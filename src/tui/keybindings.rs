@@ -27,8 +27,17 @@ pub enum Focus {
   LaunchPicker,
   /// Advanced flags panel.
   AdvancedPanel,
-  /// Right pane (Logs / Chat / Embed / Rerank — Unit 7 owns this).
+  /// Right pane in a non-input mode (the Logs tab, primarily).
+  /// Text-capture variants below cover the live input surfaces.
   RightPane,
+  /// Chat tab prompt input — alphanumerics/backspace extend the
+  /// prompt buffer; Ctrl+Enter sends.
+  ChatInput,
+  /// Embed tab input — Enter calls /v1/embeddings on the focused
+  /// model.
+  EmbedInput,
+  /// Rerank tab input — Tab stages a candidate, Enter rerank-calls.
+  RerankInput,
 }
 
 /// Symbolic action a binding triggers. Renderers / event handlers
@@ -59,6 +68,17 @@ pub enum Action {
   /// Cycle the right-pane tab (Logs ↔ Chat / Embed / Rerank when
   /// the focused model is Ready). Owned by Unit 7.
   CycleTab,
+  /// Send the buffered chat prompt to `/v1/chat/completions`.
+  /// Bound to `Ctrl+Enter` in [`Focus::ChatInput`].
+  SendChat,
+  /// Toggle the per-message `<think>...</think>` collapse in the
+  /// Chat tab (R32 reasoning-aware view).
+  ToggleThinkCollapse,
+  /// Toggle auto-scroll on the Logs tab.
+  ToggleAutoScroll,
+  /// Stage the in-progress rerank candidate buffer onto the
+  /// candidate list. Bound to `Tab` in [`Focus::RerankInput`].
+  StageRerankCandidate,
 }
 
 /// One binding in the table.
@@ -83,6 +103,9 @@ pub const DEFAULT_BINDINGS: &[(Focus, &[Binding])] = &[
   (Focus::LaunchPicker, LAUNCH_PICKER_BINDINGS),
   (Focus::AdvancedPanel, ADVANCED_BINDINGS),
   (Focus::RightPane, RIGHT_PANE_BINDINGS),
+  (Focus::ChatInput, CHAT_INPUT_BINDINGS),
+  (Focus::EmbedInput, EMBED_INPUT_BINDINGS),
+  (Focus::RerankInput, RERANK_INPUT_BINDINGS),
 ];
 
 const LIST_BINDINGS: &[Binding] = &[
@@ -308,6 +331,92 @@ const RIGHT_PANE_BINDINGS: &[Binding] = &[
     label: "Tab",
     description: "next tab",
   },
+  Binding {
+    key: KeyCode::Char('s'),
+    mods: KeyModifiers::NONE,
+    action: Action::ToggleAutoScroll,
+    label: "s",
+    description: "auto-scroll",
+  },
+];
+
+const CHAT_INPUT_BINDINGS: &[Binding] = &[
+  Binding {
+    key: KeyCode::Esc,
+    mods: KeyModifiers::NONE,
+    action: Action::FocusList,
+    label: "Esc",
+    description: "list",
+  },
+  Binding {
+    key: KeyCode::Tab,
+    mods: KeyModifiers::NONE,
+    action: Action::CycleTab,
+    label: "Tab",
+    description: "next tab",
+  },
+  Binding {
+    key: KeyCode::Enter,
+    mods: KeyModifiers::CONTROL,
+    action: Action::SendChat,
+    label: "Ctrl+Enter",
+    description: "send",
+  },
+  Binding {
+    key: KeyCode::Char('r'),
+    mods: KeyModifiers::CONTROL,
+    action: Action::ToggleThinkCollapse,
+    label: "Ctrl+r",
+    description: "collapse think",
+  },
+];
+
+const EMBED_INPUT_BINDINGS: &[Binding] = &[
+  Binding {
+    key: KeyCode::Esc,
+    mods: KeyModifiers::NONE,
+    action: Action::FocusList,
+    label: "Esc",
+    description: "list",
+  },
+  Binding {
+    key: KeyCode::Tab,
+    mods: KeyModifiers::NONE,
+    action: Action::CycleTab,
+    label: "Tab",
+    description: "next tab",
+  },
+  Binding {
+    key: KeyCode::Enter,
+    mods: KeyModifiers::NONE,
+    action: Action::Submit,
+    label: "Enter",
+    description: "embed",
+  },
+];
+
+const RERANK_INPUT_BINDINGS: &[Binding] = &[
+  Binding {
+    key: KeyCode::Esc,
+    mods: KeyModifiers::NONE,
+    action: Action::FocusList,
+    label: "Esc",
+    description: "list",
+  },
+  Binding {
+    key: KeyCode::Tab,
+    mods: KeyModifiers::NONE,
+    action: Action::StageRerankCandidate,
+    label: "Tab",
+    description: "stage",
+  },
+  Binding {
+    key: KeyCode::Enter,
+    mods: KeyModifiers::NONE,
+    action: Action::Submit,
+    label: "Enter",
+    description: "rank",
+  },
 ];
 
 /// Look up the action triggered by `(key, mods)` in the supplied
@@ -383,6 +492,46 @@ mod tests {
     assert_eq!(
       action_for(Focus::RightPane, KeyCode::Esc, KeyModifiers::NONE),
       Some(Action::FocusList)
+    );
+  }
+
+  #[test]
+  fn chat_input_ctrl_enter_sends() {
+    assert_eq!(
+      action_for(Focus::ChatInput, KeyCode::Enter, KeyModifiers::CONTROL,),
+      Some(Action::SendChat),
+    );
+  }
+
+  #[test]
+  fn chat_input_ctrl_r_toggles_think_collapse() {
+    assert_eq!(
+      action_for(Focus::ChatInput, KeyCode::Char('r'), KeyModifiers::CONTROL,),
+      Some(Action::ToggleThinkCollapse),
+    );
+  }
+
+  #[test]
+  fn embed_input_enter_submits() {
+    assert_eq!(
+      action_for(Focus::EmbedInput, KeyCode::Enter, KeyModifiers::NONE),
+      Some(Action::Submit),
+    );
+  }
+
+  #[test]
+  fn rerank_input_tab_stages_candidate() {
+    assert_eq!(
+      action_for(Focus::RerankInput, KeyCode::Tab, KeyModifiers::NONE),
+      Some(Action::StageRerankCandidate),
+    );
+  }
+
+  #[test]
+  fn right_pane_s_toggles_auto_scroll() {
+    assert_eq!(
+      action_for(Focus::RightPane, KeyCode::Char('s'), KeyModifiers::NONE,),
+      Some(Action::ToggleAutoScroll),
     );
   }
 }

@@ -193,10 +193,12 @@ pub async fn fetch_status(client: &mut Client) -> Result<StatusSnapshot, CliExit
     .map(|a| a.iter().filter_map(parse_external_row).collect())
     .unwrap_or_default();
   let gpu = body.get("gpu").cloned().unwrap_or(Value::Null);
+  let daemon = body.get("daemon").and_then(parse_daemon_health);
   Ok(StatusSnapshot {
     models,
     external,
     gpu,
+    daemon,
   })
 }
 
@@ -205,6 +207,32 @@ pub struct StatusSnapshot {
   pub models: Vec<RunningRow>,
   pub external: Vec<ExternalRow>,
   pub gpu: Value,
+  /// Daemon health preamble (`pid`, `uptime_seconds`,
+  /// `active_connections`). Older daemons may omit the field, in
+  /// which case this is `None` — the formatter silently skips it.
+  pub daemon: Option<DaemonHealth>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DaemonHealth {
+  pub pid: u64,
+  pub uptime_seconds: u64,
+  pub active_connections: u64,
+}
+
+fn parse_daemon_health(v: &Value) -> Option<DaemonHealth> {
+  let obj = v.as_object()?;
+  Some(DaemonHealth {
+    pid: obj.get("pid").and_then(Value::as_u64).unwrap_or(0),
+    uptime_seconds: obj
+      .get("uptime_seconds")
+      .and_then(Value::as_u64)
+      .unwrap_or(0),
+    active_connections: obj
+      .get("active_connections")
+      .and_then(Value::as_u64)
+      .unwrap_or(0),
+  })
 }
 
 #[derive(Debug, Clone)]

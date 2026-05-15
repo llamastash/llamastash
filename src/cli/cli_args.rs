@@ -186,7 +186,11 @@ pub struct PresetsArgs {
 #[derive(Subcommand, Debug)]
 pub enum PresetsAction {
   /// List saved presets for this model.
-  List,
+  List {
+    /// Emit JSON instead of the human-readable table.
+    #[arg(long)]
+    json: bool,
+  },
   /// Save the current/passed launch params under `name`.
   Save {
     name: String,
@@ -447,9 +451,17 @@ mod tests {
     match list.command {
       Some(Command::Presets(args)) => {
         assert_eq!(args.model, "qwen-coder");
-        assert!(matches!(args.action, PresetsAction::List));
+        assert!(matches!(args.action, PresetsAction::List { json: false }));
       }
       other => panic!("expected presets list, got {other:?}"),
+    }
+
+    let list_json = parse(&["presets", "qwen-coder", "list", "--json"]);
+    match list_json.command {
+      Some(Command::Presets(args)) => {
+        assert!(matches!(args.action, PresetsAction::List { json: true }));
+      }
+      other => panic!("expected presets list --json, got {other:?}"),
     }
 
     let delete = parse(&["presets", "qwen-coder", "delete", "old-preset"]);

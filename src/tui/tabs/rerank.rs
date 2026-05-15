@@ -9,13 +9,30 @@ use ratatui::Frame;
 
 use crate::theme::Palette;
 
-#[derive(Debug, Clone, Default)]
+/// Which sub-field of the Rerank tab the user is typing into.
+/// `Tab` cycles between the query and the candidate buffer; the
+/// staged candidates render below.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RerankField {
+  #[default]
+  Query,
+  Candidate,
+}
+
+#[derive(Debug, Default)]
 pub struct RerankTabState {
   pub query: String,
   pub candidates: Vec<String>,
   pub ranked: Vec<(usize, f64)>,
   pub last_error: Option<String>,
   pub busy: bool,
+  /// In-progress candidate text — staged onto `candidates` when
+  /// the user presses `Tab` in the candidate sub-field.
+  pub candidate_buffer: String,
+  pub field: RerankField,
+  /// Receiver for the in-flight `/v1/rerank` call. The render loop
+  /// drains it via `try_recv` once per tick.
+  pub pending: Option<tokio::sync::mpsc::UnboundedReceiver<crate::tui::events::TabEvent>>,
 }
 
 impl RerankTabState {
@@ -41,6 +58,29 @@ impl RerankTabState {
     self.candidates.clear();
     self.ranked.clear();
     self.last_error = None;
+    self.candidate_buffer.clear();
+    self.field = RerankField::Query;
+  }
+
+  /// Move the type-cursor between the query and candidate sub-
+  /// fields. The candidate buffer is preserved across cycles.
+  pub fn cycle_field(&mut self) {
+    self.field = match self.field {
+      RerankField::Query => RerankField::Candidate,
+      RerankField::Candidate => RerankField::Query,
+    };
+  }
+
+  /// Stage the in-progress candidate buffer onto the candidate list.
+  /// Returns true if a candidate was added.
+  pub fn stage_candidate(&mut self) -> bool {
+    let trimmed = self.candidate_buffer.trim().to_string();
+    if trimmed.is_empty() {
+      return false;
+    }
+    self.candidates.push(trimmed);
+    self.candidate_buffer.clear();
+    true
   }
 }
 
@@ -56,24 +96,70 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &RerankTabState, palette
     .direction(Direction::Vertical)
     .constraints([
       Constraint::Length(3),
+      Constraint::Length(3),
       Constraint::Min(1),
       Constraint::Length(1),
     ])
     .split(inner);
 
-  let prompt_block = Block::default()
+  // Query field — caret visible only when this is the active
+  // sub-field, so the user has an unambiguous typing target.
+  let query_active = state.field == RerankField::Query;
+  let query_block = Block::default()
     .title(" Query ")
     .borders(Borders::ALL)
-    .border_style(Style::default().fg(palette.muted));
-  let prompt_inner = prompt_block.inner(layout[0]);
-  frame.render_widget(prompt_block, layout[0]);
+    .border_style(Style::default().fg(if query_active {
+      palette.accent
+    } else {
+      palette.muted
+    }));
+  let query_inner = query_block.inner(layout[0]);
+  frame.render_widget(query_block, layout[0]);
+  let mut query_spans = vec![
+    Span::styled("▌ ", Style::default().fg(palette.accent)),
+    Span::styled(&state.query, Style::default().fg(palette.fg)),
+  ];
+  if query_active {
+    query_spans.push(Span::styled(
+      "│",
+      Style::default()
+        .fg(palette.accent)
+        .add_modifier(Modifier::REVERSED),
+    ));
+  }
   frame.render_widget(
-    Paragraph::new(Line::from(vec![
-      Span::styled("▌ ", Style::default().fg(palette.accent)),
-      Span::styled(&state.query, Style::default().fg(palette.fg)),
-    ]))
-    .wrap(Wrap { trim: false }),
-    prompt_inner,
+    Paragraph::new(Line::from(query_spans)).wrap(Wrap { trim: false }),
+    query_inner,
+  );
+
+  // Candidate buffer field — accepts text input when active, and
+  // shows the staged list (with the size hint) below.
+  let cand_active = state.field == RerankField::Candidate;
+  let cand_block = Block::default()
+    .title(" Candidate (Tab stages) ")
+    .borders(Borders::ALL)
+    .border_style(Style::default().fg(if cand_active {
+      palette.accent
+    } else {
+      palette.muted
+    }));
+  let cand_inner = cand_block.inner(layout[1]);
+  frame.render_widget(cand_block, layout[1]);
+  let mut cand_spans = vec![
+    Span::styled("▌ ", Style::default().fg(palette.accent)),
+    Span::styled(&state.candidate_buffer, Style::default().fg(palette.fg)),
+  ];
+  if cand_active {
+    cand_spans.push(Span::styled(
+      "│",
+      Style::default()
+        .fg(palette.accent)
+        .add_modifier(Modifier::REVERSED),
+    ));
+  }
+  frame.render_widget(
+    Paragraph::new(Line::from(cand_spans)).wrap(Wrap { trim: false }),
+    cand_inner,
   );
 
   let mut body: Vec<Line<'_>> = Vec::new();
@@ -106,7 +192,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &RerankTabState, palette
       ]));
     }
   }
-  frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), layout[1]);
+  frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), layout[2]);
 
   let status = match (state.busy, &state.last_error) {
     (true, _) => Line::from(Span::styled(
@@ -120,11 +206,11 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &RerankTabState, palette
       Style::default().fg(palette.error),
     )),
     _ => Line::from(Span::styled(
-      "Enter to rank · type candidate text then Tab to stage",
+      "Tab cycles field · Tab stages candidate · Enter ranks",
       Style::default().fg(palette.muted),
     )),
   };
-  frame.render_widget(Paragraph::new(status), layout[2]);
+  frame.render_widget(Paragraph::new(status), layout[3]);
 }
 
 #[cfg(test)]
@@ -145,11 +231,46 @@ mod tests {
       query: "q".into(),
       candidates: vec!["c".into()],
       ranked: vec![(0, 1.0)],
+      candidate_buffer: "buf".into(),
+      field: RerankField::Candidate,
       ..Default::default()
     };
     s.clear();
     assert!(s.query.is_empty());
     assert!(s.candidates.is_empty());
     assert!(s.ranked.is_empty());
+    assert!(s.candidate_buffer.is_empty());
+    assert_eq!(s.field, RerankField::Query);
+  }
+
+  #[test]
+  fn cycle_field_swaps_query_and_candidate() {
+    let mut s = RerankTabState::default();
+    assert_eq!(s.field, RerankField::Query);
+    s.cycle_field();
+    assert_eq!(s.field, RerankField::Candidate);
+    s.cycle_field();
+    assert_eq!(s.field, RerankField::Query);
+  }
+
+  #[test]
+  fn stage_candidate_moves_buffer_to_candidates_when_non_empty() {
+    let mut s = RerankTabState {
+      candidate_buffer: "doc one".into(),
+      ..Default::default()
+    };
+    assert!(s.stage_candidate());
+    assert_eq!(s.candidates, vec!["doc one".to_string()]);
+    assert!(s.candidate_buffer.is_empty());
+  }
+
+  #[test]
+  fn stage_candidate_returns_false_when_buffer_empty() {
+    let mut s = RerankTabState {
+      candidate_buffer: "   ".into(),
+      ..Default::default()
+    };
+    assert!(!s.stage_candidate());
+    assert!(s.candidates.is_empty());
   }
 }

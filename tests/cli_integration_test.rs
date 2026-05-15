@@ -72,6 +72,24 @@ fn allocate_port_range() -> PortRange {
   }
 }
 
+/// A wider range so a duplicate-launch test can grab two ports.
+fn allocate_port_range_pair() -> PortRange {
+  // Bind two ephemerals to claim consecutive-ish free slots, then
+  // hand the daemon a 32-wide window starting at the lower of them
+  // so a second `start_model` doesn't collide.
+  let l1 = std::net::TcpListener::bind("127.0.0.1:0").expect("bind 1");
+  let l2 = std::net::TcpListener::bind("127.0.0.1:0").expect("bind 2");
+  let p1 = l1.local_addr().unwrap().port();
+  let p2 = l2.local_addr().unwrap().port();
+  drop(l1);
+  drop(l2);
+  let lo = p1.min(p2);
+  PortRange {
+    start: lo,
+    end: lo.saturating_add(31),
+  }
+}
+
 struct DaemonHandle {
   join: JoinHandle<anyhow::Result<llamatui::daemon::StartOutcome>>,
   socket: PathBuf,
@@ -366,7 +384,7 @@ async fn presets_save_list_delete_round_trip() {
     &h.model_dir,
     Command::Presets(PresetsArgs {
       model: "m.gguf".into(),
-      action: PresetsAction::List,
+      action: PresetsAction::List { json: false },
     }),
   )
   .await;
@@ -471,6 +489,308 @@ async fn no_spawn_with_dead_daemon_exits_daemon_unreachable() {
   .await;
   assert_eq!(code, exit_codes::DAEMON_UNREACHABLE);
   std::fs::remove_dir_all(&model_dir).ok();
+}
+
+/// Variant of [`spawn_daemon_with_model`] with a 32-wide port range
+/// so tests can launch two instances of the same model.
+async fn spawn_daemon_with_model_wide_range(
+  label: &str,
+  model_name: &str,
+  arch: &str,
+) -> DaemonHandle {
+  let state = unique_temp(&format!("{label}-state"));
+  let model_dir = unique_temp(&format!("{label}-models"));
+  std::fs::write(model_dir.join(model_name), build_minimal_gguf(arch))
+    .expect("write fixture model");
+  let opts = DaemonOptions {
+    binary: Some(fake_binary()),
+    port_range: allocate_port_range_pair(),
+    discovery: DiscoveryOptions::new(vec![ScanRoot {
+      path: model_dir.clone(),
+      source: ModelSource::UserPath,
+    }]),
+    ..DaemonOptions::rooted_at(state.clone())
+  };
+  let socket = opts.socket_path.clone();
+  let join = tokio::spawn(async move { run_foreground(opts).await });
+  wait_for_socket(&socket).await;
+  await_catalog_populated(&socket).await;
+  DaemonHandle {
+    join,
+    socket,
+    state,
+    model_dir,
+  }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn presets_list_json_emits_array_for_agents() {
+  let h = spawn_daemon_with_model("plj", "m.gguf", "llama").await;
+
+  // Save a preset first so list has content.
+  let code = run_dispatch_at(
+    Some(&h.socket),
+    &h.model_dir,
+    Command::Presets(PresetsArgs {
+      model: "m.gguf".into(),
+      action: PresetsAction::Save {
+        name: "coding".into(),
+        ctx: Some(32768),
+        port: None,
+        reasoning: Some(ReasoningFlag::On),
+        mode: Some(CliLaunchMode::Chat),
+        extra: vec![],
+      },
+    }),
+  )
+  .await;
+  assert_eq!(code, exit_codes::SUCCESS);
+
+  // `presets list --json` exits zero. Stdout shape is asserted by
+  // the unit tests in `cli::output`; here we want the dispatch
+  // wiring to surface the flag without crashing.
+  let code = run_dispatch_at(
+    Some(&h.socket),
+    &h.model_dir,
+    Command::Presets(PresetsArgs {
+      model: "m.gguf".into(),
+      action: PresetsAction::List { json: true },
+    }),
+  )
+  .await;
+  assert_eq!(code, exit_codes::SUCCESS);
+
+  // Also assert the preset reached state.json with the JSON flag
+  // off so we know the test daemon has anything to render.
+  let s = state_store::load(&h.state).expect("load state");
+  assert!(
+    s.presets
+      .iter()
+      .any(|e| e.presets.iter().any(|p| p.name == "coding")),
+    "preset should round-trip into state.json: {:?}",
+    s.presets,
+  );
+
+  h.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn start_preset_chain_seeds_supervisor_with_saved_params() {
+  let h = spawn_daemon_with_model("pchain", "m.gguf", "llama").await;
+
+  // Save a preset that pins ctx + reasoning + advanced flags.
+  let code = run_dispatch_at(
+    Some(&h.socket),
+    &h.model_dir,
+    Command::Presets(PresetsArgs {
+      model: "m.gguf".into(),
+      action: PresetsAction::Save {
+        name: "coding".into(),
+        ctx: Some(16384),
+        port: None,
+        reasoning: Some(ReasoningFlag::On),
+        mode: Some(CliLaunchMode::Chat),
+        extra: vec![OsString::from("--threads"), OsString::from("8")],
+      },
+    }),
+  )
+  .await;
+  assert_eq!(code, exit_codes::SUCCESS);
+
+  // Now `start --preset coding` — supervisor should receive the
+  // bundled flags.
+  let code = run_dispatch_at(
+    Some(&h.socket),
+    &h.model_dir,
+    Command::Start(StartArgs {
+      model: "m.gguf".into(),
+      preset: Some("coding".into()),
+      ctx: None,
+      port: None,
+      reasoning: None,
+      mode: Some(CliLaunchMode::Chat),
+      extra: vec![],
+    }),
+  )
+  .await;
+  assert_eq!(code, exit_codes::SUCCESS);
+
+  // The supervisor persists `last_params` only after reaching
+  // Ready, *and* the recorder polls state every 200 ms — so wait
+  // for the write rather than racing it.
+  let mut client = h.client().await;
+  let deadline = Instant::now() + Duration::from_secs(8);
+  loop {
+    let lp = client.call("last_params_list", None).await.unwrap();
+    let arr = lp["last_params"].as_array().cloned().unwrap_or_default();
+    if arr.iter().any(|row| {
+      row["params"]["ctx"] == serde_json::json!(16384)
+        && row["params"]["reasoning"] == serde_json::json!(true)
+        && row["params"]["advanced"]
+          .as_array()
+          .map(|a| a.iter().any(|v| v == "--threads"))
+          .unwrap_or(false)
+    }) {
+      break;
+    }
+    if Instant::now() > deadline {
+      panic!("supervisor should have recorded preset ctx + reasoning + advanced: {arr:?}",);
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+  }
+  drop(client);
+
+  h.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn start_ctx_above_native_succeeds_and_duplicate_launch_uses_new_port() {
+  let h = spawn_daemon_with_model_wide_range("dup", "m.gguf", "llama").await;
+
+  // First launch: pass a deliberately huge ctx so we exercise the
+  // "ctx > native_ctx" path. The plan calls for the daemon to log
+  // a warning but still exit zero on the CLI side.
+  let code = run_dispatch_at(
+    Some(&h.socket),
+    &h.model_dir,
+    Command::Start(StartArgs {
+      model: "m.gguf".into(),
+      preset: None,
+      ctx: Some(131_072),
+      port: None,
+      reasoning: None,
+      mode: Some(CliLaunchMode::Chat),
+      extra: vec![],
+    }),
+  )
+  .await;
+  assert_eq!(
+    code,
+    exit_codes::SUCCESS,
+    "ctx > native should still exit 0"
+  );
+
+  // Second launch of the same model — duplicate-launch path. The
+  // daemon allocates a different port; both rows must appear in
+  // status.
+  let code = run_dispatch_at(
+    Some(&h.socket),
+    &h.model_dir,
+    Command::Start(StartArgs {
+      model: "m.gguf".into(),
+      preset: None,
+      ctx: None,
+      port: None,
+      reasoning: None,
+      mode: Some(CliLaunchMode::Chat),
+      extra: vec![],
+    }),
+  )
+  .await;
+  assert_eq!(code, exit_codes::SUCCESS);
+
+  let mut client = h.client().await;
+  let deadline = Instant::now() + Duration::from_secs(8);
+  let (port_a, port_b) = loop {
+    let body = client.call("status", None).await.unwrap();
+    let models = body["models"].as_array().unwrap();
+    if models.len() >= 2 {
+      let ports: Vec<u16> = models
+        .iter()
+        .map(|m| m["port"].as_u64().unwrap() as u16)
+        .collect();
+      break (ports[0], ports[1]);
+    }
+    if Instant::now() > deadline {
+      panic!("only one supervisor row surfaced: {models:?}");
+    }
+    tokio::time::sleep(Duration::from_millis(40)).await;
+  };
+  assert_ne!(port_a, port_b, "duplicate launches must use distinct ports");
+  drop(client);
+
+  h.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn logs_follow_returns_daemon_unreachable_when_daemon_dies() {
+  let h = spawn_daemon_with_model_wide_range("logsdrop", "m.gguf", "llama").await;
+
+  // Launch a model so `logs --follow` has a target.
+  let code = run_dispatch_at(
+    Some(&h.socket),
+    &h.model_dir,
+    Command::Start(StartArgs {
+      model: "m.gguf".into(),
+      preset: None,
+      ctx: None,
+      port: None,
+      reasoning: None,
+      mode: Some(CliLaunchMode::Chat),
+      extra: vec![],
+    }),
+  )
+  .await;
+  assert_eq!(code, exit_codes::SUCCESS);
+
+  // Resolve the launch id by talking to the daemon directly.
+  let mut client = h.client().await;
+  let deadline = Instant::now() + Duration::from_secs(5);
+  let launch_id = loop {
+    let body = client.call("status", None).await.unwrap();
+    let models = body["models"].as_array().unwrap();
+    if let Some(m) = models.iter().find(|m| m["state"]["state"] == "ready") {
+      break m["launch_id"].as_str().unwrap().to_string();
+    }
+    if Instant::now() > deadline {
+      panic!("supervisor never reached ready");
+    }
+    tokio::time::sleep(Duration::from_millis(40)).await;
+  };
+  drop(client);
+
+  // Kick off `logs --follow` in a background task. The dispatch
+  // takes the env-var lock for the duration of its call, so we
+  // hold off the daemon kill until the env swap has happened.
+  let socket = h.socket.clone();
+  let model_dir = h.model_dir.clone();
+  let launch_id_for_task = launch_id.clone();
+  let follow_handle = tokio::spawn(async move {
+    run_dispatch_at(
+      Some(&socket),
+      &model_dir,
+      Command::Logs(LogsArgs {
+        target: launch_id_for_task,
+        follow: true,
+        lines: Some(5),
+      }),
+    )
+    .await
+  });
+
+  // Give the follower a moment to enter its poll loop.
+  tokio::time::sleep(Duration::from_millis(300)).await;
+
+  // Shut the daemon down. The follower's next `logs_tail` call
+  // should fail with a connect error → DAEMON_UNREACHABLE.
+  if let Ok(mut client) = Client::connect(&h.socket).await {
+    let _ = client.call("shutdown", None).await;
+  }
+
+  let code = tokio::time::timeout(Duration::from_secs(5), follow_handle)
+    .await
+    .expect("follow exited")
+    .expect("join handle");
+  assert_eq!(
+    code,
+    exit_codes::DAEMON_UNREACHABLE,
+    "logs --follow must exit 65 when daemon disappears",
+  );
+
+  // Drop temp dirs (daemon already shut down).
+  std::fs::remove_dir_all(&h.state).ok();
+  std::fs::remove_dir_all(&h.model_dir).ok();
+  let _ = tokio::time::timeout(Duration::from_secs(2), h.join).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

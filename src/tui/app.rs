@@ -89,6 +89,9 @@ pub struct App {
   pub embed: crate::tui::tabs::embed::EmbedTabState,
   /// Rerank-tab working state — query + candidate list.
   pub rerank: crate::tui::tabs::rerank::RerankTabState,
+  /// Logs-tab buffer for the focused launch. Refreshed from the
+  /// daemon's `logs_tail` IPC method on each tick.
+  pub logs_state: crate::tui::tabs::logs::LogsTabState,
   /// Cursor index into the rendered row list (which mixes headers
   /// and models). Header rows are skipped during `move_*`.
   pub list_cursor: usize,
@@ -115,6 +118,7 @@ impl App {
       chat: Default::default(),
       embed: Default::default(),
       rerank: Default::default(),
+      logs_state: Default::default(),
       list_cursor: 0,
       filter_buffer: String::new(),
       launch_picker: None,

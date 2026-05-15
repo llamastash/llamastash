@@ -17,13 +17,14 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
+use tokio::sync::mpsc;
 
 use crate::theme::Palette;
-use crate::tui::oai_client::collapse_think_blocks;
+use crate::tui::oai_client::{collapse_think_blocks, ChatStreamMsg};
 
 /// Working state for the chat tab. Owned by [`crate::tui::app::App`]
 /// so the streamer and the renderer share one buffer.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct ChatTabState {
   /// The user's current prompt input.
   pub prompt: String,
@@ -38,6 +39,12 @@ pub struct ChatTabState {
   /// Collapse `<think>` blocks. Drives the same toggle the plan
   /// calls out for reasoning-aware models.
   pub collapse_thinks: bool,
+  /// Receiver for the most recent `spawn_chat_stream` invocation.
+  /// The render loop drains it via `try_recv` on every tick — that
+  /// way SSE deltas land in [`response`] without the input thread
+  /// having to await anything. `None` once the stream signals
+  /// `Finished` or `Error`.
+  pub stream_rx: Option<mpsc::Receiver<ChatStreamMsg>>,
 }
 
 impl ChatTabState {

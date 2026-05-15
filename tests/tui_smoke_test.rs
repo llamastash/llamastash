@@ -302,6 +302,75 @@ fn list_pane_renders_est_mem_badge() {
 }
 
 #[test]
+fn typing_into_chat_input_extends_prompt_buffer() {
+  use llamatui::tui::app::ManagedRow;
+  use llamatui::tui::keybindings::Focus;
+  use llamatui::tui::status_icons::SurfaceState;
+  let mut app = App::new(AppOptions::default());
+  app.models = vec![fake_model("/m/qwen.gguf", "/m")];
+  app.managed = vec![ManagedRow {
+    launch_id: "L1".into(),
+    path: PathBuf::from("/m/qwen.gguf"),
+    port: 41100,
+    state: SurfaceState::Ready,
+  }];
+  app.go_top();
+  // Tab from list to right pane → Chat tab is current → focus is
+  // ChatInput. Cycle once to land on Chat.
+  pump_input(&mut app, key(KeyCode::Tab, KeyModifiers::NONE));
+  pump_input(&mut app, key(KeyCode::Tab, KeyModifiers::NONE));
+  assert_eq!(app.focus, Focus::ChatInput, "Chat tab → ChatInput focus");
+  for ch in "hello".chars() {
+    pump_input(&mut app, key(KeyCode::Char(ch), KeyModifiers::NONE));
+  }
+  assert_eq!(app.chat.prompt, "hello");
+}
+
+#[test]
+fn ctrl_r_in_chat_input_toggles_think_collapse() {
+  use llamatui::tui::keybindings::Focus;
+  let mut app = App::new(AppOptions::default());
+  app.focus = Focus::ChatInput;
+  assert!(!app.chat.collapse_thinks);
+  pump_input(&mut app, key(KeyCode::Char('r'), KeyModifiers::CONTROL));
+  assert!(app.chat.collapse_thinks);
+  pump_input(&mut app, key(KeyCode::Char('r'), KeyModifiers::CONTROL));
+  assert!(!app.chat.collapse_thinks);
+}
+
+#[test]
+fn s_in_right_pane_toggles_logs_auto_scroll() {
+  use llamatui::tui::keybindings::Focus;
+  let mut app = App::new(AppOptions::default());
+  app.focus = Focus::RightPane;
+  assert!(app.logs_state.auto_scroll);
+  pump_input(&mut app, key(KeyCode::Char('s'), KeyModifiers::NONE));
+  assert!(!app.logs_state.auto_scroll);
+}
+
+#[test]
+fn rerank_tab_input_stages_candidates_via_tab() {
+  use llamatui::tui::keybindings::Focus;
+  use llamatui::tui::tabs::rerank::RerankField;
+  let mut app = App::new(AppOptions::default());
+  app.focus = Focus::RerankInput;
+  // Type a query then Tab to candidate field.
+  for ch in "what?".chars() {
+    pump_input(&mut app, key(KeyCode::Char(ch), KeyModifiers::NONE));
+  }
+  pump_input(&mut app, key(KeyCode::Tab, KeyModifiers::NONE));
+  assert_eq!(app.rerank.field, RerankField::Candidate);
+  // Type a candidate then Tab to stage.
+  for ch in "doc one".chars() {
+    pump_input(&mut app, key(KeyCode::Char(ch), KeyModifiers::NONE));
+  }
+  pump_input(&mut app, key(KeyCode::Tab, KeyModifiers::NONE));
+  assert_eq!(app.rerank.query, "what?");
+  assert_eq!(app.rerank.candidates, vec!["doc one".to_string()]);
+  assert!(app.rerank.candidate_buffer.is_empty());
+}
+
+#[test]
 fn narrow_terminal_does_not_crash_render() {
   // Plan edge case: terminal width 60 cols → renderer must
   // tolerate the constraint without panicking. We don't pin the

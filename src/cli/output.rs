@@ -87,6 +87,12 @@ pub fn filter_rows(rows: &[CatalogRow], pattern: &str) -> Vec<CatalogRow> {
 /// Human rendering of `status`.
 pub fn status_human(snap: &StatusSnapshot) -> String {
   let mut out = String::new();
+  if let Some(d) = &snap.daemon {
+    out.push_str(&format!(
+      "daemon: pid={} uptime={}s connections={}\n",
+      d.pid, d.uptime_seconds, d.active_connections,
+    ));
+  }
   if snap.models.is_empty() && snap.external.is_empty() {
     out.push_str("(no managed launches)\n");
   } else {
@@ -194,10 +200,18 @@ pub fn status_json(snap: &StatusSnapshot) -> Value {
       })
     })
     .collect();
+  let daemon = snap.daemon.as_ref().map(|d| {
+    serde_json::json!({
+      "pid": d.pid,
+      "uptime_seconds": d.uptime_seconds,
+      "active_connections": d.active_connections,
+    })
+  });
   serde_json::json!({
     "models": models,
     "external": external,
     "gpu": snap.gpu,
+    "daemon": daemon,
   })
 }
 
@@ -289,6 +303,7 @@ mod tests {
       models: vec![],
       external: vec![],
       gpu: Value::Null,
+      daemon: None,
     };
     let s = status_human(&snap);
     assert!(s.contains("no managed"));
@@ -300,9 +315,29 @@ mod tests {
       models: vec![],
       external: vec![],
       gpu: Value::String("CpuOnly".into()),
+      daemon: None,
     };
     let s = status_human(&snap);
     assert!(s.contains("CPU only"), "got: {s}");
+  }
+
+  #[test]
+  fn status_human_emits_daemon_preamble_when_present() {
+    use crate::cli::resolve::DaemonHealth;
+    let snap = StatusSnapshot {
+      models: vec![],
+      external: vec![],
+      gpu: Value::Null,
+      daemon: Some(DaemonHealth {
+        pid: 4242,
+        uptime_seconds: 90,
+        active_connections: 3,
+      }),
+    };
+    let s = status_human(&snap);
+    assert!(s.contains("daemon"), "preamble missing: {s}");
+    assert!(s.contains("pid=4242"), "pid missing: {s}");
+    assert!(s.contains("connections=3"), "conn count missing: {s}");
   }
 
   #[test]
@@ -323,6 +358,7 @@ mod tests {
         model_path: Some("/m/b.gguf".into()),
       }],
       gpu: Value::String("CpuOnly".into()),
+      daemon: None,
     };
     let v = status_json(&snap);
     let model = &v["models"][0];
@@ -331,5 +367,24 @@ mod tests {
     assert_eq!(model["port"], serde_json::json!(41100));
     let ext = &v["external"][0];
     assert_eq!(ext["pid"], serde_json::json!(999));
+  }
+
+  #[test]
+  fn status_json_includes_daemon_block_when_present() {
+    use crate::cli::resolve::DaemonHealth;
+    let snap = StatusSnapshot {
+      models: vec![],
+      external: vec![],
+      gpu: Value::Null,
+      daemon: Some(DaemonHealth {
+        pid: 11,
+        uptime_seconds: 7,
+        active_connections: 1,
+      }),
+    };
+    let v = status_json(&snap);
+    assert_eq!(v["daemon"]["pid"], serde_json::json!(11));
+    assert_eq!(v["daemon"]["uptime_seconds"], serde_json::json!(7));
+    assert_eq!(v["daemon"]["active_connections"], serde_json::json!(1));
   }
 }

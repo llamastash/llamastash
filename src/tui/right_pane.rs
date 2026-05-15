@@ -34,8 +34,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
 
   match app.right_tab {
     RightTab::Logs => {
-      let state = build_logs_state(app);
-      logs::render(frame, layout[1], &state, palette);
+      logs::render(frame, layout[1], &app.logs_state, palette);
     }
     RightTab::Chat => chat::render(frame, layout[1], &app.chat, palette),
     RightTab::Embed => embed::render(frame, layout[1], &app.embed, palette),
@@ -86,12 +85,4 @@ fn render_tab_strip(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Pale
     Style::default().fg(palette.muted),
   ));
   frame.render_widget(Paragraph::new(Line::from(spans)), area);
-}
-
-fn build_logs_state(_app: &App) -> crate::tui::tabs::logs::LogsTabState {
-  // v1 surfaces an empty Logs tab — the `logs_tail` refresher hook
-  // lands alongside Unit 8's CLI `logs --follow`. The plumbing is
-  // intentionally stubbed here so the tab is reachable; filling it
-  // with live lines is a paired follow-up.
-  crate::tui::tabs::logs::LogsTabState::default()
 }

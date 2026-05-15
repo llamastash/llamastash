@@ -13,17 +13,28 @@ use ratatui::Frame;
 
 use crate::theme::Palette;
 
+/// Maximum lines we keep around in the in-memory mirror so a
+/// long-running model doesn't grow this buffer unboundedly.
+const MAX_LINES: usize = 4096;
+
 /// In-memory mirror of the daemon's per-launch ring buffer. The
 /// renderer trims to the visible viewport so a long-running model's
 /// log doesn't bloat the render path.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct LogsTabState {
   pub lines: Vec<String>,
-  /// User scrolled up — auto-scroll stays paused until they press
-  /// `End` or `g` to resume. v1 ships without scroll keys; the
-  /// flag lives here so Unit 8's CLI logs --follow shares the
-  /// same field.
+  /// Auto-scroll keeps the viewport pinned to the tail; toggled by
+  /// the `s` hotkey in the right pane.
   pub auto_scroll: bool,
+  /// Launch id this buffer mirrors. Cleared (and `lines` reset)
+  /// when the user focuses a different launch.
+  pub launch_id: Option<String>,
+}
+
+impl Default for LogsTabState {
+  fn default() -> Self {
+    Self::new()
+  }
 }
 
 impl LogsTabState {
@@ -31,7 +42,27 @@ impl LogsTabState {
     Self {
       lines: Vec::new(),
       auto_scroll: true,
+      launch_id: None,
     }
+  }
+
+  /// Replace the buffer with a fresh tail from the daemon. The
+  /// `logs_tail` IPC method returns a snapshot so we just adopt it
+  /// wholesale; the daemon's ring buffer already caps growth.
+  pub fn set_tail(&mut self, launch_id: String, lines: Vec<String>) {
+    self.launch_id = Some(launch_id);
+    self.lines = lines;
+    if self.lines.len() > MAX_LINES {
+      let drop = self.lines.len() - MAX_LINES;
+      self.lines.drain(..drop);
+    }
+  }
+
+  /// Drop accumulated state when the user moves focus to a launch
+  /// the buffer doesn't cover. Keeps the auto-scroll preference.
+  pub fn clear(&mut self) {
+    self.lines.clear();
+    self.launch_id = None;
   }
 }
 
@@ -77,5 +108,16 @@ mod tests {
     let s = LogsTabState::new();
     assert!(s.auto_scroll);
     assert!(s.lines.is_empty());
+    assert!(s.launch_id.is_none());
+  }
+
+  #[test]
+  fn set_tail_overwrites_lines_and_caps_to_max() {
+    let mut s = LogsTabState::new();
+    let lines: Vec<String> = (0..(MAX_LINES + 50)).map(|i| format!("l{i}")).collect();
+    s.set_tail("L1".into(), lines);
+    assert_eq!(s.launch_id.as_deref(), Some("L1"));
+    assert_eq!(s.lines.len(), MAX_LINES);
+    assert_eq!(s.lines[0], format!("l{}", 50));
   }
 }

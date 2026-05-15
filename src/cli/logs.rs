@@ -76,7 +76,11 @@ pub async fn handle(args: LogsArgs, cli: &Cli, config: &Config) -> CliResult {
               push_seen(&mut seen, l);
             }
           }
-          Err(ClientError::Connect(_)) => {
+          Err(ClientError::Connect(_)) | Err(ClientError::Frame(_)) => {
+            // Connect failure = socket missing; Frame failure =
+            // peer hung up mid-response. Both mean the daemon is no
+            // longer there from the follower's POV, so collapse to
+            // DAEMON_UNREACHABLE so scripts can branch reliably.
             return Err(CliExit::new(
               DAEMON_UNREACHABLE,
               format!("daemon disconnected (launch {})", row.launch_id),

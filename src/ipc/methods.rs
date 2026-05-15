@@ -252,6 +252,10 @@ pub async fn dispatch_request(ctx: &MethodContext, req: Request) -> Response {
       Ok(v) => Response::ok(id, v),
       Err(e) => Response::err(id, e),
     },
+    "stop_external" => match stop_external_handler(ctx, req.params).await {
+      Ok(v) => Response::ok(id, v),
+      Err(e) => Response::err(id, e),
+    },
     "logs_tail" => match logs_tail_handler(ctx, req.params).await {
       Ok(v) => Response::ok(id, v),
       Err(e) => Response::err(id, e),
@@ -336,6 +340,11 @@ async fn status_response(ctx: &MethodContext) -> Value {
     "models": models,
     "external": external,
     "gpu": ctx.gpu.as_ref(),
+    "daemon": {
+      "pid": std::process::id(),
+      "uptime_seconds": ctx.started_at.elapsed().as_secs(),
+      "active_connections": ctx.active_connections.load(Ordering::Relaxed),
+    },
   })
 }
 
@@ -378,6 +387,77 @@ async fn stop_model_handler(
   Ok(json!({
     "launch_id": parsed.launch_id,
     "state": final_state,
+  }))
+}
+
+#[derive(Deserialize)]
+struct StopExternalParams {
+  pid: u32,
+  /// Grace seconds between SIGTERM and SIGKILL. Mirrors
+  /// [`StopParams::grace_secs`] for parity with managed stop.
+  #[serde(default = "default_grace_secs")]
+  grace_secs: u64,
+}
+
+/// Stop an unmanaged `llama-server` process the daemon previously
+/// surfaced via the `external` snapshot. Sends SIGTERM, waits up
+/// to `grace_secs`, then SIGKILL if the process is still alive.
+/// The external snapshot is rebuilt next time `status` is fetched
+/// (the supervisor doesn't drive sysinfo on a tick), so the row
+/// will keep appearing until the next sweep refreshes it.
+async fn stop_external_handler(
+  ctx: &MethodContext,
+  params: Option<Value>,
+) -> Result<Value, ErrorObject> {
+  let parsed: StopExternalParams = parse_params(params)?;
+  // Confirm the PID is one we surfaced as external — refuse to
+  // kill arbitrary processes the caller might point at us.
+  let known = ctx
+    .external
+    .read()
+    .await
+    .iter()
+    .any(|e| e.pid == parsed.pid);
+  if !known {
+    return Err(ErrorObject::new(
+      ErrorCode::InvalidParams,
+      format!("pid {} is not a known external llama-server", parsed.pid),
+    ));
+  }
+  // SIGTERM first — give the process time to exit cleanly.
+  let pid_i = parsed.pid as i32;
+  unsafe {
+    libc::kill(pid_i, libc::SIGTERM);
+  }
+  let grace = Duration::from_secs(parsed.grace_secs);
+  let mut elapsed = Duration::ZERO;
+  let step = Duration::from_millis(100);
+  while elapsed < grace {
+    // ESRCH (errno 3) → process is gone. `kill(pid, 0)` is the
+    // standard liveness probe; we don't depend on `nix` for it.
+    let alive = unsafe { libc::kill(pid_i, 0) } == 0;
+    if !alive {
+      break;
+    }
+    tokio::time::sleep(step).await;
+    elapsed += step;
+  }
+  // Refresh liveness one last time; SIGKILL if still up.
+  let still_alive = unsafe { libc::kill(pid_i, 0) } == 0;
+  let mut sent_kill = false;
+  if still_alive {
+    unsafe {
+      libc::kill(pid_i, libc::SIGKILL);
+    }
+    sent_kill = true;
+  }
+  // Drop the entry from the in-memory external slot so the next
+  // `status` doesn't keep surfacing a ghost; a real re-sweep will
+  // repopulate it if the user spawns another unmanaged process.
+  ctx.external.write().await.retain(|e| e.pid != parsed.pid);
+  Ok(json!({
+    "pid": parsed.pid,
+    "killed_with_sigkill": sent_kill,
   }))
 }
 
@@ -1017,6 +1097,38 @@ mod tests {
     let resp = dispatch_request(&c, Request::new(1, "favorite_list", None)).await;
     let body = resp.result.expect("favorite_list result body");
     assert_eq!(body["favorites"], json!([]));
+  }
+
+  #[tokio::test]
+  async fn stop_external_refuses_pid_not_in_external_snapshot() {
+    let c = ctx();
+    let resp = dispatch_request(
+      &c,
+      Request::new(1, "stop_external", Some(json!({"pid": 999_999_999u32}))),
+    )
+    .await;
+    let err = resp
+      .error
+      .expect("unknown external PID must reject — safety guard");
+    assert_eq!(err.code, ErrorCode::InvalidParams.as_i32());
+    assert!(
+      err.message.contains("999999999"),
+      "error must name the rejected PID, got: {}",
+      err.message
+    );
+  }
+
+  #[tokio::test]
+  async fn status_includes_daemon_health_block() {
+    let c = ctx();
+    let resp = dispatch_request(&c, Request::new(1, "status", None)).await;
+    let body = resp.result.expect("status result");
+    let daemon = body
+      .get("daemon")
+      .expect("status must include daemon health block");
+    assert!(daemon["pid"].is_number());
+    assert!(daemon["uptime_seconds"].is_number());
+    assert_eq!(daemon["active_connections"], json!(0));
   }
 
   #[tokio::test]

@@ -21,7 +21,7 @@ pub async fn handle(args: PresetsArgs, cli: &Cli, config: &Config) -> CliResult 
   let row = resolve_model(&rows, &args.model)?;
 
   match args.action {
-    PresetsAction::List => {
+    PresetsAction::List { json: as_json } => {
       let body = client
         .call("presets_list", Some(json!({"model_path": &row.path})))
         .await
@@ -31,7 +31,12 @@ pub async fn handle(args: PresetsArgs, cli: &Cli, config: &Config) -> CliResult 
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-      if arr.is_empty() {
+      if as_json {
+        // Pass the daemon's wire shape through verbatim so agents
+        // pin against the same structure for both `presets list
+        // --json` and `presets show`.
+        println!("{}", pretty_json(&Value::Array(arr)));
+      } else if arr.is_empty() {
         println!("(no presets for {})", row.name());
       } else {
         println!("NAME\tCTX\tREASONING\tEXTRA");
