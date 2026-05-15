@@ -94,7 +94,7 @@ async fn handle_stop() -> Result<()> {
 /// `known_caches::default_set`. An empty config + no flags still
 /// produces a working daemon — the daemon just operates with whichever
 /// HF/Ollama/LM Studio caches exist on disk.
-fn build_options(
+pub(crate) fn build_options(
   state_dir: Option<PathBuf>,
   socket_path: Option<PathBuf>,
   cli: &Cli,

@@ -1,63 +1,98 @@
 //! CLI surface (clap definitions + dispatcher).
 //!
-//! The dispatcher is `async` because Unit 2's daemon client speaks Tokio.
-//! Subcommands not yet implemented remain as `unimplemented!` so callers
-//! see the wiring is in place without claiming work that isn't done.
+//! The dispatcher is `async` because Unit 2's daemon client speaks
+//! Tokio. Each subcommand has its own handler module under
+//! `src/cli/`. Handlers return [`exit_codes::CliResult`] so the
+//! top-level dispatcher can map structured failure into the
+//! documented exit-code table without losing the message.
 
 pub mod cli_args;
+pub mod client;
 pub mod daemon;
+pub mod exit_codes;
+pub mod favorites;
+pub mod list;
+pub mod logs;
+pub mod output;
+pub mod presets;
+pub mod pull;
+pub mod resolve;
+pub mod start;
+pub mod status;
+pub mod stop;
 
 use anyhow::Result;
 
 use crate::config::loader::LoadedConfig;
 
-// Public surface kept ready for later units (TUI, supervisor, CLI handlers).
-// Quiet the dead-code re-export warning until those consumers land.
 #[allow(unused_imports)]
 pub use cli_args::{
   Cli, Command, DaemonAction, FavoritesAction, LaunchMode, PresetsAction, PullAction, ReasoningFlag,
 };
+pub use exit_codes::{CliExit, CliResult};
 
-/// Dispatch the parsed CLI to its handler. The `config` argument carries
-/// the merged user-config (loaded with the `--config` override already
-/// applied) so handlers don't have to re-resolve the file path.
-pub async fn dispatch(mut cli: Cli, config: LoadedConfig) -> Result<()> {
-  // The `daemon` handler resolves scan roots from global flags + the
-  // loaded config; other handlers don't (yet) need either. Keep both
-  // bound here so future handlers can pick them up without re-shaping
-  // the dispatcher.
+/// Dispatch the parsed CLI to its handler. Returns the OS exit code
+/// the binary should propagate. `main.rs` calls
+/// `std::process::exit(code)` with the result.
+pub async fn dispatch(mut cli: Cli, config: LoadedConfig) -> Result<i32> {
   if let Some(warning) = &config.warning {
     log::warn!("{warning}");
   }
-  // Splitting `command` off lets later arms still borrow `cli` for its
-  // global flags (`model_paths`, `no_scan`) without fighting partial-
-  // move rules around the per-subcommand owned data.
   let command = cli.command.take();
   let resolved_config = &config.config;
-  match command {
+  let outcome: CliResult = match command {
     None => handle_tui(&cli, resolved_config).await,
-    Some(Command::Daemon(action)) => daemon::handle(action, &cli, resolved_config).await,
-    Some(Command::List(_)) => unimplemented!("list — Unit 8"),
-    Some(Command::Start(_)) => unimplemented!("start — Unit 8"),
-    Some(Command::Stop(_)) => unimplemented!("stop — Unit 8"),
-    Some(Command::Status(_)) => unimplemented!("status — Unit 8"),
-    Some(Command::Logs(_)) => unimplemented!("logs — Unit 8"),
-    Some(Command::Presets(_)) => unimplemented!("presets — Unit 8"),
-    // TODO(v2-R46): wire the HF pull worker. v1 scope was reduced
-    // mid-Unit-4; the subcommand surface stays scaffolded but the
-    // dispatcher must never claim work that isn't done.
-    Some(Command::Pull(_)) => unimplemented!("pull — deferred to v2 (R46)"),
-    Some(Command::Favorites(_)) => unimplemented!("favorites — Unit 5 / 8"),
+    Some(Command::Daemon(action)) => {
+      map_anyhow(daemon::handle(action, &cli, resolved_config).await)
+    }
+    Some(Command::List(args)) => list::handle(args, &cli, resolved_config).await,
+    Some(Command::Start(args)) => start::handle(args, &cli, resolved_config).await,
+    Some(Command::Stop(args)) => stop::handle(args, &cli, resolved_config).await,
+    Some(Command::Status(args)) => status::handle(args, &cli, resolved_config).await,
+    Some(Command::Logs(args)) => logs::handle(args, &cli, resolved_config).await,
+    Some(Command::Presets(args)) => presets::handle(args, &cli, resolved_config).await,
+    Some(Command::Favorites(args)) => favorites::handle(args, &cli, resolved_config).await,
+    // `pull` stays scaffolded; handler returns PULL_FAILED + an
+    // explanatory message until R46 lands in v2.
+    Some(Command::Pull(args)) => pull::handle(args).await,
+  };
+  Ok(report(outcome))
+}
+
+/// Translate an anyhow-bearing handler result into the CliResult
+/// shape. The `daemon` subcommand still uses `anyhow::Result` for its
+/// internal start/stop/status flow; we treat any anyhow error as a
+/// `UNKNOWN` exit unless it's already a `CliExit`.
+fn map_anyhow(r: Result<()>) -> CliResult {
+  match r {
+    Ok(()) => Ok(()),
+    Err(e) => match e.downcast::<CliExit>() {
+      Ok(exit) => Err(exit),
+      Err(other) => Err(CliExit::new(exit_codes::UNKNOWN, format!("{other}"))),
+    },
   }
 }
 
-/// Entry point for the TUI (`llamatui` with no subcommand).
-///
-/// Resolves the daemon socket path the same way `daemon stop`
-/// does, then hands off to [`crate::tui::events::launch`]. The
-/// TUI's run-loop owns the alternate-screen lifecycle; this
-/// function returns once the user quits.
-async fn handle_tui(_cli: &Cli, config: &crate::config::Config) -> Result<()> {
+/// Print any error message and return the exit code.
+fn report(result: CliResult) -> i32 {
+  match result {
+    Ok(()) => exit_codes::SUCCESS,
+    Err(exit) => {
+      if let Some(msg) = &exit.message {
+        eprintln!("{msg}");
+      }
+      exit.code
+    }
+  }
+}
+
+/// Entry point for the TUI (`llamatui` with no subcommand). Returns a
+/// `CliResult` so the dispatcher's exit-code surface stays uniform;
+/// any anyhow failure from the TUI runtime maps to `UNKNOWN`.
+async fn handle_tui(_cli: &Cli, config: &crate::config::Config) -> CliResult {
   let socket = crate::util::paths::runtime_socket_path();
-  crate::tui::events::launch(config.theme, &socket).await
+  match crate::tui::events::launch(config.theme, &socket).await {
+    Ok(()) => Ok(()),
+    Err(e) => Err(CliExit::new(exit_codes::UNKNOWN, format!("tui: {e}"))),
+  }
 }

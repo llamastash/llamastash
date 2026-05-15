@@ -19,5 +19,6 @@ async fn main() -> Result<()> {
   logging::install_panic_hook();
 
   let config = loader::load_config(cli.config.clone());
-  cli::dispatch(cli, config).await
+  let code = cli::dispatch(cli, config).await?;
+  std::process::exit(code);
 }

@@ -17,6 +17,24 @@ A fast, keyboard-driven TUI for launching and managing local `llama-server` (lla
 
 Coming soon: `cargo install llamatui`, Homebrew tap, and pre-built release binaries.
 
+## CLI exit codes
+
+Every non-interactive subcommand returns a documented exit code so agent scripts can branch on failure class. The codes are the public CLI contract — pin against numbers, not message text.
+
+| Code | Meaning |
+|------|---------|
+| `0`  | Success |
+| `64` | Usage error (missing required arg, invalid combination — clap-emitted) |
+| `65` | Daemon unreachable (socket missing, peer hung up, timeout) |
+| `66` | Model reference matched zero or multiple models (stderr lists candidates) |
+| `67` | `start_model` failed at the supervisor (probe timeout, port allocation failure) |
+| `68` | `stop_model` / `stop_all` failed |
+| `69` | Reserved for `pull` (lands with R46 in v2) |
+| `70` | `llama-server` binary not found (`--llama-server`, `LLAMATUI_LLAMA_SERVER`, or `$PATH`) |
+| `71` | Unexpected error (catch-all) |
+
+Set `LLAMATUI_SOCKET=/path/to/daemon.sock` to point a CLI at a non-default daemon socket without the `--socket-path` hidden flag dance.
+
 ## License
 
 MIT © Deepu K Sasidharan

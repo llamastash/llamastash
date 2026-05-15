@@ -49,9 +49,19 @@ pub fn log_dir() -> Option<PathBuf> {
 
 /// Resolve the Unix-socket path for the daemon.
 ///
-/// Always returns a path. `XDG_RUNTIME_DIR` is preferred (Linux); macOS and
-/// environments without it fall back to `$TMPDIR/llamatui-$USER/daemon.sock`.
+/// Always returns a path. Resolution order:
+/// 1. `LLAMATUI_SOCKET` env var (verbatim) — used by tests and by
+///    operators who want to point a CLI at a non-default daemon
+///    without the `--socket-path` hidden flag dance.
+/// 2. `XDG_RUNTIME_DIR/llamatui/daemon.sock` (Linux).
+/// 3. `$TMPDIR/llamatui-$USER/daemon.sock` (macOS / no runtime dir).
 pub fn runtime_socket_path() -> PathBuf {
+  if let Some(raw) = std::env::var_os("LLAMATUI_SOCKET") {
+    let p = PathBuf::from(raw);
+    if !p.as_os_str().is_empty() {
+      return p;
+    }
+  }
   if let Some(dirs) = project_dirs() {
     if let Some(rt) = dirs.runtime_dir() {
       return rt.join("daemon.sock");
