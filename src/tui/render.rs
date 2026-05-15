@@ -20,11 +20,11 @@ use ratatui::Frame;
 use crate::theme::Palette;
 use crate::tui::app::App;
 use crate::tui::keybindings::Focus;
-use crate::tui::status_icons::{label_for, SurfaceState};
-use crate::tui::{advanced_panel, help_bar, launch_picker, list_pane};
+use crate::tui::{advanced_panel, help_bar, launch_picker, list_pane, right_pane};
 
 pub fn render(frame: &mut Frame<'_>, app: &mut App) {
   app.expire_toast();
+  app.ensure_right_tab_reachable();
   let palette = app.palette();
   let area = frame.area();
 
@@ -105,7 +105,7 @@ fn render_body(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) 
   } else {
     list_pane::render(frame, split[0], &rows, app.list_cursor, palette);
   }
-  render_right_pane(frame, split[1], app, palette);
+  right_pane::render(frame, split[1], app, palette);
 }
 
 fn render_empty_state(frame: &mut Frame<'_>, area: Rect, palette: &Palette) {
@@ -126,60 +126,6 @@ fn render_empty_state(frame: &mut Frame<'_>, area: Rect, palette: &Palette) {
     )),
   ];
   frame.render_widget(Paragraph::new(lines), inner);
-}
-
-fn render_right_pane(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
-  let title = match app.focused_managed() {
-    Some(m) => format!(
-      " {} · port {} · {} ",
-      m.path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("model"),
-      m.port,
-      label_for(m.state)
-    ),
-    None => match app.focused_path() {
-      Some(p) => format!(
-        " {} · not launched ",
-        p.file_stem().and_then(|s| s.to_str()).unwrap_or("model")
-      ),
-      None => " — ".into(),
-    },
-  };
-  let block = Block::default()
-    .title(title)
-    .borders(Borders::ALL)
-    .border_style(Style::default().fg(palette.accent));
-  let inner = block.inner(area);
-  frame.render_widget(block, area);
-
-  let body = match app.focused_managed() {
-    Some(m) => vec![
-      Line::from(Span::styled(
-        format!("Endpoint: http://127.0.0.1:{}/v1", m.port),
-        Style::default().fg(palette.fg),
-      )),
-      Line::from(Span::styled(
-        format!("State: {} ({})", label_for(m.state), glyph(m.state)),
-        Style::default().fg(palette.muted),
-      )),
-      Line::from(Span::styled(
-        "Logs / Chat / Embed / Rerank tabs land in Unit 7.",
-        Style::default().fg(palette.muted),
-      )),
-    ],
-    None => vec![Line::from(Span::styled(
-      "Select a model on the left and press Enter to launch.",
-      Style::default().fg(palette.muted),
-    ))],
-  };
-  frame.render_widget(Paragraph::new(body), inner);
-}
-
-fn glyph(state: SurfaceState) -> char {
-  use crate::tui::status_icons::glyph_for;
-  glyph_for(state)
 }
 
 fn render_filter_line(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {

@@ -42,6 +42,12 @@ pub enum ListRow {
     quant: String,
     /// Native context length in tokens, when known.
     native_ctx: Option<u64>,
+    /// Weights footprint in bytes (sum of tensor storage), when
+    /// known. Rendered as a `· 4.2G` badge alongside the quant /
+    /// native-ctx columns so users can size models at a glance
+    /// (plan: "est-mem badge"). KV-aware variants land at launch
+    /// picker time, not in the always-on list row.
+    weights_bytes: Option<u64>,
     /// Mode hint surfaced at discovery time.
     mode_hint: String,
     /// Whether this row is favorited (drives the `★` glyph).
@@ -143,14 +149,15 @@ fn display_name(m: &DiscoveredModel) -> String {
 }
 
 fn model_row(m: &DiscoveredModel, favorite: bool, state: SurfaceState) -> ListRow {
-  let (arch, quant, native_ctx, mode_hint) = match &m.metadata {
+  let (arch, quant, native_ctx, mode_hint, weights_bytes) = match &m.metadata {
     Some(md) => (
       md.arch.clone().unwrap_or_default(),
       md.quant.label().to_string(),
       md.native_ctx,
       mode_hint_label(md.mode_hint),
+      md.weights_bytes,
     ),
-    None => (String::new(), String::new(), None, "unknown".into()),
+    None => (String::new(), String::new(), None, "unknown".into(), None),
   };
   ListRow::Model {
     path: m.path.clone(),
@@ -158,9 +165,35 @@ fn model_row(m: &DiscoveredModel, favorite: bool, state: SurfaceState) -> ListRo
     arch,
     quant,
     native_ctx,
+    weights_bytes,
     mode_hint,
     favorite,
     state,
+  }
+}
+
+/// Render a weights footprint in the most compact human-friendly
+/// unit (GiB-or-MiB). Aims for the same readout the plan's `· 4.2G`
+/// example shows — single-letter unit suffix, one fractional digit
+/// for sub-10 G values so 4.2G doesn't collapse to 4G.
+fn format_bytes(bytes: u64) -> String {
+  const KIB: f64 = 1024.0;
+  const MIB: f64 = KIB * 1024.0;
+  const GIB: f64 = MIB * 1024.0;
+  let b = bytes as f64;
+  if b >= GIB {
+    let g = b / GIB;
+    if g >= 10.0 {
+      format!("{g:.0}G")
+    } else {
+      format!("{g:.1}G")
+    }
+  } else if b >= MIB {
+    format!("{:.0}M", b / MIB)
+  } else if b >= KIB {
+    format!("{:.0}K", b / KIB)
+  } else {
+    format!("{bytes}B")
   }
 }
 
@@ -223,6 +256,7 @@ fn render_row<'a>(row: &'a ListRow, palette: &Palette) -> ListItem<'a> {
       arch,
       quant,
       native_ctx,
+      weights_bytes,
       mode_hint,
       favorite,
       state,
@@ -263,6 +297,14 @@ fn render_row<'a>(row: &'a ListRow, palette: &Palette) -> ListItem<'a> {
           Style::default().fg(palette.muted),
         ));
       }
+      // Est-mem badge (weights footprint). KV cache is launch-time
+      // and shows up in the launch picker, not here.
+      if let Some(bytes) = weights_bytes {
+        spans.push(Span::styled(
+          format!(" · {}", format_bytes(*bytes)),
+          Style::default().fg(palette.muted),
+        ));
+      }
       // Mode hint.
       spans.push(Span::styled(
         format!(" · {mode_hint}"),
@@ -294,6 +336,7 @@ mod tests {
         tokenizer_kind: None,
         reasoning_hint: None,
         mode_hint: ModeHint::Chat,
+        weights_bytes: Some(4_200_000_000),
       }),
       parse_error: None,
       split_siblings: Vec::new(),

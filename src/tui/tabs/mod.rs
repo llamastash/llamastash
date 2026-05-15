@@ -1,0 +1,73 @@
+//! Right-pane tab implementations.
+//!
+//! Each tab is a small self-contained module so the per-tab state
+//! and render code stays close together. The [`RightTab`] enum is
+//! the single shared identifier; `tabs_for_mode` resolves the set
+//! of tabs reachable for a given model mode hint.
+
+pub mod chat;
+pub mod embed;
+pub mod logs;
+pub mod rerank;
+
+use crate::gguf::metadata::ModeHint;
+
+/// Identifier for one right-pane tab. `Logs` is always reachable;
+/// the mode-specific tabs become reachable when the focused model
+/// is `Ready` and its `ModeHint` matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RightTab {
+  Logs,
+  Chat,
+  Embed,
+  Rerank,
+}
+
+impl RightTab {
+  pub fn label(&self) -> &'static str {
+    match self {
+      RightTab::Logs => "Logs",
+      RightTab::Chat => "Chat",
+      RightTab::Embed => "Embed",
+      RightTab::Rerank => "Rerank",
+    }
+  }
+}
+
+/// Tabs available for a model with the supplied mode hint. The
+/// renderer only exposes the second tab when the model is `Ready`;
+/// this helper just declares which tab type is appropriate.
+pub fn tabs_for_mode(mode: ModeHint) -> Vec<RightTab> {
+  match mode {
+    ModeHint::Chat => vec![RightTab::Logs, RightTab::Chat],
+    ModeHint::Embedding => vec![RightTab::Logs, RightTab::Embed],
+    ModeHint::Rerank => vec![RightTab::Logs, RightTab::Rerank],
+    ModeHint::Unknown => vec![RightTab::Logs],
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn unknown_mode_only_exposes_logs() {
+    assert_eq!(tabs_for_mode(ModeHint::Unknown), vec![RightTab::Logs]);
+  }
+
+  #[test]
+  fn chat_mode_pairs_logs_and_chat() {
+    assert_eq!(
+      tabs_for_mode(ModeHint::Chat),
+      vec![RightTab::Logs, RightTab::Chat]
+    );
+  }
+
+  #[test]
+  fn embedding_mode_pairs_logs_and_embed() {
+    assert_eq!(
+      tabs_for_mode(ModeHint::Embedding),
+      vec![RightTab::Logs, RightTab::Embed]
+    );
+  }
+}

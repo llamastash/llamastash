@@ -39,6 +39,9 @@ clap = { version = "4.6", default-features = false, features = [
 ] }
 crossterm = "0.29"
 directories = "6"
+# Streaming bytes for the right-pane chat tab (Unit 7) without
+# pulling in tokio-stream's full surface.
+futures = { version = "0.3", default-features = false, features = ["std"] }
 ignore = "0.4"
 libc = "0.2"
 log = "0.4"
@@ -50,6 +53,13 @@ regex = { version = "1.11", default-features = false, features = [
   "std",
   "perf",
   "unicode-perl",
+] }
+# Right-pane smoke-test client (Unit 7). `rustls-tls` keeps the
+# build hermetic for the loopback-only v1 surface.
+reqwest = { version = "0.12", default-features = false, features = [
+  "json",
+  "stream",
+  "rustls-tls",
 ] }
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde_json = "1.0"

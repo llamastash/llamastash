@@ -1,11 +1,18 @@
 //! Fuzzy filter for the model list pane (R25).
 //!
 //! v1 ships a hand-rolled subsequence matcher rather than pulling
-//! in `nucleo-matcher`. The matcher we need is small: per-row
-//! score = number of contiguous match runs inverted (fewer is
-//! better) plus a small prefix-match bonus. That's enough to
-//! prioritise `qwen` over `q*w*e*n` on a real model list and keeps
-//! the dep tree tight.
+//! in `nucleo-matcher` or `fuzzy-matcher`. The matcher we need is
+//! small: per-row score = position of each matched character +
+//! contiguous-run penalty (fewer runs = better) — enough to
+//! prioritise `qwen` over `q*w*e*n` on a real model list.
+//!
+//! Decision (closes the plan's deferred `nucleo-matcher` question
+//! from Unit 6): the hand-rolled ranker stays. It keeps the dep
+//! tree tight, ships ~50 LOC, and the model-name corpus (file
+//! stems + arch + quant tokens) is far smaller than the workloads
+//! nucleo is optimised for. Revisit if catalogs grow past ~500
+//! models *and* user-perceived filter latency regresses; until
+//! then the extra crate isn't worth the carry.
 
 /// Small score wrapper so callers can sort `(score, idx)` without
 /// reimplementing the comparison rules.

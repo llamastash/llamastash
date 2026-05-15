@@ -32,6 +32,7 @@ fn fake_model(path: &str, parent: &str) -> DiscoveredModel {
       tokenizer_kind: None,
       reasoning_hint: None,
       mode_hint: ModeHint::Chat,
+      weights_bytes: Some(4_200_000_000),
     }),
     parse_error: None,
     split_siblings: Vec::new(),
@@ -161,6 +162,143 @@ fn theme_cycle_swaps_palette_without_restart() {
   // Render still produces a coherent frame with the new theme.
   let frame = render_to_string(&mut app, 80, 12);
   assert!(frame.contains("llamatui"));
+}
+
+#[test]
+fn right_pane_starts_on_logs_tab_for_unlaunched_model() {
+  use llamatui::tui::RightTab;
+  let mut app = App::new(AppOptions::default());
+  app.models = vec![fake_model("/m/qwen.gguf", "/m")];
+  app.go_top();
+  let frame = render_to_string(&mut app, 120, 24);
+  assert_eq!(app.right_tab, RightTab::Logs, "Logs is the default tab");
+  assert!(
+    frame.contains("Logs"),
+    "Logs tab label must render in the right pane strip: {frame}"
+  );
+}
+
+#[test]
+fn ready_chat_model_exposes_chat_tab_via_cycle() {
+  use llamatui::tui::app::ManagedRow;
+  use llamatui::tui::status_icons::SurfaceState;
+  use llamatui::tui::RightTab;
+  let mut app = App::new(AppOptions::default());
+  app.models = vec![fake_model("/m/qwen.gguf", "/m")];
+  app.managed = vec![ManagedRow {
+    launch_id: "L1".into(),
+    path: PathBuf::from("/m/qwen.gguf"),
+    port: 41100,
+    state: SurfaceState::Ready,
+  }];
+  app.go_top();
+  let tabs = app.available_right_tabs();
+  assert!(tabs.contains(&RightTab::Chat));
+  // Cycle from Logs → Chat.
+  app.cycle_right_tab();
+  assert_eq!(app.right_tab, RightTab::Chat);
+  let frame = render_to_string(&mut app, 120, 24);
+  assert!(
+    frame.contains("Chat"),
+    "Chat tab body must render once selected: {frame}"
+  );
+}
+
+#[test]
+fn external_row_surfaces_via_ingest_status_external_array() {
+  use llamatui::tui::status_icons::SurfaceState;
+  use serde_json::json;
+  let mut app = App::new(AppOptions::default());
+  app.ingest_status(&json!({
+    "models": [],
+    "external": [{
+      "pid": 4242,
+      "cmdline": "llama-server -m /opt/llms/foo.gguf",
+      "model_path": "/opt/llms/foo.gguf",
+    }],
+  }));
+  let rows = app.external_rows();
+  assert_eq!(rows.len(), 1);
+  assert_eq!(rows[0].state, SurfaceState::External);
+  assert_eq!(rows[0].launch_id, "ext-4242");
+}
+
+#[test]
+fn launch_picker_seeds_from_persisted_last_params() {
+  use serde_json::json;
+  let mut app = App::new(AppOptions::default());
+  app.models = vec![fake_model("/m/qwen.gguf", "/m")];
+  app.ingest_last_params(&json!({
+    "last_params": [{
+      "id": {"path": "/m/qwen.gguf", "header_blake3": "00".repeat(32)},
+      "model_path": "/m/qwen.gguf",
+      "params": {
+        "model_path": "/m/qwen.gguf",
+        "mode": "chat",
+        "ctx": 8192,
+        "reasoning": true,
+        "advanced": ["--threads", "8"],
+      },
+    }],
+  }));
+  app.go_top();
+  app.open_launch_picker();
+  let picker = app.launch_picker.as_ref().expect("picker open");
+  assert_eq!(picker.ctx, Some(8192));
+  assert!(
+    picker.reasoning,
+    "reasoning toggle must seed from last_params"
+  );
+  let advanced = app
+    .advanced_panel
+    .as_ref()
+    .expect("advanced panel seeded")
+    .buffer
+    .clone();
+  assert!(
+    advanced.contains("--threads"),
+    "advanced flags must seed from last_params: {advanced}"
+  );
+}
+
+#[test]
+fn picker_warns_when_focused_model_already_has_active_instance() {
+  use llamatui::tui::app::ManagedRow;
+  use llamatui::tui::status_icons::SurfaceState;
+  let mut app = App::new(AppOptions::default());
+  app.models = vec![fake_model("/m/qwen.gguf", "/m")];
+  app.managed = vec![ManagedRow {
+    launch_id: "L1".into(),
+    path: PathBuf::from("/m/qwen.gguf"),
+    port: 41101,
+    state: SurfaceState::Ready,
+  }];
+  app.go_top();
+  app.open_launch_picker();
+  assert_eq!(
+    app.launch_picker.as_ref().unwrap().active_instances,
+    1,
+    "active instance count must reach the picker"
+  );
+  let frame = render_to_string(&mut app, 120, 24);
+  assert!(
+    frame.contains("already running"),
+    "picker must surface duplicate-launch heads-up: {frame}"
+  );
+}
+
+#[test]
+fn list_pane_renders_est_mem_badge() {
+  let mut app = App::new(AppOptions::default());
+  app.models = vec![fake_model("/m/qwen.gguf", "/m")];
+  let frame = render_to_string(&mut app, 120, 12);
+  // Fixture sets weights_bytes = 4_200_000_000 → ~3.9 GiB. The
+  // badge formatter prints in binary GiB so the visible value is
+  // "3.9G", not the raw "4.2G" the SI count would suggest.
+  assert!(
+    frame.contains("3.9G"),
+    "est-mem badge must render alongside arch/quant: {frame}"
+  );
 }
 
 #[test]

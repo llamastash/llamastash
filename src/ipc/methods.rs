@@ -18,10 +18,11 @@ use std::{
 
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 use super::protocol::{ErrorCode, ErrorObject, Request, Response, JSONRPC_VERSION};
 use crate::config::loader::PortRange;
+use crate::daemon::orphans::ExternalProcess;
 use crate::daemon::probe::ProbeOptions;
 use crate::daemon::registry::{LaunchId, SupervisorRegistry};
 use crate::daemon::shutdown::ShutdownToken;
@@ -71,6 +72,12 @@ pub struct MethodContext {
   /// range, log directory, probe tuning. Optional because catalog-only
   /// IPC tests don't need to launch anything.
   pub launch: Option<LaunchEnv>,
+  /// Snapshot of `llama-server` processes the daemon does *not*
+  /// own. Populated by the orphan sweep at startup so `status`
+  /// surfaces them read-only (plan: External rows). Wrapped in
+  /// `RwLock` so a periodic re-sweep can refresh the slot without
+  /// rebuilding the context.
+  pub external: Arc<RwLock<Vec<ExternalProcess>>>,
 }
 
 /// Wrapper around the in-memory `DaemonState` plus the directory
@@ -150,6 +157,17 @@ impl MethodContext {
       gpu: Arc::new(GpuInfo::CpuOnly),
       state: PersistedState::ephemeral(),
       launch: None,
+      external: Arc::new(RwLock::new(Vec::new())),
+    }
+  }
+
+  /// Builder helper: seed the external (unmanaged `llama-server`)
+  /// process snapshot. Production wiring populates it from the
+  /// startup orphan sweep.
+  pub fn with_external(self, external: Vec<ExternalProcess>) -> Self {
+    Self {
+      external: Arc::new(RwLock::new(external)),
+      ..self
     }
   }
 
@@ -266,6 +284,10 @@ pub async fn dispatch_request(ctx: &MethodContext, req: Request) -> Response {
       Ok(v) => Response::ok(id, v),
       Err(e) => Response::err(id, e),
     },
+    "last_params_list" => match last_params_list_handler(ctx).await {
+      Ok(v) => Response::ok(id, v),
+      Err(e) => Response::err(id, e),
+    },
     other => Response::err(
       id,
       ErrorObject::new(
@@ -295,8 +317,24 @@ async fn status_response(ctx: &MethodContext) -> Value {
       "state": state,
     }));
   }
+  // External — read-only rows for `llama-server` processes the
+  // daemon doesn't own. Populated by the startup orphan sweep;
+  // mirrors the plan's "External read-only" surface (plan: list-
+  // pane glyph `⇪`). Stable shape: `{pid, cmdline, model_path}`.
+  let external_snapshot = ctx.external.read().await.clone();
+  let external: Vec<Value> = external_snapshot
+    .iter()
+    .map(|e| {
+      json!({
+        "pid": e.pid,
+        "cmdline": e.cmdline,
+        "model_path": e.model_path,
+      })
+    })
+    .collect();
   json!({
     "models": models,
+    "external": external,
     "gpu": ctx.gpu.as_ref(),
   })
 }
@@ -783,6 +821,28 @@ async fn favorite_list_handler(ctx: &MethodContext) -> Result<Value, ErrorObject
   Ok(json!({"favorites": body}))
 }
 
+/// Snapshot every persisted `last_params` entry. Used by the TUI to
+/// pre-populate the launch picker with the most recent successful
+/// launch params for the focused model (plan: "the picker is
+/// pre-populated with last-params and named-preset values"). Keyed
+/// by `model_path` so the TUI can look up without re-resolving
+/// `ModelId`.
+async fn last_params_list_handler(ctx: &MethodContext) -> Result<Value, ErrorObject> {
+  let snapshot = ctx.state.snapshot().await;
+  let rows: Vec<Value> = snapshot
+    .last_params
+    .iter()
+    .map(|entry| {
+      json!({
+        "id": &entry.id,
+        "model_path": &entry.id.path,
+        "params": launch_params_row(&entry.params),
+      })
+    })
+    .collect();
+  Ok(json!({ "last_params": rows }))
+}
+
 fn parse_params<T: serde::de::DeserializeOwned>(params: Option<Value>) -> Result<T, ErrorObject> {
   let raw = params.unwrap_or(Value::Null);
   serde_json::from_value(raw)
@@ -877,6 +937,7 @@ mod tests {
           tokenizer_kind: Some("llama".to_string()),
           reasoning_hint: None,
           mode_hint: ModeHint::Chat,
+          weights_bytes: Some(4_000_000_000),
         }),
         parse_error: None,
         split_siblings: Vec::new(),

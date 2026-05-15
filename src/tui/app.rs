@@ -19,6 +19,7 @@ use crate::tui::keybindings::Focus;
 use crate::tui::launch_picker::LaunchPickerState;
 use crate::tui::list_pane::{build_rows, ListRow, RowInputs};
 use crate::tui::status_icons::SurfaceState;
+use crate::tui::tabs::{tabs_for_mode, RightTab};
 
 /// Maximum age of a toast before the App auto-clears it. Keeps
 /// transient yank confirmations from sticking around forever.
@@ -33,6 +34,17 @@ pub struct ManagedRow {
   pub path: PathBuf,
   pub port: u16,
   pub state: SurfaceState,
+}
+
+/// Persisted "last successful launch params" for one model, fetched
+/// via the daemon's `last_params_list` method. The TUI consults this
+/// when opening the launch picker so the user lands on the same
+/// ctx/reasoning/advanced they last shipped — without re-typing.
+#[derive(Debug, Clone, Default)]
+pub struct LastParamsRow {
+  pub ctx: Option<u32>,
+  pub reasoning: bool,
+  pub advanced: Vec<String>,
 }
 
 /// Immutable parts of the App that don't change after construction.
@@ -57,6 +69,26 @@ pub struct App {
   pub models: Vec<DiscoveredModel>,
   pub favorites: Vec<PathBuf>,
   pub managed: Vec<ManagedRow>,
+  /// External (unmanaged) `llama-server` processes the daemon's
+  /// sweep surfaced. Read-only — the TUI shows them with the `⇪`
+  /// glyph; only `stop` is permitted on these rows.
+  pub external: Vec<ManagedRow>,
+  /// Last-known persisted launch params per model path. Keyed off
+  /// the canonical `ModelId.path` the daemon emits.
+  pub last_params: BTreeMap<PathBuf, LastParamsRow>,
+  /// Selected right-pane tab. `Logs` is always reachable; mode-
+  /// specific tabs (`Chat` / `Embed` / `Rerank`) become reachable
+  /// when the focused model is Ready.
+  pub right_tab: RightTab,
+  /// Working chat session for the right-pane Chat tab. Holds the
+  /// in-progress prompt and the most recent response so the render
+  /// path is purely synchronous.
+  pub chat: crate::tui::tabs::chat::ChatTabState,
+  /// Embed-tab working state — single text input and latest
+  /// response payload.
+  pub embed: crate::tui::tabs::embed::EmbedTabState,
+  /// Rerank-tab working state — query + candidate list.
+  pub rerank: crate::tui::tabs::rerank::RerankTabState,
   /// Cursor index into the rendered row list (which mixes headers
   /// and models). Header rows are skipped during `move_*`.
   pub list_cursor: usize,
@@ -77,6 +109,12 @@ impl App {
       models: Vec::new(),
       favorites: Vec::new(),
       managed: Vec::new(),
+      external: Vec::new(),
+      last_params: BTreeMap::new(),
+      right_tab: RightTab::Logs,
+      chat: Default::default(),
+      embed: Default::default(),
+      rerank: Default::default(),
       list_cursor: 0,
       filter_buffer: String::new(),
       launch_picker: None,
@@ -109,19 +147,65 @@ impl App {
   }
 
   /// Apply a `status` IPC response — just the supervisor side.
-  /// Discovery rows survive intact.
+  /// Discovery rows survive intact. Parses both the supervised
+  /// `models` array and the read-only `external` array (unmanaged
+  /// `llama-server` processes the sweep surfaced) so the list pane
+  /// can render `⇪` rows alongside owned ones.
   pub fn ingest_status(&mut self, body: &Value) {
-    let arr = match body.get("models").and_then(Value::as_array) {
+    if let Some(arr) = body.get("models").and_then(Value::as_array) {
+      self.managed = arr.iter().filter_map(parse_status_row).collect();
+    }
+    if let Some(arr) = body.get("external").and_then(Value::as_array) {
+      self.external = arr.iter().filter_map(parse_external_row).collect();
+    } else {
+      // The daemon may not yet emit `external`; clearing keeps stale
+      // rows from sticking around if the field is dropped in a
+      // future surface change.
+      self.external.clear();
+    }
+  }
+
+  /// Apply a `last_params_list` IPC response. The TUI uses the
+  /// snapshot to seed the launch picker for the focused model.
+  pub fn ingest_last_params(&mut self, body: &Value) {
+    let arr = match body.get("last_params").and_then(Value::as_array) {
       Some(a) => a,
       None => return,
     };
-    let mut next: Vec<ManagedRow> = Vec::with_capacity(arr.len());
+    let mut next: BTreeMap<PathBuf, LastParamsRow> = BTreeMap::new();
     for row in arr {
-      if let Some(m) = parse_status_row(row) {
-        next.push(m);
+      let path = row
+        .get("model_path")
+        .and_then(Value::as_str)
+        .map(PathBuf::from);
+      let params = row.get("params");
+      if let (Some(path), Some(params)) = (path, params) {
+        let ctx = params.get("ctx").and_then(Value::as_u64).map(|n| n as u32);
+        let reasoning = params
+          .get("reasoning")
+          .and_then(Value::as_bool)
+          .unwrap_or(false);
+        let advanced = params
+          .get("advanced")
+          .and_then(Value::as_array)
+          .map(|items| {
+            items
+              .iter()
+              .filter_map(|v| v.as_str().map(String::from))
+              .collect()
+          })
+          .unwrap_or_default();
+        next.insert(
+          path,
+          LastParamsRow {
+            ctx,
+            reasoning,
+            advanced,
+          },
+        );
       }
     }
-    self.managed = next;
+    self.last_params = next;
   }
 
   /// Apply a `favorite_list` IPC response.
@@ -160,11 +244,28 @@ impl App {
   }
 
   fn surface_states(&self) -> BTreeMap<PathBuf, SurfaceState> {
-    self
-      .managed
-      .iter()
-      .map(|m| (m.path.clone(), m.state))
-      .collect()
+    // Managed rows win over external when both reference the same
+    // path — the daemon's sweep excludes adopted PIDs, so this
+    // collision is rare in practice. External rows surface paths
+    // that aren't part of the discovered catalog, so they're
+    // skipped here and rendered separately (see
+    // `rendered_rows`).
+    let mut out: BTreeMap<PathBuf, SurfaceState> = BTreeMap::new();
+    for m in &self.external {
+      out.insert(m.path.clone(), m.state);
+    }
+    for m in &self.managed {
+      out.insert(m.path.clone(), m.state);
+    }
+    out
+  }
+
+  /// Rows for external `llama-server` processes the daemon detected
+  /// outside its supervisor. Surfaced read-only (stop is the only
+  /// action allowed) — used by Unit 7's right pane to show "this
+  /// model is unmanaged" hints.
+  pub fn external_rows(&self) -> &[ManagedRow] {
+    &self.external
   }
 
   /// Move cursor down to the next selectable (model) row.
@@ -254,13 +355,42 @@ impl App {
     self.managed.iter().find(|m| m.path == path)
   }
 
-  /// Open the launch picker for the focused model. No-op when the
-  /// cursor is on a header.
+  /// Open the launch picker for the focused model. Seeds from
+  /// persisted `last_params` (R20) when the daemon has reported any
+  /// for the focused path, so a returning user lands on the params
+  /// they last shipped. No-op when the cursor is on a header.
   pub fn open_launch_picker(&mut self) {
-    if let Some(name) = self.focused_name() {
-      self.launch_picker = Some(LaunchPickerState::for_model(name));
-      self.focus = Focus::LaunchPicker;
+    let name = match self.focused_name() {
+      Some(n) => n,
+      None => return,
+    };
+    let path = self.focused_path();
+    let active_count = path
+      .as_ref()
+      .map(|p| self.managed.iter().filter(|m| &m.path == p).count())
+      .unwrap_or(0);
+    let mut state = LaunchPickerState::for_model(name);
+    if let Some(p) = &path {
+      if let Some(last) = self.last_params.get(p) {
+        state.ctx = last.ctx;
+        state.reasoning = last.reasoning;
+        state.preset_idx = last.ctx.and_then(|c| {
+          crate::tui::launch_picker::CTX_PRESETS
+            .iter()
+            .position(|val| *val == c)
+        });
+        // Seed the advanced panel buffer so opening the editor
+        // shows the user their last flag set.
+        if !last.advanced.is_empty() {
+          let buffer = last.advanced.join(" ");
+          let cursor = buffer.len();
+          self.advanced_panel = Some(AdvancedPanelState { buffer, cursor });
+        }
+      }
     }
+    state.active_instances = active_count;
+    self.launch_picker = Some(state);
+    self.focus = Focus::LaunchPicker;
   }
 
   pub fn close_launch_picker(&mut self) {
@@ -310,6 +440,48 @@ impl App {
 
   pub fn toast_message(&self) -> Option<&str> {
     self.toast.as_ref().map(|(s, _)| s.as_str())
+  }
+
+  /// Tabs the right pane should expose for the currently focused
+  /// model. `Logs` is always present; Ready models gain a mode-
+  /// appropriate second tab (Chat / Embed / Rerank). Non-Ready
+  /// models render `Logs` only.
+  pub fn available_right_tabs(&self) -> Vec<RightTab> {
+    let managed = match self.focused_managed() {
+      Some(m) if m.state == SurfaceState::Ready => m,
+      _ => return vec![RightTab::Logs],
+    };
+    let mode = self
+      .models
+      .iter()
+      .find(|m| m.path == managed.path)
+      .and_then(|m| m.metadata.as_ref())
+      .map(|md| md.mode_hint)
+      .unwrap_or(crate::gguf::metadata::ModeHint::Chat);
+    tabs_for_mode(mode)
+  }
+
+  /// Advance the right-pane tab. Skips tabs that aren't reachable
+  /// for the current focus (e.g. Chat when the model isn't Ready).
+  pub fn cycle_right_tab(&mut self) {
+    let tabs = self.available_right_tabs();
+    if tabs.is_empty() {
+      self.right_tab = RightTab::Logs;
+      return;
+    }
+    let pos = tabs.iter().position(|t| *t == self.right_tab).unwrap_or(0);
+    let next = (pos + 1) % tabs.len();
+    self.right_tab = tabs[next];
+  }
+
+  /// Clamp `right_tab` back to a reachable choice if the focused
+  /// model's available tabs shrink (e.g. the model dropped from
+  /// Ready to Stopped). Called by the renderer before drawing.
+  pub fn ensure_right_tab_reachable(&mut self) {
+    let tabs = self.available_right_tabs();
+    if !tabs.contains(&self.right_tab) {
+      self.right_tab = RightTab::Logs;
+    }
   }
 
   /// Cycle to the next theme. Used by the `t` hotkey.
@@ -418,6 +590,7 @@ fn parse_list_models_row(row: &Value) -> Option<DiscoveredModel> {
           .map(String::from),
         reasoning_hint: None,
         mode_hint: parse_mode_hint(md.get("mode_hint").and_then(Value::as_str)),
+        weights_bytes: md.get("weights_bytes").and_then(Value::as_u64),
       })
     }
   });
@@ -471,6 +644,24 @@ fn parse_quant(label: &str) -> crate::gguf::metadata::Quant {
   }
 }
 
+fn parse_external_row(row: &Value) -> Option<ManagedRow> {
+  let pid = row.get("pid").and_then(Value::as_u64)? as u32;
+  let path = row
+    .get("model_path")
+    .and_then(Value::as_str)
+    .map(PathBuf::from)
+    .unwrap_or_default();
+  Some(ManagedRow {
+    launch_id: format!("ext-{pid}"),
+    path,
+    // External processes don't have an observable port from
+    // sysinfo cmdline alone — surface 0 and let the right pane
+    // know to hide the endpoint slot for these rows.
+    port: 0,
+    state: SurfaceState::External,
+  })
+}
+
 fn parse_status_row(row: &Value) -> Option<ManagedRow> {
   let launch_id = row.get("launch_id")?.as_str()?.to_string();
   let port = row.get("port")?.as_u64()? as u16;
@@ -522,6 +713,7 @@ mod tests {
         tokenizer_kind: None,
         reasoning_hint: None,
         mode_hint: ModeHint::Chat,
+        weights_bytes: Some(4_200_000_000),
       }),
       parse_error: None,
       split_siblings: Vec::new(),

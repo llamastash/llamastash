@@ -34,6 +34,11 @@ pub struct LaunchPickerState {
   pub preset_idx: Option<usize>,
   /// Currently focused field (cycles via Tab).
   pub field: PickerField,
+  /// Count of active `ManagedRow`s for the focused model. v1 does
+  /// not block duplicate launches — submitting just spins up a new
+  /// instance on a fresh port — but the picker surfaces a heads-up
+  /// so the user isn't surprised.
+  pub active_instances: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +56,7 @@ impl LaunchPickerState {
       reasoning: false,
       preset_idx: None,
       field: PickerField::Ctx,
+      active_instances: 0,
     }
   }
 
@@ -93,12 +99,14 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &LaunchPickerState, pale
   frame.render_widget(block.clone(), modal);
   let inner = block.inner(modal);
 
+  let warning_lines = if state.active_instances > 0 { 1 } else { 0 };
   let rows = Layout::default()
     .direction(Direction::Vertical)
     .constraints([
       Constraint::Length(2),
       Constraint::Length(2),
       Constraint::Length(2),
+      Constraint::Length(warning_lines as u16),
       Constraint::Min(0),
     ])
     .split(inner);
@@ -135,6 +143,21 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &LaunchPickerState, pale
     ),
     rows[2],
   );
+  if warning_lines > 0 {
+    let warn = format!(
+      "⚠ {} instance(s) already running — submit launches a new one on a fresh port",
+      state.active_instances
+    );
+    frame.render_widget(
+      Paragraph::new(Line::from(Span::styled(
+        warn,
+        Style::default()
+          .fg(palette.warning)
+          .add_modifier(Modifier::BOLD),
+      ))),
+      rows[3],
+    );
+  }
 }
 
 fn field_line<'a>(

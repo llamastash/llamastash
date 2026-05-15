@@ -98,6 +98,7 @@ fn model_row(m: &DiscoveredModel) -> Value {
         "mode_hint": mode_hint_label(md.mode_hint),
         "reasoning_hint": md.reasoning_hint.is_some(),
         "has_chat_template": md.chat_template.is_some(),
+        "weights_bytes": md.weights_bytes,
       })
     }),
     "parse_error": m.parse_error,
@@ -155,6 +156,7 @@ mod tests {
         tokenizer_kind: Some("llama".to_string()),
         reasoning_hint: None,
         mode_hint: ModeHint::Chat,
+        weights_bytes: Some(4_000_000_000),
       }),
       parse_error: None,
       split_siblings: Vec::new(),

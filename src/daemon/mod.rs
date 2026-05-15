@@ -197,7 +197,8 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   let mut ctx = MethodContext::with_catalog(token.clone(), catalog)
     .with_supervisors(supervisors)
     .with_gpu(gpu)
-    .with_state(persisted);
+    .with_state(persisted)
+    .with_external(sweep.external.clone());
   if let Some(binary) = opts.binary.clone() {
     if let Err(e) = std::fs::create_dir_all(&opts.log_dir) {
       log::warn!(

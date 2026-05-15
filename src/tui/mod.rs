@@ -17,8 +17,12 @@ pub mod keybindings;
 pub mod launch_picker;
 pub mod layout;
 pub mod list_pane;
+pub mod oai_client;
 pub mod render;
+pub mod right_pane;
 pub mod status_icons;
+pub mod tabs;
 
 pub use app::{App, AppOptions, ManagedRow};
 pub use events::{launch, refresh_apply, RefreshTick};
+pub use tabs::RightTab;

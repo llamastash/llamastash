@@ -185,6 +185,7 @@ mod tests {
         tokenizer_kind: None,
         reasoning_hint: None,
         mode_hint: ModeHint::Chat,
+        weights_bytes: None,
       }),
       parse_error: None,
     }

@@ -56,6 +56,9 @@ pub enum Action {
   CycleTheme,
   FocusRightPane,
   FocusList,
+  /// Cycle the right-pane tab (Logs ↔ Chat / Embed / Rerank when
+  /// the focused model is Ready). Owned by Unit 7.
+  CycleTab,
 }
 
 /// One binding in the table.
@@ -292,11 +295,18 @@ const RIGHT_PANE_BINDINGS: &[Binding] = &[
     description: "list",
   },
   Binding {
+    key: KeyCode::BackTab,
+    mods: KeyModifiers::SHIFT,
+    action: Action::FocusList,
+    label: "Shift+Tab",
+    description: "list",
+  },
+  Binding {
     key: KeyCode::Tab,
     mods: KeyModifiers::NONE,
-    action: Action::FocusList,
+    action: Action::CycleTab,
     label: "Tab",
-    description: "list",
+    description: "next tab",
   },
 ];
 

@@ -28,6 +28,12 @@ pub struct ModelMetadata {
   pub tokenizer_kind: Option<String>,
   pub reasoning_hint: Option<ReasoningHint>,
   pub mode_hint: ModeHint,
+  /// Sum of per-tensor storage bytes (the GGUF weights footprint).
+  /// `None` when the header has no usable tensor info — typical for
+  /// metadata-only GGUFs. Surfaced in `list_models` so the TUI can
+  /// render a weights-only est-mem badge without re-reading the
+  /// header on every refresh (origin: R8, est-mem render half).
+  pub weights_bytes: Option<u64>,
 }
 
 /// GGML tensor quantisation tag the GGUF advertises. `Unknown(u32)` carries
@@ -254,6 +260,14 @@ pub fn summarise(header: &GgufHeader) -> ModelMetadata {
   let quant = dominant_quant(&header.tensors);
   let mode_hint = infer_mode_hint(header, arch_key);
   let reasoning_hint = infer_reasoning_hint(header);
+  let weights_bytes = {
+    let bytes = crate::gguf::memory::weights_bytes(header);
+    if bytes == 0 {
+      None
+    } else {
+      Some(bytes)
+    }
+  };
 
   ModelMetadata {
     arch: arch_raw,
@@ -265,6 +279,7 @@ pub fn summarise(header: &GgufHeader) -> ModelMetadata {
     tokenizer_kind,
     reasoning_hint,
     mode_hint,
+    weights_bytes,
   }
 }
 
