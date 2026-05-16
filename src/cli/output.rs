@@ -44,14 +44,13 @@ pub fn list_json(rows: &[CatalogRow]) -> Value {
   let arr: Vec<Value> = rows
     .iter()
     .map(|r| {
-      serde_json::json!({
+      // Emit `model_id` only when populated. The IPC `list_models`
+      // doesn't currently include it (the catalog has no scan-time
+      // BLAKE3 yet), so leaving the field present as `null` would
+      // mislead agents into thinking a stable handle exists.
+      let mut row = serde_json::json!({
         "name": r.name(),
         "path": r.path,
-        // Short BLAKE3-derived id so agents can key by a stable
-        // canonical handle rather than the path string (which the
-        // user can rename/move). `None` when the daemon's catalog
-        // didn't compute it for this row.
-        "model_id": r.model_id,
         "parent": r.parent,
         "source": r.source,
         "arch": r.arch,
@@ -60,7 +59,11 @@ pub fn list_json(rows: &[CatalogRow]) -> Value {
         "mode_hint": r.mode_hint,
         "parameter_label": r.parameter_label,
         "parse_error": r.parse_error,
-      })
+      });
+      if let Some(id) = &r.model_id {
+        row["model_id"] = serde_json::Value::String(id.clone());
+      }
+      row
     })
     .collect();
   serde_json::json!({"models": arr})
@@ -343,6 +346,23 @@ mod tests {
   fn list_json_empty_catalog_returns_empty_models_array() {
     let v = list_json(&[]);
     assert_eq!(v, serde_json::json!({"models": []}));
+  }
+
+  #[test]
+  fn list_json_omits_model_id_when_none() {
+    // The IPC `list_models` response doesn't currently include
+    // `model_id`. `list_json` must drop the field entirely rather
+    // than serialise it as `null`, so agents that test
+    // `row.model_id != null` don't have to special-case a missing
+    // BLAKE3 column.
+    let mut r = row("qwen", "qwen2", "Q4_K", 8192);
+    r.model_id = None;
+    let v = list_json(&[r]);
+    let row_v = v["models"][0].clone();
+    assert!(
+      row_v.get("model_id").is_none(),
+      "model_id must be absent (not null) when CatalogRow.model_id is None"
+    );
   }
 
   #[test]

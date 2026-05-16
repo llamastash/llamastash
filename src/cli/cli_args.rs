@@ -797,6 +797,7 @@ mod tests {
       "logs",
       "presets",
       "favorites",
+      "last-params",
     ] {
       assert!(
         rendered.contains(sub),

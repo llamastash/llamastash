@@ -49,18 +49,59 @@ pub async fn handle(args: StopArgs, cli: &Cli, config: &Config) -> CliResult {
       }
       return Ok(());
     }
+    let mut params = serde_json::Map::new();
+    if let Some(g) = grace {
+      params.insert("grace_secs".into(), serde_json::Value::from(g));
+    }
+    // Per-launch grace runs in parallel inside the daemon, but the
+    // wall-clock is bounded by the slowest stop. Size the IPC budget
+    // around `grace + slop` so a long custom grace doesn't trip the
+    // default 5-second deadline (`R-01`).
+    let grace_for_timeout = grace.unwrap_or(5);
+    let ipc_deadline =
+      std::time::Duration::from_secs(grace_for_timeout.saturating_add(5));
     let resp = client
-      .call("stop_all", None)
+      .call_with_timeout(
+        "stop_all",
+        if params.is_empty() {
+          None
+        } else {
+          Some(serde_json::Value::Object(params))
+        },
+        ipc_deadline,
+      )
       .await
       .map_err(|e| CliExit::new(STOP_FAILED, format!("stop_all: {e}")))?;
-    let stopped_count = resp
+    let stopped_items: Vec<serde_json::Value> = resp
       .get("stopped")
       .and_then(|v| v.as_array())
-      .map(|a| a.len())
-      .unwrap_or(0);
+      .cloned()
+      .unwrap_or_default();
+    // Normalise per-item state into the flat string form `stop --json`
+    // (single target) already emits, so agents parse one shape across
+    // both code paths (`F3`).
+    let stopped_items: Vec<serde_json::Value> = stopped_items
+      .into_iter()
+      .map(|mut item| {
+        if let Some(state) = item
+          .get("state")
+          .and_then(|s| s.get("state"))
+          .and_then(|s| s.as_str())
+          .map(str::to_string)
+        {
+          item["state"] = serde_json::Value::from(state);
+        }
+        item
+      })
+      .collect();
+    let stopped_count = resp
+      .get("count")
+      .and_then(|v| v.as_u64())
+      .map(|n| n as usize)
+      .unwrap_or(stopped_items.len());
     if args.json {
       let body = serde_json::json!({
-        "stopped": resp.get("stopped").cloned().unwrap_or(serde_json::Value::Array(Vec::new())),
+        "stopped": stopped_items,
         "count": stopped_count,
       });
       println!("{}", pretty_json(&body));

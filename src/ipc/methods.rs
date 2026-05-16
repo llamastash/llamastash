@@ -295,7 +295,7 @@ pub async fn dispatch_request(ctx: &MethodContext, req: Request) -> Response {
       Ok(v) => Response::ok(id, v),
       Err(e) => Response::err(id, e),
     },
-    "stop_all" => match stop_all_handler(ctx).await {
+    "stop_all" => match stop_all_handler(ctx, req.params).await {
       Ok(v) => Response::ok(id, v),
       Err(e) => Response::err(id, e),
     },
@@ -651,7 +651,25 @@ async fn stop_external_handler(
   }))
 }
 
-async fn stop_all_handler(ctx: &MethodContext) -> Result<Value, ErrorObject> {
+#[derive(Default, Deserialize)]
+struct StopAllParams {
+  #[serde(default)]
+  grace_secs: Option<u64>,
+}
+
+async fn stop_all_handler(
+  ctx: &MethodContext,
+  params: Option<Value>,
+) -> Result<Value, ErrorObject> {
+  // `stop_all` is the only handler called with `None` params by the
+  // TUI's old code path; treat absent / null as an empty options
+  // object rather than rejecting at parse time.
+  let parsed: StopAllParams = match params {
+    Some(Value::Null) | None => StopAllParams::default(),
+    other => parse_params(other)?,
+  };
+  let grace_secs = parsed.grace_secs.unwrap_or_else(default_grace_secs);
+  check_grace_secs(grace_secs)?;
   let snap = ctx.supervisors.snapshot().await;
   // Run the per-launch stops concurrently. Sequential iteration on
   // the original implementation serialised N × grace_secs, which
@@ -659,7 +677,7 @@ async fn stop_all_handler(ctx: &MethodContext) -> Result<Value, ErrorObject> {
   // launches. `join_all` brings the wall-clock back to the slowest
   // stop, not the sum.
   use futures::future::join_all;
-  let grace = Duration::from_secs(default_grace_secs());
+  let grace = Duration::from_secs(grace_secs);
   let stops = snap.into_iter().map(|(launch_id, model)| async move {
     let final_state = model.stop(grace).await;
     let model_id = model.id().clone();
@@ -687,7 +705,8 @@ async fn stop_all_handler(ctx: &MethodContext) -> Result<Value, ErrorObject> {
       })
       .await;
   }
-  Ok(json!({"stopped": stopped}))
+  let count = stopped.len();
+  Ok(json!({"stopped": stopped, "count": count}))
 }
 
 #[derive(Deserialize)]

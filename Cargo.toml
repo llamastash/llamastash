@@ -11,6 +11,12 @@ readme = "README.md"
 license = "MIT"
 edition = "2021"
 rust-version = "1.80"
+# `cargo run` (without --bin) targets the real binary. The other
+# `[[bin]]` entry (fake_llama_server) is only built for tests
+# under the `test-fixtures` feature, but cargo's run-target picker
+# checks the manifest before feature resolution, so we still need
+# this hint.
+default-run = "llamatui"
 exclude = [
   "test_data/*",
   "deployment/*",
