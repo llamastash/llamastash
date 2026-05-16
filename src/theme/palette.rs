@@ -51,6 +51,20 @@ impl ThemeName {
     self.to_string()
   }
 
+  /// Short display name — what the Logo panel and any chip-style UI
+  /// surface uses when the canonical form ("catppuccin-macchiato")
+  /// would overflow. Mapped explicitly so changes to the strum
+  /// serializer order don't silently lengthen the chip.
+  pub fn short_name(self) -> &'static str {
+    match self {
+      ThemeName::Macchiato => "macchiato",
+      ThemeName::Latte => "latte",
+      ThemeName::GruvboxDark => "gruvbox",
+      ThemeName::SolarizedDark => "solarized",
+      ThemeName::Mono => "mono",
+    }
+  }
+
   /// Parse a theme name from a user-supplied string, returning a structured
   /// error when the value is unknown. Useful for surfacing actionable
   /// validation errors from the config loader.
