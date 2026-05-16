@@ -22,10 +22,11 @@ Heavy abstractions (Ollama, LM Studio) hide llama.cpp; raw `llama-server` use is
 - Skills
 - HuggingFace pull (origin: R46).
 - Custom themes
-- HTTP and MCP surfaces (origin: R34). 
+- HTTP and MCP surfaces (origin: R34).
 - Anthropic API compatibility
 - Maybe MLX and vLLM if its easy to add
 - Docker Ready
+- **Per-PID VRAM attribution via NVML.** Today the right-pane block title surfaces per-model RAM + CPU%; per-model VRAM is reported only at the host level. v2 unlocks per-launch VRAM via NVML's `nvmlDeviceGetComputeRunningProcesses` (Linux + Windows; AMD/Apple parity depends on upstream surface).
 
 ## Install
 

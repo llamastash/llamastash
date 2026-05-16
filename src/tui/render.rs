@@ -118,14 +118,9 @@ fn render_title_left(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Pal
     Span::raw(" "),
     Span::styled(
       "LlamaDash",
-      Style::default()
-        .fg(palette.bg)
-        .add_modifier(Modifier::BOLD),
+      Style::default().fg(palette.bg).add_modifier(Modifier::BOLD),
     ),
-    Span::styled(
-      format!(" v{version} · "),
-      Style::default().fg(palette.bg),
-    ),
+    Span::styled(format!(" v{version} · "), Style::default().fg(palette.bg)),
     Span::styled("●", Style::default().fg(dot_color)),
     Span::raw(" "),
     Span::styled(daemon_label, Style::default().fg(palette.bg)),
@@ -139,7 +134,8 @@ fn render_info_row(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palet
   // Reserve the Logo panel only when there's enough width for its
   // inner area to be readable. Otherwise the Daemon panel claims the
   // freed space.
-  let show_logo = area.width
+  let show_logo = area
+    .width
     .saturating_sub(HOST_PANEL_WIDTH)
     .saturating_sub(LOGO_PANEL_WIDTH)
     >= MIN_LOGO_INNER_WIDTH + 2;
@@ -170,7 +166,13 @@ fn render_body(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) 
     .split(area);
   let rows = app.rendered_rows();
   if rows.is_empty() {
-    render_empty_state(frame, split[0], palette, app.models.len(), app.filter_buffer.as_str());
+    render_empty_state(
+      frame,
+      split[0],
+      palette,
+      app.models.len(),
+      app.filter_buffer.as_str(),
+    );
   } else {
     let filter = if app.filter_buffer.is_empty() {
       None
@@ -278,7 +280,10 @@ mod tests {
     let app = App::new(AppOptions::default());
     let rows = render_into(100, 30, app);
     let body = rows.join("\n");
-    assert!(body.contains("LlamaDash"), "title row missing brand: {body}");
+    assert!(
+      body.contains("LlamaDash"),
+      "title row missing brand: {body}"
+    );
     assert!(body.contains("?:help"), "title row missing global hints");
     assert!(body.contains("Host"), "info row missing Host block");
     assert!(body.contains("Daemon"), "info row missing Daemon block");
@@ -295,7 +300,10 @@ mod tests {
     assert!(body.contains("LlamaDash"), "title still renders");
     assert!(body.contains("Models"), "body still renders");
     // Host panel block title shouldn't appear when info row is hidden.
-    assert!(!body.contains("─ Host ─"), "info row should be hidden: {body}");
+    assert!(
+      !body.contains("─ Host ─"),
+      "info row should be hidden: {body}"
+    );
   }
 
   #[test]

@@ -236,8 +236,7 @@ async fn run_foreground_with_supervisors(
   let catalog = llamadash::discovery::ModelCatalog::new();
   let _discovery =
     llamadash::daemon::discovery_task::spawn(catalog.clone(), opts.discovery.clone());
-  let host_metrics =
-    llamadash::daemon::host_metrics::spawn(token.clone(), Duration::from_secs(1));
+  let host_metrics = llamadash::daemon::host_metrics::spawn(token.clone(), Duration::from_secs(1));
   let ctx = MethodContext::with_catalog(token, catalog)
     .with_supervisors(supervisors)
     .with_gpu(llamadash::gpu::GpuInfo::CpuOnly)

@@ -85,7 +85,8 @@ mod tests {
 
   #[test]
   fn parses_canonical_five_column_csv() {
-    let stdout = "NVIDIA GeForce RTX 4090, 24564, 312, 84, 68\nNVIDIA GeForce RTX 4080, 16376, 0, 12, 42\n";
+    let stdout =
+      "NVIDIA GeForce RTX 4090, 24564, 312, 84, 68\nNVIDIA GeForce RTX 4080, 16376, 0, 12, 42\n";
     let devices = parse(stdout);
     assert_eq!(devices.len(), 2);
     assert_eq!(devices[0].name, "NVIDIA GeForce RTX 4090");

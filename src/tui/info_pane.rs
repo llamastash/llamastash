@@ -35,12 +35,13 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   frame.render_widget(block, area);
 
   let row_budget = inner.width.saturating_sub(LABEL_WIDTH as u16) as usize;
-  let mut lines: Vec<Line<'_>> = Vec::with_capacity(5);
-  lines.push(socket_row(app, row_budget, palette));
-  lines.push(uptime_build_row(app, palette));
-  lines.push(server_row(app, row_budget, palette));
-  lines.push(counts_row(app, palette));
-  lines.push(running_row(app, row_budget, palette));
+  let lines: Vec<Line<'_>> = vec![
+    socket_row(app, row_budget, palette),
+    uptime_build_row(app, palette),
+    server_row(app, row_budget, palette),
+    counts_row(app, palette),
+    running_row(app, row_budget, palette),
+  ];
   frame.render_widget(Paragraph::new(lines), inner);
 }
 
@@ -185,7 +186,14 @@ fn ellipsise(s: &str, budget: usize) -> String {
   let prefix = "…/";
   let prefix_len = prefix.chars().count();
   if budget <= prefix_len {
-    return s.chars().rev().take(budget).collect::<String>().chars().rev().collect();
+    return s
+      .chars()
+      .rev()
+      .take(budget)
+      .collect::<String>()
+      .chars()
+      .rev()
+      .collect();
   }
   let keep = budget - prefix_len;
   let tail: String = s.chars().skip(count - keep).collect();

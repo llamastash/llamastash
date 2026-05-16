@@ -53,10 +53,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, host: &HostMetricsSnapshot, pal
     "apple_metal" => {
       lines.push(Line::from(vec![
         Span::styled("GPU  ", Style::default().fg(palette.muted)),
-        Span::styled(
-          "unified memory",
-          Style::default().fg(palette.fg),
-        ),
+        Span::styled("unified memory", Style::default().fg(palette.fg)),
       ]));
     }
     _ => {
@@ -121,7 +118,11 @@ fn ram_row<'a>(host: &HostMetricsSnapshot, bar_width: usize, palette: &'a Palett
   ])
 }
 
-fn gpu_util_row<'a>(host: &HostMetricsSnapshot, bar_width: usize, palette: &'a Palette) -> Line<'a> {
+fn gpu_util_row<'a>(
+  host: &HostMetricsSnapshot,
+  bar_width: usize,
+  palette: &'a Palette,
+) -> Line<'a> {
   let pct = host.gpu_util_pct.unwrap_or(0.0).clamp(0.0, 100.0);
   let bar = bar(pct, bar_width, palette, gauge_color(pct, palette));
   let value = host
@@ -349,7 +350,9 @@ mod tests {
     assert!(!body.contains("GPU"));
     assert!(!body.contains("VRAM"));
     assert!(
-      rows.iter().any(|r| r.contains("backend") && r.contains("cpu only")),
+      rows
+        .iter()
+        .any(|r| r.contains("backend") && r.contains("cpu only")),
       "expected `backend  cpu only` row, got: {rows:#?}"
     );
   }

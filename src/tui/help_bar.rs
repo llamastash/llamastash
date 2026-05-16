@@ -24,11 +24,7 @@ pub fn global_hint_text() -> &'static str {
 /// in `palette.bg` on the accent background already painted by the
 /// title-row renderer. Adds a one-cell trailing pad so the rightmost
 /// hint isn't flush against the terminal edge.
-pub fn render_global(
-  frame: &mut Frame<'_>,
-  area: Rect,
-  palette: &Palette,
-) {
+pub fn render_global(frame: &mut Frame<'_>, area: Rect, palette: &Palette) {
   let line = Line::from(vec![
     hint_span("?", "help", palette),
     Span::raw("  "),

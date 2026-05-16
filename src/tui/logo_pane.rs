@@ -125,6 +125,9 @@ mod tests {
     for x in 0..buf.area.width {
       top.push_str(buf.cell((x, 0)).unwrap().symbol());
     }
-    assert!(top.contains("mono"), "expected `mono` in title, got: {top:?}");
+    assert!(
+      top.contains("mono"),
+      "expected `mono` in title, got: {top:?}"
+    );
   }
 }

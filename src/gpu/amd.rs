@@ -17,13 +17,7 @@ use super::{GpuDevice, GpuInfo};
 
 pub fn probe() -> Option<GpuInfo> {
   let output = Command::new("rocm-smi")
-    .args([
-      "--showmeminfo",
-      "vram",
-      "--showuse",
-      "--showtemp",
-      "--json",
-    ])
+    .args(["--showmeminfo", "vram", "--showuse", "--showtemp", "--json"])
     .output()
     .ok()?;
   if !output.status.success() {
@@ -50,10 +44,7 @@ pub(crate) fn parse(stdout: &str) -> Vec<GpuDevice> {
       };
       let total = pick_u64(card, &["VRAM Total Memory (B)", "vram total memory (B)"]);
       let used = pick_u64(card, &["VRAM Used Memory (B)", "vram used memory (B)"]);
-      let utilization_pct = pick_f32(
-        card,
-        &["GPU use (%)", "gpu use (%)", "GPU Use (%)"],
-      );
+      let utilization_pct = pick_f32(card, &["GPU use (%)", "gpu use (%)", "GPU Use (%)"]);
       // ROCm reports edge temperature on a per-sensor basis; the
       // canonical key is `Temperature (Sensor edge) (C)`, with
       // `junction` and `memory` siblings on newer cards. Prefer edge

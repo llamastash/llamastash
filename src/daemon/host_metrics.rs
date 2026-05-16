@@ -165,13 +165,13 @@ fn aggregate_gpu(info: &GpuInfo) -> (Option<f32>, Option<u64>, Option<u64>, Opti
       } else {
         Some(util_readings.iter().sum::<f32>() / util_readings.len() as f32)
       };
-      let temp = devices
-        .iter()
-        .filter_map(|d| d.temperature_c)
-        .fold(None, |acc: Option<f32>, t| match acc {
+      let temp = devices.iter().filter_map(|d| d.temperature_c).fold(
+        None,
+        |acc: Option<f32>, t| match acc {
           None => Some(t),
           Some(prev) => Some(prev.max(t)),
-        });
+        },
+      );
       (util, Some(used), Some(total), temp, count)
     }
   }
@@ -312,8 +312,7 @@ mod tests {
     for _ in 0..40 {
       tokio::time::sleep(Duration::from_millis(25)).await;
       let read = snap.read().await.clone();
-      if read.ram_total_bytes > 0
-        && read.gpu_backend != HostMetricsSnapshot::UNINITIALIZED_BACKEND
+      if read.ram_total_bytes > 0 && read.gpu_backend != HostMetricsSnapshot::UNINITIALIZED_BACKEND
       {
         token.trigger();
         return;

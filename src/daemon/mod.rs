@@ -236,10 +236,8 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   // 7b. Host-metrics sampler (1 Hz). Re-probes the active GPU
   // backend each tick for live util/temp/VRAM; sysinfo handles
   // host CPU% + RAM.
-  let host_metrics = crate::daemon::host_metrics::spawn(
-    token.clone(),
-    std::time::Duration::from_secs(1),
-  );
+  let host_metrics =
+    crate::daemon::host_metrics::spawn(token.clone(), std::time::Duration::from_secs(1));
 
   // 8. Wire the dispatcher context.
   let supervisors = SupervisorRegistry::new();

@@ -62,7 +62,10 @@ fn render_to_string(app: &mut App, width: u16, height: u16) -> String {
 fn empty_app_renders_title_info_and_empty_state() {
   let mut app = App::new(AppOptions::default());
   let frame = render_to_string(&mut app, 100, 20);
-  assert!(frame.contains("LlamaDash"), "title row missing brand: {frame}");
+  assert!(
+    frame.contains("LlamaDash"),
+    "title row missing brand: {frame}"
+  );
   assert!(
     frame.contains("daemon connecting"),
     "title row missing daemon-connecting label: {frame}"

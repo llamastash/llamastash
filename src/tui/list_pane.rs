@@ -563,10 +563,19 @@ mod tests {
       },
       40,
     );
-    assert!(title.contains("Enter:launch"), "must never drop launch chip: {title:?}");
-    assert!(title.contains("Models [127]"), "must never drop the count: {title:?}");
+    assert!(
+      title.contains("Enter:launch"),
+      "must never drop launch chip: {title:?}"
+    );
+    assert!(
+      title.contains("Models [127]"),
+      "must never drop the count: {title:?}"
+    );
     // `y:yank` should be dropped first.
-    assert!(!title.contains("y:yank"), "expected y:yank dropped at 40 cols: {title:?}");
+    assert!(
+      !title.contains("y:yank"),
+      "expected y:yank dropped at 40 cols: {title:?}"
+    );
   }
 
   #[test]
@@ -581,8 +590,14 @@ mod tests {
       },
       28,
     );
-    assert!(title.contains("[/qwen]"), "filter chip must survive any width: {title:?}");
-    assert!(title.contains("Enter:launch"), "launch chip must survive: {title:?}");
+    assert!(
+      title.contains("[/qwen]"),
+      "filter chip must survive any width: {title:?}"
+    );
+    assert!(
+      title.contains("Enter:launch"),
+      "launch chip must survive: {title:?}"
+    );
   }
 
   #[test]
