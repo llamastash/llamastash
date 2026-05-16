@@ -25,7 +25,7 @@ use serde::Serialize;
 /// What detection found. Always a complete snapshot — no
 /// "partial" / "unknown" middle ground — so the IPC handler can
 /// serialise it directly into `status`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "backend", rename_all = "snake_case")]
 pub enum GpuInfo {
   /// No GPU detected (or detection failed). The daemon still runs;
@@ -42,11 +42,21 @@ pub enum GpuInfo {
 }
 
 /// One discrete GPU device (NVIDIA / AMD path).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+///
+/// `utilization_pct` and `temperature_c` are best-effort: the per-tick
+/// host-metrics sampler reads them from vendor tools that may or may
+/// not expose them on a given platform / driver version. When a probe
+/// can't surface them they stay `None`; the host stats pane renders
+/// `—` in place of a numeric reading rather than dropping the row.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct GpuDevice {
   pub name: String,
   pub total_memory_bytes: u64,
   pub used_memory_bytes: u64,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub utilization_pct: Option<f32>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub temperature_c: Option<f32>,
 }
 
 impl GpuInfo {
@@ -102,6 +112,8 @@ mod tests {
         name: "RTX 4090".into(),
         total_memory_bytes: 24 * 1024 * 1024 * 1024,
         used_memory_bytes: 0,
+        utilization_pct: None,
+        temperature_c: None,
       }],
     };
     assert!(info.is_gpu());
@@ -116,5 +128,33 @@ mod tests {
     let s = serde_json::to_string(&v).unwrap();
     assert!(s.contains("\"backend\":\"apple_metal\""));
     assert!(s.contains("\"total_memory_bytes\":"));
+  }
+
+  #[test]
+  fn gpu_device_omits_optional_fields_when_absent() {
+    let dev = GpuDevice {
+      name: "RTX 4090".into(),
+      total_memory_bytes: 24 * 1024 * 1024 * 1024,
+      used_memory_bytes: 0,
+      utilization_pct: None,
+      temperature_c: None,
+    };
+    let s = serde_json::to_string(&dev).unwrap();
+    assert!(!s.contains("utilization_pct"));
+    assert!(!s.contains("temperature_c"));
+  }
+
+  #[test]
+  fn gpu_device_emits_optional_fields_when_present() {
+    let dev = GpuDevice {
+      name: "RTX 4090".into(),
+      total_memory_bytes: 24 * 1024 * 1024 * 1024,
+      used_memory_bytes: 12 * 1024 * 1024 * 1024,
+      utilization_pct: Some(84.0),
+      temperature_c: Some(68.0),
+    };
+    let s = serde_json::to_string(&dev).unwrap();
+    assert!(s.contains("\"utilization_pct\":84"));
+    assert!(s.contains("\"temperature_c\":68"));
   }
 }

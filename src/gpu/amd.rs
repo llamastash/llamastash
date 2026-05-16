@@ -1,10 +1,13 @@
-//! AMD GPU probe via `rocm-smi --showmeminfo vram --json`.
+//! AMD GPU probe via `rocm-smi`.
 //!
-//! The JSON shape varies between ROCm releases; rather than pin to
-//! one schema, we walk the response looking for any object with
-//! `VRAM Total Memory (B)` and `VRAM Used Memory (B)` keys (or the
-//! historical `vram total memory (B)` lower-case variant). That
-//! survives ROCm 5/6 in our checks.
+//! v1 baseline: shell out to `rocm-smi` with three flags combined —
+//! `--showmeminfo vram --showuse --showtemp --json` — and walk the
+//! response. The JSON shape varies between ROCm releases; rather than
+//! pin to one schema, we look for any object with `VRAM Total Memory
+//! (B)` / `VRAM Used Memory (B)` keys (plus their lower-case
+//! variants), and accept `GPU use (%)` / `Temperature (Sensor edge)
+//! (C)` for utilization and temperature respectively. Missing
+//! keys fall back to `None` rather than dropping the device.
 
 use std::process::Command;
 
@@ -14,7 +17,13 @@ use super::{GpuDevice, GpuInfo};
 
 pub fn probe() -> Option<GpuInfo> {
   let output = Command::new("rocm-smi")
-    .args(["--showmeminfo", "vram", "--json"])
+    .args([
+      "--showmeminfo",
+      "vram",
+      "--showuse",
+      "--showtemp",
+      "--json",
+    ])
     .output()
     .ok()?;
   if !output.status.success() {
@@ -41,11 +50,30 @@ pub(crate) fn parse(stdout: &str) -> Vec<GpuDevice> {
       };
       let total = pick_u64(card, &["VRAM Total Memory (B)", "vram total memory (B)"]);
       let used = pick_u64(card, &["VRAM Used Memory (B)", "vram used memory (B)"]);
+      let utilization_pct = pick_f32(
+        card,
+        &["GPU use (%)", "gpu use (%)", "GPU Use (%)"],
+      );
+      // ROCm reports edge temperature on a per-sensor basis; the
+      // canonical key is `Temperature (Sensor edge) (C)`, with
+      // `junction` and `memory` siblings on newer cards. Prefer edge
+      // (matches `nvidia-smi`'s `temperature.gpu`).
+      let temperature_c = pick_f32(
+        card,
+        &[
+          "Temperature (Sensor edge) (C)",
+          "Temperature (Sensor edge) (c)",
+          "Temperature (Sensor #1) (C)",
+          "Temperature (Sensor) (C)",
+        ],
+      );
       if let Some(total_bytes) = total {
         out.push(GpuDevice {
           name: gpu_key.clone(),
           total_memory_bytes: total_bytes,
           used_memory_bytes: used.unwrap_or(0),
+          utilization_pct,
+          temperature_c,
         });
       }
     }
@@ -69,6 +97,25 @@ fn pick_u64(card: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<u64>
   None
 }
 
+fn pick_f32(card: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<f32> {
+  for k in keys {
+    if let Some(raw) = card.get(*k) {
+      if let Some(n) = raw.as_f64() {
+        return Some(n as f32);
+      }
+      if let Some(n) = raw.as_u64() {
+        return Some(n as f32);
+      }
+      if let Some(s) = raw.as_str() {
+        if let Ok(parsed) = s.parse::<f32>() {
+          return Some(parsed);
+        }
+      }
+    }
+  }
+  None
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -78,7 +125,9 @@ mod tests {
     let stdout = r#"{
       "card0": {
         "VRAM Total Memory (B)": 17163091968,
-        "VRAM Used Memory (B)": 256000000
+        "VRAM Used Memory (B)": 256000000,
+        "GPU use (%)": "73",
+        "Temperature (Sensor edge) (C)": "62.0"
       }
     }"#;
     let devices = parse(stdout);
@@ -86,6 +135,8 @@ mod tests {
     assert_eq!(devices[0].name, "card0");
     assert_eq!(devices[0].total_memory_bytes, 17163091968);
     assert_eq!(devices[0].used_memory_bytes, 256000000);
+    assert_eq!(devices[0].utilization_pct, Some(73.0));
+    assert_eq!(devices[0].temperature_c, Some(62.0));
   }
 
   #[test]
@@ -97,6 +148,67 @@ mod tests {
     assert_eq!(devices.len(), 1);
     assert_eq!(devices[0].total_memory_bytes, 1024);
     assert_eq!(devices[0].used_memory_bytes, 512);
+    assert_eq!(devices[0].utilization_pct, None);
+    assert_eq!(devices[0].temperature_c, None);
+  }
+
+  #[test]
+  fn missing_util_or_temp_keeps_device_with_none() {
+    // Older rocm-smi versions don't emit the util/temp keys at all
+    // (or report them under a non-canonical name). The card row must
+    // still surface; only the affected fields drop to `None`.
+    let stdout = r#"{
+      "card0": {
+        "VRAM Total Memory (B)": 1024,
+        "VRAM Used Memory (B)": 512
+      }
+    }"#;
+    let devices = parse(stdout);
+    assert_eq!(devices.len(), 1);
+    assert_eq!(devices[0].utilization_pct, None);
+    assert_eq!(devices[0].temperature_c, None);
+  }
+
+  #[test]
+  fn multi_card_each_gets_its_own_readings() {
+    let stdout = r#"{
+      "card0": {
+        "VRAM Total Memory (B)": 1024,
+        "VRAM Used Memory (B)": 0,
+        "GPU use (%)": "20",
+        "Temperature (Sensor edge) (C)": "55.0"
+      },
+      "card1": {
+        "VRAM Total Memory (B)": 2048,
+        "VRAM Used Memory (B)": 1024,
+        "GPU use (%)": "80",
+        "Temperature (Sensor edge) (C)": "72.0"
+      }
+    }"#;
+    let devices = parse(stdout);
+    assert_eq!(devices.len(), 2);
+    // BTreeMap-backed serde_json::Map iterates lexicographically, so
+    // card0 sorts first, card1 second.
+    let card0 = devices.iter().find(|d| d.name == "card0").unwrap();
+    let card1 = devices.iter().find(|d| d.name == "card1").unwrap();
+    assert_eq!(card0.utilization_pct, Some(20.0));
+    assert_eq!(card1.utilization_pct, Some(80.0));
+    assert_eq!(card1.temperature_c, Some(72.0));
+  }
+
+  #[test]
+  fn accepts_numeric_keys_not_strings() {
+    let stdout = r#"{
+      "card0": {
+        "VRAM Total Memory (B)": 1024,
+        "VRAM Used Memory (B)": 0,
+        "GPU use (%)": 65,
+        "Temperature (Sensor edge) (C)": 58
+      }
+    }"#;
+    let devices = parse(stdout);
+    assert_eq!(devices[0].utilization_pct, Some(65.0));
+    assert_eq!(devices[0].temperature_c, Some(58.0));
   }
 
   #[test]

@@ -32,6 +32,8 @@ pub fn probe() -> Option<GpuInfo> {
         name,
         total_memory_bytes: 0,
         used_memory_bytes: 0,
+        utilization_pct: None,
+        temperature_c: None,
       })
       .collect(),
   })
