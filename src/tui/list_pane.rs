@@ -240,11 +240,7 @@ pub fn render(
 /// On overflow, drop hint chips right-to-left in this priority:
 /// `y:yank` → `f:fav` → `s:stop` → `/:filter`. `Enter:launch`, the
 /// count, and the filter chip are never dropped.
-pub(crate) fn build_block_title(
-  total: usize,
-  filter: Option<&str>,
-  area_width: usize,
-) -> String {
+pub(crate) fn build_block_title(total: usize, filter: Option<&str>, area_width: usize) -> String {
   // The full title strip including borders consumes the whole top
   // edge. ratatui leaves 1 cell on each side for the corner glyphs,
   // so the usable budget is `area_width - 2`. Subtract another 2 for

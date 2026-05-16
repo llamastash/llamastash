@@ -212,7 +212,9 @@ fn gpu_label(gpu: &Value) -> Option<String> {
         .and_then(Value::as_array)
         .map(|a| a.len())
         .unwrap_or(0);
-      Some(format!("Unknown GPU vendor (Vulkan-only): {count} device(s)"))
+      Some(format!(
+        "Unknown GPU vendor (Vulkan-only): {count} device(s)"
+      ))
     }
     _ => Some(serde_json::to_string(gpu).unwrap_or_else(|_| "?".to_string())),
   }

@@ -474,8 +474,8 @@ async fn status_response(ctx: &MethodContext) -> Value {
   // (including the `gpu_backend: String`) per status call.
   let host = match &ctx.host_metrics {
     Some(slot) => {
-      let snap = slot.read().await;
-      serde_json::to_value(&*snap).unwrap_or(Value::Null)
+      let host_snap = slot.read().await;
+      serde_json::to_value(&*host_snap).unwrap_or(Value::Null)
     }
     None => {
       let default_snap = HostMetricsSnapshot {
