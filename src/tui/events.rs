@@ -61,9 +61,9 @@ pub enum WriterCmd {
     mode: Option<crate::launch::mode::LaunchMode>,
   },
   /// `favorite_add` for the supplied model path. The TUI flips its
-  /// local view optimistically; on RPC failure the writer task
-  /// sends a `FavoriteRollback` back so the user sees the row
-  /// revert instead of drifting from daemon truth.
+  /// local view optimistically; an RPC failure is surfaced via the
+  /// writer task's `warn!` log and the next `favorite_list` refresh
+  /// snaps the row back to daemon truth.
   FavoriteAdd(PathBuf),
   /// `favorite_remove` for the supplied model path.
   FavoriteRemove(PathBuf),
@@ -435,19 +435,16 @@ fn apply_launch_submit(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) 
   // launched from the picker reaches llama-server with the right
   // mode flag. Without this the daemon defaulted to Chat for every
   // launch regardless of the catalog's classification.
-  use crate::gguf::metadata::ModeHint;
   use crate::launch::mode::LaunchMode;
+  // Delegate to the canonical `LaunchMode::resolve` rather than
+  // re-implementing the `ModeHint -> LaunchMode` table inline — keeps
+  // the TUI in lockstep with whatever the CLI / IPC paths use.
   let mode = app
     .models
     .iter()
     .find(|m| m.path == path)
     .and_then(|m| m.metadata.as_ref())
-    .and_then(|md| match md.mode_hint {
-      ModeHint::Chat => Some(LaunchMode::Chat),
-      ModeHint::Embedding => Some(LaunchMode::Embedding),
-      ModeHint::Rerank => Some(LaunchMode::Rerank),
-      ModeHint::Unknown => None,
-    });
+    .and_then(|md| LaunchMode::resolve(None, md.mode_hint));
 
   let cmd = WriterCmd::StartModel {
     model_path: path,
