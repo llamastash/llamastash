@@ -12,7 +12,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 use tokio::sync::RwLock;
 
@@ -23,7 +23,7 @@ use crate::gpu::{self, GpuInfo};
 /// every backend exposes them — Vulkan and CpuOnly don't have GPU
 /// numbers at all; Apple Silicon reports unified memory total but no
 /// per-card util or temp via `system_profiler`.
-#[derive(Debug, Clone, PartialEq, Serialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct HostMetricsSnapshot {
   /// Mean CPU utilisation across all logical cores, 0..=100.
   pub cpu_pct: f32,

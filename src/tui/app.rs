@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+use crate::daemon::host_metrics::HostMetricsSnapshot;
 use crate::discovery::DiscoveredModel;
 use crate::theme::{palette_for, Palette, ThemeName};
 use crate::tui::advanced_panel::AdvancedPanelState;
@@ -51,6 +52,16 @@ pub struct LastParamsRow {
   pub ctx: Option<u32>,
   pub reasoning: bool,
   pub advanced: Vec<String>,
+}
+
+/// Snapshot of the daemon-side metadata the Daemon info panel
+/// renders. Mirrors the `daemon` object on the `status` response.
+#[derive(Debug, Clone, Default)]
+pub struct DaemonInfo {
+  pub pid: Option<u32>,
+  pub uptime_seconds: Option<u64>,
+  pub build: Option<String>,
+  pub server_path: Option<String>,
 }
 
 /// Immutable parts of the App that don't change after construction.
@@ -106,6 +117,13 @@ pub struct App {
   pub advanced_panel: Option<AdvancedPanelState>,
   pub toast: Option<(String, Instant)>,
   pub daemon_connected: bool,
+  /// Snapshot of the daemon-side metadata block from the most recent
+  /// `status` response. Populated by [`Self::ingest_status`].
+  pub daemon_info: DaemonInfo,
+  /// Latest host-level CPU/RAM/GPU readings the daemon's sampler
+  /// emits. Populated by [`Self::ingest_status`]; consumed by the
+  /// Host info-row pane.
+  pub host_metrics: HostMetricsSnapshot,
   /// Set when the user presses `q` so the event loop can exit.
   pub should_exit: bool,
 }
@@ -131,6 +149,8 @@ impl App {
       advanced_panel: None,
       toast: None,
       daemon_connected: false,
+      daemon_info: DaemonInfo::default(),
+      host_metrics: HostMetricsSnapshot::default(),
       should_exit: false,
     }
   }
@@ -156,11 +176,10 @@ impl App {
     self.clamp_cursor();
   }
 
-  /// Apply a `status` IPC response — just the supervisor side.
-  /// Discovery rows survive intact. Parses both the supervised
-  /// `models` array and the read-only `external` array (unmanaged
-  /// `llama-server` processes the sweep surfaced) so the list pane
-  /// can render `⇪` rows alongside owned ones.
+  /// Apply a `status` IPC response. Refreshes the supervisor's
+  /// per-launch rows, the read-only external rows, the daemon-info
+  /// block, and the host-metrics snapshot. Discovery rows survive
+  /// intact — `list_models` owns those.
   pub fn ingest_status(&mut self, body: &Value) {
     if let Some(arr) = body.get("models").and_then(Value::as_array) {
       self.managed = arr.iter().filter_map(parse_status_row).collect();
@@ -172,6 +191,27 @@ impl App {
       // rows from sticking around if the field is dropped in a
       // future surface change.
       self.external.clear();
+    }
+    if let Some(daemon) = body.get("daemon") {
+      self.daemon_info = DaemonInfo {
+        pid: daemon.get("pid").and_then(Value::as_u64).map(|n| n as u32),
+        uptime_seconds: daemon.get("uptime_seconds").and_then(Value::as_u64),
+        build: daemon
+          .get("build")
+          .and_then(Value::as_str)
+          .map(String::from),
+        server_path: daemon
+          .get("server_path")
+          .and_then(Value::as_str)
+          .map(String::from),
+      };
+    }
+    if let Some(host) = body.get("host") {
+      if !host.is_null() {
+        if let Ok(snap) = serde_json::from_value::<HostMetricsSnapshot>(host.clone()) {
+          self.host_metrics = snap;
+        }
+      }
     }
   }
 

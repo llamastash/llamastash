@@ -459,6 +459,11 @@ async fn status_response(ctx: &MethodContext) -> Value {
       "pid": std::process::id(),
       "uptime_seconds": ctx.started_at.elapsed().as_secs(),
       "active_connections": ctx.active_connections.load(Ordering::Relaxed),
+      "build": env!("CARGO_PKG_VERSION"),
+      "server_path": ctx
+        .launch
+        .as_ref()
+        .map(|env| env.binary.display().to_string()),
     },
   })
 }

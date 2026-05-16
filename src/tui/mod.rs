@@ -13,6 +13,7 @@ pub mod app;
 pub mod events;
 pub mod filter;
 pub mod help_bar;
+pub mod info_pane;
 pub mod keybindings;
 pub mod launch_picker;
 pub mod layout;
