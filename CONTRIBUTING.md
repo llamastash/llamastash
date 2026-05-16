@@ -26,6 +26,31 @@ cargo fmt --check                          # CI pins this
 
 The integration tests need `--features test-fixtures` because they spawn the `fake_llama_server` binary the daemon launches in place of a real llama.cpp child.
 
+### Running the daemon locally
+
+Two terminals are typically the easiest setup when you're hacking on the daemon or IPC surface:
+
+```bash
+# Terminal 1: foreground daemon. Logs land in your terminal; Ctrl-C stops it.
+cargo run -- daemon start
+
+# Terminal 2: drive it with the CLI or TUI.
+cargo run -- list
+cargo run -- start <model>
+cargo run                              # opens the TUI against the same daemon
+cargo run -- daemon status             # pid / uptime / connections
+cargo run -- daemon stop               # graceful shutdown
+```
+
+The daemon binds its socket under `$XDG_RUNTIME_DIR/llamatui/daemon.sock` on Linux and `$TMPDIR/llamatui-$USER/daemon.sock` on macOS. If you need two daemons side-by-side (e.g. testing migrations), point each at a distinct path:
+
+```bash
+LLAMATUI_SOCKET=/tmp/llamatui-dev/daemon.sock cargo run -- daemon start
+LLAMATUI_SOCKET=/tmp/llamatui-dev/daemon.sock cargo run -- list
+```
+
+If something is wedged and the normal `daemon stop` won't go through, deleting the socket file and `daemon.pid` in the same directory is safe — the next `daemon start` re-binds clean.
+
 ## Code conventions
 
 - Rust edition 2021. Minimum supported Rust version is pinned in `Cargo.toml` (`rust-version`).

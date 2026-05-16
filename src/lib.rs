@@ -5,10 +5,10 @@
 
 #![warn(rust_2018_idioms)]
 #![deny(clippy::shadow_unrelated)]
-// Unit 2 lands the IPC + daemon layer; later units (3-9) consume the rest.
-// Allow dead code crate-wide while the scaffold is incomplete; remove this
-// allow once Unit 6+ start consuming these surfaces.
-#![allow(dead_code)]
+// Crate-wide `dead_code` allow removed at Unit 9 release prep — every
+// scaffold module is now consumed. If you add a new module that hasn't
+// landed all of its consumers yet, narrow the allow to that item
+// (`#[allow(dead_code)] fn …`) rather than re-blanketing the crate.
 
 pub mod banner;
 pub mod cli;

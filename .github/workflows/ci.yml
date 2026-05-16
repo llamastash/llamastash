@@ -23,7 +23,15 @@ jobs:
 
   clippy:
     name: clippy
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Run clippy on macOS too so the `cfg(target_os = "macos")`
+        # branches (peercred via getpeereid, $TMPDIR runtime fallback,
+        # pbcopy clipboard) get lint-checked pre-merge instead of
+        # waiting for the release tarball to surface a regression.
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

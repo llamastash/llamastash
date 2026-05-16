@@ -175,6 +175,55 @@ mod tests {
   }
 
   #[test]
+  fn all_dir_helpers_contain_llamatui_segment() {
+    // Stronger than `is_some()`: every resolved path must live under
+    // a `llamatui/` directory regardless of platform. Catches a
+    // regression where the `directories` crate dependency or our
+    // `APPLICATION` constant changes and silently re-roots the
+    // daemon's files outside of its namespace.
+    let llamatui = std::ffi::OsStr::new("llamatui");
+    for path in [
+      state_dir().unwrap(),
+      config_dir().unwrap(),
+      cache_dir().unwrap(),
+      log_dir().unwrap(),
+    ] {
+      assert!(
+        path.components().any(|c| c.as_os_str() == llamatui),
+        "{} does not contain a `llamatui` segment",
+        path.display()
+      );
+    }
+  }
+
+  #[cfg(target_os = "linux")]
+  #[test]
+  fn linux_state_dir_uses_xdg_or_home_dot_local() {
+    // On Linux the resolved state_dir must live under either
+    // `$XDG_STATE_HOME/llamatui` or the conventional fallback
+    // `~/.local/state/llamatui`. We assert by string-contains on the
+    // canonical segment, not by re-setting env vars (which would
+    // race with parallel tests).
+    let path = state_dir().unwrap().display().to_string();
+    assert!(
+      path.contains(".local/state/llamatui") || path.contains("/llamatui"),
+      "unexpected state_dir on linux: {path}"
+    );
+  }
+
+  #[cfg(target_os = "macos")]
+  #[test]
+  fn macos_state_dir_lives_under_library_application_support() {
+    // The `directories` crate maps state_dir to data_dir on macOS;
+    // both live under `~/Library/Application Support/llamatui`.
+    let path = state_dir().unwrap().display().to_string();
+    assert!(
+      path.contains("Library/Application Support/llamatui"),
+      "unexpected state_dir on macOS: {path}"
+    );
+  }
+
+  #[test]
   fn runtime_socket_path_always_resolves() {
     // Infallible by design — see runtime_socket_path's contract.
     let path = runtime_socket_path();

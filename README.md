@@ -1,5 +1,7 @@
 # llamatui
 
+Name ideas: LlamaServ, LlamaLaunch, llama-launcher, LlamaMan.
+
 A fast, keyboard-driven TUI **and** CLI for launching local `llama-server` (llama.cpp) instances.
 
 > **Status: v1 work in progress.** Scope: [`docs/brainstorms/llamatui-requirements.md`](docs/brainstorms/llamatui-requirements.md). Implementation plan: [`docs/plans/2026-05-13-001-feat-llamatui-v1-launcher-plan.md`](docs/plans/2026-05-13-001-feat-llamatui-v1-launcher-plan.md).
@@ -17,7 +19,15 @@ Heavy abstractions (Ollama, LM Studio) hide llama.cpp; raw `llama-server` use is
 - **Smoke-tests models** via a right-pane Chat / Embed / Rerank tab that hits the same OpenAI-compatible endpoints any external client would use.
 - **Exposes a complete non-interactive CLI** — `list`, `start`, `stop`, `status`, `logs`, `presets`, `favorites`, `daemon`. Every read command supports `--json`. Distinct exit codes per failure class.
 
-HTTP and MCP surfaces are deferred to v2 (origin: R34). HuggingFace pull is also v2 (origin: R46).
+## v2 and beyond will add:
+- Init command to install llama.cpp (brew or custom), set up config, etc.
+- Skills
+- HuggingFace pull (origin: R46).
+- Custom themes
+- HTTP and MCP surfaces (origin: R34). 
+- Anthropic API compatibility
+- Maybe MLX and vLLM if its easy to add
+- Docker Ready
 
 ## Install
 
@@ -32,6 +42,8 @@ cargo install --path .
 `cargo install llamatui`, a Homebrew tap, and pre-built release binaries land alongside the first tagged release.
 
 You also need `llama-server` on your `PATH` (or pointed at via `--llama-server <path>` / `LLAMATUI_LLAMA_SERVER`).
+
+> **macOS pre-1.0 release tarballs are not yet codesigned.** Until the signing step lands in the release workflow, Gatekeeper will quarantine the unzipped binary. Run `xattr -d com.apple.quarantine ./llamatui` once after download to clear the flag.
 
 ## Quickstart
 
@@ -73,6 +85,8 @@ Every non-interactive subcommand returns a documented exit code so agent scripts
 | `70` | `llama-server` binary not found (`--llama-server`, `LLAMATUI_LLAMA_SERVER`, or `$PATH`) |
 | `71` | Unexpected error (catch-all) |
 
+> **Note on sysexits.h**: the numbers above are deliberately reused from `<sysexits.h>` for familiarity, but llamatui's *meanings* diverge from the standard ones. Scripts that import `EX_NOHOST` (68) expecting "host unreachable" will get our "stop failed"; `EX_DATAERR` (65) is reused for "daemon unreachable", not "data error". Branch on llamatui's table above, not the libc constants.
+
 ## Configuration
 
 llamatui reads `$XDG_CONFIG_HOME/llamatui/config.yaml` (macOS: `~/Library/Application Support/llamatui/config.yaml`). Schema in [`docs/usage.md`](docs/usage.md). Environment variables:
@@ -83,6 +97,18 @@ llamatui reads `$XDG_CONFIG_HOME/llamatui/config.yaml` (macOS: `~/Library/Applic
 | `LLAMATUI_LLAMA_SERVER` | Path to `llama-server` |
 | `LLAMATUI_NO_SCAN` | Skip filesystem scanning |
 | `LLAMATUI_SOCKET` | Point a CLI at a non-default daemon socket |
+
+### Default scan paths
+
+When `model_paths` and `--model-path` are empty, llamatui walks these caches automatically. Each bucket is independently toggleable via `disable_default_cache_paths.<bucket>: true` in `config.yaml`, or globally via `--no-scan` / `LLAMATUI_NO_SCAN=1`.
+
+| Bucket | Linux | macOS |
+|---|---|---|
+| HuggingFace | `~/.cache/huggingface/hub` | `~/Library/Caches/huggingface/hub` |
+| Ollama | `~/.ollama/models` | `~/.ollama/models` |
+| LM Studio | `~/.lmstudio/models`, `~/.cache/lm-studio/models` | `~/Library/Caches/LMStudio/models`, `~/.lmstudio/models` |
+
+Files anywhere under these roots that end in `.gguf` (and aren't `.gguf.part`) get parsed and added to the catalog.
 
 ## Platforms
 

@@ -131,4 +131,27 @@ mod tests {
     let exit = CliExit::from_client_error(ClientError::Timeout(Duration::from_secs(1)));
     assert_eq!(exit.code, DAEMON_UNREACHABLE);
   }
+
+  #[test]
+  fn from_client_error_wildcard_maps_to_unknown() {
+    // Catch-all arm: Frame / Encode / Decode / Remote all collapse to
+    // UNKNOWN so callers that don't have method-specific context get
+    // a consistent exit. Pin the contract.
+    use crate::ipc::protocol::{ErrorCode, ErrorObject};
+    use std::io::{Error, ErrorKind};
+
+    let frame_err = ClientError::Frame(crate::ipc::framing::FrameError::Io(Error::from(
+      ErrorKind::UnexpectedEof,
+    )));
+    assert_eq!(CliExit::from_client_error(frame_err).code, UNKNOWN);
+
+    let decode_err = ClientError::Decode(serde_json::from_str::<()>("{").unwrap_err());
+    assert_eq!(CliExit::from_client_error(decode_err).code, UNKNOWN);
+
+    let remote_err = ClientError::Remote(ErrorObject::new(
+      ErrorCode::InternalError,
+      "synthetic remote".to_string(),
+    ));
+    assert_eq!(CliExit::from_client_error(remote_err).code, UNKNOWN);
+  }
 }

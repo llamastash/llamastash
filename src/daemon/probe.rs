@@ -111,4 +111,25 @@ mod tests {
     );
     assert!(parse_status(b"not http").is_none());
   }
+
+  #[tokio::test]
+  async fn poll_until_ready_times_out_against_unreachable_port() {
+    // No listener on this port; probe should fail to connect on every
+    // attempt and surface a `Timeout` with `last_status = None`.
+    let opts = ProbeOptions {
+      interval: Duration::from_millis(20),
+      timeout: Duration::from_millis(120),
+    };
+    // Pick a port unlikely to be open — 1 is privileged on Linux.
+    let outcome = poll_until_ready(1, opts).await;
+    match outcome {
+      ProbeOutcome::Timeout { last_status } => {
+        assert!(
+          last_status.is_none(),
+          "no responses observed; last_status should be None"
+        );
+      }
+      ProbeOutcome::Ready => panic!("port 1 should not be ready"),
+    }
+  }
 }
