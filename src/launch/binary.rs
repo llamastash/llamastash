@@ -2,7 +2,7 @@
 //!
 //! Priority order, per the plan:
 //! 1. CLI flag `--llama-server <path>`
-//! 2. `LLAMATUI_LLAMA_SERVER` environment variable
+//! 2. `LLAMADASH_LLAMA_SERVER` environment variable
 //! 3. `$PATH` lookup via the `which` crate
 //!
 //! When `$PATH` has multiple matching candidates (e.g.,
@@ -44,7 +44,7 @@ impl std::fmt::Display for LocateError {
     match self {
       Self::NotFound => write!(
         f,
-        "could not find `llama-server` — set `--llama-server <path>` or `LLAMATUI_LLAMA_SERVER`, or add it to your $PATH"
+        "could not find `llama-server` — set `--llama-server <path>` or `LLAMADASH_LLAMA_SERVER`, or add it to your $PATH"
       ),
       Self::ExplicitPathMissing(p) => {
         write!(f, "configured `llama-server` path does not exist: {}", p.display())
@@ -52,7 +52,7 @@ impl std::fmt::Display for LocateError {
       Self::ExplicitPathNotExecutable(p) => {
         write!(
           f,
-          "configured `llama-server` path is not executable: {} — run `chmod +x {}` or point `--llama-server` / `LLAMATUI_LLAMA_SERVER` at the real binary",
+          "configured `llama-server` path is not executable: {} — run `chmod +x {}` or point `--llama-server` / `LLAMADASH_LLAMA_SERVER` at the real binary",
           p.display(),
           p.display()
         )
@@ -149,7 +149,7 @@ mod tests {
       .expect("clock")
       .as_nanos();
     let p = std::env::temp_dir().join(format!(
-      "llamatui-binary-locate-{label}-{}-{nanos}",
+      "llamadash-binary-locate-{label}-{}-{nanos}",
       std::process::id()
     ));
     fs::create_dir_all(&p).expect("temp");

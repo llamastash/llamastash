@@ -31,7 +31,7 @@ pub const STOP_FAILED: i32 = 68;
 #[allow(dead_code)]
 pub const PULL_FAILED: i32 = 69;
 /// `llama-server` binary not on `$PATH`, no `--llama-server` flag,
-/// and `LLAMATUI_LLAMA_SERVER` unset.
+/// and `LLAMADASH_LLAMA_SERVER` unset.
 pub const BINARY_NOT_FOUND: i32 = 70;
 /// Catch-all for unexpected errors that don't map to a documented
 /// failure class. anyhow's bubble-up lands here.

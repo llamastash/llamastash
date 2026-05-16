@@ -3,7 +3,7 @@
 //! We stick to the minimum spec slice needed for our methods: a single
 //! Request, a single Response (either result or error), no batching. The
 //! standard reserved error codes (`-32700..=-32600`) are encoded as
-//! variants of `ErrorCode`; llamatui-specific codes live in the same enum
+//! variants of `ErrorCode`; llamadash-specific codes live in the same enum
 //! to keep the wire shape uniform.
 
 use serde::{Deserialize, Serialize};
@@ -95,7 +95,7 @@ impl ErrorObject {
 }
 
 /// JSON-RPC error codes. The first five (`ParseError`..`InternalError`)
-/// are the reserved spec codes; `UnauthorizedPeer` is llamatui's
+/// are the reserved spec codes; `UnauthorizedPeer` is llamadash's
 /// application-specific code returned when peercred verification fails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorCode {

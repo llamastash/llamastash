@@ -85,7 +85,7 @@ fn report(result: CliResult) -> i32 {
   }
 }
 
-/// Entry point for the TUI (`llamatui` with no subcommand). Returns a
+/// Entry point for the TUI (`llamadash` with no subcommand). Returns a
 /// `CliResult` so the dispatcher's exit-code surface stays uniform;
 /// any anyhow failure from the TUI runtime maps to `UNKNOWN`.
 async fn handle_tui(_cli: &Cli, config: &crate::config::Config) -> CliResult {

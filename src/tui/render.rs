@@ -81,7 +81,7 @@ fn render_banner(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette
     )
   };
   let title = Span::styled(
-    "llamatui",
+    "llamadash",
     Style::default()
       .fg(palette.accent)
       .add_modifier(Modifier::BOLD),
@@ -121,7 +121,7 @@ fn render_empty_state(frame: &mut Frame<'_>, area: Rect, palette: &Palette) {
       Style::default().fg(palette.fg),
     )),
     Line::from(Span::styled(
-      "Drop a `.gguf` into a watched directory or run `llamatui --model-path <DIR>`.",
+      "Drop a `.gguf` into a watched directory or run `llamadash --model-path <DIR>`.",
       Style::default().fg(palette.muted),
     )),
   ];

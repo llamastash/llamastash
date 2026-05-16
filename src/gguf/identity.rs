@@ -102,8 +102,8 @@ mod tests {
   #[test]
   fn same_bytes_yield_same_hash() {
     let bytes = b"GGUF\x03\x00\x00\x00";
-    let a = compute("/tmp/llamatui-fake-a.gguf", bytes);
-    let b = compute("/tmp/llamatui-fake-b.gguf", bytes);
+    let a = compute("/tmp/llamadash-fake-a.gguf", bytes);
+    let b = compute("/tmp/llamadash-fake-b.gguf", bytes);
     assert_eq!(a.header_blake3, b.header_blake3);
     assert_ne!(a.path, b.path);
   }
@@ -134,7 +134,7 @@ mod tests {
 
   fn tempdir_for_test() -> std::path::PathBuf {
     let base = std::env::temp_dir().join(format!(
-      "llamatui-id-{}-{}",
+      "llamadash-id-{}-{}",
       std::process::id(),
       std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

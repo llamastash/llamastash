@@ -26,7 +26,7 @@ assignees: ''
 
 ## Environment
 
-- `llamatui --version`:
+- `llamadash --version`:
 - OS + version:
 - `llama-server --version` (if relevant):
 - GPU / backend (if relevant):
@@ -34,7 +34,7 @@ assignees: ''
 ## Daemon logs (if applicable)
 
 <details>
-<summary>Last ~100 lines of <code>$XDG_CACHE_HOME/llamatui/logs/llamatui.log</code></summary>
+<summary>Last ~100 lines of <code>$XDG_CACHE_HOME/llamadash/logs/llamadash.log</code></summary>
 
 ```
 paste here

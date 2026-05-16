@@ -98,7 +98,7 @@ pub struct LoadedConfig {
 /// optional env override, and the directory `directories` would pick. Pure
 /// function for testability — mirrors `kdash::config::config_path_from`.
 ///
-/// Precedence: `--config` flag > `LLAMATUI_CONFIG` env > XDG default. The
+/// Precedence: `--config` flag > `LLAMADASH_CONFIG` env > XDG default. The
 /// CLI is highest because users explicitly typed it; env beats the default
 /// for the same reason.
 pub fn config_path_from(
@@ -120,7 +120,7 @@ pub fn config_path_from(
 pub fn config_path(cli_override: Option<PathBuf>) -> Option<PathBuf> {
   config_path_from(
     cli_override,
-    env::var_os("LLAMATUI_CONFIG"),
+    env::var_os("LLAMADASH_CONFIG"),
     user_config_file(),
   )
 }
@@ -219,7 +219,7 @@ pub fn load_config(cli_override: Option<PathBuf>) -> LoadedConfig {
 }
 
 /// Validate that we have *some* place to look for models. If scanning is
-/// disabled and no user-supplied paths exist, llamatui would start with an
+/// disabled and no user-supplied paths exist, llamadash would start with an
 /// empty list and no path forward — a confusing dead-end. Surface it
 /// early.
 pub fn validate_scan_settings(
@@ -246,7 +246,7 @@ impl std::fmt::Display for ScanSettingsError {
       Self::NoScanWithoutPaths => write!(
         f,
         "scanning is disabled but no model paths were supplied via --model-path, \
-         LLAMATUI_MODEL_PATHS, or the `model_paths` config key — llamatui has nothing to list. \
+         LLAMADASH_MODEL_PATHS, or the `model_paths` config key — llamadash has nothing to list. \
          Provide at least one path or re-enable scanning."
       ),
     }
@@ -270,7 +270,7 @@ mod tests {
       .expect("system time should be after epoch")
       .as_nanos();
     let path = env::temp_dir().join(format!(
-      "llamatui-config-tests-{}-{}-{}",
+      "llamadash-config-tests-{}-{}-{}",
       name,
       std::process::id(),
       suffix
@@ -294,11 +294,11 @@ mod tests {
     let path = config_path_from(
       None,
       None,
-      Some(PathBuf::from("/home/u/.config/llamatui/config.yaml")),
+      Some(PathBuf::from("/home/u/.config/llamadash/config.yaml")),
     );
     assert_eq!(
       path,
-      Some(PathBuf::from("/home/u/.config/llamatui/config.yaml"))
+      Some(PathBuf::from("/home/u/.config/llamadash/config.yaml"))
     );
   }
 
@@ -307,11 +307,11 @@ mod tests {
     let path = config_path_from(
       None,
       Some(OsString::new()),
-      Some(PathBuf::from("/home/u/.config/llamatui/config.yaml")),
+      Some(PathBuf::from("/home/u/.config/llamadash/config.yaml")),
     );
     assert_eq!(
       path,
-      Some(PathBuf::from("/home/u/.config/llamatui/config.yaml"))
+      Some(PathBuf::from("/home/u/.config/llamadash/config.yaml"))
     );
   }
 

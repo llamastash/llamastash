@@ -1,4 +1,4 @@
-//! `llamatui start <model-ref>` — launch a model.
+//! `llamadash start <model-ref>` — launch a model.
 //!
 //! Resolution order (per the plan):
 //! 1. resolve `<model-ref>` against the catalog (substring / path / id),
@@ -192,7 +192,7 @@ fn map_start_error(e: crate::ipc::ClientError, row: &CatalogRow) -> CliExit {
         CliExit::new(
           BINARY_NOT_FOUND,
           format!(
-            "daemon could not launch {name}: {msg}\nhint: pass --llama-server <path> or set LLAMATUI_LLAMA_SERVER",
+            "daemon could not launch {name}: {msg}\nhint: pass --llama-server <path> or set LLAMADASH_LLAMA_SERVER",
             name = row.name(),
             msg = err.message,
           ),

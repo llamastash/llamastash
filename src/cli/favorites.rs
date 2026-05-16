@@ -1,4 +1,4 @@
-//! `llamatui favorites {list|add|remove}`.
+//! `llamadash favorites {list|add|remove}`.
 
 use serde_json::{json, Value};
 

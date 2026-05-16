@@ -239,7 +239,7 @@ mod tests {
       .expect("clock")
       .as_nanos();
     let p = std::env::temp_dir().join(format!(
-      "llamatui-watcher-{label}-{}-{nanos}",
+      "llamadash-watcher-{label}-{}-{nanos}",
       std::process::id()
     ));
     fs::create_dir_all(&p).expect("temp root");
@@ -312,7 +312,7 @@ mod tests {
   #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
   async fn missing_root_is_logged_and_skipped_without_failure() {
     let alive = temp_root("alive");
-    let dead = PathBuf::from("/nonexistent/llamatui/watcher/root");
+    let dead = PathBuf::from("/nonexistent/llamadash/watcher/root");
     let (_handle, _rx) = start(
       vec![
         WatchRoot::recursive(dead),

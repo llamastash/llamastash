@@ -1,4 +1,4 @@
-//! `llamatui pull` — placeholder for the v2 in-app HuggingFace pull
+//! `llamadash pull` — placeholder for the v2 in-app HuggingFace pull
 //! worker (R46).
 //!
 //! The subcommand surface is wired so callers see a stable shape, but
@@ -17,6 +17,6 @@ pub async fn handle(args: PullArgs) -> CliResult {
   };
   Err(CliExit::new(
     PULL_FAILED,
-    format!("{what}: in-app HuggingFace pull is deferred to llamatui v2 (R46)"),
+    format!("{what}: in-app HuggingFace pull is deferred to llamadash v2 (R46)"),
   ))
 }

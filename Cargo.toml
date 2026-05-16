@@ -1,12 +1,12 @@
 [package]
-name = "llamatui"
+name = "llamadash"
 version = "0.1.0-dev"
 authors = ["Deepu K Sasidharan <d4udts@gmail.com>"]
 description = "A fast, keyboard-driven TUI for launching local llama.cpp models"
-documentation = "https://github.com/llamatui/llamatui"
-keywords = ["llamatui", "llama-cpp", "llm", "tui", "gguf"]
-repository = "https://github.com/llamatui/llamatui"
-homepage = "https://github.com/llamatui/llamatui"
+documentation = "https://github.com/llamadash/llamadash"
+keywords = ["llamadash", "llama-cpp", "llm", "tui", "gguf"]
+repository = "https://github.com/llamadash/llamadash"
+homepage = "https://github.com/llamadash/llamadash"
 readme = "README.md"
 license = "MIT"
 edition = "2021"
@@ -16,7 +16,7 @@ rust-version = "1.80"
 # under the `test-fixtures` feature, but cargo's run-target picker
 # checks the manifest before feature resolution, so we still need
 # this hint.
-default-run = "llamatui"
+default-run = "llamadash"
 exclude = [
   "test_data/*",
   "deployment/*",
@@ -89,11 +89,11 @@ tokio = { version = "1.50", default-features = false, features = [
 which = "8"
 
 [lib]
-name = "llamatui"
+name = "llamadash"
 path = "src/lib.rs"
 
 [[bin]]
-name = "llamatui"
+name = "llamadash"
 path = "src/main.rs"
 bench = false
 

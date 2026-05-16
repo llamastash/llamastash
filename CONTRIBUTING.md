@@ -1,6 +1,6 @@
-# Contributing to llamatui
+# Contributing to llamadash
 
-Thanks for the interest. llamatui is still pre-1.0 and the API surface is moving, so coordination matters more than usual right now.
+Thanks for the interest. llamadash is still pre-1.0 and the API surface is moving, so coordination matters more than usual right now.
 
 ## Before you start
 
@@ -42,11 +42,11 @@ cargo run -- daemon status             # pid / uptime / connections
 cargo run -- daemon stop               # graceful shutdown
 ```
 
-The daemon binds its socket under `$XDG_RUNTIME_DIR/llamatui/daemon.sock` on Linux and `$TMPDIR/llamatui-$USER/daemon.sock` on macOS. If you need two daemons side-by-side (e.g. testing migrations), point each at a distinct path:
+The daemon binds its socket under `$XDG_RUNTIME_DIR/llamadash/daemon.sock` on Linux and `$TMPDIR/llamadash-$USER/daemon.sock` on macOS. If you need two daemons side-by-side (e.g. testing migrations), point each at a distinct path:
 
 ```bash
-LLAMATUI_SOCKET=/tmp/llamatui-dev/daemon.sock cargo run -- daemon start
-LLAMATUI_SOCKET=/tmp/llamatui-dev/daemon.sock cargo run -- list
+LLAMADASH_SOCKET=/tmp/llamadash-dev/daemon.sock cargo run -- daemon start
+LLAMADASH_SOCKET=/tmp/llamadash-dev/daemon.sock cargo run -- list
 ```
 
 If something is wedged and the normal `daemon stop` won't go through, deleting the socket file and `daemon.pid` in the same directory is safe — the next `daemon start` re-binds clean.

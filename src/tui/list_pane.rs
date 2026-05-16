@@ -217,7 +217,17 @@ pub fn render(
   selected: usize,
   palette: &Palette,
 ) {
-  let items: Vec<ListItem<'_>> = rows.iter().map(|r| render_row(r, palette)).collect();
+  // Reserve columns for borders (2), the highlight gutter (2), the
+  // status glyph (3), and the favorite mark (2). What remains is the
+  // budget the name + inline badges share; we use it to ellipsise
+  // overlong model names so they don't get silently clipped by
+  // ratatui without a visible signal.
+  const ROW_CHROME: u16 = 2 + 2 + 3 + 2;
+  let name_budget = (area.width.saturating_sub(ROW_CHROME)) as usize;
+  let items: Vec<ListItem<'_>> = rows
+    .iter()
+    .map(|r| render_row(r, palette, name_budget))
+    .collect();
   let list = List::new(items)
     .block(
       Block::default()
@@ -242,7 +252,20 @@ pub fn render(
   frame.render_stateful_widget(list, area, &mut state);
 }
 
-fn render_row<'a>(row: &'a ListRow, palette: &Palette) -> ListItem<'a> {
+/// Truncate `s` to fit `budget` columns, appending `…` if anything was
+/// dropped. Returns the original string unmodified when it already fits.
+fn ellipsise(s: &str, budget: usize) -> std::borrow::Cow<'_, str> {
+  if budget == 0 || s.chars().count() <= budget {
+    return std::borrow::Cow::Borrowed(s);
+  }
+  let keep = budget.saturating_sub(1);
+  let mut out = String::with_capacity(keep + 3);
+  out.extend(s.chars().take(keep));
+  out.push('…');
+  std::borrow::Cow::Owned(out)
+}
+
+fn render_row<'a>(row: &'a ListRow, palette: &Palette, name_budget: usize) -> ListItem<'a> {
   match row {
     ListRow::Header { label } => ListItem::new(Line::from(vec![Span::styled(
       label.as_str(),
@@ -274,8 +297,13 @@ fn render_row<'a>(row: &'a ListRow, palette: &Palette) -> ListItem<'a> {
         if *favorite { "★ " } else { "  " },
         Style::default().fg(palette.warning),
       ));
-      // Display name.
-      spans.push(Span::styled(name.as_str(), Style::default().fg(palette.fg)));
+      // Display name. Ellipsise on overflow so a narrow pane gives a
+      // visible signal instead of silently clipping at the border.
+      let shown = ellipsise(name.as_str(), name_budget);
+      spans.push(Span::styled(
+        shown.into_owned(),
+        Style::default().fg(palette.fg),
+      ));
       // Arch badge.
       if !arch.is_empty() {
         spans.push(Span::styled(

@@ -13,13 +13,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use llamatui::daemon::discovery_task::DiscoveryOptions;
-use llamatui::daemon::{run_foreground, DaemonOptions};
-use llamatui::discovery::scanner::{ScanOptions, ScanRoot};
-use llamatui::discovery::watcher::WatcherOptions;
-use llamatui::discovery::ModelSource;
-use llamatui::gguf::test_fixtures::build_minimal_gguf;
-use llamatui::ipc::Client;
+use llamadash::daemon::discovery_task::DiscoveryOptions;
+use llamadash::daemon::{run_foreground, DaemonOptions};
+use llamadash::discovery::scanner::{ScanOptions, ScanRoot};
+use llamadash::discovery::watcher::WatcherOptions;
+use llamadash::discovery::ModelSource;
+use llamadash::gguf::test_fixtures::build_minimal_gguf;
+use llamadash::ipc::Client;
 use serde_json::Value;
 use tokio::time::timeout;
 
@@ -29,7 +29,7 @@ fn unique_temp_dir(label: &str) -> PathBuf {
     .expect("clock")
     .as_nanos();
   let dir = std::env::temp_dir().join(format!(
-    "llamatui-listmodels-{label}-{}-{suffix}",
+    "llamadash-listmodels-{label}-{}-{suffix}",
     std::process::id()
   ));
   fs::create_dir_all(&dir).expect("temp dir");

@@ -10,11 +10,11 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use llamatui::daemon::probe::ProbeOptions;
-use llamatui::daemon::supervisor::{spawn, ManagedSpawn, ManagedState};
-use llamatui::gguf::identity::ModelId;
-use llamatui::launch::mode::LaunchMode;
-use llamatui::launch::params::LaunchParams;
+use llamadash::daemon::probe::ProbeOptions;
+use llamadash::daemon::supervisor::{spawn, ManagedSpawn, ManagedState};
+use llamadash::gguf::identity::ModelId;
+use llamadash::launch::mode::LaunchMode;
+use llamadash::launch::params::LaunchParams;
 
 fn fake_binary() -> PathBuf {
   PathBuf::from(env!("CARGO_BIN_EXE_fake_llama_server"))
@@ -26,7 +26,7 @@ fn unique_temp(label: &str) -> PathBuf {
     .expect("clock")
     .as_nanos();
   let p = std::env::temp_dir().join(format!(
-    "llamatui-sup-{label}-{}-{nanos}",
+    "llamadash-sup-{label}-{}-{nanos}",
     std::process::id()
   ));
   std::fs::create_dir_all(&p).expect("temp");
@@ -55,7 +55,7 @@ fn allocate_port() -> u16 {
 }
 
 async fn wait_for_state<P: Fn(&ManagedState) -> bool>(
-  model: &llamatui::daemon::supervisor::ManagedModel,
+  model: &llamadash::daemon::supervisor::ManagedModel,
   pred: P,
   budget: Duration,
 ) -> ManagedState {

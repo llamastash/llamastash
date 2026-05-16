@@ -8,8 +8,8 @@ use std::{
   time::Duration,
 };
 
-use llamatui::daemon::{run_foreground, start_detached_with_exe, DaemonOptions, StartOutcome};
-use llamatui::ipc::Client;
+use llamadash::daemon::{run_foreground, start_detached_with_exe, DaemonOptions, StartOutcome};
+use llamadash::ipc::Client;
 use tokio::time::timeout;
 
 fn unique_temp_dir(label: &str) -> PathBuf {
@@ -18,7 +18,7 @@ fn unique_temp_dir(label: &str) -> PathBuf {
     .expect("clock")
     .as_nanos();
   let dir = std::env::temp_dir().join(format!(
-    "llamatui-lifecycle-{label}-{}-{suffix}",
+    "llamadash-lifecycle-{label}-{}-{suffix}",
     std::process::id()
   ));
   std::fs::create_dir_all(&dir).expect("temp dir creation");
@@ -138,7 +138,7 @@ async fn stale_socket_is_cleaned_before_bind() {
 }
 
 /// Regression test for the Unit 2 P2 follow-up: `start_detached` used to
-/// re-exec the child as plain `llamatui daemon start`, which rebuilt
+/// re-exec the child as plain `llamadash daemon start`, which rebuilt
 /// `DaemonOptions` from XDG defaults and silently ignored the caller's
 /// `state_dir` / `socket_path`. With the hidden `--state-dir` /
 /// `--socket-path` flags wired through, the child must bind the
@@ -149,7 +149,7 @@ async fn start_detached_honours_caller_supplied_paths() {
   let opts = opts_for(&dir);
   let socket = opts.socket_path.clone();
   let pidfile = dir.join("daemon.pid");
-  let exe = PathBuf::from(env!("CARGO_BIN_EXE_llamatui"));
+  let exe = PathBuf::from(env!("CARGO_BIN_EXE_llamadash"));
 
   // `start_detached_with_exe` blocks on a sync poll loop, so push it off
   // the tokio reactor to keep the test runtime live.

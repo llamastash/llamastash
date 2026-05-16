@@ -1,6 +1,4 @@
-# llamatui
-
-Name ideas: LlamaServ, LlamaLaunch, llama-launcher, LlamaMan.
+# LlamaDash 🦙
 
 A fast, keyboard-driven TUI **and** CLI for launching local `llama-server` (llama.cpp) instances.
 
@@ -8,7 +6,7 @@ A fast, keyboard-driven TUI **and** CLI for launching local `llama-server` (llam
 
 ## Why
 
-Heavy abstractions (Ollama, LM Studio) hide llama.cpp; raw `llama-server` use is tedious. llamatui is a fast, transparent launcher that is also a first-class shell-tool surface for agents — one binary, daemon on demand, same primitives in the TUI and the CLI.
+Heavy abstractions (Ollama, LM Studio) hide llama.cpp; raw `llama-server` use is tedious. LlamaDash is a fast, transparent launcher that is also a first-class shell-tool surface for agents — one binary, daemon on demand, same primitives in the TUI and the CLI.
 
 ## What it does (v1)
 
@@ -34,29 +32,29 @@ Heavy abstractions (Ollama, LM Studio) hide llama.cpp; raw `llama-server` use is
 > Pre-1.0 binaries are not yet published. Build from source for now.
 
 ```bash
-git clone https://github.com/llamatui/llamatui
-cd llamatui
+git clone https://github.com/llamadash/llamadash
+cd llamadash
 cargo install --path .
 ```
 
-`cargo install llamatui`, a Homebrew tap, and pre-built release binaries land alongside the first tagged release.
+`cargo install llamadash`, a Homebrew tap, and pre-built release binaries land alongside the first tagged release.
 
-You also need `llama-server` on your `PATH` (or pointed at via `--llama-server <path>` / `LLAMATUI_LLAMA_SERVER`).
+You also need `llama-server` on your `PATH` (or pointed at via `--llama-server <path>` / `LLAMADASH_LLAMA_SERVER`).
 
-> **macOS pre-1.0 release tarballs are not yet codesigned.** Until the signing step lands in the release workflow, Gatekeeper will quarantine the unzipped binary. Run `xattr -d com.apple.quarantine ./llamatui` once after download to clear the flag.
+> **macOS pre-1.0 release tarballs are not yet codesigned.** Until the signing step lands in the release workflow, Gatekeeper will quarantine the unzipped binary. Run `xattr -d com.apple.quarantine ./llamadash` once after download to clear the flag.
 
 ## Quickstart
 
 ```bash
 # Open the TUI. Scans default caches; daemon auto-spawns on demand.
-llamatui
+llamadash
 
 # List discovered models (TSV by default, JSON for agents).
-llamatui list
-llamatui list --json | jq
+llamadash list
+llamadash list --json | jq
 
 # Launch a model by name, name substring, path, or canonical id.
-llamatui start qwen-coder --ctx 16384 --reasoning on
+llamadash start qwen-coder --ctx 16384 --reasoning on
 
 # Drive a smoke-test request against the running endpoint.
 curl -s http://127.0.0.1:41100/v1/chat/completions \
@@ -64,7 +62,7 @@ curl -s http://127.0.0.1:41100/v1/chat/completions \
   -d '{"model": "qwen-coder", "messages": [{"role": "user", "content": "hi"}]}'
 
 # Stop it.
-llamatui stop qwen-coder
+llamadash stop qwen-coder
 ```
 
 Full subcommand reference: [`docs/usage.md`](docs/usage.md). Architecture and IPC contract: [`docs/architecture.md`](docs/architecture.md). When things go wrong: [`docs/troubleshooting.md`](docs/troubleshooting.md).
@@ -82,25 +80,25 @@ Every non-interactive subcommand returns a documented exit code so agent scripts
 | `67` | `start_model` failed at the supervisor (probe timeout, port allocation failure) |
 | `68` | `stop_model` / `stop_all` failed |
 | `69` | Reserved for `pull` (lands with R46 in v2) |
-| `70` | `llama-server` binary not found (`--llama-server`, `LLAMATUI_LLAMA_SERVER`, or `$PATH`) |
+| `70` | `llama-server` binary not found (`--llama-server`, `LLAMADASH_LLAMA_SERVER`, or `$PATH`) |
 | `71` | Unexpected error (catch-all) |
 
-> **Note on sysexits.h**: the numbers above are deliberately reused from `<sysexits.h>` for familiarity, but llamatui's *meanings* diverge from the standard ones. Scripts that import `EX_NOHOST` (68) expecting "host unreachable" will get our "stop failed"; `EX_DATAERR` (65) is reused for "daemon unreachable", not "data error". Branch on llamatui's table above, not the libc constants.
+> **Note on sysexits.h**: the numbers above are deliberately reused from `<sysexits.h>` for familiarity, but LlamaDash's *meanings* diverge from the standard ones. Scripts that import `EX_NOHOST` (68) expecting "host unreachable" will get our "stop failed"; `EX_DATAERR` (65) is reused for "daemon unreachable", not "data error". Branch on LlamaDash's table above, not the libc constants.
 
 ## Configuration
 
-llamatui reads `$XDG_CONFIG_HOME/llamatui/config.yaml` (macOS: `~/Library/Application Support/llamatui/config.yaml`). Schema in [`docs/usage.md`](docs/usage.md). Environment variables:
+LlamaDash reads `$XDG_CONFIG_HOME/llamadash/config.yaml` (macOS: `~/Library/Application Support/llamadash/config.yaml`). Schema in [`docs/usage.md`](docs/usage.md). Environment variables:
 
 | Variable | Purpose |
 |---|---|
-| `LLAMATUI_CONFIG` | Override config-file path |
-| `LLAMATUI_LLAMA_SERVER` | Path to `llama-server` |
-| `LLAMATUI_NO_SCAN` | Skip filesystem scanning |
-| `LLAMATUI_SOCKET` | Point a CLI at a non-default daemon socket |
+| `LLAMADASH_CONFIG` | Override config-file path |
+| `LLAMADASH_LLAMA_SERVER` | Path to `llama-server` |
+| `LLAMADASH_NO_SCAN` | Skip filesystem scanning |
+| `LLAMADASH_SOCKET` | Point a CLI at a non-default daemon socket |
 
 ### Default scan paths
 
-When `model_paths` and `--model-path` are empty, llamatui walks these caches automatically. Each bucket is independently toggleable via `disable_default_cache_paths.<bucket>: true` in `config.yaml`, or globally via `--no-scan` / `LLAMATUI_NO_SCAN=1`.
+When `model_paths` and `--model-path` are empty, LlamaDash walks these caches automatically. Each bucket is independently toggleable via `disable_default_cache_paths.<bucket>: true` in `config.yaml`, or globally via `--no-scan` / `LLAMADASH_NO_SCAN=1`.
 
 | Bucket | Linux | macOS |
 |---|---|---|

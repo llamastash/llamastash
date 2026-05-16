@@ -285,7 +285,7 @@ mod tests {
       .expect("clock")
       .as_nanos();
     let dir = std::env::temp_dir().join(format!(
-      "llamatui-scanner-{label}-{}-{nanos}",
+      "llamadash-scanner-{label}-{}-{nanos}",
       std::process::id()
     ));
     fs::create_dir_all(&dir).expect("temp dir");
@@ -318,7 +318,7 @@ mod tests {
 
   #[test]
   fn nonexistent_root_returns_empty_without_panic() {
-    let bogus = PathBuf::from("/nonexistent/scan-root-llamatui");
+    let bogus = PathBuf::from("/nonexistent/scan-root-llamadash");
     assert!(collect_gguf_paths(&bogus, &[]).is_empty());
   }
 

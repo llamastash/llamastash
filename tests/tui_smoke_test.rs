@@ -8,12 +8,12 @@
 use std::path::PathBuf;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-use llamatui::discovery::{DiscoveredModel, ModelSource};
-use llamatui::gguf::metadata::{ModeHint, ModelMetadata, Quant};
-use llamatui::theme::ThemeName;
-use llamatui::tui::app::{App, AppOptions};
-use llamatui::tui::events::pump_input;
-use llamatui::tui::render::render;
+use llamadash::discovery::{DiscoveredModel, ModelSource};
+use llamadash::gguf::metadata::{ModeHint, ModelMetadata, Quant};
+use llamadash::theme::ThemeName;
+use llamadash::tui::app::{App, AppOptions};
+use llamadash::tui::events::pump_input;
+use llamadash::tui::render::render;
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 
@@ -62,7 +62,7 @@ fn render_to_string(app: &mut App, width: u16, height: u16) -> String {
 fn empty_app_renders_banner_help_and_empty_state() {
   let mut app = App::new(AppOptions::default());
   let frame = render_to_string(&mut app, 100, 20);
-  assert!(frame.contains("llamatui"), "banner missing: {frame}");
+  assert!(frame.contains("llamadash"), "banner missing: {frame}");
   assert!(
     frame.contains("daemon: connecting"),
     "connection pill missing: {frame}"
@@ -161,12 +161,12 @@ fn theme_cycle_swaps_palette_without_restart() {
   assert_ne!(app.options.theme, ThemeName::Macchiato);
   // Render still produces a coherent frame with the new theme.
   let frame = render_to_string(&mut app, 80, 12);
-  assert!(frame.contains("llamatui"));
+  assert!(frame.contains("llamadash"));
 }
 
 #[test]
 fn right_pane_starts_on_logs_tab_for_unlaunched_model() {
-  use llamatui::tui::RightTab;
+  use llamadash::tui::RightTab;
   let mut app = App::new(AppOptions::default());
   app.models = vec![fake_model("/m/qwen.gguf", "/m")];
   app.go_top();
@@ -180,9 +180,9 @@ fn right_pane_starts_on_logs_tab_for_unlaunched_model() {
 
 #[test]
 fn ready_chat_model_exposes_chat_tab_via_cycle() {
-  use llamatui::tui::app::ManagedRow;
-  use llamatui::tui::status_icons::SurfaceState;
-  use llamatui::tui::RightTab;
+  use llamadash::tui::app::ManagedRow;
+  use llamadash::tui::status_icons::SurfaceState;
+  use llamadash::tui::RightTab;
   let mut app = App::new(AppOptions::default());
   app.models = vec![fake_model("/m/qwen.gguf", "/m")];
   app.managed = vec![ManagedRow {
@@ -206,7 +206,7 @@ fn ready_chat_model_exposes_chat_tab_via_cycle() {
 
 #[test]
 fn external_row_surfaces_via_ingest_status_external_array() {
-  use llamatui::tui::status_icons::SurfaceState;
+  use llamadash::tui::status_icons::SurfaceState;
   use serde_json::json;
   let mut app = App::new(AppOptions::default());
   app.ingest_status(&json!({
@@ -263,8 +263,8 @@ fn launch_picker_seeds_from_persisted_last_params() {
 
 #[test]
 fn picker_warns_when_focused_model_already_has_active_instance() {
-  use llamatui::tui::app::ManagedRow;
-  use llamatui::tui::status_icons::SurfaceState;
+  use llamadash::tui::app::ManagedRow;
+  use llamadash::tui::status_icons::SurfaceState;
   let mut app = App::new(AppOptions::default());
   app.models = vec![fake_model("/m/qwen.gguf", "/m")];
   app.managed = vec![ManagedRow {
@@ -303,9 +303,9 @@ fn list_pane_renders_est_mem_badge() {
 
 #[test]
 fn typing_into_chat_input_extends_prompt_buffer() {
-  use llamatui::tui::app::ManagedRow;
-  use llamatui::tui::keybindings::Focus;
-  use llamatui::tui::status_icons::SurfaceState;
+  use llamadash::tui::app::ManagedRow;
+  use llamadash::tui::keybindings::Focus;
+  use llamadash::tui::status_icons::SurfaceState;
   let mut app = App::new(AppOptions::default());
   app.models = vec![fake_model("/m/qwen.gguf", "/m")];
   app.managed = vec![ManagedRow {
@@ -328,7 +328,7 @@ fn typing_into_chat_input_extends_prompt_buffer() {
 
 #[test]
 fn ctrl_r_in_chat_input_toggles_think_collapse() {
-  use llamatui::tui::keybindings::Focus;
+  use llamadash::tui::keybindings::Focus;
   let mut app = App::new(AppOptions::default());
   app.focus = Focus::ChatInput;
   assert!(!app.chat.collapse_thinks);
@@ -340,7 +340,7 @@ fn ctrl_r_in_chat_input_toggles_think_collapse() {
 
 #[test]
 fn s_in_right_pane_toggles_logs_auto_scroll() {
-  use llamatui::tui::keybindings::Focus;
+  use llamadash::tui::keybindings::Focus;
   let mut app = App::new(AppOptions::default());
   app.focus = Focus::RightPane;
   assert!(app.logs_state.auto_scroll);
@@ -350,8 +350,8 @@ fn s_in_right_pane_toggles_logs_auto_scroll() {
 
 #[test]
 fn rerank_tab_input_stages_candidates_via_tab() {
-  use llamatui::tui::keybindings::Focus;
-  use llamatui::tui::tabs::rerank::RerankField;
+  use llamadash::tui::keybindings::Focus;
+  use llamadash::tui::tabs::rerank::RerankField;
   let mut app = App::new(AppOptions::default());
   app.focus = Focus::RerankInput;
   // Type a query then Tab to candidate field.
@@ -377,7 +377,7 @@ fn narrow_terminal_does_not_crash_render() {
   let mut app = App::new(AppOptions::default());
   app.models = vec![fake_model("/m/very-long-model-name-2.5b-Q4_K_M.gguf", "/m")];
   let frame = render_to_string(&mut app, 60, 12);
-  assert!(frame.contains("llamatui"));
+  assert!(frame.contains("llamadash"));
 }
 
 #[test]

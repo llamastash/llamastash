@@ -1,6 +1,6 @@
 //! Synthetic GGUF byte-builder used by both inline unit tests in this crate
 //! and the integration tests under `tests/`. Marked `#[doc(hidden)]` because
-//! the surface is testing-only — it isn't part of llamatui's public API.
+//! the surface is testing-only — it isn't part of llamadash's public API.
 //!
 //! The builder emits a structurally valid GGUF v3 prefix (magic, version,
 //! counts, KV list, tensor info). It does **not** emit tensor data — Unit 3

@@ -4,7 +4,7 @@
 //! Linux follows XDG; macOS follows the Apple convention (everything under
 //! `~/Library/...`). `state_dir` falls back to `data_dir` on macOS because
 //! the `directories` crate only exposes a distinct state directory on Linux.
-//! The runtime socket falls back to `$TMPDIR/llamatui-$USER/daemon.sock`
+//! The runtime socket falls back to `$TMPDIR/llamadash-$USER/daemon.sock`
 //! when no `runtime_dir` is available.
 
 use std::{
@@ -16,7 +16,7 @@ use directories::{BaseDirs, ProjectDirs};
 
 const QUALIFIER: &str = "";
 const ORGANIZATION: &str = "";
-const APPLICATION: &str = "llamatui";
+const APPLICATION: &str = "llamadash";
 
 pub fn project_dirs() -> Option<ProjectDirs> {
   ProjectDirs::from(QUALIFIER, ORGANIZATION, APPLICATION)
@@ -65,13 +65,13 @@ pub fn log_dir() -> Option<PathBuf> {
 /// Resolve the Unix-socket path for the daemon.
 ///
 /// Always returns a path. Resolution order:
-/// 1. `LLAMATUI_SOCKET` env var (verbatim) — used by tests and by
+/// 1. `LLAMADASH_SOCKET` env var (verbatim) — used by tests and by
 ///    operators who want to point a CLI at a non-default daemon
 ///    without the `--socket-path` hidden flag dance.
-/// 2. `XDG_RUNTIME_DIR/llamatui/daemon.sock` (Linux).
-/// 3. `$TMPDIR/llamatui-$USER/daemon.sock` (macOS / no runtime dir).
+/// 2. `XDG_RUNTIME_DIR/llamadash/daemon.sock` (Linux).
+/// 3. `$TMPDIR/llamadash-$USER/daemon.sock` (macOS / no runtime dir).
 pub fn runtime_socket_path() -> PathBuf {
-  if let Some(raw) = std::env::var_os("LLAMATUI_SOCKET") {
+  if let Some(raw) = std::env::var_os("LLAMADASH_SOCKET") {
     let p = PathBuf::from(raw);
     if !p.as_os_str().is_empty() {
       return p;
@@ -116,7 +116,7 @@ fn fallback_runtime_dir_from(tmpdir: Option<OsString>, user: &str) -> PathBuf {
   let tmp = tmpdir
     .map(PathBuf::from)
     .unwrap_or_else(|| PathBuf::from("/tmp"));
-  tmp.join(format!("llamatui-{user}"))
+  tmp.join(format!("llamadash-{user}"))
 }
 
 /// Convenience: return the canonical user config-file path.
@@ -147,7 +147,7 @@ mod tests {
       return rt.join("daemon.sock");
     }
     fallback_tmp
-      .join(format!("llamatui-{user}"))
+      .join(format!("llamadash-{user}"))
       .join("daemon.sock")
   }
 
@@ -175,13 +175,13 @@ mod tests {
   }
 
   #[test]
-  fn all_dir_helpers_contain_llamatui_segment() {
+  fn all_dir_helpers_contain_llamadash_segment() {
     // Stronger than `is_some()`: every resolved path must live under
-    // a `llamatui/` directory regardless of platform. Catches a
+    // a `llamadash/` directory regardless of platform. Catches a
     // regression where the `directories` crate dependency or our
     // `APPLICATION` constant changes and silently re-roots the
     // daemon's files outside of its namespace.
-    let llamatui = std::ffi::OsStr::new("llamatui");
+    let llamadash = std::ffi::OsStr::new("llamadash");
     for path in [
       state_dir().unwrap(),
       config_dir().unwrap(),
@@ -189,8 +189,8 @@ mod tests {
       log_dir().unwrap(),
     ] {
       assert!(
-        path.components().any(|c| c.as_os_str() == llamatui),
-        "{} does not contain a `llamatui` segment",
+        path.components().any(|c| c.as_os_str() == llamadash),
+        "{} does not contain a `llamadash` segment",
         path.display()
       );
     }
@@ -200,13 +200,13 @@ mod tests {
   #[test]
   fn linux_state_dir_uses_xdg_or_home_dot_local() {
     // On Linux the resolved state_dir must live under either
-    // `$XDG_STATE_HOME/llamatui` or the conventional fallback
-    // `~/.local/state/llamatui`. We assert by string-contains on the
+    // `$XDG_STATE_HOME/llamadash` or the conventional fallback
+    // `~/.local/state/llamadash`. We assert by string-contains on the
     // canonical segment, not by re-setting env vars (which would
     // race with parallel tests).
     let path = state_dir().unwrap().display().to_string();
     assert!(
-      path.contains(".local/state/llamatui") || path.contains("/llamatui"),
+      path.contains(".local/state/llamadash") || path.contains("/llamadash"),
       "unexpected state_dir on linux: {path}"
     );
   }
@@ -215,10 +215,10 @@ mod tests {
   #[test]
   fn macos_state_dir_lives_under_library_application_support() {
     // The `directories` crate maps state_dir to data_dir on macOS;
-    // both live under `~/Library/Application Support/llamatui`.
+    // both live under `~/Library/Application Support/llamadash`.
     let path = state_dir().unwrap().display().to_string();
     assert!(
-      path.contains("Library/Application Support/llamatui"),
+      path.contains("Library/Application Support/llamadash"),
       "unexpected state_dir on macOS: {path}"
     );
   }
@@ -260,27 +260,27 @@ mod tests {
 
   #[test]
   fn build_socket_path_uses_runtime_dir_when_present() {
-    let rt = PathBuf::from("/run/user/1000/llamatui");
+    let rt = PathBuf::from("/run/user/1000/llamadash");
     let path = build_socket_path(Some(&rt), Path::new("/tmp"), "ignored");
-    assert_eq!(path, PathBuf::from("/run/user/1000/llamatui/daemon.sock"));
+    assert_eq!(path, PathBuf::from("/run/user/1000/llamadash/daemon.sock"));
   }
 
   #[test]
   fn build_socket_path_falls_back_to_tmp_dir_with_username() {
     let path = build_socket_path(None, Path::new("/tmp"), "alice");
-    assert_eq!(path, PathBuf::from("/tmp/llamatui-alice/daemon.sock"));
+    assert_eq!(path, PathBuf::from("/tmp/llamadash-alice/daemon.sock"));
   }
 
   #[test]
   fn fallback_runtime_dir_uses_provided_tmp_and_username() {
     let path = fallback_runtime_dir_from(Some(OsString::from("/var/tmp")), "bob");
-    assert_eq!(path, PathBuf::from("/var/tmp/llamatui-bob"));
+    assert_eq!(path, PathBuf::from("/var/tmp/llamadash-bob"));
   }
 
   #[test]
   fn fallback_runtime_dir_defaults_to_slash_tmp() {
     let path = fallback_runtime_dir_from(None, "default");
-    assert_eq!(path, PathBuf::from("/tmp/llamatui-default"));
+    assert_eq!(path, PathBuf::from("/tmp/llamadash-default"));
   }
 
   #[test]

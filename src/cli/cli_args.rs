@@ -14,18 +14,18 @@ use crate::banner::BANNER;
 
 #[derive(Parser, Debug)]
 #[command(
-  name = "llamatui",
+  name = "llamadash",
   version,
   about = "Fast keyboard-driven TUI + CLI for local llama.cpp models",
   long_about = None,
   before_help = BANNER,
 )]
 pub struct Cli {
-  /// Path to a YAML config file (overrides `LLAMATUI_CONFIG`).
+  /// Path to a YAML config file (overrides `LLAMADASH_CONFIG`).
   #[arg(long, value_name = "PATH", global = true)]
   pub config: Option<PathBuf>,
 
-  /// Path to the `llama-server` binary (overrides `LLAMATUI_LLAMA_SERVER`).
+  /// Path to the `llama-server` binary (overrides `LLAMADASH_LLAMA_SERVER`).
   #[arg(long, value_name = "PATH", global = true)]
   pub llama_server: Option<PathBuf>,
 
@@ -279,7 +279,7 @@ pub enum PullAction {
     /// `HuggingFace` repo id, optionally with `:filename.gguf` to pin a single file.
     repo: String,
     /// Fire-and-forget mode: return immediately. The pull job id is emitted to stdout
-    /// (JSON when `--json` is set) so the caller can poll `llamatui pull status <id>`.
+    /// (JSON when `--json` is set) so the caller can poll `llamadash pull status <id>`.
     #[arg(long)]
     background: bool,
     /// Emit structured JSON output (job id + progress) instead of a human-readable stream.
@@ -353,7 +353,7 @@ mod tests {
   use super::*;
 
   fn parse(args: &[&str]) -> Cli {
-    Cli::try_parse_from(std::iter::once("llamatui").chain(args.iter().copied()))
+    Cli::try_parse_from(std::iter::once("llamadash").chain(args.iter().copied()))
       .expect("argv should parse")
   }
 
@@ -408,9 +408,9 @@ mod tests {
       "daemon",
       "start",
       "--state-dir",
-      "/tmp/llamatui-test-state",
+      "/tmp/llamadash-test-state",
       "--socket-path",
-      "/tmp/llamatui-test-state/daemon.sock",
+      "/tmp/llamadash-test-state/daemon.sock",
     ]);
     match cli_with_paths.command {
       Some(Command::Daemon(DaemonAction::Start {
@@ -419,10 +419,10 @@ mod tests {
         socket_path,
       })) => {
         assert!(!detach);
-        assert_eq!(state_dir, Some(PathBuf::from("/tmp/llamatui-test-state")));
+        assert_eq!(state_dir, Some(PathBuf::from("/tmp/llamadash-test-state")));
         assert_eq!(
           socket_path,
-          Some(PathBuf::from("/tmp/llamatui-test-state/daemon.sock"))
+          Some(PathBuf::from("/tmp/llamadash-test-state/daemon.sock"))
         );
       }
       other => panic!("expected daemon start with paths, got {other:?}"),
@@ -443,7 +443,7 @@ mod tests {
 
   #[test]
   fn daemon_without_action_is_an_error() {
-    let result = Cli::try_parse_from(["llamatui", "daemon"]);
+    let result = Cli::try_parse_from(["llamadash", "daemon"]);
     assert!(result.is_err(), "daemon subcommand requires an action");
   }
 
@@ -485,27 +485,27 @@ mod tests {
 
   #[test]
   fn stop_all_conflicts_with_target() {
-    let result = Cli::try_parse_from(["llamatui", "stop", "42", "--all"]);
+    let result = Cli::try_parse_from(["llamadash", "stop", "42", "--all"]);
     assert!(result.is_err());
   }
 
   #[test]
   fn stop_requires_target_or_all() {
-    // `llamatui stop` with neither a positional target nor --all must error
+    // `llamadash stop` with neither a positional target nor --all must error
     // at parse time. Without the ArgGroup, clap would accept this silently
     // and the handler would have no idea what to stop.
-    let no_args = Cli::try_parse_from(["llamatui", "stop"]);
+    let no_args = Cli::try_parse_from(["llamadash", "stop"]);
     assert!(no_args.is_err(), "stop without target or --all must error");
 
-    let just_yes = Cli::try_parse_from(["llamatui", "stop", "--yes"]);
+    let just_yes = Cli::try_parse_from(["llamadash", "stop", "--yes"]);
     assert!(
       just_yes.is_err(),
       "stop --yes without target or --all must error"
     );
 
     // Either of the valid forms succeeds.
-    assert!(Cli::try_parse_from(["llamatui", "stop", "42"]).is_ok());
-    assert!(Cli::try_parse_from(["llamatui", "stop", "--all"]).is_ok());
+    assert!(Cli::try_parse_from(["llamadash", "stop", "42"]).is_ok());
+    assert!(Cli::try_parse_from(["llamadash", "stop", "--all"]).is_ok());
   }
 
   #[test]
@@ -764,13 +764,13 @@ mod tests {
 
   #[test]
   fn unknown_reasoning_value_errors() {
-    let result = Cli::try_parse_from(["llamatui", "start", "x", "--reasoning", "maybe"]);
+    let result = Cli::try_parse_from(["llamadash", "start", "x", "--reasoning", "maybe"]);
     assert!(result.is_err());
   }
 
   #[test]
   fn version_flag_works() {
-    let result = Cli::try_parse_from(["llamatui", "--version"]);
+    let result = Cli::try_parse_from(["llamadash", "--version"]);
     // clap returns an "error" with exit kind DisplayVersion for --version.
     let err = result.unwrap_err();
     assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
@@ -780,7 +780,7 @@ mod tests {
 
   #[test]
   fn help_flag_lists_every_user_facing_subcommand() {
-    let result = Cli::try_parse_from(["llamatui", "--help"]);
+    let result = Cli::try_parse_from(["llamadash", "--help"]);
     let err = result.unwrap_err();
     assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
     let rendered = err.to_string();
@@ -808,7 +808,7 @@ mod tests {
 
   #[test]
   fn pull_subcommand_is_hidden_from_help_pending_r46() {
-    let result = Cli::try_parse_from(["llamatui", "--help"]);
+    let result = Cli::try_parse_from(["llamadash", "--help"]);
     let err = result.unwrap_err();
     let rendered = err.to_string();
     // Top-level help omits hidden subcommands. Be precise about what we

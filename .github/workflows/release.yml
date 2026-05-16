@@ -44,20 +44,20 @@ jobs:
       - name: cargo build --release
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-        run: cargo build --release --target ${{ matrix.target }} --bin llamatui
+        run: cargo build --release --target ${{ matrix.target }} --bin llamadash
       - name: package
         shell: bash
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
-          stage="llamatui-${version}-${{ matrix.target }}"
+          stage="llamadash-${version}-${{ matrix.target }}"
           mkdir -p "dist/${stage}"
-          cp "target/${{ matrix.target }}/release/llamatui" "dist/${stage}/"
+          cp "target/${{ matrix.target }}/release/llamadash" "dist/${stage}/"
           cp LICENSE README.md "dist/${stage}/"
           (cd dist && tar -czf "${stage}.tar.gz" "${stage}" && shasum -a 256 "${stage}.tar.gz" > "${stage}.tar.gz.sha256")
       - uses: actions/upload-artifact@v4
         with:
-          name: llamatui-${{ matrix.target }}
+          name: llamadash-${{ matrix.target }}
           path: |
             dist/*.tar.gz
             dist/*.tar.gz.sha256

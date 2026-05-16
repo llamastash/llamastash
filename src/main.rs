@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use llamatui::{
+use llamadash::{
   cli::{self, Cli},
   config::loader,
   util::logging,

@@ -16,20 +16,20 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use llamatui::cli::cli_args::{
+use llamadash::cli::cli_args::{
   Cli, Command, FavoritesAction, FavoritesArgs, LaunchMode as CliLaunchMode, ListArgs, LogsArgs,
   PresetsAction, PresetsArgs, PullAction, PullArgs, ReasoningFlag, StartArgs, StatusArgs, StopArgs,
 };
-use llamatui::cli::{dispatch, exit_codes};
-use llamatui::config::loader::{LoadedConfig, PortRange};
-use llamatui::config::Config;
-use llamatui::daemon::discovery_task::DiscoveryOptions;
-use llamatui::daemon::state_store;
-use llamatui::daemon::{run_foreground, DaemonOptions};
-use llamatui::discovery::scanner::ScanRoot;
-use llamatui::discovery::ModelSource;
-use llamatui::gguf::test_fixtures::build_minimal_gguf;
-use llamatui::ipc::Client;
+use llamadash::cli::{dispatch, exit_codes};
+use llamadash::config::loader::{LoadedConfig, PortRange};
+use llamadash::config::Config;
+use llamadash::daemon::discovery_task::DiscoveryOptions;
+use llamadash::daemon::state_store;
+use llamadash::daemon::{run_foreground, DaemonOptions};
+use llamadash::discovery::scanner::ScanRoot;
+use llamadash::discovery::ModelSource;
+use llamadash::gguf::test_fixtures::build_minimal_gguf;
+use llamadash::ipc::Client;
 use tokio::task::JoinHandle;
 
 fn fake_binary() -> PathBuf {
@@ -42,7 +42,7 @@ fn unique_temp(label: &str) -> PathBuf {
     .expect("clock")
     .as_nanos();
   let p = std::env::temp_dir().join(format!(
-    "llamatui-cli-{label}-{}-{nanos}",
+    "llamadash-cli-{label}-{}-{nanos}",
     std::process::id()
   ));
   std::fs::create_dir_all(&p).expect("temp");
@@ -91,7 +91,7 @@ fn allocate_port_range_pair() -> PortRange {
 }
 
 struct DaemonHandle {
-  join: JoinHandle<anyhow::Result<llamatui::daemon::StartOutcome>>,
+  join: JoinHandle<anyhow::Result<llamadash::daemon::StartOutcome>>,
   socket: PathBuf,
   state: PathBuf,
   model_dir: PathBuf,
@@ -183,7 +183,7 @@ fn build_cli(model_dir: &Path, command: Command) -> (Cli, LoadedConfig) {
   (cli, config)
 }
 
-/// Serialises `LLAMATUI_SOCKET` env-var swap so two parallel tests
+/// Serialises `LLAMADASH_SOCKET` env-var swap so two parallel tests
 /// don't read each other's daemon. Held across an `.await` so we use
 /// tokio's async-aware `Mutex` (the std `Mutex` would block worker
 /// threads while a dispatch is in flight).
@@ -192,15 +192,15 @@ static SOCKET_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new((
 async fn run_dispatch_at(socket: Option<&Path>, model_dir: &Path, command: Command) -> i32 {
   let (cli, cfg) = build_cli(model_dir, command);
   let _guard = SOCKET_ENV_LOCK.lock().await;
-  let prev = std::env::var_os("LLAMATUI_SOCKET");
+  let prev = std::env::var_os("LLAMADASH_SOCKET");
   match socket {
-    Some(s) => std::env::set_var("LLAMATUI_SOCKET", s),
-    None => std::env::remove_var("LLAMATUI_SOCKET"),
+    Some(s) => std::env::set_var("LLAMADASH_SOCKET", s),
+    None => std::env::remove_var("LLAMADASH_SOCKET"),
   }
   let code = dispatch(cli, cfg).await.expect("dispatch");
   match prev {
-    Some(v) => std::env::set_var("LLAMATUI_SOCKET", v),
-    None => std::env::remove_var("LLAMATUI_SOCKET"),
+    Some(v) => std::env::set_var("LLAMADASH_SOCKET", v),
+    None => std::env::remove_var("LLAMADASH_SOCKET"),
   }
   code
 }

@@ -85,9 +85,9 @@ async fn handle_stop() -> Result<()> {
 /// `--state-dir` / `--socket-path` flags take precedence; unset fields
 /// fall back to the platform-default XDG paths. Centralised so the
 /// re-exec'd child of `start_detached` honours the same priority order
-/// as a hand-typed `llamatui daemon start --state-dir ...` invocation.
+/// as a hand-typed `llamadash daemon start --state-dir ...` invocation.
 ///
-/// Discovery roots are resolved here so a real `llamatui daemon start`
+/// Discovery roots are resolved here so a real `llamadash daemon start`
 /// (not just tests) populates the catalog: global `--model-path` /
 /// `--no-scan` / `--config` plus `config.model_paths` /
 /// `config.disable_default_cache_paths` / `config.disable_scan` feed
@@ -115,7 +115,7 @@ pub(crate) fn build_options(
   // sees *why* a later launch fails.
   opts.binary = match locate_binary(LocateInputs {
     cli_flag: cli.llama_server.clone(),
-    env_var: std::env::var_os("LLAMATUI_LLAMA_SERVER"),
+    env_var: std::env::var_os("LLAMADASH_LLAMA_SERVER"),
     config_path: config.llama_server_path.clone(),
   }) {
     Ok(p) => Some(p),
@@ -183,7 +183,7 @@ mod tests {
   use crate::discovery::ModelSource;
 
   fn parse_cli(args: &[&str]) -> Cli {
-    Cli::try_parse_from(std::iter::once("llamatui").chain(args.iter().copied())).expect("parse")
+    Cli::try_parse_from(std::iter::once("llamadash").chain(args.iter().copied())).expect("parse")
   }
 
   #[test]

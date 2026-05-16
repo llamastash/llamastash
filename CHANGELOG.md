@@ -1,11 +1,11 @@
 # Changelog
 
-All notable changes to llamatui will be documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project intends to follow [SemVer](https://semver.org/spec/v2.0.0.html) starting with the first stable release.
+All notable changes to llamadash will be documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project intends to follow [SemVer](https://semver.org/spec/v2.0.0.html) starting with the first stable release.
 
 ## [Unreleased]
 
 ### Added
-- Daemon-on-demand architecture: single `llamatui` binary that acts as TUI, CLI, **and** daemon depending on the subcommand. Daemon owns `llama-server` children and persisted state; clients attach over a `0600` Unix socket authenticated via peer credentials.
+- Daemon-on-demand architecture: single `llamadash` binary that acts as TUI, CLI, **and** daemon depending on the subcommand. Daemon owns `llama-server` children and persisted state; clients attach over a `0600` Unix socket authenticated via peer credentials.
 - GGUF header parser with model identity = `(canonical path, BLAKE3 of header)`; KV-cache-aware memory estimator.
 - Asynchronous filesystem scanner that surfaces HuggingFace, Ollama, and LM Studio caches plus user-configured roots; depth-limited HF watcher; per-file `(path, mtime, size)` metadata cache.
 - Process supervisor: `Launching → Loading → Ready / Error → Stopping → Stopped` state machine; port allocator; `/health` probe; per-model log file plus 4K-line ring buffer; SIGTERM→SIGKILL stop semantics; orphan re-adoption with three-factor (PID alive + port listening + `/v1/models` path match) confirmation.

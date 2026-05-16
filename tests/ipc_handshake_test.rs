@@ -10,8 +10,8 @@ use std::{
   time::Duration,
 };
 
-use llamatui::daemon::{run_foreground, DaemonOptions, StartOutcome};
-use llamatui::ipc::Client;
+use llamadash::daemon::{run_foreground, DaemonOptions, StartOutcome};
+use llamadash::ipc::Client;
 use serde_json::json;
 use tokio::time::timeout;
 
@@ -21,7 +21,7 @@ fn unique_temp_dir(label: &str) -> PathBuf {
     .expect("clock")
     .as_nanos();
   let dir = std::env::temp_dir().join(format!(
-    "llamatui-ipc-{label}-{}-{suffix}",
+    "llamadash-ipc-{label}-{}-{suffix}",
     std::process::id()
   ));
   std::fs::create_dir_all(&dir).expect("temp dir creation");
@@ -94,7 +94,7 @@ async fn version_reports_pid_uptime_and_connections() {
 
   let mut client = Client::connect(&socket).await.expect("connect");
   let v = client.call("version", None).await.expect("version");
-  assert_eq!(v["name"], json!("llamatui"));
+  assert_eq!(v["name"], json!("llamadash"));
   assert_eq!(v["pid"], json!(std::process::id()));
   assert!(v["uptime_seconds"].is_number());
   // We have one live connection (ours) at the time the daemon returns.

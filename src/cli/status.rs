@@ -1,4 +1,4 @@
-//! `llamatui status` — managed launches + GPU snapshot.
+//! `llamadash status` — managed launches + GPU snapshot.
 //!
 //! Optional `<target>` filters to a single launch (matched as port
 //! number or `LaunchId`). `--json` mirrors the daemon's `status` wire

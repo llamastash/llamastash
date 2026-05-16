@@ -1,53 +1,53 @@
 # Troubleshooting
 
-Quick reference for the common ways llamatui can refuse to do what you want, with concrete remediation steps.
+Quick reference for the common ways LlamaDash can refuse to do what you want, with concrete remediation steps.
 
 ## `llama-server` not on `PATH`
 
-**Symptom:** `llamatui start <ref>` exits `70` (`BINARY_NOT_FOUND`); the message names both the `--llama-server` flag and the `LLAMATUI_LLAMA_SERVER` env var.
+**Symptom:** `llamadash start <ref>` exits `70` (`BINARY_NOT_FOUND`); the message names both the `--llama-server` flag and the `LLAMADASH_LLAMA_SERVER` env var.
 
-**Fix:** install llama.cpp's server build, then either put it on your `PATH`, set `LLAMATUI_LLAMA_SERVER=/abs/path/to/llama-server`, or pass `--llama-server /abs/path/to/llama-server`. If `which llama-server` returns multiple hits (e.g. `llama-server-cuda` + `llama-server`), llamatui logs them and uses the first; pin a specific one via flag/env to avoid the surprise.
+**Fix:** install llama.cpp's server build, then either put it on your `PATH`, set `LLAMADASH_LLAMA_SERVER=/abs/path/to/llama-server`, or pass `--llama-server /abs/path/to/llama-server`. If `which llama-server` returns multiple hits (e.g. `llama-server-cuda` + `llama-server`), LlamaDash logs them and uses the first; pin a specific one via flag/env to avoid the surprise.
 
 ## GPU not detected
 
-**Symptom:** `llamatui status --json | jq .gpu` returns `"CpuOnly"` even though you have a GPU. Memory estimates show only RAM, not VRAM.
+**Symptom:** `llamadash status --json | jq .gpu` returns `"CpuOnly"` even though you have a GPU. Memory estimates show only RAM, not VRAM.
 
 **Fixes per backend:**
 
-- **NVIDIA:** confirm `nvidia-smi` works. llamatui uses `nvml-wrapper`; if NVML isn't installed (driver-only install), the daemon falls back to CPU-only. Install the NVML library that ships with your CUDA toolkit.
-- **AMD:** llamatui shells out to `rocm-smi --showmeminfo vram --json`. Make sure `rocm-smi` is on `PATH` and that ROCm is initialised.
-- **Apple Silicon:** llamatui parses `system_profiler SPDisplaysDataType -json`. If this is empty, the macOS install is unusual — try the command manually and file an issue with the output.
-- **Intel macOS:** there is no Metal support to detect; llamatui falls back to CPU-only and that's correct.
+- **NVIDIA:** confirm `nvidia-smi` works. LlamaDash uses `nvml-wrapper`; if NVML isn't installed (driver-only install), the daemon falls back to CPU-only. Install the NVML library that ships with your CUDA toolkit.
+- **AMD:** LlamaDash shells out to `rocm-smi --showmeminfo vram --json`. Make sure `rocm-smi` is on `PATH` and that ROCm is initialised.
+- **Apple Silicon:** LlamaDash parses `system_profiler SPDisplaysDataType -json`. If this is empty, the macOS install is unusual — try the command manually and file an issue with the output.
+- **Intel macOS:** there is no Metal support to detect; LlamaDash falls back to CPU-only and that's correct.
 
 ## Daemon socket already exists (stale)
 
-**Symptom:** `llamatui daemon start` complains about an existing socket, or `llamatui list` exits `65` because the socket file is there but no listener is.
+**Symptom:** `llamadash daemon start` complains about an existing socket, or `llamadash list` exits `65` because the socket file is there but no listener is.
 
-**Fix:** llamatui auto-detects stale sockets on `daemon start` and unlinks them. If you hit this anyway, remove the socket manually:
+**Fix:** LlamaDash auto-detects stale sockets on `daemon start` and unlinks them. If you hit this anyway, remove the socket manually:
 
 ```bash
-ls -l "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/llamatui/daemon.sock"
-rm -- "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/llamatui/daemon.sock"
-llamatui daemon start
+ls -l "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/llamadash/daemon.sock"
+rm -- "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/llamadash/daemon.sock"
+llamadash daemon start
 ```
 
-On macOS the socket lives under `$TMPDIR/llamatui-$UID/daemon.sock`.
+On macOS the socket lives under `$TMPDIR/llamadash-$UID/daemon.sock`.
 
 ## Stale PID lockfile after a crash
 
-**Symptom:** `llamatui daemon start` reports `AlreadyRunning(pid)` but `ps -p <pid>` shows nothing.
+**Symptom:** `llamadash daemon start` reports `AlreadyRunning(pid)` but `ps -p <pid>` shows nothing.
 
-**Fix:** llamatui validates the lockfile against `kill -0 pid` and clears stale entries. If it's still wedged, delete it:
+**Fix:** llamadash validates the lockfile against `kill -0 pid` and clears stale entries. If it's still wedged, delete it:
 
 ```bash
-rm -- "$XDG_STATE_HOME/llamatui/daemon.pid"
+rm -- "$XDG_STATE_HOME/llamadash/daemon.pid"
 ```
 
-The state directory defaults to `~/.local/state/llamatui/` on Linux and `~/Library/Application Support/llamatui/` on macOS.
+The state directory defaults to `~/.local/state/llamadash/` on Linux and `~/Library/Application Support/llamadash/` on macOS.
 
 ## Port range exhausted
 
-**Symptom:** `llamatui start ...` exits `67` with `port allocation failed: NoFreePort`.
+**Symptom:** `llamadash start ...` exits `67` with `port allocation failed: NoFreePort`.
 
 **Fix:** widen the range in your config or pin a specific port:
 
@@ -58,14 +58,14 @@ port_range:
 ```
 
 ```bash
-llamatui start <ref> --port 41250
+llamadash start <ref> --port 41250
 ```
 
 ## Wayland clipboard yank does nothing
 
 **Symptom:** `y` / `Y` / `p` in the TUI flashes a toast but the system clipboard stays empty (Wayland sessions are the usual culprit).
 
-**Fix:** llamatui uses `arboard` first, then falls back to `wl-copy`, `xclip`, and `xsel` (in that order). Install at least one fallback:
+**Fix:** LlamaDash uses `arboard` first, then falls back to `wl-copy`, `xclip`, and `xsel` (in that order). Install at least one fallback:
 
 ```bash
 # Wayland
@@ -78,9 +78,9 @@ The toast prints the URL inline when every backend fails, so you can still paste
 
 ## Daemon disconnect during `logs --follow`
 
-**Symptom:** `llamatui logs <id> -f` exits `65` mid-stream.
+**Symptom:** `LlamaDash logs <id> -f` exits `65` mid-stream.
 
-**Fix:** the daemon was shut down or crashed. Restart it with `llamatui daemon start`. Running children survive daemon exit; you can re-attach to the same launch id once the daemon is back (orphan re-adoption verifies PID + port + `/v1/models` match).
+**Fix:** the daemon was shut down or crashed. Restart it with `llamadash daemon start`. Running children survive daemon exit; you can re-attach to the same launch id once the daemon is back (orphan re-adoption verifies PID + port + `/v1/models` match).
 
 ## "model already running" surprise
 
@@ -92,8 +92,8 @@ The toast prints the URL inline when every backend fails, so you can still paste
 
 **Symptom:** daemon refuses to start; log says state-store parse failed.
 
-**Fix:** llamatui quarantines a corrupt `state.json` as `state.json.broken-<ts>` and starts with defaults. You'll lose favorites, presets, last-params, and the running snapshot for this restart — but the daemon will come up. If you have a recent backup of `state.json`, restore it and try again.
+**Fix:** llamadash quarantines a corrupt `state.json` as `state.json.broken-<ts>` and starts with defaults. You'll lose favorites, presets, last-params, and the running snapshot for this restart — but the daemon will come up. If you have a recent backup of `state.json`, restore it and try again.
 
 ## HuggingFace pull does nothing
 
-**This is intentional.** The in-app HF pull worker is deferred to v2 (R46). The `pull` subcommand is hidden from `--help` and exits unimplemented. Use `huggingface-cli download ...` for now; llamatui discovers the downloaded files via its cache scanner.
+**This is intentional.** The in-app HF pull worker is deferred to v2 (R46). The `pull` subcommand is hidden from `--help` and exits unimplemented. Use `huggingface-cli download ...` for now; llamadash discovers the downloaded files via its cache scanner.

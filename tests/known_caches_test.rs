@@ -3,9 +3,9 @@
 
 use std::path::PathBuf;
 
-use llamatui::config::CachePathsConfig;
-use llamatui::discovery::known_caches::{default_set, RootResolution};
-use llamatui::discovery::ModelSource;
+use llamadash::config::CachePathsConfig;
+use llamadash::discovery::known_caches::{default_set, RootResolution};
+use llamadash::discovery::ModelSource;
 
 fn all_enabled() -> CachePathsConfig {
   CachePathsConfig {
@@ -33,7 +33,7 @@ fn default_resolution_covers_all_three_known_caches() {
 
 #[test]
 fn no_scan_suppresses_default_caches_but_keeps_user_paths() {
-  // R4: `--no-scan` / `LLAMATUI_NO_SCAN=1` must keep only user-supplied
+  // R4: `--no-scan` / `LLAMADASH_NO_SCAN=1` must keep only user-supplied
   // paths so agent invocations are scope-deterministic.
   let user = vec![PathBuf::from("/work/models")];
   let home = PathBuf::from("/home/alice");

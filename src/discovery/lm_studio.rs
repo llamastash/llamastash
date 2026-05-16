@@ -104,7 +104,7 @@ mod tests {
       .expect("clock")
       .as_nanos();
     let p = std::env::temp_dir().join(format!(
-      "llamatui-lmstudio-{label}-{}-{nanos}",
+      "llamadash-lmstudio-{label}-{}-{nanos}",
       std::process::id()
     ));
     fs::create_dir_all(&p).expect("temp home");

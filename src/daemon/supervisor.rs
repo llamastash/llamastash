@@ -728,7 +728,7 @@ mod tests {
       port: 41100,
       mode: LaunchMode::Chat,
       params,
-      log_path: PathBuf::from("/tmp/llamatui-test.log"),
+      log_path: PathBuf::from("/tmp/llamadash-test.log"),
       ready_at: RwLock::new(None),
       state: RwLock::new(initial),
       pid: RwLock::new(None),

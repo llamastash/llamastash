@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use llamatui::discovery::split_gguf::{group, parse_shard_name, DiscoveredEntry};
+use llamadash::discovery::split_gguf::{group, parse_shard_name, DiscoveredEntry};
 
 #[test]
 fn end_to_end_grouping_for_a_typical_huggingface_layout() {

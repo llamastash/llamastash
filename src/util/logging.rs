@@ -1,8 +1,8 @@
 //! Process-wide log initialisation and panic hook.
 //!
-//! Logs are written to `cache_dir/logs/llamatui.log` in append mode.
+//! Logs are written to `cache_dir/logs/llamadash.log` in append mode.
 //! Verbose mode bumps the default Info level up to Debug; further levels
-//! (Trace, Warn, Error) are accessible via the env var `LLAMATUI_LOG`.
+//! (Trace, Warn, Error) are accessible via the env var `LLAMADASH_LOG`.
 
 use std::{fs, fs::File, path::PathBuf, str::FromStr};
 
@@ -15,11 +15,11 @@ use super::paths::log_dir;
 /// Initialise the global logger. Returns the path of the log file that was
 /// opened so the caller can surface it in error output.
 pub fn init(verbose: bool) -> Result<PathBuf> {
-  let level = resolve_level(verbose, std::env::var("LLAMATUI_LOG").ok().as_deref());
+  let level = resolve_level(verbose, std::env::var("LLAMADASH_LOG").ok().as_deref());
   let dir = log_dir().context("could not resolve a log directory for this platform")?;
   fs::create_dir_all(&dir)
     .with_context(|| format!("failed to create log directory at {}", dir.display()))?;
-  let path = dir.join("llamatui.log");
+  let path = dir.join("llamadash.log");
   let file = open_log_file(&path)
     .with_context(|| format!("failed to open log file at {}", path.display()))?;
   WriteLogger::init(level, Config::default(), file).context("logger already initialised")?;
@@ -68,7 +68,7 @@ fn resolve_level(verbose: bool, env: Option<&str>) -> LevelFilter {
 pub fn install_panic_hook() {
   std::panic::set_hook(Box::new(|info| {
     log::error!("panic: {info}");
-    eprintln!("\nllamatui panicked: {info}");
+    eprintln!("\nllamadash panicked: {info}");
   }));
 }
 
@@ -107,9 +107,9 @@ mod tests {
       .expect("clock should be after epoch")
       .as_nanos();
     let dir =
-      std::env::temp_dir().join(format!("llamatui-logtest-{}-{suffix}", std::process::id()));
+      std::env::temp_dir().join(format!("llamadash-logtest-{}-{suffix}", std::process::id()));
     fs::create_dir_all(&dir).expect("temp dir should be created");
-    let path = dir.join("llamatui.log");
+    let path = dir.join("llamadash.log");
 
     // Pre-create the file with a permissive mode to verify we tighten it.
     fs::write(&path, "stale").expect("seed write should succeed");

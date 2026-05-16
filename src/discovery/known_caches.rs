@@ -5,7 +5,7 @@
 //! Per-cache disables in `config.disable_default_cache_paths` let
 //! users opt out of any single source without having to enumerate
 //! the remaining roots by hand. A global `no_scan` flag (set by
-//! `--no-scan` or `LLAMATUI_NO_SCAN=1`) skips everything except
+//! `--no-scan` or `LLAMADASH_NO_SCAN=1`) skips everything except
 //! explicitly-passed `--model-path` roots, so agent invocations can
 //! pin their scan surface (origin: R4).
 
@@ -263,7 +263,7 @@ mod tests {
     // dropped in favour of the hard-coded `~/.lmstudio/models`.
     use std::fs;
     let home = std::env::temp_dir().join(format!(
-      "llamatui-known-caches-lmstudio-{}-{}",
+      "llamadash-known-caches-lmstudio-{}-{}",
       std::process::id(),
       std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
