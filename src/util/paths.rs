@@ -7,7 +7,10 @@
 //! The runtime socket falls back to `$TMPDIR/llamatui-$USER/daemon.sock`
 //! when no `runtime_dir` is available.
 
-use std::{ffi::OsString, path::PathBuf};
+use std::{
+  ffi::OsString,
+  path::{Path, PathBuf},
+};
 
 use directories::{BaseDirs, ProjectDirs};
 
@@ -17,6 +20,18 @@ const APPLICATION: &str = "llamatui";
 
 pub fn project_dirs() -> Option<ProjectDirs> {
   ProjectDirs::from(QUALIFIER, ORGANIZATION, APPLICATION)
+}
+
+/// Human-friendly short label derived from a GGUF file path. Falls
+/// back to `"model"` when the path has no readable `file_stem`. Used
+/// by every TUI surface that needs a short tag for the focused model
+/// (chat-tab `model` field, right-pane title, launch picker, logs).
+pub fn model_display_name(path: &Path) -> String {
+  path
+    .file_stem()
+    .and_then(|s| s.to_str())
+    .unwrap_or("model")
+    .to_string()
 }
 
 /// Best-effort home directory resolution. Returns `None` only when the

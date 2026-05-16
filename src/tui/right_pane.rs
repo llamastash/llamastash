@@ -43,22 +43,17 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
 }
 
 fn right_pane_title(app: &App) -> String {
+  use crate::util::paths::model_display_name;
   match app.focused_managed() {
     Some(m) => format!(
       " {} · port {} · {} {} ",
-      m.path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("model"),
+      model_display_name(&m.path),
       m.port,
       glyph_for(m.state),
       label_for(m.state)
     ),
     None => match app.focused_path() {
-      Some(p) => format!(
-        " {} · not launched ",
-        p.file_stem().and_then(|s| s.to_str()).unwrap_or("model")
-      ),
+      Some(p) => format!(" {} · not launched ", model_display_name(&p)),
       None => " — ".into(),
     },
   }

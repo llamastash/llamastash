@@ -20,7 +20,7 @@ pub struct EmbedTabState {
   /// Receiver fed by the background `oai_client::embed` task. The
   /// render loop drains it via `try_recv` so a slow `/v1/embeddings`
   /// call never blocks input.
-  pub pending: Option<tokio::sync::mpsc::UnboundedReceiver<crate::tui::events::TabEvent>>,
+  pub pending: Option<tokio::sync::mpsc::UnboundedReceiver<crate::tui::tabs::TabEvent>>,
 }
 
 impl EmbedTabState {

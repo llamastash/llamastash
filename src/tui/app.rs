@@ -275,6 +275,15 @@ impl App {
   /// Move cursor down to the next selectable (model) row.
   pub fn move_down(&mut self) {
     let rows = self.rendered_rows();
+    self.move_down_in(&rows);
+  }
+
+  pub fn move_up(&mut self) {
+    let rows = self.rendered_rows();
+    self.move_up_in(&rows);
+  }
+
+  fn move_down_in(&mut self, rows: &[ListRow]) {
     if rows.is_empty() {
       return;
     }
@@ -287,17 +296,33 @@ impl App {
     }
   }
 
-  pub fn move_up(&mut self) {
+  fn move_up_in(&mut self, rows: &[ListRow]) {
     if self.list_cursor == 0 {
       return;
     }
-    let rows = self.rendered_rows();
     let mut next = self.list_cursor;
     while next > 0 {
       next -= 1;
       if rows.get(next).map(|r| r.is_selectable()).unwrap_or(false) {
         self.list_cursor = next;
         return;
+      }
+    }
+  }
+
+  /// Page-step: move the cursor by `delta` selectable rows. Positive
+  /// values go down, negative up. Builds the rendered row vec once
+  /// rather than once per step. Use this for PageUp/PageDown so a
+  /// single keypress doesn't rebuild rows 10×.
+  pub fn move_by(&mut self, delta: i32) {
+    let rows = self.rendered_rows();
+    if delta >= 0 {
+      for _ in 0..delta {
+        self.move_down_in(&rows);
+      }
+    } else {
+      for _ in 0..-delta {
+        self.move_up_in(&rows);
       }
     }
   }

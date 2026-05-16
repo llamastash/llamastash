@@ -46,12 +46,21 @@ impl LogsTabState {
     }
   }
 
-  /// Replace the buffer with a fresh tail from the daemon. The
-  /// `logs_tail` IPC method returns a snapshot so we just adopt it
-  /// wholesale; the daemon's ring buffer already caps growth.
+  /// Adopt a fresh tail from the daemon. When the daemon's tail is a
+  /// strict extension of our local buffer (the steady-state shape
+  /// while a model is logging), append only the new lines instead of
+  /// reallocating up to MAX_LINES `String`s per 500 ms poll. On
+  /// launch-id change or any non-extension overlap (rotation, etc.)
+  /// fall back to a wholesale replace.
   pub fn set_tail(&mut self, launch_id: String, lines: Vec<String>) {
-    self.launch_id = Some(launch_id);
-    self.lines = lines;
+    if self.launch_id.as_deref() != Some(launch_id.as_str()) {
+      self.launch_id = Some(launch_id);
+      self.lines = lines;
+    } else if let Some(suffix) = lines_extend_tail(&self.lines, &lines) {
+      self.lines.extend(suffix.iter().cloned());
+    } else {
+      self.lines = lines;
+    }
     if self.lines.len() > MAX_LINES {
       let drop = self.lines.len() - MAX_LINES;
       self.lines.drain(..drop);
@@ -64,6 +73,48 @@ impl LogsTabState {
     self.lines.clear();
     self.launch_id = None;
   }
+}
+
+/// If `fresh` ends with everything in `current`'s tail (i.e. it is
+/// `current` extended by some new suffix), return the suffix.
+/// Otherwise `None`. The check is by-content; the daemon reports
+/// the last N lines so a slow consumer + fast producer will
+/// occasionally drop the prefix overlap — `None` triggers wholesale
+/// replace, which is the safe fallback.
+fn lines_extend_tail<'a>(current: &[String], fresh: &'a [String]) -> Option<&'a [String]> {
+  if current.is_empty() {
+    return Some(fresh);
+  }
+  if fresh.len() < current.len() {
+    return None;
+  }
+  // The overlap region we'd expect to match is the last `current.len()`
+  // entries of fresh's prefix.
+  let split = fresh.len() - 0;
+  let _ = split; // silence unused
+  // Find the overlap: fresh[start..start+current.len()] must equal current,
+  // where start = fresh.len() - (current.len() + suffix.len()). The cheap
+  // check is: does fresh end with `current` followed by the suffix? That's
+  // equivalent to `fresh[fresh.len()-current.len()-suffix.len()..fresh.len()-suffix.len()] == current`.
+  // We don't know the suffix length up front, so we search by aligning
+  // `current` against fresh's contiguous window starting at the earliest
+  // possible position that still leaves room for current entries to align.
+  //
+  // Practically: try suffix lengths in 0..=fresh.len()-current.len(),
+  // smallest first. The smallest match is the "tightest fit" and gives
+  // the smallest suffix to append. This is O(n) lines × O(m) compares
+  // worst-case; on the steady-state path the suffix length is small
+  // (typically 1–5 lines per 500 ms poll) so the first iteration usually
+  // wins.
+  let max_suffix = fresh.len() - current.len();
+  for suffix_len in 0..=max_suffix {
+    let start = fresh.len() - current.len() - suffix_len;
+    let end = start + current.len();
+    if &fresh[start..end] == current {
+      return Some(&fresh[end..]);
+    }
+  }
+  None
 }
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, state: &LogsTabState, palette: &Palette) {

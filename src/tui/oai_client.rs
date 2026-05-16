@@ -10,11 +10,29 @@
 //! still arriving — keeps the render loop's input-to-redraw budget
 //! intact.
 
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
+
+/// Shared `reqwest::Client` for all right-pane tabs. `reqwest` builds
+/// a TLS context and an HTTP connection pool the first time you
+/// construct a `Client`; rebuilding per request (chat / embed /
+/// rerank) drops the pool on every send. We don't talk to anything
+/// over TLS, but the build cost is non-trivial and the pool is what
+/// keeps successive sends to the same loopback port cheap. The
+/// timeout matches the previous per-call default.
+fn shared_oai_client() -> &'static reqwest::Client {
+  static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+  CLIENT.get_or_init(|| {
+    reqwest::Client::builder()
+      .timeout(Duration::from_secs(60))
+      .build()
+      .expect("reqwest client should build with default features")
+  })
+}
 
 /// Outcome of one `/v1/chat/completions` stream chunk.
 #[derive(Debug, Clone)]
@@ -45,18 +63,7 @@ pub fn spawn_chat_stream(
       "stream": true,
       "messages": [{"role": "user", "content": prompt}],
     });
-    let client = match reqwest::Client::builder()
-      .timeout(Duration::from_secs(60))
-      .build()
-    {
-      Ok(c) => c,
-      Err(e) => {
-        let _ = tx
-          .send(ChatStreamMsg::Error(format!("client build: {e}")))
-          .await;
-        return;
-      }
-    };
+    let client = shared_oai_client();
     let resp = match client.post(&url).json(&body).send().await {
       Ok(r) => r,
       Err(e) => {
@@ -150,10 +157,7 @@ struct ChatDelta {
 pub async fn embed(port: u16, model: &str, input: &str) -> Result<EmbedResult, String> {
   let url = format!("http://127.0.0.1:{port}/v1/embeddings");
   let request_body = json!({"model": model, "input": input});
-  let resp = reqwest::Client::builder()
-    .timeout(Duration::from_secs(30))
-    .build()
-    .map_err(|e| format!("client build: {e}"))?
+  let resp = shared_oai_client()
     .post(&url)
     .json(&request_body)
     .send()
@@ -201,10 +205,7 @@ pub async fn rerank(
 ) -> Result<Vec<(usize, f64)>, String> {
   let url = format!("http://127.0.0.1:{port}/v1/rerank");
   let request_body = json!({"model": model, "query": query, "documents": candidates});
-  let resp = reqwest::Client::builder()
-    .timeout(Duration::from_secs(30))
-    .build()
-    .map_err(|e| format!("client build: {e}"))?
+  let resp = shared_oai_client()
     .post(&url)
     .json(&request_body)
     .send()

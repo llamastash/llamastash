@@ -373,10 +373,33 @@ fn rerank_tab_input_stages_candidates_via_tab() {
 #[test]
 fn narrow_terminal_does_not_crash_render() {
   // Plan edge case: terminal width 60 cols → renderer must
-  // tolerate the constraint without panicking. We don't pin the
-  // exact truncation strategy here — just that the call succeeds.
+  // tolerate the constraint without panicking.
   let mut app = App::new(AppOptions::default());
   app.models = vec![fake_model("/m/very-long-model-name-2.5b-Q4_K_M.gguf", "/m")];
   let frame = render_to_string(&mut app, 60, 12);
   assert!(frame.contains("llamatui"));
+}
+
+#[test]
+fn narrow_terminal_truncates_long_model_names_with_ellipsis() {
+  // Plan edge case: a name wider than the list pane should render
+  // with `…` rather than wrapping. We use a synthetic super-long
+  // name so the truncation kicks in regardless of theme padding.
+  let mut app = App::new(AppOptions::default());
+  let very_long = "a-very-very-very-long-model-name-that-easily-overflows-sixty-columns.gguf";
+  app.models = vec![fake_model(&format!("/m/{very_long}"), "/m")];
+  let frame = render_to_string(&mut app, 60, 12);
+  assert!(
+    frame.contains('…'),
+    "expected ellipsis truncation glyph in:\n{frame}"
+  );
+  // No line in the rendered frame should be wider than the
+  // terminal width (60 + a couple of trailing spaces for borders);
+  // assert a generous upper bound to catch line-wrap regressions.
+  for line in frame.lines() {
+    assert!(
+      line.chars().count() <= 64,
+      "rendered line {line:?} wider than 60-col terminal"
+    );
+  }
 }

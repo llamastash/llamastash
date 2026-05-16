@@ -32,7 +32,7 @@ pub struct RerankTabState {
   pub field: RerankField,
   /// Receiver for the in-flight `/v1/rerank` call. The render loop
   /// drains it via `try_recv` once per tick.
-  pub pending: Option<tokio::sync::mpsc::UnboundedReceiver<crate::tui::events::TabEvent>>,
+  pub pending: Option<tokio::sync::mpsc::UnboundedReceiver<crate::tui::tabs::TabEvent>>,
 }
 
 impl RerankTabState {
