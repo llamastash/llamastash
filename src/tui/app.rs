@@ -181,15 +181,19 @@ impl App {
   /// block, and the host-metrics snapshot. Discovery rows survive
   /// intact — `list_models` owns those.
   pub fn ingest_status(&mut self, body: &Value) {
+    // Both `models` and `external` clear when their field is absent.
+    // Asymmetry would let ghost supervised rows persist across a
+    // schema change or transient framing error, so the TUI would
+    // continue offering a stop affordance for a launch the daemon no
+    // longer tracks.
     if let Some(arr) = body.get("models").and_then(Value::as_array) {
       self.managed = arr.iter().filter_map(parse_status_row).collect();
+    } else {
+      self.managed.clear();
     }
     if let Some(arr) = body.get("external").and_then(Value::as_array) {
       self.external = arr.iter().filter_map(parse_external_row).collect();
     } else {
-      // The daemon may not yet emit `external`; clearing keeps stale
-      // rows from sticking around if the field is dropped in a
-      // future surface change.
       self.external.clear();
     }
     if let Some(daemon) = body.get("daemon") {
@@ -867,7 +871,9 @@ mod tests {
         "mode": "chat",
         "pid": 1234,
         "ready_at": null,
-        "state": {"state": "ready"}
+        "state": {"state": "ready"},
+        "latest_rss_bytes": 4_500_000_000_u64,
+        "latest_cpu_pct": 312.0,
       }],
       "gpu": {"backend": "cpu_only"}
     });
@@ -875,6 +881,78 @@ mod tests {
     assert_eq!(app.managed.len(), 1);
     assert_eq!(app.managed[0].launch_id, "L1");
     assert_eq!(app.managed[0].state, SurfaceState::Ready);
+    assert_eq!(app.managed[0].rss_bytes, Some(4_500_000_000));
+    assert_eq!(app.managed[0].cpu_pct, Some(312.0));
+  }
+
+  #[test]
+  fn ingest_status_populates_daemon_info_from_daemon_block() {
+    let mut app = App::new(AppOptions::default());
+    let body = json!({
+      "daemon": {
+        "pid": 2222,
+        "uptime_seconds": 9_000,
+        "build": "0.1.0",
+        "server_path": "/usr/bin/llama-server"
+      }
+    });
+    app.ingest_status(&body);
+    assert_eq!(app.daemon_info.pid, Some(2222));
+    assert_eq!(app.daemon_info.uptime_seconds, Some(9_000));
+    assert_eq!(app.daemon_info.build.as_deref(), Some("0.1.0"));
+    assert_eq!(
+      app.daemon_info.server_path.as_deref(),
+      Some("/usr/bin/llama-server")
+    );
+  }
+
+  #[test]
+  fn ingest_status_populates_host_metrics_from_host_block() {
+    let mut app = App::new(AppOptions::default());
+    let body = json!({
+      "host": {
+        "cpu_pct": 47.5,
+        "ram_used_bytes": 1_073_741_824_u64,
+        "ram_total_bytes": 17_179_869_184_u64,
+        "gpu_util_pct": 84.0,
+        "gpu_mem_used_bytes": 14_000_000_000_u64,
+        "gpu_mem_total_bytes": 24_000_000_000_u64,
+        "gpu_temp_c": 68.0,
+        "gpu_backend": "nvidia",
+        "gpu_device_count": 1
+      }
+    });
+    app.ingest_status(&body);
+    assert_eq!(app.host_metrics.gpu_backend, "nvidia");
+    assert_eq!(app.host_metrics.ram_total_bytes, 17_179_869_184);
+    assert_eq!(app.host_metrics.gpu_util_pct, Some(84.0));
+  }
+
+  #[test]
+  fn ingest_status_clears_managed_when_models_field_absent() {
+    // Schema-evolution or framing error must not leave a ghost
+    // ManagedRow visible — symmetric with the `external` clear path.
+    let mut app = App::new(AppOptions::default());
+    let with_models = json!({
+      "models": [{
+        "launch_id": "L1",
+        "id": {"path": "/m/a.gguf", "header_blake3": "00".repeat(32)},
+        "port": 41100,
+        "mode": "chat",
+        "pid": 1,
+        "ready_at": null,
+        "state": {"state": "ready"}
+      }]
+    });
+    app.ingest_status(&with_models);
+    assert_eq!(app.managed.len(), 1);
+    // A subsequent status with no `models` field clears managed.
+    let without_models = json!({});
+    app.ingest_status(&without_models);
+    assert!(
+      app.managed.is_empty(),
+      "managed must clear when field absent"
+    );
   }
 
   #[test]

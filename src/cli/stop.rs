@@ -235,6 +235,8 @@ mod tests {
       mode: "chat".into(),
       ready_at: None,
       params: None,
+      latest_rss_bytes: None,
+      latest_cpu_pct: None,
     }]
   }
 

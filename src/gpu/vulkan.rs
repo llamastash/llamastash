@@ -9,10 +9,12 @@
 
 use std::process::Command;
 
-use super::{GpuDevice, GpuInfo};
+use super::{run_with_timeout, GpuDevice, GpuInfo};
 
 pub fn probe() -> Option<GpuInfo> {
-  let output = Command::new("vulkaninfo").arg("--summary").output().ok()?;
+  let mut cmd = Command::new("vulkaninfo");
+  cmd.arg("--summary");
+  let output = run_with_timeout(cmd)?;
   if !output.status.success() {
     return None;
   }
@@ -21,11 +23,12 @@ pub fn probe() -> Option<GpuInfo> {
   if names.is_empty() {
     return None;
   }
-  Some(GpuInfo::Amd {
-    // Vulkan can't tell us vendor reliably or memory accurately.
-    // We surface it under `Amd` (the most likely match on Linux
-    // when NVIDIA + ROCm both failed) with zero memory so the TUI
-    // can render "VRAM: unknown".
+  // Vulkan can't tell us vendor reliably or memory accurately. We
+  // surface it under `Unknown` rather than mislabelling the card as
+  // AMD — Intel Arc, llvmpipe (software), and AMD-without-rocm-smi
+  // all hit this path on Linux, and the TUI renders
+  // `backend  unknown` so the user knows the vendor probe failed.
+  Some(GpuInfo::Unknown {
     devices: names
       .into_iter()
       .map(|name| GpuDevice {

@@ -51,6 +51,21 @@ impl HostMetricsSnapshot {
   /// lands — distinguishes "never sampled" from "sampled and found
   /// cpu only".
   pub const UNINITIALIZED_BACKEND: &'static str = "unsampled";
+
+  /// `gpu_backend` value emitted when no GPU was detected. Stable
+  /// wire string consumed by the TUI host pane and clients gating
+  /// behavior on backend kind.
+  pub const BACKEND_CPU_ONLY: &'static str = "cpu_only";
+  /// `gpu_backend` value emitted when NVIDIA NVML/nvidia-smi probing
+  /// succeeded.
+  pub const BACKEND_NVIDIA: &'static str = "nvidia";
+  /// `gpu_backend` value emitted when AMD rocm-smi probing succeeded.
+  pub const BACKEND_AMD: &'static str = "amd";
+  /// `gpu_backend` value emitted on Apple Silicon (Metal).
+  pub const BACKEND_APPLE_METAL: &'static str = "apple_metal";
+  /// `gpu_backend` value emitted when vulkaninfo found a device but
+  /// neither NVIDIA nor ROCm probes succeeded. The vendor is unknown.
+  pub const BACKEND_UNKNOWN: &'static str = "unknown";
 }
 
 /// One-shot synchronous sample. The first refresh of `cpu_usage`
@@ -152,13 +167,21 @@ fn aggregate_gpu(info: &GpuInfo) -> (Option<f32>, Option<u64>, Option<u64>, Opti
       // can render a `RAM (unified)` row.
       (None, None, Some(*total_memory_bytes), None, 1)
     }
-    GpuInfo::Nvidia { devices } | GpuInfo::Amd { devices } => {
+    GpuInfo::Nvidia { devices } | GpuInfo::Amd { devices } | GpuInfo::Unknown { devices } => {
       if devices.is_empty() {
         return (None, None, None, None, 0);
       }
       let count = devices.len() as u32;
       let total: u64 = devices.iter().map(|d| d.total_memory_bytes).sum();
       let used: u64 = devices.iter().map(|d| d.used_memory_bytes).sum();
+      // Treat all-zero totals as "no VRAM data" — the Vulkan fallback
+      // emits this and the host pane should show `—/—` instead of a
+      // bar pinned to 0%.
+      let (used_opt, total_opt) = if total == 0 {
+        (None, None)
+      } else {
+        (Some(used), Some(total))
+      };
       let util_readings: Vec<f32> = devices.iter().filter_map(|d| d.utilization_pct).collect();
       let util = if util_readings.is_empty() {
         None
@@ -172,7 +195,7 @@ fn aggregate_gpu(info: &GpuInfo) -> (Option<f32>, Option<u64>, Option<u64>, Opti
           Some(prev) => Some(prev.max(t)),
         },
       );
-      (util, Some(used), Some(total), temp, count)
+      (util, used_opt, total_opt, temp, count)
     }
   }
 }

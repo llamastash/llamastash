@@ -20,10 +20,9 @@ use super::GpuInfo;
 
 #[cfg(target_os = "macos")]
 pub fn probe() -> Option<GpuInfo> {
-  let output = Command::new("system_profiler")
-    .args(["SPDisplaysDataType", "-json"])
-    .output()
-    .ok()?;
+  let mut cmd = Command::new("system_profiler");
+  cmd.args(["SPDisplaysDataType", "-json"]);
+  let output = super::run_with_timeout(cmd)?;
   if !output.status.success() {
     return None;
   }

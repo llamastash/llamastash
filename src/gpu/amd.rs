@@ -13,22 +13,43 @@ use std::process::Command;
 
 use serde_json::Value;
 
-use super::{GpuDevice, GpuInfo};
+use super::{run_with_timeout, GpuDevice, GpuInfo};
+
+/// rocm-smi argument variants to try, in order. Older ROCm releases
+/// (pre-5.4) may reject the combined four-flag form or emit non-JSON
+/// stdout, which would silently demote an AMD machine to `cpu_only`.
+/// Falling back to the leaner three-flag and two-flag forms preserves
+/// VRAM data even when util/temp are missing.
+const ROCM_SMI_ARG_VARIANTS: &[&[&str]] = &[
+  &["--showmeminfo", "vram", "--showuse", "--showtemp", "--json"],
+  &["--showmeminfo", "vram", "--showuse", "--json"],
+  &["--showmeminfo", "vram", "--json"],
+];
 
 pub fn probe() -> Option<GpuInfo> {
-  let output = Command::new("rocm-smi")
-    .args(["--showmeminfo", "vram", "--showuse", "--showtemp", "--json"])
-    .output()
-    .ok()?;
-  if !output.status.success() {
-    return None;
+  for args in ROCM_SMI_ARG_VARIANTS {
+    let mut cmd = Command::new("rocm-smi");
+    cmd.args(*args);
+    let Some(output) = run_with_timeout(cmd) else {
+      continue;
+    };
+    if !output.status.success() {
+      continue;
+    }
+    let Ok(stdout) = String::from_utf8(output.stdout) else {
+      continue;
+    };
+    let devices = parse(&stdout);
+    if !devices.is_empty() {
+      return Some(GpuInfo::Amd { devices });
+    }
   }
-  let stdout = String::from_utf8(output.stdout).ok()?;
-  let devices = parse(&stdout);
-  if devices.is_empty() {
-    return None;
-  }
-  Some(GpuInfo::Amd { devices })
+  // Every variant produced either a process-spawn failure, non-zero
+  // exit, non-UTF-8 stdout, or non-JSON output. Log so the operator
+  // can tell that AMD probing was attempted but failed (avoids the
+  // silent degrade-to-cpu_only failure mode).
+  log::debug!("rocm-smi probe failed across all argument variants; treating as no-AMD");
+  None
 }
 
 pub(crate) fn parse(stdout: &str) -> Vec<GpuDevice> {

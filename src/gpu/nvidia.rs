@@ -12,18 +12,18 @@
 
 use std::process::Command;
 
-use super::{GpuDevice, GpuInfo};
+use super::{run_with_timeout, GpuDevice, GpuInfo};
 
-/// Run `nvidia-smi`. Returns `None` if the binary isn't on `$PATH`
-/// or its exit status is non-zero (no NVIDIA driver loaded).
+/// Run `nvidia-smi`. Returns `None` if the binary isn't on `$PATH`,
+/// its exit status is non-zero (no NVIDIA driver loaded), or the
+/// invocation exceeds the per-probe wall-clock deadline.
 pub fn probe() -> Option<GpuInfo> {
-  let output = Command::new("nvidia-smi")
-    .args([
-      "--query-gpu=name,memory.total,memory.used,utilization.gpu,temperature.gpu",
-      "--format=csv,noheader,nounits",
-    ])
-    .output()
-    .ok()?;
+  let mut cmd = Command::new("nvidia-smi");
+  cmd.args([
+    "--query-gpu=name,memory.total,memory.used,utilization.gpu,temperature.gpu",
+    "--format=csv,noheader,nounits",
+  ]);
+  let output = run_with_timeout(cmd)?;
   if !output.status.success() {
     return None;
   }

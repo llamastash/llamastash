@@ -444,12 +444,19 @@ async fn status_response(ctx: &MethodContext) -> Value {
     })
     .collect();
   // Host-level metrics (CPU%, RAM, GPU util/temp/VRAM aggregates).
-  // Sampled by the daemon's `host_metrics` task at 1 Hz; the
-  // snapshot is `None` in catalog-only tests that skip the sampler.
-  let host = match &ctx.host_metrics {
-    Some(slot) => serde_json::to_value(slot.read().await.clone()).unwrap_or(Value::Null),
-    None => Value::Null,
+  // Sampled by the daemon's `host_metrics` task at 1 Hz. When no
+  // sampler is attached (catalog-only contexts), emit a default
+  // snapshot rather than `null` so clients see a stable object
+  // shape — `gpu_backend == "unsampled"` already distinguishes the
+  // never-sampled case from a real reading.
+  let host_snapshot = match &ctx.host_metrics {
+    Some(slot) => slot.read().await.clone(),
+    None => HostMetricsSnapshot {
+      gpu_backend: HostMetricsSnapshot::UNINITIALIZED_BACKEND.into(),
+      ..HostMetricsSnapshot::default()
+    },
   };
+  let host = serde_json::to_value(host_snapshot).unwrap_or(Value::Null);
   json!({
     "models": models,
     "external": external,

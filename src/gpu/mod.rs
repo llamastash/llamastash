@@ -20,7 +20,45 @@ pub mod metal;
 pub mod nvidia;
 pub mod vulkan;
 
+use std::process::{Command, Output};
+use std::time::Duration;
+
 use serde::Serialize;
+
+/// Wall-clock budget for a single vendor probe. A wedged GPU driver
+/// (nvidia-smi hang, ROCm reset, locked Vulkan loader) would otherwise
+/// pin the blocking pool thread indefinitely. Five seconds is well
+/// above any normal vendor-tool invocation on healthy hardware.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Run an external probe with a wall-clock deadline. On expiry the
+/// child is killed; the call returns `None` so the probe chain can
+/// fall through to the next backend instead of stalling the daemon.
+pub(crate) fn run_with_timeout(mut cmd: Command) -> Option<Output> {
+  let mut child = cmd.spawn().ok()?;
+  let deadline = std::time::Instant::now() + PROBE_TIMEOUT;
+  loop {
+    match child.try_wait() {
+      Ok(Some(_status)) => {
+        return child.wait_with_output().ok();
+      }
+      Ok(None) => {
+        if std::time::Instant::now() >= deadline {
+          let _ = child.kill();
+          let _ = child.wait();
+          log::warn!(
+            "gpu probe `{:?}` exceeded {:?}; killed and falling through",
+            cmd.get_program(),
+            PROBE_TIMEOUT
+          );
+          return None;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+      }
+      Err(_) => return None,
+    }
+  }
+}
 
 /// What detection found. Always a complete snapshot — no
 /// "partial" / "unknown" middle ground — so the IPC handler can
@@ -39,6 +77,11 @@ pub enum GpuInfo {
   /// Apple Silicon — unified-memory GPU. Reports the system memory
   /// available to the GPU since Metal doesn't separate VRAM.
   AppleMetal { total_memory_bytes: u64 },
+  /// `vulkaninfo` found a device but neither NVIDIA nor ROCm probes
+  /// succeeded, so the vendor is unknown. The supervisor still hints
+  /// that the user can attempt `-ngl > 0`; the host pane renders
+  /// `backend  unknown` rather than mislabelling the card.
+  Unknown { devices: Vec<GpuDevice> },
 }
 
 /// One discrete GPU device (NVIDIA / AMD path).
@@ -66,6 +109,7 @@ impl GpuInfo {
       Self::Nvidia { .. } => "nvidia",
       Self::Amd { .. } => "amd",
       Self::AppleMetal { .. } => "apple_metal",
+      Self::Unknown { .. } => "unknown",
     }
   }
 

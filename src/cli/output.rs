@@ -243,6 +243,13 @@ pub fn status_json(snap: &StatusSnapshot) -> Value {
       if let Some(params) = r.params.as_ref() {
         obj.insert("params".into(), params.clone());
       }
+      // Per-PID resource snapshot from the supervisor sampler. `None`
+      // before the sampler primes (one tick after launch).
+      obj.insert(
+        "latest_rss_bytes".into(),
+        serde_json::json!(r.latest_rss_bytes),
+      );
+      obj.insert("latest_cpu_pct".into(), serde_json::json!(r.latest_cpu_pct));
       Value::Object(obj)
     })
     .collect();
@@ -263,6 +270,8 @@ pub fn status_json(snap: &StatusSnapshot) -> Value {
       "pid": d.pid,
       "uptime_seconds": d.uptime_seconds,
       "active_connections": d.active_connections,
+      "build": d.build,
+      "server_path": d.server_path,
     })
   });
   serde_json::json!({
@@ -412,6 +421,8 @@ mod tests {
         pid: 4242,
         uptime_seconds: 90,
         active_connections: 3,
+        build: None,
+        server_path: None,
       }),
     };
     let s = status_human(&snap);
@@ -433,6 +444,8 @@ mod tests {
         pid: Some(123),
         ready_at: Some(1_700_000_000),
         params: None,
+        latest_rss_bytes: Some(4_500_000_000),
+        latest_cpu_pct: Some(312.0),
       }],
       external: vec![ExternalRow {
         pid: 999,
@@ -447,6 +460,11 @@ mod tests {
     assert_eq!(model["launch_id"], serde_json::json!("L1"));
     assert_eq!(model["state"], serde_json::json!("ready"));
     assert_eq!(model["port"], serde_json::json!(41100));
+    assert_eq!(
+      model["latest_rss_bytes"],
+      serde_json::json!(4_500_000_000_u64)
+    );
+    assert_eq!(model["latest_cpu_pct"], serde_json::json!(312.0));
     let ext = &v["external"][0];
     assert_eq!(ext["pid"], serde_json::json!(999));
   }
@@ -462,11 +480,18 @@ mod tests {
         pid: 11,
         uptime_seconds: 7,
         active_connections: 1,
+        build: Some("0.1.0".into()),
+        server_path: Some("/usr/bin/llama-server".into()),
       }),
     };
     let v = status_json(&snap);
     assert_eq!(v["daemon"]["pid"], serde_json::json!(11));
     assert_eq!(v["daemon"]["uptime_seconds"], serde_json::json!(7));
     assert_eq!(v["daemon"]["active_connections"], serde_json::json!(1));
+    assert_eq!(v["daemon"]["build"], serde_json::json!("0.1.0"));
+    assert_eq!(
+      v["daemon"]["server_path"],
+      serde_json::json!("/usr/bin/llama-server")
+    );
   }
 }

@@ -65,6 +65,13 @@ pub struct RunningRow {
   /// agents reproduce a launch without a separate `last_params`
   /// call.
   pub params: Option<Value>,
+  /// Latest resident-set bytes for the supervised process. `None`
+  /// before the per-PID sampler has primed (typically one tick after
+  /// launch).
+  pub latest_rss_bytes: Option<u64>,
+  /// Latest CPU usage % (multi-core sum, so >100% is normal for
+  /// inference workloads). `None` before the per-PID sampler primes.
+  pub latest_cpu_pct: Option<f32>,
 }
 
 /// Fetch every catalog row via `list_models`. Centralised here so
@@ -234,6 +241,12 @@ pub struct DaemonHealth {
   pub pid: u64,
   pub uptime_seconds: u64,
   pub active_connections: u64,
+  /// Daemon build version (cargo pkg version at compile time).
+  /// `None` when an older daemon omits the field.
+  pub build: Option<String>,
+  /// Path to the `llama-server` binary the daemon resolved at start.
+  /// `None` when the daemon doesn't expose it or hasn't resolved one.
+  pub server_path: Option<String>,
 }
 
 fn parse_daemon_health(v: &Value) -> Option<DaemonHealth> {
@@ -248,6 +261,11 @@ fn parse_daemon_health(v: &Value) -> Option<DaemonHealth> {
       .get("active_connections")
       .and_then(Value::as_u64)
       .unwrap_or(0),
+    build: obj.get("build").and_then(Value::as_str).map(str::to_string),
+    server_path: obj
+      .get("server_path")
+      .and_then(Value::as_str)
+      .map(str::to_string),
   })
 }
 
@@ -289,6 +307,11 @@ fn parse_running_row(v: &Value) -> Option<RunningRow> {
   let pid = v.get("pid").and_then(Value::as_u64);
   let ready_at = v.get("ready_at").and_then(Value::as_u64);
   let params = v.get("params").cloned();
+  let latest_rss_bytes = v.get("latest_rss_bytes").and_then(Value::as_u64);
+  let latest_cpu_pct = v
+    .get("latest_cpu_pct")
+    .and_then(Value::as_f64)
+    .map(|n| n as f32);
   Some(RunningRow {
     launch_id,
     model_path,
@@ -299,6 +322,8 @@ fn parse_running_row(v: &Value) -> Option<RunningRow> {
     pid,
     ready_at,
     params,
+    latest_rss_bytes,
+    latest_cpu_pct,
   })
 }
 
@@ -458,6 +483,8 @@ mod tests {
         pid: Some(123),
         ready_at: None,
         params: None,
+        latest_rss_bytes: None,
+        latest_cpu_pct: None,
       },
       RunningRow {
         launch_id: "L2".into(),
@@ -469,6 +496,8 @@ mod tests {
         pid: Some(124),
         ready_at: None,
         params: None,
+        latest_rss_bytes: None,
+        latest_cpu_pct: None,
       },
     ];
     assert_eq!(resolve_running(&rows, "41100").unwrap().launch_id, "L1");
@@ -487,6 +516,8 @@ mod tests {
       pid: None,
       ready_at: None,
       params: None,
+      latest_rss_bytes: None,
+      latest_cpu_pct: None,
     }];
     let err = resolve_running(&rows, "9999").unwrap_err();
     assert_eq!(err.code, MODEL_NOT_FOUND);
