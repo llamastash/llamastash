@@ -7,6 +7,7 @@
 //! no in-runtime `fork()` is involved, which keeps the tokio runtime safe.
 
 pub mod discovery_task;
+pub mod host_metrics;
 pub mod lockfile;
 pub mod orphans;
 pub mod peercred;
@@ -232,12 +233,21 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   // even if it's `CpuOnly`.
   let gpu = crate::gpu::probe();
 
+  // 7b. Host-metrics sampler (1 Hz). Re-probes the active GPU
+  // backend each tick for live util/temp/VRAM; sysinfo handles
+  // host CPU% + RAM.
+  let host_metrics = crate::daemon::host_metrics::spawn(
+    token.clone(),
+    std::time::Duration::from_secs(1),
+  );
+
   // 8. Wire the dispatcher context.
   let supervisors = SupervisorRegistry::new();
   let persisted = PersistedState::new(state_after_sweep, Some(opts.state_dir.clone()));
   let mut ctx = MethodContext::with_catalog(token.clone(), catalog)
     .with_supervisors(supervisors)
     .with_gpu(gpu)
+    .with_host_metrics(host_metrics)
     .with_state(persisted)
     .with_external(external_combined);
   if let Some(binary) = opts.binary.clone() {

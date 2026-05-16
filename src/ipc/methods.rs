@@ -21,6 +21,7 @@ use tokio::sync::{Mutex, RwLock};
 
 use super::protocol::{ErrorCode, ErrorObject, Request, Response, JSONRPC_VERSION};
 use crate::config::loader::PortRange;
+use crate::daemon::host_metrics::HostMetricsSnapshot;
 use crate::daemon::orphans::ExternalProcess;
 use crate::daemon::probe::ProbeOptions;
 use crate::daemon::registry::{LaunchId, SupervisorRegistry};
@@ -63,6 +64,13 @@ pub struct MethodContext {
   /// reports it alongside per-model resources so the UI can render
   /// a GPU panel.
   pub gpu: Arc<GpuInfo>,
+  /// Live host-level metrics (CPU%, RAM, GPU util/temp/VRAM
+  /// aggregates). Refreshed by the
+  /// [`crate::daemon::host_metrics::spawn`] sampler at 1 Hz; `status`
+  /// surfaces the most recent reading under the `host` field. A
+  /// `None` value means no sampler was attached (catalog-only tests
+  /// stay lightweight by leaving it off).
+  pub host_metrics: Option<Arc<RwLock<HostMetricsSnapshot>>>,
   /// Persisted favorites / presets / last_params / running snapshots.
   /// `start_model`, `presets_*`, and `favorite_*` mutate it and
   /// flush to `state.json` after each change.
@@ -158,6 +166,7 @@ impl MethodContext {
       catalog,
       supervisors: SupervisorRegistry::new(),
       gpu: Arc::new(GpuInfo::CpuOnly),
+      host_metrics: None,
       state: PersistedState::ephemeral(),
       launch: None,
       external: Arc::new(RwLock::new(Vec::new())),
@@ -195,6 +204,15 @@ impl MethodContext {
   /// Builder helper: attach a probed GPU info snapshot.
   pub fn with_gpu(mut self, gpu: GpuInfo) -> Self {
     self.gpu = Arc::new(gpu);
+    self
+  }
+
+  /// Builder helper: attach the shared host-metrics snapshot the
+  /// sampler updates. Production wiring passes the
+  /// [`crate::daemon::host_metrics::spawn`] return value here so
+  /// every `status` call reads the freshest reading.
+  pub fn with_host_metrics(mut self, snap: Arc<RwLock<HostMetricsSnapshot>>) -> Self {
+    self.host_metrics = Some(snap);
     self
   }
 
@@ -420,10 +438,18 @@ async fn status_response(ctx: &MethodContext) -> Value {
       })
     })
     .collect();
+  // Host-level metrics (CPU%, RAM, GPU util/temp/VRAM aggregates).
+  // Sampled by the daemon's `host_metrics` task at 1 Hz; the
+  // snapshot is `None` in catalog-only tests that skip the sampler.
+  let host = match &ctx.host_metrics {
+    Some(slot) => serde_json::to_value(slot.read().await.clone()).unwrap_or(Value::Null),
+    None => Value::Null,
+  };
   json!({
     "models": models,
     "external": external,
     "gpu": ctx.gpu.as_ref(),
+    "host": host,
     "daemon": {
       "pid": std::process::id(),
       "uptime_seconds": ctx.started_at.elapsed().as_secs(),

@@ -116,6 +116,20 @@ async fn status_lists_active_supervised_model() {
   assert_eq!(models[0]["mode"], json!("chat"));
   assert_eq!(models[0]["state"]["state"], json!("ready"));
   assert!(body["gpu"]["backend"].as_str().is_some());
+  // Host-metrics block must always serialize, even if the sampler
+  // hasn't ticked yet (sentinel "unsampled" backend until the first
+  // 1-second tick lands). `ram_total_bytes` is missing only when the
+  // sentinel snapshot is fresh; once the sampler runs at least once,
+  // it carries a non-zero total.
+  assert!(
+    body["host"].is_object(),
+    "status response must include a `host` field: {body:#?}"
+  );
+  assert!(
+    body["host"]["gpu_backend"].as_str().is_some(),
+    "host snapshot must carry a backend label: {:#?}",
+    body["host"]
+  );
 
   // `logs_tail` returns the ring buffer contents.
   let logs_body = client
@@ -222,9 +236,12 @@ async fn run_foreground_with_supervisors(
   let catalog = llamadash::discovery::ModelCatalog::new();
   let _discovery =
     llamadash::daemon::discovery_task::spawn(catalog.clone(), opts.discovery.clone());
+  let host_metrics =
+    llamadash::daemon::host_metrics::spawn(token.clone(), Duration::from_secs(1));
   let ctx = MethodContext::with_catalog(token, catalog)
     .with_supervisors(supervisors)
-    .with_gpu(llamadash::gpu::GpuInfo::CpuOnly);
+    .with_gpu(llamadash::gpu::GpuInfo::CpuOnly)
+    .with_host_metrics(host_metrics);
   // Suppress unused-mut warning when opts isn't mutated further.
   let _ = &mut opts;
   let result = llamadash::daemon::server::serve(listener, ctx).await;
