@@ -97,7 +97,11 @@ pub fn spawn(shutdown: ShutdownToken, interval: Duration) -> Arc<RwLock<HostMetr
     ..HostMetricsSnapshot::default()
   }));
   let shared_for_task = Arc::clone(&shared);
-  tokio::spawn(async move {
+  // Route through `spawn_supervised` so a panic in the loop body (a
+  // misbehaving sysinfo refresh, a GPU probe parser bug) surfaces in
+  // the daemon log instead of silently freezing the snapshot for the
+  // lifetime of the daemon.
+  super::supervisor::spawn_supervised("host_metrics_sampler", async move {
     let mut sys = System::new_with_specifics(host_refresh_kind());
     // Prime sysinfo's CPU delta on first refresh.
     sys.refresh_cpu_specifics(CpuRefreshKind::new().with_cpu_usage());

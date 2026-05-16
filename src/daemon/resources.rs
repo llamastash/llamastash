@@ -83,8 +83,19 @@ pub fn sample_loop(pid: u32, interval: Duration) -> tokio::sync::mpsc::Receiver<
         cpu_percent: proc.cpu_usage(),
         threads: proc.tasks().map(|t| t.len() as u32).unwrap_or(1),
       };
-      if tx.send(reading).await.is_err() {
-        return;
+      // Use `try_send` rather than `send().await`: a slow consumer
+      // would otherwise back-pressure this task, pinning the
+      // synchronous sysinfo `/proc` refresh on a tokio worker. For
+      // resource sampling, a dropped reading is fine — the next tick
+      // emits a fresh one. Channel closed means the consumer is
+      // gone, in which case we exit.
+      use tokio::sync::mpsc::error::TrySendError;
+      match tx.try_send(reading) {
+        Ok(()) => {}
+        Err(TrySendError::Full(_)) => {
+          // Consumer is slow; skip this reading.
+        }
+        Err(TrySendError::Closed(_)) => return,
       }
       tokio::time::sleep(interval).await;
     }

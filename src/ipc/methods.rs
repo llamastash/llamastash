@@ -1021,7 +1021,13 @@ async fn start_model_handler(
   // last_params (per the plan — only updated on a *successful*
   // Loading → Ready transition). We poll because ManagedModel
   // doesn't expose a transition channel yet.
-  spawn_last_params_recorder(ctx.state.clone(), model.clone(), id.clone(), launch_params);
+  spawn_last_params_recorder(
+    ctx.state.clone(),
+    model.clone(),
+    id.clone(),
+    launch_params,
+    ctx.shutdown.clone(),
+  );
 
   Ok(json!({
     "launch_id": launch_id,
@@ -1037,11 +1043,15 @@ fn spawn_last_params_recorder(
   model: ManagedModel,
   id: ModelId,
   params: LaunchParams,
+  shutdown: ShutdownToken,
 ) {
   tokio::spawn(async move {
     // The supervisor's probe runs with at most a 120s timeout in
     // production. Cap our wait at the same horizon so we don't
-    // leak tasks for models that never come up.
+    // leak tasks for models that never come up. The poll also
+    // observes the daemon's shutdown token so SIGTERM during a
+    // pending Loading state doesn't block clean process exit on
+    // this task's 180s wall clock.
     let deadline = Instant::now() + Duration::from_secs(180);
     loop {
       match model.state().await {
@@ -1057,7 +1067,10 @@ fn spawn_last_params_recorder(
       if Instant::now() > deadline {
         return;
       }
-      tokio::time::sleep(Duration::from_millis(200)).await;
+      tokio::select! {
+        _ = shutdown.wait_until_triggered() => return,
+        _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+      }
     }
   });
 }

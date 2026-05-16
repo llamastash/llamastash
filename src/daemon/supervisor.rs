@@ -466,7 +466,7 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
 /// it disappear when the `JoinHandle` is dropped. The watchdog task
 /// only runs while the outer task is alive; it does not own a copy
 /// of the work itself.
-fn spawn_supervised<F>(name: &'static str, fut: F)
+pub(crate) fn spawn_supervised<F>(name: &'static str, fut: F)
 where
   F: std::future::Future<Output = ()> + Send + 'static,
 {
@@ -543,6 +543,14 @@ async fn pump_stream<R>(
   let mut line = String::new();
   let prefix = format!("[{source}] ");
   let mut scratch = String::with_capacity(256);
+  // Disk writes can wedge transiently (full filesystem, fs remounted
+  // ro, quota exceeded). Previously we returned on the first failure,
+  // silently stopping log capture for the lifetime of the child even
+  // though the kernel pipe was still readable. Keep pumping the ring
+  // buffer regardless so the TUI's Logs tab always reflects the
+  // freshest output; log the disk error once per session so it shows
+  // up in journal/stderr without spamming on every line.
+  let mut disk_writes_disabled = false;
   loop {
     line.clear();
     match reader.read_line(&mut line).await {
@@ -557,16 +565,14 @@ async fn pump_stream<R>(
         // alternative (sharing through Arc<str>) costs more allocs
         // overall under steady-state write rate.
         inner.ring.lock().await.push(scratch.clone());
-        let mut file = log_file.lock().await;
-        if let Err(e) = file.write_line(scratch.as_bytes()).await {
-          // Don't spin: a closed file (disk full, fs ro'd) is a
-          // terminal condition for this stream. The child keeps
-          // running and the ring buffer still captures lines for the
-          // TUI Logs tab.
-          log::warn!(
-            "supervisor: {source} log write failed: {e}; logs to disk paused for this launch"
-          );
-          return;
+        if !disk_writes_disabled {
+          let mut file = log_file.lock().await;
+          if let Err(e) = file.write_line(scratch.as_bytes()).await {
+            log::warn!(
+              "supervisor: {source} log write failed: {e}; disk capture paused for this launch (ring buffer continues)"
+            );
+            disk_writes_disabled = true;
+          }
         }
       }
       Err(e) => {
