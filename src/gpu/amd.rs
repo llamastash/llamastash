@@ -64,7 +64,19 @@ pub(crate) fn parse(stdout: &str) -> Vec<GpuDevice> {
         continue;
       };
       let total = pick_u64(card, &["VRAM Total Memory (B)", "vram total memory (B)"]);
-      let used = pick_u64(card, &["VRAM Used Memory (B)", "vram used memory (B)"]);
+      // Newer rocm-smi releases emit `VRAM Total Used Memory (B)`
+      // (note the extra "Total"); older releases drop "Total" from
+      // the key. Probe both spellings so we don't silently read 0
+      // used VRAM on Strix Halo / RDNA4 boxes.
+      let used = pick_u64(
+        card,
+        &[
+          "VRAM Total Used Memory (B)",
+          "VRAM Used Memory (B)",
+          "vram total used memory (B)",
+          "vram used memory (B)",
+        ],
+      );
       let utilization_pct = pick_f32(card, &["GPU use (%)", "gpu use (%)", "GPU Use (%)"]);
       // ROCm reports edge temperature on a per-sensor basis; the
       // canonical key is `Temperature (Sensor edge) (C)`, with

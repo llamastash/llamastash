@@ -20,7 +20,7 @@ pub mod metal;
 pub mod nvidia;
 pub mod vulkan;
 
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -35,7 +35,17 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// child is killed; the call returns `None` so the probe chain can
 /// fall through to the next backend instead of stalling the daemon.
 pub(crate) fn run_with_timeout(mut cmd: Command) -> Option<Output> {
-  let mut child = cmd.spawn().ok()?;
+  // `Command::spawn()` inherits the parent's stdio by default, which
+  // means `wait_with_output()` would return empty buffers — and
+  // every probe would silently fall through to `CpuOnly` despite a
+  // working vendor binary. Pipe stdout/stderr explicitly so the
+  // child's output is captured the way `Command::output()` would.
+  let mut child = cmd
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .stdin(Stdio::null())
+    .spawn()
+    .ok()?;
   let deadline = std::time::Instant::now() + PROBE_TIMEOUT;
   loop {
     match child.try_wait() {
