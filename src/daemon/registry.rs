@@ -7,12 +7,12 @@
 //! same GGUF can be launched twice (different ports, different
 //! purposes) without collisions.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex as TokioMutex, RwLock};
 
 use crate::daemon::supervisor::ManagedModel;
 
@@ -39,6 +39,13 @@ impl LaunchId {
 pub struct SupervisorRegistry {
   inner: Arc<RwLock<BTreeMap<LaunchId, ManagedModel>>>,
   counter: Arc<AtomicU64>,
+  /// Ports chosen by `reserve_port` but not yet inserted into a
+  /// supervisor. Held under a tokio mutex so the
+  /// "choose + reserve + spawn" sequence is serialised; without this
+  /// two concurrent `start_model` calls would observe the same
+  /// `collect_in_use_ports` snapshot, both bind-probe the same free
+  /// port, and the second spawn's `llama-server` would fail to bind.
+  reserved_ports: Arc<TokioMutex<BTreeSet<u16>>>,
 }
 
 impl SupervisorRegistry {
@@ -82,6 +89,44 @@ impl SupervisorRegistry {
 
   pub async fn is_empty(&self) -> bool {
     self.inner.read().await.is_empty()
+  }
+
+  /// Atomically pick a port and add it to the in-flight reservation
+  /// set, given the live-supervisor ports the caller already knows
+  /// about. The returned port is held in the reservation set until
+  /// [`release_reserved_port`] is called. Use this from
+  /// `start_model` to close the choose-and-reserve race against
+  /// concurrent IPC clients.
+  pub async fn reserve_port(
+    &self,
+    requested: Option<u16>,
+    live_in_use: &[u16],
+    range: &crate::config::loader::PortRange,
+  ) -> Result<u16, String> {
+    let mut reserved = self.reserved_ports.lock().await;
+    let mut combined: Vec<u16> = live_in_use.to_vec();
+    combined.extend(reserved.iter().copied());
+    let chosen = match requested {
+      Some(p) => {
+        if reserved.contains(&p) || live_in_use.contains(&p) {
+          return Err(format!(
+            "port {p} is already in use by another launch"
+          ));
+        }
+        p
+      }
+      None => crate::daemon::ports::allocate(range, &combined).map_err(|e| e.to_string())?,
+    };
+    reserved.insert(chosen);
+    Ok(chosen)
+  }
+
+  /// Drop a port from the in-flight reservation set, typically called
+  /// once the supervisor has been inserted into `inner` (so its port
+  /// is visible via the normal supervisor snapshot path) or when a
+  /// spawn fails and the reservation should be released for retry.
+  pub async fn release_reserved_port(&self, port: u16) {
+    self.reserved_ports.lock().await.remove(&port);
   }
 }
 

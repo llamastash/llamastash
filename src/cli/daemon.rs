@@ -125,6 +125,7 @@ pub(crate) fn build_options(
     }
   };
   opts.port_range = config.port_range;
+  opts.probe_timeout_secs = Some(config.probe_timeout_secs);
   Ok(opts)
 }
 

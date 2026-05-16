@@ -65,6 +65,11 @@ pub struct DaemonOptions {
   /// or CLI; tests construct one of these with a temp dir seeded
   /// with `.gguf` fixtures.
   pub discovery: DiscoveryOptions,
+  /// Per-launch health-probe deadline. `None` keeps the
+  /// [`ProbeOptions::default`] timeout (120 s); production wiring
+  /// passes through `Config::probe_timeout_secs` so users can raise
+  /// it for very large models on slow disks.
+  pub probe_timeout_secs: Option<u64>,
 }
 
 impl DaemonOptions {
@@ -82,6 +87,7 @@ impl DaemonOptions {
       binary: None,
       port_range: PortRange::default(),
       discovery: DiscoveryOptions::new(Vec::new()),
+      probe_timeout_secs: None,
     }
   }
 
@@ -104,6 +110,7 @@ impl DaemonOptions {
       // Empty roots still produce a working daemon — `list_models`
       // returns `{"models": []}`.
       discovery: DiscoveryOptions::new(Vec::new()),
+      probe_timeout_secs: None,
     })
   }
 }
@@ -173,22 +180,46 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   };
 
   // 6. Orphan / external sweep. Live recorded PIDs that still answer
-  // `/v1/models` correctly are kept; the rest are dropped. We do
-  // not yet rebuild full `ManagedModel` instances for adopted
-  // entries — that requires re-attaching to the live child's
-  // stdout/stderr, which is a Phase 2 follow-up. For now the
-  // adopted snapshots survive in `state.running` so a future daemon
-  // restart still sees them, and the IPC `status` handler reflects
-  // the result.
+  // `/v1/models` correctly are surfaced as *external* processes
+  // (read-only; `stop_external` can target them) rather than re-
+  // entering `state.running`. Rebuilding a full `ManagedModel` for
+  // an adopted entry would require re-attaching to the live child's
+  // stdout/stderr, which isn't feasible after process boundaries.
+  // Without this routing change, adopted entries would persist in
+  // `state.running` forever — `stop_model` returns InvalidParams
+  // for them (no live supervisor), and every subsequent restart
+  // would re-adopt the same row.
   let recorded_running: Vec<RunningSnapshot> = persisted_state.running.clone();
   let sweep = orphans::sweep(orphans::SweepInputs::new(&recorded_running)).await;
   let mut state_after_sweep = persisted_state;
-  state_after_sweep.running = sweep.adopted.clone();
+  // Clear `running` — only the IPC `start_model` path repopulates
+  // this slot via live supervisors going forward.
+  state_after_sweep.running.clear();
   if let Err(e) = state_store::save(&opts.state_dir, &state_after_sweep) {
     log::warn!("state-store: failed to persist after orphan sweep: {e}");
   }
+  // Merge adopted snapshots into the external slot. They share the
+  // ExternalProcess shape (pid + cmdline + model_path); a synthetic
+  // cmdline + best-effort start_time keeps the structure consistent.
+  let mut external_combined = sweep.external.clone();
+  for adopted in &sweep.adopted {
+    if external_combined.iter().any(|e| e.pid == adopted.pid as u32) {
+      continue;
+    }
+    let start_time_secs = lookup_start_time(adopted.pid as u32).unwrap_or(0);
+    external_combined.push(orphans::ExternalProcess {
+      pid: adopted.pid as u32,
+      cmdline: format!(
+        "llama-server --port {} -m {}",
+        adopted.port,
+        adopted.id.path.display()
+      ),
+      model_path: Some(adopted.id.path.clone()),
+      start_time_secs,
+    });
+  }
   log::info!(
-    "orphan sweep: {} adopted, {} stale, {} external",
+    "orphan sweep: {} adopted (now external), {} stale, {} external",
     sweep.adopted.len(),
     sweep.stale.len(),
     sweep.external.len()
@@ -205,7 +236,7 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
     .with_supervisors(supervisors)
     .with_gpu(gpu)
     .with_state(persisted)
-    .with_external(sweep.external.clone());
+    .with_external(external_combined);
   if let Some(binary) = opts.binary.clone() {
     if let Err(e) = std::fs::create_dir_all(&opts.log_dir) {
       log::warn!(
@@ -213,11 +244,18 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
         opts.log_dir.display()
       );
     }
+    let probe = match opts.probe_timeout_secs {
+      Some(secs) => ProbeOptions {
+        timeout: std::time::Duration::from_secs(secs),
+        ..ProbeOptions::default()
+      },
+      None => ProbeOptions::default(),
+    };
     ctx = ctx.with_launch_env(LaunchEnv {
       binary,
       port_range: opts.port_range,
       log_dir: opts.log_dir.clone(),
-      probe: ProbeOptions::default(),
+      probe,
     });
   } else {
     log::info!(
@@ -234,6 +272,19 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   drop(lockfile);
 
   result.map(|()| StartOutcome::RanToCompletion)
+}
+
+/// Best-effort `start_time` lookup for a PID. Used to seed
+/// [`ExternalProcess::start_time_secs`] for adopted entries the
+/// daemon can't itself supervise. Falls back to 0 if `sysinfo` has
+/// no record (rare; means the PID has already exited).
+fn lookup_start_time(pid: u32) -> Option<u64> {
+  use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
+  let mut sys = System::new_with_specifics(
+    RefreshKind::new().with_processes(ProcessRefreshKind::everything()),
+  );
+  sys.refresh_process(Pid::from_u32(pid));
+  sys.process(Pid::from_u32(pid)).map(|p| p.start_time())
 }
 
 /// Move a malformed `state.json` aside so the daemon can restart

@@ -403,15 +403,15 @@ async fn stop_model_handler(
         format!("unknown launch_id: {}", parsed.launch_id.as_str()),
       )
     })?;
+  let stopped_port = model.port();
   let final_state = model.stop(Duration::from_secs(parsed.grace_secs)).await;
   ctx.supervisors.remove(&parsed.launch_id).await;
-  // Drop the running snapshot for this model so a daemon restart
-  // doesn't try to re-adopt a process we just stopped. Identified by
-  // ModelId — the supervisor's `id()` is the canonical anchor.
+  // Drop the running snapshot keyed by `(id, port)` so a second
+  // launch of the same GGUF on a different port keeps its row.
   let stopped_id = model.id().clone();
   ctx
     .state
-    .mutate(|s| s.running.retain(|r| r.id != stopped_id))
+    .mutate(|s| s.running.retain(|r| !(r.id == stopped_id && r.port == stopped_port)))
     .await;
   Ok(json!({
     "launch_id": parsed.launch_id,
@@ -439,22 +439,78 @@ async fn stop_external_handler(
   params: Option<Value>,
 ) -> Result<Value, ErrorObject> {
   let parsed: StopExternalParams = parse_params(params)?;
-  // Confirm the PID is one we surfaced as external — refuse to
-  // kill arbitrary processes the caller might point at us.
-  let known = ctx
-    .external
-    .read()
-    .await
-    .iter()
-    .any(|e| e.pid == parsed.pid);
-  if !known {
+  // Confirm the PID is one we surfaced as external and snapshot
+  // its recorded start_time. We later re-verify the live
+  // start_time matches before each signal to defend against PID
+  // recycling: if the original process exits during the grace
+  // window and the kernel hands the pid to an unrelated process,
+  // its start_time will differ from our snapshot and we refuse to
+  // signal it.
+  let recorded_start_time = {
+    let known = ctx
+      .external
+      .read()
+      .await
+      .iter()
+      .find(|e| e.pid == parsed.pid)
+      .map(|e| e.start_time_secs);
+    match known {
+      Some(s) => s,
+      None => {
+        return Err(ErrorObject::new(
+          ErrorCode::InvalidParams,
+          format!("pid {} is not a known external llama-server", parsed.pid),
+        ))
+      }
+    }
+  };
+  // Bound the pid cast: a u32 > i32::MAX flips negative under
+  // `as i32` and `libc::kill(neg, sig)` would signal a process
+  // group. Kernel pid_max on every supported platform is well below
+  // i32::MAX in practice, but the daemon shouldn't trust that.
+  if parsed.pid > i32::MAX as u32 {
     return Err(ErrorObject::new(
       ErrorCode::InvalidParams,
-      format!("pid {} is not a known external llama-server", parsed.pid),
+      format!("pid {} exceeds i32::MAX; refusing to signal", parsed.pid),
     ));
   }
-  // SIGTERM first — give the process time to exit cleanly.
   let pid_i = parsed.pid as i32;
+
+  // Helper: returns Some(true) if alive AND start_time matches, Some(false)
+  // if alive but pid has been reused, None if dead. We sample via
+  // `sysinfo` rather than `kill(pid, 0)` so we can compare start_time
+  // — the cheap liveness check alone can't distinguish recycle.
+  fn live_and_same(pid: u32, expected_start: u64) -> Option<bool> {
+    use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
+    let mut sys = System::new_with_specifics(
+      RefreshKind::new().with_processes(ProcessRefreshKind::everything()),
+    );
+    sys.refresh_process(Pid::from_u32(pid));
+    sys.process(Pid::from_u32(pid))
+      .map(|p| p.start_time() == expected_start)
+  }
+  match live_and_same(parsed.pid, recorded_start_time) {
+    Some(true) => {}
+    Some(false) => {
+      ctx.external.write().await.retain(|e| e.pid != parsed.pid);
+      return Err(ErrorObject::new(
+        ErrorCode::InvalidParams,
+        format!(
+          "pid {} has been recycled; refusing to signal (start_time mismatch)",
+          parsed.pid
+        ),
+      ));
+    }
+    None => {
+      // Already gone — surface as success.
+      ctx.external.write().await.retain(|e| e.pid != parsed.pid);
+      return Ok(json!({
+        "pid": parsed.pid,
+        "killed_with_sigkill": false,
+      }));
+    }
+  }
+  // SIGTERM first — give the process time to exit cleanly.
   unsafe {
     libc::kill(pid_i, libc::SIGTERM);
   }
@@ -462,27 +518,24 @@ async fn stop_external_handler(
   let mut elapsed = Duration::ZERO;
   let step = Duration::from_millis(100);
   while elapsed < grace {
-    // ESRCH (errno 3) → process is gone. `kill(pid, 0)` is the
-    // standard liveness probe; we don't depend on `nix` for it.
-    let alive = unsafe { libc::kill(pid_i, 0) } == 0;
-    if !alive {
-      break;
+    match live_and_same(parsed.pid, recorded_start_time) {
+      Some(true) => {}
+      _ => break, // gone, or pid was recycled — either way stop signalling
     }
     tokio::time::sleep(step).await;
     elapsed += step;
   }
-  // Refresh liveness one last time; SIGKILL if still up.
-  let still_alive = unsafe { libc::kill(pid_i, 0) } == 0;
+  // Final check; SIGKILL only if same process is still up.
   let mut sent_kill = false;
-  if still_alive {
+  if matches!(
+    live_and_same(parsed.pid, recorded_start_time),
+    Some(true)
+  ) {
     unsafe {
       libc::kill(pid_i, libc::SIGKILL);
     }
     sent_kill = true;
   }
-  // Drop the entry from the in-memory external slot so the next
-  // `status` doesn't keep surfacing a ghost; a real re-sweep will
-  // repopulate it if the user spawns another unmanaged process.
   ctx.external.write().await.retain(|e| e.pid != parsed.pid);
   Ok(json!({
     "pid": parsed.pid,
@@ -492,18 +545,35 @@ async fn stop_external_handler(
 
 async fn stop_all_handler(ctx: &MethodContext) -> Result<Value, ErrorObject> {
   let snap = ctx.supervisors.snapshot().await;
-  let mut stopped: Vec<Value> = Vec::with_capacity(snap.len());
-  let mut stopped_ids: Vec<ModelId> = Vec::with_capacity(snap.len());
-  for (launch_id, model) in snap {
-    let s = model.stop(Duration::from_secs(default_grace_secs())).await;
+  // Run the per-launch stops concurrently. Sequential iteration on
+  // the original implementation serialised N × grace_secs, which
+  // could blow the default IPC client timeout (5 s) for 2+ stuck
+  // launches. `join_all` brings the wall-clock back to the slowest
+  // stop, not the sum.
+  use futures::future::join_all;
+  let grace = Duration::from_secs(default_grace_secs());
+  let stops = snap.into_iter().map(|(launch_id, model)| async move {
+    let final_state = model.stop(grace).await;
+    let model_id = model.id().clone();
+    let port = model.port();
+    (launch_id, model_id, port, final_state)
+  });
+  let outcomes = join_all(stops).await;
+
+  let mut stopped: Vec<Value> = Vec::with_capacity(outcomes.len());
+  let mut stopped_keys: Vec<(ModelId, u16)> = Vec::with_capacity(outcomes.len());
+  for (launch_id, model_id, port, final_state) in outcomes {
     ctx.supervisors.remove(&launch_id).await;
-    stopped_ids.push(model.id().clone());
-    stopped.push(json!({"launch_id": launch_id, "state": s}));
+    stopped_keys.push((model_id, port));
+    stopped.push(json!({"launch_id": launch_id, "state": final_state}));
   }
-  if !stopped_ids.is_empty() {
+  if !stopped_keys.is_empty() {
     ctx
       .state
-      .mutate(|s| s.running.retain(|r| !stopped_ids.contains(&r.id)))
+      .mutate(|s| {
+        s.running
+          .retain(|r| !stopped_keys.iter().any(|(id, port)| *id == r.id && *port == r.port))
+      })
       .await;
   }
   Ok(json!({"stopped": stopped}))
@@ -580,6 +650,12 @@ impl From<LaunchModeWire> for LaunchMode {
   }
 }
 
+/// Upper bound on `ctx` (token-window) advertised on the IPC. The TUI
+/// picker caps at 131_072 but CLI + direct JSON-RPC callers bypass
+/// that; this stops a buggy or malicious request from sending
+/// `--ctx u32::MAX` straight to llama-server.
+const MAX_CTX_TOKENS: u32 = 1_048_576;
+
 async fn start_model_handler(
   ctx: &MethodContext,
   params: Option<Value>,
@@ -605,17 +681,42 @@ async fn start_model_handler(
     .map(LaunchMode::from)
     .unwrap_or(LaunchMode::Chat);
 
-  // Port allocation.
-  let in_use = collect_in_use_ports(ctx).await;
-  let port = match parsed.port {
-    Some(requested) => requested,
-    None => crate::daemon::ports::allocate(&env.port_range, &in_use).map_err(|e| {
-      ErrorObject::new(
-        ErrorCode::InternalError,
-        format!("port allocation failed: {e}"),
-      )
-    })?,
-  };
+  // Reject pinned port values that would corrupt our internal state
+  // or require root: 0 means "OS pick" (llama-server would pick a
+  // port we never track), <1024 needs root and is almost certainly
+  // a typo / hostile.
+  if let Some(p) = parsed.port {
+    if p == 0 || p < 1024 {
+      return Err(ErrorObject::new(
+        ErrorCode::InvalidParams,
+        format!("port {p} is not in the allowed range (>= 1024, not 0)"),
+      ));
+    }
+  }
+  // Validate ctx token-window bound.
+  if let Some(c) = parsed.ctx {
+    if c > MAX_CTX_TOKENS {
+      return Err(ErrorObject::new(
+        ErrorCode::InvalidParams,
+        format!("ctx {c} exceeds maximum {MAX_CTX_TOKENS}"),
+      ));
+    }
+  }
+
+  // Port allocation — race-safe. `reserve_port` is a CAS across
+  // `collect_in_use_ports → allocate → reserve` so two concurrent
+  // `start_model` calls cannot both walk away with the same port.
+  // We must collect the live in-use list before taking the
+  // reservation mutex, since `collect_in_use_ports` itself awaits
+  // supervisor read locks.
+  let live_in_use = collect_in_use_ports(ctx).await;
+  let port = ctx
+    .supervisors
+    .reserve_port(parsed.port, &live_in_use, &env.port_range)
+    .await
+    .map_err(|e| {
+      ErrorObject::new(ErrorCode::InternalError, format!("port allocation failed: {e}"))
+    })?;
 
   // Compose LaunchParams.
   let mut launch_params = LaunchParams::new(parsed.model_path.clone(), mode);
@@ -641,7 +742,7 @@ async fn start_model_handler(
   // Per-launch log file under cache_dir/logs/<short-id>-<ts>.log.
   let log_path = build_log_path(&env.log_dir, &id);
 
-  let model = supervisor_spawn(ManagedSpawn {
+  let spawn_result = supervisor_spawn(ManagedSpawn {
     id: id.clone(),
     binary: env.binary.clone(),
     params: launch_params.clone(),
@@ -650,16 +751,31 @@ async fn start_model_handler(
     log_path: log_path.clone(),
     probe: env.probe,
   })
-  .await
-  .map_err(|e| ErrorObject::new(ErrorCode::InternalError, format!("supervisor spawn: {e}")))?;
+  .await;
+  let model = match spawn_result {
+    Ok(m) => m,
+    Err(e) => {
+      // Free the reserved port so a retry can re-use it.
+      ctx.supervisors.release_reserved_port(port).await;
+      return Err(ErrorObject::new(
+        ErrorCode::InternalError,
+        format!("supervisor spawn: {e}"),
+      ));
+    }
+  };
 
   let launch_id = ctx.supervisors.next_id();
   ctx
     .supervisors
     .insert(launch_id.clone(), model.clone())
     .await;
+  // Live supervisor now owns the port; drop the in-flight reservation.
+  ctx.supervisors.release_reserved_port(port).await;
 
-  // Persist running snapshot + watch for Ready to stamp last_params.
+  // Persist running snapshot. Retain by `(id, port)` so the same
+  // GGUF launched twice against different ports persists both
+  // snapshots — the orphan sweep can then re-adopt either one on
+  // daemon restart instead of silently dropping the older.
   let pid = model.pid().await.unwrap_or(0) as i32;
   let started_at = SystemTime::now()
     .duration_since(UNIX_EPOCH)
@@ -668,7 +784,7 @@ async fn start_model_handler(
   ctx
     .state
     .mutate(|s| {
-      s.running.retain(|r| r.id != id);
+      s.running.retain(|r| !(r.id == id && r.port == port));
       s.running.push(RunningSnapshot {
         id: id.clone(),
         pid,

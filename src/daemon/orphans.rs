@@ -49,6 +49,15 @@ pub struct ExternalProcess {
   /// Helps the user identify which model is running outside
   /// llamatui's control.
   pub model_path: Option<PathBuf>,
+  /// Boot-time snapshot of the process's start_time (seconds since
+  /// kernel boot or epoch, depending on platform). Used by
+  /// `stop_external` to defend against PID-recycling: if the
+  /// process's current start_time has changed between the sweep
+  /// snapshot and the stop request, the original process has exited
+  /// and the kernel has handed the pid to someone else — refuse to
+  /// signal.
+  #[serde(default)]
+  pub start_time_secs: u64,
 }
 
 /// Inputs to a sweep — the daemon hands them in.
@@ -121,10 +130,12 @@ pub async fn sweep(inputs: SweepInputs<'_>) -> SweepReport {
         return None;
       }
       let model_path = extract_model_path(&cmd);
+      let start_time_secs = proc.start_time();
       Some(ExternalProcess {
         pid: pid_u32,
         cmdline: cmd.join(" "),
         model_path,
+        start_time_secs,
       })
     })
     .collect();
@@ -205,24 +216,43 @@ fn split_status_and_body(bytes: &[u8]) -> Option<(u16, &[u8])> {
   Some((status, body))
 }
 
-/// Permissive match: the body text must contain the expected
-/// canonical path *or* its trailing file name. `llama-server`
-/// reports the literal `-m <path>` argument the user supplied; we
-/// canonicalised on launch but the daemon may have been restarted
-/// after a `mv`, so we also accept a basename match as a fallback
-/// signal that a re-adopt is warranted.
+/// Strict match: parse the `/v1/models` body as JSON and accept
+/// adoption only when the documented `data[].id` field equals the
+/// expected path exactly. This is tighter than the previous
+/// substring-anywhere match, which would falsely adopt any local
+/// process whose response body happened to contain the basename
+/// (think `python -m http.server` serving a directory whose
+/// listing mentions `llama.gguf`). The strict match is the right
+/// boundary because llama-server emits the literal `-m <path>` it
+/// received and we recorded the same canonical path on launch.
 fn body_mentions_path(body: &[u8], expected: &Path) -> bool {
   let Ok(text) = std::str::from_utf8(body) else {
     return false;
   };
-  let path_str = expected.to_string_lossy();
-  if !path_str.is_empty() && text.contains(path_str.as_ref()) {
-    return true;
+  // Fast reject: if the canonical path text isn't anywhere in the
+  // body, no JSON shape can match.
+  let expected_str = expected.to_string_lossy();
+  if expected_str.is_empty() || !text.contains(expected_str.as_ref()) {
+    return false;
   }
-  match expected.file_name().and_then(|n| n.to_str()) {
-    Some(name) if !name.is_empty() => text.contains(name),
-    _ => false,
-  }
+  // Parse the body strictly. Only accept the documented OpenAI
+  // shape `{ "data": [ { "id": "<path>" }, ... ] }`. Any extra
+  // fields are allowed (forward-compatible); a substring-only hit
+  // outside `data[].id` is rejected as accidental.
+  let parsed: serde_json::Value = match serde_json::from_str(text) {
+    Ok(v) => v,
+    Err(_) => return false,
+  };
+  let Some(arr) = parsed.get("data").and_then(|v| v.as_array()) else {
+    return false;
+  };
+  arr.iter().any(|row| {
+    row
+      .get("id")
+      .and_then(|v| v.as_str())
+      .map(|id| id == expected_str.as_ref())
+      .unwrap_or(false)
+  })
 }
 
 /// Lift `-m <path>` out of a llama-server cmdline. Returns the
@@ -341,13 +371,23 @@ mod tests {
   }
 
   #[test]
-  fn body_mentions_path_matches_full_or_basename() {
-    let body = b"{\"data\":[{\"id\":\"/m/a.gguf\"}]}";
+  fn body_mentions_path_requires_strict_id_match() {
+    let body = br#"{"data":[{"id":"/m/a.gguf","object":"model"}]}"#;
     assert!(body_mentions_path(body, Path::new("/m/a.gguf")));
-    let body_renamed = b"{\"data\":[{\"id\":\"/different/dir/a.gguf\"}]}";
-    assert!(body_mentions_path(body_renamed, Path::new("/m/a.gguf")));
-    let body_other = b"{\"data\":[{\"id\":\"/m/other.gguf\"}]}";
+    // Same basename in a different directory must NOT adopt. This is
+    // the PID-reuse / friendly-fire case the strict matcher rejects.
+    let body_renamed = br#"{"data":[{"id":"/different/dir/a.gguf"}]}"#;
+    assert!(!body_mentions_path(body_renamed, Path::new("/m/a.gguf")));
+    let body_other = br#"{"data":[{"id":"/m/other.gguf"}]}"#;
     assert!(!body_mentions_path(body_other, Path::new("/m/a.gguf")));
+    // Non-OpenAI shape that merely contains the path text must be
+    // rejected — the legacy substring matcher would have accepted.
+    let body_html =
+      b"<html><body>I serve /m/a.gguf here, but not as a llama-server</body></html>";
+    assert!(!body_mentions_path(body_html, Path::new("/m/a.gguf")));
+    // Decoy field with the right value but not at `data[].id`.
+    let body_decoy = br#"{"notes":"/m/a.gguf","data":[{"id":"/m/other.gguf"}]}"#;
+    assert!(!body_mentions_path(body_decoy, Path::new("/m/a.gguf")));
   }
 
   #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -26,7 +26,7 @@ const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 /// when new fields are added (forward-compat). Unknown values within a known
 /// field (e.g. a non-existent theme name) still error, which is intentional —
 /// silent typo tolerance for theme names would mask a real user problem.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "snake_case")]
 pub struct Config {
   pub theme: ThemeName,
@@ -36,6 +36,27 @@ pub struct Config {
   pub llama_server_path: Option<PathBuf>,
   pub keybindings: BTreeMap<String, String>,
   pub disable_scan: bool,
+  /// Per-launch health-probe timeout in seconds. Defaults to 120 s,
+  /// which is enough for the typical 7B–13B model on local NVMe but
+  /// can be tight for 70B+ on slow disks. Raise to e.g. 600 if you
+  /// hit `health probe timeout (last status 503)` for legitimate
+  /// loads.
+  pub probe_timeout_secs: u64,
+}
+
+impl Default for Config {
+  fn default() -> Self {
+    Self {
+      theme: ThemeName::default(),
+      model_paths: Vec::new(),
+      disable_default_cache_paths: CachePathsConfig::default(),
+      port_range: PortRange::default(),
+      llama_server_path: None,
+      keybindings: BTreeMap::new(),
+      disable_scan: false,
+      probe_timeout_secs: 120,
+    }
+  }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

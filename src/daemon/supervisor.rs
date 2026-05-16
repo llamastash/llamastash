@@ -22,7 +22,7 @@
 //!    alive. State transitions reflect each step.
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -31,6 +31,11 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, RwLock};
+
+/// Rotate logs at this byte size. Matches the module-level docstring.
+const LOG_ROTATE_BYTES: u64 = 10 * 1024 * 1024;
+/// Keep this many rotated segments (`<base>.1` … `<base>.N`).
+const LOG_KEEP_SEGMENTS: usize = 5;
 
 use crate::daemon::probe::{self, ProbeOptions, ProbeOutcome};
 use crate::gguf::identity::ModelId;
@@ -139,23 +144,22 @@ impl ManagedModel {
     self.inner.ring.lock().await.tail(max)
   }
 
-  /// Trigger graceful shutdown: SIGTERM, 5 s grace, then SIGKILL.
-  /// Returns once the child has fully exited.
+  /// Trigger graceful shutdown: SIGTERM, `grace` to honor it, then
+  /// SIGKILL. Returns once the child has fully exited.
+  ///
+  /// Signal delivery is guarded against PID reuse: we re-check that
+  /// the `Child` handle still reports a non-reaped pid under the
+  /// child mutex before each `libc::kill`. Without this guard, a
+  /// kernel that recycled the child's pid for an unrelated process
+  /// during the grace window could see our SIGKILL.
   pub async fn stop(&self, grace: Duration) -> ManagedState {
     self.transition(ManagedState::Stopping).await;
-    let pid = match *self.inner.pid.read().await {
-      Some(p) => p as i32,
-      None => {
-        // Spawn never completed; nothing to signal.
-        self.transition(ManagedState::Stopped).await;
-        return self.state().await;
-      }
-    };
-    // SIGTERM first. Best-effort: a "no such process" return value
-    // just means the child already exited.
-    unsafe {
-      libc::kill(pid, libc::SIGTERM);
+    if self.inner.pid.read().await.is_none() {
+      // Spawn never completed; nothing to signal.
+      self.transition(ManagedState::Stopped).await;
+      return self.state().await;
     }
+    signal_child_with_guard(self, libc::SIGTERM).await;
     let deadline = Instant::now() + grace;
     loop {
       if let Some(child) = self.inner.child.lock().await.as_mut() {
@@ -166,9 +170,7 @@ impl ManagedModel {
         break;
       }
       if Instant::now() >= deadline {
-        unsafe {
-          libc::kill(pid, libc::SIGKILL);
-        }
+        signal_child_with_guard(self, libc::SIGKILL).await;
         // Wait for exit; SIGKILL is unignorable so this completes.
         if let Some(child) = self.inner.child.lock().await.as_mut() {
           let _ = child.wait().await;
@@ -253,13 +255,10 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
   // Prepare the log file lazily — opening it ahead of the child
   // lets us bail out cleanly if the cache_dir/logs/ tree is
   // unwritable.
-  ensure_parent(&input.log_path).map_err(|e| SpawnError::Log(e.to_string()))?;
-  let log_file = std::fs::OpenOptions::new()
-    .create(true)
-    .append(true)
-    .open(&input.log_path)
+  let log_file = LogWriter::open(input.log_path.clone())
+    .await
     .map_err(|e| SpawnError::Log(e.to_string()))?;
-  let log_file = Arc::new(Mutex::new(tokio::fs::File::from_std(log_file)));
+  let log_file = Arc::new(Mutex::new(log_file));
 
   let stdout = child.stdout.take().expect("piped stdout");
   let stderr = child.stderr.take().expect("piped stderr");
@@ -279,26 +278,33 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
   let model = ManagedModel { inner };
 
   // Stream-pump tasks for stdout + stderr → ring buffer + log file.
-  let pump_stdout = pump_stream(
-    BufReader::new(stdout),
-    Arc::clone(&model.inner),
-    Arc::clone(&log_file),
-    "stdout",
+  // Each task is wrapped in `spawn_supervised` so a panic surfaces as
+  // a logged error instead of being silently swallowed by tokio. The
+  // watchdog task is cheap (one extra `.await` on the JoinHandle).
+  spawn_supervised(
+    "pump_stdout",
+    pump_stream(
+      BufReader::new(stdout),
+      Arc::clone(&model.inner),
+      Arc::clone(&log_file),
+      "stdout",
+    ),
   );
-  let pump_stderr = pump_stream(
-    BufReader::new(stderr),
-    Arc::clone(&model.inner),
-    Arc::clone(&log_file),
-    "stderr",
+  spawn_supervised(
+    "pump_stderr",
+    pump_stream(
+      BufReader::new(stderr),
+      Arc::clone(&model.inner),
+      Arc::clone(&log_file),
+      "stderr",
+    ),
   );
-  tokio::spawn(pump_stdout);
-  tokio::spawn(pump_stderr);
 
   // Transition to Loading and kick off the probe.
   model.transition(ManagedState::Loading).await;
   let probe_model = model.clone();
   let probe_opts = input.probe;
-  tokio::spawn(async move {
+  spawn_supervised("probe", async move {
     let outcome = probe::poll_until_ready(probe_model.inner.port, probe_opts).await;
     match outcome {
       ProbeOutcome::Ready => {
@@ -319,14 +325,15 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
           cause.push_str("; last stderr lines:\n");
           cause.push_str(&tail.join("\n"));
         }
+        // The transition is guarded — if the user already initiated
+        // stop, this is a no-op and the SIGKILL below is the only
+        // useful side-effect.
         probe_model.transition(ManagedState::Error { cause }).await;
         // Best-effort SIGKILL so we don't leave the unresponsive
-        // child draining resources.
-        if let Some(child_pid) = probe_model.pid().await {
-          unsafe {
-            libc::kill(child_pid as i32, libc::SIGKILL);
-          }
-        }
+        // child draining resources. Guarded against PID reuse by
+        // taking the child mutex and re-verifying the handle is
+        // still alive — see [`signal_child_with_guard`].
+        signal_child_with_guard(&probe_model, libc::SIGKILL).await;
       }
     }
   });
@@ -342,7 +349,7 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
   // ultimately writes through, so a concurrent probe transition can't
   // sneak in between read and write.
   let watcher_model = model.clone();
-  tokio::spawn(async move {
+  spawn_supervised("exit_watcher", async move {
     loop {
       let mut guard = watcher_model.inner.child.lock().await;
       let watched = match guard.as_mut() {
@@ -388,6 +395,52 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
   Ok(model)
 }
 
+/// Spawn `fut` and forward any panic to the log instead of letting
+/// it disappear when the `JoinHandle` is dropped. The watchdog task
+/// only runs while the outer task is alive; it does not own a copy
+/// of the work itself.
+fn spawn_supervised<F>(name: &'static str, fut: F)
+where
+  F: std::future::Future<Output = ()> + Send + 'static,
+{
+  let handle = tokio::spawn(fut);
+  tokio::spawn(async move {
+    if let Err(e) = handle.await {
+      if e.is_panic() {
+        log::error!("supervisor: task {name} panicked: {e}");
+      } else if e.is_cancelled() {
+        log::debug!("supervisor: task {name} cancelled");
+      }
+    }
+  });
+}
+
+/// Send `sig` to the supervised child, holding the child mutex
+/// across the syscall so a concurrent reap can't recycle the pid
+/// while we're delivering. If the child handle has already been
+/// reaped (`Ok(Some(_))` from `try_wait`) or never spawned, this
+/// is a no-op.
+async fn signal_child_with_guard(model: &ManagedModel, sig: libc::c_int) {
+  let mut guard = model.inner.child.lock().await;
+  let Some(child) = guard.as_mut() else {
+    return;
+  };
+  // Re-check liveness under the lock. If `try_wait` says
+  // `Ok(Some(_))`, the kernel has reaped the zombie and the pid is
+  // a candidate for recycling — don't signal.
+  if !matches!(child.try_wait(), Ok(None)) {
+    return;
+  }
+  let Some(pid) = child.id() else { return };
+  // SAFETY: `kill(2)` with a positive pid signals a single process.
+  // `pid` came from a `tokio::process::Child` that is still alive
+  // (we just verified via `try_wait`) and we hold the mutex across
+  // the call so it cannot be reaped between the check and the send.
+  unsafe {
+    libc::kill(pid as i32, sig);
+  }
+}
+
 /// Errors `spawn` can return synchronously.
 #[derive(Debug)]
 pub enum SpawnError {
@@ -408,33 +461,46 @@ impl std::fmt::Display for SpawnError {
 
 impl std::error::Error for SpawnError {}
 
-fn ensure_parent(path: &std::path::Path) -> std::io::Result<()> {
-  if let Some(parent) = path.parent() {
-    std::fs::create_dir_all(parent)?;
-  }
-  Ok(())
-}
-
 async fn pump_stream<R>(
   mut reader: BufReader<R>,
   inner: Arc<ManagedInner>,
-  log_file: Arc<Mutex<tokio::fs::File>>,
+  log_file: Arc<Mutex<LogWriter>>,
   source: &'static str,
 ) where
   R: tokio::io::AsyncRead + Unpin,
 {
+  // Reuse one buffer across iterations instead of paying for a fresh
+  // `to_string` + `format!` per line. The prefix never changes for a
+  // given stream so we can format it once and snip the per-line body
+  // in place.
   let mut line = String::new();
+  let prefix = format!("[{source}] ");
+  let mut scratch = String::with_capacity(256);
   loop {
     line.clear();
     match reader.read_line(&mut line).await {
       Ok(0) => return,
       Ok(_) => {
-        let trimmed = line.trim_end_matches(['\n', '\r']).to_string();
-        let stamped = format!("[{source}] {trimmed}");
-        inner.ring.lock().await.push(stamped.clone());
+        let trimmed = line.trim_end_matches(['\n', '\r']);
+        scratch.clear();
+        scratch.push_str(&prefix);
+        scratch.push_str(trimmed);
+        // Ring buffer stores fully-prefixed lines so logs_tail can
+        // emit them verbatim. One owned clone here is the cost; the
+        // alternative (sharing through Arc<str>) costs more allocs
+        // overall under steady-state write rate.
+        inner.ring.lock().await.push(scratch.clone());
         let mut file = log_file.lock().await;
-        let _ = file.write_all(stamped.as_bytes()).await;
-        let _ = file.write_all(b"\n").await;
+        if let Err(e) = file.write_line(scratch.as_bytes()).await {
+          // Don't spin: a closed file (disk full, fs ro'd) is a
+          // terminal condition for this stream. The child keeps
+          // running and the ring buffer still captures lines for the
+          // TUI Logs tab.
+          log::warn!(
+            "supervisor: {source} log write failed: {e}; logs to disk paused for this launch"
+          );
+          return;
+        }
       }
       Err(e) => {
         log::warn!("supervisor: {source} stream read error: {e}");
@@ -442,6 +508,93 @@ async fn pump_stream<R>(
       }
     }
   }
+}
+
+/// Rotating writer for one launch's log file. Wraps a `tokio::fs::File`
+/// plus a running byte counter; when the counter crosses
+/// [`LOG_ROTATE_BYTES`], the current file is renamed to `<base>.1`,
+/// older segments shift up by one, and the [`LOG_KEEP_SEGMENTS`]th
+/// segment is unlinked. Then a fresh file replaces the active path.
+pub(crate) struct LogWriter {
+  path: PathBuf,
+  file: tokio::fs::File,
+  written: u64,
+}
+
+impl LogWriter {
+  pub(crate) async fn open(path: PathBuf) -> std::io::Result<Self> {
+    if let Some(parent) = path.parent() {
+      std::fs::create_dir_all(parent)?;
+    }
+    let std_file = std::fs::OpenOptions::new()
+      .create(true)
+      .append(true)
+      .open(&path)?;
+    let written = std_file.metadata().map(|m| m.len()).unwrap_or(0);
+    let file = tokio::fs::File::from_std(std_file);
+    Ok(Self {
+      path,
+      file,
+      written,
+    })
+  }
+
+  async fn write_line(&mut self, body: &[u8]) -> std::io::Result<()> {
+    self.file.write_all(body).await?;
+    self.file.write_all(b"\n").await?;
+    self.written += body.len() as u64 + 1;
+    if self.written >= LOG_ROTATE_BYTES {
+      // Flush before rotating so the renamed file has every line.
+      let _ = self.file.flush().await;
+      if let Err(e) = self.rotate().await {
+        // Rotation failure shouldn't kill the writer; we just keep
+        // appending to the existing oversize file and try again on
+        // the next line.
+        log::warn!("supervisor: log rotate failed for {}: {e}", self.path.display());
+      }
+    }
+    Ok(())
+  }
+
+  async fn rotate(&mut self) -> std::io::Result<()> {
+    rotate_segments(&self.path, LOG_KEEP_SEGMENTS)?;
+    let std_file = std::fs::OpenOptions::new()
+      .create(true)
+      .append(true)
+      .open(&self.path)?;
+    self.file = tokio::fs::File::from_std(std_file);
+    self.written = 0;
+    Ok(())
+  }
+}
+
+/// Shift `<base>.<N-1>` → `<base>.<N>` for N..=2, rename the active
+/// `<base>` → `<base>.1`, and unlink `<base>.<N+1>` (if any). Pure FS,
+/// no I/O against the open file.
+fn rotate_segments(base: &Path, keep: usize) -> std::io::Result<()> {
+  let segment = |n: usize| -> PathBuf {
+    let mut name = base.file_name().map(|s| s.to_os_string()).unwrap_or_default();
+    name.push(format!(".{n}"));
+    base.with_file_name(name)
+  };
+  // Drop the oldest if we'd otherwise exceed `keep`.
+  let oldest = segment(keep);
+  if oldest.exists() {
+    std::fs::remove_file(&oldest)?;
+  }
+  // Shift remaining segments up: .keep-1 → .keep, .keep-2 → .keep-1, …, .1 → .2.
+  for n in (1..keep).rev() {
+    let from = segment(n);
+    if from.exists() {
+      let to = segment(n + 1);
+      std::fs::rename(&from, &to)?;
+    }
+  }
+  // Rename the active file to .1.
+  if base.exists() {
+    std::fs::rename(base, &segment(1))?;
+  }
+  Ok(())
 }
 
 /// Fixed-capacity ring buffer of stdout/stderr lines. Older lines
