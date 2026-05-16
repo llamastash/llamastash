@@ -88,8 +88,20 @@ fn report(result: CliResult) -> i32 {
 /// Entry point for the TUI (`llamadash` with no subcommand). Returns a
 /// `CliResult` so the dispatcher's exit-code surface stays uniform;
 /// any anyhow failure from the TUI runtime maps to `UNKNOWN`.
-async fn handle_tui(_cli: &Cli, config: &crate::config::Config) -> CliResult {
+///
+/// Mirrors the auto-spawn behavior of every other CLI handler: if
+/// the daemon socket isn't connectable, `connect_or_spawn` starts a
+/// detached daemon configured with `cli.model_paths` / `--no-scan` /
+/// `--llama-server` so discovery and host-metrics populate as soon
+/// as the TUI's event loop attaches. Without this, `llamadash -p
+/// /path` ran with the daemon down displayed an empty Models pane
+/// and "daemon connecting…" indefinitely.
+async fn handle_tui(cli: &Cli, config: &crate::config::Config) -> CliResult {
   let socket = crate::util::paths::runtime_socket_path();
+  // Ensure the daemon is up. We discard the client immediately — the
+  // TUI's writer task reconnects per command, and the reader spawned
+  // by `launch` opens its own connection.
+  let _client = client::connect_or_spawn(cli, config).await?;
   match crate::tui::events::launch(config.theme, &socket).await {
     Ok(()) => Ok(()),
     Err(e) => Err(CliExit::new(exit_codes::UNKNOWN, format!("tui: {e}"))),
