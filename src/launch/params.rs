@@ -7,6 +7,12 @@
 //! user-supplied advanced flags. Advanced flags land *last* so they
 //! always trump bundled ones — that's the contract documented on the
 //! TUI's "Advanced" panel.
+//!
+//! `validate_advanced` enforces the loopback-only and same-UID contract:
+//! a curated denylist (`--host`, `--listen`, `--bind`, `--api-key`,
+//! `--ssl-*`) is refused. llama-server honours the last-occurrence of a
+//! flag, so without this guard a trailing `--host 0.0.0.0` in `advanced`
+//! would expose the model to the LAN.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -14,6 +20,40 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::launch::mode::LaunchMode;
+
+/// Flags refused in `LaunchParams.advanced` because they would break
+/// the loopback-only / same-UID security contract documented in
+/// `docs/architecture.md`. Match is case-insensitive on the flag
+/// itself; `--ssl-*` matches any flag starting with that prefix.
+pub const FORBIDDEN_ADVANCED_PREFIXES: &[&str] = &[
+  "--host",
+  "--listen",
+  "--bind",
+  "--api-key",
+  "--ssl-",
+];
+
+/// Returns the subset of `advanced` flags that hit the denylist. Used
+/// by IPC handlers to refuse a launch before spawn, and by `compose`
+/// to defensively strip in case validation was skipped.
+pub fn forbidden_in_advanced(advanced: &[OsString]) -> Vec<String> {
+  advanced
+    .iter()
+    .filter_map(|s| {
+      let lossy = s.to_string_lossy();
+      let head = lossy.split('=').next().unwrap_or(&lossy);
+      let lower = head.to_ascii_lowercase();
+      if FORBIDDEN_ADVANCED_PREFIXES
+        .iter()
+        .any(|p| lower == *p || (p.ends_with('-') && lower.starts_with(p)))
+      {
+        Some(lossy.into_owned())
+      } else {
+        None
+      }
+    })
+    .collect()
+}
 
 /// All launch knobs the supervisor reads. Persisted under
 /// `last_params: HashMap<ModelId, LaunchParams>` in `state.json`.
@@ -76,7 +116,34 @@ pub fn compose(params: &LaunchParams, allocated_port: u16) -> Vec<OsString> {
     argv.push("-c".into());
     argv.push(ctx.to_string().into());
   }
-  argv.extend(params.advanced.iter().cloned());
+  // Defensive strip: refuse to pass loopback-breaking flags even if
+  // an upstream validator was skipped. Last-occurrence semantics in
+  // llama-server mean a single `--host 0.0.0.0` here would override
+  // the bundled `--host 127.0.0.1` above.
+  let mut iter = params.advanced.iter().peekable();
+  while let Some(adv) = iter.next() {
+    let lossy = adv.to_string_lossy();
+    let head = lossy.split('=').next().unwrap_or(&lossy).to_ascii_lowercase();
+    let banned = FORBIDDEN_ADVANCED_PREFIXES
+      .iter()
+      .any(|p| head == *p || (p.ends_with('-') && head.starts_with(p)));
+    if banned {
+      log::warn!("compose: stripping forbidden advanced flag {lossy:?}");
+      // A token like `--host 0.0.0.0` is two args. Drop the value too
+      // if it's the next non-flag token. `--host=0.0.0.0` is one arg
+      // and already consumed.
+      if !lossy.contains('=') {
+        if let Some(next) = iter.peek() {
+          let next_lossy = next.to_string_lossy();
+          if !next_lossy.starts_with('-') {
+            iter.next();
+          }
+        }
+      }
+      continue;
+    }
+    argv.push(adv.clone());
+  }
   argv
 }
 
@@ -192,5 +259,55 @@ mod tests {
     let argv = strs(&compose(&p, 41200));
     let i = argv.iter().position(|a| a == "--port").unwrap();
     assert_eq!(argv[i + 1], "41200");
+  }
+
+  #[test]
+  fn forbidden_in_advanced_flags_loopback_bypass_attempts() {
+    let advanced = vec![
+      OsString::from("--host"),
+      OsString::from("0.0.0.0"),
+      OsString::from("--LISTEN=0.0.0.0:8080"),
+      OsString::from("--threads"),
+      OsString::from("8"),
+      OsString::from("--api-key"),
+      OsString::from("secret"),
+      OsString::from("--ssl-key-file"),
+      OsString::from("/etc/key.pem"),
+    ];
+    let banned = forbidden_in_advanced(&advanced);
+    assert!(banned.iter().any(|s| s == "--host"));
+    assert!(banned.iter().any(|s| s == "--LISTEN=0.0.0.0:8080"));
+    assert!(banned.iter().any(|s| s == "--api-key"));
+    assert!(banned.iter().any(|s| s == "--ssl-key-file"));
+    assert!(!banned.iter().any(|s| s == "--threads"));
+  }
+
+  #[test]
+  fn compose_strips_forbidden_advanced_flags_and_their_values() {
+    let mut p = base_params();
+    p.advanced = vec![
+      OsString::from("--host"),
+      OsString::from("0.0.0.0"),
+      OsString::from("--threads"),
+      OsString::from("8"),
+      OsString::from("--api-key=secret"),
+      OsString::from("--ssl-key-file"),
+      OsString::from("/etc/key.pem"),
+    ];
+    let argv = strs(&compose(&p, 41100));
+    // Bundled `--host 127.0.0.1` survives; the trailing `--host 0.0.0.0`
+    // and its value have been stripped.
+    let host_count = argv.iter().filter(|a| *a == "--host").count();
+    assert_eq!(host_count, 1, "only the bundled --host should remain");
+    assert!(!argv.iter().any(|a| a == "0.0.0.0"));
+    // --api-key=foo single-token form is dropped.
+    assert!(!argv.iter().any(|a| a.starts_with("--api-key")));
+    assert!(!argv.iter().any(|a| a == "secret"));
+    // --ssl-* prefix match.
+    assert!(!argv.iter().any(|a| a == "--ssl-key-file"));
+    assert!(!argv.iter().any(|a| a == "/etc/key.pem"));
+    // Innocent flags survive in order.
+    let t = argv.iter().position(|a| a == "--threads").unwrap();
+    assert_eq!(argv[t + 1], "8");
   }
 }

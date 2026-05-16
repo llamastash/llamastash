@@ -595,6 +595,20 @@ async fn start_model_handler(
   launch_params.reasoning = parsed.reasoning.unwrap_or(false);
   launch_params.advanced = parsed.advanced.into_iter().map(OsString::from).collect();
 
+  // Reject loopback-breaking / auth-bypass advanced flags before
+  // spawn. `compose` strips defensively too, but failing fast here
+  // gives callers a clear error instead of a silently-different argv.
+  let banned = crate::launch::params::forbidden_in_advanced(&launch_params.advanced);
+  if !banned.is_empty() {
+    return Err(ErrorObject::new(
+      ErrorCode::InvalidParams,
+      format!(
+        "advanced flags refused (loopback / auth contract): {}",
+        banned.join(", ")
+      ),
+    ));
+  }
+
   // Per-launch log file under cache_dir/logs/<short-id>-<ts>.log.
   let log_path = build_log_path(&env.log_dir, &id);
 

@@ -182,9 +182,37 @@ impl ManagedModel {
     self.state().await
   }
 
-  async fn transition(&self, next: ManagedState) {
+  /// Apply a state transition iff it is legal under the documented
+  /// edges:
+  ///
+  /// * `Error` and `Stopped` are terminal — nothing transitions out
+  ///   of them. (This preserves the probe's detailed `Error{cause}`
+  ///   against a follow-up race from the exit-watcher, and stops a
+  ///   long-running probe from clobbering `Stopped` after a
+  ///   user-initiated stop.)
+  /// * `Stopping` only accepts a transition to `Stopped` — once the
+  ///   user initiates stop, neither a late probe-timeout nor a
+  ///   simultaneous Ready signal should pre-empt their intent.
+  ///
+  /// Returns `true` if the transition fired, `false` if it was
+  /// rejected. Callers may ignore the return value when the only
+  /// goal is "make sure we're at least at this terminal state".
+  pub(crate) async fn transition(&self, next: ManagedState) -> bool {
     let mut guard = self.inner.state.write().await;
-    *guard = next;
+    match (&*guard, &next) {
+      // Terminal: don't overwrite.
+      (ManagedState::Error { .. } | ManagedState::Stopped, _) => false,
+      // Stop is in progress: only stop() may complete the journey.
+      (ManagedState::Stopping, ManagedState::Stopped) => {
+        *guard = next;
+        true
+      }
+      (ManagedState::Stopping, _) => false,
+      _ => {
+        *guard = next;
+        true
+      }
+    }
   }
 }
 
@@ -303,8 +331,16 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
     }
   });
 
-  // Also watch for child exit before we ever reach Ready; that's an
-  // Error{cause: "process exited"}.
+  // Watch for child exit. Classification depends on the state the
+  // child died in:
+  //   Launching / Loading → `Error{cause}` with status + stderr tail
+  //   Ready               → `Stopped` (orphan / external kill)
+  //   Stopping            → `Stopped` (let stop() race us; idempotent)
+  //   Error / Stopped     → no-op; probe / stop() already classified
+  //
+  // The classification reads the state under the same write lock it
+  // ultimately writes through, so a concurrent probe transition can't
+  // sneak in between read and write.
   let watcher_model = model.clone();
   tokio::spawn(async move {
     loop {
@@ -317,25 +353,28 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
       drop(guard);
       match try_wait {
         Ok(Some(status)) => {
+          // Snapshot tail before taking the write lock so we don't
+          // hold both locks at once.
+          let tail = watcher_model.tail(50).await;
           let mut state = watcher_model.inner.state.write().await;
-          if matches!(
-            *state,
-            ManagedState::Ready | ManagedState::Stopping | ManagedState::Stopped
-          ) {
-            // Stop path handles its own transitions; Ready → exit
-            // is the orphan-detection job (Unit 5.F).
-            *state = ManagedState::Stopped;
-          } else {
-            let tail = watcher_model.tail(50).await;
-            let mut cause = format!(
-              "process exited before becoming ready (status: {:?})",
-              status.code()
-            );
-            if !tail.is_empty() {
-              cause.push_str("; last stderr lines:\n");
-              cause.push_str(&tail.join("\n"));
+          match &*state {
+            ManagedState::Error { .. } | ManagedState::Stopped => {
+              // Already classified; preserve the more-specific cause.
             }
-            *state = ManagedState::Error { cause };
+            ManagedState::Ready | ManagedState::Stopping => {
+              *state = ManagedState::Stopped;
+            }
+            ManagedState::Launching | ManagedState::Loading => {
+              let mut cause = format!(
+                "process exited before becoming ready (status: {:?})",
+                status.code()
+              );
+              if !tail.is_empty() {
+                cause.push_str("; last stderr lines:\n");
+                cause.push_str(&tail.join("\n"));
+              }
+              *state = ManagedState::Error { cause };
+            }
           }
           return;
         }
@@ -483,5 +522,105 @@ mod tests {
     let r = ManagedState::Ready;
     let s_ready = serde_json::to_string(&r).unwrap();
     assert_eq!(s_ready, "{\"state\":\"ready\"}");
+  }
+
+  fn test_model(initial: ManagedState) -> ManagedModel {
+    let id = ModelId {
+      path: PathBuf::from("/test/m.gguf"),
+      header_blake3: [0u8; 32],
+    };
+    let params = LaunchParams::new(id.path.clone(), LaunchMode::Chat);
+    let inner = Arc::new(ManagedInner {
+      id,
+      port: 41100,
+      mode: LaunchMode::Chat,
+      params,
+      log_path: PathBuf::from("/tmp/llamatui-test.log"),
+      ready_at: RwLock::new(None),
+      state: RwLock::new(initial),
+      pid: RwLock::new(None),
+      ring: Mutex::new(RingBuffer::with_capacity(16)),
+      child: Mutex::new(None),
+    });
+    ManagedModel { inner }
+  }
+
+  #[tokio::test]
+  async fn transition_rejects_moves_out_of_error() {
+    let m = test_model(ManagedState::Error {
+      cause: "probe timeout".into(),
+    });
+    assert!(!m.transition(ManagedState::Ready).await);
+    assert!(!m.transition(ManagedState::Stopped).await);
+    assert!(!m.transition(ManagedState::Stopping).await);
+    // Original cause preserved.
+    match m.state().await {
+      ManagedState::Error { cause } => assert_eq!(cause, "probe timeout"),
+      other => panic!("expected Error, got {other:?}"),
+    }
+  }
+
+  #[tokio::test]
+  async fn transition_rejects_moves_out_of_stopped() {
+    let m = test_model(ManagedState::Stopped);
+    assert!(!m.transition(ManagedState::Ready).await);
+    assert!(
+      !m.transition(ManagedState::Error {
+        cause: "x".into()
+      })
+      .await
+    );
+    assert!(matches!(m.state().await, ManagedState::Stopped));
+  }
+
+  #[tokio::test]
+  async fn transition_rejects_stopping_to_ready_probe_race() {
+    let m = test_model(ManagedState::Stopping);
+    assert!(!m.transition(ManagedState::Ready).await);
+    assert!(matches!(m.state().await, ManagedState::Stopping));
+    // A late probe-timeout firing after user-stop must not pre-empt.
+    assert!(
+      !m.transition(ManagedState::Error {
+        cause: "probe timeout".into()
+      })
+      .await
+    );
+    assert!(matches!(m.state().await, ManagedState::Stopping));
+    // But Stopping → Stopped is still allowed (stop() completes).
+    assert!(m.transition(ManagedState::Stopped).await);
+    assert!(matches!(m.state().await, ManagedState::Stopped));
+  }
+
+  #[tokio::test]
+  async fn legal_transitions_succeed() {
+    let m = test_model(ManagedState::Launching);
+    assert!(m.transition(ManagedState::Loading).await);
+    assert!(m.transition(ManagedState::Ready).await);
+    assert!(m.transition(ManagedState::Stopping).await);
+    assert!(m.transition(ManagedState::Stopped).await);
+  }
+
+  #[tokio::test]
+  async fn second_transition_to_error_preserves_first_cause() {
+    let m = test_model(ManagedState::Loading);
+    assert!(
+      m.transition(ManagedState::Error {
+        cause: "probe timeout (last status 503)".into()
+      })
+      .await
+    );
+    // A follow-up Error from the exit-watcher must not overwrite.
+    assert!(
+      !m.transition(ManagedState::Error {
+        cause: "process exited before becoming ready".into()
+      })
+      .await
+    );
+    match m.state().await {
+      ManagedState::Error { cause } => {
+        assert!(cause.contains("probe timeout"));
+      }
+      other => panic!("expected Error, got {other:?}"),
+    }
   }
 }

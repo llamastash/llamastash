@@ -629,8 +629,14 @@ pub async fn run(app: App, socket: PathBuf) -> Result<()> {
 
   loop {
     // Mirror the focused launch id to the logs poller so the next
-    // tick fetches the right buffer.
-    *current_launch.lock().unwrap() = app.focused_managed().map(|m| m.launch_id.clone());
+    // tick fetches the right buffer. `unwrap_or_else(into_inner)`
+    // recovers from a poisoned mutex instead of crashing the TUI at
+    // 125 Hz — the data inside is a plain `Option<String>` we can
+    // safely replace regardless of who panicked previously.
+    *current_launch
+      .lock()
+      .unwrap_or_else(std::sync::PoisonError::into_inner) =
+      app.focused_managed().map(|m| m.launch_id.clone());
 
     terminal.draw(|f| crate::tui::render::render(f, &mut app))?;
 
