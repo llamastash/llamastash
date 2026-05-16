@@ -24,7 +24,6 @@ use ratatui::Frame;
 use crate::theme::Palette;
 use crate::tui::app::App;
 use crate::tui::keybindings::Focus;
-use crate::tui::list_pane::TitleInputs;
 use crate::tui::{
   advanced_panel, help_bar, host_stats_pane, info_pane, launch_picker, list_pane, logo_pane,
   right_pane,
@@ -186,10 +185,8 @@ fn render_body(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) 
       split[0],
       &rows,
       app.list_cursor,
-      TitleInputs {
-        total: app.models.len(),
-        filter,
-      },
+      app.models.len(),
+      filter,
       palette,
     );
   }
@@ -209,13 +206,7 @@ fn render_empty_state(
   } else {
     Some(filter)
   };
-  let title = list_pane::build_block_title(
-    &TitleInputs {
-      total,
-      filter: filter_chip,
-    },
-    area.width as usize,
-  );
+  let title = list_pane::build_block_title(total, filter_chip, area.width as usize);
   let block = Block::default()
     .title(title)
     .borders(Borders::ALL)

@@ -91,12 +91,24 @@ pub async fn sample_priming(prime_delay: Duration) -> HostMetricsSnapshot {
 /// delta to report). The shared snapshot starts at `Default::default()`
 /// with `gpu_backend == "unsampled"`; callers should treat that
 /// sentinel as "no reading yet."
-pub fn spawn(shutdown: ShutdownToken, interval: Duration) -> Arc<RwLock<HostMetricsSnapshot>> {
-  let shared = Arc::new(RwLock::new(HostMetricsSnapshot {
+/// Cells produced by [`spawn`]. The aggregated [`HostMetricsSnapshot`]
+/// powers the host stats pane; the live [`GpuInfo`] keeps `status.gpu`
+/// from diverging from `status.host` on driver hotplug or a driver
+/// loaded after daemon start.
+#[derive(Clone)]
+pub struct SamplerHandles {
+  pub snapshot: Arc<RwLock<HostMetricsSnapshot>>,
+  pub gpu: Arc<RwLock<GpuInfo>>,
+}
+
+pub fn spawn(shutdown: ShutdownToken, interval: Duration) -> SamplerHandles {
+  let snapshot = Arc::new(RwLock::new(HostMetricsSnapshot {
     gpu_backend: HostMetricsSnapshot::UNINITIALIZED_BACKEND.into(),
     ..HostMetricsSnapshot::default()
   }));
-  let shared_for_task = Arc::clone(&shared);
+  let gpu = Arc::new(RwLock::new(GpuInfo::CpuOnly));
+  let snapshot_for_task = Arc::clone(&snapshot);
+  let gpu_for_task = Arc::clone(&gpu);
   // Route through `spawn_supervised` so a panic in the loop body (a
   // misbehaving sysinfo refresh, a GPU probe parser bug) surfaces in
   // the daemon log instead of silently freezing the snapshot for the
@@ -112,11 +124,17 @@ pub fn spawn(shutdown: ShutdownToken, interval: Duration) -> Arc<RwLock<HostMetr
       }
       sys.refresh_cpu_specifics(CpuRefreshKind::new().with_cpu_usage());
       sys.refresh_memory();
-      let next = build_snapshot(&sys, probe_gpu().await);
-      *shared_for_task.write().await = next;
+      let info = probe_gpu().await;
+      let next = build_snapshot(&sys, info.clone());
+      *snapshot_for_task.write().await = next;
+      // Mirror the live GpuInfo so `status.gpu` follows hotplug /
+      // late driver loads. Without this, `ctx.gpu` would stay
+      // pinned to the startup snapshot forever even after the
+      // host pane has detected the new device.
+      *gpu_for_task.write().await = info;
     }
   });
-  shared
+  SamplerHandles { snapshot, gpu }
 }
 
 fn host_refresh_kind() -> RefreshKind {
@@ -338,33 +356,42 @@ mod tests {
     // `wait_until_triggered` select arm would leave the task looping
     // forever and the strong count stuck at 2.
     let token = ShutdownToken::new();
-    let snap = spawn(token.clone(), Duration::from_millis(20));
-    // Give the task a moment to enter its loop and clone the Arc.
+    let handles = spawn(token.clone(), Duration::from_millis(20));
+    // Give the task a moment to enter its loop and clone both Arcs.
     tokio::time::sleep(Duration::from_millis(30)).await;
     token.trigger();
     // The task may be parked inside spawn_blocking when the token
-    // fires; poll the strong count for up to ~1s.
+    // fires; poll the strong count for up to ~1s. Both cells (host
+    // snapshot + live GpuInfo) should be released — checking either
+    // is sufficient since the sampler owns clones of both.
     let deadline = std::time::Instant::now() + Duration::from_secs(1);
-    while Arc::strong_count(&snap) > 1 && std::time::Instant::now() < deadline {
+    while (Arc::strong_count(&handles.snapshot) > 1 || Arc::strong_count(&handles.gpu) > 1)
+      && std::time::Instant::now() < deadline
+    {
       tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert_eq!(
-      Arc::strong_count(&snap),
+      Arc::strong_count(&handles.snapshot),
       1,
-      "sampler task must release its Arc clone after shutdown",
+      "sampler task must release its snapshot Arc clone after shutdown",
+    );
+    assert_eq!(
+      Arc::strong_count(&handles.gpu),
+      1,
+      "sampler task must release its live-gpu Arc clone after shutdown",
     );
   }
 
   #[tokio::test]
   async fn spawn_updates_snapshot_after_first_tick() {
     let token = ShutdownToken::new();
-    let snap = spawn(token.clone(), Duration::from_millis(50));
+    let handles = spawn(token.clone(), Duration::from_millis(50));
     // First tick lands after `interval`; the GPU probe step shells
     // out and may share the blocking pool with other parallel tests,
     // so allow generous headroom for the snapshot to land.
     for _ in 0..40 {
       tokio::time::sleep(Duration::from_millis(25)).await;
-      let read = snap.read().await.clone();
+      let read = handles.snapshot.read().await.clone();
       if read.ram_total_bytes > 0 && read.gpu_backend != HostMetricsSnapshot::UNINITIALIZED_BACKEND
       {
         token.trigger();
@@ -374,7 +401,7 @@ mod tests {
     panic!(
       "host-metrics sampler did not produce a snapshot within 1s; \
        snapshot: {:?}",
-      snap.read().await
+      handles.snapshot.read().await
     );
   }
 }

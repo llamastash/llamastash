@@ -230,13 +230,16 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   );
 
   // 7. GPU probe (best-effort). Always returns *some* `GpuInfo`,
-  // even if it's `CpuOnly`.
-  let gpu = crate::gpu::probe();
+  // even if it's `CpuOnly`. Seeded for the fallback `ctx.gpu` slot
+  // before the sampler's first tick lands.
+  let initial_gpu = crate::gpu::probe();
 
   // 7b. Host-metrics sampler (1 Hz). Re-probes the active GPU
   // backend each tick for live util/temp/VRAM; sysinfo handles
-  // host CPU% + RAM.
-  let host_metrics =
+  // host CPU% + RAM. The sampler also owns the live `GpuInfo` cell
+  // so `status.gpu` follows hotplug instead of staying pinned to the
+  // boot snapshot.
+  let sampler =
     crate::daemon::host_metrics::spawn(token.clone(), std::time::Duration::from_secs(1));
 
   // 8. Wire the dispatcher context.
@@ -244,8 +247,8 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   let persisted = PersistedState::new(state_after_sweep, Some(opts.state_dir.clone()));
   let mut ctx = MethodContext::with_catalog(token.clone(), catalog)
     .with_supervisors(supervisors)
-    .with_gpu(gpu)
-    .with_host_metrics(host_metrics)
+    .with_gpu(initial_gpu)
+    .with_sampler(sampler)
     .with_state(persisted)
     .with_external(external_combined);
   if let Some(binary) = opts.binary.clone() {

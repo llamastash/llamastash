@@ -11,6 +11,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
+use unicode_width::UnicodeWidthStr;
 
 use crate::theme::Palette;
 use crate::tui::app::App;
@@ -92,12 +93,13 @@ fn server_row<'a>(app: &'a App, budget: usize, palette: &'a Palette) -> Line<'a>
     None => String::new(),
   };
   // Reserve room for the parenthesised flavor; truncate the path
-  // first so the flavor stays visible. The `+1` separator is only
-  // deducted when there is a flavor chunk to render.
+  // first so the flavor stays visible. The flavor's column width is
+  // measured (not char-counted) so multi-byte glyphs don't desync
+  // the budget from the rendered cell count.
   let path_budget = if flavor_chunk.is_empty() {
     budget
   } else {
-    budget.saturating_sub(flavor_chunk.chars().count())
+    budget.saturating_sub(flavor_chunk.width())
   };
   let path_truncated = ellipsise(path, path_budget);
   Line::from(vec![
@@ -154,8 +156,9 @@ fn running_row<'a>(app: &'a App, budget: usize, palette: &'a Palette) -> Line<'a
   } else {
     String::new()
   };
-  // Truncate the head to make room for the suffix.
-  let head_budget = budget.saturating_sub(suffix.chars().count());
+  // Truncate the head to make room for the suffix. Width-based so
+  // CJK model names don't push `+N more` off-screen.
+  let head_budget = budget.saturating_sub(suffix.width());
   let head_truncated = ellipsise(&head, head_budget);
   Line::from(vec![
     Span::styled(LABEL_RUNNING, Style::default().fg(palette.muted)),
@@ -175,34 +178,48 @@ fn flavor_label(app: &App) -> Option<&'static str> {
   }
 }
 
-/// Truncate `s` to fit `budget` columns from the **left**, prepending
-/// `…/` so the trailing component (the binary name, the launch id)
-/// stays visible. Returns the original string unmodified when it
-/// already fits.
+/// Truncate `s` to fit `budget` terminal columns from the **left**,
+/// prepending `…/` so the trailing component (the binary name, the
+/// launch id) stays visible. Returns the original string unmodified
+/// when it already fits.
+///
+/// Measures in unicode display width (`UnicodeWidthStr`), not char
+/// count: a CJK character occupies two cells, so on a CJK install
+/// prefix like `/Users/张伟/.../llama-server` char-count truncation
+/// would overflow the reserved budget and push the trailing flavor
+/// chunk off-screen.
 fn ellipsise(s: &str, budget: usize) -> String {
-  let count = s.chars().count();
   if budget == 0 {
     return String::new();
   }
-  if count <= budget {
+  if s.width() <= budget {
     return s.to_string();
   }
-  // Reserve space for the `…/` prefix.
   let prefix = "…/";
-  let prefix_len = prefix.chars().count();
-  if budget <= prefix_len {
-    return s
-      .chars()
-      .rev()
-      .take(budget)
-      .collect::<String>()
-      .chars()
-      .rev()
-      .collect();
+  let prefix_w = prefix.width();
+  if budget <= prefix_w {
+    return take_tail_by_width(s, budget);
   }
-  let keep = budget - prefix_len;
-  let tail: String = s.chars().skip(count - keep).collect();
+  let keep_budget = budget - prefix_w;
+  let tail = take_tail_by_width(s, keep_budget);
   format!("{prefix}{tail}")
+}
+
+/// Take the longest suffix of `s` whose display width is `<= budget`.
+/// Iterates chars in reverse so a wide character that wouldn't fit is
+/// dropped rather than splitting it.
+fn take_tail_by_width(s: &str, budget: usize) -> String {
+  let mut acc_w = 0usize;
+  let mut start = s.len();
+  for (idx, ch) in s.char_indices().rev() {
+    let w = ch.to_string().width();
+    if acc_w + w > budget {
+      break;
+    }
+    acc_w += w;
+    start = idx;
+  }
+  s[start..].to_string()
 }
 
 fn format_uptime(secs: u64) -> String {
@@ -289,7 +306,25 @@ mod tests {
     let truncated = ellipsise("/usr/local/lib/llama-cpp-cuda/bin/llama-server", 20);
     assert!(truncated.starts_with("…/"));
     assert!(truncated.ends_with("llama-server"));
-    assert!(truncated.chars().count() <= 20);
+    assert!(truncated.width() <= 20);
+  }
+
+  #[test]
+  fn ellipsise_measures_in_display_columns_not_char_count() {
+    // CJK characters occupy two terminal cells each. A char-count
+    // implementation would let `/张伟/llama-server` (15 chars, 17
+    // cells) "fit" inside a 16-column budget; ratatui would then
+    // clip the flavor chunk that the caller appends. Width-based
+    // measurement keeps the truncated string inside the requested
+    // budget so the trailing chunk renders intact.
+    let s = "/usr/local/张伟/bin/llama-server";
+    let out = ellipsise(s, 20);
+    assert!(
+      out.width() <= 20,
+      "expected width <= 20, got {} for {out:?}",
+      out.width()
+    );
+    assert!(out.ends_with("llama-server"));
   }
 
   #[test]

@@ -1076,6 +1076,7 @@ dependencies = [
  "strum",
  "sysinfo",
  "tokio",
+ "unicode-width",
  "which",
 ]
 

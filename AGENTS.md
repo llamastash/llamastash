@@ -73,6 +73,20 @@ TUI / CLI ──attach──► Unix-socket JSON-RPC server (peercred)
 
 Every read-and-mutation command supports `--json` and emits a wrapped object: `{"models":[…]}`, `{"favorites":[…]}`, `{"presets":[…]}`, `{"last_params":[…]}`, `{"stopped":[…],"count":N}`, etc. Stable shapes for agent consumption. Exit codes follow `<sysexits.h>` numerically but with project-specific meanings — pin against the table in `src/cli/exit_codes.rs`, not the libc constants. `stop --all` in a non-TTY context refuses without `--yes`. The IPC `capabilities` method enumerates supported methods so clients can feature-detect.
 
+### `status` IPC fields (kdash-style dashboard wiring)
+
+The `status` method response carries the following top-level objects beyond the legacy `models` / `external` / `gpu` shapes:
+
+- `host` — always an object (no `null`). Populated by the daemon's host-metrics sampler at 1 Hz. Fields: `cpu_pct` (f32, 0..=100 mean across cores), `ram_used_bytes` / `ram_total_bytes` (u64), `gpu_util_pct` / `gpu_mem_used_bytes` / `gpu_mem_total_bytes` / `gpu_temp_c` (each `Option`, omitted on backends that don't surface them), `gpu_backend` (string), `gpu_device_count` (u32).
+  - `gpu_backend` values: `"cpu_only"`, `"nvidia"`, `"amd"`, `"apple_metal"`, `"unknown"` (Vulkan-only fallback), or the sentinel `"unsampled"` returned in the brief window between daemon start and the sampler's first tick. Clients gating UI on backend kind should treat `"unsampled"` as "not yet known", not as a real reading.
+- `daemon.build` — semver string from `CARGO_PKG_VERSION`; matches `--version`.
+- `daemon.server_path` — absolute path to the `llama-server` binary the daemon resolved at startup. `null` when unset.
+- Per-model rows in `models[]` carry `latest_rss_bytes: Option<u64>` and `latest_cpu_pct: Option<f32>` from the per-launch resource sampler. Both are `None` until one tick (~1 s) after launch.
+
+`status.gpu` is **live**: when the host-metrics sampler is attached, it reflects the freshest GPU probe. Late driver loads / hotplug changes propagate within one sampler tick rather than staying pinned to the boot snapshot.
+
+All of these fields land in the CLI's `status --json` output too (`src/cli/output.rs::status_json`), so agents that consume the CLI surface get the same view as raw IPC clients.
+
 ## Conventions
 
 - Conventional-commit prefixes: `feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`. Unit-scoped variants are common (`feat(unit8): …`).

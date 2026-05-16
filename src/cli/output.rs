@@ -169,44 +169,53 @@ fn row_string(r: &RunningRow) -> String {
 }
 
 fn gpu_label(gpu: &Value) -> Option<String> {
-  // GpuInfo serialises with serde's default; surface a one-liner so
-  // the human form doesn't dump a JSON blob mid-paragraph.
+  // GpuInfo serialises as `{"backend": "<name>", ...}` — see
+  // `gpu::GpuInfo`'s `#[serde(tag = "backend", rename_all = "snake_case")]`
+  // attribute. Earlier versions of this function pattern-matched on
+  // PascalCase variant keys (`Nvidia`, `Amd`, `Metal`, `Vulkan`)
+  // which the current wire shape never emits, so every non-CpuOnly
+  // backend silently fell through to the JSON-blob branch. Match on
+  // the tagged-enum shape instead.
   if gpu.is_null() {
     return None;
   }
-  if gpu == &Value::String("CpuOnly".into()) {
-    return Some("CPU only".to_string());
-  }
-  // Map common shapes; fall back to compact JSON for everything else.
-  if let Some(obj) = gpu.as_object() {
-    if let Some(nv) = obj.get("Nvidia") {
-      let count = nv
+  let obj = gpu.as_object()?;
+  match obj.get("backend").and_then(Value::as_str) {
+    Some("cpu_only") => Some("CPU only".to_string()),
+    Some("nvidia") => {
+      let count = obj
         .get("devices")
         .and_then(Value::as_array)
         .map(|a| a.len())
         .unwrap_or(0);
-      return Some(format!("NVIDIA GPU(s): {count}"));
+      Some(format!("NVIDIA GPU(s): {count}"))
     }
-    if let Some(amd) = obj.get("Amd") {
-      let count = amd
+    Some("amd") => {
+      let count = obj
         .get("devices")
         .and_then(Value::as_array)
         .map(|a| a.len())
         .unwrap_or(0);
-      return Some(format!("AMD GPU(s): {count}"));
+      Some(format!("AMD GPU(s): {count}"))
     }
-    if let Some(metal) = obj.get("Metal") {
-      let label = metal
-        .get("device")
-        .and_then(Value::as_str)
-        .unwrap_or("Apple Silicon");
-      return Some(format!("Metal: {label}"));
+    Some("apple_metal") => {
+      let total = obj
+        .get("total_memory_bytes")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+      let gib = total as f64 / (1024.0 * 1024.0 * 1024.0);
+      Some(format!("Apple Silicon: {gib:.0}G unified"))
     }
-    if obj.contains_key("Vulkan") {
-      return Some("Vulkan".to_string());
+    Some("unknown") => {
+      let count = obj
+        .get("devices")
+        .and_then(Value::as_array)
+        .map(|a| a.len())
+        .unwrap_or(0);
+      Some(format!("Unknown GPU vendor (Vulkan-only): {count} device(s)"))
     }
+    _ => Some(serde_json::to_string(gpu).unwrap_or_else(|_| "?".to_string())),
   }
-  Some(serde_json::to_string(gpu).unwrap_or_else(|_| "?".to_string()))
 }
 
 /// JSON projection of `status` (preserves the daemon's wire shape so
@@ -400,14 +409,57 @@ mod tests {
 
   #[test]
   fn status_human_includes_gpu_label_when_present() {
+    // The live wire shape is `{"backend": "cpu_only"}` (snake_case
+    // tagged enum); the test feeds the same shape the daemon emits,
+    // not the legacy PascalCase variant key the function used to
+    // match against.
     let snap = StatusSnapshot {
       models: vec![],
       external: vec![],
-      gpu: Value::String("CpuOnly".into()),
+      gpu: serde_json::json!({"backend": "cpu_only"}),
       daemon: None,
     };
     let s = status_human(&snap);
     assert!(s.contains("CPU only"), "got: {s}");
+  }
+
+  #[test]
+  fn gpu_label_matches_tagged_enum_shape_for_each_backend() {
+    // The daemon serialises GpuInfo with `tag = "backend",
+    // rename_all = "snake_case"`. Each backend must produce a
+    // human-readable label rather than falling through to the JSON
+    // blob branch.
+    let nv = serde_json::json!({
+      "backend": "nvidia",
+      "devices": [
+        {"name": "RTX 4090", "total_memory_bytes": 24, "used_memory_bytes": 0},
+      ],
+    });
+    assert_eq!(gpu_label(&nv).as_deref(), Some("NVIDIA GPU(s): 1"));
+    let amd = serde_json::json!({
+      "backend": "amd",
+      "devices": [
+        {"name": "RX 7900", "total_memory_bytes": 24, "used_memory_bytes": 0},
+        {"name": "RX 7800", "total_memory_bytes": 16, "used_memory_bytes": 0},
+      ],
+    });
+    assert_eq!(gpu_label(&amd).as_deref(), Some("AMD GPU(s): 2"));
+    let metal = serde_json::json!({
+      "backend": "apple_metal",
+      "total_memory_bytes": 64u64 * 1024 * 1024 * 1024,
+    });
+    assert_eq!(
+      gpu_label(&metal).as_deref(),
+      Some("Apple Silicon: 64G unified")
+    );
+    let unknown = serde_json::json!({
+      "backend": "unknown",
+      "devices": [{"name": "Vulkan device", "total_memory_bytes": 0, "used_memory_bytes": 0}],
+    });
+    assert_eq!(
+      gpu_label(&unknown).as_deref(),
+      Some("Unknown GPU vendor (Vulkan-only): 1 device(s)")
+    );
   }
 
   #[test]

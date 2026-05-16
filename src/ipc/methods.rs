@@ -21,7 +21,7 @@ use tokio::sync::{Mutex, RwLock};
 
 use super::protocol::{ErrorCode, ErrorObject, Request, Response, JSONRPC_VERSION};
 use crate::config::loader::PortRange;
-use crate::daemon::host_metrics::HostMetricsSnapshot;
+use crate::daemon::host_metrics::{HostMetricsSnapshot, SamplerHandles};
 use crate::daemon::orphans::ExternalProcess;
 use crate::daemon::probe::ProbeOptions;
 use crate::daemon::registry::{LaunchId, SupervisorRegistry};
@@ -60,10 +60,17 @@ pub struct MethodContext {
   /// `logs_tail`. Empty in tests that only exercise the discovery
   /// surface.
   pub supervisors: SupervisorRegistry,
-  /// Snapshot of `gpu::probe()` taken at daemon start. `status`
-  /// reports it alongside per-model resources so the UI can render
-  /// a GPU panel.
+  /// Boot-time snapshot of `gpu::probe()`. Used by `status.gpu` only
+  /// when the live sampler hasn't been attached (catalog-only tests);
+  /// production wiring always overrides it with the sampler's live
+  /// cell via [`Self::with_sampler`].
   pub gpu: Arc<GpuInfo>,
+  /// Live `GpuInfo` cell the host-metrics sampler refreshes each
+  /// tick. When `Some`, `status.gpu` reads from this lock so the
+  /// wire shape follows hotplug / late-driver-load events instead of
+  /// staying pinned to the daemon-start snapshot. `None` in
+  /// catalog-only tests that skip the sampler.
+  pub gpu_live: Option<Arc<RwLock<GpuInfo>>>,
   /// Live host-level metrics (CPU%, RAM, GPU util/temp/VRAM
   /// aggregates). Refreshed by the
   /// [`crate::daemon::host_metrics::spawn`] sampler at 1 Hz; `status`
@@ -166,6 +173,7 @@ impl MethodContext {
       catalog,
       supervisors: SupervisorRegistry::new(),
       gpu: Arc::new(GpuInfo::CpuOnly),
+      gpu_live: None,
       host_metrics: None,
       state: PersistedState::ephemeral(),
       launch: None,
@@ -213,6 +221,16 @@ impl MethodContext {
   /// every `status` call reads the freshest reading.
   pub fn with_host_metrics(mut self, snap: Arc<RwLock<HostMetricsSnapshot>>) -> Self {
     self.host_metrics = Some(snap);
+    self
+  }
+
+  /// Builder helper: attach both sampler cells (host snapshot + live
+  /// GpuInfo) in one call. Production wiring uses this; tests that
+  /// only need the host snapshot keep using
+  /// [`Self::with_host_metrics`] alone.
+  pub fn with_sampler(mut self, handles: SamplerHandles) -> Self {
+    self.host_metrics = Some(handles.snapshot);
+    self.gpu_live = Some(handles.gpu);
     self
   }
 
@@ -467,10 +485,18 @@ async fn status_response(ctx: &MethodContext) -> Value {
       serde_json::to_value(default_snap).unwrap_or(Value::Null)
     }
   };
+  // Prefer the live GpuInfo cell when the sampler is attached so
+  // `status.gpu` follows hotplug / late-driver-load events. Falls
+  // back to the boot-time `ctx.gpu` snapshot when the sampler is
+  // off (catalog-only tests).
+  let gpu = match &ctx.gpu_live {
+    Some(slot) => serde_json::to_value(&*slot.read().await).unwrap_or(Value::Null),
+    None => serde_json::to_value(ctx.gpu.as_ref()).unwrap_or(Value::Null),
+  };
   json!({
     "models": models,
     "external": external,
-    "gpu": ctx.gpu.as_ref(),
+    "gpu": gpu,
     "host": host,
     "daemon": {
       "pid": std::process::id(),

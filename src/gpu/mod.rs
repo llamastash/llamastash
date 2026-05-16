@@ -91,6 +91,13 @@ pub enum GpuInfo {
 /// not expose them on a given platform / driver version. When a probe
 /// can't surface them they stay `None`; the host stats pane renders
 /// `—` in place of a numeric reading rather than dropping the row.
+///
+/// Note: this struct intentionally does not derive `Eq` because the
+/// `f32` fields don't satisfy `Eq` (NaN-not-equal-to-itself). The
+/// `PartialEq` derive is sufficient for the only equality use case
+/// today — round-tripping in tests. Downstream consumers needing a
+/// hashable / `Eq`-bound view should compare a projection (e.g. the
+/// `name` + `total_memory_bytes` fields) rather than the whole struct.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct GpuDevice {
   pub name: String,

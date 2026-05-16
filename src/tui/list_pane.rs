@@ -183,25 +183,17 @@ fn mode_hint_label(hint: crate::gguf::metadata::ModeHint) -> String {
   }
 }
 
-/// Inputs to the Models pane block title.
-pub struct TitleInputs<'a> {
-  /// Total models discovered (not "matched after filter").
-  pub total: usize,
-  /// Active filter query, if any. When `Some`, the `[/query]` chip
-  /// replaces the `/:filter` hint chip in the strip.
-  pub filter: Option<&'a str>,
-}
-
 /// Render `rows` into the supplied area using the active palette.
 /// `selected` is the index in `rows` (NOT in the model list) the
-/// user is currently focused on. `title` carries the dynamic content
-/// (count + filter chip + hint strip).
+/// user is currently focused on. `total` and `filter` drive the
+/// block title (count + filter chip + hint strip).
 pub fn render(
   frame: &mut Frame<'_>,
   area: Rect,
   rows: &[ListRow],
   selected: usize,
-  title: TitleInputs<'_>,
+  total: usize,
+  filter: Option<&str>,
   palette: &Palette,
 ) {
   // Reserve columns for borders (2), the highlight gutter (2), the
@@ -215,7 +207,7 @@ pub fn render(
     .iter()
     .map(|r| render_row(r, palette, name_budget))
     .collect();
-  let title_str = build_block_title(&title, area.width as usize);
+  let title_str = build_block_title(total, filter, area.width as usize);
   let list = List::new(items)
     .block(
       Block::default()
@@ -248,15 +240,19 @@ pub fn render(
 /// On overflow, drop hint chips right-to-left in this priority:
 /// `y:yank` → `f:fav` → `s:stop` → `/:filter`. `Enter:launch`, the
 /// count, and the filter chip are never dropped.
-pub(crate) fn build_block_title(inputs: &TitleInputs<'_>, area_width: usize) -> String {
+pub(crate) fn build_block_title(
+  total: usize,
+  filter: Option<&str>,
+  area_width: usize,
+) -> String {
   // The full title strip including borders consumes the whole top
   // edge. ratatui leaves 1 cell on each side for the corner glyphs,
   // so the usable budget is `area_width - 2`. Subtract another 2 for
   // the leading/trailing space inside the title string.
   let budget = area_width.saturating_sub(4);
 
-  let count = format!("Models [{}]", inputs.total);
-  let filter_chip = inputs.filter.map(|q| format!("[/{}]", q));
+  let count = format!("Models [{total}]");
+  let filter_chip = filter.map(|q| format!("[/{q}]"));
 
   // Hints in display order. `/:filter` is suppressed when the filter
   // is already active (the `[/query]` chip takes its slot).
@@ -518,13 +514,7 @@ mod tests {
 
   #[test]
   fn title_includes_count_and_full_hint_strip_when_filter_inactive() {
-    let title = build_block_title(
-      &TitleInputs {
-        total: 127,
-        filter: None,
-      },
-      120,
-    );
+    let title = build_block_title(127, None, 120);
     assert!(title.contains("Models [127]"));
     assert!(title.contains("Enter:launch"));
     assert!(title.contains("/:filter"));
@@ -535,13 +525,7 @@ mod tests {
 
   #[test]
   fn title_swaps_filter_hint_for_chip_when_filter_active() {
-    let title = build_block_title(
-      &TitleInputs {
-        total: 127,
-        filter: Some("qwen"),
-      },
-      120,
-    );
+    let title = build_block_title(127, Some("qwen"), 120);
     assert!(title.contains("[/qwen]"));
     assert!(
       !title.contains("/:filter"),
@@ -556,13 +540,7 @@ mod tests {
   fn title_drops_hints_right_to_left_under_pressure() {
     // A 40-col area can't fit the whole strip; the title builder
     // should drop hints from the tail (`y:yank` first, then `f:fav`).
-    let title = build_block_title(
-      &TitleInputs {
-        total: 127,
-        filter: None,
-      },
-      40,
-    );
+    let title = build_block_title(127, None, 40);
     assert!(
       title.contains("Enter:launch"),
       "must never drop launch chip: {title:?}"
@@ -585,10 +563,8 @@ mod tests {
     // truncate with an ellipsis rather than letting ratatui silently
     // clip the title.
     let title = build_block_title(
-      &TitleInputs {
-        total: 7,
-        filter: Some("/very/long/absolute/path/that/should/not/fit/anywhere"),
-      },
+      7,
+      Some("/very/long/absolute/path/that/should/not/fit/anywhere"),
       32,
     );
     assert!(
@@ -611,13 +587,7 @@ mod tests {
     // (its body may truncate to `[/q…]`) — sharing a logical slot
     // with the `/:filter` hint, dropping it entirely would lose the
     // active-filter signal.
-    let title = build_block_title(
-      &TitleInputs {
-        total: 5,
-        filter: Some("qwen"),
-      },
-      28,
-    );
+    let title = build_block_title(5, Some("qwen"), 28);
     assert!(title.contains("[/"), "chip prefix must survive: {title:?}");
     assert!(
       title.contains("Enter:launch"),

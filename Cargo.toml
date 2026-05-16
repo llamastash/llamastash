@@ -72,6 +72,10 @@ serde_json = "1.0"
 serde_yaml = "0.9"
 simplelog = { version = "0.12", default-features = false }
 strum = { version = "0.27", features = ["derive"] }
+# Display-width measurement for terminal text (CJK paths, emoji, etc.).
+# ratatui already pulls this in transitively; declaring it explicitly so
+# the daemon-info pane's truncation logic can reason in cells, not chars.
+unicode-width = "0.2"
 sysinfo = { version = "0.32", default-features = false, features = [
   "system",
 ] }
