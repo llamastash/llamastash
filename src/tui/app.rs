@@ -34,6 +34,12 @@ pub struct ManagedRow {
   pub path: PathBuf,
   pub port: u16,
   pub state: SurfaceState,
+  /// Latest per-PID RSS reading in bytes. `None` until the daemon's
+  /// per-launch sampler has emitted at least one reading.
+  pub rss_bytes: Option<u64>,
+  /// Latest per-PID CPU usage percent (multi-core, may exceed 100%).
+  /// `None` until the daemon's per-launch sampler primes.
+  pub cpu_pct: Option<f32>,
 }
 
 /// Persisted "last successful launch params" for one model, fetched
@@ -688,6 +694,8 @@ fn parse_external_row(row: &Value) -> Option<ManagedRow> {
     // know to hide the endpoint slot for these rows.
     port: 0,
     state: SurfaceState::External,
+    rss_bytes: None,
+    cpu_pct: None,
   })
 }
 
@@ -712,11 +720,18 @@ fn parse_status_row(row: &Value) -> Option<ManagedRow> {
     "stopped" => SurfaceState::Stopped,
     _ => SurfaceState::NotLaunched,
   };
+  let rss_bytes = row.get("latest_rss_bytes").and_then(Value::as_u64);
+  let cpu_pct = row
+    .get("latest_cpu_pct")
+    .and_then(Value::as_f64)
+    .map(|n| n as f32);
   Some(ManagedRow {
     launch_id,
     path,
     port,
     state,
+    rss_bytes,
+    cpu_pct,
   })
 }
 

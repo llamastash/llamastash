@@ -102,6 +102,10 @@ struct ManagedInner {
   /// Stays alive for the lifetime of the child; dropped on
   /// transition into `Stopped` or `Error`.
   child: Mutex<Option<Child>>,
+  /// Latest per-PID resource reading (CPU% + RSS). `None` until the
+  /// per-launch sampler has emitted at least one reading. Updated by
+  /// the `resource_sampler` task spawned from [`spawn`].
+  latest_resource: RwLock<Option<super::resources::ResourceReading>>,
 }
 
 impl ManagedModel {
@@ -135,6 +139,13 @@ impl ManagedModel {
 
   pub async fn ready_at(&self) -> Option<u64> {
     *self.inner.ready_at.read().await
+  }
+
+  /// Latest per-PID resource reading (CPU% + RSS). Mirrors the
+  /// shape `resources::sample()` returns. `None` until the per-launch
+  /// sampler has emitted its first non-priming reading.
+  pub async fn latest_resource(&self) -> Option<super::resources::ResourceReading> {
+    *self.inner.latest_resource.read().await
   }
 
   /// Snapshot of the most recent N lines the child wrote (stdout
@@ -294,8 +305,28 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
     pid: RwLock::new(pid),
     ring: Mutex::new(RingBuffer::with_capacity(4096)),
     child: Mutex::new(Some(child)),
+    latest_resource: RwLock::new(None),
   });
   let model = ManagedModel { inner };
+
+  // Per-launch resource sampler (CPU% + RSS at 1 Hz). Mirrors the
+  // host-metrics pattern: a tokio task pumps `sample_loop` readings
+  // into a shared cell the IPC `status` handler reads. The task
+  // exits when the child PID disappears (the sample_loop closes its
+  // sender) or when the model lands in a terminal state.
+  if let Some(pid) = pid {
+    let sampler_model = model.clone();
+    spawn_supervised("resource_sampler", async move {
+      let mut rx = super::resources::sample_loop(pid, Duration::from_secs(1));
+      while let Some(reading) = rx.recv().await {
+        match sampler_model.state().await {
+          ManagedState::Stopped | ManagedState::Error { .. } => break,
+          _ => {}
+        }
+        *sampler_model.inner.latest_resource.write().await = Some(reading);
+      }
+    });
+  }
 
   // Stream-pump tasks for stdout + stderr → ring buffer + log file.
   // Each task is wrapped in `spawn_supervised` so a panic surfaces as
@@ -734,6 +765,7 @@ mod tests {
       pid: RwLock::new(None),
       ring: Mutex::new(RingBuffer::with_capacity(16)),
       child: Mutex::new(None),
+      latest_resource: RwLock::new(None),
     });
     ManagedModel { inner }
   }

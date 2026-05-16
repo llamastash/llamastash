@@ -411,6 +411,9 @@ async fn status_response(ctx: &MethodContext) -> Value {
         .map(|s| s.to_string_lossy().into_owned())
         .collect::<Vec<_>>(),
     });
+    let latest = model.latest_resource().await;
+    let latest_rss_bytes = latest.as_ref().map(|r| r.rss_bytes);
+    let latest_cpu_pct = latest.as_ref().map(|r| r.cpu_percent);
     let row = json!({
       "launch_id": launch_id,
       "id": model.id(),
@@ -420,6 +423,8 @@ async fn status_response(ctx: &MethodContext) -> Value {
       "ready_at": ready_at,
       "state": state_obj,
       "params": params_json,
+      "latest_rss_bytes": latest_rss_bytes,
+      "latest_cpu_pct": latest_cpu_pct,
     });
     models.push(row);
   }

@@ -190,6 +190,8 @@ fn ready_chat_model_exposes_chat_tab_via_cycle() {
     path: PathBuf::from("/m/qwen.gguf"),
     port: 41100,
     state: SurfaceState::Ready,
+    rss_bytes: None,
+    cpu_pct: None,
   }];
   app.go_top();
   let tabs = app.available_right_tabs();
@@ -272,6 +274,8 @@ fn picker_warns_when_focused_model_already_has_active_instance() {
     path: PathBuf::from("/m/qwen.gguf"),
     port: 41101,
     state: SurfaceState::Ready,
+    rss_bytes: None,
+    cpu_pct: None,
   }];
   app.go_top();
   app.open_launch_picker();
@@ -313,6 +317,8 @@ fn typing_into_chat_input_extends_prompt_buffer() {
     path: PathBuf::from("/m/qwen.gguf"),
     port: 41100,
     state: SurfaceState::Ready,
+    rss_bytes: None,
+    cpu_pct: None,
   }];
   app.go_top();
   // Tab from list to right pane → Chat tab is current → focus is
