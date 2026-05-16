@@ -168,19 +168,25 @@ pub fn load(state_dir: &Path) -> Result<DaemonState, LoadError> {
 }
 
 /// Persist `state` to `state_dir/state.json` atomically. Creates the
-/// directory if it doesn't exist. Writes to `state.json.tmp` first,
+/// directory if it doesn't exist. Writes to `state.json.tmp.<pid>` first,
 /// then `rename`s — which is atomic on every POSIX filesystem and
 /// guarantees the on-disk file is always either the old content or
 /// the new content, never partial.
+///
+/// The tmp filename includes the daemon PID so a misuse where two
+/// saves race outside the state mutex still produces two distinct
+/// files (rather than overwriting each other's in-progress writes).
+/// `O_NOFOLLOW + O_EXCL` defends against a symlink-swap shape on the
+/// macOS `/tmp` fallback.
 pub fn save(state_dir: &Path, state: &DaemonState) -> Result<(), SaveError> {
   std::fs::create_dir_all(state_dir).map_err(|e| SaveError::Io {
     path: state_dir.to_path_buf(),
     error: e.to_string(),
   })?;
   let final_path = path(state_dir);
-  let tmp_path = state_dir.join("state.json.tmp");
+  let tmp_path = state_dir.join(format!("state.json.tmp.{}", std::process::id()));
   let body = serde_json::to_vec_pretty(state).map_err(|e| SaveError::Serialise(e.to_string()))?;
-  std::fs::write(&tmp_path, &body).map_err(|e| SaveError::Io {
+  write_tmp_safely(&tmp_path, &body).map_err(|e| SaveError::Io {
     path: tmp_path.clone(),
     error: e.to_string(),
   })?;
@@ -189,6 +195,48 @@ pub fn save(state_dir: &Path, state: &DaemonState) -> Result<(), SaveError> {
     error: e.to_string(),
   })?;
   Ok(())
+}
+
+#[cfg(unix)]
+fn write_tmp_safely(tmp: &Path, body: &[u8]) -> std::io::Result<()> {
+  use std::io::Write as _;
+  use std::os::unix::fs::OpenOptionsExt;
+
+  // O_EXCL + O_NOFOLLOW + O_CREAT: refuses to clobber an existing file
+  // (so we can't be tricked into following a planted symlink and
+  // truncating an attacker-chosen target). If a stale tmp from a
+  // crashed daemon exists, the rare-but-possible cleanup is to unlink
+  // it first; on the common path the rename in `save` removes it.
+  let result = std::fs::OpenOptions::new()
+    .write(true)
+    .create_new(true)
+    .custom_flags(libc::O_NOFOLLOW)
+    .mode(0o600)
+    .open(tmp);
+  let mut f = match result {
+    Ok(f) => f,
+    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+      // Stale tmp (e.g. from a previous crash). Remove and retry; this
+      // single-shot retry still cannot follow a symlink because the
+      // subsequent open still has O_NOFOLLOW set.
+      std::fs::remove_file(tmp)?;
+      std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .mode(0o600)
+        .open(tmp)?
+    }
+    Err(e) => return Err(e),
+  };
+  f.write_all(body)?;
+  f.sync_all()?;
+  Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_tmp_safely(tmp: &Path, body: &[u8]) -> std::io::Result<()> {
+  std::fs::write(tmp, body)
 }
 
 #[derive(Debug)]
@@ -336,11 +384,47 @@ mod tests {
 
   #[test]
   fn save_is_atomic_via_tmp_rename() {
-    // After a successful save, the `.tmp` sibling must not linger.
+    // After a successful save, no `.tmp` sibling must linger. The
+    // exact tmp basename now includes the PID, so we scan rather than
+    // hard-code the suffix.
     let dir = temp_state_dir("atomic");
     save(&dir, &DaemonState::default()).expect("save");
-    assert!(!dir.join("state.json.tmp").exists(), ".tmp must be renamed");
+    for entry in fs::read_dir(&dir).expect("readdir") {
+      let entry = entry.expect("dirent");
+      let name = entry.file_name();
+      let name = name.to_string_lossy();
+      assert!(
+        !name.starts_with("state.json.tmp"),
+        ".tmp sibling lingered: {name}"
+      );
+    }
     assert!(dir.join("state.json").exists());
+    fs::remove_dir_all(&dir).ok();
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn save_refuses_to_follow_symlink_at_tmp_path() {
+    use std::os::unix::fs::symlink;
+
+    let dir = temp_state_dir("symlink-tmp");
+    fs::create_dir_all(&dir).expect("mk dir");
+    // Plant a victim and symlink the tmp path at it. The PID-suffixed
+    // tmp filename is predictable from $pid for a same-UID attacker;
+    // we still refuse the open instead of truncating the victim.
+    let victim = dir.join("victim.dat");
+    fs::write(&victim, b"important data").expect("write victim");
+    let tmp = dir.join(format!("state.json.tmp.{}", std::process::id()));
+    symlink(&victim, &tmp).expect("plant symlink");
+
+    let err = save(&dir, &DaemonState::default()).expect_err("save must refuse");
+    match err {
+      SaveError::Io { .. } => {}
+      other => panic!("expected Io, got {other:?}"),
+    }
+    // Victim must be untouched.
+    let after = fs::read(&victim).expect("victim still readable");
+    assert_eq!(after, b"important data");
     fs::remove_dir_all(&dir).ok();
   }
 

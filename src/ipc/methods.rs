@@ -78,6 +78,10 @@ pub struct MethodContext {
   /// `RwLock` so a periodic re-sweep can refresh the slot without
   /// rebuilding the context.
   pub external: Arc<RwLock<Vec<ExternalProcess>>>,
+  /// Hook for the accept-loop's peercred decision. Production uses
+  /// [`crate::daemon::peercred::is_authorized_peer`]; tests can
+  /// inject `|_| false` to drive the rejection branch.
+  pub peer_authorizer: Arc<dyn Fn(crate::daemon::peercred::PeerCred) -> bool + Send + Sync>,
 }
 
 /// Wrapper around the in-memory `DaemonState` plus the directory
@@ -158,7 +162,17 @@ impl MethodContext {
       state: PersistedState::ephemeral(),
       launch: None,
       external: Arc::new(RwLock::new(Vec::new())),
+      peer_authorizer: Arc::new(crate::daemon::peercred::is_authorized_peer),
     }
+  }
+
+  /// Builder helper: override the peercred decision. Test-only.
+  pub fn with_peer_authorizer<F>(mut self, auth: F) -> Self
+  where
+    F: Fn(crate::daemon::peercred::PeerCred) -> bool + Send + Sync + 'static,
+  {
+    self.peer_authorizer = Arc::new(auth);
+    self
   }
 
   /// Builder helper: seed the external (unmanaged `llama-server`)
@@ -234,6 +248,21 @@ pub async fn dispatch_request(ctx: &MethodContext, req: Request) -> Response {
     "shutdown" => {
       ctx.shutdown.trigger();
       Response::ok(id, json!({"shutdown": "scheduled"}))
+    }
+    #[cfg(feature = "test-fixtures")]
+    "_test_sleep" => {
+      // Test-only seam: holds the connection open for the requested
+      // number of milliseconds. Used by drain-timeout tests to model
+      // a slow in-flight request. Behind the `test-fixtures` feature
+      // so production builds never expose it.
+      let ms: u64 = req
+        .params
+        .as_ref()
+        .and_then(|p| p.get("ms"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+      tokio::time::sleep(Duration::from_millis(ms)).await;
+      Response::ok(id, json!({"slept_ms": ms}))
     }
     "list_models" => {
       let body = ctx.catalog.to_list_response().await;

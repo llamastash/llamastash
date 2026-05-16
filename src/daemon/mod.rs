@@ -135,8 +135,15 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
       .with_context(|| format!("removing stale socket at {}", opts.socket_path.display()))?;
   }
   ensure_parent_dir(&opts.socket_path)?;
-  let listener = UnixListener::bind(&opts.socket_path)
-    .with_context(|| format!("binding socket at {}", opts.socket_path.display()))?;
+  // Bind under a restrictive umask so the socket inode is created
+  // with mode 0o600 from the moment it exists. A bind→chmod sequence
+  // would leave a TOCTOU window where the file is world-accessible
+  // on Linux (peercred is the real auth boundary, but no need to
+  // leave the door visibly open).
+  let listener = with_restrictive_umask(|| {
+    UnixListener::bind(&opts.socket_path)
+      .with_context(|| format!("binding socket at {}", opts.socket_path.display()))
+  })?;
   apply_socket_permissions(&opts.socket_path)?;
   log::info!("daemon listening on {}", opts.socket_path.display());
 
@@ -403,10 +410,75 @@ fn existing_daemon_pid(state_dir: &Path) -> Option<i32> {
 
 fn ensure_parent_dir(path: &Path) -> Result<()> {
   if let Some(parent) = path.parent() {
-    fs::create_dir_all(parent)
+    create_dir_secure(parent)
       .with_context(|| format!("creating parent dir {}", parent.display()))?;
   }
   Ok(())
+}
+
+/// `create_dir_all` with mode 0o700 on Unix so freshly-created
+/// per-user runtime directories (e.g. macOS's `$TMPDIR/llamatui-$USER`
+/// fallback) are not world-readable. Linux's `$XDG_RUNTIME_DIR` is
+/// already 0700 by the systemd contract, but the fallback path needs
+/// this to keep parity. We don't downgrade pre-existing directories
+/// — if the user has a more permissive parent, that's their call.
+#[cfg(unix)]
+fn create_dir_secure(path: &Path) -> std::io::Result<()> {
+  use std::os::unix::fs::DirBuilderExt;
+  if path.exists() {
+    return Ok(());
+  }
+  // Walk up to the first existing ancestor; create the chain back
+  // down with mode 0o700.
+  let mut to_create: Vec<&Path> = Vec::new();
+  let mut cur = Some(path);
+  while let Some(p) = cur {
+    if p.exists() {
+      break;
+    }
+    to_create.push(p);
+    cur = p.parent();
+  }
+  to_create.reverse();
+  for p in to_create {
+    std::fs::DirBuilder::new()
+      .mode(0o700)
+      .create(p)
+      .or_else(|e| {
+        // Race with another creator (rare but legal): tolerate.
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+          Ok(())
+        } else {
+          Err(e)
+        }
+      })?;
+  }
+  Ok(())
+}
+
+#[cfg(not(unix))]
+fn create_dir_secure(path: &Path) -> std::io::Result<()> {
+  std::fs::create_dir_all(path)
+}
+
+/// Run `f` with the process umask temporarily set to 0o077 so any
+/// file inode it creates inherits mode bits 0o600 / 0o700. Safe for
+/// the daemon's single-threaded startup; should NOT be called from
+/// arbitrary tokio tasks because umask is process-global.
+#[cfg(unix)]
+fn with_restrictive_umask<T, F: FnOnce() -> Result<T>>(f: F) -> Result<T> {
+  // SAFETY: `umask(2)` is async-signal-safe and operates on a
+  // process-global integer. We're on the single-threaded startup
+  // path before any worker tokio tasks have been spawned.
+  let prev = unsafe { libc::umask(0o077) };
+  let out = f();
+  unsafe { libc::umask(prev) };
+  out
+}
+
+#[cfg(not(unix))]
+fn with_restrictive_umask<T, F: FnOnce() -> Result<T>>(f: F) -> Result<T> {
+  f()
 }
 
 /// Apply mode `0600` to the socket file so other users on the host cannot

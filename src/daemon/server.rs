@@ -11,15 +11,15 @@
 //!    in-flight tasks up to the supplied deadline.
 
 use std::{
-  sync::{atomic::Ordering, Arc},
+  sync::{atomic::Ordering, Arc, Mutex as StdMutex},
   time::Duration,
 };
 
 use anyhow::Result;
 use serde_json::Value;
-use tokio::{net::UnixListener, time::Instant};
+use tokio::{net::UnixListener, task::JoinHandle, time::Instant};
 
-use super::peercred::{is_authorized_peer, read_peer_credentials};
+use super::peercred::read_peer_credentials;
 use crate::ipc::{
   framing::{read_frame, write_frame, FrameError},
   methods::{dispatch_request, MethodContext},
@@ -31,11 +31,15 @@ use crate::ipc::{
 pub const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Run the daemon's accept loop until `ctx.shutdown` is triggered, then
-/// drain in-flight tasks for up to `DRAIN_TIMEOUT`.
+/// drain in-flight tasks for up to `DRAIN_TIMEOUT`. On drain timeout
+/// we explicitly abort the outstanding per-connection task handles
+/// rather than relying on runtime drop to do it for us, so the
+/// behaviour is predictable across tokio versions.
 pub async fn serve(listener: UnixListener, ctx: MethodContext) -> Result<()> {
   let tracker = Arc::new(ConnectionTracker {
     counter: ctx.active_connections.clone(),
     notify: tokio::sync::Notify::new(),
+    handles: StdMutex::new(Vec::new()),
   });
 
   loop {
@@ -51,17 +55,24 @@ pub async fn serve(listener: UnixListener, ctx: MethodContext) -> Result<()> {
             // connection off — a rejected peer should never see a single
             // byte of our protocol.
             match read_peer_credentials(&stream) {
-              Ok(cred) if is_authorized_peer(cred) => {
+              Ok(cred) if (ctx.peer_authorizer)(cred) => {
                 let conn_ctx = ctx.clone();
                 let conn_tracker = tracker.clone();
                 conn_tracker.counter.fetch_add(1, Ordering::SeqCst);
-                tokio::spawn(async move {
+                let task_tracker = conn_tracker.clone();
+                let handle = tokio::spawn(async move {
                   serve_connection(stream, conn_ctx).await;
-                  let prev = conn_tracker.counter.fetch_sub(1, Ordering::SeqCst);
+                  let prev = task_tracker.counter.fetch_sub(1, Ordering::SeqCst);
                   if prev <= 1 {
-                    conn_tracker.notify.notify_waiters();
+                    task_tracker.notify.notify_waiters();
                   }
                 });
+                if let Ok(mut handles) = conn_tracker.handles.lock() {
+                  // Garbage-collect finished handles opportunistically so
+                  // the vector doesn't grow unboundedly.
+                  handles.retain(|h| !h.is_finished());
+                  handles.push(handle);
+                }
               }
               Ok(cred) => {
                 log::warn!(
@@ -91,10 +102,18 @@ pub async fn serve(listener: UnixListener, ctx: MethodContext) -> Result<()> {
   while tracker.counter.load(Ordering::SeqCst) > 0 {
     let remaining = deadline.checked_duration_since(Instant::now());
     let Some(timeout) = remaining else {
+      let still_active = tracker.counter.load(Ordering::SeqCst);
       log::warn!(
-        "drain deadline reached with {} connection(s) still active; dropping",
-        tracker.counter.load(Ordering::SeqCst)
+        "drain deadline reached with {still_active} connection(s) still active; aborting"
       );
+      // Explicitly abort outstanding tasks so any partial frame in
+      // their write buffers is dropped along with the task rather
+      // than appearing on the wire after subsequent reconnects.
+      if let Ok(mut handles) = tracker.handles.lock() {
+        for h in handles.drain(..) {
+          h.abort();
+        }
+      }
       break;
     };
     let notified = tracker.notify.notified();
@@ -109,6 +128,7 @@ pub async fn serve(listener: UnixListener, ctx: MethodContext) -> Result<()> {
 struct ConnectionTracker {
   counter: Arc<std::sync::atomic::AtomicUsize>,
   notify: tokio::sync::Notify,
+  handles: StdMutex<Vec<JoinHandle<()>>>,
 }
 
 /// Run the per-connection request loop. Returns when the peer closes the

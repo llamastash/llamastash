@@ -78,6 +78,13 @@ pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Vec<u8>,
 /// Write one length-prefixed frame to `writer`. The caller is responsible
 /// for keeping the body under `MAX_FRAME_SIZE`; oversized writes are
 /// rejected here so a buggy server can't crash a careful client.
+///
+/// The prefix and body are concatenated into a single buffer and written
+/// with one `write_all`, so a future cancelled mid-call either emits
+/// the whole frame or leaves the byte stream byte-aligned-for-the-next-call.
+/// Without this, a cancellation between the prefix `write_all` and the
+/// body `write_all` would leave the peer parsing 4 bytes of prefix and
+/// waiting forever for a body that never comes.
 pub async fn write_frame<W: AsyncWrite + Unpin>(
   writer: &mut W,
   body: &[u8],
@@ -90,8 +97,10 @@ pub async fn write_frame<W: AsyncWrite + Unpin>(
   }
   // Cast is safe: bounded by MAX_FRAME_SIZE above, which fits in u32.
   let prefix = (body.len() as u32).to_be_bytes();
-  writer.write_all(&prefix).await?;
-  writer.write_all(body).await?;
+  let mut buf = Vec::with_capacity(prefix.len() + body.len());
+  buf.extend_from_slice(&prefix);
+  buf.extend_from_slice(body);
+  writer.write_all(&buf).await?;
   writer.flush().await?;
   Ok(())
 }

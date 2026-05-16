@@ -1,6 +1,7 @@
 //! Daemon-process lifecycle tests: lockfile contention, stale-lock
-//! recovery, and the cleanup invariant that shutdown removes both the
-//! socket and the pidfile.
+//! recovery, the cleanup invariant that shutdown removes both the
+//! socket and the pidfile, the SIGINT mid-request drain budget, and
+//! the state.json quarantine path.
 
 use std::{
   path::{Path, PathBuf},
@@ -198,6 +199,115 @@ async fn start_detached_honours_caller_supplied_paths() {
     !socket.exists(),
     "detached child must remove its socket on shutdown"
   );
+
+  std::fs::remove_dir_all(&dir).ok();
+}
+
+/// SIGINT mid-request drain: a request that's mid-flight when the
+/// daemon is told to shut down must complete within the drain
+/// timeout, not be dropped on the floor.
+#[cfg(feature = "test-fixtures")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn shutdown_drains_in_flight_request_within_budget() {
+  let dir = unique_temp_dir("drain-completes");
+  let opts = opts_for(&dir);
+  let socket = opts.socket_path.clone();
+  let handle = tokio::spawn(async move { run_foreground(opts).await });
+  wait_for_socket(&socket).await;
+
+  // Two clients on separate connections: one issues a slow call and
+  // another taps the shutdown method while the first is in flight.
+  let mut slow_client = Client::connect(&socket).await.expect("slow client connect");
+  let mut shutdown_client = Client::connect(&socket).await.expect("shutdown client");
+
+  let slow_call = tokio::spawn(async move {
+    slow_client
+      .call(
+        "_test_sleep",
+        Some(serde_json::json!({"ms": 800u64})),
+      )
+      .await
+  });
+
+  // Give the slow call a moment to write its request frame.
+  tokio::time::sleep(Duration::from_millis(150)).await;
+  shutdown_client
+    .call("shutdown", None)
+    .await
+    .expect("shutdown call");
+
+  // The slow call must still return (within drain budget + slop) and
+  // the daemon must exit shortly after.
+  let outcome = timeout(Duration::from_secs(5), slow_call)
+    .await
+    .expect("slow call did not return within drain window")
+    .expect("join handle")
+    .expect("slow call must succeed within drain budget");
+  assert_eq!(outcome.get("slept_ms").and_then(|v| v.as_u64()), Some(800));
+
+  timeout(Duration::from_secs(5), handle)
+    .await
+    .expect("daemon must exit")
+    .expect("join")
+    .expect("daemon result");
+
+  std::fs::remove_dir_all(&dir).ok();
+}
+
+/// State.json corruption recovery: a malformed `state.json` is
+/// quarantined as `state.json.broken-<ts>` and the daemon boots with
+/// default state (zero favorites / presets / last_params / running).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn corrupt_state_json_is_quarantined_on_boot() {
+  let dir = unique_temp_dir("quarantine");
+  let opts = opts_for(&dir);
+  let socket = opts.socket_path.clone();
+
+  // Seed a corrupt state.json before the daemon starts.
+  std::fs::create_dir_all(&dir).expect("mk state dir");
+  let state_path = dir.join("state.json");
+  std::fs::write(&state_path, b"{ this is not valid json").expect("seed corrupt state.json");
+
+  let handle = tokio::spawn(async move { run_foreground(opts).await });
+  wait_for_socket(&socket).await;
+
+  // Daemon must be up and report defaults via `status`.
+  let mut client = Client::connect(&socket).await.expect("connect");
+  let status = client.call("status", None).await.expect("status");
+  let models = status
+    .get("models")
+    .and_then(|v| v.as_array())
+    .expect("status.models is array");
+  assert!(models.is_empty(), "default boot should have no models");
+
+  let favs = client
+    .call("favorite_list", None)
+    .await
+    .expect("favorite_list");
+  let arr = favs
+    .get("favorites")
+    .and_then(|v| v.as_array())
+    .expect("favorites array");
+  assert!(arr.is_empty(), "default boot should have no favorites");
+
+  // The broken file must have been renamed.
+  let broken: Vec<_> = std::fs::read_dir(&dir)
+    .expect("readdir")
+    .filter_map(Result::ok)
+    .filter(|e| {
+      e.file_name()
+        .to_string_lossy()
+        .starts_with("state.json.broken-")
+    })
+    .collect();
+  assert_eq!(broken.len(), 1, "state.json.broken-<ts> must exist");
+
+  let _ = client.call("shutdown", None).await;
+  timeout(Duration::from_secs(3), handle)
+    .await
+    .expect("daemon must exit")
+    .expect("join")
+    .expect("daemon result");
 
   std::fs::remove_dir_all(&dir).ok();
 }

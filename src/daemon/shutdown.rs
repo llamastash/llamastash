@@ -74,6 +74,11 @@ impl Default for ShutdownToken {
 
 /// Install SIGINT + SIGTERM handlers that trip `token` when either signal
 /// arrives. Runs on a dedicated tokio task. Exits on first signal.
+///
+/// If handler installation fails, this triggers `token` itself so the
+/// daemon does not silently degrade to a SIGINT-immune state — the
+/// operator gets a clean refusal instead of a daemon they can't stop
+/// without `kill -9`.
 #[cfg(unix)]
 pub fn install_signal_handlers(token: ShutdownToken) -> tokio::task::JoinHandle<()> {
   use tokio::signal::unix::{signal, SignalKind};
@@ -82,14 +87,20 @@ pub fn install_signal_handlers(token: ShutdownToken) -> tokio::task::JoinHandle<
     let mut sigint = match signal(SignalKind::interrupt()) {
       Ok(s) => s,
       Err(e) => {
-        log::error!("failed to install SIGINT handler: {e}");
+        log::error!(
+          "failed to install SIGINT handler: {e}; triggering shutdown so the daemon is not signal-immune"
+        );
+        token.trigger();
         return;
       }
     };
     let mut sigterm = match signal(SignalKind::terminate()) {
       Ok(s) => s,
       Err(e) => {
-        log::error!("failed to install SIGTERM handler: {e}");
+        log::error!(
+          "failed to install SIGTERM handler: {e}; triggering shutdown so the daemon is not signal-immune"
+        );
+        token.trigger();
         return;
       }
     };

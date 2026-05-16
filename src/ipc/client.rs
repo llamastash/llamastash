@@ -65,6 +65,12 @@ impl From<FrameError> for ClientError {
 pub struct Client {
   stream: UnixStream,
   next_id: i64,
+  /// Once a `call` is cancelled mid-frame by the timeout, the underlying
+  /// byte stream is in an undefined position. Mark the client poisoned
+  /// so every subsequent `call` short-circuits with a clear error and
+  /// the user is forced to reconnect, instead of silently corrupting
+  /// the next request with leftover payload.
+  poisoned: bool,
 }
 
 impl Client {
@@ -75,7 +81,17 @@ impl Client {
     let stream = UnixStream::connect(socket_path)
       .await
       .map_err(ClientError::Connect)?;
-    Ok(Self { stream, next_id: 1 })
+    Ok(Self {
+      stream,
+      next_id: 1,
+      poisoned: false,
+    })
+  }
+
+  /// Returns true if the client has been poisoned by a prior timeout
+  /// and must be reconnected before further use.
+  pub fn is_poisoned(&self) -> bool {
+    self.poisoned
   }
 
   /// Issue one JSON-RPC call with the default timeout. Returns the
@@ -88,12 +104,21 @@ impl Client {
   }
 
   /// Same as `call` but with a caller-supplied timeout.
+  ///
+  /// On `ClientError::Timeout`, the in-flight `write_frame` / `read_frame`
+  /// may have transferred a partial frame, so the byte stream's framing
+  /// is undefined. The client is poisoned in that case and all
+  /// subsequent calls return `Timeout` until the caller drops it and
+  /// reconnects.
   pub async fn call_with_timeout(
     &mut self,
     method: &str,
     params: Option<Value>,
     deadline: Duration,
   ) -> Result<Value, ClientError> {
+    if self.poisoned {
+      return Err(ClientError::Timeout(deadline));
+    }
     let id = self.next_id;
     self.next_id = self.next_id.wrapping_add(1);
     let req = Request::new(id, method, params);
@@ -111,7 +136,10 @@ impl Client {
 
     match timeout(deadline, interaction).await {
       Ok(result) => result,
-      Err(_) => Err(ClientError::Timeout(deadline)),
+      Err(_) => {
+        self.poisoned = true;
+        Err(ClientError::Timeout(deadline))
+      }
     }
   }
 }

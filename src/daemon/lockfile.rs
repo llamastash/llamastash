@@ -34,7 +34,7 @@ use std::{
 };
 
 #[cfg(unix)]
-use std::os::unix::{fs::OpenOptionsExt, io::AsRawFd};
+use std::os::unix::{fs::MetadataExt, fs::OpenOptionsExt, io::AsRawFd};
 
 /// Result of `acquire`.
 #[derive(Debug)]
@@ -122,8 +122,29 @@ pub fn acquire(state_dir: &Path) -> Result<AcquireOutcome, LockfileError> {
   #[cfg(unix)]
   {
     opts.mode(0o600);
+    // `O_NOFOLLOW` refuses to open a symlink (returns ELOOP). Without
+    // this, a local attacker on macOS could plant
+    // `/tmp/llamatui-$USER/daemon.pid → /victim/critical/file` and the
+    // subsequent `set_len(0)` would truncate the victim file. Linux's
+    // XDG_RUNTIME_DIR is 0700 so the attack is macOS-fallback-only, but
+    // the flag is cheap and we want defence in depth.
+    opts.custom_flags(libc::O_NOFOLLOW);
   }
   let mut file = opts.open(&path)?;
+  // Belt-and-braces: refuse to operate on anything other than a regular
+  // file. `O_NOFOLLOW` already rejects symlinks; this catches the
+  // pre-existing-FIFO / pre-existing-device-node shape.
+  #[cfg(unix)]
+  {
+    let meta = file.metadata()?;
+    let mode = meta.mode() & libc::S_IFMT as u32;
+    if mode != libc::S_IFREG as u32 {
+      return Err(LockfileError::CorruptLockfile(
+        path.clone(),
+        format!("not a regular file (mode {mode:o})"),
+      ));
+    }
+  }
 
   match try_flock_exclusive(&file)? {
     FlockOutcome::Acquired => {
@@ -356,6 +377,29 @@ mod tests {
       & 0o777;
     assert_eq!(mode, 0o600, "pidfile must be 0600");
     drop(lock);
+    std::fs::remove_dir_all(&dir).ok();
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn symlinked_pidfile_is_refused() {
+    use std::os::unix::fs::symlink;
+
+    let dir = temp_state_dir("symlink");
+    // Pre-create a target file the attacker wants to truncate.
+    let victim = dir.join("victim.dat");
+    std::fs::write(&victim, b"important data").expect("write victim");
+    let pidfile = dir.join("daemon.pid");
+    symlink(&victim, &pidfile).expect("plant symlink");
+
+    let err = acquire(&dir).expect_err("symlink at daemon.pid must be refused");
+    // We get back an io error (ELOOP from O_NOFOLLOW). Body is allowed
+    // to vary across libc versions; the important thing is that we
+    // didn't open the symlink target.
+    assert!(matches!(err, LockfileError::Io(_)));
+    // Victim must be untouched.
+    let after = std::fs::read(&victim).expect("victim still readable");
+    assert_eq!(after, b"important data");
     std::fs::remove_dir_all(&dir).ok();
   }
 }
