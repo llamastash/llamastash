@@ -47,6 +47,13 @@ const MAX_TENSOR_COUNT: u64 = 1_000_000;
 const MAX_TENSOR_DIMS: u32 = 8;
 const MAX_STRING_LEN: u64 = 4 * 1024 * 1024;
 const MAX_ARRAY_LEN: u64 = 1_000_000;
+/// Maximum levels of `Array(Array(...))` nesting accepted by
+/// [`read_value`]. The header window cap (`MAX_HEADER_CAP_BYTES = 4
+/// MiB`) lets a hostile file describe hundreds of thousands of levels
+/// at ~12 bytes per level, which is enough to blow the parser's
+/// (blocking-pool) stack on a synchronous recursion. We don't see
+/// nested arrays in real GGUFs.
+const MAX_ARRAY_NEST_DEPTH: usize = 4;
 
 /// Tunable knobs for [`read_path`] and [`read_reader`].
 #[derive(Debug, Clone, Copy)]
@@ -231,11 +238,15 @@ pub fn read_reader<R: Read>(reader: R, opts: HeaderReadOptions) -> GgufResult<Re
     });
   }
 
-  let mut metadata = HashMap::with_capacity(kv_count as usize);
+  // Symmetrise the pre-allocation with the tensor list below: cap
+  // attacker-controlled hints at a small bound; `HashMap` resizes
+  // organically as inserts arrive. Without this an attacker could
+  // force a 10 000-slot allocation for one element of payload.
+  let mut metadata = HashMap::with_capacity((kv_count.min(1024)) as usize);
   for _ in 0..kv_count {
     let key = cur.read_gguf_string()?;
     let value_type = cur.read_u32_le()?;
-    let value = read_value(&mut cur, value_type)?;
+    let value = read_value(&mut cur, value_type, 0)?;
     metadata.insert(key, value);
   }
 
@@ -276,7 +287,7 @@ pub fn read_reader<R: Read>(reader: R, opts: HeaderReadOptions) -> GgufResult<Re
   })
 }
 
-fn read_value(cur: &mut Cursor<'_>, value_type: u32) -> GgufResult<GgufValue> {
+fn read_value(cur: &mut Cursor<'_>, value_type: u32, depth: usize) -> GgufResult<GgufValue> {
   Ok(match value_type {
     0 => GgufValue::U8(cur.read_u8()?),
     1 => GgufValue::I8(cur.read_u8()? as i8),
@@ -288,6 +299,12 @@ fn read_value(cur: &mut Cursor<'_>, value_type: u32) -> GgufResult<GgufValue> {
     7 => GgufValue::Bool(cur.read_u8()? != 0),
     8 => GgufValue::String(cur.read_gguf_string()?),
     9 => {
+      if depth >= MAX_ARRAY_NEST_DEPTH {
+        return Err(GgufError::ArrayNestingTooDeep {
+          depth: depth + 1,
+          cap: MAX_ARRAY_NEST_DEPTH,
+        });
+      }
       let elem_ty = cur.read_u32_le()?;
       let len = cur.read_u64_le()?;
       if len > MAX_ARRAY_LEN {
@@ -298,7 +315,7 @@ fn read_value(cur: &mut Cursor<'_>, value_type: u32) -> GgufResult<GgufValue> {
       }
       let mut items = Vec::with_capacity(len.min(1024) as usize);
       for _ in 0..len {
-        items.push(read_value(cur, elem_ty)?);
+        items.push(read_value(cur, elem_ty, depth + 1)?);
       }
       GgufValue::Array(items)
     }
@@ -474,5 +491,59 @@ mod tests {
       ),
       "got {err:?}"
     );
+  }
+
+  /// Build a GGUF file whose only KV is `Array(Array(Array(...)))` nested
+  /// `depth` levels deep, each level a 1-element array of the next. The
+  /// innermost element is a `U8`.
+  fn build_nested_array_gguf(depth: usize) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"GGUF");
+    bytes.extend_from_slice(&3u32.to_le_bytes()); // version
+    bytes.extend_from_slice(&0u64.to_le_bytes()); // tensor_count
+    bytes.extend_from_slice(&1u64.to_le_bytes()); // kv_count
+    // KV[0].key = "nest"
+    let key = b"nest";
+    bytes.extend_from_slice(&(key.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(key);
+    // KV[0].value_type = 9 (Array)
+    bytes.extend_from_slice(&9u32.to_le_bytes());
+    // Each outer Array advertises elem_ty=9 (Array) with len=1, except
+    // the innermost which advertises elem_ty=0 (U8) with len=1 + a byte.
+    for _ in 0..(depth - 1) {
+      bytes.extend_from_slice(&9u32.to_le_bytes()); // elem_ty = Array
+      bytes.extend_from_slice(&1u64.to_le_bytes()); // len = 1
+    }
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // innermost elem_ty = U8
+    bytes.extend_from_slice(&1u64.to_le_bytes()); // len = 1
+    bytes.push(0x42);
+    bytes
+  }
+
+  #[test]
+  fn rejects_array_nesting_past_cap() {
+    let bytes = build_nested_array_gguf(MAX_ARRAY_NEST_DEPTH + 2);
+    let err = read_reader(
+      IoCursor::new(bytes.as_slice()),
+      HeaderReadOptions::default(),
+    )
+    .unwrap_err();
+    assert!(
+      matches!(err, GgufError::ArrayNestingTooDeep { .. }),
+      "got {err:?}"
+    );
+  }
+
+  #[test]
+  fn accepts_array_nesting_at_cap() {
+    let bytes = build_nested_array_gguf(MAX_ARRAY_NEST_DEPTH);
+    let read = read_reader(
+      IoCursor::new(bytes.as_slice()),
+      HeaderReadOptions::default(),
+    )
+    .expect("at-cap nesting must parse");
+    // The KV exists and is a nested Array.
+    assert_eq!(read.header.metadata.len(), 1);
+    assert!(matches!(read.header.metadata.get("nest"), Some(GgufValue::Array(_))));
   }
 }

@@ -35,6 +35,12 @@ pub enum GgufError {
   BadStringLen(u64),
   /// A non-UTF-8 byte sequence appeared where the GGUF spec requires UTF-8.
   BadUtf8,
+  /// `Array(Array(...))` value-types nested past the configured cap.
+  /// The parser short-circuits well before stack overflow rather than
+  /// crashing the worker. Bounded because a malicious file inside the
+  /// 1 MiB header cap can still describe ~87 000 levels of nesting at
+  /// 12 bytes per level.
+  ArrayNestingTooDeep { depth: usize, cap: usize },
 }
 
 impl std::fmt::Display for GgufError {
@@ -58,6 +64,10 @@ impl std::fmt::Display for GgufError {
       GgufError::BadValueType(t) => write!(f, "unknown gguf value-type tag: {t}"),
       GgufError::BadStringLen(n) => write!(f, "gguf string length out of range: {n}"),
       GgufError::BadUtf8 => write!(f, "gguf string contained invalid UTF-8"),
+      GgufError::ArrayNestingTooDeep { depth, cap } => write!(
+        f,
+        "gguf array nested {depth} levels, exceeds cap {cap}"
+      ),
     }
   }
 }
