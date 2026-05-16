@@ -97,13 +97,89 @@ fn report(result: CliResult) -> i32 {
 /// /path` ran with the daemon down displayed an empty Models pane
 /// and "daemon connecting…" indefinitely.
 async fn handle_tui(cli: &Cli, config: &crate::config::Config) -> CliResult {
+  // Ensure the daemon is up. The TUI's writer task reconnects per
+  // command, so we don't hold the connection past startup priming.
+  let mut client = client::connect_or_spawn(cli, config).await?;
+  if cli.render {
+    return render_snapshot(cli, config, &mut client).await;
+  }
+  drop(client);
   let socket = crate::util::paths::runtime_socket_path();
-  // Ensure the daemon is up. We discard the client immediately — the
-  // TUI's writer task reconnects per command, and the reader spawned
-  // by `launch` opens its own connection.
-  let _client = client::connect_or_spawn(cli, config).await?;
   match crate::tui::events::launch(config.theme, &socket).await {
     Ok(()) => Ok(()),
     Err(e) => Err(CliExit::new(exit_codes::UNKNOWN, format!("tui: {e}"))),
   }
+}
+
+/// `--render`: draw a single TUI frame against `ratatui::TestBackend`
+/// and print it as plain text. Uses the same App + render path the
+/// interactive loop and the e2e golden test exercise.
+///
+/// The snapshot polls `status` for up to ~1.5s so the host-metrics
+/// sampler's first 1 Hz tick has landed; if the wait times out the
+/// Host pane shows the `unsampled` sentinel — which is honest output
+/// for a daemon that just started.
+async fn render_snapshot(
+  cli: &Cli,
+  config: &crate::config::Config,
+  client: &mut crate::ipc::Client,
+) -> CliResult {
+  use crate::tui::app::{App, AppOptions};
+  use ratatui::backend::TestBackend;
+  use ratatui::Terminal;
+
+  let (width, height) = match cli.render_size.as_deref() {
+    Some(raw) => cli_args::parse_render_size(raw)
+      .map_err(|msg| CliExit::new(exit_codes::UNKNOWN, format!("--render-size: {msg}")))?,
+    None => (120, 40),
+  };
+
+  // Prime the App with whatever the daemon knows right now.
+  let mut app = App::new(AppOptions {
+    theme: config.theme,
+  });
+  if let Ok(body) = client.call("list_models", None).await {
+    app.ingest_list_models(&body);
+  }
+
+  // Poll `status` for up to ~1.5s so the host-metrics sampler's
+  // first 1 Hz tick has landed before we draw. Without this wait
+  // the snapshot would always show `backend unsampled` and a 0%
+  // CPU bar, which is correct but unhelpful as a debug tool.
+  let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+  loop {
+    if let Ok(body) = client.call("status", None).await {
+      app.daemon_connected = true;
+      app.ingest_status(&body);
+      let primed =
+        app.host_metrics.gpu_backend != "unsampled" && app.host_metrics.ram_total_bytes > 0;
+      if primed || std::time::Instant::now() >= deadline {
+        break;
+      }
+    } else if std::time::Instant::now() >= deadline {
+      break;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+  }
+
+  let backend = TestBackend::new(width, height);
+  let mut terminal = Terminal::new(backend)
+    .map_err(|e| CliExit::new(exit_codes::UNKNOWN, format!("--render: terminal: {e}")))?;
+  terminal
+    .draw(|f| crate::tui::render::render(f, &mut app))
+    .map_err(|e| CliExit::new(exit_codes::UNKNOWN, format!("--render: draw: {e}")))?;
+
+  let buf = terminal.backend().buffer();
+  let mut out = String::with_capacity((width as usize + 1) * height as usize);
+  for y in 0..buf.area.height {
+    let mut row = String::with_capacity(width as usize);
+    for x in 0..buf.area.width {
+      row.push_str(buf[(x, y)].symbol());
+    }
+    // Trim trailing whitespace per row so diffs stay readable.
+    out.push_str(row.trim_end());
+    out.push('\n');
+  }
+  print!("{out}");
+  Ok(())
 }

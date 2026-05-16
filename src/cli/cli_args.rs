@@ -52,8 +52,46 @@ pub struct Cli {
   #[arg(short = 'q', long, global = true, action = ArgAction::SetTrue)]
   pub quiet: bool,
 
+  /// Render one frame of the TUI to stdout as plain text and exit
+  /// instead of entering the interactive loop. Connects to (or auto-
+  /// spawns) the daemon, primes `list_models` + `status`, draws one
+  /// frame against `ratatui`'s headless `TestBackend`, and prints the
+  /// resulting cell grid. The same path the e2e render test uses, so
+  /// agents and CI can sanity-check the UI without a terminal.
+  ///
+  /// Only honoured when no subcommand is given (i.e. the TUI entry).
+  #[arg(long, global = true, action = ArgAction::SetTrue)]
+  pub render: bool,
+
+  /// Optional `WIDTHxHEIGHT` (e.g. `120x40`) for `--render`. Defaults
+  /// to `120x40` which matches the e2e test fixture geometry.
+  #[arg(long, value_name = "WxH", global = true)]
+  pub render_size: Option<String>,
+
   #[command(subcommand)]
   pub command: Option<Command>,
+}
+
+/// Parse a `WIDTHxHEIGHT` string into a `(u16, u16)` tuple. Returns
+/// `Err` with a user-facing message on malformed input.
+pub fn parse_render_size(raw: &str) -> Result<(u16, u16), String> {
+  let (w, h) = raw
+    .split_once('x')
+    .ok_or_else(|| format!("expected `WxH`, got `{raw}`"))?;
+  let w: u16 = w
+    .trim()
+    .parse()
+    .map_err(|_| format!("invalid width in `{raw}`"))?;
+  let h: u16 = h
+    .trim()
+    .parse()
+    .map_err(|_| format!("invalid height in `{raw}`"))?;
+  if w < 40 || h < 10 {
+    return Err(format!(
+      "render size `{raw}` is too small; minimum is 40x10"
+    ));
+  }
+  Ok((w, h))
 }
 
 #[derive(Subcommand, Debug)]
@@ -685,6 +723,32 @@ mod tests {
     assert!(with_flag.no_spawn);
     let without_flag = parse(&["status"]);
     assert!(!without_flag.no_spawn);
+  }
+
+  #[test]
+  fn render_flag_and_size_parse_globally() {
+    let with_flag = parse(&["--render", "--render-size", "100x30"]);
+    assert!(with_flag.render);
+    assert_eq!(with_flag.render_size.as_deref(), Some("100x30"));
+    let without_flag = parse(&[]);
+    assert!(!without_flag.render);
+    assert!(without_flag.render_size.is_none());
+  }
+
+  #[test]
+  fn parse_render_size_accepts_canonical_form() {
+    assert_eq!(parse_render_size("120x40").unwrap(), (120, 40));
+    assert_eq!(parse_render_size("80x20").unwrap(), (80, 20));
+  }
+
+  #[test]
+  fn parse_render_size_rejects_too_small_or_malformed() {
+    assert!(parse_render_size("garbage").is_err());
+    assert!(parse_render_size("100").is_err());
+    assert!(parse_render_size("axb").is_err());
+    // Below the minimum that still lets the layout split into the
+    // title row + info row + body without collapsing into nonsense.
+    assert!(parse_render_size("20x5").is_err());
   }
 
   #[test]
