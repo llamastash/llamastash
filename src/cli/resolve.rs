@@ -24,6 +24,10 @@ use crate::ipc::Client;
 pub struct CatalogRow {
   /// Canonical absolute path to the launchable file (or shard 1).
   pub path: String,
+  /// Short BLAKE3-derived canonical id (8 hex chars). Optional
+  /// because the daemon's catalog computes it lazily — pre-launch
+  /// rows omit it.
+  pub model_id: Option<String>,
   pub parent: String,
   pub source: String,
   pub arch: Option<String>,
@@ -49,11 +53,18 @@ impl CatalogRow {
 pub struct RunningRow {
   pub launch_id: String,
   pub model_path: String,
+  /// Full canonical `ModelId` object as emitted by the daemon (path
+  /// + header_blake3). `None` if the wire shape omits it.
+  pub id: Option<Value>,
   pub port: u16,
   pub mode: String,
   pub state: String,
   pub pid: Option<u64>,
   pub ready_at: Option<u64>,
+  /// Per-launch params (ctx / reasoning / advanced / mode). Lets
+  /// agents reproduce a launch without a separate `last_params`
+  /// call.
+  pub params: Option<Value>,
 }
 
 /// Fetch every catalog row via `list_models`. Centralised here so
@@ -92,8 +103,13 @@ fn parse_catalog_row(row: Value) -> CatalogRow {
     .get("parse_error")
     .and_then(Value::as_str)
     .map(str::to_string);
+  let model_id = row
+    .get("model_id")
+    .and_then(Value::as_str)
+    .map(str::to_string);
   CatalogRow {
     path,
+    model_id,
     parent,
     source,
     arch: metadata
@@ -244,6 +260,7 @@ pub struct ExternalRow {
 
 fn parse_running_row(v: &Value) -> Option<RunningRow> {
   let launch_id = v.get("launch_id")?.as_str()?.to_string();
+  let id = v.get("id").cloned();
   // Path lives under id.path because the `status` handler nests the
   // ModelId; preserve the same shape so callers can show it.
   let model_path = v
@@ -258,22 +275,30 @@ fn parse_running_row(v: &Value) -> Option<RunningRow> {
     .and_then(Value::as_str)
     .unwrap_or_default()
     .to_string();
+  // Accept both the legacy nested `state.state` enum repr and the
+  // flat `state: "ready"` shape (post-P2-16 daemon). Falls back to
+  // empty string when neither is present.
   let state = v
     .get("state")
-    .and_then(|s| s.get("state"))
-    .and_then(Value::as_str)
-    .unwrap_or_default()
-    .to_string();
+    .and_then(|s| {
+      s.as_str()
+        .map(str::to_string)
+        .or_else(|| s.get("state").and_then(Value::as_str).map(str::to_string))
+    })
+    .unwrap_or_default();
   let pid = v.get("pid").and_then(Value::as_u64);
   let ready_at = v.get("ready_at").and_then(Value::as_u64);
+  let params = v.get("params").cloned();
   Some(RunningRow {
     launch_id,
     model_path,
+    id,
     port,
     mode,
     state,
     pid,
     ready_at,
+    params,
   })
 }
 
@@ -350,6 +375,7 @@ mod tests {
   fn row(path: &str, parent: &str) -> CatalogRow {
     CatalogRow {
       path: path.to_string(),
+      model_id: None,
       parent: parent.to_string(),
       source: "user".to_string(),
       arch: Some("llama".to_string()),
@@ -425,20 +451,24 @@ mod tests {
       RunningRow {
         launch_id: "L1".into(),
         model_path: "/m/a.gguf".into(),
+        id: None,
         port: 41100,
         mode: "chat".into(),
         state: "ready".into(),
         pid: Some(123),
         ready_at: None,
+        params: None,
       },
       RunningRow {
         launch_id: "L2".into(),
         model_path: "/m/b.gguf".into(),
+        id: None,
         port: 41101,
         mode: "chat".into(),
         state: "ready".into(),
         pid: Some(124),
         ready_at: None,
+        params: None,
       },
     ];
     assert_eq!(resolve_running(&rows, "41100").unwrap().launch_id, "L1");
@@ -450,11 +480,13 @@ mod tests {
     let rows = vec![RunningRow {
       launch_id: "L1".into(),
       model_path: "/m/a.gguf".into(),
+      id: None,
       port: 41100,
       mode: "chat".into(),
       state: "ready".into(),
       pid: None,
       ready_at: None,
+      params: None,
     }];
     let err = resolve_running(&rows, "9999").unwrap_err();
     assert_eq!(err.code, MODEL_NOT_FOUND);

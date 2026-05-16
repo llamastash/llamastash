@@ -37,7 +37,9 @@ pub fn list_human(rows: &[CatalogRow]) -> String {
 }
 
 /// JSON projection of `list_models` rows. Stable shape — agents pin
-/// against this, so column drift requires deliberate intent.
+/// against this, so column drift requires deliberate intent. Wrapped
+/// in `{"models": [...]}` so every CLI `--json` surface lives behind
+/// the same "always object at the root" rule.
 pub fn list_json(rows: &[CatalogRow]) -> Value {
   let arr: Vec<Value> = rows
     .iter()
@@ -45,6 +47,11 @@ pub fn list_json(rows: &[CatalogRow]) -> Value {
       serde_json::json!({
         "name": r.name(),
         "path": r.path,
+        // Short BLAKE3-derived id so agents can key by a stable
+        // canonical handle rather than the path string (which the
+        // user can rename/move). `None` when the daemon's catalog
+        // didn't compute it for this row.
+        "model_id": r.model_id,
         "parent": r.parent,
         "source": r.source,
         "arch": r.arch,
@@ -56,7 +63,35 @@ pub fn list_json(rows: &[CatalogRow]) -> Value {
       })
     })
     .collect();
-  Value::Array(arr)
+  serde_json::json!({"models": arr})
+}
+
+/// JSON projection of `favorite_list` rows. Wrapped in
+/// `{"favorites": [...]}` (matches the rest of the CLI surface).
+/// Each row carries `path` + `name` at the root for symmetry with
+/// `list_json` so consumers don't need to descend two levels via
+/// `id.path`.
+pub fn favorites_json(rows: &[Value]) -> Value {
+  let arr: Vec<Value> = rows
+    .iter()
+    .map(|r| {
+      let path = r
+        .get("id")
+        .and_then(|id| id.get("path"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+      let name = std::path::Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+      serde_json::json!({
+        "name": name,
+        "path": path,
+        "id": r.get("id").cloned().unwrap_or(Value::Null),
+      })
+    })
+    .collect();
+  serde_json::json!({"favorites": arr})
 }
 
 /// Filter catalog rows by case-insensitive substring against name,
@@ -173,20 +208,39 @@ fn gpu_label(gpu: &Value) -> Option<String> {
 
 /// JSON projection of `status` (preserves the daemon's wire shape so
 /// agents that already parse `daemon status` keep working).
+///
+/// Per the api-contract review:
+/// * Each row preserves the daemon's `id` object (`{path,
+///   header_blake3}`) so consumers can key by the canonical
+///   fingerprint, not just the path string. `model_path` survives as
+///   a convenience alongside.
+/// * Each row also carries `params` (ctx / port / reasoning / mode /
+///   advanced) so an agent can answer "how was this launch
+///   configured" without a separate `last_params` round-trip.
+/// * External rows synthesise `launch_id: "ext-<pid>"` to match the
+///   TUI's identifier shape, so `stop ext-<pid>` lines up across
+///   surfaces.
 pub fn status_json(snap: &StatusSnapshot) -> Value {
   let models: Vec<Value> = snap
     .models
     .iter()
     .map(|r| {
-      serde_json::json!({
-        "launch_id": r.launch_id,
-        "model_path": r.model_path,
-        "port": r.port,
-        "mode": r.mode,
-        "state": r.state,
-        "pid": r.pid,
-        "ready_at": r.ready_at,
-      })
+      let mut obj = serde_json::Map::new();
+      obj.insert("launch_id".into(), serde_json::json!(r.launch_id));
+      // Preserve full `id` object alongside the flat path.
+      if let Some(id) = r.id.as_ref() {
+        obj.insert("id".into(), id.clone());
+      }
+      obj.insert("model_path".into(), serde_json::json!(r.model_path));
+      obj.insert("port".into(), serde_json::json!(r.port));
+      obj.insert("mode".into(), serde_json::json!(r.mode));
+      obj.insert("state".into(), serde_json::json!(r.state));
+      obj.insert("pid".into(), serde_json::json!(r.pid));
+      obj.insert("ready_at".into(), serde_json::json!(r.ready_at));
+      if let Some(params) = r.params.as_ref() {
+        obj.insert("params".into(), params.clone());
+      }
+      Value::Object(obj)
     })
     .collect();
   let external: Vec<Value> = snap
@@ -194,6 +248,7 @@ pub fn status_json(snap: &StatusSnapshot) -> Value {
     .iter()
     .map(|r| {
       serde_json::json!({
+        "launch_id": format!("ext-{}", r.pid),
         "pid": r.pid,
         "cmdline": r.cmdline,
         "model_path": r.model_path,
@@ -230,6 +285,7 @@ mod tests {
   fn row(name: &str, arch: &str, quant: &str, ctx: u64) -> CatalogRow {
     CatalogRow {
       path: format!("/m/{name}.gguf"),
+      model_id: Some(format!("{name:.8}")),
       parent: "/m".to_string(),
       source: "user".to_string(),
       arch: Some(arch.to_string()),

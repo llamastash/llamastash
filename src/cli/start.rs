@@ -73,7 +73,7 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
     .call("start_model", Some(payload))
     .await
     .map_err(|e| map_start_error(e, &row))?;
-  emit_response(args.preset.as_deref(), &row, &resp);
+  emit_response(args.preset.as_deref(), &row, &resp, args.json, cli.quiet);
   Ok(())
 }
 
@@ -208,10 +208,25 @@ fn map_start_error(e: crate::ipc::ClientError, row: &CatalogRow) -> CliExit {
   }
 }
 
-fn emit_response(preset: Option<&str>, row: &CatalogRow, resp: &Value) {
+fn emit_response(preset: Option<&str>, row: &CatalogRow, resp: &Value, json: bool, quiet: bool) {
   let port = resp.get("port").and_then(Value::as_u64);
   let lid = resp.get("launch_id").and_then(Value::as_str);
   let pid = resp.get("pid").and_then(Value::as_u64);
+  if json {
+    let body = serde_json::json!({
+      "name": row.name(),
+      "launch_id": lid,
+      "port": port,
+      "pid": pid,
+      "preset": preset,
+      "path": row.path,
+    });
+    println!("{}", crate::cli::output::pretty_json(&body));
+    return;
+  }
+  if quiet {
+    return;
+  }
   let preset_label = preset
     .map(|p| format!(" (preset: {p})"))
     .unwrap_or_default();
@@ -233,6 +248,7 @@ mod tests {
   fn row(mode_hint: Option<&str>) -> CatalogRow {
     CatalogRow {
       path: "/m/qwen.gguf".into(),
+      model_id: Some("deadbeef".into()),
       parent: "/m".into(),
       source: "user".into(),
       arch: Some("qwen2".into()),

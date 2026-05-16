@@ -20,9 +20,11 @@ use crate::config::Config;
 use crate::ipc::{Client, ClientError};
 
 const FOLLOW_INTERVAL: Duration = Duration::from_millis(250);
-/// Memory ceiling for the dedupe window — lines older than this drop
-/// out of the "have I seen this already?" tracker.
-const SEEN_WINDOW: usize = 1024;
+/// Minimum dedupe-window size. Lines older than this drop out of the
+/// "have I seen this already?" tracker. We expand it at runtime when
+/// the user asks for a larger initial tail so the seed doesn't push
+/// real new lines off the front of the window.
+const MIN_SEEN_WINDOW: usize = 1024;
 
 pub async fn handle(args: LogsArgs, cli: &Cli, config: &Config) -> CliResult {
   let mut client = connect_or_spawn(cli, config).await?;
@@ -38,21 +40,33 @@ pub async fn handle(args: LogsArgs, cli: &Cli, config: &Config) -> CliResult {
     .await
     .map_err(CliExit::from_client_error)?;
   let initial = extract_lines(&body);
-  for l in &initial {
-    safe_println(l)?;
+  // Emit the tail. `--json` wraps the initial chunk as one object so
+  // a non-follow invocation has a stable single-object output shape;
+  // `--follow --json` then emits one object per poll containing only
+  // new lines.
+  if args.json {
+    let init_body = serde_json::json!({
+      "launch_id": &row.launch_id,
+      "lines": &initial,
+    });
+    safe_println(&crate::cli::output::pretty_json(&init_body))?;
+  } else {
+    for l in &initial {
+      safe_println(l)?;
+    }
   }
 
   if !args.follow {
     return Ok(());
   }
 
-  // Track the last N lines so duplicate rows from the rolling tail
-  // don't print twice. A small fixed window is enough — the daemon's
-  // ring buffer is 4 K lines and our window only needs to cover the
-  // overlap between two polls.
-  let mut seen: VecDeque<String> = VecDeque::with_capacity(SEEN_WINDOW);
+  // Window large enough to remember the initial seed plus realistic
+  // overlap between two polls; without this an `--lines 4096`
+  // invocation would drop real new lines past the legacy 1024 cap.
+  let window = MIN_SEEN_WINDOW.max(initial_lines + 256);
+  let mut seen: VecDeque<String> = VecDeque::with_capacity(window);
   for l in initial {
-    push_seen(&mut seen, l);
+    push_seen(&mut seen, l, window);
   }
 
   // SIGINT (Ctrl-C) handling: the tokio signal future returns once,
@@ -68,12 +82,29 @@ pub async fn handle(args: LogsArgs, cli: &Cli, config: &Config) -> CliResult {
       _ = tokio::time::sleep(FOLLOW_INTERVAL) => {
         match poll_tail(&mut client, &row.launch_id).await {
           Ok(lines) => {
+            let mut new_lines: Vec<String> = Vec::new();
             for l in lines {
               if seen.contains(&l) {
                 continue;
               }
-              safe_println(&l)?;
-              push_seen(&mut seen, l);
+              new_lines.push(l);
+            }
+            if args.json {
+              if !new_lines.is_empty() {
+                let body = serde_json::json!({
+                  "launch_id": &row.launch_id,
+                  "lines": &new_lines,
+                });
+                safe_println(&crate::cli::output::pretty_json(&body))?;
+              }
+              for l in new_lines {
+                push_seen(&mut seen, l, window);
+              }
+            } else {
+              for l in new_lines {
+                safe_println(&l)?;
+                push_seen(&mut seen, l, window);
+              }
             }
           }
           Err(ClientError::Connect(_)) | Err(ClientError::Frame(_)) => {
@@ -131,9 +162,54 @@ fn safe_println(line: &str) -> CliResult {
   }
 }
 
-fn push_seen(buf: &mut VecDeque<String>, line: String) {
-  if buf.len() >= SEEN_WINDOW {
+fn push_seen(buf: &mut VecDeque<String>, line: String, window: usize) {
+  if buf.len() >= window {
     buf.pop_front();
   }
   buf.push_back(line);
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use std::io::{Cursor, ErrorKind};
+
+  /// `safe_println` with a writer parameter so the test can route
+  /// the write to a fixture that returns `BrokenPipe`.
+  fn safe_println_to<W: std::io::Write>(w: &mut W, line: &str) -> CliResult {
+    use std::io::Write;
+    match writeln!(w, "{line}") {
+      Ok(()) => Ok(()),
+      Err(e) if e.kind() == ErrorKind::BrokenPipe => Err(CliExit::code_only(SUCCESS)),
+      Err(e) => Err(CliExit::new(
+        crate::cli::exit_codes::UNKNOWN,
+        format!("write: {e}"),
+      )),
+    }
+  }
+
+  struct BrokenWriter;
+  impl std::io::Write for BrokenWriter {
+    fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+      Err(std::io::Error::from(ErrorKind::BrokenPipe))
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+      Err(std::io::Error::from(ErrorKind::BrokenPipe))
+    }
+  }
+
+  #[test]
+  fn broken_pipe_maps_to_success_exit() {
+    let mut w = BrokenWriter;
+    let err = safe_println_to(&mut w, "anything").expect_err("BrokenPipe should surface");
+    assert_eq!(err.code, SUCCESS);
+    assert!(err.message.is_none());
+  }
+
+  #[test]
+  fn normal_writer_returns_ok() {
+    let mut w = Cursor::new(Vec::new());
+    safe_println_to(&mut w, "hello").expect("normal write should succeed");
+    assert_eq!(String::from_utf8(w.into_inner()).unwrap(), "hello\n");
+  }
 }

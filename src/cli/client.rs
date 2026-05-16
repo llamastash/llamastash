@@ -56,19 +56,6 @@ pub async fn connect_or_spawn(cli: &Cli, config: &Config) -> Result<Client, CliE
   }
 }
 
-/// Strict variant — never spawns. Used by `daemon stop` / `daemon
-/// status` where "not running" is a meaningful state worth surfacing
-/// rather than papering over.
-pub async fn connect_or_fail(socket: &std::path::Path) -> Result<Client, CliExit> {
-  Client::connect(socket).await.map_err(|e| match e {
-    ClientError::Connect(_) => CliExit::new(
-      DAEMON_UNREACHABLE,
-      format!("daemon: not running (socket: {})", socket.display()),
-    ),
-    other => CliExit::from_client_error(other),
-  })
-}
-
 async fn await_socket(socket: &std::path::Path, total: Duration) -> Result<Client, CliExit> {
   let deadline = std::time::Instant::now() + total;
   let mut last_err: Option<ClientError> = None;

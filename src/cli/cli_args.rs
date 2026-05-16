@@ -43,8 +43,14 @@ pub struct Cli {
   pub no_spawn: bool,
 
   /// Verbose logging (Debug level instead of Info).
-  #[arg(short, long, global = true, action = ArgAction::SetTrue)]
+  #[arg(short, long, global = true, action = ArgAction::SetTrue, conflicts_with = "quiet")]
   pub verbose: bool,
+
+  /// Suppress success prose on mutating commands (`start`, `stop`,
+  /// `favorites add/remove`, `presets save/delete`). Errors still
+  /// print. Useful for scripts that branch on exit code alone.
+  #[arg(short = 'q', long, global = true, action = ArgAction::SetTrue)]
+  pub quiet: bool,
 
   #[command(subcommand)]
   pub command: Option<Command>,
@@ -77,6 +83,11 @@ pub enum Command {
   Pull(PullArgs),
   /// Mark, unmark, and list favorite models.
   Favorites(FavoritesArgs),
+  /// Inspect the last successful `start_model` params for one or
+  /// every catalog model. Surfaces the daemon's `last_params_list`
+  /// IPC so agents can answer "how did I launch this model last
+  /// time" without going through the TUI.
+  LastParams(LastParamsArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -139,6 +150,11 @@ pub struct StartArgs {
   /// Extra flags forwarded verbatim to `llama-server` after `--`.
   #[arg(last = true, value_name = "ARG")]
   pub extra: Vec<OsString>,
+  /// Emit JSON instead of human-readable success prose. Stable
+  /// shape: `{ "name", "launch_id", "port", "pid", "preset",
+  /// "path" }`.
+  #[arg(long)]
+  pub json: bool,
 }
 
 #[derive(Args, Debug)]
@@ -152,6 +168,25 @@ pub struct StopArgs {
   /// Skip the confirmation prompt.
   #[arg(short, long)]
   pub yes: bool,
+  /// Seconds the daemon waits between SIGTERM and SIGKILL. Mirrors
+  /// the IPC parameter; defaults to 5.
+  #[arg(long, value_name = "SECONDS")]
+  pub grace_secs: Option<u64>,
+  /// Emit JSON instead of human-readable success prose. Stable
+  /// shape: `{ "stopped": [...], "count": N }` for `--all`, a
+  /// single-row object for one-shot stop.
+  #[arg(long)]
+  pub json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct LastParamsArgs {
+  /// Optional model id, path, or name substring. When omitted, all
+  /// recorded last-params rows are returned.
+  pub target: Option<String>,
+  /// Emit JSON instead of the human-readable table.
+  #[arg(long)]
+  pub json: bool,
 }
 
 #[derive(Args, Debug)]
@@ -173,6 +208,12 @@ pub struct LogsArgs {
   /// Number of trailing lines to print before following.
   #[arg(short = 'n', long, value_name = "N")]
   pub lines: Option<u32>,
+  /// Emit JSON Lines (one object per poll) instead of raw text.
+  /// One-shot `logs` emits a single `{ "launch_id": "...", "lines":
+  /// [...] }` object; `--follow --json` emits one object per
+  /// refresh containing only the newly-arrived lines.
+  #[arg(long)]
+  pub json: bool,
 }
 
 #[derive(Args, Debug)]
@@ -204,11 +245,25 @@ pub enum PresetsAction {
     mode: Option<LaunchMode>,
     #[arg(last = true, value_name = "ARG")]
     extra: Vec<OsString>,
+    /// Emit JSON. `{ "action": "save", "name": "...", "replaced":
+    /// bool }`.
+    #[arg(long)]
+    json: bool,
   },
   /// Delete a saved preset.
-  Delete { name: String },
+  Delete {
+    name: String,
+    /// Emit JSON. `{ "action": "delete", "name": "...", "deleted":
+    /// bool }`.
+    #[arg(long)]
+    json: bool,
+  },
   /// Print a saved preset's parameters.
-  Show { name: String },
+  Show {
+    name: String,
+    #[arg(long)]
+    json: bool,
+  },
 }
 
 #[derive(Args, Debug)]
@@ -262,11 +317,19 @@ pub enum FavoritesAction {
   Add {
     /// Model reference: name substring, absolute path, or canonical model id.
     model: String,
+    /// Emit JSON instead of human-readable prose. Stable shape:
+    /// `{ "action": "add", "model": "...", "added": bool,
+    ///    "already_present": bool }`.
+    #[arg(long)]
+    json: bool,
   },
   /// Remove a favorite.
   Remove {
     /// Model reference.
     model: String,
+    /// Emit JSON. Mirrors `Add` with `removed`/`already_absent`.
+    #[arg(long)]
+    json: bool,
   },
 }
 

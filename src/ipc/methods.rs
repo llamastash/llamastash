@@ -239,9 +239,28 @@ pub async fn dispatch_request(ctx: &MethodContext, req: Request) -> Response {
         json!({
           "name": env!("CARGO_PKG_NAME"),
           "version": env!("CARGO_PKG_VERSION"),
+          // Wire protocol version. Bumped only when an existing
+          // method's request or response shape changes in a way
+          // older clients can't parse. New methods are additive
+          // and don't require a bump; callers can feature-detect
+          // via `capabilities`.
+          "protocol_version": 1u32,
           "pid": std::process::id(),
           "uptime_seconds": uptime_secs,
           "connections": connections,
+        }),
+      )
+    }
+    "capabilities" => {
+      // Method-set introspection. Returned as a sorted array of the
+      // method names this daemon advertises so clients can do a
+      // cheap feature-detect before issuing an unknown method call.
+      let methods = supported_methods();
+      Response::ok(
+        id,
+        json!({
+          "protocol_version": 1u32,
+          "methods": methods,
         }),
       )
     }
@@ -340,15 +359,48 @@ async fn status_response(ctx: &MethodContext) -> Value {
     let state = model.state().await;
     let pid = model.pid().await;
     let ready_at = model.ready_at().await;
-    models.push(json!({
+    // Flatten `ManagedState` to a lowercase string label (P2-16
+    // review finding). The legacy nested `{"state": {"state":
+    // "ready"}}` shape was a serde default; agents now see the
+    // expected `"state": "ready"` form, with `error.cause` lifted
+    // to a sibling field when applicable.
+    let (state_label, error_cause) = match &state {
+      ManagedState::Launching => ("launching", None),
+      ManagedState::Loading => ("loading", None),
+      ManagedState::Ready => ("ready", None),
+      ManagedState::Error { cause } => ("error", Some(cause.clone())),
+      ManagedState::Stopping => ("stopping", None),
+      ManagedState::Stopped => ("stopped", None),
+    };
+    // `params` so an agent can reproduce the launch without a
+    // separate `last_params_list` call.
+    let params = model.params();
+    let params_json = json!({
+      "model_path": params.model_path,
+      "mode": model.mode().label(),
+      "ctx": params.ctx,
+      "port": params.port,
+      "reasoning": params.reasoning,
+      "advanced": params
+        .advanced
+        .iter()
+        .map(|s| s.to_string_lossy().into_owned())
+        .collect::<Vec<_>>(),
+    });
+    let mut row = json!({
       "launch_id": launch_id,
       "id": model.id(),
       "port": model.port(),
       "mode": model.mode().label(),
       "pid": pid,
       "ready_at": ready_at,
-      "state": state,
-    }));
+      "state": state_label,
+      "params": params_json,
+    });
+    if let Some(cause) = error_cause {
+      row["error_cause"] = json!(cause);
+    }
+    models.push(row);
   }
   // External — read-only rows for `llama-server` processes the
   // daemon doesn't own. Populated by the startup orphan sweep;
@@ -648,6 +700,36 @@ impl From<LaunchModeWire> for LaunchMode {
       LaunchModeWire::Rerank => LaunchMode::Rerank,
     }
   }
+}
+
+/// Sorted list of every method `dispatch_request` knows. Used by
+/// the `capabilities` handler so clients can feature-detect. The
+/// names here mirror the wire spec in `docs/architecture.md`; a new
+/// method must be added in both places.
+fn supported_methods() -> Vec<&'static str> {
+  let mut v = vec![
+    "ping",
+    "version",
+    "capabilities",
+    "shutdown",
+    "list_models",
+    "status",
+    "start_model",
+    "stop_model",
+    "stop_all",
+    "stop_external",
+    "logs_tail",
+    "presets_list",
+    "presets_save",
+    "presets_delete",
+    "presets_show",
+    "favorite_add",
+    "favorite_remove",
+    "favorite_list",
+    "last_params_list",
+  ];
+  v.sort();
+  v
 }
 
 /// Upper bound on `ctx` (token-window) advertised on the IPC. The TUI
@@ -1087,21 +1169,6 @@ fn parse_params<T: serde::de::DeserializeOwned>(params: Option<Value>) -> Result
   serde_json::from_value(raw)
     .map_err(|e| ErrorObject::new(ErrorCode::InvalidParams, format!("params parse error: {e}")))
 }
-
-// Compile-time guard so future commits don't drop the BTreeMap import
-// silently (presets_map() returns a BTreeMap; the `unused_imports`
-// lint would otherwise fire if all callers happened to ignore the map
-// at once).
-#[allow(dead_code)]
-const _: fn() = || {
-  let _ = std::mem::size_of::<BTreeMap<ModelId, Presets>>();
-};
-
-// Silence the unused-state-import warning when no test exercises it.
-#[allow(dead_code)]
-const _: fn() = || {
-  let _ = std::mem::size_of::<ManagedState>();
-};
 
 #[cfg(test)]
 mod tests {

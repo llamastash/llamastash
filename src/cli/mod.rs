@@ -11,6 +11,7 @@ pub mod client;
 pub mod daemon;
 pub mod exit_codes;
 pub mod favorites;
+pub mod last_params;
 pub mod list;
 pub mod logs;
 pub mod output;
@@ -25,10 +26,7 @@ use anyhow::Result;
 
 use crate::config::loader::LoadedConfig;
 
-#[allow(unused_imports)]
-pub use cli_args::{
-  Cli, Command, DaemonAction, FavoritesAction, LaunchMode, PresetsAction, PullAction, ReasoningFlag,
-};
+pub use cli_args::{Cli, Command};
 pub use exit_codes::{CliExit, CliResult};
 
 /// Dispatch the parsed CLI to its handler. Returns the OS exit code
@@ -52,6 +50,7 @@ pub async fn dispatch(mut cli: Cli, config: LoadedConfig) -> Result<i32> {
     Some(Command::Logs(args)) => logs::handle(args, &cli, resolved_config).await,
     Some(Command::Presets(args)) => presets::handle(args, &cli, resolved_config).await,
     Some(Command::Favorites(args)) => favorites::handle(args, &cli, resolved_config).await,
+    Some(Command::LastParams(args)) => last_params::handle(args, &cli, resolved_config).await,
     // `pull` stays scaffolded; handler returns PULL_FAILED + an
     // explanatory message until R46 lands in v2.
     Some(Command::Pull(args)) => pull::handle(args).await,

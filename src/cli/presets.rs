@@ -32,10 +32,13 @@ pub async fn handle(args: PresetsArgs, cli: &Cli, config: &Config) -> CliResult 
         .cloned()
         .unwrap_or_default();
       if as_json {
-        // Pass the daemon's wire shape through verbatim so agents
-        // pin against the same structure for both `presets list
-        // --json` and `presets show`.
-        println!("{}", pretty_json(&Value::Array(arr)));
+        // Wrapped object — same shape convention as `list --json`
+        // (now `{"models": [...]}`) so agent parsers can rely on a
+        // single "always object" rule across the CLI surface.
+        println!(
+          "{}",
+          pretty_json(&serde_json::json!({"presets": arr}))
+        );
       } else if arr.is_empty() {
         println!("(no presets for {})", row.name());
       } else {
@@ -68,7 +71,10 @@ pub async fn handle(args: PresetsArgs, cli: &Cli, config: &Config) -> CliResult 
       }
       Ok(())
     }
-    PresetsAction::Show { name } => {
+    PresetsAction::Show {
+      name,
+      json: _as_json,
+    } => {
       let body = client
         .call(
           "presets_show",
@@ -85,7 +91,10 @@ pub async fn handle(args: PresetsArgs, cli: &Cli, config: &Config) -> CliResult 
       println!("{}", pretty_json(&body["preset"]));
       Ok(())
     }
-    PresetsAction::Delete { name } => {
+    PresetsAction::Delete {
+      name,
+      json: as_json,
+    } => {
       let body = client
         .call(
           "presets_delete",
@@ -93,13 +102,24 @@ pub async fn handle(args: PresetsArgs, cli: &Cli, config: &Config) -> CliResult 
         )
         .await
         .map_err(CliExit::from_client_error)?;
-      if body.get("removed").map(Value::is_null).unwrap_or(true) {
+      let deleted = !body.get("removed").map(Value::is_null).unwrap_or(true);
+      if !deleted {
         return Err(CliExit::new(
           USAGE,
           format!("preset `{name}` not found for {}", row.name()),
         ));
       }
-      println!("removed preset `{name}` for {}", row.name());
+      if as_json {
+        let out = json!({
+          "action": "delete",
+          "name": name,
+          "deleted": deleted,
+          "model": row.name(),
+        });
+        println!("{}", pretty_json(&out));
+      } else if !cli.quiet {
+        println!("removed preset `{name}` for {}", row.name());
+      }
       Ok(())
     }
     PresetsAction::Save {
@@ -109,6 +129,7 @@ pub async fn handle(args: PresetsArgs, cli: &Cli, config: &Config) -> CliResult 
       reasoning,
       mode,
       extra,
+      json: as_json,
     } => {
       if name.trim().is_empty() {
         return Err(CliExit::new(USAGE, "preset name must not be empty"));
@@ -141,7 +162,17 @@ pub async fn handle(args: PresetsArgs, cli: &Cli, config: &Config) -> CliResult 
         .map_err(CliExit::from_client_error)?;
       let replaced = body.get("replaced").map(|v| !v.is_null()).unwrap_or(false);
       let verb = if replaced { "replaced" } else { "saved" };
-      println!("{verb} preset `{name}` for {}", row.name());
+      if as_json {
+        let out = json!({
+          "action": "save",
+          "name": name,
+          "replaced": replaced,
+          "model": row.name(),
+        });
+        println!("{}", pretty_json(&out));
+      } else if !cli.quiet {
+        println!("{verb} preset `{name}` for {}", row.name());
+      }
       Ok(())
     }
   }

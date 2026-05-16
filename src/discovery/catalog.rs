@@ -13,12 +13,11 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
-use crate::discovery::{DiscoveredModel, ModelSource};
-use crate::gguf::metadata::{ModeHint, Quant};
+use crate::discovery::DiscoveredModel;
+use crate::gguf::metadata::ModeHint;
 
 /// Shared, cheap-to-clone catalog of every model discovery has seen.
 #[derive(Debug, Clone, Default)]
@@ -81,6 +80,12 @@ impl ModelCatalog {
 
 /// JSON projection of a single [`DiscoveredModel`] for the
 /// `list_models` response. Stable shape — agents pin against this.
+///
+/// `has_reasoning_hint` is the canonical name for the boolean
+/// presence indicator (P2-17). The legacy `reasoning_hint` field
+/// is still emitted for backwards compatibility with any caller
+/// that pinned against the original name; a future v2 release
+/// will drop it.
 fn model_row(m: &DiscoveredModel) -> Value {
   json!({
     "path": m.path,
@@ -96,6 +101,9 @@ fn model_row(m: &DiscoveredModel) -> Value {
         "native_ctx": md.native_ctx,
         "tokenizer_kind": md.tokenizer_kind,
         "mode_hint": mode_hint_label(md.mode_hint),
+        "has_reasoning_hint": md.reasoning_hint.is_some(),
+        // Deprecated alias — kept until v2 to avoid breaking pinned
+        // parsers. Same value as `has_reasoning_hint`.
         "reasoning_hint": md.reasoning_hint.is_some(),
         "has_chat_template": md.chat_template.is_some(),
         "weights_bytes": md.weights_bytes,
@@ -112,27 +120,6 @@ fn mode_hint_label(h: ModeHint) -> &'static str {
     ModeHint::Rerank => "rerank",
     ModeHint::Unknown => "unknown",
   }
-}
-
-// Compile-time guard: a future commit must not silently drop Quant
-// variants from the response by reusing an old label table. Quant's
-// own `label` method is the source of truth.
-#[allow(dead_code)]
-fn _quant_label_is_source_of_truth(q: Quant) -> &'static str {
-  q.label()
-}
-
-// Compile-time guard: ModelSource labels likewise live on the enum.
-#[allow(dead_code)]
-fn _source_label_is_source_of_truth(s: ModelSource) -> &'static str {
-  s.label()
-}
-
-/// Implementation-only flag so future test fixtures can serialise
-/// without involving the live catalog. Not exposed.
-#[derive(Debug, Serialize)]
-struct _SchemaAnchor {
-  path: PathBuf,
 }
 
 #[cfg(test)]
