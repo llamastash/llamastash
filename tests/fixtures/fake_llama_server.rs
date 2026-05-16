@@ -222,11 +222,44 @@ async fn handle(
       .await?;
     }
     ("POST", "/v1/chat/completions") => {
-      // Tiny streamed SSE so the supervisor's stdout/stderr tee +
-      // ring buffer get exercised without a real LLM.
-      let body = b"event: message\ndata: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n\
-                   event: done\ndata: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n\n";
-      write_response(&mut wr, 200, "text/event-stream", body).await?;
+      // Test failure-injection knobs via query string:
+      //   ?fail=400   → return a 400 with a JSON error body
+      //   ?malformed-sse=1 → emit a bogus `data:` frame before the
+      //                     valid one so the client must skip it
+      //                     and still surface the good delta.
+      // Both cases let the tui_chat_smoke_test exercise the error
+      // paths in `oai_client::spawn_chat_stream`.
+      let query = path
+        .split_once('?')
+        .map(|(_, q)| q.to_string())
+        .unwrap_or_default();
+      // We accept either query-string flags (when the test client
+      // can rewrite the URL) or magic marker strings in the
+      // request body. The latter is convenient when the test
+      // drives `spawn_chat_stream` which builds the URL itself.
+      let body_text = std::str::from_utf8(&body).unwrap_or("");
+      let want_fail =
+        query.contains("fail=400") || body_text.contains("__TEST_INJECT_FAIL_400__");
+      let want_malformed =
+        query.contains("malformed-sse=1") || body_text.contains("__TEST_INJECT_MALFORMED_SSE__");
+      if want_fail {
+        write_response(
+          &mut wr,
+          400,
+          "application/json",
+          b"{\"error\":\"injected 400\"}",
+        )
+        .await?;
+      } else if want_malformed {
+        let stream = b"event: noise\ndata: {not json at all\n\n\
+                       event: message\ndata: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n\
+                       event: done\ndata: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n\n";
+        write_response(&mut wr, 200, "text/event-stream", stream).await?;
+      } else {
+        let stream = b"event: message\ndata: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n\
+                       event: done\ndata: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n\n";
+        write_response(&mut wr, 200, "text/event-stream", stream).await?;
+      }
     }
     ("POST", "/v1/embeddings") => {
       let body = serde_json::json!({

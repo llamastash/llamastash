@@ -105,15 +105,25 @@ fn shell_fallback_backends() -> Vec<&'static str> {
   }
 }
 
-fn write_via(backend: &str, text: &str) -> std::io::Result<()> {
-  let args: &[&str] = match backend {
+/// Canonical argv tail for each shell-out clipboard backend. Public
+/// (within the crate) so tests can snapshot the table and catch
+/// silent reorders / flag drops.
+pub(crate) fn backend_argv(backend: &str) -> &'static [&'static str] {
+  match backend {
     // `xclip` defaults to PRIMARY; `-selection clipboard` puts the
     // text where Ctrl+V pastes. `xsel`'s `--input --clipboard` does
-    // the same.
+    // the same. `wl-copy` and `pbcopy` need no flags — they target
+    // the clipboard by default.
     "xclip" => &["-selection", "clipboard"],
     "xsel" => &["--input", "--clipboard"],
+    "wl-copy" => &[],
+    "pbcopy" => &[],
     _ => &[],
-  };
+  }
+}
+
+fn write_via(backend: &str, text: &str) -> std::io::Result<()> {
+  let args: &[&str] = backend_argv(backend);
   let mut child = Command::new(backend)
     .args(args)
     .stdin(Stdio::piped())
@@ -213,5 +223,22 @@ mod tests {
   fn which_on_path_finds_cat_but_not_a_made_up_name() {
     assert!(which_on_path("cat").is_some());
     assert!(which_on_path("nonexistent-tool-9f3a-llamatui").is_none());
+  }
+
+  #[test]
+  fn backend_argv_snapshot_per_backend() {
+    // Pins the canonical flag set for each shell backend so a
+    // silent reorder (or a removed `--clipboard`) is caught at
+    // build time. The `wl-copy` and `pbcopy` paths have no flags;
+    // listing the empty-slice case explicitly so an accidental
+    // addition becomes a test failure.
+    assert_eq!(backend_argv("xclip"), &["-selection", "clipboard"]);
+    assert_eq!(backend_argv("xsel"), &["--input", "--clipboard"]);
+    let empty: &[&str] = &[];
+    assert_eq!(backend_argv("wl-copy"), empty);
+    assert_eq!(backend_argv("pbcopy"), empty);
+    // Unknown backends default to an empty argv (write_via still
+    // tries to spawn them; that's the existing behaviour).
+    assert_eq!(backend_argv("never-heard-of"), empty);
   }
 }

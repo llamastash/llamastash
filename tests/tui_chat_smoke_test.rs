@@ -141,10 +141,74 @@ async fn embed_returns_dim_and_preview() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_stream_surfaces_http_4xx_as_error_message() {
+  let (port, _daemon, _socket) = drive_to_ready_port().await;
+  // The chat tab posts a JSON body containing the user's prompt; the
+  // fake server treats the marker string as a request to return 400.
+  let mut rx = spawn_chat_stream(
+    port,
+    "m".to_string(),
+    "__TEST_INJECT_FAIL_400__".to_string(),
+  );
+  let msg = timeout(Duration::from_secs(2), rx.recv())
+    .await
+    .expect("must receive an error within 2s")
+    .expect("stream must yield at least one message");
+  match msg {
+    ChatStreamMsg::Error(body) => {
+      assert!(
+        body.contains("400") || body.contains("injected"),
+        "error must surface the 4xx body: got {body}"
+      );
+    }
+    other => panic!("expected ChatStreamMsg::Error, got {other:?}"),
+  }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_stream_skips_malformed_sse_frame_and_emits_delta() {
+  let (port, _daemon, _socket) = drive_to_ready_port().await;
+  let mut rx = spawn_chat_stream(
+    port,
+    "m".to_string(),
+    "__TEST_INJECT_MALFORMED_SSE__".to_string(),
+  );
+  let mut saw_delta = false;
+  let mut saw_finished = false;
+  while let Some(msg) = timeout(Duration::from_secs(2), rx.recv())
+    .await
+    .expect("timely")
+  {
+    match msg {
+      ChatStreamMsg::Delta(d) => {
+        if d == "hi" {
+          saw_delta = true;
+        }
+      }
+      ChatStreamMsg::Finished { .. } => {
+        saw_finished = true;
+        break;
+      }
+      ChatStreamMsg::Error(e) => panic!("malformed frame should be tolerated, got Error({e})"),
+    }
+  }
+  assert!(saw_delta, "the good delta must arrive after the bad frame");
+  assert!(saw_finished, "stream must terminate with Finished");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rerank_returns_sorted_scores() {
   let (port, _daemon, _socket) = drive_to_ready_port().await;
   let ranked = rerank(port, "m", "query", &["doc one".into(), "doc two".into()])
     .await
     .expect("rerank call");
   assert!(!ranked.is_empty(), "fake server emits at least one result");
+  // Scores must be monotone non-increasing — that's the contract
+  // the rerank tab relies on when it picks the top candidate.
+  for window in ranked.windows(2) {
+    assert!(
+      window[0].1 >= window[1].1,
+      "rerank scores must be sorted descending: got {ranked:?}"
+    );
+  }
 }
