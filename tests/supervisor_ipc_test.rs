@@ -108,7 +108,25 @@ async fn status_lists_active_supervised_model() {
 
   // Call `status`.
   let mut client = Client::connect(&socket).await.expect("connect");
-  let body = client.call("status", None).await.expect("status");
+  // Poll until the host-metrics sampler has produced a real reading
+  // (`ram_total_bytes > 0`). The sampler's first tick lands one
+  // interval after spawn (~1s); without this poll the assertions
+  // below would only verify the wire shape, not that the sampler
+  // actually runs.
+  let body = {
+    let deadline = std::time::Instant::now() + Duration::from_secs(4);
+    loop {
+      let body = client.call("status", None).await.expect("status");
+      let ram_total = body["host"]["ram_total_bytes"].as_u64().unwrap_or(0);
+      if ram_total > 0 {
+        break body;
+      }
+      if std::time::Instant::now() > deadline {
+        panic!("host-metrics sampler never primed: {body:#?}");
+      }
+      tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+  };
   let models = body["models"].as_array().expect("models array");
   assert_eq!(models.len(), 1);
   assert_eq!(models[0]["launch_id"], json!(launch_id.as_str()));
@@ -116,11 +134,6 @@ async fn status_lists_active_supervised_model() {
   assert_eq!(models[0]["mode"], json!("chat"));
   assert_eq!(models[0]["state"]["state"], json!("ready"));
   assert!(body["gpu"]["backend"].as_str().is_some());
-  // Host-metrics block must always serialize, even if the sampler
-  // hasn't ticked yet (sentinel "unsampled" backend until the first
-  // 1-second tick lands). `ram_total_bytes` is missing only when the
-  // sentinel snapshot is fresh; once the sampler runs at least once,
-  // it carries a non-zero total.
   assert!(
     body["host"].is_object(),
     "status response must include a `host` field: {body:#?}"
@@ -129,6 +142,19 @@ async fn status_lists_active_supervised_model() {
     body["host"]["gpu_backend"].as_str().is_some(),
     "host snapshot must carry a backend label: {:#?}",
     body["host"]
+  );
+  // After the poll above, the snapshot is no longer the
+  // `unsampled` sentinel — verify the transition explicitly so a
+  // regression that leaves the sentinel in place becomes a test
+  // failure.
+  assert_ne!(
+    body["host"]["gpu_backend"].as_str().unwrap(),
+    "unsampled",
+    "sampler should have transitioned past the sentinel"
+  );
+  assert!(
+    body["host"]["ram_total_bytes"].as_u64().unwrap_or(0) > 0,
+    "primed snapshot must carry a non-zero RAM total"
   );
 
   // `logs_tail` returns the ring buffer contents.

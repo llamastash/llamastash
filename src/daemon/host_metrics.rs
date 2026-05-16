@@ -326,6 +326,32 @@ mod tests {
   }
 
   #[tokio::test]
+  async fn spawn_task_exits_when_shutdown_token_fires() {
+    // Triggering the shutdown token must terminate the sampler task
+    // so the `Arc<RwLock<...>>` clone it held is released — once the
+    // task drops, the strong count falls back to 1 (the local
+    // variable). A regression that removes the
+    // `wait_until_triggered` select arm would leave the task looping
+    // forever and the strong count stuck at 2.
+    let token = ShutdownToken::new();
+    let snap = spawn(token.clone(), Duration::from_millis(20));
+    // Give the task a moment to enter its loop and clone the Arc.
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    token.trigger();
+    // The task may be parked inside spawn_blocking when the token
+    // fires; poll the strong count for up to ~1s.
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    while Arc::strong_count(&snap) > 1 && std::time::Instant::now() < deadline {
+      tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+      Arc::strong_count(&snap),
+      1,
+      "sampler task must release its Arc clone after shutdown",
+    );
+  }
+
+  #[tokio::test]
   async fn spawn_updates_snapshot_after_first_tick() {
     let token = ShutdownToken::new();
     let snap = spawn(token.clone(), Duration::from_millis(50));

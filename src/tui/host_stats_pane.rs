@@ -436,6 +436,42 @@ mod tests {
   }
 
   #[test]
+  fn empty_backend_collapses_gpu_rows_like_cpu_only() {
+    // A default-constructed `HostMetricsSnapshot` (which the IPC
+    // emits as `host` when no sampler is attached) carries
+    // `gpu_backend == ""`. The pane should not render GPU/VRAM rows
+    // for that state.
+    let snap = HostMetricsSnapshot {
+      gpu_backend: String::new(),
+      ..Default::default()
+    };
+    let rows = render_lines(snap);
+    let body = rows.join("\n");
+    assert!(body.contains("CPU"));
+    assert!(body.contains("RAM"));
+    assert!(!body.contains("GPU"));
+    assert!(!body.contains("VRAM"));
+  }
+
+  #[test]
+  fn arbitrary_backend_string_falls_through_to_catch_all() {
+    // An unrecognised label (e.g. a future backend not yet handled by
+    // the explicit arms) should still render — just verbatim — so the
+    // user gets a debuggable signal rather than a missing row.
+    let snap = HostMetricsSnapshot {
+      gpu_backend: "future-backend".into(),
+      gpu_device_count: 1,
+      gpu_mem_total_bytes: Some(8 * 1024 * 1024 * 1024),
+      ..Default::default()
+    };
+    let rows = render_lines(snap);
+    assert!(
+      rows.iter().any(|r| r.contains("future-backend")),
+      "expected verbatim catch-all label: {rows:#?}"
+    );
+  }
+
+  #[test]
   fn unknown_backend_renders_via_constant_arm() {
     // The Vulkan fallback emits BACKEND_UNKNOWN. The backend row
     // should pick up the explicit "unknown" label rather than passing

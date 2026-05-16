@@ -400,4 +400,71 @@ mod tests {
       "expected `(cuda)` flavor on nvidia backend, got: {server_row:?}"
     );
   }
+
+  #[test]
+  fn server_row_picks_rocm_flavor_for_amd_backend() {
+    let mut app = App::new(AppOptions::default());
+    app.daemon_info = DaemonInfo {
+      server_path: Some("/usr/bin/llama-server".into()),
+      ..Default::default()
+    };
+    app.host_metrics = HostMetricsSnapshot {
+      gpu_backend: "amd".into(),
+      ..Default::default()
+    };
+    let rows = render_lines(&app);
+    let server_row = rows.iter().find(|r| r.contains("server")).unwrap();
+    assert!(server_row.contains("(rocm)"), "{server_row:?}");
+  }
+
+  #[test]
+  fn server_row_picks_metal_flavor_for_apple_metal_backend() {
+    let mut app = App::new(AppOptions::default());
+    app.daemon_info = DaemonInfo {
+      server_path: Some("/usr/bin/llama-server".into()),
+      ..Default::default()
+    };
+    app.host_metrics = HostMetricsSnapshot {
+      gpu_backend: "apple_metal".into(),
+      ..Default::default()
+    };
+    let rows = render_lines(&app);
+    let server_row = rows.iter().find(|r| r.contains("server")).unwrap();
+    assert!(server_row.contains("(metal)"), "{server_row:?}");
+  }
+
+  #[test]
+  fn server_row_omits_flavor_chunk_for_unsampled_backend() {
+    let mut app = App::new(AppOptions::default());
+    app.daemon_info = DaemonInfo {
+      server_path: Some("/usr/bin/llama-server".into()),
+      ..Default::default()
+    };
+    app.host_metrics = HostMetricsSnapshot {
+      gpu_backend: "unsampled".into(),
+      ..Default::default()
+    };
+    let rows = render_lines(&app);
+    let server_row = rows.iter().find(|r| r.contains("server")).unwrap();
+    // No parenthesised flavor chunk should appear yet.
+    assert!(
+      !server_row.contains('('),
+      "unsampled backend should suppress the flavor chunk: {server_row:?}"
+    );
+  }
+
+  #[test]
+  fn socket_row_renders_pid_when_daemon_info_carries_one() {
+    let mut app = App::new(AppOptions::default());
+    app.daemon_info = DaemonInfo {
+      pid: Some(1234),
+      ..Default::default()
+    };
+    let rows = render_lines(&app);
+    let socket_row = rows.iter().find(|r| r.contains("socket")).unwrap();
+    assert!(
+      socket_row.contains("pid 1234"),
+      "expected `pid 1234`, got: {socket_row:?}"
+    );
+  }
 }

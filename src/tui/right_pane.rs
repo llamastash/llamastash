@@ -211,4 +211,45 @@ mod tests {
     let title = right_pane_title(&app);
     assert!(title.contains("not launched"));
   }
+
+  #[test]
+  fn tab_strip_is_suppressed_when_only_logs_is_reachable() {
+    // A non-Ready (or unlaunched) model exposes only the Logs tab.
+    // The render path should omit the strip row entirely — no other
+    // tab labels visible, no `│` separator from `render_tab_strip`.
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+    use ratatui::Terminal;
+    let app = App::new(AppOptions::default());
+    assert_eq!(app.available_right_tabs(), vec![RightTab::Logs]);
+    let palette = app.palette();
+    let mut term = Terminal::new(TestBackend::new(50, 12)).unwrap();
+    term
+      .draw(|f| render(f, Rect::new(0, 0, 50, 12), &app, palette))
+      .unwrap();
+    let buf = term.backend().buffer().clone();
+    let mut rows: Vec<String> = Vec::with_capacity(buf.area.height as usize);
+    for y in 0..buf.area.height {
+      let mut row = String::with_capacity(buf.area.width as usize);
+      for x in 0..buf.area.width {
+        row.push_str(buf.cell((x, y)).unwrap().symbol());
+      }
+      rows.push(row);
+    }
+    let body = rows.join("\n");
+    // None of the multi-tab labels appear when the strip is suppressed.
+    for label in ["Chat", "Embed", "Rerank"] {
+      assert!(
+        !body.contains(label),
+        "expected `{label}` absent when only Logs is reachable: {body}"
+      );
+    }
+    // And the per-tab hint strings stay hidden too.
+    for hint in ["Ctrl+Enter:send", "Enter:embed", "Enter:rerank"] {
+      assert!(
+        !body.contains(hint),
+        "expected hint `{hint}` absent when strip is suppressed: {body}"
+      );
+    }
+  }
 }

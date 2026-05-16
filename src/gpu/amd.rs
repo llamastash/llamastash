@@ -229,4 +229,36 @@ mod tests {
     assert!(parse("not json").is_empty());
     assert!(parse("{}").is_empty());
   }
+
+  #[test]
+  fn parses_alternative_temperature_keys() {
+    // Different ROCm releases capitalise the unit differently or
+    // emit a numbered-sensor key. All variants must resolve.
+    let cases = [
+      (
+        "Temperature (Sensor edge) (c)",
+        r#"{"card0":{"VRAM Total Memory (B)":1024,"VRAM Used Memory (B)":0,"Temperature (Sensor edge) (c)":"42.0"}}"#,
+        42.0_f32,
+      ),
+      (
+        "Temperature (Sensor #1) (C)",
+        r#"{"card0":{"VRAM Total Memory (B)":1024,"VRAM Used Memory (B)":0,"Temperature (Sensor #1) (C)":"57.5"}}"#,
+        57.5_f32,
+      ),
+      (
+        "Temperature (Sensor) (C)",
+        r#"{"card0":{"VRAM Total Memory (B)":1024,"VRAM Used Memory (B)":0,"Temperature (Sensor) (C)":"61"}}"#,
+        61.0_f32,
+      ),
+    ];
+    for (label, stdout, expected) in cases {
+      let devices = parse(stdout);
+      assert_eq!(devices.len(), 1, "{label}: expected one device");
+      assert_eq!(
+        devices[0].temperature_c,
+        Some(expected),
+        "{label}: temp parse failed"
+      );
+    }
+  }
 }

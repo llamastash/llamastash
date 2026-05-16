@@ -301,9 +301,14 @@ mod tests {
     let body = rows.join("\n");
     assert!(body.contains("LlamaDash"), "title still renders");
     assert!(body.contains("Models"), "body still renders");
-    // Host panel block title shouldn't appear when info row is hidden.
+    // The Host pane block title is rendered as discrete cells, so the
+    // joined frame won't contain a contiguous "─ Host ─" token even
+    // when the pane is visible — assert the literal word `Host` is
+    // absent instead, and that no Host block border row appears
+    // between the title row and the body.
+    assert!(!body.contains("Host"), "info row should be hidden: {body}");
     assert!(
-      !body.contains("─ Host ─"),
+      !body.contains("Daemon"),
       "info row should be hidden: {body}"
     );
   }
