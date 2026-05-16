@@ -10,6 +10,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use futures::stream::{self, StreamExt};
 use ignore::WalkBuilder;
 use tokio::sync::mpsc;
 
@@ -89,13 +90,36 @@ async fn walk_root(
       Vec::new()
     });
 
-  for entry in group(paths) {
-    let model = build_discovered_model(entry, source, cache.as_ref()).await;
+  // Parse files in parallel on the blocking pool. The per-file
+  // `build_discovered_model` already pushes its CPU-bound work onto
+  // `spawn_blocking`; `buffer_unordered` just lets several of those
+  // happen at once instead of strict one-at-a-time await. On a cold
+  // HF cache with hundreds of GGUFs this cuts first-scan latency from
+  // serial-disk-bound to parallel-disk-bound. We deliberately do NOT
+  // use rayon — the work is mostly waiting on disk, and we want the
+  // tokio scheduler to interleave with the rest of the daemon.
+  let entries: Vec<_> = group(paths);
+  let cache_ref = cache.clone();
+  let mut stream = stream::iter(entries.into_iter().map(|entry| {
+    let cache_ref = cache_ref.clone();
+    async move { build_discovered_model(entry, source, cache_ref.as_ref()).await }
+  }))
+  .buffer_unordered(parallel_parse_limit());
+  while let Some(model) = stream.next().await {
     if tx.send(model).await.is_err() {
-      // Receiver dropped — caller doesn't want more; stop walking.
       return;
     }
   }
+}
+
+/// Concurrency cap for [`walk_root`]'s per-file parse. Default to
+/// `num_cpus()`-flavoured but capped — too many parallel
+/// `spawn_blocking` calls land everything on the blocking pool
+/// regardless. Empirically 8 saturates a single NVMe.
+fn parallel_parse_limit() -> usize {
+  std::thread::available_parallelism()
+    .map(|n| n.get().clamp(2, 8))
+    .unwrap_or(4)
 }
 
 /// Synchronous file-system walk. Returns every `.gguf` file under
@@ -114,7 +138,11 @@ fn collect_gguf_paths(root: &Path, excludes: &[String]) -> Vec<PathBuf> {
     // Follow symlinks so users who alias a GGUF into a scan root
     // (e.g., `ln -s /big-disk/model.gguf ~/models/`) still see the
     // model. The `ignore` walker detects cycles, so following links
-    // doesn't expose us to symlink loops.
+    // doesn't expose us to symlink loops. A hostile symlink pointing
+    // at a non-GGUF file is bounded by (a) the `.gguf` extension
+    // gate below and (b) the GGUF parser's BadMagic short-circuit
+    // and 4 MiB header cap — opening such a file reads at most a
+    // few KB and surfaces as a parse error.
     .follow_links(true)
     .hidden(false);
   if !excludes.is_empty() {

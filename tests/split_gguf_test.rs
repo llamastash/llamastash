@@ -26,7 +26,16 @@ fn end_to_end_grouping_for_a_typical_huggingface_layout() {
   let entries = group(paths);
   assert_eq!(entries.len(), 2, "one Split + one Single passthrough");
 
-  match &entries[0] {
+  // Find the Split and the Single explicitly; order can vary.
+  let split = entries
+    .iter()
+    .find(|e| matches!(e, DiscoveredEntry::Split(_)))
+    .expect("a Split entry must be present");
+  let single = entries
+    .iter()
+    .find(|e| matches!(e, DiscoveredEntry::Single(_)))
+    .expect("the non-shard file must round-trip as Single");
+  match split {
     DiscoveredEntry::Split(g) => {
       assert_eq!(g.base, "Qwen2.5-32B-Instruct-Q4_K_M");
       assert_eq!(g.total, 5);
@@ -38,6 +47,16 @@ fn end_to_end_grouping_for_a_typical_huggingface_layout() {
         .ends_with("Qwen2.5-32B-Instruct-Q4_K_M-00001-of-00005.gguf"));
     }
     other => panic!("expected Split, got {other:?}"),
+  }
+  match single {
+    DiscoveredEntry::Single(path) => {
+      assert!(
+        path.to_string_lossy().ends_with("README.gguf-not-a-gguf.txt"),
+        "unexpected Single passthrough path: {}",
+        path.display()
+      );
+    }
+    other => panic!("expected Single, got {other:?}"),
   }
 }
 

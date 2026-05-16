@@ -15,6 +15,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -32,14 +33,15 @@ pub struct CachedParse {
   pub parse_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug)]
 struct CacheEntry {
   mtime: Option<SystemTime>,
   size: u64,
   parse: CachedParse,
-  /// Monotonic counter, bumped on every access. Smallest value is the
-  /// LRU victim when we evict.
-  last_access: u64,
+  /// Monotonic access counter. Bumped on every `get` hit without
+  /// upgrading the outer RwLock from read → write. The smallest
+  /// value is the LRU victim at eviction time.
+  last_access: AtomicU64,
 }
 
 /// Thread-safe LRU cache. Cheap to clone — the inner state is held
@@ -47,14 +49,12 @@ struct CacheEntry {
 /// between the scanner and the discovery task.
 #[derive(Debug, Clone)]
 pub struct MetadataCache {
-  inner: Arc<RwLock<MetadataCacheInner>>,
+  inner: Arc<RwLock<BTreeMap<PathBuf, Arc<CacheEntry>>>>,
+  /// Process-wide monotonic counter. Bumping it on a `get` hit only
+  /// needs a read lock on `inner`; the write lock is reserved for
+  /// inserts and evictions.
+  access_counter: Arc<AtomicU64>,
   capacity: usize,
-}
-
-#[derive(Debug, Default)]
-struct MetadataCacheInner {
-  entries: BTreeMap<PathBuf, CacheEntry>,
-  access_counter: u64,
 }
 
 impl MetadataCache {
@@ -62,7 +62,8 @@ impl MetadataCache {
   /// as a degenerate (no-cache) configuration — gets always miss.
   pub fn new(capacity: usize) -> Self {
     Self {
-      inner: Arc::new(RwLock::new(MetadataCacheInner::default())),
+      inner: Arc::new(RwLock::new(BTreeMap::new())),
+      access_counter: Arc::new(AtomicU64::new(0)),
       capacity,
     }
   }
@@ -87,25 +88,17 @@ impl MetadataCache {
     if self.capacity == 0 {
       return None;
     }
-    let mut guard = self.inner.write().await;
-    let mtime_matches;
-    let size_matches;
-    {
-      let probe = guard.entries.get(path)?;
-      mtime_matches = probe.mtime == mtime;
-      size_matches = probe.size == size;
-    }
-    if !(mtime_matches && size_matches) {
+    // Read-only lookup. The hit path updates `last_access` via
+    // atomic store — concurrent scanner reads now scale, where they
+    // previously serialised on a write lock.
+    let guard = self.inner.read().await;
+    let entry = guard.get(path)?;
+    if entry.mtime != mtime || entry.size != size {
       return None;
     }
-    guard.access_counter = guard.access_counter.saturating_add(1);
-    let new_access = guard.access_counter;
-    let live = guard
-      .entries
-      .get_mut(path)
-      .expect("entry exists; second borrow after counter bump");
-    live.last_access = new_access;
-    Some(live.parse.clone())
+    let next = self.access_counter.fetch_add(1, Ordering::Relaxed) + 1;
+    entry.last_access.store(next, Ordering::Relaxed);
+    Some(entry.parse.clone())
   }
 
   /// Insert or replace the parse result for `path`. Evicts the LRU
@@ -114,39 +107,39 @@ impl MetadataCache {
     if self.capacity == 0 {
       return;
     }
+    let next = self.access_counter.fetch_add(1, Ordering::Relaxed) + 1;
     let mut guard = self.inner.write().await;
-    guard.access_counter = guard.access_counter.saturating_add(1);
-    let last_access = guard.access_counter;
-    guard.entries.insert(
+    guard.insert(
       path,
-      CacheEntry {
+      Arc::new(CacheEntry {
         mtime,
         size,
         parse,
-        last_access,
-      },
+        last_access: AtomicU64::new(next),
+      }),
     );
-    if guard.entries.len() > self.capacity {
+    if guard.len() > self.capacity {
       // Identify the LRU victim by smallest `last_access`. O(n) in
-      // capacity, which is fine for our bound (a few thousand).
+      // capacity, which is fine for our bound (a few thousand entries
+      // at most). Documented here so a future move to a multi-million-
+      // entry cache knows to swap in a linked-list-keyed LRU.
       let victim = guard
-        .entries
         .iter()
-        .min_by_key(|(_, e)| e.last_access)
+        .min_by_key(|(_, e)| e.last_access.load(Ordering::Relaxed))
         .map(|(p, _)| p.clone());
       if let Some(p) = victim {
-        guard.entries.remove(&p);
+        guard.remove(&p);
       }
     }
   }
 
   /// Current entry count. Useful in tests.
   pub async fn len(&self) -> usize {
-    self.inner.read().await.entries.len()
+    self.inner.read().await.len()
   }
 
   pub async fn is_empty(&self) -> bool {
-    self.inner.read().await.entries.is_empty()
+    self.inner.read().await.is_empty()
   }
 }
 

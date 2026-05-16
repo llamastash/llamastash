@@ -103,7 +103,11 @@ impl Default for WatcherOptions {
     Self {
       debounce: Duration::from_millis(500),
       periodic_rescan: Duration::from_secs(5 * 60),
-      channel_capacity: 64,
+      // 256 absorbs a single HF snapshot's worth of debounced events
+      // without dropping. Below this, a download of a multi-shard
+      // model would trigger backstop reconciliation; above this, we
+      // start sitting on stale events for a slow consumer.
+      channel_capacity: 256,
     }
   }
 }
@@ -138,11 +142,21 @@ pub fn start(
       if paths.is_empty() {
         return;
       }
-      // Channel send from a sync (debouncer-owned) thread: best-effort
-      // non-blocking. If the consumer is overwhelmed, we drop the
-      // event — the periodic rescan tick is the safety net.
-      if let Err(e) = tx_for_debouncer.blocking_send(WatchEvent::Changed { paths }) {
-        log::debug!("watcher channel closed mid-event: {e}");
+      // Channel send from a sync (debouncer-owned) thread. We use
+      // `try_send` rather than `blocking_send` so a slow consumer
+      // can't pin the debouncer thread for an unbounded period; if
+      // the channel is full we drop the burst and let the periodic
+      // rescan tick recover. The warn level is deliberate so users
+      // see watcher pressure in logs rather than discovering it as
+      // "models take 5 minutes to show up after a download spike".
+      match tx_for_debouncer.try_send(WatchEvent::Changed { paths }) {
+        Ok(()) => {}
+        Err(mpsc::error::TrySendError::Full(_)) => {
+          log::warn!("watcher channel full; dropping fs event burst (will reconcile on next periodic rescan)");
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+          log::debug!("watcher channel closed mid-event");
+        }
       }
     }
     Err(err) => {
@@ -388,5 +402,24 @@ mod tests {
     assert!(filtered[0].ends_with("model.gguf"));
     // Periodic rescan never carries paths.
     assert!(changed_gguf_paths(&WatchEvent::PeriodicRescan).is_empty());
+  }
+
+  #[tokio::test]
+  async fn empty_roots_still_yields_periodic_rescan_ticks() {
+    // Degenerate "no scan paths configured" shape: the receiver must
+    // still be alive and produce PeriodicRescan ticks. We use a tiny
+    // periodic interval so the test wakes quickly.
+    let opts = WatcherOptions {
+      debounce: Duration::from_millis(10),
+      periodic_rescan: Duration::from_millis(50),
+      channel_capacity: 4,
+    };
+    let (handle, mut rx) = start(Vec::new(), opts).expect("watcher start");
+    let evt = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+      .await
+      .expect("must produce a periodic tick within 2s")
+      .expect("channel still open");
+    assert!(matches!(evt, WatchEvent::PeriodicRescan));
+    drop(handle);
   }
 }
