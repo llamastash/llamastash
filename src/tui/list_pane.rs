@@ -207,14 +207,25 @@ fn mode_hint_label(hint: crate::gguf::metadata::ModeHint) -> String {
   }
 }
 
+/// Inputs to the Models pane block title.
+pub struct TitleInputs<'a> {
+  /// Total models discovered (not "matched after filter").
+  pub total: usize,
+  /// Active filter query, if any. When `Some`, the `[/query]` chip
+  /// replaces the `/:filter` hint chip in the strip.
+  pub filter: Option<&'a str>,
+}
+
 /// Render `rows` into the supplied area using the active palette.
 /// `selected` is the index in `rows` (NOT in the model list) the
-/// user is currently focused on.
+/// user is currently focused on. `title` carries the dynamic content
+/// (count + filter chip + hint strip).
 pub fn render(
   frame: &mut Frame<'_>,
   area: Rect,
   rows: &[ListRow],
   selected: usize,
+  title: TitleInputs<'_>,
   palette: &Palette,
 ) {
   // Reserve columns for borders (2), the highlight gutter (2), the
@@ -228,10 +239,11 @@ pub fn render(
     .iter()
     .map(|r| render_row(r, palette, name_budget))
     .collect();
+  let title_str = build_block_title(&title, area.width as usize);
   let list = List::new(items)
     .block(
       Block::default()
-        .title(" Models ")
+        .title(title_str)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(palette.accent)),
     )
@@ -241,7 +253,7 @@ pub fn render(
         .fg(palette.fg)
         .add_modifier(Modifier::BOLD),
     )
-    .highlight_symbol("▌ ");
+    .highlight_symbol("> ");
   let mut state = ListState::default();
   let safe = if rows.is_empty() {
     None
@@ -250,6 +262,60 @@ pub fn render(
   };
   state.select(safe);
   frame.render_stateful_widget(list, area, &mut state);
+}
+
+/// Build the dynamic Models block title:
+///
+/// * filter inactive: ` Models [127]  Enter:launch  /:filter  s:stop  f:fav  y:yank `
+/// * filter active:   ` Models [127]  [/qwen]  Enter:launch  s:stop  f:fav  y:yank `
+///
+/// On overflow, drop hint chips right-to-left in this priority:
+/// `y:yank` → `f:fav` → `s:stop` → `/:filter`. `Enter:launch`, the
+/// count, and the filter chip are never dropped.
+pub(crate) fn build_block_title(inputs: &TitleInputs<'_>, area_width: usize) -> String {
+  // The full title strip including borders consumes the whole top
+  // edge. ratatui leaves 1 cell on each side for the corner glyphs,
+  // so the usable budget is `area_width - 2`. Subtract another 2 for
+  // the leading/trailing space inside the title string.
+  let budget = area_width.saturating_sub(4);
+
+  let count = format!("Models [{}]", inputs.total);
+  let filter_chip = inputs.filter.map(|q| format!("[/{}]", q));
+
+  // Hints in display order. `/:filter` is suppressed when the filter
+  // is already active (the `[/query]` chip takes its slot).
+  let mut hints: Vec<&'static str> = Vec::with_capacity(5);
+  hints.push("Enter:launch");
+  if filter_chip.is_none() {
+    hints.push("/:filter");
+  }
+  hints.push("s:stop");
+  hints.push("f:fav");
+  hints.push("y:yank");
+
+  // Truncate right-to-left: drop hints from the tail until the
+  // assembled title fits.
+  loop {
+    let candidate = format_title(&count, filter_chip.as_deref(), &hints);
+    if candidate.chars().count() <= budget || hints.len() <= 1 {
+      return format!(" {candidate} ");
+    }
+    hints.pop();
+  }
+}
+
+fn format_title(count: &str, filter_chip: Option<&str>, hints: &[&str]) -> String {
+  let mut out = String::with_capacity(count.len() + 64);
+  out.push_str(count);
+  if let Some(chip) = filter_chip {
+    out.push_str("  ");
+    out.push_str(chip);
+  }
+  for hint in hints {
+    out.push_str("  ");
+    out.push_str(hint);
+  }
+  out
 }
 
 /// Truncate `s` to fit `budget` columns, appending `…` if anything was
@@ -448,6 +514,75 @@ mod tests {
       })
       .collect();
     assert_eq!(headers, vec!["/m/x".to_string(), "/m/y".to_string()]);
+  }
+
+  #[test]
+  fn title_includes_count_and_full_hint_strip_when_filter_inactive() {
+    let title = build_block_title(
+      &TitleInputs {
+        total: 127,
+        filter: None,
+      },
+      120,
+    );
+    assert!(title.contains("Models [127]"));
+    assert!(title.contains("Enter:launch"));
+    assert!(title.contains("/:filter"));
+    assert!(title.contains("s:stop"));
+    assert!(title.contains("f:fav"));
+    assert!(title.contains("y:yank"));
+  }
+
+  #[test]
+  fn title_swaps_filter_hint_for_chip_when_filter_active() {
+    let title = build_block_title(
+      &TitleInputs {
+        total: 127,
+        filter: Some("qwen"),
+      },
+      120,
+    );
+    assert!(title.contains("[/qwen]"));
+    assert!(
+      !title.contains("/:filter"),
+      "filter chip and `/:filter` hint must not coexist: {title:?}"
+    );
+    // Other hints still present.
+    assert!(title.contains("Enter:launch"));
+    assert!(title.contains("s:stop"));
+  }
+
+  #[test]
+  fn title_drops_hints_right_to_left_under_pressure() {
+    // A 40-col area can't fit the whole strip; the title builder
+    // should drop hints from the tail (`y:yank` first, then `f:fav`).
+    let title = build_block_title(
+      &TitleInputs {
+        total: 127,
+        filter: None,
+      },
+      40,
+    );
+    assert!(title.contains("Enter:launch"), "must never drop launch chip: {title:?}");
+    assert!(title.contains("Models [127]"), "must never drop the count: {title:?}");
+    // `y:yank` should be dropped first.
+    assert!(!title.contains("y:yank"), "expected y:yank dropped at 40 cols: {title:?}");
+  }
+
+  #[test]
+  fn title_never_drops_filter_chip() {
+    // Even at very narrow widths the `[/query]` chip stays — it
+    // shares a logical slot with the `/:filter` hint, and dropping
+    // the chip would lose the active filter signal.
+    let title = build_block_title(
+      &TitleInputs {
+        total: 5,
+        filter: Some("qwen"),
+      },
+      28,
+    );
+    assert!(title.contains("[/qwen]"), "filter chip must survive any width: {title:?}");
+    assert!(title.contains("Enter:launch"), "launch chip must survive: {title:?}");
   }
 
   #[test]

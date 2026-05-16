@@ -59,23 +59,26 @@ fn render_to_string(app: &mut App, width: u16, height: u16) -> String {
 }
 
 #[test]
-fn empty_app_renders_banner_help_and_empty_state() {
+fn empty_app_renders_title_info_and_empty_state() {
   let mut app = App::new(AppOptions::default());
   let frame = render_to_string(&mut app, 100, 20);
-  assert!(frame.contains("LlamaDash"), "banner missing: {frame}");
+  assert!(frame.contains("LlamaDash"), "title row missing brand: {frame}");
   assert!(
-    frame.contains("daemon: connecting"),
-    "connection pill missing: {frame}"
+    frame.contains("daemon connecting"),
+    "title row missing daemon-connecting label: {frame}"
   );
   assert!(
     frame.contains("No GGUFs surfaced"),
     "empty-state hint missing: {frame}"
   );
-  // Help bar surfaces the canonical hotkeys.
+  // Global hint strip surfaces the canonical hotkeys on the title row.
   assert!(
-    frame.contains("q") && frame.contains("/"),
-    "help bar missing q + /: {frame}"
+    frame.contains("?:help") && frame.contains("q:quit"),
+    "title row hint strip missing ?:help / q:quit: {frame}"
   );
+  // Info row renders the three side-by-side panels.
+  assert!(frame.contains("Host"), "info row missing Host: {frame}");
+  assert!(frame.contains("Daemon"), "info row missing Daemon: {frame}");
 }
 
 #[test]
@@ -90,7 +93,12 @@ fn populated_app_renders_directory_groups_and_status_glyph() {
   assert!(frame.contains("/m/x"), "directory group header missing");
   assert!(frame.contains("qwen"), "qwen row missing");
   assert!(frame.contains("phi"), "phi row missing");
-  assert!(frame.contains("daemon: connected"));
+  // Connected daemon shows the bare `daemon` label (no `connecting…`
+  // suffix) on the accent-bg title row.
+  assert!(
+    frame.contains("● daemon"),
+    "title row missing connected daemon dot: {frame}"
+  );
 }
 
 #[test]
