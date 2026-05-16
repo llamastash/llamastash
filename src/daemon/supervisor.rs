@@ -550,7 +550,10 @@ impl LogWriter {
         // Rotation failure shouldn't kill the writer; we just keep
         // appending to the existing oversize file and try again on
         // the next line.
-        log::warn!("supervisor: log rotate failed for {}: {e}", self.path.display());
+        log::warn!(
+          "supervisor: log rotate failed for {}: {e}",
+          self.path.display()
+        );
       }
     }
     Ok(())
@@ -573,7 +576,10 @@ impl LogWriter {
 /// no I/O against the open file.
 fn rotate_segments(base: &Path, keep: usize) -> std::io::Result<()> {
   let segment = |n: usize| -> PathBuf {
-    let mut name = base.file_name().map(|s| s.to_os_string()).unwrap_or_default();
+    let mut name = base
+      .file_name()
+      .map(|s| s.to_os_string())
+      .unwrap_or_default();
     name.push(format!(".{n}"));
     base.with_file_name(name)
   };
@@ -592,7 +598,7 @@ fn rotate_segments(base: &Path, keep: usize) -> std::io::Result<()> {
   }
   // Rename the active file to .1.
   if base.exists() {
-    std::fs::rename(base, &segment(1))?;
+    std::fs::rename(base, segment(1))?;
   }
   Ok(())
 }
@@ -718,10 +724,8 @@ mod tests {
     let m = test_model(ManagedState::Stopped);
     assert!(!m.transition(ManagedState::Ready).await);
     assert!(
-      !m.transition(ManagedState::Error {
-        cause: "x".into()
-      })
-      .await
+      !m.transition(ManagedState::Error { cause: "x".into() })
+        .await
     );
     assert!(matches!(m.state().await, ManagedState::Stopped));
   }

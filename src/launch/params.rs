@@ -25,13 +25,8 @@ use crate::launch::mode::LaunchMode;
 /// the loopback-only / same-UID security contract documented in
 /// `docs/architecture.md`. Match is case-insensitive on the flag
 /// itself; `--ssl-*` matches any flag starting with that prefix.
-pub const FORBIDDEN_ADVANCED_PREFIXES: &[&str] = &[
-  "--host",
-  "--listen",
-  "--bind",
-  "--api-key",
-  "--ssl-",
-];
+pub const FORBIDDEN_ADVANCED_PREFIXES: &[&str] =
+  &["--host", "--listen", "--bind", "--api-key", "--ssl-"];
 
 /// Returns the subset of `advanced` flags that hit the denylist. Used
 /// by IPC handlers to refuse a launch before spawn, and by `compose`
@@ -123,7 +118,11 @@ pub fn compose(params: &LaunchParams, allocated_port: u16) -> Vec<OsString> {
   let mut iter = params.advanced.iter().peekable();
   while let Some(adv) = iter.next() {
     let lossy = adv.to_string_lossy();
-    let head = lossy.split('=').next().unwrap_or(&lossy).to_ascii_lowercase();
+    let head = lossy
+      .split('=')
+      .next()
+      .unwrap_or(&lossy)
+      .to_ascii_lowercase();
     let banned = FORBIDDEN_ADVANCED_PREFIXES
       .iter()
       .any(|p| head == *p || (p.ends_with('-') && head.starts_with(p)));

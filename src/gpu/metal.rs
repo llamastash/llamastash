@@ -13,6 +13,7 @@
 #[cfg(target_os = "macos")]
 use std::process::Command;
 
+#[cfg(any(target_os = "macos", test))]
 use serde_json::Value;
 
 use super::GpuInfo;
@@ -38,7 +39,8 @@ pub fn probe() -> Option<GpuInfo> {
 
 /// Extract Apple Silicon system RAM from `system_profiler
 /// SPDisplaysDataType -json`. Returns `None` on Intel Macs or
-/// malformed JSON.
+/// malformed JSON. Cross-compile-only on macOS (no Linux caller).
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn parse(stdout: &str) -> Option<u64> {
   let v: Value = serde_json::from_str(stdout).ok()?;
   let displays = v.get("SPDisplaysDataType")?.as_array()?;
@@ -68,6 +70,7 @@ pub(crate) fn parse(stdout: &str) -> Option<u64> {
   None
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn parse_memory_string(raw: &str) -> Option<u64> {
   // Expected forms: "16 GB", "8 GB", "8192 MB", "65536 MB".
   let parts: Vec<&str> = raw.split_whitespace().collect();
@@ -84,6 +87,7 @@ fn parse_memory_string(raw: &str) -> Option<u64> {
   Some(n.saturating_mul(multiplier))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn system_total_memory() -> u64 {
   use sysinfo::System;
   let mut sys = System::new();

@@ -9,7 +9,6 @@
 //! small fixed set of methods.
 
 use std::{
-  collections::BTreeMap,
   ffi::OsString,
   path::PathBuf,
   sync::{atomic::Ordering, Arc},
@@ -37,7 +36,7 @@ use crate::gpu::GpuInfo;
 use crate::launch::favorites::FavoriteEntry;
 use crate::launch::mode::LaunchMode;
 use crate::launch::params::LaunchParams;
-use crate::launch::presets::{NamedPreset, Presets};
+use crate::launch::presets::NamedPreset;
 
 /// Shared state that the daemon hands to each request handler. Cheap to
 /// clone (`Arc` inside).
@@ -359,11 +358,13 @@ async fn status_response(ctx: &MethodContext) -> Value {
     let state = model.state().await;
     let pid = model.pid().await;
     let ready_at = model.ready_at().await;
-    // Flatten `ManagedState` to a lowercase string label (P2-16
-    // review finding). The legacy nested `{"state": {"state":
-    // "ready"}}` shape was a serde default; agents now see the
-    // expected `"state": "ready"` form, with `error.cause` lifted
-    // to a sibling field when applicable.
+    // Wrap `ManagedState` in a small `{state, cause?}` object
+    // (P2-16). The legacy nested `{"state": {"state": "ready"}}`
+    // shape was a serde default; the new shape is `"state": {
+    // "state": "ready" }` — same as before for `state.state`
+    // (preserving existing pinned parsers) but `Error{cause}` now
+    // surfaces the cause as a sibling string field instead of being
+    // hidden in serde tagged-enum content.
     let (state_label, error_cause) = match &state {
       ManagedState::Launching => ("launching", None),
       ManagedState::Loading => ("loading", None),
@@ -371,6 +372,11 @@ async fn status_response(ctx: &MethodContext) -> Value {
       ManagedState::Error { cause } => ("error", Some(cause.clone())),
       ManagedState::Stopping => ("stopping", None),
       ManagedState::Stopped => ("stopped", None),
+    };
+    let state_obj = if let Some(cause) = &error_cause {
+      json!({"state": state_label, "cause": cause})
+    } else {
+      json!({"state": state_label})
     };
     // `params` so an agent can reproduce the launch without a
     // separate `last_params_list` call.
@@ -387,19 +393,16 @@ async fn status_response(ctx: &MethodContext) -> Value {
         .map(|s| s.to_string_lossy().into_owned())
         .collect::<Vec<_>>(),
     });
-    let mut row = json!({
+    let row = json!({
       "launch_id": launch_id,
       "id": model.id(),
       "port": model.port(),
       "mode": model.mode().label(),
       "pid": pid,
       "ready_at": ready_at,
-      "state": state_label,
+      "state": state_obj,
       "params": params_json,
     });
-    if let Some(cause) = error_cause {
-      row["error_cause"] = json!(cause);
-    }
     models.push(row);
   }
   // External — read-only rows for `llama-server` processes the
@@ -463,12 +466,36 @@ async fn stop_model_handler(
   let stopped_id = model.id().clone();
   ctx
     .state
-    .mutate(|s| s.running.retain(|r| !(r.id == stopped_id && r.port == stopped_port)))
+    .mutate(|s| {
+      s.running
+        .retain(|r| !(r.id == stopped_id && r.port == stopped_port))
+    })
     .await;
   Ok(json!({
     "launch_id": parsed.launch_id,
-    "state": final_state,
+    "state": flatten_state(&final_state),
   }))
+}
+
+/// Flatten `ManagedState` to a JSON object whose `state` field is a
+/// lowercase string label plus an optional `error_cause`. Used by
+/// `stop_model` and `stop_all` responses so the shape matches the
+/// `status` rows (P2-16) and the legacy nested-enum form is gone.
+fn flatten_state(state: &ManagedState) -> Value {
+  match state {
+    ManagedState::Error { cause } => json!({"state": "error", "cause": cause}),
+    other => {
+      let label = match other {
+        ManagedState::Launching => "launching",
+        ManagedState::Loading => "loading",
+        ManagedState::Ready => "ready",
+        ManagedState::Stopping => "stopping",
+        ManagedState::Stopped => "stopped",
+        ManagedState::Error { .. } => unreachable!(),
+      };
+      json!({"state": label})
+    }
+  }
 }
 
 #[derive(Deserialize)]
@@ -534,11 +561,15 @@ async fn stop_external_handler(
   // — the cheap liveness check alone can't distinguish recycle.
   fn live_and_same(pid: u32, expected_start: u64) -> Option<bool> {
     use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
-    let mut sys = System::new_with_specifics(
-      RefreshKind::new().with_processes(ProcessRefreshKind::everything()),
+    let refresh = ProcessRefreshKind::new();
+    let mut sys = System::new_with_specifics(RefreshKind::new().with_processes(refresh));
+    sys.refresh_processes_specifics(
+      sysinfo::ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
+      true,
+      refresh,
     );
-    sys.refresh_process(Pid::from_u32(pid));
-    sys.process(Pid::from_u32(pid))
+    sys
+      .process(Pid::from_u32(pid))
       .map(|p| p.start_time() == expected_start)
   }
   match live_and_same(parsed.pid, recorded_start_time) {
@@ -579,10 +610,7 @@ async fn stop_external_handler(
   }
   // Final check; SIGKILL only if same process is still up.
   let mut sent_kill = false;
-  if matches!(
-    live_and_same(parsed.pid, recorded_start_time),
-    Some(true)
-  ) {
+  if matches!(live_and_same(parsed.pid, recorded_start_time), Some(true)) {
     unsafe {
       libc::kill(pid_i, libc::SIGKILL);
     }
@@ -617,14 +645,17 @@ async fn stop_all_handler(ctx: &MethodContext) -> Result<Value, ErrorObject> {
   for (launch_id, model_id, port, final_state) in outcomes {
     ctx.supervisors.remove(&launch_id).await;
     stopped_keys.push((model_id, port));
-    stopped.push(json!({"launch_id": launch_id, "state": final_state}));
+    stopped.push(json!({"launch_id": launch_id, "state": flatten_state(&final_state)}));
   }
   if !stopped_keys.is_empty() {
     ctx
       .state
       .mutate(|s| {
-        s.running
-          .retain(|r| !stopped_keys.iter().any(|(id, port)| *id == r.id && *port == r.port))
+        s.running.retain(|r| {
+          !stopped_keys
+            .iter()
+            .any(|(id, port)| *id == r.id && *port == r.port)
+        })
       })
       .await;
   }
@@ -797,7 +828,10 @@ async fn start_model_handler(
     .reserve_port(parsed.port, &live_in_use, &env.port_range)
     .await
     .map_err(|e| {
-      ErrorObject::new(ErrorCode::InternalError, format!("port allocation failed: {e}"))
+      ErrorObject::new(
+        ErrorCode::InternalError,
+        format!("port allocation failed: {e}"),
+      )
     })?;
 
   // Compose LaunchParams.

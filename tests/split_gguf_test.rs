@@ -51,7 +51,9 @@ fn end_to_end_grouping_for_a_typical_huggingface_layout() {
   match single {
     DiscoveredEntry::Single(path) => {
       assert!(
-        path.to_string_lossy().ends_with("README.gguf-not-a-gguf.txt"),
+        path
+          .to_string_lossy()
+          .ends_with("README.gguf-not-a-gguf.txt"),
         "unexpected Single passthrough path: {}",
         path.display()
       );

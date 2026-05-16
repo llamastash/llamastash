@@ -857,73 +857,61 @@ pub fn drain_chat_stream(app: &mut App) -> bool {
   finished
 }
 
-/// Drain one tab's pending receiver. The `classify` closure pattern-
-/// matches a foreign-or-matching `TabEvent` and returns
-/// `Some(action)` when matched, or `None` to leave the event in the
-/// queue. The `on_disconnect` closure clears any per-tab busy flag.
-/// Unifies `drain_embed_pending` and `drain_rerank_pending` so a bug
-/// fix in either path only needs one site to change.
+/// Outcome of one tab-event drain step.
+#[derive(Debug, Clone)]
+enum DrainOutcome<E> {
+  /// No event ready; receiver stays.
+  Empty,
+  /// Event matched; receiver should be dropped.
+  Event(E),
+  /// Receiver disconnected; receiver should be dropped, busy flag reset.
+  Disconnected,
+}
+
+/// Drain one tab's pending receiver. Returns the outcome so the
+/// caller can update both the receiver slot and any per-tab state
+/// (busy flag, result, error) without two-closure-with-shared-app
+/// borrow checker conflicts.
 fn drain_tab_pending(
   pending: &mut Option<mpsc::UnboundedReceiver<TabEvent>>,
-  mut classify: impl FnMut(TabEvent),
-  mut on_disconnect: impl FnMut(),
-) {
-  let mut take = false;
-  if let Some(rx) = pending.as_mut() {
-    match rx.try_recv() {
-      Ok(evt) => {
-        classify(evt);
-        take = true;
-      }
-      Err(mpsc::error::TryRecvError::Empty) => {}
-      Err(mpsc::error::TryRecvError::Disconnected) => {
-        on_disconnect();
-        take = true;
-      }
+) -> DrainOutcome<TabEvent> {
+  let Some(rx) = pending.as_mut() else {
+    return DrainOutcome::Empty;
+  };
+  match rx.try_recv() {
+    Ok(evt) => {
+      *pending = None;
+      DrainOutcome::Event(evt)
     }
-  }
-  if take {
-    *pending = None;
+    Err(mpsc::error::TryRecvError::Empty) => DrainOutcome::Empty,
+    Err(mpsc::error::TryRecvError::Disconnected) => {
+      *pending = None;
+      DrainOutcome::Disconnected
+    }
   }
 }
 
 /// Drain the embed pending receiver. Records success or surfaces
 /// the error message on the embed tab state.
 pub fn drain_embed_pending(app: &mut App) {
-  // Pull the receiver out so the closures can take a mutable
-  // borrow on `app` without overlapping with the receiver borrow.
-  let mut pending = app.embed.pending.take();
-  drain_tab_pending(
-    &mut pending,
-    |evt| match evt {
-      TabEvent::EmbedOk(result) => app.embed.record(result),
-      TabEvent::EmbedErr(msg) => app.embed.record_error(msg),
-      _ => {}
-    },
-    || app.embed.busy = false,
-  );
-  // Put it back if drain_tab_pending didn't consume it (the
-  // receiver is still live and waiting for events).
-  if pending.is_some() {
-    app.embed.pending = pending;
+  match drain_tab_pending(&mut app.embed.pending) {
+    DrainOutcome::Event(TabEvent::EmbedOk(result)) => app.embed.record(result),
+    DrainOutcome::Event(TabEvent::EmbedErr(msg)) => app.embed.record_error(msg),
+    DrainOutcome::Event(_) => {}
+    DrainOutcome::Disconnected => app.embed.busy = false,
+    DrainOutcome::Empty => {}
   }
 }
 
 /// Drain the rerank pending receiver. Mirrors
 /// [`drain_embed_pending`].
 pub fn drain_rerank_pending(app: &mut App) {
-  let mut pending = app.rerank.pending.take();
-  drain_tab_pending(
-    &mut pending,
-    |evt| match evt {
-      TabEvent::RerankOk(ranked) => app.rerank.record(ranked),
-      TabEvent::RerankErr(msg) => app.rerank.record_error(msg),
-      _ => {}
-    },
-    || app.rerank.busy = false,
-  );
-  if pending.is_some() {
-    app.rerank.pending = pending;
+  match drain_tab_pending(&mut app.rerank.pending) {
+    DrainOutcome::Event(TabEvent::RerankOk(ranked)) => app.rerank.record(ranked),
+    DrainOutcome::Event(TabEvent::RerankErr(msg)) => app.rerank.record_error(msg),
+    DrainOutcome::Event(_) => {}
+    DrainOutcome::Disconnected => app.rerank.busy = false,
+    DrainOutcome::Empty => {}
   }
 }
 

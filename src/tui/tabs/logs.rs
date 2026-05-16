@@ -88,10 +88,6 @@ fn lines_extend_tail<'a>(current: &[String], fresh: &'a [String]) -> Option<&'a 
   if fresh.len() < current.len() {
     return None;
   }
-  // The overlap region we'd expect to match is the last `current.len()`
-  // entries of fresh's prefix.
-  let split = fresh.len() - 0;
-  let _ = split; // silence unused
   // Find the overlap: fresh[start..start+current.len()] must equal current,
   // where start = fresh.len() - (current.len() + suffix.len()). The cheap
   // check is: does fresh end with `current` followed by the suffix? That's

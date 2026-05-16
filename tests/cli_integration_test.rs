@@ -170,6 +170,7 @@ fn build_cli(model_dir: &Path, command: Command) -> (Cli, LoadedConfig) {
     no_scan: true,
     no_spawn: true,
     verbose: false,
+    quiet: false,
     command: Some(command),
   };
   let config = LoadedConfig {
@@ -242,6 +243,7 @@ async fn agent_script_round_trip_list_start_status_logs_stop() {
       reasoning: None,
       mode: Some(CliLaunchMode::Chat),
       extra: vec![],
+      json: false,
     }),
   )
   .await;
@@ -283,6 +285,7 @@ async fn agent_script_round_trip_list_start_status_logs_stop() {
       target: launch_id.clone(),
       follow: false,
       lines: Some(50),
+      json: false,
     }),
   )
   .await;
@@ -296,6 +299,8 @@ async fn agent_script_round_trip_list_start_status_logs_stop() {
       target: Some(launch_id),
       all: false,
       yes: true,
+      grace_secs: None,
+      json: false,
     }),
   )
   .await;
@@ -336,6 +341,7 @@ async fn list_filter_and_unknown_ref_exit_codes() {
       reasoning: None,
       mode: Some(CliLaunchMode::Chat),
       extra: vec![],
+      json: false,
     }),
   )
   .await;
@@ -361,6 +367,7 @@ async fn presets_save_list_delete_round_trip() {
         reasoning: Some(ReasoningFlag::On),
         mode: Some(CliLaunchMode::Chat),
         extra: vec![OsString::from("--threads"), OsString::from("4")],
+        json: false,
       },
     }),
   )
@@ -398,6 +405,7 @@ async fn presets_save_list_delete_round_trip() {
       model: "m.gguf".into(),
       action: PresetsAction::Delete {
         name: "long-ctx".into(),
+        json: false,
       },
     }),
   )
@@ -420,6 +428,7 @@ async fn presets_save_list_delete_round_trip() {
       model: "m.gguf".into(),
       action: PresetsAction::Delete {
         name: "long-ctx".into(),
+        json: false,
       },
     }),
   )
@@ -439,6 +448,7 @@ async fn favorites_round_trip_through_dispatcher() {
     Command::Favorites(FavoritesArgs {
       action: FavoritesAction::Add {
         model: "m.gguf".into(),
+        json: false,
       },
     }),
   )
@@ -463,6 +473,7 @@ async fn favorites_round_trip_through_dispatcher() {
     Command::Favorites(FavoritesArgs {
       action: FavoritesAction::Remove {
         model: "m.gguf".into(),
+        json: false,
       },
     }),
   )
@@ -540,6 +551,7 @@ async fn presets_list_json_emits_array_for_agents() {
         reasoning: Some(ReasoningFlag::On),
         mode: Some(CliLaunchMode::Chat),
         extra: vec![],
+        json: false,
       },
     }),
   )
@@ -591,6 +603,7 @@ async fn start_preset_chain_seeds_supervisor_with_saved_params() {
         reasoning: Some(ReasoningFlag::On),
         mode: Some(CliLaunchMode::Chat),
         extra: vec![OsString::from("--threads"), OsString::from("8")],
+        json: false,
       },
     }),
   )
@@ -610,6 +623,7 @@ async fn start_preset_chain_seeds_supervisor_with_saved_params() {
       reasoning: None,
       mode: Some(CliLaunchMode::Chat),
       extra: vec![],
+      json: false,
     }),
   )
   .await;
@@ -661,6 +675,7 @@ async fn start_ctx_above_native_succeeds_and_duplicate_launch_uses_new_port() {
       reasoning: None,
       mode: Some(CliLaunchMode::Chat),
       extra: vec![],
+      json: false,
     }),
   )
   .await;
@@ -684,6 +699,7 @@ async fn start_ctx_above_native_succeeds_and_duplicate_launch_uses_new_port() {
       reasoning: None,
       mode: Some(CliLaunchMode::Chat),
       extra: vec![],
+      json: false,
     }),
   )
   .await;
@@ -728,6 +744,7 @@ async fn logs_follow_returns_daemon_unreachable_when_daemon_dies() {
       reasoning: None,
       mode: Some(CliLaunchMode::Chat),
       extra: vec![],
+      json: false,
     }),
   )
   .await;
@@ -763,6 +780,7 @@ async fn logs_follow_returns_daemon_unreachable_when_daemon_dies() {
         target: launch_id_for_task,
         follow: true,
         lines: Some(5),
+        json: false,
       }),
     )
     .await

@@ -530,7 +530,7 @@ mod tests {
     let delete = parse(&["presets", "qwen-coder", "delete", "old-preset"]);
     match delete.command {
       Some(Command::Presets(args)) => match args.action {
-        PresetsAction::Delete { name } => assert_eq!(name, "old-preset"),
+        PresetsAction::Delete { name, .. } => assert_eq!(name, "old-preset"),
         other => panic!("expected Delete, got {other:?}"),
       },
       other => panic!("expected presets delete, got {other:?}"),
@@ -539,7 +539,7 @@ mod tests {
     let show = parse(&["presets", "qwen-coder", "show", "coding"]);
     match show.command {
       Some(Command::Presets(args)) => match args.action {
-        PresetsAction::Show { name } => assert_eq!(name, "coding"),
+        PresetsAction::Show { name, .. } => assert_eq!(name, "coding"),
         other => panic!("expected Show, got {other:?}"),
       },
       other => panic!("expected presets show, got {other:?}"),
@@ -746,7 +746,7 @@ mod tests {
     let add_cli = parse(&["favorites", "add", "qwen-coder"]);
     match add_cli.command {
       Some(Command::Favorites(args)) => match args.action {
-        FavoritesAction::Add { model } => assert_eq!(model, "qwen-coder"),
+        FavoritesAction::Add { model, .. } => assert_eq!(model, "qwen-coder"),
         other => panic!("expected FavoritesAction::Add, got {other:?}"),
       },
       other => panic!("expected Favorites, got {other:?}"),
@@ -755,7 +755,7 @@ mod tests {
     let remove_cli = parse(&["favorites", "remove", "qwen-coder"]);
     match remove_cli.command {
       Some(Command::Favorites(args)) => match args.action {
-        FavoritesAction::Remove { model } => assert_eq!(model, "qwen-coder"),
+        FavoritesAction::Remove { model, .. } => assert_eq!(model, "qwen-coder"),
         other => panic!("expected FavoritesAction::Remove, got {other:?}"),
       },
       other => panic!("expected Favorites, got {other:?}"),

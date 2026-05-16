@@ -238,8 +238,7 @@ async fn handle(
       // request body. The latter is convenient when the test
       // drives `spawn_chat_stream` which builds the URL itself.
       let body_text = std::str::from_utf8(&body).unwrap_or("");
-      let want_fail =
-        query.contains("fail=400") || body_text.contains("__TEST_INJECT_FAIL_400__");
+      let want_fail = query.contains("fail=400") || body_text.contains("__TEST_INJECT_FAIL_400__");
       let want_malformed =
         query.contains("malformed-sse=1") || body_text.contains("__TEST_INJECT_MALFORMED_SSE__");
       if want_fail {

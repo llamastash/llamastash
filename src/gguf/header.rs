@@ -502,7 +502,7 @@ mod tests {
     bytes.extend_from_slice(&3u32.to_le_bytes()); // version
     bytes.extend_from_slice(&0u64.to_le_bytes()); // tensor_count
     bytes.extend_from_slice(&1u64.to_le_bytes()); // kv_count
-    // KV[0].key = "nest"
+                                                  // KV[0].key = "nest"
     let key = b"nest";
     bytes.extend_from_slice(&(key.len() as u64).to_le_bytes());
     bytes.extend_from_slice(key);
@@ -544,6 +544,9 @@ mod tests {
     .expect("at-cap nesting must parse");
     // The KV exists and is a nested Array.
     assert_eq!(read.header.metadata.len(), 1);
-    assert!(matches!(read.header.metadata.get("nest"), Some(GgufValue::Array(_))));
+    assert!(matches!(
+      read.header.metadata.get("nest"),
+      Some(GgufValue::Array(_))
+    ));
   }
 }

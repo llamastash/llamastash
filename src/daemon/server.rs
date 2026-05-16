@@ -67,12 +67,7 @@ pub async fn serve(listener: UnixListener, ctx: MethodContext) -> Result<()> {
                     task_tracker.notify.notify_waiters();
                   }
                 });
-                if let Ok(mut handles) = conn_tracker.handles.lock() {
-                  // Garbage-collect finished handles opportunistically so
-                  // the vector doesn't grow unboundedly.
-                  handles.retain(|h| !h.is_finished());
-                  handles.push(handle);
-                }
+                push_handle(&conn_tracker, handle);
               }
               Ok(cred) => {
                 log::warn!(
@@ -103,9 +98,7 @@ pub async fn serve(listener: UnixListener, ctx: MethodContext) -> Result<()> {
     let remaining = deadline.checked_duration_since(Instant::now());
     let Some(timeout) = remaining else {
       let still_active = tracker.counter.load(Ordering::SeqCst);
-      log::warn!(
-        "drain deadline reached with {still_active} connection(s) still active; aborting"
-      );
+      log::warn!("drain deadline reached with {still_active} connection(s) still active; aborting");
       // Explicitly abort outstanding tasks so any partial frame in
       // their write buffers is dropped along with the task rather
       // than appearing on the wire after subsequent reconnects.
@@ -129,6 +122,19 @@ struct ConnectionTracker {
   counter: Arc<std::sync::atomic::AtomicUsize>,
   notify: tokio::sync::Notify,
   handles: StdMutex<Vec<JoinHandle<()>>>,
+}
+
+/// Push `handle` onto the tracker's handle list under the mutex,
+/// opportunistically GCing finished handles so the vec doesn't grow
+/// unboundedly. Wrapped in a helper because inlining the
+/// `if let Ok(...) = tracker.handles.lock()` form at the accept-loop
+/// call site extends the temporary `Result` past the surrounding
+/// `conn_tracker` binding and trips E0597.
+fn push_handle(tracker: &Arc<ConnectionTracker>, handle: JoinHandle<()>) {
+  if let Ok(mut handles) = tracker.handles.lock() {
+    handles.retain(|h| !h.is_finished());
+    handles.push(handle);
+  }
 }
 
 /// Run the per-connection request loop. Returns when the peer closes the

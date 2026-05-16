@@ -137,8 +137,8 @@ pub fn acquire(state_dir: &Path) -> Result<AcquireOutcome, LockfileError> {
   #[cfg(unix)]
   {
     let meta = file.metadata()?;
-    let mode = meta.mode() & libc::S_IFMT as u32;
-    if mode != libc::S_IFREG as u32 {
+    let mode = meta.mode() & libc::S_IFMT;
+    if mode != libc::S_IFREG {
       return Err(LockfileError::CorruptLockfile(
         path.clone(),
         format!("not a regular file (mode {mode:o})"),

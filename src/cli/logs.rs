@@ -91,11 +91,11 @@ pub async fn handle(args: LogsArgs, cli: &Cli, config: &Config) -> CliResult {
             }
             if args.json {
               if !new_lines.is_empty() {
-                let body = serde_json::json!({
+                let follow_body = serde_json::json!({
                   "launch_id": &row.launch_id,
                   "lines": &new_lines,
                 });
-                safe_println(&crate::cli::output::pretty_json(&body))?;
+                safe_println(&crate::cli::output::pretty_json(&follow_body))?;
               }
               for l in new_lines {
                 push_seen(&mut seen, l, window);
@@ -177,7 +177,6 @@ mod tests {
   /// `safe_println` with a writer parameter so the test can route
   /// the write to a fixture that returns `BrokenPipe`.
   fn safe_println_to<W: std::io::Write>(w: &mut W, line: &str) -> CliResult {
-    use std::io::Write;
     match writeln!(w, "{line}") {
       Ok(()) => Ok(()),
       Err(e) if e.kind() == ErrorKind::BrokenPipe => Err(CliExit::code_only(SUCCESS)),

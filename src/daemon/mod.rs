@@ -203,7 +203,10 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   // cmdline + best-effort start_time keeps the structure consistent.
   let mut external_combined = sweep.external.clone();
   for adopted in &sweep.adopted {
-    if external_combined.iter().any(|e| e.pid == adopted.pid as u32) {
+    if external_combined
+      .iter()
+      .any(|e| e.pid == adopted.pid as u32)
+    {
       continue;
     }
     let start_time_secs = lookup_start_time(adopted.pid as u32).unwrap_or(0);
@@ -280,10 +283,13 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
 /// no record (rare; means the PID has already exited).
 fn lookup_start_time(pid: u32) -> Option<u64> {
   use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
-  let mut sys = System::new_with_specifics(
-    RefreshKind::new().with_processes(ProcessRefreshKind::everything()),
+  let refresh = ProcessRefreshKind::new();
+  let mut sys = System::new_with_specifics(RefreshKind::new().with_processes(refresh));
+  sys.refresh_processes_specifics(
+    sysinfo::ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
+    true,
+    refresh,
   );
-  sys.refresh_process(Pid::from_u32(pid));
   sys.process(Pid::from_u32(pid)).map(|p| p.start_time())
 }
 

@@ -265,7 +265,7 @@ fn parse_running_row(v: &Value) -> Option<RunningRow> {
   // ModelId; preserve the same shape so callers can show it.
   let model_path = v
     .get("id")
-    .and_then(|id| id.get("path"))
+    .and_then(|model_id| model_id.get("path"))
     .and_then(Value::as_str)
     .unwrap_or_default()
     .to_string();

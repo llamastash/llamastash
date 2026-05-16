@@ -35,10 +35,7 @@ pub async fn handle(args: PresetsArgs, cli: &Cli, config: &Config) -> CliResult 
         // Wrapped object — same shape convention as `list --json`
         // (now `{"models": [...]}`) so agent parsers can rely on a
         // single "always object" rule across the CLI surface.
-        println!(
-          "{}",
-          pretty_json(&serde_json::json!({"presets": arr}))
-        );
+        println!("{}", pretty_json(&serde_json::json!({"presets": arr})));
       } else if arr.is_empty() {
         println!("(no presets for {})", row.name());
       } else {

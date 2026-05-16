@@ -126,7 +126,8 @@ fn mode_hint_label(h: ModeHint) -> &'static str {
 mod tests {
   use super::*;
 
-  use crate::gguf::metadata::{ModelMetadata, ReasoningHint};
+  use crate::discovery::ModelSource;
+  use crate::gguf::metadata::{ModelMetadata, Quant, ReasoningHint};
 
   fn fake_model(path: &str, source: ModelSource) -> DiscoveredModel {
     DiscoveredModel {

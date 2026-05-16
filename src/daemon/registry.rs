@@ -109,9 +109,7 @@ impl SupervisorRegistry {
     let chosen = match requested {
       Some(p) => {
         if reserved.contains(&p) || live_in_use.contains(&p) {
-          return Err(format!(
-            "port {p} is already in use by another launch"
-          ));
+          return Err(format!("port {p} is already in use by another launch"));
         }
         p
       }

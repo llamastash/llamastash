@@ -11,8 +11,6 @@
 
 use std::io::{self, IsTerminal, Read, Write};
 
-use serde_json::json;
-
 use crate::cli::cli_args::{Cli, StopArgs};
 use crate::cli::client::connect_or_spawn;
 use crate::cli::exit_codes::{CliExit, CliResult, STOP_FAILED, USAGE};
@@ -190,21 +188,23 @@ mod tests {
     vec![RunningRow {
       launch_id: "L1".into(),
       model_path: "/m/a.gguf".into(),
+      id: None,
       port: 41100,
       state: "ready".into(),
       pid: Some(1),
       mode: "chat".into(),
       ready_at: None,
+      params: None,
     }]
   }
 
   #[test]
   fn confirm_from_accepts_y_yes() {
     let rows = dummy_rows();
-    let mut input = Cursor::new(b"y\n".to_vec());
-    assert!(confirm_from(&mut input, &rows).unwrap());
-    let mut input = Cursor::new(b"yes\n".to_vec());
-    assert!(confirm_from(&mut input, &rows).unwrap());
+    let mut single_y = Cursor::new(b"y\n".to_vec());
+    assert!(confirm_from(&mut single_y, &rows).unwrap());
+    let mut yes_word = Cursor::new(b"yes\n".to_vec());
+    assert!(confirm_from(&mut yes_word, &rows).unwrap());
   }
 
   #[test]

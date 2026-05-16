@@ -404,27 +404,29 @@ mod tests {
 
   #[cfg(unix)]
   #[test]
-  fn save_refuses_to_follow_symlink_at_tmp_path() {
+  fn save_does_not_follow_symlink_at_tmp_path() {
     use std::os::unix::fs::symlink;
 
     let dir = temp_state_dir("symlink-tmp");
     fs::create_dir_all(&dir).expect("mk dir");
     // Plant a victim and symlink the tmp path at it. The PID-suffixed
-    // tmp filename is predictable from $pid for a same-UID attacker;
-    // we still refuse the open instead of truncating the victim.
+    // tmp filename is predictable for a same-UID attacker; the
+    // important invariant is that the victim file is never
+    // truncated. The save logic detects the stale-by-AlreadyExists
+    // shape, unlinks the symlink, and re-opens fresh — both branches
+    // refuse to follow the symlink to the victim.
     let victim = dir.join("victim.dat");
     fs::write(&victim, b"important data").expect("write victim");
     let tmp = dir.join(format!("state.json.tmp.{}", std::process::id()));
     symlink(&victim, &tmp).expect("plant symlink");
 
-    let err = save(&dir, &DaemonState::default()).expect_err("save must refuse");
-    match err {
-      SaveError::Io { .. } => {}
-      other => panic!("expected Io, got {other:?}"),
-    }
+    save(&dir, &DaemonState::default()).expect("save with planted symlink should succeed");
     // Victim must be untouched.
     let after = fs::read(&victim).expect("victim still readable");
     assert_eq!(after, b"important data");
+    // Final state.json must be a regular file (not the planted symlink).
+    let meta = fs::symlink_metadata(path(&dir)).expect("state.json metadata");
+    assert!(meta.is_file(), "state.json must be a regular file");
     fs::remove_dir_all(&dir).ok();
   }
 

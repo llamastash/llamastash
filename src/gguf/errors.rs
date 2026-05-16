@@ -64,10 +64,9 @@ impl std::fmt::Display for GgufError {
       GgufError::BadValueType(t) => write!(f, "unknown gguf value-type tag: {t}"),
       GgufError::BadStringLen(n) => write!(f, "gguf string length out of range: {n}"),
       GgufError::BadUtf8 => write!(f, "gguf string contained invalid UTF-8"),
-      GgufError::ArrayNestingTooDeep { depth, cap } => write!(
-        f,
-        "gguf array nested {depth} levels, exceeds cap {cap}"
-      ),
+      GgufError::ArrayNestingTooDeep { depth, cap } => {
+        write!(f, "gguf array nested {depth} levels, exceeds cap {cap}")
+      }
     }
   }
 }

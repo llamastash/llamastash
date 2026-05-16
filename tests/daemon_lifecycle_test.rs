@@ -222,10 +222,7 @@ async fn shutdown_drains_in_flight_request_within_budget() {
 
   let slow_call = tokio::spawn(async move {
     slow_client
-      .call(
-        "_test_sleep",
-        Some(serde_json::json!({"ms": 800u64})),
-      )
+      .call("_test_sleep", Some(serde_json::json!({"ms": 800u64})))
       .await
   });
 

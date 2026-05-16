@@ -313,15 +313,19 @@ mod tests {
   }
 
   #[test]
-  fn list_json_is_an_array_with_documented_keys() {
+  fn list_json_wraps_rows_in_models_object_with_documented_keys() {
     let rows = vec![row("qwen", "qwen2", "Q4_K", 8192)];
     let v = list_json(&rows);
-    let arr = v.as_array().expect("array");
+    let arr = v
+      .get("models")
+      .and_then(|m| m.as_array())
+      .expect("models array");
     assert_eq!(arr.len(), 1);
     let r = &arr[0];
     for key in [
       "name",
       "path",
+      "model_id",
       "parent",
       "source",
       "arch",
@@ -336,9 +340,9 @@ mod tests {
   }
 
   #[test]
-  fn list_json_empty_catalog_returns_empty_array() {
+  fn list_json_empty_catalog_returns_empty_models_array() {
     let v = list_json(&[]);
-    assert_eq!(v, serde_json::json!([]));
+    assert_eq!(v, serde_json::json!({"models": []}));
   }
 
   #[test]
@@ -402,11 +406,13 @@ mod tests {
       models: vec![RunningRow {
         launch_id: "L1".into(),
         model_path: "/m/a.gguf".into(),
+        id: Some(serde_json::json!({"path": "/m/a.gguf", "header_blake3": "deadbeef"})),
         port: 41100,
         mode: "chat".into(),
         state: "ready".into(),
         pid: Some(123),
         ready_at: Some(1_700_000_000),
+        params: None,
       }],
       external: vec![ExternalRow {
         pid: 999,

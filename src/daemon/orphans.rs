@@ -382,8 +382,7 @@ mod tests {
     assert!(!body_mentions_path(body_other, Path::new("/m/a.gguf")));
     // Non-OpenAI shape that merely contains the path text must be
     // rejected — the legacy substring matcher would have accepted.
-    let body_html =
-      b"<html><body>I serve /m/a.gguf here, but not as a llama-server</body></html>";
+    let body_html = b"<html><body>I serve /m/a.gguf here, but not as a llama-server</body></html>";
     assert!(!body_mentions_path(body_html, Path::new("/m/a.gguf")));
     // Decoy field with the right value but not at `data[].id`.
     let body_decoy = br#"{"notes":"/m/a.gguf","data":[{"id":"/m/other.gguf"}]}"#;
