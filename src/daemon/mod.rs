@@ -283,14 +283,23 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
 /// no record (rare; means the PID has already exited).
 fn lookup_start_time(pid: u32) -> Option<u64> {
   use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
-  let refresh = ProcessRefreshKind::new();
+  // `everything()` over a blank kind: explicit about wanting all
+  // process metadata so `start_time()` is reliably populated across
+  // sysinfo versions and platforms. The cost is one extra /proc read
+  // per call, negligible at boot-sweep scale.
+  let refresh = ProcessRefreshKind::everything();
   let mut sys = System::new_with_specifics(RefreshKind::new().with_processes(refresh));
   sys.refresh_processes_specifics(
     sysinfo::ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
     true,
     refresh,
   );
-  sys.process(Pid::from_u32(pid)).map(|p| p.start_time())
+  // Filter `start_time == 0` so the consumer's `live != 0` guard
+  // sees `None` instead of a meaningless zero.
+  sys
+    .process(Pid::from_u32(pid))
+    .map(|p| p.start_time())
+    .filter(|s| *s != 0)
 }
 
 /// Move a malformed `state.json` aside so the daemon can restart

@@ -231,6 +231,26 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
     .stdin(Stdio::null())
     .stdout(Stdio::piped())
     .stderr(Stdio::piped());
+  // Strip llama-server's environment-variable overrides before spawn.
+  // llama-server reads `LLAMA_ARG_*` for every CLI flag (e.g.
+  // `LLAMA_ARG_HOST=0.0.0.0` overrides the `--host 127.0.0.1` we
+  // pass in argv on some flag-parsing builds), so an inherited env
+  // var would silently defeat the loopback-only contract that
+  // `FORBIDDEN_ADVANCED_PREFIXES` enforces for argv. Strip the
+  // specific bypass vectors rather than `env_clear()` so PATH /
+  // HOME / library-search-path env vars the child legitimately
+  // needs (CUDA, Metal, ROCm, BLAS) survive.
+  for var in [
+    "LLAMA_ARG_HOST",
+    "LLAMA_ARG_PORT",
+    "LLAMA_ARG_BIND",
+    "LLAMA_ARG_LISTEN",
+    "LLAMA_ARG_API_KEY",
+    "LLAMA_ARG_SSL_KEY_FILE",
+    "LLAMA_ARG_SSL_CERT_FILE",
+  ] {
+    cmd.env_remove(var);
+  }
   #[cfg(unix)]
   {
     // SAFETY: `pre_exec` runs in the child between fork and exec.

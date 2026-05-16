@@ -443,11 +443,31 @@ fn default_grace_secs() -> u64 {
   5
 }
 
+/// Upper bound on the SIGTERM→SIGKILL grace window. Caps both
+/// managed `stop_model` and external `stop_external`. Keeps
+/// `Duration::from_secs(grace)` arithmetic safe and prevents a
+/// same-UID caller from holding the IPC task open indefinitely by
+/// passing `u64::MAX`.
+const MAX_GRACE_SECS: u64 = 300;
+
+fn check_grace_secs(secs: u64) -> Result<(), ErrorObject> {
+  if secs > MAX_GRACE_SECS {
+    return Err(ErrorObject::new(
+      ErrorCode::InvalidParams,
+      format!(
+        "grace_secs={secs} exceeds maximum {MAX_GRACE_SECS}; clamp client-side"
+      ),
+    ));
+  }
+  Ok(())
+}
+
 async fn stop_model_handler(
   ctx: &MethodContext,
   params: Option<Value>,
 ) -> Result<Value, ErrorObject> {
   let parsed: StopParams = parse_params(params)?;
+  check_grace_secs(parsed.grace_secs)?;
   let model = ctx
     .supervisors
     .get(&parsed.launch_id)
@@ -518,6 +538,7 @@ async fn stop_external_handler(
   params: Option<Value>,
 ) -> Result<Value, ErrorObject> {
   let parsed: StopExternalParams = parse_params(params)?;
+  check_grace_secs(parsed.grace_secs)?;
   // Confirm the PID is one we surfaced as external and snapshot
   // its recorded start_time. We later re-verify the live
   // start_time matches before each signal to defend against PID
@@ -559,18 +580,25 @@ async fn stop_external_handler(
   // if alive but pid has been reused, None if dead. We sample via
   // `sysinfo` rather than `kill(pid, 0)` so we can compare start_time
   // — the cheap liveness check alone can't distinguish recycle.
+  //
+  // Defensive: if either the live or expected `start_time` is 0 we
+  // can't *prove* identity (sysinfo can hand back 0 on some platforms /
+  // for kernel processes, and adopted-but-already-dead entries are
+  // seeded with `start_time_secs = 0` in `daemon::mod`). Treat that
+  // as a mismatch — refusing to signal is the safe failure mode.
   fn live_and_same(pid: u32, expected_start: u64) -> Option<bool> {
     use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
-    let refresh = ProcessRefreshKind::new();
+    let refresh = ProcessRefreshKind::everything();
     let mut sys = System::new_with_specifics(RefreshKind::new().with_processes(refresh));
     sys.refresh_processes_specifics(
       sysinfo::ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
       true,
       refresh,
     );
-    sys
-      .process(Pid::from_u32(pid))
-      .map(|p| p.start_time() == expected_start)
+    sys.process(Pid::from_u32(pid)).map(|p| {
+      let live = p.start_time();
+      live != 0 && expected_start != 0 && live == expected_start
+    })
   }
   match live_and_same(parsed.pid, recorded_start_time) {
     Some(true) => {}
