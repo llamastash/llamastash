@@ -844,8 +844,12 @@ async fn start_model_handler(
   // Reject loopback-breaking / auth-bypass advanced flags before
   // spawn. `compose` strips defensively too, but failing fast here
   // gives callers a clear error instead of a silently-different argv.
+  // Release the reservation first so a retry can re-use the port —
+  // otherwise a client that repeatedly submits a banned flag would
+  // permanently exhaust the port pool.
   let banned = crate::launch::params::forbidden_in_advanced(&launch_params.advanced);
   if !banned.is_empty() {
+    ctx.supervisors.release_reserved_port(port).await;
     return Err(ErrorObject::new(
       ErrorCode::InvalidParams,
       format!(

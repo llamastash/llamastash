@@ -70,7 +70,7 @@ pub async fn handle(args: PresetsArgs, cli: &Cli, config: &Config) -> CliResult 
     }
     PresetsAction::Show {
       name,
-      json: _as_json,
+      json: as_json,
     } => {
       let body = client
         .call(
@@ -85,7 +85,20 @@ pub async fn handle(args: PresetsArgs, cli: &Cli, config: &Config) -> CliResult 
           format!("preset `{name}` not found for {}", row.name()),
         ));
       }
-      println!("{}", pretty_json(&body["preset"]));
+      if as_json {
+        // Same wrapping convention as `presets list --json` /
+        // `presets delete --json` — agents key on the `action` field
+        // and read the preset body from `preset`.
+        let out = json!({
+          "action": "show",
+          "model": row.name(),
+          "name": name,
+          "preset": body["preset"].clone(),
+        });
+        println!("{}", pretty_json(&out));
+      } else {
+        println!("{}", pretty_json(&body["preset"]));
+      }
       Ok(())
     }
     PresetsAction::Delete {
