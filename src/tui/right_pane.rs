@@ -2,9 +2,9 @@
 //!
 //! Renders the block (with focused-model header in the title), the
 //! tab strip (when more than one tab is reachable), and dispatches
-//! to the active tab's renderer. Per-Unit-6: the tab strip carries
-//! dynamic per-tab key hints, and is **suppressed entirely** when
-//! the focused model exposes only `Logs`.
+//! to the active tab's renderer. The tab strip carries dynamic
+//! per-tab key hints, and is suppressed entirely when the focused
+//! model exposes only `Logs`.
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -14,6 +14,7 @@ use ratatui::Frame;
 
 use crate::theme::Palette;
 use crate::tui::app::App;
+use crate::tui::fmt::format_bytes;
 use crate::tui::status_icons::{glyph_for, label_for};
 use crate::tui::tabs::{chat, embed, logs, rerank, RightTab};
 
@@ -87,27 +88,6 @@ fn format_per_model_stats(m: &crate::tui::app::ManagedRow) -> String {
     None => "—".into(),
   };
   format!(" · {rss} RAM · {cpu} CPU")
-}
-
-fn format_bytes(bytes: u64) -> String {
-  const KIB: f64 = 1024.0;
-  const MIB: f64 = KIB * 1024.0;
-  const GIB: f64 = MIB * 1024.0;
-  let b = bytes as f64;
-  if b >= GIB {
-    let g = b / GIB;
-    if g >= 100.0 {
-      format!("{g:.0}G")
-    } else {
-      format!("{g:.1}G")
-    }
-  } else if b >= MIB {
-    format!("{:.0}M", b / MIB)
-  } else if b >= KIB {
-    format!("{:.0}K", b / KIB)
-  } else {
-    format!("{bytes}B")
-  }
 }
 
 fn render_tab_strip(

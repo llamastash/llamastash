@@ -92,8 +92,13 @@ fn server_row<'a>(app: &'a App, budget: usize, palette: &'a Palette) -> Line<'a>
     None => String::new(),
   };
   // Reserve room for the parenthesised flavor; truncate the path
-  // first so the flavor stays visible.
-  let path_budget = budget.saturating_sub(flavor_chunk.chars().count() + 1);
+  // first so the flavor stays visible. The `+1` separator is only
+  // deducted when there is a flavor chunk to render.
+  let path_budget = if flavor_chunk.is_empty() {
+    budget
+  } else {
+    budget.saturating_sub(flavor_chunk.chars().count())
+  };
   let path_truncated = ellipsise(path, path_budget);
   Line::from(vec![
     Span::styled(LABEL_SERVER, Style::default().fg(palette.muted)),

@@ -96,8 +96,10 @@ fn render_title_row(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Pale
   frame.render_widget(bg, area);
 
   // Reserve the right slot for the global hint strip; the left slot
-  // (brand + daemon dot) flexes into the rest.
-  let hint_slot = (help_bar::global_hint_text().chars().count() + 2) as u16;
+  // (brand + daemon dot) flexes into the rest. `global_hint_slot_width`
+  // is derived from the same `GLOBAL_HINTS` list the renderer iterates,
+  // so the slot can't drift from the rendered text.
+  let hint_slot = help_bar::global_hint_slot_width();
   let split = Layout::default()
     .direction(Direction::Horizontal)
     .constraints([Constraint::Min(1), Constraint::Length(hint_slot)])

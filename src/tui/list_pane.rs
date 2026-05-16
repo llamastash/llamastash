@@ -18,6 +18,7 @@ use ratatui::Frame;
 
 use crate::discovery::DiscoveredModel;
 use crate::theme::Palette;
+use crate::tui::fmt::format_bytes;
 use crate::tui::status_icons::{colour_for, glyph_for, SurfaceState};
 
 /// A row as it appears in the rendered list — section header or
@@ -172,31 +173,6 @@ fn model_row(m: &DiscoveredModel, favorite: bool, state: SurfaceState) -> ListRo
   }
 }
 
-/// Render a weights footprint in the most compact human-friendly
-/// unit (GiB-or-MiB). Aims for the same readout the plan's `· 4.2G`
-/// example shows — single-letter unit suffix, one fractional digit
-/// for sub-10 G values so 4.2G doesn't collapse to 4G.
-fn format_bytes(bytes: u64) -> String {
-  const KIB: f64 = 1024.0;
-  const MIB: f64 = KIB * 1024.0;
-  const GIB: f64 = MIB * 1024.0;
-  let b = bytes as f64;
-  if b >= GIB {
-    let g = b / GIB;
-    if g >= 10.0 {
-      format!("{g:.0}G")
-    } else {
-      format!("{g:.1}G")
-    }
-  } else if b >= MIB {
-    format!("{:.0}M", b / MIB)
-  } else if b >= KIB {
-    format!("{:.0}K", b / KIB)
-  } else {
-    format!("{bytes}B")
-  }
-}
-
 fn mode_hint_label(hint: crate::gguf::metadata::ModeHint) -> String {
   use crate::gguf::metadata::ModeHint;
   match hint {
@@ -297,10 +273,34 @@ pub(crate) fn build_block_title(inputs: &TitleInputs<'_>, area_width: usize) -> 
   // assembled title fits.
   loop {
     let candidate = format_title(&count, filter_chip.as_deref(), &hints);
-    if candidate.chars().count() <= budget || hints.len() <= 1 {
+    if candidate.chars().count() <= budget {
       return format!(" {candidate} ");
     }
-    hints.pop();
+    if hints.len() > 1 {
+      hints.pop();
+      continue;
+    }
+    // Hints have been pruned to just `Enter:launch`; the candidate
+    // still overflows. Most often this means the filter chip is
+    // wider than the remaining budget. Shrink the chip body before
+    // letting ratatui clip the title silently.
+    if let Some(chip) = filter_chip.as_ref() {
+      let over = candidate.chars().count().saturating_sub(budget);
+      // Keep `[/` + at least one char + `…]` = 5 chars minimum.
+      let chip_len = chip.chars().count();
+      let new_chip_len = chip_len.saturating_sub(over).max(5);
+      if new_chip_len < chip_len {
+        let body: String = chip
+          .chars()
+          .skip(2) // strip leading `[/`
+          .take(new_chip_len.saturating_sub(4)) // leave room for `[/` `…]`
+          .collect();
+        let truncated = format!("[/{body}…]");
+        let trimmed = format_title(&count, Some(&truncated), &hints);
+        return format!(" {trimmed} ");
+      }
+    }
+    return format!(" {candidate} ");
   }
 }
 
@@ -579,10 +579,38 @@ mod tests {
   }
 
   #[test]
+  fn title_truncates_filter_chip_body_when_chip_alone_exceeds_budget() {
+    // Even after every hint except `Enter:launch` is dropped, a very
+    // long filter chip can overflow the budget. The chip body should
+    // truncate with an ellipsis rather than letting ratatui silently
+    // clip the title.
+    let title = build_block_title(
+      &TitleInputs {
+        total: 7,
+        filter: Some("/very/long/absolute/path/that/should/not/fit/anywhere"),
+      },
+      32,
+    );
+    assert!(
+      title.contains("…]"),
+      "expected truncated chip ending with `…]`, got: {title:?}"
+    );
+    assert!(
+      title.contains("[/"),
+      "chip still starts with `[/`: {title:?}"
+    );
+    assert!(
+      title.contains("Enter:launch"),
+      "launch chip must survive: {title:?}"
+    );
+  }
+
+  #[test]
   fn title_never_drops_filter_chip() {
-    // Even at very narrow widths the `[/query]` chip stays — it
-    // shares a logical slot with the `/:filter` hint, and dropping
-    // the chip would lose the active filter signal.
+    // Even at very narrow widths the filter chip stays in some form
+    // (its body may truncate to `[/q…]`) — sharing a logical slot
+    // with the `/:filter` hint, dropping it entirely would lose the
+    // active-filter signal.
     let title = build_block_title(
       &TitleInputs {
         total: 5,
@@ -590,10 +618,7 @@ mod tests {
       },
       28,
     );
-    assert!(
-      title.contains("[/qwen]"),
-      "filter chip must survive any width: {title:?}"
-    );
+    assert!(title.contains("[/"), "chip prefix must survive: {title:?}");
     assert!(
       title.contains("Enter:launch"),
       "launch chip must survive: {title:?}"

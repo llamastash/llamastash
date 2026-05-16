@@ -24,6 +24,7 @@ use ratatui::Frame;
 
 use crate::daemon::host_metrics::HostMetricsSnapshot;
 use crate::theme::Palette;
+use crate::tui::fmt::format_bytes;
 
 const LABEL_WIDTH: usize = 5;
 
@@ -43,14 +44,20 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, host: &HostMetricsSnapshot, pal
   lines.push(cpu_row(host, bar_width, palette));
   // RAM row is always present (Apple Silicon labels it "(unified)").
   lines.push(ram_row(host, bar_width, palette));
-  // GPU rows depend on backend.
+  // GPU rows depend on backend. The empty-string and "unsampled"
+  // values both mean "no readings yet" — render the same collapsed
+  // layout as cpu_only so the pre-first-tick window doesn't show
+  // four bars filled to 0%.
   match host.gpu_backend.as_str() {
-    "cpu_only" | "" | "unsampled" => {
+    s if s == HostMetricsSnapshot::BACKEND_CPU_ONLY
+      || s == HostMetricsSnapshot::UNINITIALIZED_BACKEND
+      || s.is_empty() =>
+    {
       // No GPU rows; one blank line preserves vertical rhythm so
       // the backend label lands on the same row across variants.
       lines.push(Line::from(""));
     }
-    "apple_metal" => {
+    s if s == HostMetricsSnapshot::BACKEND_APPLE_METAL => {
       lines.push(Line::from(vec![
         Span::styled("GPU  ", Style::default().fg(palette.muted)),
         Span::styled("unified memory", Style::default().fg(palette.fg)),
@@ -72,23 +79,16 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, host: &HostMetricsSnapshot, pal
 
 fn cpu_row<'a>(host: &HostMetricsSnapshot, bar_width: usize, palette: &'a Palette) -> Line<'a> {
   let pct = host.cpu_pct.clamp(0.0, 100.0);
-  let bar = bar(pct, bar_width, palette, gauge_color(pct, palette));
+  let bar = bar(pct, bar_width, gauge_color(pct, palette));
   let value = format!(" {:>3.0}%", host.cpu_pct);
-  let mut spans = vec![
+  // Host CPU temperature isn't sampled today (sysinfo Components
+  // would need another refresh kind). The row leaves the temp column
+  // blank rather than fabricating a value.
+  Line::from(vec![
     Span::styled("CPU  ", Style::default().fg(palette.muted)),
     bar,
     Span::styled(value, Style::default().fg(palette.fg)),
-  ];
-  // No host-CPU temperature reading exposed today; column is left
-  // blank rather than fabricated.
-  if let Some(temp) = host_cpu_temp(host) {
-    spans.push(Span::raw("  "));
-    spans.push(Span::styled(
-      format!("{temp:>2.0}°C"),
-      Style::default().fg(cpu_temp_color(temp, palette)),
-    ));
-  }
-  Line::from(spans)
+  ])
 }
 
 fn ram_row<'a>(host: &HostMetricsSnapshot, bar_width: usize, palette: &'a Palette) -> Line<'a> {
@@ -105,12 +105,12 @@ fn ram_row<'a>(host: &HostMetricsSnapshot, bar_width: usize, palette: &'a Palett
       ),
     )
   };
-  let label = if host.gpu_backend == "apple_metal" {
+  let label = if host.gpu_backend == HostMetricsSnapshot::BACKEND_APPLE_METAL {
     "RAM* "
   } else {
     "RAM  "
   };
-  let bar = bar(pct, bar_width, palette, gauge_color(pct, palette));
+  let bar = bar(pct, bar_width, gauge_color(pct, palette));
   Line::from(vec![
     Span::styled(label, Style::default().fg(palette.muted)),
     bar,
@@ -124,7 +124,7 @@ fn gpu_util_row<'a>(
   palette: &'a Palette,
 ) -> Line<'a> {
   let pct = host.gpu_util_pct.unwrap_or(0.0).clamp(0.0, 100.0);
-  let bar = bar(pct, bar_width, palette, gauge_color(pct, palette));
+  let bar = bar(pct, bar_width, gauge_color(pct, palette));
   let value = host
     .gpu_util_pct
     .map(|p| format!(" {:>3.0}%", p))
@@ -155,7 +155,7 @@ fn vram_row<'a>(host: &HostMetricsSnapshot, bar_width: usize, palette: &'a Palet
     }
     _ => (0.0_f32, "—/—".into()),
   };
-  let bar = bar(pct, bar_width, palette, gauge_color(pct, palette));
+  let bar = bar(pct, bar_width, gauge_color(pct, palette));
   Line::from(vec![
     Span::styled("VRAM ", Style::default().fg(palette.muted)),
     bar,
@@ -165,11 +165,16 @@ fn vram_row<'a>(host: &HostMetricsSnapshot, bar_width: usize, palette: &'a Palet
 
 fn backend_row<'a>(host: &HostMetricsSnapshot, palette: &'a Palette) -> Line<'a> {
   let label = match host.gpu_backend.as_str() {
-    "nvidia" => format!("NVML · {}", pluralize_gpu(host.gpu_device_count)),
-    "amd" => format!("ROCm · {}", pluralize_gpu(host.gpu_device_count)),
-    "apple_metal" => "apple metal".into(),
-    "cpu_only" => "cpu only".into(),
-    "unsampled" => "unsampled".into(),
+    s if s == HostMetricsSnapshot::BACKEND_NVIDIA => {
+      format!("NVML · {}", pluralize_gpu(host.gpu_device_count))
+    }
+    s if s == HostMetricsSnapshot::BACKEND_AMD => {
+      format!("ROCm · {}", pluralize_gpu(host.gpu_device_count))
+    }
+    s if s == HostMetricsSnapshot::BACKEND_APPLE_METAL => "apple metal".into(),
+    s if s == HostMetricsSnapshot::BACKEND_CPU_ONLY => "cpu only".into(),
+    s if s == HostMetricsSnapshot::UNINITIALIZED_BACKEND => "unsampled".into(),
+    s if s == HostMetricsSnapshot::BACKEND_UNKNOWN => "unknown".into(),
     other => other.to_string(),
   };
   Line::from(vec![
@@ -196,8 +201,11 @@ fn bar_width_for(inner_width: u16) -> usize {
 }
 
 /// Render a single bar `[████░░░░]` of `width` cells. Fill chars are
-/// `█`, trough chars `░`, both styled in `palette`-derived colors.
-fn bar<'a>(pct: f32, width: usize, palette: &'a Palette, fill: Color) -> Span<'a> {
+/// `█`, trough chars `░`. We can't color two halves of one span
+/// without splitting, so the fill color owns the whole string — the
+/// trough chars naturally read as a dimmer shade of the fill because
+/// `░` is a 25%-density glyph. (Matches kdash's visual.)
+fn bar(pct: f32, width: usize, fill: Color) -> Span<'static> {
   if width == 0 {
     return Span::raw("");
   }
@@ -211,11 +219,6 @@ fn bar<'a>(pct: f32, width: usize, palette: &'a Palette, fill: Color) -> Span<'a
   for _ in 0..trough {
     s.push('░');
   }
-  // We can't color two halves of one span without splitting, so the
-  // fill color owns the whole string — the trough chars naturally
-  // read as a dimmer shade of the fill because `░` is a 25%-density
-  // glyph. (Matches kdash's visual.)
-  let _ = palette; // palette reserved for future per-tier styling.
   Span::styled(s, Style::default().fg(fill))
 }
 
@@ -230,17 +233,6 @@ fn gauge_color(pct: f32, palette: &Palette) -> Color {
   }
 }
 
-/// CPU temperature tier: green ≤65°C, yellow 65–80°C, red ≥80°C.
-fn cpu_temp_color(temp: f32, palette: &Palette) -> Color {
-  if temp >= 80.0 {
-    palette.error
-  } else if temp >= 65.0 {
-    palette.warning
-  } else {
-    palette.success
-  }
-}
-
 /// GPU temperature tier: green ≤70°C, yellow 70–82°C, red ≥82°C.
 fn gpu_temp_color(temp: f32, palette: &Palette) -> Color {
   if temp >= 82.0 {
@@ -249,35 +241,6 @@ fn gpu_temp_color(temp: f32, palette: &Palette) -> Color {
     palette.warning
   } else {
     palette.success
-  }
-}
-
-/// Host CPU temperature isn't currently sampled (sysinfo's
-/// `Components` API needs another refresh kind we don't enable, and
-/// `nvidia-smi` only surfaces GPU temp). Returns `None` for now so
-/// the CPU row reads cleanly without inventing a value.
-fn host_cpu_temp(_host: &HostMetricsSnapshot) -> Option<f32> {
-  None
-}
-
-fn format_bytes(bytes: u64) -> String {
-  const KIB: f64 = 1024.0;
-  const MIB: f64 = KIB * 1024.0;
-  const GIB: f64 = MIB * 1024.0;
-  let b = bytes as f64;
-  if b >= GIB {
-    let g = b / GIB;
-    if g >= 100.0 {
-      format!("{g:.0}G")
-    } else {
-      format!("{g:.1}G")
-    }
-  } else if b >= MIB {
-    format!("{:.0}M", b / MIB)
-  } else if b >= KIB {
-    format!("{:.0}K", b / KIB)
-  } else {
-    format!("{bytes}B")
   }
 }
 
@@ -316,14 +279,6 @@ mod tests {
     assert_eq!(gauge_color(84.9, palette), palette.warning);
     assert_eq!(gauge_color(85.0, palette), palette.error);
     assert_eq!(gauge_color(100.0, palette), palette.error);
-  }
-
-  #[test]
-  fn cpu_temp_tier_thresholds_match_plan() {
-    let palette = crate::theme::palette_for(crate::theme::ThemeName::Macchiato);
-    assert_eq!(cpu_temp_color(50.0, palette), palette.success);
-    assert_eq!(cpu_temp_color(65.0, palette), palette.warning);
-    assert_eq!(cpu_temp_color(80.0, palette), palette.error);
   }
 
   #[test]
@@ -453,5 +408,47 @@ mod tests {
     assert!(bar_width_for(20) < bar_width_for(40));
     // Pathologically narrow panels still produce a minimum-width bar.
     assert!(bar_width_for(8) >= 4);
+  }
+
+  #[test]
+  fn unsampled_backend_collapses_gpu_rows_like_cpu_only() {
+    // The pre-first-tick window emits `gpu_backend == "unsampled"`. The
+    // host panel must not render gpu_util_row/vram_row in that window
+    // (they would show bars filled to 0% / "—/—" placeholders that
+    // misrepresent the actual GPU state).
+    let snap = HostMetricsSnapshot {
+      cpu_pct: 10.0,
+      ram_used_bytes: 1024 * 1024 * 1024,
+      ram_total_bytes: 16 * 1024 * 1024 * 1024,
+      gpu_backend: HostMetricsSnapshot::UNINITIALIZED_BACKEND.into(),
+      ..Default::default()
+    };
+    let rows = render_lines(snap);
+    let body = rows.join("\n");
+    assert!(body.contains("CPU"));
+    assert!(body.contains("RAM"));
+    assert!(!body.contains("GPU"));
+    assert!(!body.contains("VRAM"));
+    assert!(
+      rows.iter().any(|r| r.contains("unsampled")),
+      "expected `backend  unsampled`, got: {rows:#?}"
+    );
+  }
+
+  #[test]
+  fn unknown_backend_renders_via_constant_arm() {
+    // The Vulkan fallback emits BACKEND_UNKNOWN. The backend row
+    // should pick up the explicit "unknown" label rather than passing
+    // through the catch-all (otherwise the wire string leaks into the
+    // UI verbatim).
+    let snap = HostMetricsSnapshot {
+      gpu_backend: HostMetricsSnapshot::BACKEND_UNKNOWN.into(),
+      ..Default::default()
+    };
+    let rows = render_lines(snap);
+    assert!(
+      rows.iter().any(|r| r.contains("unknown")),
+      "expected `backend  unknown`, got: {rows:#?}"
+    );
   }
 }

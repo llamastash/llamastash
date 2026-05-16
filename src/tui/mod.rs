@@ -12,6 +12,7 @@ pub mod advanced_panel;
 pub mod app;
 pub mod events;
 pub mod filter;
+pub mod fmt;
 pub mod help_bar;
 pub mod host_stats_pane;
 pub mod info_pane;
