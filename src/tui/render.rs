@@ -81,7 +81,7 @@ fn render_banner(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette
     )
   };
   let title = Span::styled(
-    "llamadash",
+    "LlamaDash",
     Style::default()
       .fg(palette.accent)
       .add_modifier(Modifier::BOLD),

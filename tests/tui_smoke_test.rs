@@ -62,7 +62,7 @@ fn render_to_string(app: &mut App, width: u16, height: u16) -> String {
 fn empty_app_renders_banner_help_and_empty_state() {
   let mut app = App::new(AppOptions::default());
   let frame = render_to_string(&mut app, 100, 20);
-  assert!(frame.contains("llamadash"), "banner missing: {frame}");
+  assert!(frame.contains("LlamaDash"), "banner missing: {frame}");
   assert!(
     frame.contains("daemon: connecting"),
     "connection pill missing: {frame}"
@@ -161,7 +161,7 @@ fn theme_cycle_swaps_palette_without_restart() {
   assert_ne!(app.options.theme, ThemeName::Macchiato);
   // Render still produces a coherent frame with the new theme.
   let frame = render_to_string(&mut app, 80, 12);
-  assert!(frame.contains("llamadash"));
+  assert!(frame.contains("LlamaDash"));
 }
 
 #[test]
@@ -377,7 +377,7 @@ fn narrow_terminal_does_not_crash_render() {
   let mut app = App::new(AppOptions::default());
   app.models = vec![fake_model("/m/very-long-model-name-2.5b-Q4_K_M.gguf", "/m")];
   let frame = render_to_string(&mut app, 60, 12);
-  assert!(frame.contains("llamadash"));
+  assert!(frame.contains("LlamaDash"));
 }
 
 #[test]
