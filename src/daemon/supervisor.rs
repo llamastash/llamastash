@@ -319,11 +319,27 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
     spawn_supervised("resource_sampler", async move {
       let mut rx = super::resources::sample_loop(pid, Duration::from_secs(1));
       while let Some(reading) = rx.recv().await {
+        // The terminal-state check and the write into
+        // `latest_resource` happen across two `.await` points. A
+        // transition into Stopped/Error between them would let a
+        // post-mortem reading land in the shared cell and leak out
+        // via the next `status` poll. Hold the write lock first, then
+        // re-check state under that guard so the write is gated by
+        // the freshest known state.
+        let mut slot = sampler_model.inner.latest_resource.write().await;
         match sampler_model.state().await {
-          ManagedState::Stopped | ManagedState::Error { .. } => break,
-          _ => {}
+          ManagedState::Stopped | ManagedState::Error { .. } => {
+            // Clear any stale reading so the next status poll sees
+            // a clean "no longer sampled" rather than a frozen
+            // pre-stop snapshot.
+            *slot = None;
+            drop(slot);
+            break;
+          }
+          _ => {
+            *slot = Some(reading);
+          }
         }
-        *sampler_model.inner.latest_resource.write().await = Some(reading);
       }
     });
   }

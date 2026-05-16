@@ -70,13 +70,40 @@ pub(crate) fn parse(stdout: &str) -> Vec<GpuDevice> {
 /// Parse a `nvidia-smi` numeric field. Returns `None` for unsupported
 /// columns (`[Not Supported]`, `[N/A]`, empty), so older drivers
 /// missing `utilization.gpu` / `temperature.gpu` don't break the
-/// reading.
+/// reading. Robust to trailing unit suffixes (`84 %`, `68 C`, `°C`)
+/// that some driver builds emit despite the `--format=csv,nounits`
+/// flag — strips anything after the leading numeric run.
 fn parse_optional_f32(raw: &str) -> Option<f32> {
   let trimmed = raw.trim();
   if trimmed.is_empty() || trimmed.starts_with('[') {
     return None;
   }
-  trimmed.parse::<f32>().ok()
+  // Find the first non-numeric character (allowing one '.' and a
+  // leading '-') and parse up to it. This tolerates "84 %", "84%",
+  // "68.0 C", "68°C", etc., while still rejecting pure garbage.
+  let mut seen_dot = false;
+  let end = trimmed
+    .char_indices()
+    .find(|(i, c)| {
+      if c.is_ascii_digit() {
+        return false;
+      }
+      if *c == '-' && *i == 0 {
+        return false;
+      }
+      if *c == '.' && !seen_dot {
+        seen_dot = true;
+        return false;
+      }
+      true
+    })
+    .map(|(i, _)| i)
+    .unwrap_or(trimmed.len());
+  let numeric = &trimmed[..end];
+  if numeric.is_empty() {
+    return None;
+  }
+  numeric.parse::<f32>().ok()
 }
 
 #[cfg(test)]
@@ -127,6 +154,20 @@ mod tests {
   fn empty_stdout_yields_no_devices() {
     assert!(parse("").is_empty());
     assert!(parse("\n   \n").is_empty());
+  }
+
+  #[test]
+  fn strips_trailing_unit_suffixes_from_optional_columns() {
+    // Some driver builds emit `--format=csv,nounits` rows that still
+    // carry a `%` or `C` suffix (or `°C`) on the util/temp columns.
+    // The parser should pick up the leading numeric run regardless.
+    let stdout = "RTX 4090, 24564, 312, 84 %, 68°C\nRTX 3090, 24564, 312, 50%, 60 C\n";
+    let devices = parse(stdout);
+    assert_eq!(devices.len(), 2);
+    assert_eq!(devices[0].utilization_pct, Some(84.0));
+    assert_eq!(devices[0].temperature_c, Some(68.0));
+    assert_eq!(devices[1].utilization_pct, Some(50.0));
+    assert_eq!(devices[1].temperature_c, Some(60.0));
   }
 
   #[test]
