@@ -454,9 +454,7 @@ fn check_grace_secs(secs: u64) -> Result<(), ErrorObject> {
   if secs > MAX_GRACE_SECS {
     return Err(ErrorObject::new(
       ErrorCode::InvalidParams,
-      format!(
-        "grace_secs={secs} exceeds maximum {MAX_GRACE_SECS}; clamp client-side"
-      ),
+      format!("grace_secs={secs} exceeds maximum {MAX_GRACE_SECS}; clamp client-side"),
     ));
   }
   Ok(())

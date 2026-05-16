@@ -586,16 +586,16 @@ impl LogWriter {
     // until rotation finishes (negligible on ext4/xfs, 10s of ms on
     // ecryptfs / FUSE / slow NAS). Off-thread it via `spawn_blocking`
     // so concurrent probe polling / log pumps stay responsive.
-    let path = self.path.clone();
-    tokio::task::spawn_blocking(move || rotate_segments(&path, LOG_KEEP_SEGMENTS))
+    let rotate_path = self.path.clone();
+    tokio::task::spawn_blocking(move || rotate_segments(&rotate_path, LOG_KEEP_SEGMENTS))
       .await
       .map_err(|e| std::io::Error::other(format!("rotate join: {e}")))??;
-    let path = self.path.clone();
+    let open_path = self.path.clone();
     let std_file = tokio::task::spawn_blocking(move || {
       std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&path)
+        .open(&open_path)
     })
     .await
     .map_err(|e| std::io::Error::other(format!("rotate open join: {e}")))??;

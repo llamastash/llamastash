@@ -110,10 +110,7 @@ pub async fn serve(listener: UnixListener, ctx: MethodContext) -> Result<()> {
       // Explicitly abort outstanding tasks so any partial frame in
       // their write buffers is dropped along with the task rather
       // than appearing on the wire after subsequent reconnects.
-      let mut handles = tracker
-        .handles
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+      let mut handles = tracker.handles.lock().unwrap_or_else(|e| e.into_inner());
       for h in handles.drain(..) {
         h.abort();
       }
@@ -142,10 +139,7 @@ fn push_handle(tracker: &Arc<ConnectionTracker>, handle: JoinHandle<()>) {
   // leaving the task running past the daemon's deadline. Match the
   // `PoisonError::into_inner` pattern the TUI uses for the same
   // reason.
-  let mut handles = tracker
-    .handles
-    .lock()
-    .unwrap_or_else(|e| e.into_inner());
+  let mut handles = tracker.handles.lock().unwrap_or_else(|e| e.into_inner());
   handles.retain(|h| !h.is_finished());
   handles.push(handle);
 }

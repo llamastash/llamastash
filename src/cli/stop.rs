@@ -58,8 +58,7 @@ pub async fn handle(args: StopArgs, cli: &Cli, config: &Config) -> CliResult {
     // around `grace + slop` so a long custom grace doesn't trip the
     // default 5-second deadline (`R-01`).
     let grace_for_timeout = grace.unwrap_or(5);
-    let ipc_deadline =
-      std::time::Duration::from_secs(grace_for_timeout.saturating_add(5));
+    let ipc_deadline = std::time::Duration::from_secs(grace_for_timeout.saturating_add(5));
     let resp = client
       .call_with_timeout(
         "stop_all",
