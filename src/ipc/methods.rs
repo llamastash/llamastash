@@ -449,14 +449,24 @@ async fn status_response(ctx: &MethodContext) -> Value {
   // snapshot rather than `null` so clients see a stable object
   // shape — `gpu_backend == "unsampled"` already distinguishes the
   // never-sampled case from a real reading.
-  let host_snapshot = match &ctx.host_metrics {
-    Some(slot) => slot.read().await.clone(),
-    None => HostMetricsSnapshot {
-      gpu_backend: HostMetricsSnapshot::UNINITIALIZED_BACKEND.into(),
-      ..HostMetricsSnapshot::default()
-    },
+  //
+  // Serialize the snapshot directly under the read lock instead of
+  // cloning it out first; `HostMetricsSnapshot` already implements
+  // `Serialize` for `&Self`, so this saves one full struct clone
+  // (including the `gpu_backend: String`) per status call.
+  let host = match &ctx.host_metrics {
+    Some(slot) => {
+      let snap = slot.read().await;
+      serde_json::to_value(&*snap).unwrap_or(Value::Null)
+    }
+    None => {
+      let default_snap = HostMetricsSnapshot {
+        gpu_backend: HostMetricsSnapshot::UNINITIALIZED_BACKEND.into(),
+        ..HostMetricsSnapshot::default()
+      };
+      serde_json::to_value(default_snap).unwrap_or(Value::Null)
+    }
   };
-  let host = serde_json::to_value(host_snapshot).unwrap_or(Value::Null);
   json!({
     "models": models,
     "external": external,
