@@ -219,6 +219,16 @@ async fn shutdown_drains_in_flight_request_within_budget() {
   // another taps the shutdown method while the first is in flight.
   let mut slow_client = Client::connect(&socket).await.expect("slow client connect");
   let mut shutdown_client = Client::connect(&socket).await.expect("shutdown client");
+  // Prove the slow client's connection is fully wired to a serve loop
+  // before we hand it off — without this barrier the slow `_test_sleep`
+  // frame might not yet have reached the daemon by the time we trigger
+  // shutdown, and the in-flight assumption that drain has anything to
+  // drain doesn't hold. A round-trip on `ping` proves the dispatcher
+  // is reading frames on this socket.
+  slow_client
+    .call("ping", None)
+    .await
+    .expect("ping engages slow connection");
 
   let slow_call = tokio::spawn(async move {
     slow_client

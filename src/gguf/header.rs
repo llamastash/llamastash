@@ -313,7 +313,16 @@ fn read_value(cur: &mut Cursor<'_>, value_type: u32, depth: usize) -> GgufResult
           cap: MAX_ARRAY_LEN,
         });
       }
-      let mut items = Vec::with_capacity(len.min(1024) as usize);
+      // Vec pre-allocation must be bounded by what can actually be read
+      // from the remaining header bytes. A malicious header can declare
+      // `len = MAX_ARRAY_LEN` and then truncate — without this cap we
+      // would have already committed up to 40 KiB per nesting level
+      // before `Truncated` fires. `read_value` consumes at least one
+      // byte per element (Bool/U8); divide remaining-byte budget by 1
+      // for the worst case.
+      let remaining = cur.remaining() as u64;
+      let safe_cap = len.min(1024).min(remaining) as usize;
+      let mut items = Vec::with_capacity(safe_cap);
       for _ in 0..len {
         items.push(read_value(cur, elem_ty, depth + 1)?);
       }

@@ -580,11 +580,25 @@ impl LogWriter {
   }
 
   async fn rotate(&mut self) -> std::io::Result<()> {
-    rotate_segments(&self.path, LOG_KEEP_SEGMENTS)?;
-    let std_file = std::fs::OpenOptions::new()
-      .create(true)
-      .append(true)
-      .open(&self.path)?;
+    // `rotate_segments` does up to `LOG_KEEP_SEGMENTS` blocking
+    // `std::fs::rename` + one `remove_file` syscall. On the standard
+    // tokio worker thread these stall every other task on the worker
+    // until rotation finishes (negligible on ext4/xfs, 10s of ms on
+    // ecryptfs / FUSE / slow NAS). Off-thread it via `spawn_blocking`
+    // so concurrent probe polling / log pumps stay responsive.
+    let path = self.path.clone();
+    tokio::task::spawn_blocking(move || rotate_segments(&path, LOG_KEEP_SEGMENTS))
+      .await
+      .map_err(|e| std::io::Error::other(format!("rotate join: {e}")))??;
+    let path = self.path.clone();
+    let std_file = tokio::task::spawn_blocking(move || {
+      std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    })
+    .await
+    .map_err(|e| std::io::Error::other(format!("rotate open join: {e}")))??;
     self.file = tokio::fs::File::from_std(std_file);
     self.written = 0;
     Ok(())

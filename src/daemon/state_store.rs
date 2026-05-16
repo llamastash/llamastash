@@ -168,23 +168,30 @@ pub fn load(state_dir: &Path) -> Result<DaemonState, LoadError> {
 }
 
 /// Persist `state` to `state_dir/state.json` atomically. Creates the
-/// directory if it doesn't exist. Writes to `state.json.tmp.<pid>` first,
-/// then `rename`s — which is atomic on every POSIX filesystem and
-/// guarantees the on-disk file is always either the old content or
-/// the new content, never partial.
+/// directory if it doesn't exist. Writes to
+/// `state.json.tmp.<pid>.<rand>` first, then `rename`s — which is
+/// atomic on every POSIX filesystem and guarantees the on-disk file
+/// is always either the old content or the new content, never partial.
 ///
-/// The tmp filename includes the daemon PID so a misuse where two
-/// saves race outside the state mutex still produces two distinct
-/// files (rather than overwriting each other's in-progress writes).
-/// `O_NOFOLLOW + O_EXCL` defends against a symlink-swap shape on the
-/// macOS `/tmp` fallback.
+/// The tmp filename includes both the daemon PID and a per-save
+/// random suffix. The random suffix defeats a same-UID attacker who
+/// could otherwise predict the tmp path and plant a symlink at it
+/// between the `remove_file` and re-`open` in the AlreadyExists
+/// retry branch (the `O_NOFOLLOW` defence holds either way, but a
+/// predictable target lets the attacker persistently DoS state
+/// saves). `O_NOFOLLOW + O_EXCL` defends against a symlink-swap
+/// shape on the macOS `/tmp` fallback.
 pub fn save(state_dir: &Path, state: &DaemonState) -> Result<(), SaveError> {
   std::fs::create_dir_all(state_dir).map_err(|e| SaveError::Io {
     path: state_dir.to_path_buf(),
     error: e.to_string(),
   })?;
   let final_path = path(state_dir);
-  let tmp_path = state_dir.join(format!("state.json.tmp.{}", std::process::id()));
+  let tmp_path = state_dir.join(format!(
+    "state.json.tmp.{}.{:016x}",
+    std::process::id(),
+    random_suffix()
+  ));
   let body = serde_json::to_vec_pretty(state).map_err(|e| SaveError::Serialise(e.to_string()))?;
   write_tmp_safely(&tmp_path, &body).map_err(|e| SaveError::Io {
     path: tmp_path.clone(),
@@ -195,6 +202,22 @@ pub fn save(state_dir: &Path, state: &DaemonState) -> Result<(), SaveError> {
     error: e.to_string(),
   })?;
   Ok(())
+}
+
+/// 64 bits of randomness for the tmp filename. Uses time + counter so
+/// we don't pull a CSPRNG dep just for filename uniqueness — the
+/// security property here is "unpredictable to a same-UID attacker
+/// observing readdir + clock skew", not cryptographic-grade entropy.
+fn random_suffix() -> u64 {
+  use std::sync::atomic::{AtomicU64, Ordering};
+  use std::time::{SystemTime, UNIX_EPOCH};
+  static COUNTER: AtomicU64 = AtomicU64::new(0);
+  let nanos = SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .map(|d| d.as_nanos() as u64)
+    .unwrap_or(0);
+  let bump = COUNTER.fetch_add(1, Ordering::Relaxed);
+  nanos ^ (bump.wrapping_mul(0x9e3779b97f4a7c15))
 }
 
 #[cfg(unix)]
@@ -409,24 +432,29 @@ mod tests {
 
     let dir = temp_state_dir("symlink-tmp");
     fs::create_dir_all(&dir).expect("mk dir");
-    // Plant a victim and symlink the tmp path at it. The PID-suffixed
-    // tmp filename is predictable for a same-UID attacker; the
-    // important invariant is that the victim file is never
-    // truncated. The save logic detects the stale-by-AlreadyExists
-    // shape, unlinks the symlink, and re-opens fresh — both branches
-    // refuse to follow the symlink to the victim.
+    // Plant a symlink at the historical PID-only tmp path shape. The
+    // current `save` uses a `state.json.tmp.<pid>.<rand>` filename so
+    // the planted path no longer matches the chosen tmp path —
+    // randomisation defeats prediction in addition to the
+    // `O_NOFOLLOW + O_EXCL` guard. The victim must remain untouched
+    // and the final state.json must be a regular file.
     let victim = dir.join("victim.dat");
     fs::write(&victim, b"important data").expect("write victim");
-    let tmp = dir.join(format!("state.json.tmp.{}", std::process::id()));
-    symlink(&victim, &tmp).expect("plant symlink");
+    let planted = dir.join(format!("state.json.tmp.{}", std::process::id()));
+    symlink(&victim, &planted).expect("plant symlink");
 
     save(&dir, &DaemonState::default()).expect("save with planted symlink should succeed");
-    // Victim must be untouched.
     let after = fs::read(&victim).expect("victim still readable");
     assert_eq!(after, b"important data");
-    // Final state.json must be a regular file (not the planted symlink).
     let meta = fs::symlink_metadata(path(&dir)).expect("state.json metadata");
     assert!(meta.is_file(), "state.json must be a regular file");
+    // The planted symlink should still exist — `save` worked around
+    // it rather than through it.
+    let planted_meta = fs::symlink_metadata(&planted).expect("planted symlink should remain");
+    assert!(
+      planted_meta.file_type().is_symlink(),
+      "save must not touch the planted symlink",
+    );
     fs::remove_dir_all(&dir).ok();
   }
 

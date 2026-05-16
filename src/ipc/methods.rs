@@ -586,21 +586,32 @@ async fn stop_external_handler(
   // for kernel processes, and adopted-but-already-dead entries are
   // seeded with `start_time_secs = 0` in `daemon::mod`). Treat that
   // as a mismatch — refusing to signal is the safe failure mode.
-  fn live_and_same(pid: u32, expected_start: u64) -> Option<bool> {
-    use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
-    let refresh = ProcessRefreshKind::everything();
-    let mut sys = System::new_with_specifics(RefreshKind::new().with_processes(refresh));
-    sys.refresh_processes_specifics(
-      sysinfo::ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
-      true,
-      refresh,
-    );
-    sys.process(Pid::from_u32(pid)).map(|p| {
-      let live = p.start_time();
-      live != 0 && expected_start != 0 && live == expected_start
+  //
+  // Off-thread via `spawn_blocking`: sysinfo does synchronous /proc
+  // I/O (Linux) or sysctl (macOS) per refresh. In the 100ms grace
+  // loop that's ~50 calls per stop, and `stop_all` runs them in
+  // parallel via `join_all` — left on the async worker, a fleet of
+  // concurrent stops can saturate every reactor thread and stall
+  // probe polling for a launching model.
+  async fn live_and_same(pid: u32, expected_start: u64) -> Option<bool> {
+    tokio::task::spawn_blocking(move || {
+      use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
+      let refresh = ProcessRefreshKind::everything();
+      let mut sys = System::new_with_specifics(RefreshKind::new().with_processes(refresh));
+      sys.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
+        true,
+        refresh,
+      );
+      sys.process(Pid::from_u32(pid)).map(|p| {
+        let live = p.start_time();
+        live != 0 && expected_start != 0 && live == expected_start
+      })
     })
+    .await
+    .unwrap_or(None)
   }
-  match live_and_same(parsed.pid, recorded_start_time) {
+  match live_and_same(parsed.pid, recorded_start_time).await {
     Some(true) => {}
     Some(false) => {
       ctx.external.write().await.retain(|e| e.pid != parsed.pid);
@@ -629,7 +640,7 @@ async fn stop_external_handler(
   let mut elapsed = Duration::ZERO;
   let step = Duration::from_millis(100);
   while elapsed < grace {
-    match live_and_same(parsed.pid, recorded_start_time) {
+    match live_and_same(parsed.pid, recorded_start_time).await {
       Some(true) => {}
       _ => break, // gone, or pid was recycled — either way stop signalling
     }
@@ -638,7 +649,10 @@ async fn stop_external_handler(
   }
   // Final check; SIGKILL only if same process is still up.
   let mut sent_kill = false;
-  if matches!(live_and_same(parsed.pid, recorded_start_time), Some(true)) {
+  if matches!(
+    live_and_same(parsed.pid, recorded_start_time).await,
+    Some(true)
+  ) {
     unsafe {
       libc::kill(pid_i, libc::SIGKILL);
     }

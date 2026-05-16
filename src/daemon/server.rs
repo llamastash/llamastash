@@ -38,7 +38,6 @@ pub const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 pub async fn serve(listener: UnixListener, ctx: MethodContext) -> Result<()> {
   let tracker = Arc::new(ConnectionTracker {
     counter: ctx.active_connections.clone(),
-    notify: tokio::sync::Notify::new(),
     handles: StdMutex::new(Vec::new()),
   });
 
@@ -62,10 +61,7 @@ pub async fn serve(listener: UnixListener, ctx: MethodContext) -> Result<()> {
                 let task_tracker = conn_tracker.clone();
                 let handle = tokio::spawn(async move {
                   serve_connection(stream, conn_ctx).await;
-                  let prev = task_tracker.counter.fetch_sub(1, Ordering::SeqCst);
-                  if prev <= 1 {
-                    task_tracker.notify.notify_waiters();
-                  }
+                  task_tracker.counter.fetch_sub(1, Ordering::SeqCst);
                 });
                 push_handle(&conn_tracker, handle);
               }
@@ -93,34 +89,43 @@ pub async fn serve(listener: UnixListener, ctx: MethodContext) -> Result<()> {
   }
 
   // Drain phase: wait until the counter reaches zero, capped at DRAIN_TIMEOUT.
+  //
+  // We previously coordinated via `tokio::sync::Notify`, but its
+  // `notify_waiters` semantics open a lost-wakeup race against the
+  // per-connection task's decrement-then-notify path: if the task
+  // notifies between the drain's `notified()` construction and the
+  // future being polled, the wakeup is dropped and drain sleeps the
+  // full remaining budget before tripping the abort path even though
+  // every request had completed cleanly. `Notified::enable` shrinks
+  // the window but doesn't eliminate it. A bounded poll (50 ms) is
+  // boringly correct under every scheduling order and at 40 ticks /
+  // 2 s the wall-clock cost is negligible.
   let deadline = Instant::now() + DRAIN_TIMEOUT;
+  let poll_interval = Duration::from_millis(50);
   while tracker.counter.load(Ordering::SeqCst) > 0 {
     let remaining = deadline.checked_duration_since(Instant::now());
-    let Some(timeout) = remaining else {
+    let Some(time_left) = remaining else {
       let still_active = tracker.counter.load(Ordering::SeqCst);
       log::warn!("drain deadline reached with {still_active} connection(s) still active; aborting");
       // Explicitly abort outstanding tasks so any partial frame in
       // their write buffers is dropped along with the task rather
       // than appearing on the wire after subsequent reconnects.
-      if let Ok(mut handles) = tracker.handles.lock() {
-        for h in handles.drain(..) {
-          h.abort();
-        }
+      let mut handles = tracker
+        .handles
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+      for h in handles.drain(..) {
+        h.abort();
       }
       break;
     };
-    let notified = tracker.notify.notified();
-    if tracker.counter.load(Ordering::SeqCst) == 0 {
-      break;
-    }
-    let _ = tokio::time::timeout(timeout, notified).await;
+    tokio::time::sleep(poll_interval.min(time_left)).await;
   }
   Ok(())
 }
 
 struct ConnectionTracker {
   counter: Arc<std::sync::atomic::AtomicUsize>,
-  notify: tokio::sync::Notify,
   handles: StdMutex<Vec<JoinHandle<()>>>,
 }
 
@@ -129,12 +134,20 @@ struct ConnectionTracker {
 /// unboundedly. Wrapped in a helper because inlining the
 /// `if let Ok(...) = tracker.handles.lock()` form at the accept-loop
 /// call site extends the temporary `Result` past the surrounding
-/// `conn_tracker` binding and trips E0597.
+/// `conn_tracker` binding and trips the borrow checker.
 fn push_handle(tracker: &Arc<ConnectionTracker>, handle: JoinHandle<()>) {
-  if let Ok(mut handles) = tracker.handles.lock() {
-    handles.retain(|h| !h.is_finished());
-    handles.push(handle);
-  }
+  // Poisoned-mutex recovery: a previous holder panicked but the
+  // inner Vec is still well-formed. Dropping the handle silently
+  // would exclude this connection from drain-abort at shutdown,
+  // leaving the task running past the daemon's deadline. Match the
+  // `PoisonError::into_inner` pattern the TUI uses for the same
+  // reason.
+  let mut handles = tracker
+    .handles
+    .lock()
+    .unwrap_or_else(|e| e.into_inner());
+  handles.retain(|h| !h.is_finished());
+  handles.push(handle);
 }
 
 /// Run the per-connection request loop. Returns when the peer closes the

@@ -21,8 +21,10 @@ pub mod memory;
 pub mod metadata;
 
 // Synthetic-GGUF helpers used by both inline unit tests in this crate and
-// integration tests under `tests/`. Marked `doc(hidden)` so they don't appear
-// in rustdoc — they're not part of the public surface.
+// integration tests under `tests/`. Gated behind `cfg(test)` or the
+// `test-fixtures` feature so `cargo install` / release builds don't
+// ship `FixtureBuilder` / `build_minimal_gguf` to consumers.
+#[cfg(any(test, feature = "test-fixtures"))]
 #[doc(hidden)]
 pub mod test_fixtures;
 
