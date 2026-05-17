@@ -216,11 +216,15 @@ pub async fn fetch_status(client: &mut Client) -> Result<StatusSnapshot, CliExit
     .map(|a| a.iter().filter_map(parse_external_row).collect())
     .unwrap_or_default();
   let gpu = body.get("gpu").cloned().unwrap_or(Value::Null);
+  // AGENTS.md: `host` is always an object on the wire; preserve it
+  // verbatim so the CLI `status --json` mirrors the IPC contract.
+  let host = body.get("host").cloned().unwrap_or(Value::Null);
   let daemon = body.get("daemon").and_then(parse_daemon_health);
   Ok(StatusSnapshot {
     models,
     external,
     gpu,
+    host,
     daemon,
   })
 }
@@ -230,6 +234,13 @@ pub struct StatusSnapshot {
   pub models: Vec<RunningRow>,
   pub external: Vec<ExternalRow>,
   pub gpu: Value,
+  /// Host-level metrics (CPU%, RAM, GPU util/temp/VRAM aggregates,
+  /// sampler backend). Always an object on the wire per
+  /// `AGENTS.md::status IPC fields`; the CLI preserves it verbatim
+  /// so `status --json` consumers see the same shape as raw IPC
+  /// clients. `Value::Null` only when talking to a daemon that
+  /// predates the field.
+  pub host: Value,
   /// Daemon health preamble (`pid`, `uptime_seconds`,
   /// `active_connections`). Older daemons may omit the field, in
   /// which case this is `None` — the formatter silently skips it.
@@ -247,6 +258,10 @@ pub struct DaemonHealth {
   /// Path to the `llama-server` binary the daemon resolved at start.
   /// `None` when the daemon doesn't expose it or hasn't resolved one.
   pub server_path: Option<String>,
+  /// Unix-domain socket the daemon bound on startup. `None` when
+  /// talking to an older daemon that pre-dates the field. Surfaced
+  /// so `status --json` mirrors the IPC wire shape.
+  pub socket_path: Option<String>,
 }
 
 fn parse_daemon_health(v: &Value) -> Option<DaemonHealth> {
@@ -264,6 +279,10 @@ fn parse_daemon_health(v: &Value) -> Option<DaemonHealth> {
     build: obj.get("build").and_then(Value::as_str).map(str::to_string),
     server_path: obj
       .get("server_path")
+      .and_then(Value::as_str)
+      .map(str::to_string),
+    socket_path: obj
+      .get("socket_path")
       .and_then(Value::as_str)
       .map(str::to_string),
   })

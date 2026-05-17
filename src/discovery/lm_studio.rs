@@ -47,15 +47,23 @@ pub fn resolve_models_dirs(home: &Path) -> Vec<PathBuf> {
 }
 
 /// LM Studio's settings file. The shape varies between releases; the
-/// relevant key is `paths.models` in current builds but historically
-/// has been `modelsDirectory`. Both are accepted so a stale install
-/// still gets a working pointer.
+/// relevant key shifts across releases:
+/// - `paths.models` — older builds.
+/// - `modelsDirectory` — even older.
+/// - `downloadsFolder` — current top-level key (observed in
+///   LM Studio 0.3.x). Set whenever the user relocates the model
+///   directory via the GUI; without this key the resolver missed
+///   real user installs that pointed at an external drive.
+///
+/// All three are accepted in priority order.
 #[derive(Debug, Deserialize, Default)]
 struct LmStudioSettings {
   #[serde(default)]
   paths: Option<PathsSection>,
   #[serde(rename = "modelsDirectory", default)]
   models_directory_legacy: Option<PathBuf>,
+  #[serde(rename = "downloadsFolder", default)]
+  downloads_folder: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -85,6 +93,9 @@ fn read_settings_models_dir(home: &Path) -> Option<PathBuf> {
       return Some(p);
     }
     if let Some(p) = settings.models_directory_legacy {
+      return Some(p);
+    }
+    if let Some(p) = settings.downloads_folder {
       return Some(p);
     }
   }
@@ -156,6 +167,35 @@ mod tests {
     assert!(
       dirs.iter().any(|d| d == &custom),
       "expected override path in {dirs:?}"
+    );
+    fs::remove_dir_all(&home).ok();
+  }
+
+  #[test]
+  fn downloads_folder_key_resolves_when_others_absent() {
+    // LM Studio 0.3.x writes `downloadsFolder` (not `paths.models`)
+    // when the user relocates the model directory via the GUI.
+    // Without this key the resolver missed real user installs that
+    // pointed at an external drive — observed on the test author's
+    // Strix Halo box where the default `.lmstudio/models` had a
+    // stale 2-model snapshot and `downloadsFolder` pointed at a
+    // 100+-model collection on a separate disk.
+    let home = temp_home("downloads-folder");
+    let custom = home.join("ExternalDrive/lmstudio-models");
+    fs::create_dir_all(&custom).unwrap();
+    fs::create_dir_all(home.join(".lmstudio")).unwrap();
+    let settings = serde_json::json!({
+      "downloadsFolder": custom.to_string_lossy(),
+    });
+    fs::write(
+      home.join(".lmstudio/settings.json"),
+      serde_json::to_vec(&settings).unwrap(),
+    )
+    .unwrap();
+    let dirs = resolve_models_dirs(&home);
+    assert!(
+      dirs.iter().any(|d| d == &custom),
+      "downloadsFolder must resolve, got {dirs:?}"
     );
     fs::remove_dir_all(&home).ok();
   }

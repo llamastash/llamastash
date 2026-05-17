@@ -19,6 +19,7 @@ pub async fn handle(args: StatusArgs, cli: &Cli, config: &Config) -> CliResult {
       models: vec![resolve_running(&snap.models, t)?],
       external: vec![],
       gpu: snap.gpu.clone(),
+      host: snap.host.clone(),
       daemon: snap.daemon.clone(),
     },
     None => snap,

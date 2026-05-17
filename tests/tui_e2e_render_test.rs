@@ -61,6 +61,7 @@ fn seeded_dashboard_app() -> App {
     uptime_seconds: Some(3 * 3600 + 12 * 60 + 45),
     build: Some("0.1.0".into()),
     server_path: Some("/usr/local/bin/llama-server".into()),
+    socket_path: Some("/run/user/1000/llamadash/daemon.sock".into()),
   };
   app.host_metrics = HostMetricsSnapshot {
     cpu_pct: 47.5,

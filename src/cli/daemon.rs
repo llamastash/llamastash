@@ -126,7 +126,34 @@ pub(crate) fn build_options(
   };
   opts.port_range = config.port_range;
   opts.probe_timeout_secs = Some(config.probe_timeout_secs);
+  opts.propagated_cli_args = propagated_cli_args(cli);
   Ok(opts)
+}
+
+/// Collect the global CLI flags that the re-exec'd detached daemon
+/// must inherit so it resolves the same discovery / binary / config
+/// surface the parent would have. Without this, the child rebuilds
+/// `DaemonOptions` from an empty `Cli` and the user's `-p
+/// /some/path`, `--no-scan`, `--llama-server`, `--config` flags are
+/// silently dropped.
+fn propagated_cli_args(cli: &Cli) -> Vec<std::ffi::OsString> {
+  let mut args: Vec<std::ffi::OsString> = Vec::new();
+  for path in &cli.model_paths {
+    args.push("--model-path".into());
+    args.push(path.into());
+  }
+  if cli.no_scan {
+    args.push("--no-scan".into());
+  }
+  if let Some(p) = &cli.llama_server {
+    args.push("--llama-server".into());
+    args.push(p.into());
+  }
+  if let Some(p) = &cli.config {
+    args.push("--config".into());
+    args.push(p.into());
+  }
+  args
 }
 
 /// Merge CLI + config + default-cache enumeration into the canonical
@@ -275,5 +302,49 @@ mod tests {
       .map(|r| r.path.as_path())
       .collect();
     assert_eq!(matches.len(), 1, "duplicate must collapse, got {matches:?}");
+  }
+
+  #[test]
+  fn propagated_cli_args_carry_model_paths_no_scan_and_overrides() {
+    // Regression: `start_detached` previously dropped every global
+    // flag on re-exec, so an auto-spawned daemon silently ignored
+    // the user's `-p /some/path` and `--no-scan`. `build_options`
+    // now stamps these onto `DaemonOptions::propagated_cli_args` so
+    // the child sees the same CLI surface as the parent.
+    let cli = parse_cli(&[
+      "--model-path",
+      "/work/a",
+      "--model-path",
+      "/work/b",
+      "--no-scan",
+      "--llama-server",
+      "/usr/local/bin/llama-server",
+      "--config",
+      "/etc/llamadash.yaml",
+      "daemon",
+      "start",
+    ]);
+    let args = propagated_cli_args(&cli);
+    let as_str: Vec<&str> = args.iter().map(|s| s.to_str().unwrap()).collect();
+    assert_eq!(
+      as_str,
+      vec![
+        "--model-path",
+        "/work/a",
+        "--model-path",
+        "/work/b",
+        "--no-scan",
+        "--llama-server",
+        "/usr/local/bin/llama-server",
+        "--config",
+        "/etc/llamadash.yaml",
+      ]
+    );
+  }
+
+  #[test]
+  fn propagated_cli_args_is_empty_when_no_global_flags_set() {
+    let cli = parse_cli(&["daemon", "start"]);
+    assert!(propagated_cli_args(&cli).is_empty());
   }
 }

@@ -36,10 +36,22 @@ use crate::gguf::errors::{GgufError, GgufResult};
 /// GGUF magic. Stored little-endian when emitted as a u32.
 pub const GGUF_MAGIC: &[u8; 4] = b"GGUF";
 
-/// Default soft cap on the structural-header window in bytes (1 MiB).
-pub const DEFAULT_HEADER_CAP_BYTES: u64 = 1 << 20;
-/// Hard cap, used if a caller asks for a larger window (4 MiB).
-pub const MAX_HEADER_CAP_BYTES: u64 = 4 << 20;
+/// Default soft cap on the structural-header window in bytes (16 MiB).
+///
+/// Modern tokenizers (Gemma 3+, Qwen 2.5+, Llama 3.x) embed the full
+/// `tokens.list` array — 128k–256k strings — directly in the metadata
+/// KV section, which routinely pushes the structural header to 2–8
+/// MiB on real models. The original 1 MiB default clipped these
+/// headers mid-string and produced misleading `BadStringLen` errors
+/// on every modern chat / embed model; 16 MiB covers everything
+/// observed in the wild today with headroom for the next vocab-size
+/// jump. Tests that need a smaller window can pass an explicit
+/// `HeaderReadOptions { cap_bytes: … }`.
+pub const DEFAULT_HEADER_CAP_BYTES: u64 = 16 << 20;
+/// Hard cap, used if a caller asks for a larger window (64 MiB).
+/// Sized so a hostile file with an enormous metadata payload still
+/// fails fast rather than OOMing the daemon's blocking-pool worker.
+pub const MAX_HEADER_CAP_BYTES: u64 = 64 << 20;
 
 /// Defensive ceilings on attacker-controllable counts.
 const MAX_KV_COUNT: u64 = 10_000;
@@ -48,7 +60,7 @@ const MAX_TENSOR_DIMS: u32 = 8;
 const MAX_STRING_LEN: u64 = 4 * 1024 * 1024;
 const MAX_ARRAY_LEN: u64 = 1_000_000;
 /// Maximum levels of `Array(Array(...))` nesting accepted by
-/// [`read_value`]. The header window cap (`MAX_HEADER_CAP_BYTES = 4
+/// [`read_value`]. The header window cap (`MAX_HEADER_CAP_BYTES = 64
 /// MiB`) lets a hostile file describe hundreds of thousands of levels
 /// at ~12 bytes per level, which is enough to blow the parser's
 /// (blocking-pool) stack on a synchronous recursion. We don't see
@@ -481,6 +493,35 @@ mod tests {
     assert_eq!(read.header.tensors.len(), 2);
     assert_eq!(read.header.tensors[0].name, "output.weight");
     assert_eq!(read.header.tensors[1].ggml_type, 8); // Q8_0
+  }
+
+  #[test]
+  fn default_cap_handles_realistic_tokenizer_payload() {
+    // Modern tokenizers (Gemma 3+, Qwen 2.5+, Llama 3.x) embed
+    // `tokens.list` arrays of 128k–256k strings inside the metadata
+    // KV section; the resulting structural header routinely lands
+    // in the 2–8 MiB range. The original 1 MiB default cap clipped
+    // these mid-string and produced misleading `BadStringLen` /
+    // `Truncated` errors on every modern chat / embed model. This
+    // test pins the default cap large enough to parse a synthetic
+    // 4 MiB metadata payload — a plausible real-world floor.
+    let bytes = FixtureBuilder::new()
+      .with_arch("llama")
+      .with_padding_kv("tokens.list_synthetic_payload", 4 * 1024 * 1024)
+      .build();
+    let read = read_reader(
+      IoCursor::new(bytes.as_slice()),
+      HeaderReadOptions::default(),
+    )
+    .expect("default cap must accommodate a 4 MiB metadata payload");
+    assert_eq!(
+      read
+        .header
+        .metadata
+        .get("general.architecture")
+        .and_then(|v| v.as_str()),
+      Some("llama")
+    );
   }
 
   #[test]

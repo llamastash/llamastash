@@ -71,6 +71,14 @@ pub struct DaemonOptions {
   /// passes through `Config::probe_timeout_secs` so users can raise
   /// it for very large models on slow disks.
   pub probe_timeout_secs: Option<u64>,
+  /// Extra CLI args to propagate to the re-exec'd child when
+  /// `start_detached` spawns the daemon. Tests leave this empty;
+  /// production builds it from the parent's `--model-path` /
+  /// `--no-scan` / `--llama-server` / `--config` flags so the
+  /// detached child resolves the same discovery surface the parent
+  /// would have. Without propagation the child rebuilds its options
+  /// from an empty `Cli` and silently ignores the user's flags.
+  pub propagated_cli_args: Vec<std::ffi::OsString>,
 }
 
 impl DaemonOptions {
@@ -89,6 +97,7 @@ impl DaemonOptions {
       port_range: PortRange::default(),
       discovery: DiscoveryOptions::new(Vec::new()),
       probe_timeout_secs: None,
+      propagated_cli_args: Vec::new(),
     }
   }
 
@@ -112,6 +121,7 @@ impl DaemonOptions {
       // returns `{"models": []}`.
       discovery: DiscoveryOptions::new(Vec::new()),
       probe_timeout_secs: None,
+      propagated_cli_args: Vec::new(),
     })
   }
 }
@@ -250,7 +260,8 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
     .with_gpu(initial_gpu)
     .with_sampler(sampler)
     .with_state(persisted)
-    .with_external(external_combined);
+    .with_external(external_combined)
+    .with_socket_path(opts.socket_path.clone());
   if let Some(binary) = opts.binary.clone() {
     if let Err(e) = std::fs::create_dir_all(&opts.log_dir) {
       log::warn!(
@@ -381,6 +392,14 @@ pub fn start_detached_with_exe(opts: DaemonOptions, exe: PathBuf) -> Result<Star
   }
 
   let mut cmd = Command::new(&exe);
+  // Global flags (`--model-path`, `--no-scan`, `--llama-server`,
+  // `--config`) must appear before the subcommand. clap accepts them
+  // either side because they are `global = true`, but front-loading
+  // them keeps the child's argv readable in `ps` output and avoids
+  // any clap parse-order surprises.
+  for arg in &opts.propagated_cli_args {
+    cmd.arg(arg);
+  }
   cmd
     .arg("daemon")
     .arg("start")

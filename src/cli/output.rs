@@ -283,12 +283,14 @@ pub fn status_json(snap: &StatusSnapshot) -> Value {
       "active_connections": d.active_connections,
       "build": d.build,
       "server_path": d.server_path,
+      "socket_path": d.socket_path,
     })
   });
   serde_json::json!({
     "models": models,
     "external": external,
     "gpu": snap.gpu,
+    "host": snap.host,
     "daemon": daemon,
   })
 }
@@ -403,6 +405,7 @@ mod tests {
       models: vec![],
       external: vec![],
       gpu: Value::Null,
+      host: Value::Null,
       daemon: None,
     };
     let s = status_human(&snap);
@@ -419,6 +422,7 @@ mod tests {
       models: vec![],
       external: vec![],
       gpu: serde_json::json!({"backend": "cpu_only"}),
+      host: Value::Null,
       daemon: None,
     };
     let s = status_human(&snap);
@@ -471,12 +475,14 @@ mod tests {
       models: vec![],
       external: vec![],
       gpu: Value::Null,
+      host: Value::Null,
       daemon: Some(DaemonHealth {
         pid: 4242,
         uptime_seconds: 90,
         active_connections: 3,
         build: None,
         server_path: None,
+        socket_path: None,
       }),
     };
     let s = status_human(&snap);
@@ -507,6 +513,7 @@ mod tests {
         model_path: Some("/m/b.gguf".into()),
       }],
       gpu: Value::String("CpuOnly".into()),
+      host: serde_json::json!({"gpu_backend": "amd", "cpu_pct": 12.5}),
       daemon: None,
     };
     let v = status_json(&snap);
@@ -530,12 +537,14 @@ mod tests {
       models: vec![],
       external: vec![],
       gpu: Value::Null,
+      host: Value::Null,
       daemon: Some(DaemonHealth {
         pid: 11,
         uptime_seconds: 7,
         active_connections: 1,
         build: Some("0.1.0".into()),
         server_path: Some("/usr/bin/llama-server".into()),
+        socket_path: Some("/run/user/1000/llamadash/daemon.sock".into()),
       }),
     };
     let v = status_json(&snap);
@@ -547,5 +556,34 @@ mod tests {
       v["daemon"]["server_path"],
       serde_json::json!("/usr/bin/llama-server")
     );
+  }
+
+  #[test]
+  fn status_json_preserves_host_block_verbatim() {
+    // AGENTS.md guarantees `host` is always an object on the wire.
+    // The CLI surface must surface the same shape so agents that
+    // parse `status --json` see the same fields as raw IPC clients.
+    let snap = StatusSnapshot {
+      models: vec![],
+      external: vec![],
+      gpu: Value::Null,
+      host: serde_json::json!({
+        "cpu_pct": 12.5,
+        "ram_used_bytes": 1_000_000_u64,
+        "ram_total_bytes": 64_000_000_u64,
+        "gpu_backend": "amd",
+        "gpu_util_pct": 73.0,
+        "gpu_temp_c": 62.0,
+        "gpu_mem_used_bytes": 3_000_000_000_u64,
+        "gpu_mem_total_bytes": 64_000_000_000_u64,
+        "gpu_device_count": 1,
+      }),
+      daemon: None,
+    };
+    let v = status_json(&snap);
+    assert!(v.get("host").is_some(), "host key must appear: {v}");
+    assert_eq!(v["host"]["gpu_backend"], serde_json::json!("amd"));
+    assert_eq!(v["host"]["cpu_pct"], serde_json::json!(12.5));
+    assert_eq!(v["host"]["gpu_device_count"], serde_json::json!(1));
   }
 }

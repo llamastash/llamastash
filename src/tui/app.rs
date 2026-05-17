@@ -62,6 +62,11 @@ pub struct DaemonInfo {
   pub uptime_seconds: Option<u64>,
   pub build: Option<String>,
   pub server_path: Option<String>,
+  /// Absolute path of the Unix-domain socket the daemon bound. Used
+  /// by the Daemon info panel to render the `socket  …/daemon.sock
+  /// pid 1234` line. `None` only when talking to an older daemon
+  /// that pre-dates the field.
+  pub socket_path: Option<String>,
 }
 
 /// Immutable parts of the App that don't change after construction.
@@ -206,6 +211,10 @@ impl App {
           .map(String::from),
         server_path: daemon
           .get("server_path")
+          .and_then(Value::as_str)
+          .map(String::from),
+        socket_path: daemon
+          .get("socket_path")
           .and_then(Value::as_str)
           .map(String::from),
       };

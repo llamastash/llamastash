@@ -96,6 +96,12 @@ pub struct MethodContext {
   /// [`crate::daemon::peercred::is_authorized_peer`]; tests can
   /// inject `|_| false` to drive the rejection branch.
   pub peer_authorizer: Arc<dyn Fn(crate::daemon::peercred::PeerCred) -> bool + Send + Sync>,
+  /// Absolute path of the Unix-domain socket the daemon bound on
+  /// startup. Surfaced under `status.daemon.socket_path` so the TUI
+  /// can render it in the Daemon info panel (`socket  …/daemon.sock
+  /// pid 1234`). `None` only in catalog-only tests that never bind
+  /// a real socket.
+  pub socket_path: Option<PathBuf>,
 }
 
 /// Wrapper around the in-memory `DaemonState` plus the directory
@@ -179,7 +185,17 @@ impl MethodContext {
       launch: None,
       external: Arc::new(RwLock::new(Vec::new())),
       peer_authorizer: Arc::new(crate::daemon::peercred::is_authorized_peer),
+      socket_path: None,
     }
+  }
+
+  /// Builder helper: attach the daemon's listening socket path so
+  /// `status.daemon.socket_path` surfaces a real value instead of
+  /// `null`. Production wiring passes the path the daemon actually
+  /// bound; tests typically skip this.
+  pub fn with_socket_path(mut self, path: PathBuf) -> Self {
+    self.socket_path = Some(path);
+    self
   }
 
   /// Builder helper: override the peercred decision. Test-only.
@@ -507,6 +523,7 @@ async fn status_response(ctx: &MethodContext) -> Value {
         .launch
         .as_ref()
         .map(|env| env.binary.display().to_string()),
+      "socket_path": ctx.socket_path.as_ref().map(|p| p.display().to_string()),
     },
   })
 }

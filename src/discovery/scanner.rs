@@ -112,6 +112,23 @@ async fn walk_root(
   }
 }
 
+/// Is this `.gguf` file a multimodal projector companion (e.g.,
+/// `mmproj-model-f16.gguf`)? Projector files are not independently
+/// launchable — they are tensors that pair with a parent chat model
+/// for vision/audio input. The user policy is to hide them from the
+/// Models list unless they could be launched on their own, which they
+/// cannot. The filename prefix is the upstream convention (used by
+/// `llama.cpp`'s `convert_hf_to_gguf.py` and every published
+/// HuggingFace repo that ships a projector). Filtering on the name
+/// avoids paying the cost of a header re-read.
+fn is_projector_companion(path: &Path) -> bool {
+  path
+    .file_name()
+    .and_then(|n| n.to_str())
+    .map(|n| n.starts_with("mmproj-") || n.starts_with("mmproj_"))
+    .unwrap_or(false)
+}
+
 /// Concurrency cap for [`walk_root`]'s per-file parse. Default to
 /// `num_cpus()`-flavoured but capped — too many parallel
 /// `spawn_blocking` calls land everything on the blocking pool
@@ -175,6 +192,7 @@ fn collect_gguf_paths(root: &Path, excludes: &[String]) -> Vec<PathBuf> {
         // pointing at a symlink reports the *target*'s file type.
         if p.extension().and_then(|s| s.to_str()) == Some("gguf")
           && entry.file_type().map(|t| t.is_file()).unwrap_or(false)
+          && !is_projector_companion(p)
         {
           // Canonicalise before dedup so a real file and a symlink to
           // it collapse to a single row. Falling back to the raw path
@@ -300,6 +318,34 @@ mod tests {
     let paths = collect_gguf_paths(&dir, &[]);
     assert_eq!(paths.len(), 1);
     assert!(paths[0].ends_with("a.gguf"));
+    fs::remove_dir_all(&dir).ok();
+  }
+
+  #[test]
+  fn collect_gguf_paths_drops_mmproj_projector_companions() {
+    // Multimodal projector files (`mmproj-*.gguf`) ride along with a
+    // parent chat model but are not launchable on their own; without
+    // this filter they showed up in the TUI's Models list as
+    // selectable rows that would fail at launch time.
+    let dir = temp_dir("mmproj");
+    fs::write(dir.join("model.gguf"), build_minimal_gguf("llama")).unwrap();
+    fs::write(
+      dir.join("mmproj-model-f16.gguf"),
+      build_minimal_gguf("llama"),
+    )
+    .unwrap();
+    fs::write(
+      dir.join("mmproj_model_v2.gguf"),
+      build_minimal_gguf("llama"),
+    )
+    .unwrap();
+    let paths = collect_gguf_paths(&dir, &[]);
+    let names: Vec<String> = paths
+      .iter()
+      .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+      .collect();
+    assert_eq!(paths.len(), 1, "expected only model.gguf, got {names:?}");
+    assert!(names[0].ends_with("model.gguf"));
     fs::remove_dir_all(&dir).ok();
   }
 

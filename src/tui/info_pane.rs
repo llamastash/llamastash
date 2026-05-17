@@ -47,16 +47,37 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
 }
 
 fn socket_row<'a>(app: &'a App, budget: usize, palette: &'a Palette) -> Line<'a> {
-  let socket = app
+  // Layout: `socket  …/daemon.sock  pid 1234`. The pid is fixed-width
+  // (small int + label), so allocate its width first and let the
+  // socket path consume the rest with `…/` left-truncation. When the
+  // daemon doesn't surface a socket path (older builds), fall back
+  // to `pid` alone so the row still carries useful identity.
+  let pid_chunk = app
     .daemon_info
     .pid
     .map(|pid| format!("pid {pid}"))
     .unwrap_or_else(|| "—".into());
-  // We don't propagate the socket path through the status response
-  // (the TUI already knows it), so the row leads with the pid the
-  // daemon reports and leaves room for the path to be derived from
-  // the TUI's connection state in a future pass.
-  let value = ellipsise(&socket, budget);
+  let value = match app.daemon_info.socket_path.as_deref() {
+    Some(path) => {
+      // Reserve `  pid 1234` worth of width (two-space separator +
+      // pid chunk); truncate the path with the remainder. When the
+      // remaining path budget is too small to render a recognisable
+      // socket path (less than ~12 cols — enough for `…/daemon.sock`),
+      // drop the path entirely and just show the pid. A one- or
+      // two-character socket prefix is worse than no path at all.
+      const MIN_PATH_BUDGET: usize = 12;
+      let separator = "  ";
+      let reserved = pid_chunk.width() + separator.width();
+      let path_budget = budget.saturating_sub(reserved);
+      if path_budget < MIN_PATH_BUDGET {
+        ellipsise(&pid_chunk, budget)
+      } else {
+        let path_truncated = ellipsise(path, path_budget);
+        format!("{path_truncated}{separator}{pid_chunk}")
+      }
+    }
+    None => ellipsise(&pid_chunk, budget),
+  };
   Line::from(vec![
     Span::styled(LABEL_SOCKET, Style::default().fg(palette.muted)),
     Span::styled(value, Style::default().fg(palette.fg)),
@@ -83,14 +104,22 @@ fn uptime_build_row<'a>(app: &'a App, palette: &'a Palette) -> Line<'a> {
 }
 
 fn server_row<'a>(app: &'a App, budget: usize, palette: &'a Palette) -> Line<'a> {
-  let path = app.daemon_info.server_path.as_deref().unwrap_or("—");
-  // Backend label (cuda / amd / apple_metal / cpu_only) comes from the
-  // host_metrics snapshot — the daemon's GPU probe is the source of
-  // truth either way.
-  let flavor = flavor_label(app);
-  let flavor_chunk = match flavor {
-    Some(f) => format!(" ({f})"),
-    None => String::new(),
+  // When the daemon hasn't resolved a `llama-server` binary, show
+  // `—` (matching the uptime row's missing-data convention) and
+  // drop the backend-flavor tag entirely — `— (rocm)` reads as a
+  // bug rather than a missing-binary signal. The flavor only makes
+  // sense paired with an actual binary path.
+  let server_path = app.daemon_info.server_path.as_deref();
+  let (path, flavor_chunk) = match server_path {
+    Some(p) => {
+      let flavor = flavor_label(app);
+      let chunk = match flavor {
+        Some(f) => format!(" ({f})"),
+        None => String::new(),
+      };
+      (p, chunk)
+    }
+    None => ("—", String::new()),
   };
   // Reserve room for the parenthesised flavor; truncate the path
   // first so the flavor stays visible. The flavor's column width is
@@ -500,6 +529,56 @@ mod tests {
     assert!(
       socket_row.contains("pid 1234"),
       "expected `pid 1234`, got: {socket_row:?}"
+    );
+  }
+
+  #[test]
+  fn socket_row_renders_path_alongside_pid_when_available() {
+    // After wiring `daemon.socket_path` through the IPC contract,
+    // the row leads with the absolute socket path so the user can
+    // see which daemon they're talking to without an extra command.
+    let mut app = App::new(AppOptions::default());
+    app.daemon_info = DaemonInfo {
+      pid: Some(4242),
+      socket_path: Some("/run/user/1000/llamadash/daemon.sock".into()),
+      ..Default::default()
+    };
+    let rows = render_lines(&app);
+    let socket_row = rows.iter().find(|r| r.contains("socket")).unwrap();
+    assert!(
+      socket_row.contains("daemon.sock"),
+      "expected socket basename, got: {socket_row:?}"
+    );
+    assert!(
+      socket_row.contains("pid 4242"),
+      "pid must remain on the row alongside the path: {socket_row:?}"
+    );
+  }
+
+  #[test]
+  fn server_row_omits_flavor_when_binary_unresolved() {
+    // Previously `— (rocm)` rendered when the daemon hadn't located
+    // a `llama-server` binary, which read as a bug. The flavor tag
+    // only makes sense paired with an actual binary path, so an
+    // unresolved binary collapses the row to `—`.
+    let mut app = App::new(AppOptions::default());
+    app.daemon_info = DaemonInfo {
+      server_path: None,
+      ..Default::default()
+    };
+    app.host_metrics = HostMetricsSnapshot {
+      gpu_backend: "amd".into(),
+      ..Default::default()
+    };
+    let rows = render_lines(&app);
+    let server_row = rows.iter().find(|r| r.contains("server")).unwrap();
+    assert!(
+      server_row.contains("—"),
+      "expected em-dash placeholder when no binary, got: {server_row:?}"
+    );
+    assert!(
+      !server_row.contains('('),
+      "flavor must be suppressed when binary is unresolved: {server_row:?}"
     );
   }
 }
