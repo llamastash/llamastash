@@ -1066,4 +1066,154 @@ mod tests {
       Some(Action::ToggleAutoScroll),
     );
   }
+
+  // ── KeyMap (runtime overrides) ──────────────────────────────
+
+  #[test]
+  fn keymap_default_mirrors_static_bindings() {
+    // The runtime default must accept exactly the same keys the
+    // legacy free function accepts — that's the invariant that lets
+    // us flip events.rs / help_overlay over without behavioural drift.
+    let map = KeyMap::default();
+    assert_eq!(
+      map.action_for(Focus::List, KeyCode::Char('q'), KeyModifiers::NONE),
+      Some(Action::Quit)
+    );
+    assert_eq!(
+      map.action_for(Focus::List, KeyCode::Char('t'), KeyModifiers::NONE),
+      Some(Action::CycleTheme)
+    );
+    assert_eq!(
+      map.action_for(Focus::Filter, KeyCode::Char('q'), KeyModifiers::NONE),
+      None
+    );
+  }
+
+  #[test]
+  fn parse_key_spec_handles_modifier_chains() {
+    let ctrl_q = parse_key_spec("ctrl+q").unwrap();
+    assert_eq!(ctrl_q.key, KeyCode::Char('q'));
+    assert!(ctrl_q.mods.contains(KeyModifiers::CONTROL));
+    assert_eq!(ctrl_q.label, "Ctrl+q");
+
+    let shift_tab = parse_key_spec("Shift+Tab").unwrap();
+    assert_eq!(shift_tab.key, KeyCode::Tab);
+    assert!(shift_tab.mods.contains(KeyModifiers::SHIFT));
+
+    let alt_enter = parse_key_spec("alt+enter").unwrap();
+    assert_eq!(alt_enter.key, KeyCode::Enter);
+    assert!(alt_enter.mods.contains(KeyModifiers::ALT));
+
+    let f5 = parse_key_spec("f5").unwrap();
+    assert_eq!(f5.key, KeyCode::F(5));
+  }
+
+  #[test]
+  fn parse_key_spec_uppercase_implies_shift() {
+    let spec = parse_key_spec("Q").unwrap();
+    assert_eq!(spec.key, KeyCode::Char('Q'));
+    assert!(spec.mods.contains(KeyModifiers::SHIFT));
+  }
+
+  #[test]
+  fn parse_key_spec_rejects_unknown_modifier() {
+    let err = parse_key_spec("hyper+q").unwrap_err();
+    assert!(err.contains("unknown modifier"));
+  }
+
+  #[test]
+  fn parse_key_spec_rejects_out_of_range_function_key() {
+    let err = parse_key_spec("f99").unwrap_err();
+    assert!(err.contains("function key"));
+  }
+
+  #[test]
+  fn action_from_config_name_accepts_snake_and_kebab() {
+    assert_eq!(Action::from_config_name("quit"), Some(Action::Quit));
+    assert_eq!(
+      Action::from_config_name("cycle_theme"),
+      Some(Action::CycleTheme)
+    );
+    assert_eq!(
+      Action::from_config_name("cycle-theme"),
+      Some(Action::CycleTheme)
+    );
+    assert_eq!(Action::from_config_name("nope"), None);
+  }
+
+  #[test]
+  fn apply_overrides_rebinds_quit_to_ctrl_q() {
+    let mut map = KeyMap::default();
+    let overrides: BTreeMap<String, String> = [(String::from("quit"), String::from("ctrl+q"))]
+      .into_iter()
+      .collect();
+    let warnings = map.apply_overrides(&overrides);
+    assert!(warnings.is_empty(), "no warnings expected: {warnings:?}");
+    // New binding fires.
+    assert_eq!(
+      map.action_for(Focus::List, KeyCode::Char('q'), KeyModifiers::CONTROL),
+      Some(Action::Quit)
+    );
+    // Old binding is gone.
+    assert_eq!(
+      map.action_for(Focus::List, KeyCode::Char('q'), KeyModifiers::NONE),
+      None
+    );
+  }
+
+  #[test]
+  fn apply_overrides_warns_on_unknown_action() {
+    let mut map = KeyMap::default();
+    let overrides: BTreeMap<String, String> =
+      [(String::from("nuke_everything"), String::from("ctrl+z"))]
+        .into_iter()
+        .collect();
+    let warnings = map.apply_overrides(&overrides);
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("nuke_everything"));
+  }
+
+  #[test]
+  fn apply_overrides_warns_on_unparseable_key() {
+    let mut map = KeyMap::default();
+    let overrides: BTreeMap<String, String> = [(String::from("quit"), String::from("ctrl+"))]
+      .into_iter()
+      .collect();
+    let warnings = map.apply_overrides(&overrides);
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("quit"));
+    // Original binding still works since the override failed.
+    assert_eq!(
+      map.action_for(Focus::List, KeyCode::Char('q'), KeyModifiers::NONE),
+      Some(Action::Quit)
+    );
+  }
+
+  #[test]
+  fn apply_overrides_drops_conflicting_existing_binding() {
+    // `t` defaults to CycleTheme. If the user rebinds Quit → `t`,
+    // CycleTheme must lose its `t` binding so the dispatch isn't
+    // ambiguous.
+    let mut map = KeyMap::default();
+    let overrides: BTreeMap<String, String> = [(String::from("quit"), String::from("t"))]
+      .into_iter()
+      .collect();
+    let warnings = map.apply_overrides(&overrides);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(
+      map.action_for(Focus::List, KeyCode::Char('t'), KeyModifiers::NONE),
+      Some(Action::Quit)
+    );
+    // CycleTheme should no longer be triggered by anything (its
+    // original `t` binding was claimed by Quit; no fallback exists).
+    let all_quit_keys_in_list: Vec<_> = map
+      .bindings_for(Focus::List)
+      .iter()
+      .filter(|b| b.action == Action::CycleTheme)
+      .collect();
+    assert!(
+      all_quit_keys_in_list.is_empty(),
+      "expected CycleTheme to lose its binding"
+    );
+  }
 }
