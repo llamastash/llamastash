@@ -1,164 +1,303 @@
 //! Modal `?` help overlay listing every keybinding grouped by
-//! panel. Rendered in two columns so a single screen can carry the
-//! full keymap. Centred over the dashboard with a translucent
-//! border; Esc or `?` closes it.
+//! purpose. Rendered as three fixed columns of category sections so
+//! a single screen can carry the full keymap. Centred over the
+//! dashboard with a translucent border; Esc or `?` closes it.
+//!
+//! Layout and groupings are static — the overlay does **not** shift
+//! based on which pane is focused. Every binding shown is resolved
+//! live through [`App::bindings_for`] so config-driven overrides
+//! (`keybindings:` in `config.yaml`) reflect here automatically.
 
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::theme::Palette;
 use crate::tui::app::App;
-use crate::tui::keybindings::{Binding, Focus};
+use crate::tui::keybindings::{Action, Focus};
 
-/// Focus order in the help dialog. The currently-focused panel is
-/// rendered first so the most-relevant bindings sit at the top of
-/// column 1.
-const FOCUS_ORDER: &[Focus] = &[
-  Focus::List,
-  Focus::Filter,
-  Focus::RightPane,
-  Focus::ChatInput,
-  Focus::EmbedInput,
-  Focus::RerankInput,
-  Focus::LaunchPicker,
-  Focus::AdvancedPanel,
+/// One displayed help row.
+///
+/// - `Single` resolves a single `(focus, action)` lookup and renders
+///   the live key + the binding's own description.
+/// - `Multi` covers several `(focus, action)` pairs that share a
+///   key (e.g. all three right-pane submit actions on `Ctrl+Enter`)
+///   and collapses them into a single row with an editorial joined
+///   description. If a config override breaks the shared-key
+///   invariant, the renderer falls back to one line per part so
+///   nothing is hidden.
+enum Row {
+  Single {
+    focus: Focus,
+    action: Action,
+  },
+  Multi {
+    parts: &'static [(Focus, Action)],
+    description: &'static str,
+  },
+}
+
+/// A vertical block in one column: a bold title followed by its
+/// rows.
+struct Group {
+  title: &'static str,
+  rows: &'static [Row],
+}
+
+// ─── Category contents ────────────────────────────────────────────
+//
+// Each row resolves to one line in the overlay. The grouping is
+// editorial — actions are deliberately listed under the pane where
+// they're most useful even if the keymap technically registers them
+// in a different `Focus`. The live binding is always pulled from
+// the `Focus` named in the row so a config override flows through.
+
+const GENERAL: &[Row] = &[
+  Row::Single { focus: Focus::List, action: Action::ToggleHelp },
+  Row::Single { focus: Focus::List, action: Action::Quit },
+  Row::Single { focus: Focus::List, action: Action::KillDaemon },
+  Row::Single { focus: Focus::List, action: Action::CycleTheme },
+  Row::Single { focus: Focus::List, action: Action::NextFocus },
+  Row::Single { focus: Focus::List, action: Action::PrevFocus },
+];
+
+/// Models pane's `Enter` collapse: applies the live filter buffer
+/// when the user is inside the inline filter input, otherwise opens
+/// the launch picker for the focused model.
+const MODELS_ENTER: &[(Focus, Action)] = &[
+  (Focus::Filter, Action::Submit),
+  (Focus::List, Action::OpenLaunchPicker),
+];
+
+const MODELS: &[Row] = &[
+  Row::Single { focus: Focus::List, action: Action::MoveUp },
+  Row::Single { focus: Focus::List, action: Action::MoveDown },
+  Row::Single { focus: Focus::List, action: Action::PageUp },
+  Row::Single { focus: Focus::List, action: Action::PageDown },
+  Row::Single { focus: Focus::List, action: Action::GoTop },
+  Row::Single { focus: Focus::List, action: Action::GoBottom },
+  Row::Single { focus: Focus::List, action: Action::OpenFilter },
+  Row::Multi {
+    parts: MODELS_ENTER,
+    description: "apply filter/launch",
+  },
+  Row::Single { focus: Focus::Filter, action: Action::ClearFilter },
+  Row::Single { focus: Focus::List, action: Action::ToggleFavorite },
+  Row::Single { focus: Focus::List, action: Action::OpenAdvancedPanel },
+  Row::Single { focus: Focus::List, action: Action::YankUrl },
+  Row::Single { focus: Focus::List, action: Action::YankCurl },
+  Row::Single { focus: Focus::List, action: Action::YankPath },
+  Row::Single { focus: Focus::List, action: Action::StopModel },
+];
+
+const LOGS: &[Row] = &[
+  Row::Single { focus: Focus::RightPane, action: Action::ToggleAutoScroll },
+  Row::Single { focus: Focus::RightPane, action: Action::MoveUp },
+  Row::Single { focus: Focus::RightPane, action: Action::MoveDown },
+  Row::Single { focus: Focus::RightPane, action: Action::FocusList },
+];
+
+/// The three submit actions across the right-pane inputs collapse
+/// into one row at the default `Ctrl+Enter` binding.
+const SUBMIT_TRIPLET: &[(Focus, Action)] = &[
+  (Focus::ChatInput, Action::SendChat),
+  (Focus::EmbedInput, Action::Submit),
+  (Focus::RerankInput, Action::Submit),
+];
+
+const CHAT_EMBED_RERANK: &[Row] = &[
+  Row::Single { focus: Focus::RightPane, action: Action::EnterEdit },
+  Row::Single { focus: Focus::ChatInput, action: Action::ExitEdit },
+  Row::Multi {
+    parts: SUBMIT_TRIPLET,
+    description: "send/embed/rerank",
+  },
+  Row::Single { focus: Focus::ChatInput, action: Action::ToggleThinkCollapse },
+  Row::Single { focus: Focus::RerankInput, action: Action::StageRerankCandidate },
+];
+
+/// Three different Enter destinations across the Settings flow —
+/// open the picker from the Settings tab, launch the model from
+/// inside the picker, save & close from the Advanced flags panel.
+/// User-facing summary collapses them as `launch/save`.
+const SETTINGS_ENTER: &[(Focus, Action)] = &[
+  (Focus::RightPane, Action::Submit),
+  (Focus::LaunchPicker, Action::Submit),
+  (Focus::AdvancedPanel, Action::Submit),
+];
+
+/// Picker dismiss vs. advanced-panel dismiss share `Esc` but mean
+/// slightly different things (cancel the launch vs. discard flag
+/// edits and step back). Both collapse under one row as
+/// `cancel/back`.
+const SETTINGS_ESC: &[(Focus, Action)] = &[
+  (Focus::LaunchPicker, Action::Cancel),
+  (Focus::AdvancedPanel, Action::Cancel),
+];
+
+const SETTINGS: &[Row] = &[
+  Row::Multi {
+    parts: SETTINGS_ENTER,
+    description: "launch/save",
+  },
+  Row::Single { focus: Focus::LaunchPicker, action: Action::MoveDown },
+  Row::Multi {
+    parts: SETTINGS_ESC,
+    description: "cancel/back",
+  },
+];
+
+// ─── Column assignment ────────────────────────────────────────────
+//
+// Fixed left-to-right packing. Tuned so the three columns balance
+// roughly in height — `Models` is the biggest group so it owns its
+// own column; the smaller groups pair up on either side.
+
+const COLUMN_1: &[Group] = &[
+  Group { title: "General", rows: GENERAL },
+  Group { title: "Logs", rows: LOGS },
+];
+
+const COLUMN_2: &[Group] = &[Group { title: "Models", rows: MODELS }];
+
+const COLUMN_3: &[Group] = &[
+  Group { title: "Chat / Embed / Rerank", rows: CHAT_EMBED_RERANK },
+  Group { title: "Settings", rows: SETTINGS },
 ];
 
 /// Render the overlay. Caller is responsible for only invoking
-/// this when `app.show_help` is true. Reads bindings from
-/// `app.bindings_for(...)` so config-driven keybinding overrides
-/// surface in the help screen.
+/// this when `app.show_help` is true. Layout is static — the active
+/// focus does not change which groups appear or where.
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
-  let focus = app.focus;
   let rect = centred(
     area,
-    area.width.saturating_sub(6).min(110),
+    area.width.saturating_sub(4).min(130),
     area.height.saturating_sub(4).max(20),
   );
   frame.render_widget(Clear, rect);
 
   let block = Block::default()
-    .title(Line::from(Span::styled(
-      " Help · Esc or ? to close ",
-      Style::default()
-        .fg(palette.accent)
-        .add_modifier(Modifier::BOLD),
-    )))
+    .title(Line::from(vec![
+      Span::styled(
+        " Help ",
+        Style::default()
+          .fg(palette.panel_title)
+          .add_modifier(Modifier::BOLD),
+      ),
+      Span::styled(
+        "· Esc or ? to close ",
+        Style::default().fg(palette.muted),
+      ),
+    ]))
     .borders(Borders::ALL)
-    .border_style(Style::default().fg(palette.accent));
+    .border_style(Style::default().fg(palette.accent))
+    // Breathing room inside the border so column titles and key
+    // labels don't kiss the frame on either side.
+    .padding(Padding::new(2, 2, 1, 1));
   let inner = block.inner(rect);
   frame.render_widget(block, rect);
 
-  // Split inner into header + body, then body into two columns.
-  let chunks = Layout::default()
-    .direction(Direction::Vertical)
+  let cols = Layout::default()
+    .direction(Direction::Horizontal)
     .constraints([
-      Constraint::Length(1),
-      Constraint::Length(1),
-      Constraint::Min(1),
+      Constraint::Ratio(1, 3),
+      Constraint::Ratio(1, 3),
+      Constraint::Ratio(1, 3),
     ])
     .split(inner);
 
-  let header = Paragraph::new(Line::from(vec![
-    Span::styled("Active focus: ", Style::default().fg(palette.muted)),
-    Span::styled(
-      focus_label(focus),
-      Style::default().fg(palette.fg).add_modifier(Modifier::BOLD),
-    ),
-  ]))
-  .alignment(Alignment::Left);
-  frame.render_widget(header, chunks[0]);
-
-  let cols = Layout::default()
-    .direction(Direction::Horizontal)
-    .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-    .split(chunks[2]);
-
-  let groups = group_lines(focus, app, palette);
-  let (left, right) = split_groups(groups);
-  frame.render_widget(Paragraph::new(left).wrap(Wrap { trim: false }), cols[0]);
-  frame.render_widget(Paragraph::new(right).wrap(Wrap { trim: false }), cols[1]);
+  for (idx, groups) in [COLUMN_1, COLUMN_2, COLUMN_3].iter().enumerate() {
+    let lines = render_column(groups, app, palette);
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), cols[idx]);
+  }
 }
 
-/// Build per-focus blocks of `Line`s. Each block leads with a
-/// heading (focus label) followed by one line per binding
-/// (`key:label`) and a trailing blank for vertical separation.
-fn group_lines(active: Focus, app: &App, palette: &Palette) -> Vec<Vec<Line<'static>>> {
-  let mut groups: Vec<Vec<Line<'static>>> = Vec::with_capacity(FOCUS_ORDER.len());
-  // Walk in priority order: currently-active focus first, then the
-  // rest in the canonical order. Keeps the most-relevant chunk at
-  // the top of the left column.
-  let mut ordered: Vec<Focus> = vec![active];
-  for f in FOCUS_ORDER {
-    if *f != active {
-      ordered.push(*f);
-    }
-  }
-  for focus in ordered {
-    let bindings: &[Binding] = app.bindings_for(focus);
-    if bindings.is_empty() {
-      continue;
-    }
-    let mut block: Vec<Line<'static>> = Vec::with_capacity(bindings.len() + 2);
-    block.push(Line::from(Span::styled(
-      focus_label(focus).to_string(),
+/// Build the line list for one column. Each `Group` becomes a bold
+/// title line followed by one row per [`Row`] and a trailing blank
+/// for vertical separation between groups.
+fn render_column(groups: &[Group], app: &App, palette: &Palette) -> Vec<Line<'static>> {
+  let mut out: Vec<Line<'static>> = Vec::new();
+  for group in groups {
+    out.push(Line::from(Span::styled(
+      group.title.to_string(),
       Style::default()
         .fg(palette.accent)
         .add_modifier(Modifier::BOLD),
     )));
-    for b in bindings {
-      block.push(Line::from(vec![
-        Span::styled(
-          format!("  {:<10}", b.label),
-          Style::default()
-            .fg(palette.label)
-            .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(b.description.to_string(), Style::default().fg(palette.fg)),
-      ]));
+    for row in group.rows {
+      append_row(&mut out, row, app, palette);
     }
-    block.push(Line::default());
-    groups.push(block);
+    out.push(Line::default());
   }
-  groups
+  out
 }
 
-/// Split the per-focus blocks across two columns. We pack greedily
-/// from the top by total line height — biased so column 1 ≥
-/// column 2 (the active focus, always first, lives in column 1).
-fn split_groups(groups: Vec<Vec<Line<'static>>>) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
-  let total: usize = groups.iter().map(|g| g.len()).sum();
-  let target = total.div_ceil(2);
-  let mut left: Vec<Line<'static>> = Vec::with_capacity(target + 4);
-  let mut right: Vec<Line<'static>> = Vec::with_capacity(target + 4);
-  let mut left_height = 0usize;
-  for g in groups {
-    if left_height + g.len() <= target || left.is_empty() {
-      left_height += g.len();
-      left.extend(g);
-    } else {
-      right.extend(g);
+fn append_row(out: &mut Vec<Line<'static>>, row: &Row, app: &App, palette: &Palette) {
+  match row {
+    Row::Single { focus, action } => {
+      if let Some((keys, description)) = resolve_one(app, *focus, *action) {
+        out.push(render_binding_line(&keys, &description, palette));
+      }
+    }
+    Row::Multi { parts, description } => {
+      let resolved: Vec<(String, String)> = parts
+        .iter()
+        .filter_map(|(f, a)| resolve_one(app, *f, *a))
+        .collect();
+      if resolved.is_empty() {
+        return;
+      }
+      let first_key = resolved[0].0.clone();
+      let same_key = resolved.iter().all(|(k, _)| *k == first_key);
+      if same_key {
+        // Collapsed row: shared key + the editorial joined
+        // description from the row definition.
+        out.push(render_binding_line(&first_key, description, palette));
+      } else {
+        // A config override broke the shared-key invariant. Fall
+        // back to one line per part so the user still sees every
+        // remapped key with its own per-binding description.
+        for (keys, per_part_desc) in resolved {
+          out.push(render_binding_line(&keys, &per_part_desc, palette));
+        }
+      }
     }
   }
-  (left, right)
 }
 
-/// Short human-readable label for a focus. Mirrors the variants in
-/// [`Focus`].
-fn focus_label(focus: Focus) -> &'static str {
-  match focus {
-    Focus::List => "Models list",
-    Focus::Filter => "Filter input",
-    Focus::LaunchPicker => "Launch picker",
-    Focus::AdvancedPanel => "Advanced flags",
-    Focus::RightPane => "Right pane",
-    Focus::ChatInput => "Chat prompt",
-    Focus::EmbedInput => "Embed input",
-    Focus::RerankInput => "Rerank input",
+fn render_binding_line(keys: &str, description: &str, palette: &Palette) -> Line<'static> {
+  Line::from(vec![
+    Span::styled(
+      format!("  {keys:<14}"),
+      Style::default()
+        .fg(palette.label)
+        .add_modifier(Modifier::BOLD),
+    ),
+    Span::styled(
+      description.to_string(),
+      Style::default().fg(palette.fg),
+    ),
+  ])
+}
+
+/// Look up every live binding for `action` in `focus` and assemble
+/// the display strings. Returns `None` when the user has unbound
+/// the action entirely (so it's never silently shown without a key).
+fn resolve_one(app: &App, focus: Focus, action: Action) -> Option<(String, String)> {
+  let bindings = app.bindings_for(focus);
+  let matches: Vec<_> = bindings.iter().filter(|b| b.action == action).collect();
+  if matches.is_empty() {
+    return None;
   }
+  let keys = matches
+    .iter()
+    .map(|b| b.label)
+    .collect::<Vec<_>>()
+    .join(",");
+  let description = matches[0].description.to_string();
+  Some((keys, description))
 }
 
 /// Centre a `w × h` rect within `area`, clamping to the available
@@ -174,25 +313,140 @@ fn centred(area: Rect, w: u16, h: u16) -> Rect {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::tui::app::AppOptions;
+  use crate::tui::keybindings::KeyMap;
+  use ratatui::backend::TestBackend;
+  use ratatui::Terminal;
+  use std::collections::BTreeMap;
+
+  fn render_to_string(width: u16, height: u16, app: &App) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal
+      .draw(|frame| {
+        let area = frame.area();
+        render(frame, area, app, app.palette());
+      })
+      .unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let mut lines: Vec<String> = Vec::with_capacity(buf.area.height as usize);
+    for y in 0..buf.area.height {
+      let mut row = String::new();
+      for x in 0..buf.area.width {
+        row.push_str(buf[(x, y)].symbol());
+      }
+      lines.push(row.trim_end().to_string());
+    }
+    lines.join("\n")
+  }
 
   #[test]
-  fn focus_label_distinct_per_variant() {
-    use std::collections::HashSet;
-    let labels: HashSet<&'static str> = [
-      Focus::List,
-      Focus::Filter,
-      Focus::LaunchPicker,
-      Focus::AdvancedPanel,
-      Focus::RightPane,
-      Focus::ChatInput,
-      Focus::EmbedInput,
-      Focus::RerankInput,
-    ]
-    .iter()
-    .copied()
-    .map(focus_label)
-    .collect();
-    assert_eq!(labels.len(), 8);
+  fn overlay_shows_all_five_group_titles() {
+    let app = App::new(AppOptions::default());
+    let frame = render_to_string(140, 36, &app);
+    for title in ["General", "Models", "Logs", "Chat / Embed / Rerank", "Settings"] {
+      assert!(frame.contains(title), "missing group `{title}` in:\n{frame}");
+    }
+  }
+
+  #[test]
+  fn logs_esc_uses_models_list_description() {
+    let app = App::new(AppOptions::default());
+    let frame = render_to_string(140, 36, &app);
+    assert!(
+      frame.contains("models list"),
+      "Logs Esc description should say `models list`:\n{frame}"
+    );
+  }
+
+  #[test]
+  fn models_enter_collapses_filter_and_launch() {
+    let app = App::new(AppOptions::default());
+    let frame = render_to_string(140, 36, &app);
+    assert!(
+      frame.contains("apply filter/launch"),
+      "Models Enter row should be the collapsed `apply filter/launch`:\n{frame}"
+    );
+    let occurrences = frame.matches("apply filter/launch").count();
+    assert_eq!(occurrences, 1, "expected exactly one collapsed row:\n{frame}");
+  }
+
+  #[test]
+  fn submit_triplet_collapses_under_one_ctrl_enter_row() {
+    let app = App::new(AppOptions::default());
+    let frame = render_to_string(140, 36, &app);
+    assert!(
+      frame.contains("send/embed/rerank"),
+      "right-pane submit row should be `send/embed/rerank`:\n{frame}"
+    );
+    let occurrences = frame.matches("send/embed/rerank").count();
+    assert_eq!(occurrences, 1, "expected a single collapsed row:\n{frame}");
+  }
+
+  #[test]
+  fn settings_collapses_enter_and_esc() {
+    let app = App::new(AppOptions::default());
+    let frame = render_to_string(140, 36, &app);
+    assert!(
+      frame.contains("launch/save"),
+      "Settings Enter row should be `launch/save`:\n{frame}"
+    );
+    assert!(
+      frame.contains("cancel/back"),
+      "Settings Esc row should be `cancel/back`:\n{frame}"
+    );
+  }
+
+  #[test]
+  fn overlay_reflects_config_keybinding_overrides() {
+    let mut keymap = KeyMap::default();
+    let overrides: BTreeMap<String, String> =
+      [(String::from("quit"), String::from("ctrl+q"))].into_iter().collect();
+    let warnings = keymap.apply_overrides(&overrides);
+    assert!(warnings.is_empty(), "{warnings:?}");
+
+    let app = App::new(AppOptions {
+      keymap,
+      ..AppOptions::default()
+    });
+    let frame = render_to_string(140, 36, &app);
+    assert!(frame.contains("Ctrl+q"), "remapped quit key missing: {frame}");
+    assert!(
+      !frame.contains("q,Ctrl+C"),
+      "stale default quit aliases still rendered: {frame}"
+    );
+  }
+
+  #[test]
+  fn submit_row_falls_back_to_per_part_lines_when_override_diverges_keys() {
+    let mut keymap = KeyMap::default();
+    let overrides: BTreeMap<String, String> =
+      [(String::from("send_chat"), String::from("f12"))].into_iter().collect();
+    let warnings = keymap.apply_overrides(&overrides);
+    assert!(warnings.is_empty(), "{warnings:?}");
+
+    let app = App::new(AppOptions {
+      keymap,
+      ..AppOptions::default()
+    });
+    let frame = render_to_string(140, 36, &app);
+    // Collapsed text vanishes; per-part bindings still surface.
+    assert!(
+      !frame.contains("send/embed/rerank"),
+      "collapsed row should split after override:\n{frame}"
+    );
+    assert!(frame.contains("F12"), "F12 send binding missing:\n{frame}");
+    assert!(frame.contains("Ctrl+Enter"), "Ctrl+Enter row missing:\n{frame}");
+  }
+
+  #[test]
+  fn overlay_layout_is_static_across_focuses() {
+    let baseline = App::new(AppOptions::default());
+    let mut shifted = App::new(AppOptions::default());
+    shifted.focus = Focus::RightPane;
+    assert_eq!(
+      render_to_string(140, 36, &baseline),
+      render_to_string(140, 36, &shifted)
+    );
   }
 
   #[test]

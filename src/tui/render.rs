@@ -111,17 +111,25 @@ fn render_title_row(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Pale
   frame.render_widget(bg, area);
 
   // Reserve the right slot for the global hint strip; the left slot
-  // (brand + daemon dot) flexes into the rest. `global_hint_slot_width`
-  // is derived from the same `GLOBAL_HINTS` list the renderer iterates,
-  // so the slot can't drift from the rendered text.
-  let hint_slot = help_bar::global_hint_slot_width();
-  let split = Layout::default()
-    .direction(Direction::Horizontal)
-    .constraints([Constraint::Min(1), Constraint::Length(hint_slot)])
-    .split(area);
-
-  render_title_left(frame, split[0], app, palette);
-  help_bar::render_global(frame, split[1], palette);
+  // (brand + daemon dot) flexes into the rest. The slot width is
+  // derived live from the App's `KeyMap` so a user-supplied
+  // `keybindings:` override flows through to the visible hints. On
+  // terminals too narrow to fit both the hint strip and a readable
+  // brand we drop the hints — the user can still press `?` for the
+  // full help overlay, so nothing is lost.
+  let hint_slot = help_bar::global_hint_slot_width(app);
+  let min_brand_w: u16 = 20;
+  let show_hints = area.width >= hint_slot.saturating_add(min_brand_w);
+  if show_hints {
+    let split = Layout::default()
+      .direction(Direction::Horizontal)
+      .constraints([Constraint::Min(min_brand_w), Constraint::Length(hint_slot)])
+      .split(area);
+    render_title_left(frame, split[0], app, palette);
+    help_bar::render_global(frame, split[1], app, palette);
+  } else {
+    render_title_left(frame, area, app, palette);
+  }
 }
 
 fn render_title_left(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
@@ -206,10 +214,11 @@ fn render_body(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) 
   };
   let rows = app.rendered_rows();
   let title = build_models_title(app, split[0].width as usize, &rows);
+  let filter_chip = models_filter_chip(app);
   let list_focused = list_is_focused(app.focus);
   let right_focused = right_is_focused(app.focus);
   if rows.is_empty() {
-    render_empty_state(frame, split[0], palette, title, list_focused);
+    render_empty_state(frame, split[0], palette, title, &filter_chip, list_focused);
   } else {
     list_pane::render(
       frame,
@@ -217,6 +226,7 @@ fn render_body(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) 
       &rows,
       app.list_cursor,
       title,
+      &filter_chip,
       palette,
       list_focused,
     );
@@ -253,21 +263,78 @@ fn build_models_title<'a>(
   area_width: usize,
   rows: &[list_pane::ListRow],
 ) -> list_pane::TitleInputs<'a> {
-  let filter = if app.filter_buffer.is_empty() && app.focus != Focus::Filter {
-    list_pane::FilterTitle::Inactive
-  } else {
+  let filter_active = !(app.filter_buffer.is_empty() && app.focus != Focus::Filter);
+  let filter = if filter_active {
     list_pane::FilterTitle::Active {
       buffer: app.filter_buffer.as_str(),
       focused: app.focus == Focus::Filter,
     }
+  } else {
+    list_pane::FilterTitle::Inactive
   };
-  let show_stop = focused_row_is_running(app, rows);
+  let on_running = focused_row_is_running(app, rows);
+  let hints = build_models_hints(app, filter_active, on_running);
   list_pane::TitleInputs {
     total: app.models.len(),
     area_width,
     filter,
-    show_stop,
+    hints,
   }
+}
+
+/// Build the Models title chip strip, resolved live against the
+/// keymap so a `keybindings:` config override flows through to the
+/// title bar. Order matters: the first chip is never dropped under
+/// budget pressure, so put the most important keystroke first
+/// (`Enter:apply` while filtering, `Enter:launch` otherwise).
+fn build_models_hints(app: &App, filter_active: bool, on_running: bool) -> Vec<String> {
+  use crate::tui::keybindings::Action;
+  let mut out: Vec<String> = Vec::with_capacity(7);
+  if filter_active {
+    // While the filter is being typed only the apply/clear keys are
+    // useful — every row-action hint would just clutter the strip.
+    if let Some(h) = app.hint(Focus::Filter, Action::Submit) {
+      out.push(h);
+    }
+    if let Some(h) = app.hint(Focus::Filter, Action::ClearFilter) {
+      out.push(h);
+    }
+  } else {
+    if let Some(h) = app.hint(Focus::List, Action::OpenLaunchPicker) {
+      out.push(h);
+    }
+    // `favorite` is the canonical description; override here to
+    // keep the chip terse without renaming the help-overlay entry.
+    if let Some(h) = app.hint_with(Focus::List, Action::ToggleFavorite, "fav") {
+      out.push(h);
+    }
+    if let Some(h) = app.hint(Focus::List, Action::YankPath) {
+      out.push(h);
+    }
+    if on_running {
+      if let Some(h) = app.hint(Focus::List, Action::StopModel) {
+        out.push(h);
+      }
+      if let Some(h) = app.hint(Focus::List, Action::YankUrl) {
+        out.push(h);
+      }
+      if let Some(h) = app.hint(Focus::List, Action::YankCurl) {
+        out.push(h);
+      }
+    }
+  }
+  out
+}
+
+/// Resolve the inactive-filter chip label (`/:filter`) against the
+/// live keymap so a remap of `open_filter` flows through. Falls
+/// back to a static `/` glyph if the user has unbound the action
+/// (the chip still hints at the filter feature even without a key).
+fn models_filter_chip(app: &App) -> String {
+  use crate::tui::keybindings::Action;
+  app
+    .hint(Focus::List, Action::OpenFilter)
+    .unwrap_or_else(|| "/:filter".to_string())
 }
 
 /// True when the cursor row points at a model whose launch state
@@ -289,10 +356,11 @@ fn render_empty_state(
   area: Rect,
   palette: &Palette,
   title: list_pane::TitleInputs<'_>,
+  filter_chip: &str,
   focused: bool,
 ) {
   use ratatui::widgets::{Block, Borders};
-  let title_line = list_pane::build_block_title(title, palette);
+  let title_line = list_pane::build_block_title(title, filter_chip, palette);
   let border_color = list_pane::border_color(palette, focused);
   let block = Block::default()
     .title(title_line)
@@ -472,9 +540,12 @@ mod tests {
     let app = App::new(AppOptions::default());
     let rows = render_into(100, 30, app);
     let body = rows.join("\n");
-    // At 100 cols, Host(32) + Daemon(min 1) + Logo(14) easily fit.
+    // At 100 cols, Host(28) + Daemon(min 1) + Logo(11) easily fit.
+    // The logo panel emits the COMPACT_BANNER glyphs (`██`) — assert
+    // those rather than the theme tag, which now lives on the
+    // top-row hint strip and may get clipped at narrower widths.
     assert!(
-      body.contains("macchiato"),
+      body.contains("██"),
       "logo panel should render at width 100: {body}"
     );
   }

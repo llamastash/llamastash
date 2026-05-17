@@ -41,15 +41,13 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette, f
   let inner = outer.inner(area);
   frame.render_widget(outer, area);
 
-  // Inner stack: 1 blank pad, header (1 row), contextual hint
-  // strip, separator line, tab content. The blank pad above + the
-  // separator below breathe the model header off the block edge so
-  // it reads as a distinct strip from the body; the hint strip
-  // surfaces the keys most relevant to the active tab / focus.
+  // Inner stack: 1 blank pad, header (1 row), separator line, tab
+  // content. The contextual hint chips now ride alongside the tab
+  // strip in the block title (kdash-style, matching the Models
+  // pane), so the inner stack saves a row for the actual content.
   let layout = Layout::default()
     .direction(Direction::Vertical)
     .constraints([
-      Constraint::Length(1),
       Constraint::Length(1),
       Constraint::Length(1),
       Constraint::Length(1),
@@ -58,9 +56,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette, f
     .split(inner);
 
   render_header(frame, layout[1], app, palette);
-  render_hint_strip(frame, layout[2], app, palette);
-  render_separator(frame, layout[3], palette);
-  let body_area = layout[4];
+  render_separator(frame, layout[2], palette);
+  let body_area = layout[3];
 
   match app.right_tab {
     RightTab::Logs => logs::render(frame, body_area, &app.logs_state, palette),
@@ -83,61 +80,84 @@ fn render_separator(frame: &mut Frame<'_>, area: Rect, palette: &Palette) {
   frame.render_widget(para, area);
 }
 
-/// Single-line contextual hint strip below the model header. The
-/// hints surface the keys that matter for the active tab + focus
-/// (e.g. `e:edit` on Chat in navigation mode, `Ctrl+Enter:send`
-/// once the user has entered the prompt buffer). Centred + muted
-/// so it reads as a footnote, not data.
-fn render_hint_strip(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
-  use crate::tui::keybindings::Focus;
-  let hints: &[(&str, &str)] = match (app.focus, app.right_tab) {
-    (Focus::ChatInput, _) => &[
-      ("Ctrl+Enter", "send"),
-      ("Ctrl+r", "think"),
-      ("Esc", "exit edit"),
-    ],
-    (Focus::EmbedInput, _) => &[("Enter", "embed"), ("Esc", "exit edit")],
-    (Focus::RerankInput, _) => &[("Tab", "stage"), ("Enter", "rank"), ("Esc", "exit edit")],
-    (_, RightTab::Logs) => &[
-      ("j/k", "scroll"),
-      ("s", "auto-scroll"),
-      ("Tab", "next pane"),
-    ],
-    (_, RightTab::Chat) => &[("e", "edit"), ("Tab", "next pane")],
-    (_, RightTab::Embed) => &[("e", "edit"), ("Tab", "next pane")],
-    (_, RightTab::Rerank) => &[("e", "edit"), ("Tab", "next pane")],
-    (_, RightTab::Settings) => &[("Enter", "launch"), ("a", "advanced"), ("Tab", "next pane")],
-  };
-  let mut spans: Vec<Span<'static>> = Vec::with_capacity(hints.len() * 4);
-  for (i, (key, label)) in hints.iter().enumerate() {
-    if i > 0 {
-      spans.push(Span::styled(
-        "  ·  ".to_string(),
-        Style::default().fg(palette.muted),
-      ));
+/// Contextual hint chips that ride alongside the tab strip in the
+/// block title. Each chip is resolved live against the App's
+/// `KeyMap` so a `keybindings:` config override flows through
+/// automatically. Empty vec means "no chips for this combination"
+/// — the strip stays scannable.
+///
+/// Some descriptions use overrides (e.g. `clear` on the input
+/// `Esc` rather than the binding's `exit edit` description) to
+/// keep the chip terse without making the help-overlay row
+/// ambiguous.
+fn contextual_hints(app: &App) -> Vec<String> {
+  use crate::tui::keybindings::{Action, Focus};
+  let mut out: Vec<String> = Vec::with_capacity(3);
+  let push = |out: &mut Vec<String>, h: Option<String>| {
+    if let Some(h) = h {
+      out.push(h);
     }
-    spans.push(Span::styled(
-      (*key).to_string(),
-      Style::default()
-        .fg(palette.label)
-        .add_modifier(Modifier::BOLD),
-    ));
-    spans.push(Span::raw(":"));
-    spans.push(Span::styled(
-      (*label).to_string(),
-      Style::default().fg(palette.muted),
-    ));
+  };
+  match (app.focus, app.right_tab) {
+    // Edit-mode focuses surface the keys the user needs while their
+    // cursor is in the prompt buffer. `Esc:clear` matches kdash's
+    // filter-active idiom — Esc unwinds the edit. Override the
+    // ExitEdit binding's `exit edit` description with `clear` so
+    // the chip stays short.
+    (Focus::ChatInput, _) => {
+      push(&mut out, app.hint_with(Focus::ChatInput, Action::ExitEdit, "clear"));
+      push(&mut out, app.hint(Focus::ChatInput, Action::SendChat));
+      // `collapse think` is descriptive in the help overlay but
+      // wordy in a chip — override with `think`.
+      push(
+        &mut out,
+        app.hint_with(Focus::ChatInput, Action::ToggleThinkCollapse, "think"),
+      );
+    }
+    (Focus::EmbedInput, _) => {
+      push(&mut out, app.hint_with(Focus::EmbedInput, Action::ExitEdit, "clear"));
+      push(&mut out, app.hint(Focus::EmbedInput, Action::Submit));
+    }
+    (Focus::RerankInput, _) => {
+      push(&mut out, app.hint_with(Focus::RerankInput, Action::ExitEdit, "clear"));
+      // The RerankInput Submit description is `rank` in the help
+      // overlay (kept terse to align with the Chat/Embed triplet
+      // collapse). The chip would rather show the full surface
+      // name — override with `rerank`.
+      push(
+        &mut out,
+        app.hint_with(Focus::RerankInput, Action::Submit, "rerank"),
+      );
+    }
+    // Navigation focuses surface the entry-point keystroke per tab.
+    (_, RightTab::Logs) => {
+      push(&mut out, app.hint(Focus::RightPane, Action::ToggleAutoScroll));
+    }
+    (_, RightTab::Chat | RightTab::Embed | RightTab::Rerank) => {
+      push(&mut out, app.hint(Focus::RightPane, Action::EnterEdit));
+    }
+    (_, RightTab::Settings) => {
+      // `launch (Settings)` is the canonical description (kept
+      // disambiguated in the help overlay). The chip already sits
+      // next to the `Settings` tab label, so the trailing
+      // `(Settings)` is redundant — override with `launch`.
+      push(
+        &mut out,
+        app.hint_with(Focus::RightPane, Action::Submit, "launch"),
+      );
+      push(&mut out, app.hint(Focus::RightPane, Action::OpenAdvancedPanel));
+    }
   }
-  let para = Paragraph::new(Line::from(spans)).alignment(ratatui::layout::Alignment::Right);
-  frame.render_widget(para, area);
+  out
 }
 
-/// Compose the block title as a styled line: ` Logs │ Chat │ ... `
-/// with the active tab highlighted. Trailing per-tab hints are
-/// suppressed from the title to keep it scannable; the inner tab
-/// content owns its own hint strip when relevant.
+/// Compose the block title as a styled line: ` Logs │ Chat │ ... ·
+/// hint · hint · ... `. The active tab is highlighted and the
+/// contextual key hints sit alongside it so the user doesn't have
+/// to scan past the model header to see which keys are live.
 fn block_title_line(app: &App, tabs: &[RightTab], palette: &Palette) -> Line<'static> {
-  let mut spans: Vec<Span<'static>> = Vec::with_capacity(tabs.len() * 3 + 2);
+  let hints = contextual_hints(app);
+  let mut spans: Vec<Span<'static>> = Vec::with_capacity(tabs.len() * 3 + hints.len() * 2 + 4);
   spans.push(Span::raw(" "));
   for (i, tab) in tabs.iter().enumerate() {
     if i > 0 {
@@ -154,6 +174,13 @@ fn block_title_line(app: &App, tabs: &[RightTab], palette: &Palette) -> Line<'st
       Style::default().fg(palette.muted)
     };
     spans.push(Span::styled(tab.label().to_string(), style));
+  }
+  for hint in hints {
+    spans.push(Span::styled(
+      " · ".to_string(),
+      Style::default().fg(palette.muted),
+    ));
+    spans.push(Span::styled(hint, Style::default().fg(palette.muted)));
   }
   spans.push(Span::raw(" "));
   Line::from(spans)
@@ -263,20 +290,6 @@ fn right_pane_title(app: &App) -> String {
   }
 }
 
-/// Per-tab dynamic key hints. The block title now carries only the
-/// tab strip; these hints live inside the panel body when a tab
-/// chooses to surface them. Kept around for tests.
-#[cfg(test)]
-pub(crate) fn per_tab_hints(tab: RightTab) -> &'static str {
-  match tab {
-    RightTab::Logs => "Tab:list  ←/→:tabs  j/k:scroll  s:auto-scroll",
-    RightTab::Chat => "Tab:list  ←/→:tabs  Ctrl+Enter:send  r:reasoning",
-    RightTab::Embed => "Tab:list  ←/→:tabs  Enter:embed",
-    RightTab::Rerank => "Tab:list  ←/→:tabs  Enter:rerank",
-    RightTab::Settings => "Tab:list  ←/→:tabs  Enter:launch",
-  }
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -312,12 +325,114 @@ mod tests {
     assert!(stats.contains("— CPU"));
   }
 
+  fn app_with_focus(focus: crate::tui::keybindings::Focus, tab: RightTab) -> App {
+    let mut app = App::new(AppOptions::default());
+    app.focus = focus;
+    app.right_tab = tab;
+    app
+  }
+
   #[test]
-  fn per_tab_hints_change_per_tab() {
-    assert!(per_tab_hints(RightTab::Logs).contains("scroll"));
-    assert!(per_tab_hints(RightTab::Chat).contains("Ctrl+Enter:send"));
-    assert!(per_tab_hints(RightTab::Embed).contains("Enter:embed"));
-    assert!(per_tab_hints(RightTab::Rerank).contains("Enter:rerank"));
+  fn contextual_hints_match_each_focus_tab_combo() {
+    use crate::tui::keybindings::Focus;
+    // Navigation focuses surface the entry-point keystroke per tab.
+    assert_eq!(
+      contextual_hints(&app_with_focus(Focus::RightPane, RightTab::Logs)),
+      vec!["s:auto-scroll".to_string()]
+    );
+    assert_eq!(
+      contextual_hints(&app_with_focus(Focus::RightPane, RightTab::Chat)),
+      vec!["e:edit".to_string()]
+    );
+    assert_eq!(
+      contextual_hints(&app_with_focus(Focus::RightPane, RightTab::Embed)),
+      vec!["e:edit".to_string()]
+    );
+    assert_eq!(
+      contextual_hints(&app_with_focus(Focus::RightPane, RightTab::Rerank)),
+      vec!["e:edit".to_string()]
+    );
+    assert_eq!(
+      contextual_hints(&app_with_focus(Focus::RightPane, RightTab::Settings)),
+      vec!["Enter:launch".to_string(), "a:advanced".to_string()]
+    );
+    // Edit-mode focuses surface the in-buffer keystrokes.
+    assert_eq!(
+      contextual_hints(&app_with_focus(Focus::ChatInput, RightTab::Chat)),
+      vec![
+        "Esc:clear".to_string(),
+        "Ctrl+Enter:send".to_string(),
+        "Ctrl+r:think".to_string(),
+      ]
+    );
+    assert_eq!(
+      contextual_hints(&app_with_focus(Focus::EmbedInput, RightTab::Embed)),
+      vec!["Esc:clear".to_string(), "Ctrl+Enter:embed".to_string()]
+    );
+    assert_eq!(
+      contextual_hints(&app_with_focus(Focus::RerankInput, RightTab::Rerank)),
+      vec!["Esc:clear".to_string(), "Ctrl+Enter:rerank".to_string()]
+    );
+  }
+
+  #[test]
+  fn contextual_hints_pick_up_config_keybinding_overrides() {
+    use crate::tui::keybindings::{Action, KeyMap};
+    use std::collections::BTreeMap;
+    // Rebind enter_edit to F4 — the Chat tab's nav-mode chip must
+    // surface `F4:edit`, not the stale default `e:edit`.
+    let mut keymap = KeyMap::default();
+    let overrides: BTreeMap<String, String> =
+      [(String::from("enter_edit"), String::from("f4"))]
+        .into_iter()
+        .collect();
+    let warnings = keymap.apply_overrides(&overrides);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let mut app = App::new(AppOptions {
+      keymap,
+      ..AppOptions::default()
+    });
+    app.focus = crate::tui::keybindings::Focus::RightPane;
+    app.right_tab = RightTab::Chat;
+    assert_eq!(
+      contextual_hints(&app),
+      vec!["F4:edit".to_string()],
+      "remapped enter_edit must flow into the chip"
+    );
+    // Sanity: looking up the action directly through the App also
+    // resolves to F4 (this is the path the chip uses internally).
+    assert!(app
+      .hint(crate::tui::keybindings::Focus::RightPane, Action::EnterEdit)
+      .unwrap()
+      .starts_with("F4:"));
+  }
+
+  #[test]
+  fn block_title_includes_contextual_hints_alongside_tab_strip() {
+    use crate::tui::keybindings::Focus;
+    let mut app = App::new(AppOptions::default());
+    // Force a focused running model so Chat tab is reachable.
+    app.models = vec![crate::discovery::DiscoveredModel {
+      path: PathBuf::from("/m/qwen.gguf"),
+      parent: PathBuf::from("/m"),
+      source: crate::discovery::ModelSource::UserPath,
+      metadata: None,
+      parse_error: None,
+      split_siblings: Vec::new(),
+    }];
+    app.managed = vec![ready_managed("qwen", None, None)];
+    app.list_cursor = 2;
+    app.right_tab = RightTab::Logs;
+    app.focus = Focus::RightPane;
+    let palette = app.palette();
+    let tabs = app.available_right_tabs();
+    let line = block_title_line(&app, &tabs, palette);
+    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+    assert!(text.contains("Logs"));
+    assert!(
+      text.contains("s:auto-scroll"),
+      "Logs tab must surface s:auto-scroll in title: {text:?}"
+    );
   }
 
   #[test]

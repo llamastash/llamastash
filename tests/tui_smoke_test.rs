@@ -62,7 +62,10 @@ fn render_to_string(app: &mut App, width: u16, height: u16) -> String {
 #[test]
 fn empty_app_renders_title_info_and_empty_state() {
   let mut app = App::new(AppOptions::default());
-  let frame = render_to_string(&mut app, 100, 20);
+  // Wider terminal so the full title row (brand + hint strip) fits.
+  // The hint strip grew with the Q:kill daemon chip and now needs
+  // ~120 cells to coexist with the connecting-daemon label.
+  let frame = render_to_string(&mut app, 130, 20);
   assert!(
     frame.contains("LlamaDash"),
     "title row missing brand: {frame}"

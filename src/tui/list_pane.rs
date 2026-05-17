@@ -248,15 +248,17 @@ pub enum FilterTitle<'a> {
 /// in `render` and `render_empty_state` doesn't drift; adding a new
 /// piece of context (e.g. a "stale catalog" badge) only touches
 /// one place.
-#[derive(Debug, Clone, Copy)]
+///
+/// `hints` is the resolved chip strip — the caller (`render.rs`)
+/// builds it via `App::hint` so config-driven key overrides flow
+/// through to the title automatically. Hints are dropped from the
+/// tail under budget pressure; order them most-important-first.
+#[derive(Debug, Clone)]
 pub struct TitleInputs<'a> {
   pub total: usize,
   pub area_width: usize,
   pub filter: FilterTitle<'a>,
-  /// Whether the cursor sits on a model in a "running"-ish state
-  /// (Ready / Loading / Launching) — the `s:stop` hint is only
-  /// shown when stopping the focused launch is meaningful.
-  pub show_stop: bool,
+  pub hints: Vec<String>,
 }
 
 /// Yellow border when the pane has keyboard focus, otherwise the
@@ -306,12 +308,15 @@ fn build_status_legend(palette: &Palette) -> Line<'static> {
 }
 
 /// Render `rows` into the supplied area using the active palette.
+/// `filter_chip_label` is the resolved `/:filter` label (live from
+/// the keymap) used when the filter is inactive.
 pub fn render(
   frame: &mut Frame<'_>,
   area: Rect,
   rows: &[ListRow],
   selected: usize,
   title: TitleInputs<'_>,
+  filter_chip_label: &str,
   palette: &Palette,
   focused: bool,
 ) {
@@ -336,7 +341,7 @@ pub fn render(
       render_row(r, palette, name_w, content_w, is_selected)
     })
     .collect();
-  let title_line = build_block_title(title, palette);
+  let title_line = build_block_title(title, filter_chip_label, palette);
   let legend = build_status_legend(palette);
   let border_color = border_color(palette, focused);
   let list = List::new(items)
@@ -393,39 +398,34 @@ fn column_name_budget(content_w: usize) -> usize {
 
 /// Build the Models block title as a styled `Line`. Order
 /// (left-to-right):
-///   ` Models [N] ` · filter slot · Enter:launch · [s:stop] · f:fav
-///   · y:yank ·
+///   ` Models [N] ` · `/:filter` chip (or inline buffer when active)
+///   · hint chips from `input.hints`.
 ///
-/// The filter slot is either the `/:filter` hint (filter inactive)
-/// or an inline `/ <buffer>` input (filter active). The input is
-/// suffixed with a block cursor styled with `Modifier::REVERSED`
-/// when `focused=true`.
-///
-/// `s:stop` is shown only when `show_stop` is true (i.e., the
-/// selected row's model has a running launch to stop). Hints drop
-/// from the tail (y:yank → f:fav → s:stop) on overflow; the count,
-/// the filter slot, and `Enter:launch` are never dropped.
-pub(crate) fn build_block_title(input: TitleInputs<'_>, palette: &Palette) -> Line<'static> {
+/// `input.hints` is pre-resolved against the live keymap by the
+/// caller, so config overrides flow through automatically. The
+/// filter slot itself comes from the `Focus::List` `OpenFilter`
+/// binding so its key label tracks user rebinds too. Hints drop
+/// from the tail under budget pressure; the count, the filter slot,
+/// and `hints[0]` are never dropped.
+pub(crate) fn build_block_title(
+  input: TitleInputs<'_>,
+  filter_chip_label: &str,
+  palette: &Palette,
+) -> Line<'static> {
   // The full title strip including borders consumes the whole top
   // edge. ratatui leaves 1 cell on each side for the corner glyphs.
   // Reserve one cell each side for the leading/trailing space the
   // title carries inside the block edge.
   let budget = input.area_width.saturating_sub(4);
 
-  // Decide which static hints we'd ideally include. Order matches
-  // display order; we drop from the tail under budget pressure.
-  let mut hints: Vec<&'static str> = Vec::with_capacity(4);
-  hints.push("Enter:launch");
-  if input.show_stop {
-    hints.push("s:stop");
-  }
-  hints.push("f:fav");
-  hints.push("y:yank");
+  // Local copy so we can drop entries under budget pressure without
+  // mutating the caller's Vec.
+  let mut hints: Vec<String> = input.hints.clone();
 
   // Filter slot text width (no styling here — we just need the cell
   // count for the budget calculation).
   let filter_text_width = match input.filter {
-    FilterTitle::Inactive => "/:filter".chars().count(),
+    FilterTitle::Inactive => filter_chip_label.chars().count(),
     FilterTitle::Active { buffer, focused } => {
       // `/ buffer` plus the cursor block when focused.
       "/ ".chars().count() + buffer.chars().count() + if focused { 1 } else { 0 }
@@ -433,10 +433,10 @@ pub(crate) fn build_block_title(input: TitleInputs<'_>, palette: &Palette) -> Li
   };
 
   let count = format!("Models [{}]", input.total);
-  // Trim hints from the tail until the line fits. `Enter:launch`
-  // (always hints[0]) is never dropped — agents and new users rely
-  // on the launch chip to bootstrap the keyboard surface.
-  // Hint separator is ` · ` (3 cells) instead of double-space.
+  // Trim hints from the tail until the line fits. The first hint
+  // (caller-chosen, typically `Enter:launch` or `Enter:apply`) is
+  // never dropped — agents and new users rely on it to bootstrap
+  // the keyboard surface. Hint separator is ` · ` (3 cells).
   loop {
     let mut width = 1; // leading space
     width += count.chars().count();
@@ -471,7 +471,7 @@ pub(crate) fn build_block_title(input: TitleInputs<'_>, palette: &Palette) -> Li
   match input.filter {
     FilterTitle::Inactive => {
       spans.push(Span::styled(
-        "/:filter".to_string(),
+        filter_chip_label.to_string(),
         Style::default().fg(palette.muted),
       ));
     }
@@ -498,15 +498,12 @@ pub(crate) fn build_block_title(input: TitleInputs<'_>, palette: &Palette) -> Li
   }
 
   // Hint chips, separated by ` · `.
-  for h in &hints {
+  for h in hints {
     spans.push(Span::styled(
       " · ".to_string(),
       Style::default().fg(palette.muted),
     ));
-    spans.push(Span::styled(
-      (*h).to_string(),
-      Style::default().fg(palette.muted),
-    ));
+    spans.push(Span::styled(h, Style::default().fg(palette.muted)));
   }
   spans.push(Span::raw(" "));
 
@@ -804,6 +801,25 @@ mod tests {
     crate::theme::palette_for(crate::theme::ThemeName::Macchiato)
   }
 
+  /// Mirrors the chip list `render.rs::build_models_hints` produces
+  /// for the running-row, filter-inactive case. Kept inline here so
+  /// the in-module tests can exercise `build_block_title` directly
+  /// without spinning an App.
+  fn full_hints() -> Vec<String> {
+    vec![
+      "Enter:launch".into(),
+      "f:fav".into(),
+      "p:path".into(),
+      "s:stop".into(),
+      "u:url".into(),
+      "c:curl".into(),
+    ]
+  }
+
+  fn filter_hints() -> Vec<String> {
+    vec!["Enter:apply".into(), "Esc:clear".into()]
+  }
+
   #[test]
   fn title_filter_hint_renders_before_other_hints() {
     let title = build_block_title(
@@ -811,8 +827,9 @@ mod tests {
         total: 127,
         area_width: 120,
         filter: FilterTitle::Inactive,
-        show_stop: true,
+        hints: full_hints(),
       },
+      "/:filter",
       macchiato(),
     );
     let text = title_text(&title);
@@ -829,10 +846,11 @@ mod tests {
     let title = build_block_title(
       TitleInputs {
         total: 127,
-        area_width: 120,
+        area_width: 200,
         filter: FilterTitle::Inactive,
-        show_stop: true,
+        hints: full_hints(),
       },
+      "/:filter",
       macchiato(),
     );
     let text = title_text(&title);
@@ -841,7 +859,39 @@ mod tests {
     assert!(text.contains("/:filter"));
     assert!(text.contains("s:stop"));
     assert!(text.contains("f:fav"));
-    assert!(text.contains("y:yank"));
+    assert!(text.contains("p:path"));
+    assert!(text.contains("u:url"));
+    assert!(text.contains("c:curl"));
+  }
+
+  #[test]
+  fn title_filter_active_shows_only_enter_apply_and_esc_clear_hints() {
+    // While the user is typing into the filter, the row-action hint
+    // strip collapses to just Enter:apply (commit + return focus to
+    // the list) and Esc:clear (drop the buffer + close), so the
+    // title doesn't distract from the in-flight query.
+    let title = build_block_title(
+      TitleInputs {
+        total: 127,
+        area_width: 200,
+        filter: FilterTitle::Active {
+          buffer: "qwen",
+          focused: true,
+        },
+        hints: filter_hints(),
+      },
+      "/:filter",
+      macchiato(),
+    );
+    let text = title_text(&title);
+    assert!(text.contains("Enter:apply"), "expected Enter:apply: {text:?}");
+    assert!(text.contains("Esc:clear"), "expected Esc:clear: {text:?}");
+    for missing in ["Enter:launch", "f:fav", "p:path", "s:stop", "u:url", "c:curl"] {
+      assert!(
+        !text.contains(missing),
+        "filter-active strip must drop `{missing}`: {text:?}"
+      );
+    }
   }
 
   #[test]
@@ -854,8 +904,9 @@ mod tests {
           buffer: "qwen",
           focused: true,
         },
-        show_stop: true,
+        hints: filter_hints(),
       },
+      "/:filter",
       macchiato(),
     );
     let text = title_text(&title);
@@ -867,8 +918,9 @@ mod tests {
       !text.contains("/:filter"),
       "inline input replaces the `/:filter` hint: {text:?}"
     );
-    // The `Enter:launch` hint still shows.
-    assert!(text.contains("Enter:launch"));
+    // The `Esc:clear` hint replaces the row-action chips while
+    // filter input is active.
+    assert!(text.contains("Esc:clear"));
   }
 
   #[test]
@@ -881,8 +933,9 @@ mod tests {
           buffer: "q",
           focused: true,
         },
-        show_stop: true,
+        hints: filter_hints(),
       },
+      "/:filter",
       macchiato(),
     );
     let text = title_text(&title);
@@ -897,22 +950,25 @@ mod tests {
   }
 
   #[test]
-  fn title_omits_s_stop_when_show_stop_false() {
+  fn title_omits_running_row_hints_when_caller_drops_them() {
+    // The renderer in `render.rs::build_models_hints` already omits
+    // the running-row trio when the cursor sits on an unlaunched
+    // model; the title builder just renders whatever it's handed.
     let title = build_block_title(
       TitleInputs {
         total: 3,
         area_width: 120,
         filter: FilterTitle::Inactive,
-        show_stop: false,
+        hints: vec!["Enter:launch".into(), "f:fav".into(), "p:path".into()],
       },
+      "/:filter",
       macchiato(),
     );
     let text = title_text(&title);
     assert!(
       !text.contains("s:stop"),
-      "s:stop must hide when no running launch is selected: {text:?}"
+      "s:stop must hide when caller drops it: {text:?}"
     );
-    // The other hints still render.
     assert!(text.contains("Enter:launch"));
     assert!(text.contains("f:fav"));
   }
@@ -920,14 +976,17 @@ mod tests {
   #[test]
   fn title_drops_hints_right_to_left_under_pressure() {
     // A 40-col area can't fit the whole strip; the title builder
-    // should drop hints from the tail (`y:yank` first, then `f:fav`).
+    // should drop hints from the tail. With the chip order the
+    // caller supplies, the running-row trio (s:stop · u:url ·
+    // c:curl) sits at the tail and is the first to go.
     let title = build_block_title(
       TitleInputs {
         total: 127,
         area_width: 40,
         filter: FilterTitle::Inactive,
-        show_stop: true,
+        hints: full_hints(),
       },
+      "/:filter",
       macchiato(),
     );
     let text = title_text(&title);
@@ -939,10 +998,10 @@ mod tests {
       text.contains("Models [127]"),
       "must never drop the count: {text:?}"
     );
-    // `y:yank` should be dropped first.
+    // The running-row hints sit at the tail and should drop first.
     assert!(
-      !text.contains("y:yank"),
-      "expected y:yank dropped at 40 cols: {text:?}"
+      !text.contains("c:curl"),
+      "expected c:curl dropped at 40 cols: {text:?}"
     );
   }
 

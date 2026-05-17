@@ -254,6 +254,35 @@ impl App {
     self.options.keymap.bindings_for(focus)
   }
 
+  /// Build a `key:description` chip string for `(focus, action)`
+  /// against the live keymap. Returns `None` when the user has
+  /// unbound the action in `focus` entirely so callers can drop the
+  /// hint rather than render a chip with no working key.
+  ///
+  /// The description comes from the binding's `description` field,
+  /// so updates in `keybindings.rs` flow through to every chip. For
+  /// cases where the binding's full description is too verbose for a
+  /// chip strip (e.g. `collapse think` → `think`), see
+  /// [`Self::hint_with`].
+  pub fn hint(&self, focus: Focus, action: Action) -> Option<String> {
+    let b = self
+      .bindings_for(focus)
+      .iter()
+      .find(|b| b.action == action)?;
+    Some(format!("{}:{}", b.label, b.description))
+  }
+
+  /// Like [`Self::hint`] but with a caller-supplied description
+  /// override. Same `None`-on-unbound semantics so the hint strip
+  /// stays honest about what keys actually work.
+  pub fn hint_with(&self, focus: Focus, action: Action, description: &str) -> Option<String> {
+    let b = self
+      .bindings_for(focus)
+      .iter()
+      .find(|b| b.action == action)?;
+    Some(format!("{}:{}", b.label, description))
+  }
+
   /// Apply a `list_models` IPC response. The TUI calls this after
   /// every refresh.
   pub fn ingest_list_models(&mut self, body: &Value) {

@@ -35,10 +35,11 @@ pub enum Focus {
   /// Chat tab prompt input — alphanumerics/backspace extend the
   /// prompt buffer; Ctrl+Enter sends.
   ChatInput,
-  /// Embed tab input — Enter calls /v1/embeddings on the focused
-  /// model.
+  /// Embed tab input — Ctrl+Enter calls /v1/embeddings on the
+  /// focused model.
   EmbedInput,
-  /// Rerank tab input — Tab stages a candidate, Enter rerank-calls.
+  /// Rerank tab input — Tab stages a candidate, Ctrl+Enter
+  /// rerank-calls.
   RerankInput,
 }
 
@@ -244,25 +245,25 @@ const LIST_BINDINGS: &[Binding] = &[
     description: "advanced",
   },
   Binding {
-    key: KeyCode::Char('y'),
+    key: KeyCode::Char('u'),
     mods: KeyModifiers::NONE,
     action: Action::YankUrl,
-    label: "y",
-    description: "yank url",
+    label: "u",
+    description: "url",
   },
   Binding {
-    key: KeyCode::Char('Y'),
-    mods: KeyModifiers::SHIFT,
+    key: KeyCode::Char('c'),
+    mods: KeyModifiers::NONE,
     action: Action::YankCurl,
-    label: "Y",
-    description: "yank curl",
+    label: "c",
+    description: "curl",
   },
   Binding {
     key: KeyCode::Char('p'),
     mods: KeyModifiers::NONE,
     action: Action::YankPath,
     label: "p",
-    description: "yank path",
+    description: "path",
   },
   Binding {
     key: KeyCode::Char('t'),
@@ -442,7 +443,7 @@ const RIGHT_PANE_BINDINGS: &[Binding] = &[
     mods: KeyModifiers::NONE,
     action: Action::FocusList,
     label: "Esc",
-    description: "list",
+    description: "models list",
   },
   Binding {
     key: KeyCode::Tab,
@@ -597,11 +598,14 @@ const EMBED_INPUT_BINDINGS: &[Binding] = &[
     label: "Shift+Tab",
     description: "prev pane",
   },
+  // Ctrl+Enter matches the Chat tab's send shortcut so the
+  // right-pane submit gesture is consistent across Chat / Embed /
+  // Rerank.
   Binding {
     key: KeyCode::Enter,
-    mods: KeyModifiers::NONE,
+    mods: KeyModifiers::CONTROL,
     action: Action::Submit,
-    label: "Enter",
+    label: "Ctrl+Enter",
     description: "embed",
   },
 ];
@@ -628,11 +632,12 @@ const RERANK_INPUT_BINDINGS: &[Binding] = &[
     label: "Shift+Tab",
     description: "prev pane",
   },
+  // Ctrl+Enter for parity with Chat (`send`) and Embed (`embed`).
   Binding {
     key: KeyCode::Enter,
-    mods: KeyModifiers::NONE,
+    mods: KeyModifiers::CONTROL,
     action: Action::Submit,
-    label: "Enter",
+    label: "Ctrl+Enter",
     description: "rank",
   },
 ];
@@ -1007,7 +1012,9 @@ mod tests {
     assert!(labels.contains(&"j"));
     assert!(labels.contains(&"/"));
     assert!(labels.contains(&"f"));
-    assert!(labels.contains(&"y"));
+    assert!(labels.contains(&"u"));
+    assert!(labels.contains(&"c"));
+    assert!(labels.contains(&"p"));
     assert!(labels.contains(&"t"));
   }
 
@@ -1044,10 +1051,28 @@ mod tests {
   }
 
   #[test]
-  fn embed_input_enter_submits() {
+  fn embed_input_ctrl_enter_submits() {
+    assert_eq!(
+      action_for(Focus::EmbedInput, KeyCode::Enter, KeyModifiers::CONTROL),
+      Some(Action::Submit),
+    );
+    // Plain Enter falls through to the per-tab character handler so
+    // it neither submits nor inserts a newline.
     assert_eq!(
       action_for(Focus::EmbedInput, KeyCode::Enter, KeyModifiers::NONE),
+      None,
+    );
+  }
+
+  #[test]
+  fn rerank_input_ctrl_enter_submits() {
+    assert_eq!(
+      action_for(Focus::RerankInput, KeyCode::Enter, KeyModifiers::CONTROL),
       Some(Action::Submit),
+    );
+    assert_eq!(
+      action_for(Focus::RerankInput, KeyCode::Enter, KeyModifiers::NONE),
+      None,
     );
   }
 

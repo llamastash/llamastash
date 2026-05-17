@@ -1214,7 +1214,7 @@ mod tests {
   #[test]
   fn yank_url_with_no_managed_focus_shows_helpful_toast() {
     let mut app = App::new(Default::default());
-    pump_input(&mut app, key(KeyCode::Char('y'), KeyModifiers::NONE));
+    pump_input(&mut app, key(KeyCode::Char('u'), KeyModifiers::NONE));
     let msg = app.toast_message().unwrap();
     assert!(
       msg.contains("nothing to yank") || msg.contains("clipboard"),
