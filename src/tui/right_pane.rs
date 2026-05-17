@@ -11,7 +11,7 @@
 //!     keeping the panel a single unnested rectangle.
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
@@ -22,26 +22,42 @@ use crate::tui::fmt::format_bytes;
 use crate::tui::status_icons::{glyph_for, label_for};
 use crate::tui::tabs::{chat, embed, logs, rerank, settings, RightTab};
 
-/// Render the right-pane area as a single unnested Block.
-pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
+/// Render the right-pane area as a single unnested Block. `focused`
+/// flips the border to yellow so the user can see which side of the
+/// dashboard owns the keyboard chain at a glance.
+pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette, focused: bool) {
   let tabs = app.available_right_tabs();
   let title_line = block_title_line(app, &tabs, palette);
+  let border_color = if focused {
+    Color::Yellow
+  } else {
+    palette.accent
+  };
 
   let outer = Block::default()
     .title(title_line)
     .borders(Borders::ALL)
-    .border_style(Style::default().fg(palette.accent));
+    .border_style(Style::default().fg(border_color));
   let inner = outer.inner(area);
   frame.render_widget(outer, area);
 
-  // Inner stack: header (1 row) + optional spacer + tab content.
+  // Inner stack: 1 blank pad, header (1 row), separator line, tab
+  // content. The blank pad above and the separator below together
+  // breathe the model header off the block edge so it reads as a
+  // distinct strip from the body.
   let layout = Layout::default()
     .direction(Direction::Vertical)
-    .constraints([Constraint::Length(1), Constraint::Min(1)])
+    .constraints([
+      Constraint::Length(1),
+      Constraint::Length(1),
+      Constraint::Length(1),
+      Constraint::Min(1),
+    ])
     .split(inner);
 
-  render_header(frame, layout[0], app, palette);
-  let body_area = layout[1];
+  render_header(frame, layout[1], app, palette);
+  render_separator(frame, layout[2], palette);
+  let body_area = layout[3];
 
   match app.right_tab {
     RightTab::Logs => logs::render(frame, body_area, &app.logs_state, palette),
@@ -50,6 +66,18 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
     RightTab::Rerank => rerank::render(frame, body_area, &app.rerank, palette),
     RightTab::Settings => settings::render(frame, body_area, app, palette),
   }
+}
+
+/// Paint a horizontal line below the model header. Uses the box-
+/// drawing horizontal char so the strip mirrors the block's outer
+/// border but tinted with `muted` to keep it secondary.
+fn render_separator(frame: &mut Frame<'_>, area: Rect, palette: &Palette) {
+  let line: String = "─".repeat(area.width as usize);
+  let para = Paragraph::new(Line::from(Span::styled(
+    line,
+    Style::default().fg(palette.muted),
+  )));
+  frame.render_widget(para, area);
 }
 
 /// Compose the block title as a styled line: ` Logs │ Chat │ ... `
@@ -300,7 +328,7 @@ mod tests {
     let palette = app.palette();
     let mut term = Terminal::new(TestBackend::new(50, 12)).unwrap();
     term
-      .draw(|f| render(f, Rect::new(0, 0, 50, 12), &app, palette))
+      .draw(|f| render(f, Rect::new(0, 0, 50, 12), &app, palette, false))
       .unwrap();
     let buf = term.backend().buffer().clone();
     let mut rows: Vec<String> = Vec::with_capacity(buf.area.height as usize);

@@ -25,12 +25,42 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   // If a managed launch is running, show what params were used.
   if let Some(m) = app.focused_managed() {
     lines.push(heading("Running launch", palette));
+    lines.push(kv("launch", m.launch_id.clone(), palette));
     lines.push(kv("port", format!(":{}", m.port), palette));
     lines.push(kv(
       "state",
       crate::tui::status_icons::label_for(m.state).to_string(),
       palette,
     ));
+    if let Some(rss) = m.rss_bytes {
+      lines.push(kv("rss", crate::tui::fmt::format_bytes(rss), palette));
+    }
+    if let Some(cpu) = m.cpu_pct {
+      lines.push(kv("cpu", format!("{cpu:.0}%"), palette));
+    }
+    // Surface the last-known launch parameters (ctx, reasoning,
+    // advanced argv) when the daemon's last_params_list snapshot
+    // covers this model. Falls back to "—" rows so the user still
+    // sees the field labels and knows the slot exists.
+    let last = app.last_params.get(&m.path);
+    lines.push(Line::default());
+    lines.push(heading("Launch params", palette));
+    let ctx_value = last
+      .and_then(|p| p.ctx)
+      .map(|c| c.to_string())
+      .unwrap_or_else(|| "native".into());
+    lines.push(kv("ctx", ctx_value, palette));
+    let reasoning_value = last.map(|p| p.reasoning).unwrap_or(false);
+    lines.push(kv(
+      "reasoning",
+      if reasoning_value { "on" } else { "off" }.into(),
+      palette,
+    ));
+    let advanced: String = last
+      .map(|p| p.advanced.join(" "))
+      .filter(|s| !s.is_empty())
+      .unwrap_or_else(|| "(none)".into());
+    lines.push(kv("advanced", advanced, palette));
     lines.push(Line::default());
     lines.push(
       Span::styled(

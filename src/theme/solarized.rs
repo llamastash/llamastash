@@ -36,6 +36,7 @@ pub(crate) const PALETTE: Palette = Palette {
   highlight: YELLOW,
   panel_title: YELLOW,
   label: CYAN,
+  on_accent: BASE03,
   status_loading: YELLOW,
   status_ready: GREEN,
   status_error: RED,

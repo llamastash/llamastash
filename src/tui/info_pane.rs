@@ -22,7 +22,7 @@ const LABEL_WIDTH: usize = 8;
 const LABEL_SOCKET: &str = "socket  ";
 const LABEL_UPTIME: &str = "uptime  ";
 const LABEL_SERVER: &str = "server  ";
-const LABEL_COUNTS: &str = "counts  ";
+const LABEL_MODELS: &str = "models  ";
 const LABEL_RUNNING: &str = "running ";
 
 /// Render the Daemon info panel into `area`. The block title is
@@ -165,7 +165,7 @@ fn counts_row<'a>(app: &'a App, palette: &'a Palette) -> Line<'a> {
   let total = app.models.len();
   if total == 0 {
     return Line::from(vec![
-      Span::styled(LABEL_COUNTS, Style::default().fg(palette.label)),
+      Span::styled(LABEL_MODELS, Style::default().fg(palette.label)),
       Span::styled("no models found", Style::default().fg(palette.muted)),
     ]);
   }
@@ -176,7 +176,7 @@ fn counts_row<'a>(app: &'a App, palette: &'a Palette) -> Line<'a> {
     .count();
   let favorites = app.favorites.len();
   Line::from(vec![
-    Span::styled(LABEL_COUNTS, Style::default().fg(palette.label)),
+    Span::styled(LABEL_MODELS, Style::default().fg(palette.label)),
     Span::styled(format!("{total} found"), Style::default().fg(palette.fg)),
     Span::styled(" · ", Style::default().fg(palette.muted)),
     Span::styled(format!("{ready} ready"), Style::default().fg(palette.fg)),

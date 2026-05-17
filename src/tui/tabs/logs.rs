@@ -29,6 +29,11 @@ pub struct LogsTabState {
   /// Launch id this buffer mirrors. Cleared (and `lines` reset)
   /// when the user focuses a different launch.
   pub launch_id: Option<String>,
+  /// Lines scrolled back from the tail. `0` keeps the viewport
+  /// pinned to the latest log line; positive values pull the view
+  /// upward. Bumped by `k` / `↑` in the right pane and reset by `s`
+  /// (which also re-enables `auto_scroll`).
+  pub scroll_offset: usize,
 }
 
 impl Default for LogsTabState {
@@ -43,6 +48,28 @@ impl LogsTabState {
       lines: Vec::new(),
       auto_scroll: true,
       launch_id: None,
+      scroll_offset: 0,
+    }
+  }
+
+  /// Scroll the viewport up one line. Disables auto-scroll so a
+  /// fast-emitting log doesn't yank the viewport back to the tail
+  /// the next refresh tick. The render-time clamp keeps the
+  /// offset from running past the top of the buffer.
+  pub fn scroll_up(&mut self) {
+    self.scroll_offset = self
+      .scroll_offset
+      .saturating_add(1)
+      .min(self.lines.len().saturating_sub(1));
+    self.auto_scroll = false;
+  }
+
+  /// Scroll the viewport down one line; when it hits zero, the
+  /// viewport sits on the latest line and auto-scroll resumes.
+  pub fn scroll_down(&mut self) {
+    self.scroll_offset = self.scroll_offset.saturating_sub(1);
+    if self.scroll_offset == 0 {
+      self.auto_scroll = true;
     }
   }
 
@@ -129,11 +156,18 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &LogsTabState, palette: 
   }
 
   let visible = state.lines.len().min(area.height as usize);
-  let start = state.lines.len().saturating_sub(visible);
+  // `scroll_offset` walks the viewport upward — clamp it to a value
+  // that still leaves a full screen of lines so paging past the top
+  // doesn't render a blank pane.
+  let max_offset = state.lines.len().saturating_sub(visible);
+  let offset = state.scroll_offset.min(max_offset);
+  let end = state.lines.len().saturating_sub(offset);
+  let start = end.saturating_sub(visible);
   let body: Vec<Line<'_>> = state
     .lines
     .iter()
     .skip(start)
+    .take(visible)
     .map(|l| Line::from(Span::styled(l.as_str(), Style::default().fg(palette.fg))))
     .collect();
   let mut p = Paragraph::new(body).wrap(Wrap { trim: false });

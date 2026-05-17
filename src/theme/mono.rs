@@ -30,6 +30,12 @@ pub(crate) const PALETTE: Palette = Palette {
   highlight: Color::Reset,
   panel_title: Color::White,
   label: Color::Gray,
+  // White accent bar (the title row) needs a concrete dark text
+  // colour. `bg` is `Color::Reset` here, which falls through to the
+  // terminal default — usually light on a dark terminal — so the
+  // shared `palette.bg` fallback used by colour themes would render
+  // as white-on-white. Pin to Black so the title bar always reads.
+  on_accent: Color::Black,
   status_loading: Color::Gray,
   status_ready: Color::White,
   status_error: Color::White,

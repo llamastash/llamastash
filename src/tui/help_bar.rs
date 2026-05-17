@@ -61,8 +61,10 @@ pub fn global_hint_text() -> String {
 }
 
 /// Render the global hint strip into `area`, right-aligned with text
-/// in `palette.bg` on the accent background already painted by the
-/// title-row renderer.
+/// in `palette.on_accent` on the accent background already painted by
+/// the title-row renderer. `on_accent` rather than `bg` here because
+/// `bg` is `Color::Reset` on the mono theme, which would fall through
+/// to the terminal's default fg over a White accent bar.
 pub fn render_global(frame: &mut Frame<'_>, area: Rect, palette: &Palette) {
   let mut spans: Vec<Span<'_>> = Vec::with_capacity(GLOBAL_HINTS.len() * 2);
   for (i, (key, label)) in GLOBAL_HINTS.iter().enumerate() {
@@ -74,7 +76,7 @@ pub fn render_global(frame: &mut Frame<'_>, area: Rect, palette: &Palette) {
   spans.push(Span::raw(" "));
   let para = Paragraph::new(Line::from(spans))
     .alignment(Alignment::Right)
-    .style(Style::default().bg(palette.accent).fg(palette.bg));
+    .style(Style::default().bg(palette.accent).fg(palette.on_accent));
   frame.render_widget(para, area);
 }
 

@@ -259,6 +259,52 @@ pub struct TitleInputs<'a> {
   pub show_stop: bool,
 }
 
+/// Yellow border when the pane has keyboard focus, otherwise the
+/// theme's `accent`. Re-used by the empty-state path in
+/// `render.rs` so both surfaces share one focus rule.
+pub fn border_color(palette: &Palette, focused: bool) -> Color {
+  if focused {
+    Color::Yellow
+  } else {
+    palette.accent
+  }
+}
+
+/// Compose the bottom-edge status legend that explains every
+/// surface-state glyph used in the row list. Rendered into the
+/// block's bottom title so it's always visible without spending a
+/// content row. Each glyph carries its semantic palette colour;
+/// the labels are muted so the strip reads as a hint, not data.
+fn build_status_legend(palette: &Palette) -> Line<'static> {
+  use crate::tui::status_icons::{colour_for, glyph_for, SurfaceState};
+  let entries: &[(SurfaceState, &str)] = &[
+    (SurfaceState::Launching, "launching"),
+    (SurfaceState::Loading, "loading"),
+    (SurfaceState::Ready, "ready"),
+    (SurfaceState::Error, "error"),
+    (SurfaceState::Stopped, "stopped"),
+    (SurfaceState::External, "external"),
+  ];
+  let mut spans: Vec<Span<'static>> = Vec::with_capacity(entries.len() * 4 + 2);
+  spans.push(Span::raw(" "));
+  for (i, (state, label)) in entries.iter().enumerate() {
+    if i > 0 {
+      spans.push(Span::styled(" · ", Style::default().fg(palette.muted)));
+    }
+    spans.push(Span::styled(
+      glyph_for(*state).to_string(),
+      Style::default().fg(colour_for(*state, palette)),
+    ));
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled(
+      (*label).to_string(),
+      Style::default().fg(palette.muted),
+    ));
+  }
+  spans.push(Span::raw(" "));
+  Line::from(spans)
+}
+
 /// Render `rows` into the supplied area using the active palette.
 pub fn render(
   frame: &mut Frame<'_>,
@@ -267,6 +313,7 @@ pub fn render(
   selected: usize,
   title: TitleInputs<'_>,
   palette: &Palette,
+  focused: bool,
 ) {
   // Width inside the borders is `area.width - 2`. Subtract the
   // highlight gutter ratatui reserves for the selection marker
@@ -290,12 +337,15 @@ pub fn render(
     })
     .collect();
   let title_line = build_block_title(title, palette);
+  let legend = build_status_legend(palette);
+  let border_color = border_color(palette, focused);
   let list = List::new(items)
     .block(
       Block::default()
         .title(title_line)
+        .title_bottom(legend)
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(palette.accent)),
+        .border_style(Style::default().fg(border_color)),
     )
     // KDash-style row highlight: paint the focused row with a
     // saturated `highlight` background (gold/amber per theme) and
@@ -312,22 +362,17 @@ pub fn render(
   frame.render_stateful_widget(list, area, &mut state);
 }
 
-/// KDash-style selected-row paint. When the palette opts out
-/// (`palette.highlight == Color::Reset`, as on the mono theme),
-/// fall back to `Modifier::REVERSED` so the row still inverts
-/// without relying on a saturated colour the theme refuses to
-/// emit.
-fn highlight_style(palette: &Palette) -> Style {
-  if palette.highlight == Color::Reset {
-    Style::default()
-      .add_modifier(Modifier::REVERSED)
-      .add_modifier(Modifier::BOLD)
-  } else {
-    Style::default()
-      .bg(palette.highlight)
-      .fg(palette.bg)
-      .add_modifier(Modifier::BOLD)
-  }
+/// KDash-style selected-row paint: a pure `REVERSED` inversion of
+/// the row's own foreground. This is the "inverse of the row colour"
+/// effect — a Ready (green) row paints a green bar with the panel
+/// `bg` showing through the text; an Error (red) row paints red;
+/// normal rows paint with `palette.fg`. Works uniformly across every
+/// theme (including mono) because the swap is purely a modifier and
+/// doesn't depend on a `highlight` colour slot.
+fn highlight_style(_palette: &Palette) -> Style {
+  Style::default()
+    .add_modifier(Modifier::REVERSED)
+    .add_modifier(Modifier::BOLD)
 }
 
 /// Decide how many cells the flexible Name column gets. When the
@@ -585,11 +630,14 @@ fn render_row<'a>(
       // unambiguously selected; the favorite info is recoverable
       // from the `★ Favorites` section grouping.
       let (marker, marker_style) = if is_selected {
+        // No explicit fg here so the marker inherits the row's
+        // semantic colour from `ListItem::style().fg(fg)` below.
+        // That way `REVERSED` flips the whole row (marker + name +
+        // columns) with the same source colour, instead of the
+        // marker drifting toward the accent palette.
         (
           "=> ".to_string(),
-          Style::default()
-            .fg(palette.accent)
-            .add_modifier(Modifier::BOLD),
+          Style::default().add_modifier(Modifier::BOLD),
         )
       } else if *favorite {
         ("★  ".to_string(), Style::default().fg(palette.warning))
@@ -965,30 +1013,20 @@ mod tests {
   }
 
   #[test]
-  fn highlight_style_uses_palette_highlight_when_set() {
+  fn highlight_style_uses_reversed_so_selection_inverts_row_fg() {
+    // KDash-style: the highlight is a pure REVERSED modifier, so a
+    // Ready (green) row paints a green bar on selection, an Error
+    // (red) row paints red, and normal rows paint with `palette.fg`.
+    // No concrete bg/fg colours are pinned — that's what makes the
+    // selection adopt the row's semantic colour uniformly.
     use crate::theme::{palette_for, ThemeName};
-    let p = palette_for(ThemeName::Macchiato);
-    let style = highlight_style(p);
-    assert_eq!(style.bg, Some(p.highlight));
-    assert_eq!(style.fg, Some(p.bg));
-    assert!(
-      style.add_modifier.contains(Modifier::BOLD),
-      "highlight should be bold for emphasis"
-    );
-    assert!(
-      !style.add_modifier.contains(Modifier::REVERSED),
-      "themes with a concrete highlight colour skip REVERSED so the painted bar stays consistent across rows"
-    );
-  }
-
-  #[test]
-  fn highlight_style_falls_back_to_reversed_for_mono() {
-    use crate::theme::{palette_for, ThemeName};
-    let p = palette_for(ThemeName::Mono);
-    let style = highlight_style(p);
-    assert_eq!(style.bg, None, "mono should not paint a bg colour");
-    assert_eq!(style.fg, None, "mono should not pin a fg colour");
-    assert!(style.add_modifier.contains(Modifier::REVERSED));
-    assert!(style.add_modifier.contains(Modifier::BOLD));
+    for theme in [ThemeName::Macchiato, ThemeName::Latte, ThemeName::Mono] {
+      let p = palette_for(theme);
+      let style = highlight_style(p);
+      assert_eq!(style.bg, None, "{theme:?} must not pin a bg colour");
+      assert_eq!(style.fg, None, "{theme:?} must not pin a fg colour");
+      assert!(style.add_modifier.contains(Modifier::REVERSED));
+      assert!(style.add_modifier.contains(Modifier::BOLD));
+    }
   }
 }

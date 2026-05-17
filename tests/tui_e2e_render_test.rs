@@ -19,6 +19,7 @@ use llamadash::discovery::{DiscoveredModel, ModelSource};
 use llamadash::gguf::metadata::{ModeHint, ModelMetadata, Quant};
 use llamadash::theme::ThemeName;
 use llamadash::tui::app::{App, AppOptions, DaemonInfo, ManagedRow};
+use llamadash::tui::keybindings::KeyMap;
 use llamadash::tui::render::render;
 use llamadash::tui::status_icons::SurfaceState;
 use ratatui::backend::TestBackend;
@@ -54,6 +55,8 @@ fn fake_model(path: &str, parent: &str, arch: &str, ctx: u64, weights: u64) -> D
 fn seeded_dashboard_app() -> App {
   let mut app = App::new(AppOptions {
     theme: ThemeName::Macchiato,
+    custom_palette: None,
+    keymap: KeyMap::default(),
   });
   app.daemon_connected = true;
   app.daemon_info = DaemonInfo {

@@ -25,13 +25,13 @@ use crate::theme::Palette;
 use crate::tui::app::App;
 use crate::tui::keybindings::Focus;
 use crate::tui::{
-  advanced_panel, help_bar, help_overlay, host_stats_pane, info_pane, launch_picker, list_pane,
-  logo_pane, right_pane,
+  advanced_panel, confirm_overlay, help_bar, help_overlay, host_stats_pane, info_pane,
+  launch_picker, list_pane, logo_pane, right_pane,
 };
 
 const INFO_ROW_HEIGHT: u16 = 7;
 const MIN_HEIGHT_FOR_INFO_ROW: u16 = 18;
-const HOST_PANEL_WIDTH: u16 = 32;
+const HOST_PANEL_WIDTH: u16 = 28;
 // COMPACT_BANNER is 7 cells wide; +1 cell padding each side + 2
 // border cells = 11. Drop the panel entirely on narrower terminals.
 const LOGO_PANEL_WIDTH: u16 = 11;
@@ -91,7 +91,13 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     }
   }
   if app.show_help {
-    help_overlay::render(frame, area, app.focus, palette);
+    help_overlay::render(frame, area, app, palette);
+  }
+  // Confirmation overlay paints last so it sits on top of every
+  // other modal — by design: a destructive action wins focus
+  // unconditionally until the user resolves it.
+  if let Some(action) = app.confirm_dialog.as_ref() {
+    confirm_overlay::render(frame, area, action, palette);
   }
 }
 
@@ -126,25 +132,31 @@ fn render_title_left(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Pal
     (palette.warning, "daemon connecting…")
   };
   let theme_name = app.options.theme.short_name();
+  // Text colour for content on the accent bar. Most themes route
+  // this to `palette.bg`; mono pins it to Black because `palette.bg`
+  // there is `Color::Reset` and would render as the terminal's
+  // default fg (typically light on a dark terminal) over the White
+  // accent bar — i.e. invisible.
+  let on_accent = palette.on_accent;
   let line = Line::from(vec![
     Span::raw(" "),
     // Llama mascot glyph — picked from the BMP so it renders without
     // an emoji-capable font dependency.
-    Span::styled("🦙 ", Style::default().fg(palette.bg)),
+    Span::styled("🦙 ", Style::default().fg(on_accent)),
     Span::styled(
       "LlamaDash",
-      Style::default().fg(palette.bg).add_modifier(Modifier::BOLD),
+      Style::default().fg(on_accent).add_modifier(Modifier::BOLD),
     ),
-    Span::styled(format!(" v{version} · "), Style::default().fg(palette.bg)),
+    Span::styled(format!(" v{version} · "), Style::default().fg(on_accent)),
     Span::styled("●", Style::default().fg(dot_color)),
     Span::raw(" "),
-    Span::styled(daemon_label, Style::default().fg(palette.bg)),
-    Span::styled(" · ", Style::default().fg(palette.bg)),
+    Span::styled(daemon_label, Style::default().fg(on_accent)),
+    Span::styled(" · ", Style::default().fg(on_accent)),
     // Half-filled circle glyph — visual cue for "theme" / light/dark.
-    Span::styled("◐ ", Style::default().fg(palette.bg)),
-    Span::styled(theme_name, Style::default().fg(palette.bg)),
+    Span::styled("◐ ", Style::default().fg(on_accent)),
+    Span::styled(theme_name, Style::default().fg(on_accent)),
   ]);
-  let para = Paragraph::new(line).style(Style::default().bg(palette.accent).fg(palette.bg));
+  let para = Paragraph::new(line).style(Style::default().bg(palette.accent).fg(on_accent));
   frame.render_widget(para, area);
 }
 
@@ -194,14 +206,42 @@ fn render_body(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) 
   };
   let rows = app.rendered_rows();
   let title = build_models_title(app, split[0].width as usize, &rows);
+  let list_focused = list_is_focused(app.focus);
+  let right_focused = right_is_focused(app.focus);
   if rows.is_empty() {
-    render_empty_state(frame, split[0], palette, title);
+    render_empty_state(frame, split[0], palette, title, list_focused);
   } else {
-    list_pane::render(frame, split[0], &rows, app.list_cursor, title, palette);
+    list_pane::render(
+      frame,
+      split[0],
+      &rows,
+      app.list_cursor,
+      title,
+      palette,
+      list_focused,
+    );
   }
   if show_right {
-    right_pane::render(frame, split[1], app, palette);
+    right_pane::render(frame, split[1], app, palette, right_focused);
   }
+}
+
+/// True when the Models pane currently owns keyboard focus. The
+/// filter input lives inside the Models block title, so capturing
+/// `Focus::Filter` here keeps the border yellow while the user is
+/// typing a filter.
+fn list_is_focused(focus: Focus) -> bool {
+  matches!(focus, Focus::List | Focus::Filter)
+}
+
+/// True when the right pane (any tab) owns keyboard focus. Every
+/// tab-specific input focus counts; only Models / Filter and the
+/// modal overlays leave the right pane unfocused.
+fn right_is_focused(focus: Focus) -> bool {
+  matches!(
+    focus,
+    Focus::RightPane | Focus::ChatInput | Focus::EmbedInput | Focus::RerankInput
+  )
 }
 
 /// Compose the Models block title from current app state. Pulled
@@ -249,13 +289,15 @@ fn render_empty_state(
   area: Rect,
   palette: &Palette,
   title: list_pane::TitleInputs<'_>,
+  focused: bool,
 ) {
   use ratatui::widgets::{Block, Borders};
   let title_line = list_pane::build_block_title(title, palette);
+  let border_color = list_pane::border_color(palette, focused);
   let block = Block::default()
     .title(title_line)
     .borders(Borders::ALL)
-    .border_style(Style::default().fg(palette.accent));
+    .border_style(Style::default().fg(border_color));
   let inner = block.inner(area);
   frame.render_widget(block, area);
   let lines = vec![
@@ -317,8 +359,11 @@ mod tests {
     // body — pure background between text — should carry Latte's
     // off-white bg.
     use crate::theme::{palette_for, ThemeName};
+    use crate::tui::keybindings::KeyMap;
     let mut app = App::new(AppOptions {
       theme: ThemeName::Latte,
+      custom_palette: None,
+      keymap: KeyMap::default(),
     });
     // Force the Models pane into its populated path so the body cell
     // we probe is inside a real list area, not the empty-state hint.
@@ -346,8 +391,11 @@ mod tests {
     // with non-matching bg (e.g. white terminals showing the dark
     // theme).
     use crate::theme::{palette_for, ThemeName};
+    use crate::tui::keybindings::KeyMap;
     let app = App::new(AppOptions {
       theme: ThemeName::Macchiato,
+      custom_palette: None,
+      keymap: KeyMap::default(),
     });
     let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
     let mut app_mut = app;
@@ -364,8 +412,11 @@ mod tests {
     // own bg shows through — that's the whole point of the mono
     // theme. Verify by confirming a body cell still has `Reset` bg.
     use crate::theme::ThemeName;
+    use crate::tui::keybindings::KeyMap;
     let app = App::new(AppOptions {
       theme: ThemeName::Mono,
+      custom_palette: None,
+      keymap: KeyMap::default(),
     });
     let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
     let mut app_mut = app;
@@ -398,19 +449,21 @@ mod tests {
 
   #[test]
   fn narrow_width_hides_logo_panel() {
-    // 50-col terminal: 32 (host) + Logo's 14 + min 11 inner > 50.
-    // Logo should drop; Daemon flexes.
+    // 45-col terminal: 28 (host) + 11 (logo) leaves only ~6 cells
+    // for the daemon middle, which is below the
+    // `MIN_LOGO_INNER_WIDTH + 2` threshold the renderer enforces.
+    // The Logo panel drops and Daemon flexes to fill the rest. We
+    // assert the banner glyph (the only thing the logo panel emits)
+    // is absent rather than greping for the theme tag — that tag
+    // now lives on the top header bar regardless of the logo panel.
     let app = App::new(AppOptions::default());
-    let rows = render_into(50, 30, app);
+    let rows = render_into(45, 30, app);
     let body = rows.join("\n");
     assert!(body.contains("Host"));
     assert!(body.contains("Daemon"));
-    // The theme name (default `macchiato`) only appears in the Logo
-    // panel, so its absence is a clean signal that the panel did not
-    // render.
     assert!(
-      !body.contains("macchiato"),
-      "logo panel should be hidden at width 50: {body}"
+      !body.contains("██"),
+      "logo panel should be hidden at width 45: {body}"
     );
   }
 

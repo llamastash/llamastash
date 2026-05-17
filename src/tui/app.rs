@@ -16,7 +16,7 @@ use crate::discovery::DiscoveredModel;
 use crate::theme::{palette_for, Palette, ThemeName};
 use crate::tui::advanced_panel::AdvancedPanelState;
 use crate::tui::filter::rank;
-use crate::tui::keybindings::Focus;
+use crate::tui::keybindings::{Action, Focus, KeyMap};
 use crate::tui::launch_picker::LaunchPickerState;
 use crate::tui::list_pane::{build_rows, ListRow, RowInputs};
 use crate::tui::status_icons::SurfaceState;
@@ -73,12 +73,25 @@ pub struct DaemonInfo {
 #[derive(Debug, Clone)]
 pub struct AppOptions {
   pub theme: ThemeName,
+  /// User-defined palette resolved from `config.custom_theme`.
+  /// `None` when the user didn't supply a custom theme block — in
+  /// that case `ThemeName::Custom` falls through to macchiato via
+  /// `palette_for`, and `cycle_theme` skips it.
+  pub custom_palette: Option<Palette>,
+  /// Runtime keybinding table. Built from defaults +
+  /// `config.keybindings` overrides at startup; queried via
+  /// `App::action_for` / `App::bindings_for`. Held in `AppOptions`
+  /// (vs. directly on `App`) so it travels through the same
+  /// construction path as the theme.
+  pub keymap: KeyMap,
 }
 
 impl Default for AppOptions {
   fn default() -> Self {
     Self {
       theme: ThemeName::Macchiato,
+      custom_palette: None,
+      keymap: KeyMap::default(),
     }
   }
 }
@@ -143,6 +156,23 @@ pub struct App {
   /// has no managed launch of its own. Updated whenever the cursor
   /// moves to a running model.
   pub right_pane_sticky_path: Option<PathBuf>,
+  /// Modal "are you sure?" prompt. `Some(...)` shows a centred
+  /// confirmation overlay that captures `y` / Enter to dispatch
+  /// the inner action and `n` / Esc to dismiss. Used by stop-model
+  /// and kill-daemon so a fat-finger doesn't drop a running model
+  /// or the whole supervisor.
+  pub confirm_dialog: Option<ConfirmAction>,
+}
+
+/// Action awaiting user confirmation in the modal popup. Captured
+/// at the moment the user presses the trigger key, applied when
+/// they confirm with `y` / Enter.
+#[derive(Debug, Clone)]
+pub enum ConfirmAction {
+  /// `s:stop` — graceful shutdown of one managed launch.
+  StopModel { launch_id: String, name: String },
+  /// `Q:kill daemon` — issues a `shutdown` RPC to the daemon.
+  KillDaemon,
 }
 
 impl App {
@@ -172,6 +202,7 @@ impl App {
       show_help: false,
       right_pane_force_open: false,
       right_pane_sticky_path: None,
+      confirm_dialog: None,
     }
   }
 
@@ -188,8 +219,39 @@ impl App {
     self.show_help = !self.show_help;
   }
 
-  pub fn palette(&self) -> &'static Palette {
+  /// Resolve the active palette. For `ThemeName::Custom`, prefer the
+  /// palette loaded from `config.custom_theme`; fall back to the
+  /// built-in (macchiato) if `Custom` was selected without a loaded
+  /// palette. Returns a borrow tied to `&self` because the custom
+  /// palette lives on `options`, not in a static slot.
+  pub fn palette(&self) -> &Palette {
+    if self.options.theme == ThemeName::Custom {
+      if let Some(custom) = &self.options.custom_palette {
+        return custom;
+      }
+    }
     palette_for(self.options.theme)
+  }
+
+  /// Resolve a `(focus, key, mods)` triple through the live keymap.
+  /// Drop-in replacement for the legacy `keybindings::action_for`
+  /// free function so renderers/events can pick up
+  /// `config.keybindings` overrides without re-implementing the
+  /// dispatcher.
+  pub fn action_for(
+    &self,
+    focus: Focus,
+    key: crossterm::event::KeyCode,
+    mods: crossterm::event::KeyModifiers,
+  ) -> Option<Action> {
+    self.options.keymap.action_for(focus, key, mods)
+  }
+
+  /// Bindings the help overlay should show for `focus`. Pulls from
+  /// the runtime keymap so overrides applied at startup surface in
+  /// the modal help screen too.
+  pub fn bindings_for(&self, focus: Focus) -> &[crate::tui::keybindings::Binding] {
+    self.options.keymap.bindings_for(focus)
   }
 
   /// Apply a `list_models` IPC response. The TUI calls this after
@@ -656,13 +718,25 @@ impl App {
   }
 
   /// Cycle to the next theme. Used by the `t` hotkey.
+  ///
+  /// `Custom` is part of the cycle only when a user palette is loaded
+  /// (`options.custom_palette.is_some()`). Otherwise it would render
+  /// as the macchiato fallback and feel like a no-op tick. Built-ins
+  /// always cycle; the custom slot slips in after `mono`.
   pub fn cycle_theme(&mut self) {
     use strum::IntoEnumIterator;
-    let order: Vec<ThemeName> = ThemeName::iter().collect();
-    if let Some(pos) = order.iter().position(|t| *t == self.options.theme) {
-      let next = order[(pos + 1) % order.len()];
-      self.options.theme = next;
+    let order: Vec<ThemeName> = ThemeName::iter()
+      .filter(|t| *t != ThemeName::Custom || self.options.custom_palette.is_some())
+      .collect();
+    if order.is_empty() {
+      return;
     }
+    let pos = order
+      .iter()
+      .position(|t| *t == self.options.theme)
+      .unwrap_or(order.len() - 1);
+    let next = order[(pos + 1) % order.len()];
+    self.options.theme = next;
   }
 }
 
@@ -929,11 +1003,53 @@ mod tests {
     use strum::IntoEnumIterator;
     let mut app = App::new(AppOptions::default());
     let original = app.options.theme;
-    let total = ThemeName::iter().count();
+    // `Custom` is skipped when no custom palette is loaded, so a full
+    // lap is the count of built-in (non-Custom) themes.
+    let total = ThemeName::iter()
+      .filter(|t| *t != ThemeName::Custom)
+      .count();
     for _ in 0..total {
       app.cycle_theme();
     }
     assert_eq!(app.options.theme, original, "wraps after one full lap");
+  }
+
+  #[test]
+  fn cycle_theme_includes_custom_when_palette_loaded() {
+    use strum::IntoEnumIterator;
+    let custom = crate::theme::CustomThemeConfig::default().resolve().0;
+    let mut app = App::new(AppOptions {
+      theme: ThemeName::Macchiato,
+      custom_palette: Some(custom),
+      keymap: KeyMap::default(),
+    });
+    let total = ThemeName::iter().count();
+    let mut saw_custom = false;
+    for _ in 0..total {
+      app.cycle_theme();
+      if app.options.theme == ThemeName::Custom {
+        saw_custom = true;
+      }
+    }
+    assert!(
+      saw_custom,
+      "cycle should hit Custom when a palette is loaded"
+    );
+  }
+
+  #[test]
+  fn cycle_theme_skips_custom_when_no_palette_loaded() {
+    use strum::IntoEnumIterator;
+    let mut app = App::new(AppOptions::default());
+    let total = ThemeName::iter().count();
+    for _ in 0..total {
+      app.cycle_theme();
+      assert_ne!(
+        app.options.theme,
+        ThemeName::Custom,
+        "Custom should never appear in the cycle without a loaded palette"
+      );
+    }
   }
 
   #[test]

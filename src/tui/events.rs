@@ -15,13 +15,13 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, MouseEvent, MouseEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
 use crate::ipc::Client;
-use crate::tui::app::App;
-use crate::tui::keybindings::{action_for, Action, Focus};
+use crate::tui::app::{App, ConfirmAction};
+use crate::tui::keybindings::{Action, Focus};
 use crate::tui::oai_client::{
   embed as oai_embed, rerank as oai_rerank, spawn_chat_stream, ChatStreamMsg,
 };
@@ -60,6 +60,13 @@ pub enum WriterCmd {
     /// wired through.
     mode: Option<crate::launch::mode::LaunchMode>,
   },
+  /// `stop_model` — graceful shutdown of the supplied launch.
+  /// Dispatched by the `s` hotkey when the cursor sits on a
+  /// running managed row.
+  StopModel { launch_id: String },
+  /// `shutdown` — ask the daemon itself to exit. Dispatched by
+  /// the `Q` hotkey after the user confirms the popup.
+  Shutdown,
   /// `favorite_add` for the supplied model path. The TUI flips its
   /// local view optimistically; an RPC failure is surfaced via the
   /// writer task's `warn!` log and the next `favorite_list` refresh
@@ -87,29 +94,43 @@ pub fn pump_input_with_writer(
 ) -> bool {
   match evt {
     Event::Key(key) if key.kind != KeyEventKind::Release => handle_key(app, key, writer),
-    Event::Mouse(m) => handle_mouse(app, m),
     _ => {}
   }
   app.should_exit
 }
 
-/// Route a mouse event to the focused list. v1 only consumes scroll
-/// wheel events on the model list — Chat/Logs/Embed/Rerank own
-/// their own j/k scrolling, and we don't yet track hover regions.
-fn handle_mouse(app: &mut App, m: MouseEvent) {
-  match m.kind {
-    MouseEventKind::ScrollUp => app.move_up(),
-    MouseEventKind::ScrollDown => app.move_down(),
-    _ => {}
-  }
-}
-
 fn handle_key(app: &mut App, key: KeyEvent, writer: Option<&mpsc::Sender<WriterCmd>>) {
+  // Help dialog owns Esc and `?` ahead of every focus-specific
+  // routing: when it's open, the user expects Esc to dismiss it
+  // even if they were in the middle of typing into a filter or
+  // chat prompt. Anything else falls through to normal dispatch.
+  if app.show_help && matches!(key.code, KeyCode::Esc | KeyCode::Char('?')) {
+    app.show_help = false;
+    return;
+  }
+  // Confirmation dialog steals all input. `y` / Enter confirms,
+  // anything else (Esc / n / Ctrl+C / unrecognised) cancels — a
+  // foot-gun-resistant default so a stray keypress doesn't drop
+  // a running model or kill the daemon.
+  if app.confirm_dialog.is_some() {
+    match key.code {
+      KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+        let pending = app.confirm_dialog.take();
+        if let Some(action) = pending {
+          apply_confirmed(app, action, writer);
+        }
+      }
+      _ => {
+        app.confirm_dialog = None;
+      }
+    }
+    return;
+  }
   // Resolve the bound action first; if a focus doesn't have a binding
   // for this keypress *and* it's a text-input focus, fall through to
   // the per-focus character handler so alphanumerics extend the
   // buffer instead of being silently dropped.
-  let bound = action_for(app.focus, key.code, key.modifiers);
+  let bound = app.action_for(app.focus, key.code, key.modifiers);
   match app.focus {
     Focus::Filter => handle_filter_input(app, key),
     Focus::AdvancedPanel => handle_advanced_input(app, key),
@@ -200,9 +221,19 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
           p.next_field();
         }
       }
+      Focus::RightPane if app.right_tab == RightTab::Logs => {
+        app.logs_state.scroll_down();
+      }
+      Focus::RightPane => {}
       _ => app.move_down(),
     },
-    Action::MoveUp => app.move_up(),
+    Action::MoveUp => match app.focus {
+      Focus::RightPane if app.right_tab == RightTab::Logs => {
+        app.logs_state.scroll_up();
+      }
+      Focus::RightPane => {}
+      _ => app.move_up(),
+    },
     Action::PageUp => app.move_by(-10),
     Action::PageDown => app.move_by(10),
     Action::GoTop => app.go_top(),
@@ -244,6 +275,9 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
           Err(e) => app.show_toast(format!("clipboard unavailable: {e}; {text}")),
         }
       } else {
+        // `Y` (yank-curl) is the only path that strictly requires a
+        // Ready model; the smart `y` fallback yields a string for
+        // any focused row, so this branch only fires for `Y`.
         app.show_toast("nothing to yank — focus a Ready model");
       }
     }
@@ -252,19 +286,9 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
       app.show_toast(format!("theme: {}", app.options.theme.canonical()));
     }
     Action::ToggleHelp => app.toggle_help(),
-    Action::FocusRightPane => app.focus = focus_for_tab(app.right_tab),
     Action::FocusList => app.focus = Focus::List,
-    Action::CycleTab => {
-      app.cycle_right_tab();
-      // Keep the focus aligned with the active tab so text capture
-      // moves with the user. Logs uses `RightPane`; the other three
-      // each have their own input focus.
-      app.focus = focus_for_tab(app.right_tab);
-    }
-    Action::PrevTab => {
-      app.cycle_right_tab_prev();
-      app.focus = focus_for_tab(app.right_tab);
-    }
+    Action::NextFocus => cycle_focus(app, FocusDir::Next),
+    Action::PrevFocus => cycle_focus(app, FocusDir::Prev),
     Action::SendChat => apply_send_chat(app),
     Action::ToggleThinkCollapse => {
       app.chat.collapse_thinks = !app.chat.collapse_thinks;
@@ -279,6 +303,91 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
         app.rerank.cycle_field();
       }
     }
+    Action::StopModel => apply_stop_model(app),
+    Action::KillDaemon => {
+      app.confirm_dialog = Some(ConfirmAction::KillDaemon);
+    }
+    Action::EnterEdit => {
+      // Only entry into a tab that actually captures text. Logs /
+      // Settings stay in RightPane focus.
+      if let Some(target) = edit_focus_for_tab(app.right_tab) {
+        app.focus = target;
+      }
+    }
+    Action::ExitEdit => {
+      // Step back from a text-input focus to the surrounding right
+      // pane navigation focus. Keystrokes resume hitting the chain
+      // (Tab / Shift+Tab / h / l) instead of the buffer.
+      app.focus = Focus::RightPane;
+    }
+  }
+}
+
+/// Stage a stop-model confirmation. The actual `stop_model` RPC is
+/// only dispatched after the user accepts the popup via
+/// [`apply_confirmed`]. No-op when the cursor isn't on a running
+/// row — surfaces a toast so the user understands why nothing
+/// changed.
+fn apply_stop_model(app: &mut App) {
+  let managed = match app.focused_managed() {
+    Some(m) => m,
+    None => {
+      app.show_toast("nothing to stop — focus a running model");
+      return;
+    }
+  };
+  app.confirm_dialog = Some(ConfirmAction::StopModel {
+    launch_id: managed.launch_id.clone(),
+    name: crate::util::paths::model_display_name(&managed.path),
+  });
+}
+
+/// Apply a confirmed [`ConfirmAction`] — dispatches the writer
+/// command and shows an outcome toast. Called from [`handle_key`]
+/// when the user presses `y` / Enter in the confirm dialog.
+fn apply_confirmed(app: &mut App, action: ConfirmAction, writer: Option<&mpsc::Sender<WriterCmd>>) {
+  match action {
+    ConfirmAction::StopModel { launch_id, name } => {
+      dispatch_writer(
+        app,
+        writer,
+        WriterCmd::StopModel {
+          launch_id: launch_id.clone(),
+        },
+        format!("stop dispatched ({name})"),
+        "stop failed — writer offline",
+        format!("stop dispatched (no writer; launch {launch_id})"),
+      );
+    }
+    ConfirmAction::KillDaemon => {
+      dispatch_writer(
+        app,
+        writer,
+        WriterCmd::Shutdown,
+        "daemon shutdown dispatched".into(),
+        "daemon shutdown failed — writer offline",
+        "daemon shutdown (no writer)".into(),
+      );
+    }
+  }
+}
+
+/// Small helper to centralise the writer-channel try_send +
+/// toast-on-result pattern shared by stop-model and shutdown.
+fn dispatch_writer(
+  app: &mut App,
+  writer: Option<&mpsc::Sender<WriterCmd>>,
+  cmd: WriterCmd,
+  ok_msg: String,
+  err_msg: &'static str,
+  no_writer_msg: String,
+) {
+  match writer {
+    Some(tx) => match tx.try_send(cmd) {
+      Ok(()) => app.show_toast(ok_msg),
+      Err(_) => app.show_toast(err_msg.to_string()),
+    },
+    None => app.show_toast(no_writer_msg),
   }
 }
 
@@ -287,18 +396,64 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
 // event type instead of reaching back up into `tui::events`.
 pub use crate::tui::tabs::TabEvent;
 
-/// Focus the right pane should adopt for a given active tab. Logs
-/// stays in `RightPane` (no input); the others each map to their
-/// per-tab text-input focus.
-fn focus_for_tab(tab: RightTab) -> Focus {
+#[derive(Clone, Copy)]
+enum FocusDir {
+  Next,
+  Prev,
+}
+
+/// Walk one step in the focus chain `[List, ...available_right_tabs()]`.
+/// `Tab`/`Right`/`l` step `Next`, `Shift+Tab`/`Left`/`h` step `Prev`.
+/// The right pane is force-opened on entry so the user lands on a
+/// visible target — the cursor may be on a not-yet-running model
+/// when they Tab in, and the pane has to render its first frame.
+fn cycle_focus(app: &mut App, dir: FocusDir) {
+  let tabs = app.available_right_tabs();
+  if tabs.is_empty() {
+    app.focus = Focus::List;
+    return;
+  }
+  // Build the chain: List is slot 0, each available tab follows.
+  let chain_len = tabs.len() + 1;
+  let current_pos: usize = match app.focus {
+    Focus::List => 0,
+    _ => tabs
+      .iter()
+      .position(|t| *t == app.right_tab)
+      .map(|i| i + 1)
+      .unwrap_or(0),
+  };
+  let next_pos = match dir {
+    FocusDir::Next => (current_pos + 1) % chain_len,
+    FocusDir::Prev => (current_pos + chain_len - 1) % chain_len,
+  };
+  if next_pos == 0 {
+    app.focus = Focus::List;
+    app.right_pane_force_open = false;
+  } else {
+    let tab = tabs[next_pos - 1];
+    app.right_tab = tab;
+    // KDash-style edit mode: navigation lands on RightPane focus
+    // regardless of which tab is active. The user presses `e` to
+    // enter the tab's text-input focus (ChatInput/EmbedInput/
+    // RerankInput) and `Esc` to step back out.
+    app.focus = Focus::RightPane;
+    // Make sure the pane is visible when the user explicitly walks
+    // into it — otherwise Tabbing into a not-yet-running model would
+    // leave them with focus on a hidden surface.
+    app.right_pane_force_open = true;
+  }
+}
+
+/// Edit-mode focus for a right-pane tab, when the user presses
+/// `e` on a tab that captures text. `None` means the tab has no
+/// editable surface (Logs / Settings), so `e` is a no-op there.
+fn edit_focus_for_tab(tab: RightTab) -> Option<Focus> {
   match tab {
-    RightTab::Logs => Focus::RightPane,
-    RightTab::Chat => Focus::ChatInput,
-    RightTab::Embed => Focus::EmbedInput,
-    RightTab::Rerank => Focus::RerankInput,
-    // Settings reuses RightPane focus for now — keystroke editing
-    // of launch params lands in a follow-up patch.
-    RightTab::Settings => Focus::RightPane,
+    RightTab::Chat => Some(Focus::ChatInput),
+    RightTab::Embed => Some(Focus::EmbedInput),
+    RightTab::Rerank => Some(Focus::RerankInput),
+    RightTab::Logs | RightTab::Settings => None,
   }
 }
 
@@ -507,18 +662,25 @@ fn apply_launch_submit(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) 
 fn build_yank_text(app: &App, action: Action) -> Option<String> {
   match action {
     Action::YankPath => app.focused_path().map(|p| p.display().to_string()),
-    Action::YankUrl | Action::YankCurl => {
+    Action::YankUrl => {
+      // Prefer the running URL when the model is launched; fall back
+      // to the model path so `y` always yanks *something useful* —
+      // a not-yet-running row still has a path the user often wants
+      // to paste into a script or doc.
+      if let Some(m) = app.focused_managed() {
+        Some(format!("http://127.0.0.1:{}/v1", m.port))
+      } else {
+        app.focused_path().map(|p| p.display().to_string())
+      }
+    }
+    Action::YankCurl => {
       let m = app.focused_managed()?;
       let url = format!("http://127.0.0.1:{}/v1", m.port);
-      Some(match action {
-        Action::YankUrl => url,
-        Action::YankCurl => format!(
-          "curl -s -H 'Content-Type: application/json' -d '{{\"model\":\"{}\",\"messages\":[{{\"role\":\"user\",\"content\":\"hello\"}}]}}' {}/chat/completions",
-          crate::util::paths::model_display_name(&m.path),
-          url
-        ),
-        _ => unreachable!(),
-      })
+      Some(format!(
+        "curl -s -H 'Content-Type: application/json' -d '{{\"model\":\"{}\",\"messages\":[{{\"role\":\"user\",\"content\":\"hello\"}}]}}' {}/chat/completions",
+        crate::util::paths::model_display_name(&m.path),
+        url
+      ))
     }
     _ => None,
   }
@@ -640,6 +802,8 @@ fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
         }),
       )
     }
+    WriterCmd::StopModel { launch_id } => ("stop_model", json!({ "launch_id": launch_id })),
+    WriterCmd::Shutdown => ("shutdown", json!({})),
     WriterCmd::FavoriteAdd(p) => ("favorite_add", json!({ "model_path": p })),
     WriterCmd::FavoriteRemove(p) => ("favorite_remove", json!({ "model_path": p })),
   }
@@ -648,7 +812,6 @@ fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
 /// Fully-featured TUI run-loop. Drives the App from real crossterm
 /// events + a daemon refresher, rendering on each tick.
 pub async fn run(app: App, socket: PathBuf) -> Result<()> {
-  use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
   use crossterm::execute;
   use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -658,9 +821,13 @@ pub async fn run(app: App, socket: PathBuf) -> Result<()> {
 
   enable_raw_mode()?;
   let mut stdout = std::io::stdout();
-  // Mouse capture enables scroll-wheel events so the model list can
-  // be scrolled with the mouse alongside j/k.
-  execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+  // Mouse capture is deliberately NOT enabled: when the application
+  // captures mouse events, the terminal can't run its own
+  // click-and-drag text selection. j/k/PgUp/PgDn/g/G cover all the
+  // navigation a user would otherwise reach for the wheel; keeping
+  // mouse capture off lets users copy text out of the dashboard the
+  // way they would from any other terminal program.
+  execute!(stdout, EnterAlternateScreen)?;
   let backend = CrosstermBackend::new(stdout);
   let mut terminal = Terminal::new(backend)?;
 
@@ -705,11 +872,7 @@ pub async fn run(app: App, socket: PathBuf) -> Result<()> {
 
   // Restore the terminal even on early returns above.
   disable_raw_mode()?;
-  execute!(
-    terminal.backend_mut(),
-    LeaveAlternateScreen,
-    DisableMouseCapture
-  )?;
+  execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
   terminal.show_cursor()?;
   Ok(())
 }
@@ -828,8 +991,17 @@ pub fn refresh_apply(app: &mut App, tick: RefreshTick) {
 /// loaded config and a connected (or-not-yet-connected) daemon
 /// socket. Splitting it out keeps the binary entry small and the
 /// call testable.
-pub async fn launch(theme: crate::theme::ThemeName, socket: &Path) -> Result<()> {
-  let app = App::new(crate::tui::app::AppOptions { theme });
+pub async fn launch(
+  theme: crate::theme::ThemeName,
+  custom_palette: Option<crate::theme::Palette>,
+  keymap: crate::tui::keybindings::KeyMap,
+  socket: &Path,
+) -> Result<()> {
+  let app = App::new(crate::tui::app::AppOptions {
+    theme,
+    custom_palette,
+    keymap,
+  });
   run(app, socket.to_path_buf()).await
 }
 
@@ -959,48 +1131,33 @@ mod tests {
     Event::Key(KeyEvent::new(code, mods))
   }
 
-  fn mouse(kind: MouseEventKind) -> Event {
-    Event::Mouse(MouseEvent {
-      kind,
+  #[test]
+  fn mouse_events_are_ignored_so_terminal_owns_text_selection() {
+    use crate::discovery::{DiscoveredModel, ModelSource};
+    use crossterm::event::{MouseEvent, MouseEventKind};
+    use std::path::PathBuf;
+    // Mouse capture is intentionally disabled in `run()` so the
+    // terminal can handle click-and-drag selection. Any mouse event
+    // that does sneak through (e.g. when running under a test
+    // harness with a wrapping terminal) must be a no-op.
+    let mut app = App::new(Default::default());
+    app.models = vec![DiscoveredModel {
+      path: PathBuf::from("/m/a.gguf"),
+      parent: PathBuf::from("/m"),
+      source: ModelSource::UserPath,
+      metadata: None,
+      parse_error: None,
+      split_siblings: Vec::new(),
+    }];
+    app.list_cursor = 2;
+    let evt = Event::Mouse(MouseEvent {
+      kind: MouseEventKind::ScrollDown,
       column: 0,
       row: 0,
       modifiers: KeyModifiers::NONE,
-    })
-  }
-
-  #[test]
-  fn mouse_scroll_down_moves_cursor_down_through_selectable_rows() {
-    use crate::discovery::{DiscoveredModel, ModelSource};
-    use std::path::PathBuf;
-    let mut app = App::new(Default::default());
-    app.models = vec![
-      DiscoveredModel {
-        path: PathBuf::from("/m/a.gguf"),
-        parent: PathBuf::from("/m"),
-        source: ModelSource::UserPath,
-        metadata: None,
-        parse_error: None,
-        split_siblings: Vec::new(),
-      },
-      DiscoveredModel {
-        path: PathBuf::from("/m/b.gguf"),
-        parent: PathBuf::from("/m"),
-        source: ModelSource::UserPath,
-        metadata: None,
-        parse_error: None,
-        split_siblings: Vec::new(),
-      },
-    ];
-    // Rows: [TableHeader, Header(/m), Model(a), Model(b)] — start
-    // cursor on Model(a) at index 2.
-    app.list_cursor = 2;
-    pump_input(&mut app, mouse(MouseEventKind::ScrollDown));
-    assert_eq!(
-      app.list_cursor, 3,
-      "scroll down should advance to next model"
-    );
-    pump_input(&mut app, mouse(MouseEventKind::ScrollUp));
-    assert_eq!(app.list_cursor, 2, "scroll up should return to model a");
+    });
+    pump_input(&mut app, evt);
+    assert_eq!(app.list_cursor, 2, "mouse events must not move cursor");
   }
 
   #[test]

@@ -10,9 +10,12 @@ mod macchiato;
 mod mono;
 mod solarized;
 
+pub mod custom;
 pub mod palette;
 
 // Public surface ready for the TUI renderer (Unit 6). Quiet the dead-code
 // re-export warning until consumers land.
+#[allow(unused_imports)]
+pub use custom::CustomThemeConfig;
 #[allow(unused_imports)]
 pub use palette::{palette_for, Palette, ThemeName, UnknownThemeError};

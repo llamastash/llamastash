@@ -207,8 +207,11 @@ fn pluralize_gpu(n: u32) -> String {
 /// range so the trailing percent / units column always has room.
 fn bar_width_for(inner_width: u16) -> usize {
   let budget = inner_width as usize;
-  // Leave space for label + percent/value/temp.
-  let usable = budget.saturating_sub(LABEL_WIDTH + 14);
+  // Leave space for label + percent/value/temp. The 11-cell reserve
+  // covers the widest right-of-bar payload ("  100%  82°C" / a
+  // bytes pair like "14.2/24 G"), so the bar fills the rest of the
+  // row instead of leaving dead space against the right border.
+  let usable = budget.saturating_sub(LABEL_WIDTH + 11);
   usable.clamp(4, 14)
 }
 

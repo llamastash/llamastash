@@ -13,6 +13,7 @@ use llamadash::gguf::metadata::{ModeHint, ModelMetadata, Quant};
 use llamadash::theme::ThemeName;
 use llamadash::tui::app::{App, AppOptions};
 use llamadash::tui::events::pump_input;
+use llamadash::tui::keybindings::KeyMap;
 use llamadash::tui::render::render;
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
@@ -167,6 +168,8 @@ fn enter_on_model_opens_launch_picker_overlay() {
 fn theme_cycle_swaps_palette_without_restart() {
   let mut app = App::new(AppOptions {
     theme: ThemeName::Macchiato,
+    custom_palette: None,
+    keymap: KeyMap::default(),
   });
   pump_input(&mut app, key(KeyCode::Char('t'), KeyModifiers::NONE));
   assert_ne!(app.options.theme, ThemeName::Macchiato);

@@ -41,6 +41,13 @@ pub enum ThemeName {
   #[strum(serialize = "mono", serialize = "monochrome")]
   #[serde(alias = "monochrome")]
   Mono,
+  /// User-defined theme loaded from `config.yaml`'s `custom_theme:`
+  /// block. The actual palette is built at startup (see
+  /// `crate::theme::custom::CustomThemeConfig::resolve`) and lives on
+  /// `App.options.custom_palette`; `palette_for(Custom)` returns the
+  /// macchiato palette as a benign fallback for code paths that don't
+  /// have an App in scope.
+  Custom,
 }
 
 impl ThemeName {
@@ -62,6 +69,7 @@ impl ThemeName {
       ThemeName::GruvboxDark => "gruvbox",
       ThemeName::SolarizedDark => "solarized",
       ThemeName::Mono => "mono",
+      ThemeName::Custom => "custom",
     }
   }
 
@@ -134,6 +142,15 @@ pub struct Palette {
   /// labels read as legible, scannable category markers without
   /// also brightening every `·` separator.
   pub label: Color,
+  /// Foreground for content painted on top of `accent`-backed
+  /// surfaces (the top title bar). Most themes can reuse `bg` here
+  /// because the accent is saturated enough that the panel-bg tone
+  /// reads as dark text on a coloured bar. Themes whose `bg` is
+  /// `Color::Reset` (mono) must override with a concrete colour
+  /// (Black) because `Reset` falls through to the terminal default,
+  /// which on a dark terminal renders as light-on-light over the
+  /// White accent bar.
+  pub on_accent: Color,
   pub status_loading: Color,
   pub status_ready: Color,
   pub status_error: Color,
@@ -143,9 +160,14 @@ pub struct Palette {
 
 /// Resolve a `ThemeName` to its concrete `Palette`. Returns a `'static`
 /// reference because all built-in palettes are compile-time constants.
+/// `Custom` is a runtime-loaded palette that cannot be `'static`; this
+/// resolver returns macchiato for it as a benign fallback. Code paths
+/// that need to honour a user-loaded custom palette go through
+/// `App::palette()` instead, which overlays the loaded palette when
+/// `options.theme == Custom`.
 pub fn palette_for(theme: ThemeName) -> &'static Palette {
   match theme {
-    ThemeName::Macchiato => &super::macchiato::PALETTE,
+    ThemeName::Macchiato | ThemeName::Custom => &super::macchiato::PALETTE,
     ThemeName::Latte => &super::latte::PALETTE,
     ThemeName::GruvboxDark => &super::gruvbox::PALETTE,
     ThemeName::SolarizedDark => &super::solarized::PALETTE,
@@ -163,7 +185,15 @@ mod tests {
   fn every_theme_has_a_palette() {
     for theme in ThemeName::iter() {
       let palette = palette_for(theme);
-      assert_eq!(palette.name, theme, "palette.name must match its key");
+      // `Custom` resolves to the macchiato fallback at the
+      // `palette_for` layer — the user-loaded custom palette is
+      // overlaid by `App::palette()`, not by this resolver — so the
+      // name match only holds for built-in themes here.
+      if theme != ThemeName::Custom {
+        assert_eq!(palette.name, theme, "palette.name must match its key");
+      } else {
+        assert_eq!(palette.name, ThemeName::Macchiato);
+      }
     }
   }
 
@@ -217,6 +247,7 @@ mod tests {
       ("solarized", ThemeName::SolarizedDark),
       ("mono", ThemeName::Mono),
       ("monochrome", ThemeName::Mono),
+      ("custom", ThemeName::Custom),
     ];
     for (input, expected) in cases {
       let parsed: ThemeName =

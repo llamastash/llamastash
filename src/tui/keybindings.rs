@@ -15,8 +15,10 @@ use crossterm::event::{KeyCode, KeyModifiers};
 /// Where the user's focus is on screen. Drives which key bindings
 /// are accepted *and* which ones the help bar surfaces. Distinct
 /// from "what's rendered" — multiple overlays can stack but only
-/// one focus is active.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// one focus is active. `Ord`/`PartialOrd` exist solely so `Focus`
+/// can key the `BTreeMap` inside [`KeyMap`]; the ordering is
+/// derive-defined and not part of the public API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Focus {
   /// Browsing the model list (default focus on TUI launch).
   List,
@@ -63,11 +65,17 @@ pub enum Action {
   YankCurl,
   YankPath,
   CycleTheme,
-  FocusRightPane,
+  /// Snap focus back to the Models list. Bound to `Esc` in the
+  /// right pane (closes the pane) and in the LaunchPicker /
+  /// AdvancedPanel overlays.
   FocusList,
-  /// Cycle the right-pane tab (Logs ↔ Chat / Embed / Rerank when
-  /// the focused model is Ready). Owned by Unit 7.
-  CycleTab,
+  /// Walk one step forward in the focus chain
+  /// `[List, ...available_right_tabs()]`. Bound to `Tab`, `Right`,
+  /// and `l`. Wraps.
+  NextFocus,
+  /// Walk one step backward in the focus chain. Bound to
+  /// `Shift+Tab`, `Left`, and `h`. Wraps.
+  PrevFocus,
   /// Send the buffered chat prompt to `/v1/chat/completions`.
   /// Bound to `Ctrl+Enter` in [`Focus::ChatInput`].
   SendChat,
@@ -81,10 +89,18 @@ pub enum Action {
   StageRerankCandidate,
   /// Show or hide the modal help overlay (bound to `?`).
   ToggleHelp,
-  /// Cycle to the previous right-pane tab. Bound to `Left` arrow in
-  /// the RightPane focus so the user can navigate the tab strip
-  /// bidirectionally (`CycleTab` advances forward).
-  PrevTab,
+  /// Ask the daemon to stop the focused managed launch. Bound to
+  /// `s` in [`Focus::List`].
+  StopModel,
+  /// Enter edit / text-capture mode on the active right-pane tab
+  /// (Chat / Embed / Rerank). Bound to `e` in [`Focus::RightPane`].
+  EnterEdit,
+  /// Step back from a text-input focus to the right pane's
+  /// navigation focus. Bound to `Esc` in each input focus.
+  ExitEdit,
+  /// Kill the daemon entirely (after a confirmation popup). Bound
+  /// to `Q` (Shift+q) in the model list focus.
+  KillDaemon,
 }
 
 /// One binding in the table.
@@ -128,6 +144,13 @@ const LIST_BINDINGS: &[Binding] = &[
     action: Action::Quit,
     label: "q",
     description: "quit",
+  },
+  Binding {
+    key: KeyCode::Char('Q'),
+    mods: KeyModifiers::SHIFT,
+    action: Action::KillDaemon,
+    label: "Q",
+    description: "kill daemon",
   },
   Binding {
     key: KeyCode::Char('c'),
@@ -249,11 +272,53 @@ const LIST_BINDINGS: &[Binding] = &[
     description: "theme",
   },
   Binding {
+    key: KeyCode::Char('s'),
+    mods: KeyModifiers::NONE,
+    action: Action::StopModel,
+    label: "s",
+    description: "stop",
+  },
+  Binding {
     key: KeyCode::Tab,
     mods: KeyModifiers::NONE,
-    action: Action::FocusRightPane,
+    action: Action::NextFocus,
     label: "Tab",
-    description: "right pane",
+    description: "next pane",
+  },
+  Binding {
+    key: KeyCode::BackTab,
+    mods: KeyModifiers::SHIFT,
+    action: Action::PrevFocus,
+    label: "Shift+Tab",
+    description: "prev pane",
+  },
+  Binding {
+    key: KeyCode::Right,
+    mods: KeyModifiers::NONE,
+    action: Action::NextFocus,
+    label: "→",
+    description: "next pane",
+  },
+  Binding {
+    key: KeyCode::Left,
+    mods: KeyModifiers::NONE,
+    action: Action::PrevFocus,
+    label: "←",
+    description: "prev pane",
+  },
+  Binding {
+    key: KeyCode::Char('l'),
+    mods: KeyModifiers::NONE,
+    action: Action::NextFocus,
+    label: "l",
+    description: "next pane",
+  },
+  Binding {
+    key: KeyCode::Char('h'),
+    mods: KeyModifiers::NONE,
+    action: Action::PrevFocus,
+    label: "h",
+    description: "prev pane",
   },
 ];
 
@@ -281,6 +346,13 @@ const LAUNCH_PICKER_BINDINGS: &[Binding] = &[
     action: Action::Cancel,
     label: "Esc",
     description: "cancel",
+  },
+  Binding {
+    key: KeyCode::Char('?'),
+    mods: KeyModifiers::NONE,
+    action: Action::ToggleHelp,
+    label: "?",
+    description: "help",
   },
   Binding {
     key: KeyCode::Enter,
@@ -314,6 +386,13 @@ const ADVANCED_BINDINGS: &[Binding] = &[
     description: "back",
   },
   Binding {
+    key: KeyCode::Char('?'),
+    mods: KeyModifiers::NONE,
+    action: Action::ToggleHelp,
+    label: "?",
+    description: "help",
+  },
+  Binding {
     key: KeyCode::Enter,
     mods: KeyModifiers::NONE,
     action: Action::Submit,
@@ -329,6 +408,27 @@ const RIGHT_PANE_BINDINGS: &[Binding] = &[
     action: Action::ToggleHelp,
     label: "?",
     description: "help",
+  },
+  Binding {
+    key: KeyCode::Char('t'),
+    mods: KeyModifiers::NONE,
+    action: Action::CycleTheme,
+    label: "t",
+    description: "theme",
+  },
+  Binding {
+    key: KeyCode::Char('q'),
+    mods: KeyModifiers::NONE,
+    action: Action::Quit,
+    label: "q",
+    description: "quit",
+  },
+  Binding {
+    key: KeyCode::Char('c'),
+    mods: KeyModifiers::CONTROL,
+    action: Action::Quit,
+    label: "Ctrl+C",
+    description: "quit",
   },
   Binding {
     key: KeyCode::Enter,
@@ -347,23 +447,44 @@ const RIGHT_PANE_BINDINGS: &[Binding] = &[
   Binding {
     key: KeyCode::Tab,
     mods: KeyModifiers::NONE,
-    action: Action::FocusList,
+    action: Action::NextFocus,
     label: "Tab",
-    description: "list (toggle focus)",
+    description: "next pane",
+  },
+  Binding {
+    key: KeyCode::BackTab,
+    mods: KeyModifiers::SHIFT,
+    action: Action::PrevFocus,
+    label: "Shift+Tab",
+    description: "prev pane",
   },
   Binding {
     key: KeyCode::Right,
     mods: KeyModifiers::NONE,
-    action: Action::CycleTab,
+    action: Action::NextFocus,
     label: "→",
-    description: "next tab",
+    description: "next pane",
   },
   Binding {
     key: KeyCode::Left,
     mods: KeyModifiers::NONE,
-    action: Action::PrevTab,
+    action: Action::PrevFocus,
     label: "←",
-    description: "prev tab",
+    description: "prev pane",
+  },
+  Binding {
+    key: KeyCode::Char('l'),
+    mods: KeyModifiers::NONE,
+    action: Action::NextFocus,
+    label: "l",
+    description: "next pane",
+  },
+  Binding {
+    key: KeyCode::Char('h'),
+    mods: KeyModifiers::NONE,
+    action: Action::PrevFocus,
+    label: "h",
+    description: "prev pane",
   },
   Binding {
     key: KeyCode::Char('s'),
@@ -372,22 +493,71 @@ const RIGHT_PANE_BINDINGS: &[Binding] = &[
     label: "s",
     description: "auto-scroll",
   },
+  Binding {
+    key: KeyCode::Char('e'),
+    mods: KeyModifiers::NONE,
+    action: Action::EnterEdit,
+    label: "e",
+    description: "edit",
+  },
+  Binding {
+    key: KeyCode::Char('a'),
+    mods: KeyModifiers::NONE,
+    action: Action::OpenAdvancedPanel,
+    label: "a",
+    description: "advanced",
+  },
+  Binding {
+    key: KeyCode::Char('j'),
+    mods: KeyModifiers::NONE,
+    action: Action::MoveDown,
+    label: "j",
+    description: "scroll down",
+  },
+  Binding {
+    key: KeyCode::Char('k'),
+    mods: KeyModifiers::NONE,
+    action: Action::MoveUp,
+    label: "k",
+    description: "scroll up",
+  },
+  Binding {
+    key: KeyCode::Down,
+    mods: KeyModifiers::NONE,
+    action: Action::MoveDown,
+    label: "↓",
+    description: "scroll down",
+  },
+  Binding {
+    key: KeyCode::Up,
+    mods: KeyModifiers::NONE,
+    action: Action::MoveUp,
+    label: "↑",
+    description: "scroll up",
+  },
 ];
 
 const CHAT_INPUT_BINDINGS: &[Binding] = &[
   Binding {
     key: KeyCode::Esc,
     mods: KeyModifiers::NONE,
-    action: Action::FocusList,
+    action: Action::ExitEdit,
     label: "Esc",
-    description: "list",
+    description: "exit edit",
   },
   Binding {
     key: KeyCode::Tab,
     mods: KeyModifiers::NONE,
-    action: Action::CycleTab,
+    action: Action::NextFocus,
     label: "Tab",
-    description: "next tab",
+    description: "next pane",
+  },
+  Binding {
+    key: KeyCode::BackTab,
+    mods: KeyModifiers::SHIFT,
+    action: Action::PrevFocus,
+    label: "Shift+Tab",
+    description: "prev pane",
   },
   Binding {
     key: KeyCode::Enter,
@@ -409,16 +579,23 @@ const EMBED_INPUT_BINDINGS: &[Binding] = &[
   Binding {
     key: KeyCode::Esc,
     mods: KeyModifiers::NONE,
-    action: Action::FocusList,
+    action: Action::ExitEdit,
     label: "Esc",
-    description: "list",
+    description: "exit edit",
   },
   Binding {
     key: KeyCode::Tab,
     mods: KeyModifiers::NONE,
-    action: Action::CycleTab,
+    action: Action::NextFocus,
     label: "Tab",
-    description: "next tab",
+    description: "next pane",
+  },
+  Binding {
+    key: KeyCode::BackTab,
+    mods: KeyModifiers::SHIFT,
+    action: Action::PrevFocus,
+    label: "Shift+Tab",
+    description: "prev pane",
   },
   Binding {
     key: KeyCode::Enter,
@@ -433,16 +610,23 @@ const RERANK_INPUT_BINDINGS: &[Binding] = &[
   Binding {
     key: KeyCode::Esc,
     mods: KeyModifiers::NONE,
-    action: Action::FocusList,
+    action: Action::ExitEdit,
     label: "Esc",
-    description: "list",
+    description: "exit edit",
   },
   Binding {
     key: KeyCode::Tab,
     mods: KeyModifiers::NONE,
     action: Action::StageRerankCandidate,
     label: "Tab",
-    description: "stage",
+    description: "stage / next pane",
+  },
+  Binding {
+    key: KeyCode::BackTab,
+    mods: KeyModifiers::SHIFT,
+    action: Action::PrevFocus,
+    label: "Shift+Tab",
+    description: "prev pane",
   },
   Binding {
     key: KeyCode::Enter,
@@ -472,6 +656,320 @@ pub fn bindings_for(focus: Focus) -> &'static [Binding] {
     }
   }
   &[]
+}
+
+// ─── Runtime keymap (config overrides) ──────────────────────────
+//
+// The compile-time `DEFAULT_BINDINGS` slice above stays the source
+// of truth for stock bindings. The runtime `KeyMap` below clones
+// those defaults into owned `Vec<Binding>`s and lets `config.yaml`
+// `keybindings:` overlay `action_name → key_spec` overrides on
+// top, kdash-style.
+//
+// Trick: a `Binding`'s label/description are `&'static str`. The
+// override path leaks the rebind label via `Box::leak` so the
+// resulting `&'static str` slot stays compatible. We leak at most
+// one short string per user override (≤ a few dozen bytes), once
+// at startup — negligible vs the operational benefit of a uniform
+// `Binding` type across static + runtime entries.
+
+use std::collections::BTreeMap;
+
+/// Runtime keybinding table. Built once at App startup from
+/// `KeyMap::default()` + `KeyMap::apply_overrides(config)`. Renderers
+/// route every key through [`KeyMap::action_for`] and the help
+/// overlay walks [`KeyMap::iter`] so a config tweak takes effect
+/// everywhere without touching the dispatcher.
+#[derive(Debug, Clone)]
+pub struct KeyMap {
+  by_focus: BTreeMap<Focus, Vec<Binding>>,
+}
+
+impl Default for KeyMap {
+  fn default() -> Self {
+    let mut by_focus: BTreeMap<Focus, Vec<Binding>> = BTreeMap::new();
+    for (focus, rows) in DEFAULT_BINDINGS {
+      by_focus.insert(*focus, rows.to_vec());
+    }
+    KeyMap { by_focus }
+  }
+}
+
+impl KeyMap {
+  /// Look up the action triggered by `(key, mods)` in the supplied
+  /// focus. Returns `None` when nothing matches.
+  pub fn action_for(&self, focus: Focus, key: KeyCode, mods: KeyModifiers) -> Option<Action> {
+    self.by_focus.get(&focus).and_then(|rows| {
+      rows
+        .iter()
+        .find(|b| b.key == key && b.mods == mods)
+        .map(|b| b.action)
+    })
+  }
+
+  /// Bindings the help bar should show in the supplied focus.
+  pub fn bindings_for(&self, focus: Focus) -> &[Binding] {
+    self.by_focus.get(&focus).map(Vec::as_slice).unwrap_or(&[])
+  }
+
+  /// Iterator over every `(focus, bindings)` pair. Replaces direct
+  /// access to `DEFAULT_BINDINGS` for callers (help overlay) that
+  /// walk the whole table.
+  pub fn iter(&self) -> impl Iterator<Item = (Focus, &[Binding])> {
+    self
+      .by_focus
+      .iter()
+      .map(|(focus, rows)| (*focus, rows.as_slice()))
+  }
+
+  /// Overlay user-supplied `action → key_spec` pairs onto the
+  /// keymap (kdash-style). For each override, every default
+  /// binding for that action across all focuses is removed; the
+  /// new binding is then inserted in every focus where the action
+  /// previously lived. Any existing binding at the new key spec in
+  /// those focuses is dropped to prevent ambiguous dispatch.
+  ///
+  /// Returns human-readable warnings for unknown actions and
+  /// unparseable key specs; the caller forwards them to
+  /// `log::warn!`.
+  pub fn apply_overrides(&mut self, overrides: &BTreeMap<String, String>) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for (raw_action, raw_spec) in overrides {
+      let action = match Action::from_config_name(raw_action) {
+        Some(a) => a,
+        None => {
+          warnings.push(format!(
+            "keybindings: unknown action '{raw_action}'; valid: {}",
+            Action::all_config_names().join(", ")
+          ));
+          continue;
+        }
+      };
+      let spec = match parse_key_spec(raw_spec) {
+        Ok(s) => s,
+        Err(error) => {
+          warnings.push(format!("keybindings.{raw_action}: '{raw_spec}' — {error}"));
+          continue;
+        }
+      };
+      // Leak the runtime label so the resulting Binding fits the
+      // `&'static str` slot. One-time at startup, never repeated.
+      let leaked_label: &'static str = Box::leak(spec.label.into_boxed_str());
+      let mut any_focus_had_action = false;
+      for rows in self.by_focus.values_mut() {
+        let mut description: &'static str = "";
+        let mut rebuilt: Vec<Binding> = Vec::with_capacity(rows.len());
+        let mut had_action_here = false;
+        for b in rows.iter().copied() {
+          if b.action == action {
+            had_action_here = true;
+            if description.is_empty() {
+              description = b.description;
+            }
+            continue;
+          }
+          if b.key == spec.key && b.mods == spec.mods {
+            continue;
+          }
+          rebuilt.push(b);
+        }
+        if had_action_here {
+          any_focus_had_action = true;
+          rebuilt.push(Binding {
+            key: spec.key,
+            mods: spec.mods,
+            action,
+            label: leaked_label,
+            description,
+          });
+        }
+        *rows = rebuilt;
+      }
+      if !any_focus_had_action {
+        warnings.push(format!(
+          "keybindings.{raw_action}: action has no default binding in any focus; nothing was rebound"
+        ));
+      }
+    }
+    warnings
+  }
+}
+
+/// Parsed key spec — the result of [`parse_key_spec`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct KeySpec {
+  key: KeyCode,
+  mods: KeyModifiers,
+  label: String,
+}
+
+impl Action {
+  /// Mapping table from config-facing snake_case names to variants.
+  const CONFIG_NAMES: &'static [(&'static str, Action)] = &[
+    ("quit", Action::Quit),
+    ("move_up", Action::MoveUp),
+    ("move_down", Action::MoveDown),
+    ("page_up", Action::PageUp),
+    ("page_down", Action::PageDown),
+    ("go_top", Action::GoTop),
+    ("go_bottom", Action::GoBottom),
+    ("open_filter", Action::OpenFilter),
+    ("clear_filter", Action::ClearFilter),
+    ("toggle_favorite", Action::ToggleFavorite),
+    ("open_launch_picker", Action::OpenLaunchPicker),
+    ("open_advanced_panel", Action::OpenAdvancedPanel),
+    ("submit", Action::Submit),
+    ("cancel", Action::Cancel),
+    ("yank_url", Action::YankUrl),
+    ("yank_curl", Action::YankCurl),
+    ("yank_path", Action::YankPath),
+    ("cycle_theme", Action::CycleTheme),
+    ("focus_list", Action::FocusList),
+    ("next_focus", Action::NextFocus),
+    ("prev_focus", Action::PrevFocus),
+    ("send_chat", Action::SendChat),
+    ("toggle_think_collapse", Action::ToggleThinkCollapse),
+    ("toggle_auto_scroll", Action::ToggleAutoScroll),
+    ("stage_rerank_candidate", Action::StageRerankCandidate),
+    ("toggle_help", Action::ToggleHelp),
+    ("stop_model", Action::StopModel),
+    ("enter_edit", Action::EnterEdit),
+    ("exit_edit", Action::ExitEdit),
+    ("kill_daemon", Action::KillDaemon),
+  ];
+
+  /// Parse a config-name (snake_case or kebab-case) into an action.
+  pub fn from_config_name(raw: &str) -> Option<Action> {
+    let normalized = raw.trim().to_ascii_lowercase().replace('-', "_");
+    Self::CONFIG_NAMES
+      .iter()
+      .find(|(name, _)| *name == normalized)
+      .map(|(_, action)| *action)
+  }
+
+  /// The canonical config-facing names, used in error messages.
+  pub fn all_config_names() -> Vec<&'static str> {
+    Self::CONFIG_NAMES.iter().map(|(n, _)| *n).collect()
+  }
+}
+
+/// Parse a user-supplied key spec. Accepts case-insensitive
+/// `+`-joined modifier+key tokens, e.g. `ctrl+q`, `shift+tab`,
+/// `alt+enter`, named keys (`enter`, `esc`, `tab`, `backtab`,
+/// `space`, `backspace`, `up`/`down`/`left`/`right`, `home`/`end`,
+/// `pgup`/`pgdn`, `del`/`ins`, `f1`–`f12`), and bare single
+/// characters (`q`, `?`, `/`, `Q`).
+fn parse_key_spec(raw: &str) -> Result<KeySpec, String> {
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return Err("empty key spec".to_string());
+  }
+  let mut mods = KeyModifiers::NONE;
+  let mut tokens = trimmed.split('+').map(str::trim).peekable();
+  let mut key_token: Option<&str> = None;
+  while let Some(tok) = tokens.next() {
+    if tok.is_empty() {
+      return Err(format!("empty segment in '{raw}'"));
+    }
+    if tokens.peek().is_some() {
+      match tok.to_ascii_lowercase().as_str() {
+        "ctrl" | "control" => mods |= KeyModifiers::CONTROL,
+        "shift" => mods |= KeyModifiers::SHIFT,
+        "alt" | "meta" => mods |= KeyModifiers::ALT,
+        "super" | "cmd" => mods |= KeyModifiers::SUPER,
+        other => return Err(format!("unknown modifier '{other}'")),
+      }
+    } else {
+      key_token = Some(tok);
+    }
+  }
+  let key_token = key_token.ok_or_else(|| format!("no key in '{raw}'"))?;
+  let (key, implicit_shift) = parse_key_token(key_token)?;
+  if implicit_shift {
+    mods |= KeyModifiers::SHIFT;
+  }
+  Ok(KeySpec {
+    label: format_key_label(&key, mods),
+    key,
+    mods,
+  })
+}
+
+fn parse_key_token(tok: &str) -> Result<(KeyCode, bool), String> {
+  if tok.chars().count() == 1 {
+    let ch = tok.chars().next().unwrap();
+    return Ok((KeyCode::Char(ch), ch.is_ascii_uppercase()));
+  }
+  let lower = tok.to_ascii_lowercase();
+  let code = match lower.as_str() {
+    "enter" | "return" => KeyCode::Enter,
+    "esc" | "escape" => KeyCode::Esc,
+    "tab" => KeyCode::Tab,
+    "backtab" | "shift_tab" => KeyCode::BackTab,
+    "space" => KeyCode::Char(' '),
+    "backspace" | "bs" => KeyCode::Backspace,
+    "up" => KeyCode::Up,
+    "down" => KeyCode::Down,
+    "left" => KeyCode::Left,
+    "right" => KeyCode::Right,
+    "home" => KeyCode::Home,
+    "end" => KeyCode::End,
+    "pgup" | "pageup" | "page_up" => KeyCode::PageUp,
+    "pgdn" | "pgdown" | "pagedown" | "page_down" => KeyCode::PageDown,
+    "delete" | "del" => KeyCode::Delete,
+    "insert" | "ins" => KeyCode::Insert,
+    s if s.starts_with('f') && s.len() <= 3 => {
+      let n: u8 = s[1..]
+        .parse()
+        .map_err(|_| format!("invalid function key '{tok}'"))?;
+      if !(1..=12).contains(&n) {
+        return Err(format!("function key out of range: '{tok}'"));
+      }
+      KeyCode::F(n)
+    }
+    _ => return Err(format!("unknown key '{tok}'")),
+  };
+  Ok((code, false))
+}
+
+fn format_key_label(key: &KeyCode, mods: KeyModifiers) -> String {
+  let mut out = String::new();
+  if mods.contains(KeyModifiers::CONTROL) {
+    out.push_str("Ctrl+");
+  }
+  if mods.contains(KeyModifiers::ALT) {
+    out.push_str("Alt+");
+  }
+  if mods.contains(KeyModifiers::SUPER) {
+    out.push_str("Super+");
+  }
+  let show_shift = mods.contains(KeyModifiers::SHIFT)
+    && !matches!(key, KeyCode::Char(c) if c.is_ascii_uppercase());
+  if show_shift {
+    out.push_str("Shift+");
+  }
+  match key {
+    KeyCode::Char(' ') => out.push_str("Space"),
+    KeyCode::Char(c) => out.push(*c),
+    KeyCode::Enter => out.push_str("Enter"),
+    KeyCode::Esc => out.push_str("Esc"),
+    KeyCode::Tab => out.push_str("Tab"),
+    KeyCode::BackTab => out.push_str("Shift+Tab"),
+    KeyCode::Backspace => out.push_str("Backspace"),
+    KeyCode::Up => out.push('↑'),
+    KeyCode::Down => out.push('↓'),
+    KeyCode::Left => out.push('←'),
+    KeyCode::Right => out.push('→'),
+    KeyCode::Home => out.push_str("Home"),
+    KeyCode::End => out.push_str("End"),
+    KeyCode::PageUp => out.push_str("PgUp"),
+    KeyCode::PageDown => out.push_str("PgDn"),
+    KeyCode::Delete => out.push_str("Del"),
+    KeyCode::Insert => out.push_str("Ins"),
+    KeyCode::F(n) => out.push_str(&format!("F{n}")),
+    other => out.push_str(&format!("{other:?}")),
+  }
+  out
 }
 
 #[cfg(test)]

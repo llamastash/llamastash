@@ -105,10 +105,47 @@ async fn handle_tui(cli: &Cli, config: &crate::config::Config) -> CliResult {
   }
   drop(client);
   let socket = crate::util::paths::runtime_socket_path();
-  match crate::tui::events::launch(config.theme, &socket).await {
+  let keymap = resolve_keymap(config);
+  match crate::tui::events::launch(
+    config.theme,
+    resolve_custom_palette(config),
+    keymap,
+    &socket,
+  )
+  .await
+  {
     Ok(()) => Ok(()),
     Err(e) => Err(CliExit::new(exit_codes::UNKNOWN, format!("tui: {e}"))),
   }
+}
+
+/// Build the runtime keymap from defaults + `config.keybindings`
+/// overrides. Parse warnings (unknown action names, malformed key
+/// specs) flow through `log::warn!` so a typo doesn't silently
+/// drop the user's rebind.
+fn resolve_keymap(config: &crate::config::Config) -> crate::tui::keybindings::KeyMap {
+  let mut keymap = crate::tui::keybindings::KeyMap::default();
+  if !config.keybindings.is_empty() {
+    for warning in keymap.apply_overrides(&config.keybindings) {
+      log::warn!("{warning}");
+    }
+  }
+  keymap
+}
+
+/// Resolve `config.custom_theme` into a concrete palette. Parse
+/// warnings are forwarded to the user via the normal `log::warn!`
+/// channel so a bad colour value surfaces without aborting startup.
+/// If the user picked `theme: custom` in the config but did not
+/// supply a `custom_theme:` block, this returns `None` and the App
+/// falls back to the default theme on render.
+fn resolve_custom_palette(config: &crate::config::Config) -> Option<crate::theme::Palette> {
+  let cfg = config.custom_theme.as_ref()?;
+  let (palette, warnings) = cfg.resolve();
+  for w in warnings {
+    log::warn!("{w}");
+  }
+  Some(palette)
 }
 
 /// `--render`: draw a single TUI frame against `ratatui::TestBackend`
@@ -137,6 +174,8 @@ async fn render_snapshot(
   // Prime the App with whatever the daemon knows right now.
   let mut app = App::new(AppOptions {
     theme: config.theme,
+    custom_palette: resolve_custom_palette(config),
+    keymap: resolve_keymap(config),
   });
   if let Ok(body) = client.call("list_models", None).await {
     app.ingest_list_models(&body);

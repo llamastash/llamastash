@@ -10,7 +10,7 @@ use std::{
 use log::warn;
 use serde::{Deserialize, Serialize};
 
-use crate::theme::ThemeName;
+use crate::theme::{CustomThemeConfig, ThemeName};
 use crate::util::paths::user_config_file;
 
 /// Hard cap on config-file size. `serde_yaml` 0.9 expands anchors and aliases
@@ -30,6 +30,13 @@ const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 #[serde(default, rename_all = "snake_case")]
 pub struct Config {
   pub theme: ThemeName,
+  /// Optional user-defined palette. When present it becomes the
+  /// `Custom` theme target — selectable via the config `theme:
+  /// custom` setting, and joined to the `t:theme` cycle. Absent
+  /// (the default) means `Custom` is not selectable and the cycle
+  /// stays on the five built-ins. See
+  /// [`crate::theme::custom::CustomThemeConfig`] for the slot list.
+  pub custom_theme: Option<CustomThemeConfig>,
   pub model_paths: Vec<PathBuf>,
   pub disable_default_cache_paths: CachePathsConfig,
   pub port_range: PortRange,
@@ -48,6 +55,7 @@ impl Default for Config {
   fn default() -> Self {
     Self {
       theme: ThemeName::default(),
+      custom_theme: None,
       model_paths: Vec::new(),
       disable_default_cache_paths: CachePathsConfig::default(),
       port_range: PortRange::default(),
