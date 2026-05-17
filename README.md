@@ -88,7 +88,23 @@ Every non-interactive subcommand returns a documented exit code so agent scripts
 
 ## Configuration
 
-LlamaDash reads `$XDG_CONFIG_HOME/llamadash/config.yaml` (macOS: `~/Library/Application Support/llamadash/config.yaml`). Schema in [`docs/usage.md`](docs/usage.md). Environment variables:
+LlamaDash reads `$XDG_CONFIG_HOME/llamadash/config.yaml` (macOS: `~/Library/Application Support/llamadash/config.yaml`). A fully-annotated sample lives at [`config.example.yaml`](config.example.yaml) — copy it to the path above and edit. The full schema reference is in [`docs/usage.md`](docs/usage.md#configuration).
+
+Quick tour of the top-level keys:
+
+| Key | What it controls |
+|---|---|
+| `theme` | Built-in palette: `macchiato` (default), `latte`, `gruvbox-dark`, `solarized-dark`, `mono`. Set to `custom` to use the `custom_theme` block. Cycle live with `t:theme`. |
+| `custom_theme` | User-defined palette. Inherits unspecified slots from `base:` (default macchiato). Accepts `#RRGGBB` hex or ANSI names. Once defined, `Custom` joins the `t:theme` cycle. |
+| `model_paths` | Extra directories to scan for `.gguf` files. Merged with `-p/--model-path` and `LLAMADASH_MODEL_PATHS`. |
+| `disable_default_cache_paths` | Per-bucket toggles (`huggingface`, `ollama`, `lm_studio`) for the auto-walked caches. |
+| `disable_scan` | Skip filesystem scanning entirely. Same as `--no-scan` / `LLAMADASH_NO_SCAN=1`. |
+| `port_range` | Inclusive `{start, end}` TCP range the supervisor picks from. Default `41100..=41300`. |
+| `llama_server_path` | Absolute path to `llama-server`. Overridable by `--llama-server` and `LLAMADASH_LLAMA_SERVER`. |
+| `probe_timeout_secs` | Health-probe deadline per launch. Default `120`. Bump for 70B+ on slow disks. |
+| `keybindings` | Action-name → key-spec overrides. Kdash-style dialect (`ctrl+q`, `shift+tab`, `f1`, …). |
+
+Environment variables:
 
 | Variable | Purpose |
 |---|---|

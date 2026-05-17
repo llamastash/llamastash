@@ -1,0 +1,153 @@
+# LlamaDash sample configuration.
+#
+# Copy this file to one of the resolved locations and edit:
+#
+#   Linux   ~/.config/llamadash/config.yaml
+#   macOS   ~/Library/Application Support/llamadash/config.yaml
+#   Both    LLAMADASH_CONFIG=/path/to/config.yaml
+#           llamadash --config /path/to/config.yaml ...
+#
+# Every field is optional — missing keys fall back to the defaults
+# documented inline. Unknown top-level keys are silently ignored so
+# old configs keep working when new options land; unknown values
+# within a known key (e.g. a misspelt theme name) error noisily.
+
+# ─── Theme ────────────────────────────────────────────────────────
+#
+# Built-in themes: macchiato (default) | latte | gruvbox-dark |
+# solarized-dark | mono. Aliases: catppuccin-macchiato,
+# catppuccin-latte, gruvbox, solarized, monochrome.
+#
+# Set to `custom` to activate the `custom_theme:` block below; if
+# you set `custom` without supplying `custom_theme:`, LlamaDash logs
+# a warning and falls back to macchiato.
+theme: macchiato
+
+# ─── Custom theme (optional) ──────────────────────────────────────
+#
+# When `theme: custom`, this block defines the palette. Every slot
+# is optional — missing slots inherit from `base` (or macchiato if
+# `base` is omitted). Bad colour values log a warning and the slot
+# falls back to the base value rather than dropping the whole theme.
+#
+# Colour syntax (case-insensitive):
+#   - 6-digit hex: "#1A1B26", "#c0caf5"
+#   - ANSI names: black, red, green, yellow, blue, magenta, cyan,
+#                 gray/grey, darkgray, lightred, lightgreen,
+#                 lightyellow, lightblue, lightmagenta, lightcyan,
+#                 white
+#   - "reset" / "default" — fall through to terminal default
+#
+# Strings containing `#` must be quoted in YAML.
+#
+# custom_theme:
+#   base: macchiato            # built-in palette to inherit from
+#   is_dark: true              # affects the title row text choices
+#   bg: "#1A1B26"              # panel background
+#   fg: "#C0CAF5"              # primary text
+#   accent: "#BB9AF7"          # panel borders + active tab strip
+#   on_accent: "#1A1B26"       # text drawn on top of accent (title bar)
+#   panel_title: "#FFC777"     # block-title text — yellow in stock themes
+#   label: "#7DCFFF"           # in-panel label prefixes — blue in stock themes
+#   muted: "#565F89"           # secondary text + hint separators
+#   selection: "#283457"       # subtle surface tone (reserved)
+#   highlight: "#FFC777"       # selected row background in the Models list
+#   success: "#9ECE6A"
+#   warning: "#FF9E64"
+#   error:   "#F7768E"
+#   status_loading:  "#FFC777"
+#   status_ready:    "#9ECE6A"
+#   status_error:    "#F7768E"
+#   status_stopped:  "#565F89"
+#   status_external: "#7DCFFF"
+
+# ─── Model paths ──────────────────────────────────────────────────
+#
+# Extra directories to scan for .gguf files (recursive). Also
+# accepted via `-p / --model-path` on the CLI (repeatable) and the
+# `LLAMADASH_MODEL_PATHS` env var (colon-separated). Paths from all
+# three sources are merged.
+model_paths: []
+# - /opt/llms
+# - /mnt/data/gguf
+
+# ─── Default cache scanning ───────────────────────────────────────
+#
+# When `model_paths` is empty (and `--model-path` / env vars don't
+# add any), LlamaDash walks the well-known caches below. Flip a
+# bucket to `true` to disable scanning that cache without disabling
+# the others. Set `disable_scan: true` or pass `--no-scan` /
+# `LLAMADASH_NO_SCAN=1` to drop the whole sweep.
+#
+# Cache locations:
+#   HuggingFace  ~/.cache/huggingface/hub
+#                ~/Library/Caches/huggingface/hub (macOS)
+#   Ollama       ~/.ollama/models
+#   LM Studio    ~/.lmstudio/models, ~/.cache/lm-studio/models
+#                ~/Library/Caches/LMStudio/models (macOS)
+disable_default_cache_paths:
+  huggingface: false
+  ollama: false
+  lm_studio: false
+
+# Disable filesystem scanning entirely. Useful when you've supplied
+# `model_paths` and don't want the daemon walking caches in
+# parallel. Errors at startup if no `model_paths` and no `-p` flag
+# either — LlamaDash refuses to start with nothing to list.
+disable_scan: false
+
+# ─── Daemon ───────────────────────────────────────────────────────
+#
+# Inclusive TCP port range the supervisor picks from when launching
+# `llama-server`. Defaults: 41100..=41300. Tighten this if other
+# tooling on the box owns adjacent ports.
+port_range:
+  start: 41100
+  end: 41300
+
+# Path to the `llama-server` binary. CLI flag `--llama-server` and
+# the `LLAMADASH_LLAMA_SERVER` env var take precedence over this.
+# Leave commented out to fall back to `$PATH`.
+# llama_server_path: /usr/local/bin/llama-server
+
+# Per-launch health-probe timeout in seconds. 120s suits a typical
+# 7B–13B model on local NVMe; raise to ~600 for 70B+ on slow disks
+# if you hit `health probe timeout (last status 503)` on legitimate
+# loads.
+probe_timeout_secs: 120
+
+# ─── Keybindings ──────────────────────────────────────────────────
+#
+# Override the default keymap. Each entry maps an action name
+# (snake_case or kebab-case) to a key spec.
+#
+# Key spec dialect:
+#   - bare character:           q  ?  /  Q
+#   - modifier chain:           ctrl+q, shift+tab, alt+enter,
+#                               ctrl+shift+r
+#   - named keys:               enter, esc, tab, backtab, space,
+#                               backspace, up, down, left, right,
+#                               home, end, pgup, pgdn, del, ins,
+#                               f1..f12
+#
+# Override semantics: the action's existing default binding(s) are
+# removed across every focus that used it, and the new binding is
+# inserted in those same focuses. Any binding that previously used
+# the new key spec in those focuses is dropped to keep dispatch
+# unambiguous. Unknown action names and unparseable specs log a
+# warning at startup — the rebind is dropped, the rest of the
+# keymap survives.
+#
+# Valid action names (see docs/usage.md for the action → default
+# binding cheat-sheet):
+#   quit, move_up, move_down, page_up, page_down, go_top, go_bottom,
+#   open_filter, clear_filter, toggle_favorite, open_launch_picker,
+#   open_advanced_panel, submit, cancel, yank_url, yank_curl,
+#   yank_path, cycle_theme, focus_list, next_focus, prev_focus,
+#   send_chat, toggle_think_collapse, toggle_auto_scroll,
+#   stage_rerank_candidate, toggle_help, stop_model, enter_edit,
+#   exit_edit, kill_daemon
+keybindings: {}
+#   quit: ctrl+q
+#   cycle_theme: T
+#   toggle_help: f1

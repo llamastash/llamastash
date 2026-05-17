@@ -12,22 +12,128 @@ This is the reference for the non-interactive CLI surface and the TUI keybinding
 
 ## Configuration
 
-LlamaDash reads `$XDG_CONFIG_HOME/llamadash/config.yaml` (macOS: `~/Library/Application Support/llamadash/config.yaml`). Fields:
+LlamaDash reads `$XDG_CONFIG_HOME/llamadash/config.yaml` (macOS: `~/Library/Application Support/llamadash/config.yaml`). A fully-annotated sample lives at [`config.example.yaml`](../config.example.yaml) — copy it to the path above and edit.
+
+Resolution order (highest wins): `--config <PATH>` → `LLAMADASH_CONFIG` env var → the XDG path above.
+
+All keys are optional; missing keys fall back to defaults. Unknown top-level keys are ignored (forward-compat); unknown *values* within a known key error noisily.
+
+### Schema
 
 ```yaml
-theme: macchiato            # macchiato | latte | gruvbox-dark | solarized-dark | mono
+# Built-in: macchiato (default) | latte | gruvbox-dark |
+# solarized-dark | mono. Use `custom` to activate `custom_theme:`.
+theme: macchiato
+
+# Optional user-defined palette. Active when `theme: custom`. Every
+# slot is optional and inherits from `base` (default macchiato).
+custom_theme:
+  base: macchiato
+  is_dark: true
+  bg: "#1A1B26"
+  fg: "#C0CAF5"
+  accent: "#BB9AF7"
+  on_accent: "#1A1B26"
+  panel_title: "#FFC777"
+  label: "#7DCFFF"
+  muted: "#565F89"
+  selection: "#283457"
+  highlight: "#FFC777"
+  success: "#9ECE6A"
+  warning: "#FF9E64"
+  error: "#F7768E"
+  status_loading: "#FFC777"
+  status_ready: "#9ECE6A"
+  status_error: "#F7768E"
+  status_stopped: "#565F89"
+  status_external: "#7DCFFF"
+
 model_paths:                # Extra dirs to scan. Repeatable on the CLI as -p/--model-path.
   - /opt/llms
+
 port_range:                 # Default 41100..=41300. Inclusive.
   start: 41100
   end: 41300
+
+llama_server_path: /usr/local/bin/llama-server  # Overridable by --llama-server / env var.
+
 disable_scan: false         # Equivalent to LLAMADASH_NO_SCAN=1.
 disable_default_cache_paths:
   huggingface: false
   ollama: false
-  lmstudio: false
-keybindings: {}             # Optional override map (planned).
+  lm_studio: false
+
+probe_timeout_secs: 120     # Per-launch health-probe deadline.
+
+keybindings:                # Action-name → key-spec overrides.
+  quit: ctrl+q
+  cycle_theme: T
+  toggle_help: f1
 ```
+
+### Custom theme
+
+Set `theme: custom` and define a `custom_theme:` block to ship a personal palette. The slot list mirrors the internal `Palette` struct so every visible region is rebindable:
+
+| Slot | What it paints |
+|---|---|
+| `bg` | Panel background (the root paint between bordered Blocks) |
+| `fg` | Primary text |
+| `accent` | Panel borders + active tab strip |
+| `on_accent` | Text drawn on top of `accent` (title bar). Pin to a dark colour on mono-style themes where `bg` is `reset`. |
+| `panel_title` | Block-title text — ` Host `, ` Daemon `, ` Models ` |
+| `label` | In-panel label prefixes (`CPU`, `socket`, …) and list group headers (`★ Favorites`, folder paths) |
+| `muted` | Secondary text + hint separators |
+| `selection` | Reserved surface tone (used by future overlays) |
+| `highlight` | Selected-row background in the Models list. Set to `reset` to fall back to `Modifier::REVERSED`. |
+| `success` / `warning` / `error` | Per-state row colours + gauge tiers |
+| `status_loading` / `status_ready` / `status_error` / `status_stopped` / `status_external` | Status-glyph colours in the model list |
+
+Colour syntax (case-insensitive):
+
+- 6-digit hex with leading `#`: `"#1A1B26"`, `"#c0caf5"` — quote in YAML since `#` starts a comment.
+- ANSI names: `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `gray`/`grey`, `darkgray`, `lightred`, `lightgreen`, `lightyellow`, `lightblue`, `lightmagenta`, `lightcyan`, `white`.
+- `reset` / `default` — fall through to the terminal's default colour.
+
+Missing slots inherit from the `base:` theme (defaults to macchiato). Bad colour values log a warning and the slot keeps the base value rather than dropping the whole palette.
+
+Once defined, the `Custom` theme joins the `t:theme` cycle alongside the built-ins.
+
+### Custom keybindings
+
+Each entry in `keybindings:` rebinds one action. Action names accept both snake_case and kebab-case. The key spec dialect:
+
+- Bare characters: `q`, `?`, `/`, `Q` (uppercase implies `shift+`).
+- Modifier chains: `ctrl+q`, `shift+tab`, `alt+enter`, `ctrl+shift+r`. Recognised modifiers: `ctrl`/`control`, `shift`, `alt`/`meta`, `super`/`cmd`.
+- Named keys: `enter`/`return`, `esc`/`escape`, `tab`, `backtab`, `space`, `backspace`/`bs`, `up`/`down`/`left`/`right`, `home`, `end`, `pgup`/`pageup`, `pgdn`/`pagedown`, `delete`/`del`, `insert`/`ins`, `f1`–`f12`.
+
+Override semantics mirror kdash: the action's existing default binding(s) are removed across every focus that used the action, and the new binding is inserted in those same focuses. Any binding that previously used the new key spec in those focuses is dropped to keep dispatch unambiguous. Unknown action names and unparseable specs log a warning at startup; the rebind is dropped, the rest of the keymap survives.
+
+| Action name | Default key | Where it fires |
+|---|---|---|
+| `quit` | `q`, `ctrl+c` | List focus |
+| `move_up` / `move_down` | `↑`/`k`, `↓`/`j` | List, right pane |
+| `page_up` / `page_down` | `PgUp` / `PgDn` | List |
+| `go_top` / `go_bottom` | `g` / `G` | List |
+| `open_filter` | `/` | List |
+| `clear_filter` | `Esc` | Filter input |
+| `toggle_favorite` | `f` | List |
+| `open_launch_picker` | `Enter` | List |
+| `open_advanced_panel` | `a` | List, launch picker |
+| `submit` | `Enter` | Filter, picker, advanced |
+| `cancel` | `Esc` | Picker, advanced |
+| `yank_url` / `yank_curl` / `yank_path` | `y` / `Y` / `p` | List |
+| `cycle_theme` | `t` | List |
+| `toggle_help` | `?` | List, right pane |
+| `stop_model` | `s` | List |
+| `kill_daemon` | `Q` (shift+q) | List — triggers a confirmation popup |
+| `focus_list` | `Esc` | Right pane / tab inputs |
+| `next_focus` / `prev_focus` | `Tab` / `Shift+Tab`, `→`/`l`, `←`/`h` | Cross-pane navigation |
+| `enter_edit` / `exit_edit` | `e` / `Esc` | Right pane → tab input |
+| `send_chat` | `Ctrl+Enter` | Chat input |
+| `toggle_think_collapse` | `Ctrl+r` | Chat input |
+| `toggle_auto_scroll` | `s` | Right pane (Logs) |
+| `stage_rerank_candidate` | `Tab` | Rerank input |
 
 ### Environment variables
 
@@ -143,7 +249,7 @@ llamadash daemon status        # PID + uptime + connections + managed launches
 
 ## TUI keybindings
 
-These are the v1 defaults. Config-driven overrides are planned.
+These are the defaults. Override any binding via the `keybindings:` block in `config.yaml` — see [Custom keybindings](#custom-keybindings) above for the dialect and the action-name table.
 
 ### Global / list focus
 
