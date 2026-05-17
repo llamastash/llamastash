@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, MouseEvent, MouseEventKind};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
@@ -85,12 +85,23 @@ pub fn pump_input_with_writer(
   evt: Event,
   writer: Option<&mpsc::Sender<WriterCmd>>,
 ) -> bool {
-  if let Event::Key(key) = evt {
-    if key.kind != KeyEventKind::Release {
-      handle_key(app, key, writer);
-    }
+  match evt {
+    Event::Key(key) if key.kind != KeyEventKind::Release => handle_key(app, key, writer),
+    Event::Mouse(m) => handle_mouse(app, m),
+    _ => {}
   }
   app.should_exit
+}
+
+/// Route a mouse event to the focused list. v1 only consumes scroll
+/// wheel events on the model list — Chat/Logs/Embed/Rerank own
+/// their own j/k scrolling, and we don't yet track hover regions.
+fn handle_mouse(app: &mut App, m: MouseEvent) {
+  match m.kind {
+    MouseEventKind::ScrollUp => app.move_up(),
+    MouseEventKind::ScrollDown => app.move_down(),
+    _ => {}
+  }
 }
 
 fn handle_key(app: &mut App, key: KeyEvent, writer: Option<&mpsc::Sender<WriterCmd>>) {
@@ -206,13 +217,25 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
       Focus::AdvancedPanel => app.close_advanced_panel(),
       Focus::EmbedInput => apply_embed_submit(app),
       Focus::RerankInput => apply_rerank_submit(app),
+      // The Settings tab now drives launch submission from inside
+      // the right pane. The launch_picker state object is still the
+      // form's source of truth.
+      Focus::RightPane if app.right_tab == RightTab::Settings => {
+        apply_launch_submit(app, writer);
+      }
       _ => {}
     },
-    Action::Cancel => match app.focus {
-      Focus::LaunchPicker => app.close_launch_picker(),
-      Focus::AdvancedPanel => app.close_advanced_panel(),
-      _ => {}
-    },
+    Action::Cancel => {
+      if app.show_help {
+        app.show_help = false;
+      } else {
+        match app.focus {
+          Focus::LaunchPicker => app.close_launch_picker(),
+          Focus::AdvancedPanel => app.close_advanced_panel(),
+          _ => {}
+        }
+      }
+    }
     Action::YankUrl | Action::YankCurl | Action::YankPath => {
       let text = build_yank_text(app, action);
       if let Some(text) = text {
@@ -228,6 +251,7 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
       app.cycle_theme();
       app.show_toast(format!("theme: {}", app.options.theme.canonical()));
     }
+    Action::ToggleHelp => app.toggle_help(),
     Action::FocusRightPane => app.focus = focus_for_tab(app.right_tab),
     Action::FocusList => app.focus = Focus::List,
     Action::CycleTab => {
@@ -235,6 +259,10 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
       // Keep the focus aligned with the active tab so text capture
       // moves with the user. Logs uses `RightPane`; the other three
       // each have their own input focus.
+      app.focus = focus_for_tab(app.right_tab);
+    }
+    Action::PrevTab => {
+      app.cycle_right_tab_prev();
       app.focus = focus_for_tab(app.right_tab);
     }
     Action::SendChat => apply_send_chat(app),
@@ -268,6 +296,9 @@ fn focus_for_tab(tab: RightTab) -> Focus {
     RightTab::Chat => Focus::ChatInput,
     RightTab::Embed => Focus::EmbedInput,
     RightTab::Rerank => Focus::RerankInput,
+    // Settings reuses RightPane focus for now — keystroke editing
+    // of launch params lands in a follow-up patch.
+    RightTab::Settings => Focus::RightPane,
   }
 }
 
@@ -617,6 +648,7 @@ fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
 /// Fully-featured TUI run-loop. Drives the App from real crossterm
 /// events + a daemon refresher, rendering on each tick.
 pub async fn run(app: App, socket: PathBuf) -> Result<()> {
+  use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
   use crossterm::execute;
   use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -626,7 +658,9 @@ pub async fn run(app: App, socket: PathBuf) -> Result<()> {
 
   enable_raw_mode()?;
   let mut stdout = std::io::stdout();
-  execute!(stdout, EnterAlternateScreen)?;
+  // Mouse capture enables scroll-wheel events so the model list can
+  // be scrolled with the mouse alongside j/k.
+  execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
   let backend = CrosstermBackend::new(stdout);
   let mut terminal = Terminal::new(backend)?;
 
@@ -671,7 +705,11 @@ pub async fn run(app: App, socket: PathBuf) -> Result<()> {
 
   // Restore the terminal even on early returns above.
   disable_raw_mode()?;
-  execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+  execute!(
+    terminal.backend_mut(),
+    LeaveAlternateScreen,
+    DisableMouseCapture
+  )?;
   terminal.show_cursor()?;
   Ok(())
 }
@@ -919,6 +957,50 @@ mod tests {
 
   fn key(code: KeyCode, mods: KeyModifiers) -> Event {
     Event::Key(KeyEvent::new(code, mods))
+  }
+
+  fn mouse(kind: MouseEventKind) -> Event {
+    Event::Mouse(MouseEvent {
+      kind,
+      column: 0,
+      row: 0,
+      modifiers: KeyModifiers::NONE,
+    })
+  }
+
+  #[test]
+  fn mouse_scroll_down_moves_cursor_down_through_selectable_rows() {
+    use crate::discovery::{DiscoveredModel, ModelSource};
+    use std::path::PathBuf;
+    let mut app = App::new(Default::default());
+    app.models = vec![
+      DiscoveredModel {
+        path: PathBuf::from("/m/a.gguf"),
+        parent: PathBuf::from("/m"),
+        source: ModelSource::UserPath,
+        metadata: None,
+        parse_error: None,
+        split_siblings: Vec::new(),
+      },
+      DiscoveredModel {
+        path: PathBuf::from("/m/b.gguf"),
+        parent: PathBuf::from("/m"),
+        source: ModelSource::UserPath,
+        metadata: None,
+        parse_error: None,
+        split_siblings: Vec::new(),
+      },
+    ];
+    // Rows: [TableHeader, Header(/m), Model(a), Model(b)] — start
+    // cursor on Model(a) at index 2.
+    app.list_cursor = 2;
+    pump_input(&mut app, mouse(MouseEventKind::ScrollDown));
+    assert_eq!(
+      app.list_cursor, 3,
+      "scroll down should advance to next model"
+    );
+    pump_input(&mut app, mouse(MouseEventKind::ScrollUp));
+    assert_eq!(app.list_cursor, 2, "scroll up should return to model a");
   }
 
   #[test]

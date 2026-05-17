@@ -114,6 +114,14 @@ pub struct Palette {
   pub error: Color,
   pub muted: Color,
   pub selection: Color,
+  /// Background colour used to highlight the focused row in the
+  /// Models pane. KDash-style: a saturated warm tone (gold / amber)
+  /// so the active row pops against the panel border. Text on the
+  /// highlighted row is painted in `bg` for high contrast. Themes
+  /// that prefer the legacy REVERSED behaviour (e.g. mono) can set
+  /// this to `Color::Reset` and the list renderer falls back to
+  /// `Modifier::REVERSED`.
+  pub highlight: Color,
   pub status_loading: Color,
   pub status_ready: Color,
   pub status_error: Color,

@@ -80,15 +80,25 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, host: &HostMetricsSnapshot, pal
 fn cpu_row<'a>(host: &HostMetricsSnapshot, bar_width: usize, palette: &'a Palette) -> Line<'a> {
   let pct = host.cpu_pct.clamp(0.0, 100.0);
   let bar = bar(pct, bar_width, gauge_color(pct, palette));
-  let value = format!(" {:>3.0}%", host.cpu_pct);
-  // Host CPU temperature isn't sampled today (sysinfo Components
-  // would need another refresh kind). The row leaves the temp column
-  // blank rather than fabricating a value.
-  Line::from(vec![
+  // Values land in a left-aligned column after the bar so CPU /
+  // RAM / GPU / VRAM all start at the same screen offset.
+  let value = format!(" {:.0}%", host.cpu_pct);
+  let mut spans = vec![
     Span::styled("CPU  ", Style::default().fg(palette.muted)),
     bar,
     Span::styled(value, Style::default().fg(palette.fg)),
-  ])
+  ];
+  // CPU temperature renders next to the percent so the row reads
+  // symmetrically with the GPU row, when sysinfo's component
+  // sensor surfaced a reading. Same colour tiers as GPU temp.
+  if let Some(temp) = host.cpu_temp_c {
+    spans.push(Span::raw("  "));
+    spans.push(Span::styled(
+      format!("{temp:.0}°C"),
+      Style::default().fg(gpu_temp_color(temp, palette)),
+    ));
+  }
+  Line::from(spans)
 }
 
 fn ram_row<'a>(host: &HostMetricsSnapshot, bar_width: usize, palette: &'a Palette) -> Line<'a> {
@@ -125,10 +135,12 @@ fn gpu_util_row<'a>(
 ) -> Line<'a> {
   let pct = host.gpu_util_pct.unwrap_or(0.0).clamp(0.0, 100.0);
   let bar = bar(pct, bar_width, gauge_color(pct, palette));
+  // Same left-aligned-column treatment as the CPU row: no leading
+  // pad so values line up with `CPU 3%`, `RAM 31G/62G`, etc.
   let value = host
     .gpu_util_pct
-    .map(|p| format!(" {:>3.0}%", p))
-    .unwrap_or_else(|| "   —".into());
+    .map(|p| format!(" {:.0}%", p))
+    .unwrap_or_else(|| " —".into());
   let mut spans = vec![
     Span::styled("GPU  ", Style::default().fg(palette.muted)),
     bar,
@@ -137,7 +149,7 @@ fn gpu_util_row<'a>(
   if let Some(temp) = host.gpu_temp_c {
     spans.push(Span::raw("  "));
     spans.push(Span::styled(
-      format!("{temp:>2.0}°C"),
+      format!("{temp:.0}°C"),
       Style::default().fg(gpu_temp_color(temp, palette)),
     ));
   }
@@ -335,6 +347,7 @@ mod tests {
   fn nvidia_renders_all_four_gauges_plus_backend() {
     let snap = HostMetricsSnapshot {
       cpu_pct: 58.0,
+      cpu_temp_c: Some(52.0),
       ram_used_bytes: 11 * 1024 * 1024 * 1024,
       ram_total_bytes: 32 * 1024 * 1024 * 1024,
       gpu_backend: "nvidia".into(),

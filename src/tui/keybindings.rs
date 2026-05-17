@@ -79,6 +79,12 @@ pub enum Action {
   /// Stage the in-progress rerank candidate buffer onto the
   /// candidate list. Bound to `Tab` in [`Focus::RerankInput`].
   StageRerankCandidate,
+  /// Show or hide the modal help overlay (bound to `?`).
+  ToggleHelp,
+  /// Cycle to the previous right-pane tab. Bound to `Left` arrow in
+  /// the RightPane focus so the user can navigate the tab strip
+  /// bidirectionally (`CycleTab` advances forward).
+  PrevTab,
 }
 
 /// One binding in the table.
@@ -109,6 +115,13 @@ pub const DEFAULT_BINDINGS: &[(Focus, &[Binding])] = &[
 ];
 
 const LIST_BINDINGS: &[Binding] = &[
+  Binding {
+    key: KeyCode::Char('?'),
+    mods: KeyModifiers::NONE,
+    action: Action::ToggleHelp,
+    label: "?",
+    description: "help",
+  },
   Binding {
     key: KeyCode::Char('q'),
     mods: KeyModifiers::NONE,
@@ -311,6 +324,20 @@ const ADVANCED_BINDINGS: &[Binding] = &[
 
 const RIGHT_PANE_BINDINGS: &[Binding] = &[
   Binding {
+    key: KeyCode::Char('?'),
+    mods: KeyModifiers::NONE,
+    action: Action::ToggleHelp,
+    label: "?",
+    description: "help",
+  },
+  Binding {
+    key: KeyCode::Enter,
+    mods: KeyModifiers::NONE,
+    action: Action::Submit,
+    label: "Enter",
+    description: "launch (Settings)",
+  },
+  Binding {
     key: KeyCode::Esc,
     mods: KeyModifiers::NONE,
     action: Action::FocusList,
@@ -318,18 +345,25 @@ const RIGHT_PANE_BINDINGS: &[Binding] = &[
     description: "list",
   },
   Binding {
-    key: KeyCode::BackTab,
-    mods: KeyModifiers::SHIFT,
-    action: Action::FocusList,
-    label: "Shift+Tab",
-    description: "list",
-  },
-  Binding {
     key: KeyCode::Tab,
     mods: KeyModifiers::NONE,
-    action: Action::CycleTab,
+    action: Action::FocusList,
     label: "Tab",
+    description: "list (toggle focus)",
+  },
+  Binding {
+    key: KeyCode::Right,
+    mods: KeyModifiers::NONE,
+    action: Action::CycleTab,
+    label: "→",
     description: "next tab",
+  },
+  Binding {
+    key: KeyCode::Left,
+    mods: KeyModifiers::NONE,
+    action: Action::PrevTab,
+    label: "←",
+    description: "prev tab",
   },
   Binding {
     key: KeyCode::Char('s'),

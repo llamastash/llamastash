@@ -15,7 +15,6 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::theme::Palette;
 use crate::tui::app::App;
-use crate::tui::status_icons::label_for;
 use crate::util::paths::model_display_name;
 
 const LABEL_WIDTH: usize = 8;
@@ -104,38 +103,61 @@ fn uptime_build_row<'a>(app: &'a App, palette: &'a Palette) -> Line<'a> {
 }
 
 fn server_row<'a>(app: &'a App, budget: usize, palette: &'a Palette) -> Line<'a> {
-  // When the daemon hasn't resolved a `llama-server` binary, show
-  // `—` (matching the uptime row's missing-data convention) and
-  // drop the backend-flavor tag entirely — `— (rocm)` reads as a
-  // bug rather than a missing-binary signal. The flavor only makes
-  // sense paired with an actual binary path.
+  // When the daemon hasn't resolved a `llama-server` binary, point
+  // the user at the override knobs instead of a bare `—` — they
+  // can install llama.cpp or set LLAMADASH_LLAMA_SERVER / pass
+  // --llama-server to fix it without first guessing where the
+  // binary was supposed to live.
   let server_path = app.daemon_info.server_path.as_deref();
-  let (path, flavor_chunk) = match server_path {
+  match server_path {
     Some(p) => {
-      let flavor = flavor_label(app);
-      let chunk = match flavor {
+      let flavor_chunk = match flavor_label(app) {
         Some(f) => format!(" ({f})"),
         None => String::new(),
       };
-      (p, chunk)
+      let path_budget = budget.saturating_sub(flavor_chunk.width());
+      let path_truncated = ellipsise(p, path_budget);
+      Line::from(vec![
+        Span::styled(LABEL_SERVER, Style::default().fg(palette.muted)),
+        Span::styled(path_truncated, Style::default().fg(palette.fg)),
+        Span::styled(flavor_chunk, Style::default().fg(palette.muted)),
+      ])
     }
-    None => ("—", String::new()),
-  };
-  // Reserve room for the parenthesised flavor; truncate the path
-  // first so the flavor stays visible. The flavor's column width is
-  // measured (not char-counted) so multi-byte glyphs don't desync
-  // the budget from the rendered cell count.
-  let path_budget = if flavor_chunk.is_empty() {
-    budget
-  } else {
-    budget.saturating_sub(flavor_chunk.width())
-  };
-  let path_truncated = ellipsise(path, path_budget);
-  Line::from(vec![
-    Span::styled(LABEL_SERVER, Style::default().fg(palette.muted)),
-    Span::styled(path_truncated, Style::default().fg(palette.fg)),
-    Span::styled(flavor_chunk, Style::default().fg(palette.muted)),
-  ])
+    None => {
+      let hint = "Not found in usual paths. Set LLAMADASH_LLAMA_SERVER or pass --llama-server";
+      let trimmed = right_ellipsise(hint, budget);
+      Line::from(vec![
+        Span::styled(LABEL_SERVER, Style::default().fg(palette.muted)),
+        Span::styled(trimmed, Style::default().fg(palette.error)),
+      ])
+    }
+  }
+}
+
+/// Right-truncate `s` to fit `budget` terminal columns, appending
+/// `…` when content was dropped. Use this for free-form text like
+/// hints/messages where leading characters carry the most signal;
+/// [`ellipsise`] keeps the tail (paths/launch-ids) instead.
+fn right_ellipsise(s: &str, budget: usize) -> String {
+  if budget == 0 {
+    return String::new();
+  }
+  if s.width() <= budget {
+    return s.to_string();
+  }
+  let keep = budget.saturating_sub(1);
+  let mut acc_w = 0usize;
+  let mut out = String::with_capacity(keep + 1);
+  for ch in s.chars() {
+    let w = ch.to_string().width();
+    if acc_w + w > keep {
+      break;
+    }
+    out.push(ch);
+    acc_w += w;
+  }
+  out.push('…');
+  out
 }
 
 fn counts_row<'a>(app: &'a App, palette: &'a Palette) -> Line<'a> {
@@ -166,33 +188,34 @@ fn counts_row<'a>(app: &'a App, palette: &'a Palette) -> Line<'a> {
 }
 
 fn running_row<'a>(app: &'a App, budget: usize, palette: &'a Palette) -> Line<'a> {
-  if app.managed.is_empty() {
+  let n = app.managed.len();
+  if n == 0 {
     return Line::from(vec![
       Span::styled(LABEL_RUNNING, Style::default().fg(palette.muted)),
-      Span::styled("—", Style::default().fg(palette.muted)),
+      Span::styled("0", Style::default().fg(palette.muted)),
     ]);
   }
-  let first = &app.managed[0];
-  let name = model_display_name(&first.path);
-  let head = format!(
-    "{} :{} {}",
-    name,
-    first.port,
-    label_for(first.state).to_ascii_lowercase()
-  );
-  let suffix = if app.managed.len() > 1 {
-    format!("  +{} more", app.managed.len() - 1)
-  } else {
-    String::new()
-  };
-  // Truncate the head to make room for the suffix. Width-based so
-  // CJK model names don't push `+N more` off-screen.
-  let head_budget = budget.saturating_sub(suffix.width());
-  let head_truncated = ellipsise(&head, head_budget);
+  // Layout: `running 3 (name1 :port1 · name2 :port2 · …)`. The
+  // count prefix is fixed-width, the paren-list takes the rest and
+  // truncates with `…` (not `…/`) since model names read left-to-
+  // right; the right edge is the dispensable end.
+  let prefix = format!("{n} (");
+  let suffix = ")";
+  let prefix_w = prefix.width();
+  let suffix_w = suffix.width();
+  let list_budget = budget.saturating_sub(prefix_w + suffix_w);
+  let parts: Vec<String> = app
+    .managed
+    .iter()
+    .map(|m| format!("{} :{}", model_display_name(&m.path), m.port))
+    .collect();
+  let joined = parts.join(" · ");
+  let trimmed = right_ellipsise(&joined, list_budget);
   Line::from(vec![
     Span::styled(LABEL_RUNNING, Style::default().fg(palette.muted)),
-    Span::styled(head_truncated, Style::default().fg(palette.fg)),
-    Span::styled(suffix, Style::default().fg(palette.muted)),
+    Span::styled(prefix, Style::default().fg(palette.fg)),
+    Span::styled(trimmed, Style::default().fg(palette.fg)),
+    Span::styled(suffix, Style::default().fg(palette.fg)),
   ])
 }
 
@@ -421,29 +444,58 @@ mod tests {
   }
 
   #[test]
-  fn running_row_renders_dash_when_zero_managed() {
+  fn running_row_shows_zero_when_no_managed_rows() {
     let app = App::new(AppOptions::default());
     let rows = render_lines(&app);
     let running_row = rows.iter().find(|r| r.contains("running")).unwrap();
     assert!(
-      running_row.contains("—"),
-      "expected em-dash on running row when none managed, got: {running_row:?}"
+      running_row.contains("0") && !running_row.contains("("),
+      "expected `running 0` (no parens) when none managed, got: {running_row:?}"
     );
   }
 
   #[test]
-  fn running_row_renders_plus_n_more_for_extra_managed() {
+  fn running_row_lists_each_managed_with_count_prefix() {
     let mut app = App::new(AppOptions::default());
     app.managed = vec![
       fake_managed("/m/qwen.gguf", 41100, SurfaceState::Ready),
       fake_managed("/m/gemma.gguf", 41101, SurfaceState::Loading),
-      fake_managed("/m/phi.gguf", 41102, SurfaceState::Ready),
     ];
     let rows = render_lines(&app);
     let running_row = rows.iter().find(|r| r.contains("running")).unwrap();
-    assert!(running_row.contains("qwen"));
-    assert!(running_row.contains(":41100"));
-    assert!(running_row.contains("+2 more"));
+    assert!(
+      running_row.contains("2 ("),
+      "expected count prefix `2 (`, got: {running_row:?}"
+    );
+    assert!(
+      running_row.contains("qwen :41100"),
+      "expected `qwen :41100` entry, got: {running_row:?}"
+    );
+  }
+
+  #[test]
+  fn running_row_truncates_with_ellipsis_when_list_overflows() {
+    let mut app = App::new(AppOptions::default());
+    app.managed = (0..5)
+      .map(|i| {
+        fake_managed(
+          &format!("/m/model-with-very-long-name-{i}"),
+          41100 + i,
+          SurfaceState::Ready,
+        )
+      })
+      .collect();
+    let rows = render_lines(&app);
+    let running_row = rows.iter().find(|r| r.contains("running")).unwrap();
+    assert!(
+      running_row.contains("…"),
+      "expected trailing `…` on overflow, got: {running_row:?}"
+    );
+    // The count prefix must always survive truncation.
+    assert!(
+      running_row.contains("5 ("),
+      "expected `5 (` count prefix even on overflow, got: {running_row:?}"
+    );
   }
 
   #[test]
@@ -556,11 +608,11 @@ mod tests {
   }
 
   #[test]
-  fn server_row_omits_flavor_when_binary_unresolved() {
-    // Previously `— (rocm)` rendered when the daemon hadn't located
-    // a `llama-server` binary, which read as a bug. The flavor tag
-    // only makes sense paired with an actual binary path, so an
-    // unresolved binary collapses the row to `—`.
+  fn server_row_shows_actionable_hint_when_binary_unresolved() {
+    // When the daemon hasn't located a `llama-server` binary, the
+    // row tells the user what knobs to turn — rather than a bare
+    // `—` that reads as a bug. The hint mentions both the env var
+    // and the CLI flag so either fix is discoverable.
     let mut app = App::new(AppOptions::default());
     app.daemon_info = DaemonInfo {
       server_path: None,
@@ -572,9 +624,16 @@ mod tests {
     };
     let rows = render_lines(&app);
     let server_row = rows.iter().find(|r| r.contains("server")).unwrap();
+    // The narrow 50-cell test backend truncates the hint, but the
+    // leading "Not found" tag and `LLAMADASH` env-var prefix
+    // survive the right-truncation.
     assert!(
-      server_row.contains("—"),
-      "expected em-dash placeholder when no binary, got: {server_row:?}"
+      server_row.contains("Not found"),
+      "expected `Not found` hint, got: {server_row:?}"
+    );
+    assert!(
+      server_row.contains("LLAMADASH"),
+      "expected LLAMADASH env-var hint, got: {server_row:?}"
     );
     assert!(
       !server_row.contains('('),

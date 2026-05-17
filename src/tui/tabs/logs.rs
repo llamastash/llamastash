@@ -8,7 +8,7 @@
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::theme::Palette;
@@ -113,25 +113,22 @@ fn lines_extend_tail<'a>(current: &[String], fresh: &'a [String]) -> Option<&'a 
   None
 }
 
+/// Render the Logs tab body into `area`. The caller (right_pane)
+/// owns the surrounding Block — this renderer paints content
+/// only, so the right pane can host a model header above the logs
+/// without an inner block nesting.
 pub fn render(frame: &mut Frame<'_>, area: Rect, state: &LogsTabState, palette: &Palette) {
-  let block = Block::default()
-    .title(" Logs ")
-    .borders(Borders::ALL)
-    .border_style(Style::default().fg(palette.muted));
-  let inner = block.inner(area);
-  frame.render_widget(block, area);
-
   if state.lines.is_empty() {
     let hint = Paragraph::new(Line::from(Span::styled(
       "no log lines yet — launch a model or wait for the daemon to forward stderr",
       Style::default().fg(palette.muted),
     )))
     .wrap(Wrap { trim: true });
-    frame.render_widget(hint, inner);
+    frame.render_widget(hint, area);
     return;
   }
 
-  let visible = state.lines.len().min(inner.height as usize);
+  let visible = state.lines.len().min(area.height as usize);
   let start = state.lines.len().saturating_sub(visible);
   let body: Vec<Line<'_>> = state
     .lines
@@ -143,7 +140,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &LogsTabState, palette: 
   if !state.auto_scroll {
     p = p.style(Style::default().add_modifier(Modifier::DIM));
   }
-  frame.render_widget(p, inner);
+  frame.render_widget(p, area);
 }
 
 #[cfg(test)]

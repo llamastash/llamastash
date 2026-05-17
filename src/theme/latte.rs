@@ -26,6 +26,7 @@ pub(crate) const PALETTE: Palette = Palette {
   error: RED,
   muted: SUBTEXT0,
   selection: SURFACE0,
+  highlight: YELLOW,
   status_loading: YELLOW,
   status_ready: GREEN,
   status_error: RED,

@@ -17,6 +17,10 @@ pub(crate) const PALETTE: Palette = Palette {
   error: Color::White,
   muted: Color::DarkGray,
   selection: Color::DarkGray,
+  // Reset → list_pane falls back to Modifier::REVERSED so mono
+  // keeps its glyph + invert idiom rather than gaining a colour
+  // it doesn't have anywhere else.
+  highlight: Color::Reset,
   status_loading: Color::Gray,
   status_ready: Color::White,
   status_error: Color::White,

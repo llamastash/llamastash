@@ -38,14 +38,9 @@ impl EmbedTabState {
   }
 }
 
+/// Render the Embed tab body into `area`. Block borders are owned
+/// by the right pane caller.
 pub fn render(frame: &mut Frame<'_>, area: Rect, state: &EmbedTabState, palette: &Palette) {
-  let block = Block::default()
-    .title(" Embed ")
-    .borders(Borders::ALL)
-    .border_style(Style::default().fg(palette.accent));
-  let inner = block.inner(area);
-  frame.render_widget(block, area);
-
   let layout = Layout::default()
     .direction(Direction::Vertical)
     .constraints([
@@ -53,7 +48,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &EmbedTabState, palette:
       Constraint::Min(1),
       Constraint::Length(1),
     ])
-    .split(inner);
+    .split(area);
 
   let prompt_block = Block::default()
     .title(" Input ")

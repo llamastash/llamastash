@@ -16,7 +16,7 @@
 //! block title. The global hint strip is on row 1.
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
@@ -25,35 +25,46 @@ use crate::theme::Palette;
 use crate::tui::app::App;
 use crate::tui::keybindings::Focus;
 use crate::tui::{
-  advanced_panel, help_bar, host_stats_pane, info_pane, launch_picker, list_pane, logo_pane,
-  right_pane,
+  advanced_panel, help_bar, help_overlay, host_stats_pane, info_pane, launch_picker, list_pane,
+  logo_pane, right_pane,
 };
 
 const INFO_ROW_HEIGHT: u16 = 7;
 const MIN_HEIGHT_FOR_INFO_ROW: u16 = 18;
 const HOST_PANEL_WIDTH: u16 = 32;
-const LOGO_PANEL_WIDTH: u16 = 25;
-const MIN_LOGO_INNER_WIDTH: u16 = 18;
+// COMPACT_BANNER is 7 cells wide; +1 cell padding each side + 2
+// border cells = 11. Drop the panel entirely on narrower terminals.
+const LOGO_PANEL_WIDTH: u16 = 11;
+const MIN_LOGO_INNER_WIDTH: u16 = 9;
 
 pub fn render(frame: &mut Frame<'_>, app: &mut App) {
   app.expire_toast();
   app.ensure_right_tab_reachable();
+  app.refresh_right_pane_sticky();
   let palette = app.palette();
   let area = frame.area();
 
-  let show_filter = app.focus == Focus::Filter;
+  // Paint the root area with the theme's background first so light
+  // palettes (Latte) actually show on a light surface — without this,
+  // the terminal's native background bleeds through every gap between
+  // bordered Blocks. `Color::Reset` opts out (used by `mono`) so the
+  // terminal default keeps winning for that theme.
+  if palette.bg != Color::Reset {
+    let bg = Paragraph::new("").style(Style::default().bg(palette.bg).fg(palette.fg));
+    frame.render_widget(bg, area);
+  }
+
   let show_info_row = area.height >= MIN_HEIGHT_FOR_INFO_ROW;
 
-  // Vertical layout: title, [info,] body, [filter].
-  let mut constraints: Vec<Constraint> = Vec::with_capacity(4);
+  // Vertical layout: title, [info,] body. The filter input renders
+  // inline in the Models block title now, so the body owns the
+  // bottom edge — no dedicated filter row.
+  let mut constraints: Vec<Constraint> = Vec::with_capacity(3);
   constraints.push(Constraint::Length(1));
   if show_info_row {
     constraints.push(Constraint::Length(INFO_ROW_HEIGHT));
   }
   constraints.push(Constraint::Min(1));
-  if show_filter {
-    constraints.push(Constraint::Length(1));
-  }
   let chunks = Layout::default()
     .direction(Direction::Vertical)
     .constraints(constraints)
@@ -67,10 +78,6 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     idx += 1;
   }
   render_body(frame, chunks[idx], app, palette);
-  idx += 1;
-  if show_filter {
-    render_filter_line(frame, chunks[idx], app, palette);
-  }
 
   // Overlays last.
   if app.focus == Focus::LaunchPicker {
@@ -82,6 +89,9 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     if let Some(state) = &app.advanced_panel {
       advanced_panel::render(frame, area, state, palette);
     }
+  }
+  if app.show_help {
+    help_overlay::render(frame, area, app.focus, palette);
   }
 }
 
@@ -115,8 +125,12 @@ fn render_title_left(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Pal
   } else {
     (palette.warning, "daemon connecting…")
   };
+  let theme_name = app.options.theme.short_name();
   let line = Line::from(vec![
     Span::raw(" "),
+    // Llama mascot glyph — picked from the BMP so it renders without
+    // an emoji-capable font dependency.
+    Span::styled("🦙 ", Style::default().fg(palette.bg)),
     Span::styled(
       "LlamaDash",
       Style::default().fg(palette.bg).add_modifier(Modifier::BOLD),
@@ -125,6 +139,10 @@ fn render_title_left(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Pal
     Span::styled("●", Style::default().fg(dot_color)),
     Span::raw(" "),
     Span::styled(daemon_label, Style::default().fg(palette.bg)),
+    Span::styled(" · ", Style::default().fg(palette.bg)),
+    // Half-filled circle glyph — visual cue for "theme" / light/dark.
+    Span::styled("◐ ", Style::default().fg(palette.bg)),
+    Span::styled(theme_name, Style::default().fg(palette.bg)),
   ]);
   let para = Paragraph::new(line).style(Style::default().bg(palette.accent).fg(palette.bg));
   frame.render_widget(para, area);
@@ -161,54 +179,81 @@ fn render_info_row(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palet
 }
 
 fn render_body(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
-  let split = Layout::default()
-    .direction(Direction::Horizontal)
-    .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-    .split(area);
-  let rows = app.rendered_rows();
-  if rows.is_empty() {
-    render_empty_state(
-      frame,
-      split[0],
-      palette,
-      app.models.len(),
-      app.filter_buffer.as_str(),
-    );
+  let show_right = app.right_pane_visible();
+  let split = if show_right {
+    Layout::default()
+      .direction(Direction::Horizontal)
+      .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+      .split(area)
   } else {
-    let filter = if app.filter_buffer.is_empty() {
-      None
-    } else {
-      Some(app.filter_buffer.as_str())
-    };
-    list_pane::render(
-      frame,
-      split[0],
-      &rows,
-      app.list_cursor,
-      app.models.len(),
-      filter,
-      palette,
-    );
+    // Hidden right pane → Models list owns the whole body width.
+    Layout::default()
+      .direction(Direction::Horizontal)
+      .constraints([Constraint::Percentage(100)])
+      .split(area)
+  };
+  let rows = app.rendered_rows();
+  let title = build_models_title(app, split[0].width as usize, &rows);
+  if rows.is_empty() {
+    render_empty_state(frame, split[0], palette, title);
+  } else {
+    list_pane::render(frame, split[0], &rows, app.list_cursor, title, palette);
   }
-  right_pane::render(frame, split[1], app, palette);
+  if show_right {
+    right_pane::render(frame, split[1], app, palette);
+  }
+}
+
+/// Compose the Models block title from current app state. Pulled
+/// out so the empty-state path and the populated-list path share
+/// the same title bar (a /:filter chip when inactive, the inline
+/// `/ buf` input when active).
+fn build_models_title<'a>(
+  app: &'a App,
+  area_width: usize,
+  rows: &[list_pane::ListRow],
+) -> list_pane::TitleInputs<'a> {
+  let filter = if app.filter_buffer.is_empty() && app.focus != Focus::Filter {
+    list_pane::FilterTitle::Inactive
+  } else {
+    list_pane::FilterTitle::Active {
+      buffer: app.filter_buffer.as_str(),
+      focused: app.focus == Focus::Filter,
+    }
+  };
+  let show_stop = focused_row_is_running(app, rows);
+  list_pane::TitleInputs {
+    total: app.models.len(),
+    area_width,
+    filter,
+    show_stop,
+  }
+}
+
+/// True when the cursor row points at a model whose launch state
+/// is one of the "running"-ish slots (Ready / Loading / Launching).
+/// The `s:stop` hint should hide when stopping makes no sense.
+fn focused_row_is_running(app: &App, rows: &[list_pane::ListRow]) -> bool {
+  use crate::tui::status_icons::SurfaceState;
+  match rows.get(app.list_cursor) {
+    Some(list_pane::ListRow::Model { state, .. }) => matches!(
+      state,
+      SurfaceState::Ready | SurfaceState::Loading | SurfaceState::Launching
+    ),
+    _ => false,
+  }
 }
 
 fn render_empty_state(
   frame: &mut Frame<'_>,
   area: Rect,
   palette: &Palette,
-  total: usize,
-  filter: &str,
+  title: list_pane::TitleInputs<'_>,
 ) {
   use ratatui::widgets::{Block, Borders};
-  let filter_chip = if filter.is_empty() {
-    None
-  } else {
-    Some(filter)
-  };
-  let title = list_pane::build_block_title(total, filter_chip, area.width as usize);
+  let title_line = list_pane::build_block_title(title, palette);
   let block = Block::default()
-    .title(title)
+    .title(title_line)
     .borders(Borders::ALL)
     .border_style(Style::default().fg(palette.accent));
   let inner = block.inner(area);
@@ -224,26 +269,6 @@ fn render_empty_state(
     )),
   ];
   frame.render_widget(Paragraph::new(lines), inner);
-}
-
-fn render_filter_line(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
-  let line = Line::from(vec![
-    Span::styled(
-      "/",
-      Style::default()
-        .fg(palette.accent)
-        .add_modifier(Modifier::BOLD),
-    ),
-    Span::raw(" "),
-    Span::styled(&app.filter_buffer, Style::default().fg(palette.fg)),
-    Span::styled(
-      "│",
-      Style::default()
-        .fg(palette.accent)
-        .add_modifier(Modifier::REVERSED),
-    ),
-  ]);
-  frame.render_widget(Paragraph::new(line), area);
 }
 
 #[cfg(test)]
@@ -284,6 +309,73 @@ mod tests {
   }
 
   #[test]
+  fn root_bg_is_painted_with_palette_bg_for_light_theme() {
+    // Latte is the only built-in light theme; without an explicit
+    // root paint, gaps between bordered Blocks would expose the
+    // terminal's default (typically dark) background and the panel
+    // would look broken on a light terminal. Cells inside a Block's
+    // body — pure background between text — should carry Latte's
+    // off-white bg.
+    use crate::theme::{palette_for, ThemeName};
+    let mut app = App::new(AppOptions {
+      theme: ThemeName::Latte,
+    });
+    // Force the Models pane into its populated path so the body cell
+    // we probe is inside a real list area, not the empty-state hint.
+    app.daemon_connected = true;
+    let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    term.draw(|f| render(f, &mut app)).unwrap();
+    let buf = term.backend().buffer().clone();
+    let palette = palette_for(ThemeName::Latte);
+    // Cell (1, 1) sits just inside the outer body area — between the
+    // info row's bordered Blocks. Without the root paint this cell is
+    // a `Color::Reset` bg, leaking the terminal default.
+    let cell = buf.cell((1, 1)).unwrap();
+    assert_eq!(
+      cell.bg, palette.bg,
+      "root paint should make Latte show on its own bg, got bg={:?}",
+      cell.bg
+    );
+  }
+
+  #[test]
+  fn root_bg_paints_dark_themes_too_so_panel_gaps_match() {
+    // Same property for macchiato: cells between bordered Blocks pick
+    // up the theme bg, not the terminal default. This is what keeps
+    // the dashboard looking like one solid surface across terminals
+    // with non-matching bg (e.g. white terminals showing the dark
+    // theme).
+    use crate::theme::{palette_for, ThemeName};
+    let app = App::new(AppOptions {
+      theme: ThemeName::Macchiato,
+    });
+    let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    let mut app_mut = app;
+    term.draw(|f| render(f, &mut app_mut)).unwrap();
+    let buf = term.backend().buffer().clone();
+    let palette = palette_for(ThemeName::Macchiato);
+    let cell = buf.cell((1, 1)).unwrap();
+    assert_eq!(cell.bg, palette.bg);
+  }
+
+  #[test]
+  fn mono_theme_skips_root_bg_paint() {
+    // Mono opts out (`palette.bg == Color::Reset`) so the terminal's
+    // own bg shows through — that's the whole point of the mono
+    // theme. Verify by confirming a body cell still has `Reset` bg.
+    use crate::theme::ThemeName;
+    let app = App::new(AppOptions {
+      theme: ThemeName::Mono,
+    });
+    let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    let mut app_mut = app;
+    term.draw(|f| render(f, &mut app_mut)).unwrap();
+    let buf = term.backend().buffer().clone();
+    let cell = buf.cell((1, 1)).unwrap();
+    assert_eq!(cell.bg, Color::Reset);
+  }
+
+  #[test]
   fn narrow_height_collapses_info_row() {
     // A 16-row terminal is below MIN_HEIGHT_FOR_INFO_ROW; the info
     // row drops and only title + body render.
@@ -306,21 +398,19 @@ mod tests {
 
   #[test]
   fn narrow_width_hides_logo_panel() {
-    // 70-col terminal: 32 (host) + Logo's 25 + min 18 inner > 70.
+    // 50-col terminal: 32 (host) + Logo's 14 + min 11 inner > 50.
     // Logo should drop; Daemon flexes.
     let app = App::new(AppOptions::default());
-    let rows = render_into(70, 30, app);
+    let rows = render_into(50, 30, app);
     let body = rows.join("\n");
     assert!(body.contains("Host"));
     assert!(body.contains("Daemon"));
     // The theme name (default `macchiato`) only appears in the Logo
-    // block title, so its absence is a clean signal that the Logo
-    // panel did not render. (The global hint strip on the title row
-    // contains `t:theme` regardless of the Logo panel's visibility,
-    // which is why we test the theme *name* rather than the hint.)
+    // panel, so its absence is a clean signal that the panel did not
+    // render.
     assert!(
       !body.contains("macchiato"),
-      "logo panel should be hidden at width 70: {body}"
+      "logo panel should be hidden at width 50: {body}"
     );
   }
 
@@ -329,7 +419,7 @@ mod tests {
     let app = App::new(AppOptions::default());
     let rows = render_into(100, 30, app);
     let body = rows.join("\n");
-    // At 100 cols, Host(32) + Daemon(min 1) + Logo(25) easily fit.
+    // At 100 cols, Host(32) + Daemon(min 1) + Logo(14) easily fit.
     assert!(
       body.contains("macchiato"),
       "logo panel should render at width 100: {body}"
@@ -337,16 +427,21 @@ mod tests {
   }
 
   #[test]
-  fn filter_input_appears_only_when_focused() {
+  fn filter_input_appears_inline_in_models_title_when_focused() {
     let mut app = App::new(AppOptions::default());
     app.focus = Focus::Filter;
     app.filter_buffer = "qwen".into();
     let rows = render_into(100, 30, app);
-    // The filter line appears below the body — find a row starting
-    // with `/`.
+    let frame = rows.join("\n");
+    // The inline input renders inside the Models block title strip.
     assert!(
-      rows.iter().any(|r| r.starts_with("/")),
-      "expected filter input line: {rows:#?}"
+      frame.contains("/ qwen"),
+      "expected inline `/ qwen` in Models title: {frame}"
+    );
+    // The dedicated bottom filter row no longer exists.
+    assert!(
+      !rows.iter().any(|r| r.starts_with("/ ")),
+      "no separate filter row should render: {rows:#?}"
     );
   }
 }

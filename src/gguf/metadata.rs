@@ -370,29 +370,60 @@ fn infer_mode_hint(header: &GgufHeader, arch: Option<&str>) -> ModeHint {
   let has = |needle: &str| tensor_names.iter().any(|n| n == &needle);
   let any_contains = |needle: &str| tensor_names.iter().any(|n| n.contains(needle));
 
-  // Reranker first: very specific tensor signatures or arch-level marker.
   let arch_hint = arch.unwrap_or("").to_ascii_lowercase();
+  let tags_lc = header
+    .get_string(&["general.tags"])
+    .map(|s| s.to_ascii_lowercase())
+    .unwrap_or_default();
+  let name_lc = header
+    .get_string(&["general.name"])
+    .map(|s| s.to_ascii_lowercase())
+    .unwrap_or_default();
+
+  // Reranker first: very specific tensor signatures or
+  // metadata-level marker.
   if arch_hint.contains("rerank")
-    || header
-      .get_string(&["general.tags"])
-      .map(|s| s.contains("rerank"))
-      .unwrap_or(false)
+    || tags_lc.contains("rerank")
+    || name_lc.contains("rerank")
     || any_contains("cls.predictions")
     || has("cls.score.weight")
   {
     return ModeHint::Rerank;
   }
 
-  // Chat: has an output projection (`output.weight` or `lm_head.weight`).
-  if has("output.weight") || has("lm_head.weight") {
+  // Embedding (checked BEFORE the tied-embedding chat heuristic):
+  // some embedding models are finetunes of decoder-only LLMs (e.g.
+  // `nomic-embed-code` from Qwen2) that still ship
+  // `output_norm.weight`, but they advertise an explicit
+  // `<arch>.pooling_type` key — the GGUF format's own embedding
+  // signal — and/or `general.name` / `general.tags` carry "embed".
+  // BERT-family arch is the strongest signal of all.
+  let has_pooling_type = arch
+    .map(|a| header.metadata.contains_key(&format!("{a}.pooling_type")))
+    .unwrap_or(false);
+  if arch_hint == "bert"
+    || arch_hint.contains("embed")
+    || tags_lc.contains("embed")
+    || name_lc.contains("embed")
+    || has_pooling_type
+  {
+    return ModeHint::Embedding;
+  }
+
+  // Chat: explicit output projection, OR a final `output_norm`
+  // before the (often tied-to-input-embeddings) lm_head. Newer
+  // decoder-only LLMs — Gemma 3/4, Qwen 3, several Mistral variants
+  // — share input embeddings with the output projection and so omit
+  // `output.weight` / `lm_head.weight` from the GGUF. Checking
+  // `output_norm.weight` catches those without misclassifying
+  // BERT-family encoders, which don't have it (they end with a
+  // `pooler` or `cls.*` head instead).
+  if has("output.weight") || has("lm_head.weight") || has("output_norm.weight") {
     return ModeHint::Chat;
   }
 
-  // Embedding: BERT-family arch is strongly indicative; also any GGUF that
-  // advertises embedding_length but has no output projection.
-  if arch_hint == "bert" || arch_hint.contains("embed") {
-    return ModeHint::Embedding;
-  }
+  // Older fallback: arch advertises embedding_length without any
+  // output projection — almost certainly an encoder.
   if let Some(a) = arch {
     if header.get_u64(&[format!("{a}.embedding_length")]).is_some() {
       return ModeHint::Embedding;
@@ -442,6 +473,77 @@ mod tests {
     assert_eq!(m.native_ctx, Some(4096));
     assert_eq!(m.mode_hint, ModeHint::Chat);
     assert_eq!(m.quant, Quant::Q4_K);
+  }
+
+  #[test]
+  fn chat_mode_when_output_norm_present_with_tied_embeddings() {
+    // Regression: Gemma 3/4, Qwen 3, etc. tie input embeddings to the
+    // output projection, so the GGUF lacks `output.weight` /
+    // `lm_head.weight`. They still ship `output_norm.weight` — the
+    // final RMSNorm before the LM head — which is enough to identify
+    // them as decoder-only chat models.
+    let bytes = FixtureBuilder::new()
+      .with_arch("gemma3")
+      .with_embedding_length(2048)
+      .with_context_length(131_072)
+      .with_tensor("token_embd.weight", &[2048, 256_000], 12)
+      .with_tensor("blk.0.attn_q.weight", &[2048, 2048], 12)
+      .with_tensor("output_norm.weight", &[2048], 12)
+      .build();
+    let m = parse(bytes);
+    assert_eq!(m.arch.as_deref(), Some("gemma3"));
+    assert_eq!(
+      m.mode_hint,
+      ModeHint::Chat,
+      "gemma 3/4 must classify as chat despite tied output embeddings"
+    );
+  }
+
+  #[test]
+  fn embedding_mode_when_arch_pooling_type_is_set() {
+    // `qwen2.pooling_type` (or any `<arch>.pooling_type`) is the
+    // GGUF format's explicit signal for an embedding/pooling head.
+    // Even when the model carries `output_norm.weight` from its
+    // base decoder, the pooling_type key wins — that's how
+    // nomic-embed-code (Qwen2 base, embedding head) is identified
+    // in the wild.
+    let bytes = FixtureBuilder::new()
+      .with_arch("qwen2")
+      .with_embedding_length(2048)
+      .with_kv("qwen2.pooling_type", GgufValue::U64(0))
+      .with_tensor("token_embd.weight", &[2048, 152_000], 12)
+      .with_tensor("output_norm.weight", &[2048], 12)
+      .build();
+    let m = parse(bytes);
+    assert_eq!(
+      m.mode_hint,
+      ModeHint::Embedding,
+      "pooling_type must override the output_norm chat heuristic"
+    );
+  }
+
+  #[test]
+  fn embedding_mode_when_general_name_carries_embed_even_with_output_norm() {
+    // Regression: nomic-embed-code is a Qwen2 finetune that ships
+    // `output_norm.weight` (a decoder-only chat signal) but is
+    // published purely as an embedding model. The `general.name` key
+    // carries "embed" — when present, that overrides the chat
+    // heuristic.
+    let bytes = FixtureBuilder::new()
+      .with_arch("qwen2")
+      .with_embedding_length(2048)
+      .with_kv("general.name", GgufValue::String("nomic-embed-code".into()))
+      .with_tensor("token_embd.weight", &[2048, 152_000], 12)
+      .with_tensor("blk.0.attn_q.weight", &[2048, 2048], 12)
+      .with_tensor("output_norm.weight", &[2048], 12)
+      .build();
+    let m = parse(bytes);
+    assert_eq!(m.arch.as_deref(), Some("qwen2"));
+    assert_eq!(
+      m.mode_hint,
+      ModeHint::Embedding,
+      "general.name=`*embed*` must classify as embedding even when output_norm is present"
+    );
   }
 
   #[test]

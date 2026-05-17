@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
+use sysinfo::{Components, CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 use tokio::sync::RwLock;
 
 use super::shutdown::ShutdownToken;
@@ -27,6 +27,11 @@ use crate::gpu::{self, GpuInfo};
 pub struct HostMetricsSnapshot {
   /// Mean CPU utilisation across all logical cores, 0..=100.
   pub cpu_pct: f32,
+  /// CPU package temperature in °C, when sysinfo's component sensor
+  /// surfaces a `coretemp`/`k10temp`/`Tdie`/etc. reading. `None`
+  /// when the platform has no readable sensor (containers, BSDs).
+  #[serde(default)]
+  pub cpu_temp_c: Option<f32>,
   pub ram_used_bytes: u64,
   pub ram_total_bytes: u64,
   /// Mean utilization % across GPUs that surface it. `None` when no
@@ -155,10 +160,12 @@ async fn probe_gpu() -> GpuInfo {
 
 fn build_snapshot(sys: &System, info: GpuInfo) -> HostMetricsSnapshot {
   let cpu_pct = host_cpu_pct(sys);
+  let cpu_temp_c = host_cpu_temp_c();
   let (gpu_util_pct, gpu_mem_used_bytes, gpu_mem_total_bytes, gpu_temp_c, gpu_device_count) =
     aggregate_gpu(&info);
   HostMetricsSnapshot {
     cpu_pct,
+    cpu_temp_c,
     ram_used_bytes: sys.used_memory(),
     ram_total_bytes: sys.total_memory(),
     gpu_util_pct,
@@ -168,6 +175,35 @@ fn build_snapshot(sys: &System, info: GpuInfo) -> HostMetricsSnapshot {
     gpu_backend: info.label().to_string(),
     gpu_device_count,
   }
+}
+
+/// Read the highest CPU package temperature from sysinfo Components.
+/// Hardware exposes sensors under varied labels (`coretemp`,
+/// `k10temp`, `Tctl`, `Tdie`, `CPU Package`, …); rather than match
+/// the platform, take the max reading across any component whose
+/// label hints at CPU. `None` when no matching sensor exists.
+fn host_cpu_temp_c() -> Option<f32> {
+  let mut components = Components::new_with_refreshed_list();
+  components.refresh();
+  let mut max: Option<f32> = None;
+  for c in components.iter() {
+    let label_lc = c.label().to_ascii_lowercase();
+    let cpu_hint = label_lc.contains("cpu")
+      || label_lc.contains("coretemp")
+      || label_lc.contains("k10temp")
+      || label_lc.contains("tctl")
+      || label_lc.contains("tdie")
+      || label_lc.contains("package");
+    if !cpu_hint {
+      continue;
+    }
+    let t = c.temperature();
+    if !t.is_finite() || t <= 0.0 {
+      continue;
+    }
+    max = Some(max.map_or(t, |m| m.max(t)));
+  }
+  max
 }
 
 fn host_cpu_pct(sys: &System) -> f32 {

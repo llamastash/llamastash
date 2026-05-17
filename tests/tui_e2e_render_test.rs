@@ -65,6 +65,7 @@ fn seeded_dashboard_app() -> App {
   };
   app.host_metrics = HostMetricsSnapshot {
     cpu_pct: 47.5,
+    cpu_temp_c: Some(54.0),
     ram_used_bytes: 11 * 1024 * 1024 * 1024,
     ram_total_bytes: 32 * 1024 * 1024 * 1024,
     gpu_util_pct: Some(84.0),
@@ -88,10 +89,10 @@ fn seeded_dashboard_app() -> App {
     cpu_pct: Some(312.0),
   }];
   // Park the cursor on the first model row (favorite) so the right
-  // pane title carries the focused launch metadata. The default
-  // cursor (0) lands on the `★ Favorites` section header and the
-  // right pane renders `—`, which masks every right-pane assertion.
-  app.list_cursor = 1;
+  // pane title carries the focused launch metadata. Row 0 is the
+  // table header, row 1 is the `★ Favorites` group, row 2 is the
+  // favorited model.
+  app.list_cursor = 2;
   app
 }
 

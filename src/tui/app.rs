@@ -131,6 +131,18 @@ pub struct App {
   pub host_metrics: HostMetricsSnapshot,
   /// Set when the user presses `q` so the event loop can exit.
   pub should_exit: bool,
+  /// Whether the modal help overlay is visible. Bound to `?`.
+  pub show_help: bool,
+  /// When `true`, the right pane is shown even if no model is
+  /// currently running. Set by `open_launch_picker` so pressing
+  /// Enter on a not-yet-running model pops the Settings tab into
+  /// view. Cleared by `close_launch_picker` (Esc).
+  pub right_pane_force_open: bool,
+  /// Sticky path of the running model whose Logs/Chat the right
+  /// pane should display when the list cursor lands on a row that
+  /// has no managed launch of its own. Updated whenever the cursor
+  /// moves to a running model.
+  pub right_pane_sticky_path: Option<PathBuf>,
 }
 
 impl App {
@@ -157,7 +169,23 @@ impl App {
       daemon_info: DaemonInfo::default(),
       host_metrics: HostMetricsSnapshot::default(),
       should_exit: false,
+      show_help: false,
+      right_pane_force_open: false,
+      right_pane_sticky_path: None,
     }
+  }
+
+  /// True when the right pane should render. Hidden until either a
+  /// model is running OR the user pressed Enter:launch (which sets
+  /// `right_pane_force_open`).
+  pub fn right_pane_visible(&self) -> bool {
+    self.right_pane_force_open || !self.managed.is_empty()
+  }
+
+  /// Toggle the modal help overlay. Bound to `?`. Esc also closes
+  /// it via the existing Cancel action plumbing.
+  pub fn toggle_help(&mut self) {
+    self.show_help = !self.show_help;
   }
 
   pub fn palette(&self) -> &'static Palette {
@@ -443,6 +471,37 @@ impl App {
     self.managed.iter().find(|m| m.path == path)
   }
 
+  /// The ManagedRow the right pane should display: prefers the
+  /// model the cursor sits on (when running), otherwise falls back
+  /// to the sticky path set the last time the cursor landed on a
+  /// running model. Returns `None` when no managed launches exist.
+  pub fn right_pane_focus(&self) -> Option<&ManagedRow> {
+    if let Some(m) = self.focused_managed() {
+      return Some(m);
+    }
+    let sticky = self.right_pane_sticky_path.as_ref()?;
+    self.managed.iter().find(|m| &m.path == sticky)
+  }
+
+  /// Refresh `right_pane_sticky_path` from the current cursor.
+  /// Called after every navigation event so the right pane follows
+  /// the cursor *when it lands on a running model* and otherwise
+  /// stays pinned to the last running model the user inspected.
+  pub fn refresh_right_pane_sticky(&mut self) {
+    if let Some(m) = self.focused_managed() {
+      self.right_pane_sticky_path = Some(m.path.clone());
+    } else if let Some(sticky) = &self.right_pane_sticky_path {
+      // Drop the sticky reference if its underlying launch
+      // disappeared (stopped). The next cursor move that lands on a
+      // running model will rehydrate it.
+      if !self.managed.iter().any(|m| &m.path == sticky) {
+        self.right_pane_sticky_path = self.managed.first().map(|m| m.path.clone());
+      }
+    } else if let Some(first) = self.managed.first() {
+      self.right_pane_sticky_path = Some(first.path.clone());
+    }
+  }
+
   /// Open the launch picker for the focused model. Seeds from
   /// persisted `last_params` (R20) when the daemon has reported any
   /// for the focused path, so a returning user lands on the params
@@ -467,8 +526,6 @@ impl App {
             .iter()
             .position(|val| *val == c)
         });
-        // Seed the advanced panel buffer so opening the editor
-        // shows the user their last flag set.
         if !last.advanced.is_empty() {
           let buffer = last.advanced.join(" ");
           let cursor = buffer.len();
@@ -478,12 +535,22 @@ impl App {
     }
     state.active_instances = active_count;
     self.launch_picker = Some(state);
-    self.focus = Focus::LaunchPicker;
+    // New behaviour: pressing Enter:launch on a model routes the
+    // user to the Settings tab in the right pane instead of the
+    // centred popup. The pane also flips to RightPane focus so the
+    // Enter→Settings flow needs no extra keystroke.
+    self.right_tab = RightTab::Settings;
+    self.right_pane_force_open = true;
+    self.focus = Focus::RightPane;
   }
 
   pub fn close_launch_picker(&mut self) {
     self.launch_picker = None;
+    self.right_pane_force_open = false;
     self.focus = Focus::List;
+    // Snap the right tab back to Logs so the next launch doesn't
+    // re-open on a stale Settings view.
+    self.right_tab = RightTab::Logs;
   }
 
   pub fn open_advanced_panel(&mut self) {
@@ -535,9 +602,12 @@ impl App {
   /// appropriate second tab (Chat / Embed / Rerank). Non-Ready
   /// models render `Logs` only.
   pub fn available_right_tabs(&self) -> Vec<RightTab> {
+    // Non-Ready focus: Logs (recent log lines from a stopped/failed
+    // launch may still be useful) + Settings (so the user can review
+    // / edit launch params before pressing Enter again).
     let managed = match self.focused_managed() {
       Some(m) if m.state == SurfaceState::Ready => m,
-      _ => return vec![RightTab::Logs],
+      _ => return vec![RightTab::Logs, RightTab::Settings],
     };
     let mode = self
       .models
@@ -560,6 +630,19 @@ impl App {
     let pos = tabs.iter().position(|t| *t == self.right_tab).unwrap_or(0);
     let next = (pos + 1) % tabs.len();
     self.right_tab = tabs[next];
+  }
+
+  /// Cycle to the previous right-pane tab — used by `Left` arrow
+  /// alongside [`Self::cycle_right_tab`] (`Right` arrow / Tab).
+  pub fn cycle_right_tab_prev(&mut self) {
+    let tabs = self.available_right_tabs();
+    if tabs.is_empty() {
+      self.right_tab = RightTab::Logs;
+      return;
+    }
+    let pos = tabs.iter().position(|t| *t == self.right_tab).unwrap_or(0);
+    let prev = (pos + tabs.len() - 1) % tabs.len();
+    self.right_tab = tabs[prev];
   }
 
   /// Clamp `right_tab` back to a reachable choice if the focused
@@ -611,12 +694,19 @@ fn apply_filter(rows: &[ListRow], query: &str) -> Vec<ListRow> {
   let mut i = 0;
   while i < rows.len() {
     match &rows[i] {
+      // The column-label row is always the first row in the
+      // unfiltered list; preserve it at the top of the filtered
+      // view so the columns still have labels.
+      ListRow::TableHeader => {
+        out.push(ListRow::TableHeader);
+        i += 1;
+      }
       ListRow::Header { .. } => {
         let header = rows[i].clone();
         let mut j = i + 1;
         let mut group: Vec<ListRow> = Vec::new();
         while j < rows.len() {
-          if matches!(rows[j], ListRow::Header { .. }) {
+          if matches!(rows[j], ListRow::Header { .. } | ListRow::TableHeader) {
             break;
           }
           if kept.contains(&j) {
@@ -822,13 +912,16 @@ mod tests {
     let mut app = App::new(AppOptions::default());
     app.models = vec![fake("/m/x/a.gguf", "/m/x"), fake("/m/y/b.gguf", "/m/y")];
     let rows = app.rendered_rows();
-    // Layout: header(/m/x), model a, header(/m/y), model b
-    assert_eq!(rows.len(), 4);
-    app.list_cursor = 1; // model a
+    // Layout: TableHeader, header(/m/x), model a, header(/m/y), model b
+    assert_eq!(rows.len(), 5);
+    app.list_cursor = 2; // model a
     app.move_down();
-    assert_eq!(app.list_cursor, 3, "move_down skipped header to next model");
+    assert_eq!(app.list_cursor, 4, "move_down skipped header to next model");
     app.move_up();
-    assert_eq!(app.list_cursor, 1, "move_up went back past the header");
+    assert_eq!(
+      app.list_cursor, 2,
+      "move_up went back past the group header"
+    );
   }
 
   #[test]
@@ -977,14 +1070,23 @@ mod tests {
   }
 
   #[test]
-  fn open_launch_picker_carries_model_name() {
+  fn open_launch_picker_carries_model_name_and_routes_to_settings_tab() {
     let mut app = App::new(AppOptions::default());
     app.models = vec![fake("/m/a.gguf", "/m")];
-    app.list_cursor = 1;
+    // Rows: [TableHeader, Header(/m), Model] — model is at index 2.
+    app.list_cursor = 2;
     app.open_launch_picker();
-    let picker = app.launch_picker.as_ref().expect("picker open");
+    let picker = app.launch_picker.as_ref().expect("picker state");
     assert_eq!(picker.model_name, "a");
-    assert_eq!(app.focus, Focus::LaunchPicker);
+    // New behaviour: launch picker no longer pops a centred modal;
+    // it parks focus on the right pane's Settings tab and forces
+    // the pane open if no model is currently running.
+    assert_eq!(app.focus, Focus::RightPane);
+    assert_eq!(app.right_tab, RightTab::Settings);
+    assert!(
+      app.right_pane_visible(),
+      "right pane must be visible after open_launch_picker"
+    );
   }
 
   #[test]

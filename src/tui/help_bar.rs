@@ -21,12 +21,12 @@ use crate::theme::Palette;
 /// reordering an entry updates both call sites automatically.
 const GLOBAL_HINTS: &[(&str, &str)] = &[
   ("?", "help"),
+  ("Tab", "focus"),
   ("t", "theme"),
-  ("/", "filter"),
   ("q", "quit"),
 ];
 
-const HINT_SEP: &str = "  ";
+const HINT_SEP: &str = " · ";
 
 /// Width in columns the title row should reserve for the global hint
 /// strip, including the leading space inside each `key:label` pair and
@@ -96,9 +96,15 @@ mod tests {
   fn global_hint_text_lists_required_keys() {
     let text = global_hint_text();
     assert!(text.contains("?:help"));
+    assert!(text.contains("Tab:focus"));
     assert!(text.contains("t:theme"));
-    assert!(text.contains("/:filter"));
     assert!(text.contains("q:quit"));
+    // `/:filter` is panel-scoped now (lives in the Models block
+    // title) — it should not appear in the global strip.
+    assert!(
+      !text.contains("/:filter"),
+      "filter is panel-scoped; remove from global hints: {text}"
+    );
   }
 
   #[test]

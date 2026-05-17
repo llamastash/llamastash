@@ -70,14 +70,10 @@ impl ChatTabState {
   }
 }
 
+/// Render the Chat tab body into `area`. The caller (right_pane)
+/// owns the surrounding Block — this renderer paints content only,
+/// no outer wrapper.
 pub fn render(frame: &mut Frame<'_>, area: Rect, state: &ChatTabState, palette: &Palette) {
-  let block = Block::default()
-    .title(" Chat ")
-    .borders(Borders::ALL)
-    .border_style(Style::default().fg(palette.accent));
-  let inner = block.inner(area);
-  frame.render_widget(block, area);
-
   let layout = Layout::default()
     .direction(Direction::Vertical)
     .constraints([
@@ -85,7 +81,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &ChatTabState, palette: 
       Constraint::Length(3),
       Constraint::Length(1),
     ])
-    .split(inner);
+    .split(area);
 
   let body_text = if state.collapse_thinks {
     collapse_think_blocks(&state.response)

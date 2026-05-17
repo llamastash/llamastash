@@ -9,6 +9,7 @@ pub mod chat;
 pub mod embed;
 pub mod logs;
 pub mod rerank;
+pub mod settings;
 
 use crate::gguf::metadata::ModeHint;
 
@@ -21,6 +22,9 @@ pub enum RightTab {
   Chat,
   Embed,
   Rerank,
+  /// Launch-parameter form. Editable for not-yet-launched models;
+  /// read-only for running models (shows the params used).
+  Settings,
 }
 
 impl RightTab {
@@ -30,6 +34,7 @@ impl RightTab {
       RightTab::Chat => "Chat",
       RightTab::Embed => "Embed",
       RightTab::Rerank => "Rerank",
+      RightTab::Settings => "Settings",
     }
   }
 }
@@ -53,11 +58,14 @@ pub enum TabEvent {
 /// renderer only exposes the second tab when the model is `Ready`;
 /// this helper just declares which tab type is appropriate.
 pub fn tabs_for_mode(mode: ModeHint) -> Vec<RightTab> {
+  // Settings is always present so the user can review/edit launch
+  // params for the focused model. The mode-specific surface (Chat /
+  // Embed / Rerank) sits between Logs and Settings.
   match mode {
-    ModeHint::Chat => vec![RightTab::Logs, RightTab::Chat],
-    ModeHint::Embedding => vec![RightTab::Logs, RightTab::Embed],
-    ModeHint::Rerank => vec![RightTab::Logs, RightTab::Rerank],
-    ModeHint::Unknown => vec![RightTab::Logs],
+    ModeHint::Chat => vec![RightTab::Logs, RightTab::Chat, RightTab::Settings],
+    ModeHint::Embedding => vec![RightTab::Logs, RightTab::Embed, RightTab::Settings],
+    ModeHint::Rerank => vec![RightTab::Logs, RightTab::Rerank, RightTab::Settings],
+    ModeHint::Unknown => vec![RightTab::Logs, RightTab::Settings],
   }
 }
 
@@ -66,23 +74,26 @@ mod tests {
   use super::*;
 
   #[test]
-  fn unknown_mode_only_exposes_logs() {
-    assert_eq!(tabs_for_mode(ModeHint::Unknown), vec![RightTab::Logs]);
-  }
-
-  #[test]
-  fn chat_mode_pairs_logs_and_chat() {
+  fn unknown_mode_exposes_logs_and_settings() {
     assert_eq!(
-      tabs_for_mode(ModeHint::Chat),
-      vec![RightTab::Logs, RightTab::Chat]
+      tabs_for_mode(ModeHint::Unknown),
+      vec![RightTab::Logs, RightTab::Settings]
     );
   }
 
   #[test]
-  fn embedding_mode_pairs_logs_and_embed() {
+  fn chat_mode_pairs_logs_chat_settings() {
+    assert_eq!(
+      tabs_for_mode(ModeHint::Chat),
+      vec![RightTab::Logs, RightTab::Chat, RightTab::Settings]
+    );
+  }
+
+  #[test]
+  fn embedding_mode_pairs_logs_embed_settings() {
     assert_eq!(
       tabs_for_mode(ModeHint::Embedding),
-      vec![RightTab::Logs, RightTab::Embed]
+      vec![RightTab::Logs, RightTab::Embed, RightTab::Settings]
     );
   }
 }

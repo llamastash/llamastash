@@ -4,6 +4,31 @@
 //! when three panes each defined their own `format_bytes` with subtly
 //! different thresholds.
 
+/// Format a token count for the Ctx column / launch picker:
+/// `131072` → `128k`, `262144` → `256k`, `2_000_000` → `2.0M`.
+/// Sub-1024 values render as raw integers (e.g., `512`).
+pub(crate) fn format_tokens(n: u64) -> String {
+  const K: u64 = 1024;
+  const M: u64 = K * 1024;
+  if n >= M {
+    let m = n as f64 / M as f64;
+    if m >= 10.0 {
+      format!("{m:.0}M")
+    } else {
+      format!("{m:.1}M")
+    }
+  } else if n >= K {
+    let k = n as f64 / K as f64;
+    if k >= 10.0 {
+      format!("{k:.0}k")
+    } else {
+      format!("{k:.1}k")
+    }
+  } else {
+    n.to_string()
+  }
+}
+
 /// Format a byte count for compact display in panel headers and bars.
 /// Rounds to a single decimal place between 1G and 10G (so `4.2G` is
 /// distinguishable from `5.1G`), and drops the decimal at 10G+ to keep
@@ -32,6 +57,21 @@ pub(crate) fn format_bytes(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn format_tokens_basic_ranges() {
+    assert_eq!(format_tokens(0), "0");
+    assert_eq!(format_tokens(512), "512");
+    assert_eq!(format_tokens(1024), "1.0k");
+    assert_eq!(format_tokens(2048), "2.0k");
+    assert_eq!(format_tokens(8192), "8.0k");
+    assert_eq!(format_tokens(32_768), "32k");
+    assert_eq!(format_tokens(131_072), "128k");
+    assert_eq!(format_tokens(262_144), "256k");
+    assert_eq!(format_tokens(1_048_576), "1.0M");
+    assert_eq!(format_tokens(2_097_152), "2.0M");
+    assert_eq!(format_tokens(10_485_760), "10M");
+  }
 
   #[test]
   fn under_kib_renders_raw_bytes() {

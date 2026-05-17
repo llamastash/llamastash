@@ -1,14 +1,13 @@
-//! Top-right info-row pane: compact `LlamaDash` glyph + active-theme
-//! hint in the block title.
+//! Top-right info-row pane: compact monogram glyph only.
 //!
-//! No version string, no metadata text — those live elsewhere
-//! (Daemon panel for build/version, theme hotkey for cycling). The
-//! width-hide fallback (panel disappears when inner width <18 cols)
-//! is owned by [`super::render`], not this component.
+//! Theme tag lives in the top header bar (next to the daemon
+//! label), not in this panel. The width-hide fallback (panel
+//! disappears when inner width is too small) is owned by
+//! [`super::render`].
 
-use ratatui::layout::Rect;
+use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
@@ -16,30 +15,107 @@ use crate::banner::COMPACT_BANNER;
 use crate::theme::Palette;
 use crate::tui::app::App;
 
-/// Render the Logo panel. The block title carries the active theme
-/// name plus a `t:theme` hint so the cycle keybinding is visible
-/// inline.
-pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
-  let title = format!(" {} · t:theme ", app.options.theme.short_name());
+/// Llama mascot perched on top of the "L-" dash. 2-cell wide emoji
+/// that replaces the same number of cells in the row immediately
+/// above the dash.
+const LLAMA_GLYPH: &str = "🦙";
+
+/// Render the Logo panel.
+pub fn render(frame: &mut Frame<'_>, area: Rect, _app: &App, palette: &Palette) {
   let block = Block::default()
-    .title(title)
     .borders(Borders::ALL)
     .border_style(Style::default().fg(palette.accent));
   let inner = block.inner(area);
   frame.render_widget(block, area);
 
-  let lines: Vec<Line<'_>> = glyph_lines()
-    .into_iter()
-    .map(|line| {
-      Line::styled(
-        line,
-        Style::default()
-          .fg(palette.accent)
-          .add_modifier(Modifier::BOLD),
-      )
-    })
+  let glyphs = glyph_lines();
+  let dash_row = locate_dash_row(&glyphs);
+  // Resolve the dash column from the actual dash row so the emoji
+  // row above it knows where to inject — the L vertical rows
+  // themselves don't carry a dash to detect.
+  let dash_col = dash_row.and_then(|r| dash_column(glyphs[r]));
+  let lines: Vec<Line<'_>> = glyphs
+    .iter()
+    .enumerate()
+    .map(|(i, &line)| build_row(i, line, dash_row, dash_col, palette))
     .collect();
-  frame.render_widget(Paragraph::new(lines), inner);
+
+  let para = Paragraph::new(lines).alignment(Alignment::Center);
+  frame.render_widget(para, inner);
+}
+
+/// Compose one banner row. The row directly above the dash gets the
+/// llama emoji overlaid at the dash's horizontal slot — the rest
+/// stay as plain accent-coloured banner glyphs.
+fn build_row<'a>(
+  idx: usize,
+  raw: &'a str,
+  dash_row: Option<usize>,
+  dash_col: Option<usize>,
+  palette: &Palette,
+) -> Line<'a> {
+  let base_style = Style::default()
+    .fg(palette.accent)
+    .add_modifier(Modifier::BOLD);
+  if Some(idx + 1) == dash_row {
+    // Row above the dash: split the row at the same byte offset the
+    // dash uses on the next row so the emoji lands directly above.
+    if let Some(col) = dash_col {
+      if col <= raw.len() {
+        let left = &raw[..col];
+        // Emoji is 2 cells; trail with a single space so the row's
+        // total cell width matches the 3-cell `███` beneath it.
+        return Line::from(vec![
+          Span::styled(left, base_style),
+          Span::raw(LLAMA_GLYPH.to_string()),
+          Span::styled(" ", base_style),
+        ]);
+      }
+    }
+  }
+  Line::styled(raw, base_style)
+}
+
+/// Find the index of the row containing the dash. The dash is the
+/// only banner row where `██` reappears past the leading column —
+/// e.g. `██  ███`. Returns `None` when the banner has no such row
+/// (single-letter monograms, etc.) so the caller renders untouched.
+fn locate_dash_row(rows: &[&str]) -> Option<usize> {
+  rows.iter().position(|line| dash_column(line).is_some())
+}
+
+/// Byte offset where the dash segment starts — suitable for
+/// `str::split_at`. Detected as the second `██` run in the row;
+/// the first run is the L's vertical stroke. `██` is 3 UTF-8 bytes
+/// per glyph (2 display cells), so this is a byte index, not a
+/// cell index.
+fn dash_column(line: &str) -> Option<usize> {
+  let bytes = line.as_bytes();
+  // Find the first `██` (L vertical), skip past it, then look for
+  // another `██` after at least one space.
+  let pat = "██".as_bytes();
+  if !bytes.starts_with(pat) {
+    return None;
+  }
+  let mut i = pat.len();
+  // Require at least one space between the L stroke and the dash.
+  let mut saw_space = false;
+  while i < bytes.len() {
+    if bytes[i] == b' ' {
+      saw_space = true;
+      i += 1;
+    } else {
+      break;
+    }
+  }
+  if !saw_space || i >= bytes.len() {
+    return None;
+  }
+  if line[i..].starts_with("██") {
+    Some(i)
+  } else {
+    None
+  }
 }
 
 /// Split [`COMPACT_BANNER`] into its rendered lines, dropping the
@@ -61,73 +137,86 @@ mod tests {
   use ratatui::Terminal;
 
   #[test]
-  fn glyph_lines_are_five_rows() {
-    // The Logo panel's inner content area is sized for a 5-row glyph.
-    // If COMPACT_BANNER drifts to a different height, the renderer
-    // would either clip or leave dead rows.
-    assert_eq!(glyph_lines().len(), 5);
+  fn glyph_lines_fit_in_panel_inner_area() {
+    // INFO_ROW_HEIGHT is 7 (5 inner rows). Glyph must fit so the
+    // logo panel doesn't clip.
+    assert!(
+      glyph_lines().len() <= 5,
+      "glyph height {} exceeds 5-row inner area",
+      glyph_lines().len()
+    );
   }
 
-  #[test]
-  fn glyph_lines_fit_in_22_cols() {
-    // Inner area on the wireframe target is ~22 cols. Keep the glyph
-    // well under that so the panel reads cleanly on slightly narrower
-    // terminals too.
-    for (i, line) in glyph_lines().iter().enumerate() {
-      assert!(
-        line.chars().count() <= 22,
-        "glyph row {i} = {:?} exceeds 22 cols",
-        line
-      );
+  fn render_lines(app: &App, w: u16, h: u16) -> Vec<String> {
+    let palette = app.palette();
+    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    term
+      .draw(|f| render(f, Rect::new(0, 0, w, h), app, palette))
+      .unwrap();
+    let buf = term.backend().buffer().clone();
+    let mut rows: Vec<String> = Vec::new();
+    for y in 0..buf.area.height {
+      let mut row = String::new();
+      for x in 0..buf.area.width {
+        row.push_str(buf.cell((x, y)).unwrap().symbol());
+      }
+      rows.push(row);
     }
+    rows
   }
 
   #[test]
-  fn render_block_title_includes_theme_and_hint() {
+  fn dash_column_locates_the_l_dash_segment() {
+    // Plain "L" rows have no second `██` run.
+    assert_eq!(dash_column("██     "), None);
+    assert_eq!(dash_column("███████"), None);
+    // The dash row has a second `██` after whitespace. `██` is 3
+    // UTF-8 bytes per glyph (2 display cells), so `██  ` is 8 bytes.
+    assert_eq!(dash_column("██  ███"), Some(8));
+  }
+
+  #[test]
+  fn locate_dash_row_finds_the_row_with_a_dash() {
+    let rows = ["██     ", "██     ", "██  ███", "██     ", "███████"];
+    assert_eq!(locate_dash_row(&rows), Some(2));
+  }
+
+  #[test]
+  fn llama_glyph_renders_one_row_above_the_dash() {
+    // Render at a width that prevents the centred Paragraph from
+    // shifting cells around, so we can match cell positions
+    // directly.
+    let app = App::new(AppOptions::default());
+    let rows = render_lines(&app, 14, 7);
+    let body = rows.join("\n");
+    assert!(
+      body.contains('🦙'),
+      "expected llama glyph somewhere in panel: {body}"
+    );
+    // Find the dash row; the llama must land on the row above it.
+    let dash_row_idx = rows
+      .iter()
+      .position(|r| r.contains("███") && r.contains("██  "))
+      .expect("dash row present");
+    assert!(dash_row_idx > 0, "dash row cannot be at the top");
+    let above = &rows[dash_row_idx - 1];
+    assert!(
+      above.contains('🦙'),
+      "llama must sit directly above the dash: above={above:?}"
+    );
+  }
+
+  #[test]
+  fn logo_panel_has_no_theme_tag_inside() {
+    // Theme tag now lives in the top header bar, not inside the
+    // logo panel. Assert the panel body contains no theme name.
     let mut app = App::new(AppOptions::default());
     app.options.theme = ThemeName::Macchiato;
-    let palette = app.palette();
-    let mut term = Terminal::new(TestBackend::new(28, 7)).unwrap();
-    term
-      .draw(|f| {
-        let area = Rect::new(0, 0, 28, 7);
-        render(f, area, &app, palette);
-      })
-      .unwrap();
-
-    let buf = term.backend().buffer().clone();
-    let mut top = String::new();
-    for x in 0..buf.area.width {
-      top.push_str(buf.cell((x, 0)).unwrap().symbol());
-    }
+    let rows = render_lines(&app, 14, 7);
+    let body = rows.join("\n");
     assert!(
-      top.contains("macchiato"),
-      "expected theme name in block title row, got: {top:?}"
-    );
-    assert!(
-      top.contains("t:theme"),
-      "expected `t:theme` hint in block title row, got: {top:?}"
-    );
-  }
-
-  #[test]
-  fn render_block_title_updates_when_theme_cycles() {
-    let mut app = App::new(AppOptions::default());
-    app.options.theme = ThemeName::Mono;
-    let palette = app.palette();
-    let mut term = Terminal::new(TestBackend::new(28, 7)).unwrap();
-    term
-      .draw(|f| render(f, Rect::new(0, 0, 28, 7), &app, palette))
-      .unwrap();
-
-    let buf = term.backend().buffer().clone();
-    let mut top = String::new();
-    for x in 0..buf.area.width {
-      top.push_str(buf.cell((x, 0)).unwrap().symbol());
-    }
-    assert!(
-      top.contains("mono"),
-      "expected `mono` in title, got: {top:?}"
+      !body.contains("macchiato"),
+      "theme tag must not render in logo panel: {body}"
     );
   }
 }
