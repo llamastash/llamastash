@@ -9,10 +9,10 @@
 ┌ Models [2] · /:filter · Enter:launch · s:stop · f:fav · y:yank ──────┐┌ Logs │ Chat │ Settings ──────────────────────┐
 │      Name                  Arch     Quant   Ctx     Size   Mode      ││                                              │
 │★ Favorites                                                           ││qwen-7b  :41100  ● ready  4.2G RAM · 312% CPU │
-│ ● => qwen-7b               qwen3    Q4_K    32k     4.2G   chat      ││──────────────────────────────────────────────│
-│/m/y                                                                  ││no log lines yet — launch a model or wait for │
-│      phi-3                 phi      Q4_K    8.0k    3.9G   chat      ││the daemon to forward stderr                  │
-│                                                                      ││                                              │
+│ ● => qwen-7b               qwen3    Q4_K    32k     4.2G   chat      ││j/k:scroll  ·  s:auto-scroll  ·  Tab:next pane│
+│/m/y                                                                  ││──────────────────────────────────────────────│
+│      phi-3                 phi      Q4_K    8.0k    3.9G   chat      ││no log lines yet — launch a model or wait for │
+│                                                                      ││the daemon to forward stderr                  │
 │                                                                      ││                                              │
 │                                                                      ││                                              │
 │                                                                      ││                                              │

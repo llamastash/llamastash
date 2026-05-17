@@ -41,13 +41,15 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette, f
   let inner = outer.inner(area);
   frame.render_widget(outer, area);
 
-  // Inner stack: 1 blank pad, header (1 row), separator line, tab
-  // content. The blank pad above and the separator below together
-  // breathe the model header off the block edge so it reads as a
-  // distinct strip from the body.
+  // Inner stack: 1 blank pad, header (1 row), contextual hint
+  // strip, separator line, tab content. The blank pad above + the
+  // separator below breathe the model header off the block edge so
+  // it reads as a distinct strip from the body; the hint strip
+  // surfaces the keys most relevant to the active tab / focus.
   let layout = Layout::default()
     .direction(Direction::Vertical)
     .constraints([
+      Constraint::Length(1),
       Constraint::Length(1),
       Constraint::Length(1),
       Constraint::Length(1),
@@ -56,8 +58,9 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette, f
     .split(inner);
 
   render_header(frame, layout[1], app, palette);
-  render_separator(frame, layout[2], palette);
-  let body_area = layout[3];
+  render_hint_strip(frame, layout[2], app, palette);
+  render_separator(frame, layout[3], palette);
+  let body_area = layout[4];
 
   match app.right_tab {
     RightTab::Logs => logs::render(frame, body_area, &app.logs_state, palette),
@@ -77,6 +80,55 @@ fn render_separator(frame: &mut Frame<'_>, area: Rect, palette: &Palette) {
     line,
     Style::default().fg(palette.muted),
   )));
+  frame.render_widget(para, area);
+}
+
+/// Single-line contextual hint strip below the model header. The
+/// hints surface the keys that matter for the active tab + focus
+/// (e.g. `e:edit` on Chat in navigation mode, `Ctrl+Enter:send`
+/// once the user has entered the prompt buffer). Centred + muted
+/// so it reads as a footnote, not data.
+fn render_hint_strip(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
+  use crate::tui::keybindings::Focus;
+  let hints: &[(&str, &str)] = match (app.focus, app.right_tab) {
+    (Focus::ChatInput, _) => &[
+      ("Ctrl+Enter", "send"),
+      ("Ctrl+r", "think"),
+      ("Esc", "exit edit"),
+    ],
+    (Focus::EmbedInput, _) => &[("Enter", "embed"), ("Esc", "exit edit")],
+    (Focus::RerankInput, _) => &[("Tab", "stage"), ("Enter", "rank"), ("Esc", "exit edit")],
+    (_, RightTab::Logs) => &[
+      ("j/k", "scroll"),
+      ("s", "auto-scroll"),
+      ("Tab", "next pane"),
+    ],
+    (_, RightTab::Chat) => &[("e", "edit"), ("Tab", "next pane")],
+    (_, RightTab::Embed) => &[("e", "edit"), ("Tab", "next pane")],
+    (_, RightTab::Rerank) => &[("e", "edit"), ("Tab", "next pane")],
+    (_, RightTab::Settings) => &[("Enter", "launch"), ("a", "advanced"), ("Tab", "next pane")],
+  };
+  let mut spans: Vec<Span<'static>> = Vec::with_capacity(hints.len() * 4);
+  for (i, (key, label)) in hints.iter().enumerate() {
+    if i > 0 {
+      spans.push(Span::styled(
+        "  ·  ".to_string(),
+        Style::default().fg(palette.muted),
+      ));
+    }
+    spans.push(Span::styled(
+      (*key).to_string(),
+      Style::default()
+        .fg(palette.label)
+        .add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::raw(":"));
+    spans.push(Span::styled(
+      (*label).to_string(),
+      Style::default().fg(palette.muted),
+    ));
+  }
+  let para = Paragraph::new(Line::from(spans)).alignment(ratatui::layout::Alignment::Right);
   frame.render_widget(para, area);
 }
 

@@ -1326,4 +1326,243 @@ mod tests {
       matches!(&remove_cmd, WriterCmd::FavoriteRemove(p) if p.as_path() == Path::new("/m/qwen.gguf"))
     );
   }
+
+  // ── regression coverage for the round-3 fixes ──────────────────
+
+  fn fake_model_for_events(path: &str, parent: &str) -> crate::discovery::DiscoveredModel {
+    use crate::discovery::{DiscoveredModel, ModelSource};
+    use crate::gguf::metadata::{ModeHint, ModelMetadata, Quant};
+    DiscoveredModel {
+      path: PathBuf::from(path),
+      parent: PathBuf::from(parent),
+      source: ModelSource::UserPath,
+      metadata: Some(ModelMetadata {
+        arch: Some("llama".into()),
+        total_parameters: None,
+        parameter_label: None,
+        quant: Quant::Q4_K,
+        native_ctx: Some(8192),
+        chat_template: None,
+        tokenizer_kind: None,
+        reasoning_hint: None,
+        mode_hint: ModeHint::Chat,
+        weights_bytes: None,
+      }),
+      parse_error: None,
+      split_siblings: Vec::new(),
+    }
+  }
+
+  fn ready_managed_for_events(path: &str, port: u16) -> crate::tui::app::ManagedRow {
+    use crate::tui::app::ManagedRow;
+    use crate::tui::status_icons::SurfaceState;
+    ManagedRow {
+      launch_id: format!("L-{port}"),
+      path: PathBuf::from(path),
+      port,
+      state: SurfaceState::Ready,
+      rss_bytes: None,
+      cpu_pct: None,
+    }
+  }
+
+  #[test]
+  fn esc_closes_help_dialog_from_any_focus() {
+    // Help dialog steals Esc / `?` ahead of every focus, so the
+    // user can dismiss it even mid-edit. Cover the three focuses
+    // most likely to swallow Esc: List, Filter, ChatInput.
+    for focus in [Focus::List, Focus::Filter, Focus::ChatInput] {
+      let mut app = App::new(Default::default());
+      app.focus = focus;
+      app.show_help = true;
+      pump_input(&mut app, key(KeyCode::Esc, KeyModifiers::NONE));
+      assert!(
+        !app.show_help,
+        "Esc must close the help dialog from focus {focus:?}"
+      );
+    }
+  }
+
+  #[test]
+  fn question_mark_closes_help_from_any_focus() {
+    // The dialog title hints both Esc and `?` as close keys.
+    let mut app = App::new(Default::default());
+    app.show_help = true;
+    pump_input(&mut app, key(KeyCode::Char('?'), KeyModifiers::NONE));
+    assert!(!app.show_help, "`?` must toggle the help dialog off");
+  }
+
+  #[test]
+  fn s_on_running_row_stages_stop_confirm_popup() {
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.managed = vec![ready_managed_for_events("/m/qwen.gguf", 41100)];
+    app.go_top();
+    pump_input(&mut app, key(KeyCode::Char('s'), KeyModifiers::NONE));
+    match app.confirm_dialog {
+      Some(crate::tui::app::ConfirmAction::StopModel {
+        ref launch_id,
+        ref name,
+      }) => {
+        assert_eq!(launch_id, "L-41100");
+        assert_eq!(name, "qwen");
+      }
+      ref other => panic!("expected StopModel confirm, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn s_on_non_running_row_toasts_instead_of_staging_confirm() {
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.go_top();
+    pump_input(&mut app, key(KeyCode::Char('s'), KeyModifiers::NONE));
+    assert!(app.confirm_dialog.is_none(), "no managed row = no popup");
+    let toast = app.toast_message().unwrap_or("");
+    assert!(toast.contains("nothing to stop"), "toast: {toast}");
+  }
+
+  #[test]
+  fn confirm_dialog_y_dispatches_stop_to_writer() {
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.managed = vec![ready_managed_for_events("/m/qwen.gguf", 41100)];
+    app.go_top();
+    let (tx, mut rx) = mpsc::channel::<WriterCmd>(4);
+    pump_input_with_writer(
+      &mut app,
+      key(KeyCode::Char('s'), KeyModifiers::NONE),
+      Some(&tx),
+    );
+    assert!(app.confirm_dialog.is_some(), "confirm popup primed");
+    // Press `y` to confirm; writer should receive a StopModel cmd.
+    pump_input_with_writer(
+      &mut app,
+      key(KeyCode::Char('y'), KeyModifiers::NONE),
+      Some(&tx),
+    );
+    assert!(app.confirm_dialog.is_none(), "popup cleared on confirm");
+    let cmd = rx.try_recv().expect("writer must receive stop");
+    assert!(matches!(cmd, WriterCmd::StopModel { launch_id } if launch_id == "L-41100"));
+  }
+
+  #[test]
+  fn confirm_dialog_esc_cancels_without_dispatching() {
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.managed = vec![ready_managed_for_events("/m/qwen.gguf", 41100)];
+    app.go_top();
+    let (tx, mut rx) = mpsc::channel::<WriterCmd>(4);
+    pump_input_with_writer(
+      &mut app,
+      key(KeyCode::Char('s'), KeyModifiers::NONE),
+      Some(&tx),
+    );
+    pump_input_with_writer(&mut app, key(KeyCode::Esc, KeyModifiers::NONE), Some(&tx));
+    assert!(app.confirm_dialog.is_none(), "popup cleared on Esc");
+    assert!(
+      rx.try_recv().is_err(),
+      "no StopModel must reach the writer on cancel"
+    );
+  }
+
+  #[test]
+  fn capital_q_stages_kill_daemon_confirm() {
+    let mut app = App::new(Default::default());
+    pump_input(&mut app, key(KeyCode::Char('Q'), KeyModifiers::SHIFT));
+    assert!(matches!(
+      app.confirm_dialog,
+      Some(crate::tui::app::ConfirmAction::KillDaemon)
+    ));
+  }
+
+  #[test]
+  fn kill_daemon_confirm_dispatches_shutdown_to_writer() {
+    let mut app = App::new(Default::default());
+    let (tx, mut rx) = mpsc::channel::<WriterCmd>(4);
+    pump_input_with_writer(
+      &mut app,
+      key(KeyCode::Char('Q'), KeyModifiers::SHIFT),
+      Some(&tx),
+    );
+    pump_input_with_writer(&mut app, key(KeyCode::Enter, KeyModifiers::NONE), Some(&tx));
+    let cmd = rx.try_recv().expect("writer must receive shutdown");
+    assert!(matches!(cmd, WriterCmd::Shutdown));
+  }
+
+  #[test]
+  fn tab_in_list_focus_walks_chain_into_right_pane_navigation_mode() {
+    // Edit-mode rule: Tab lands on RightPane focus (not ChatInput),
+    // even when the active tab is Chat. The user must press `e` to
+    // start typing.
+    let mut app = App::new(Default::default());
+    app.managed = vec![ready_managed_for_events("/m/qwen.gguf", 41100)];
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.go_top();
+    pump_input(&mut app, key(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(app.focus, Focus::RightPane);
+  }
+
+  #[test]
+  fn e_in_right_pane_enters_chat_input_when_chat_tab_active() {
+    use crate::tui::tabs::RightTab;
+    let mut app = App::new(Default::default());
+    app.focus = Focus::RightPane;
+    app.right_tab = RightTab::Chat;
+    pump_input(&mut app, key(KeyCode::Char('e'), KeyModifiers::NONE));
+    assert_eq!(app.focus, Focus::ChatInput);
+  }
+
+  #[test]
+  fn esc_in_chat_input_exits_to_right_pane_navigation() {
+    let mut app = App::new(Default::default());
+    app.focus = Focus::ChatInput;
+    pump_input(&mut app, key(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.focus, Focus::RightPane);
+  }
+
+  #[test]
+  fn smart_y_yanks_path_when_no_managed_launch_focused() {
+    // The smart `y` fallback yields the *path* for a not-running
+    // row, so `y` always copies something useful. We can't observe
+    // the clipboard from a test, but we can verify `build_yank_text`
+    // returns the path.
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.go_top();
+    let text = super::build_yank_text(&app, Action::YankUrl).expect("path fallback");
+    assert!(text.ends_with("qwen.gguf"));
+  }
+
+  #[test]
+  fn smart_y_yanks_url_when_managed_launch_focused() {
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.managed = vec![ready_managed_for_events("/m/qwen.gguf", 41100)];
+    app.go_top();
+    let text = super::build_yank_text(&app, Action::YankUrl).expect("url");
+    assert_eq!(text, "http://127.0.0.1:41100/v1");
+  }
+
+  #[test]
+  fn logs_scroll_keys_in_right_pane_disable_auto_scroll() {
+    use crate::tui::tabs::RightTab;
+    let mut app = App::new(Default::default());
+    app.focus = Focus::RightPane;
+    app.right_tab = RightTab::Logs;
+    app.logs_state.lines = (0..40).map(|i| format!("line {i}")).collect();
+    app.logs_state.auto_scroll = true;
+    pump_input(&mut app, key(KeyCode::Char('k'), KeyModifiers::NONE));
+    assert!(
+      !app.logs_state.auto_scroll,
+      "scrolling up disables auto-scroll"
+    );
+    assert_eq!(app.logs_state.scroll_offset, 1);
+    pump_input(&mut app, key(KeyCode::Char('j'), KeyModifiers::NONE));
+    assert_eq!(app.logs_state.scroll_offset, 0);
+    assert!(
+      app.logs_state.auto_scroll,
+      "returning to tail re-enables auto-scroll"
+    );
+  }
 }
