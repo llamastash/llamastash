@@ -122,6 +122,18 @@ pub struct Palette {
   /// this to `Color::Reset` and the list renderer falls back to
   /// `Modifier::REVERSED`.
   pub highlight: Color,
+  /// Foreground for block titles (` Host `, ` Daemon `, ` Models `).
+  /// Distinct from `accent` so titles can pop in a different hue
+  /// from the panel borders (e.g. yellow titles on mauve borders).
+  /// Renderers also bold this slot.
+  pub panel_title: Color,
+  /// Foreground for label prefixes inside a panel (`CPU  `,
+  /// `socket  `, list group headers like `★ Favorites` and folder
+  /// paths). Distinct from `muted` because `muted` doubles as the
+  /// "secondary text / hint divider" tone — separating the two lets
+  /// labels read as legible, scannable category markers without
+  /// also brightening every `·` separator.
+  pub label: Color,
   pub status_loading: Color,
   pub status_ready: Color,
   pub status_error: Color,

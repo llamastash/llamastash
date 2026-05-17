@@ -24,14 +24,14 @@ use ratatui::Frame;
 
 use crate::daemon::host_metrics::HostMetricsSnapshot;
 use crate::theme::Palette;
-use crate::tui::fmt::format_bytes;
+use crate::tui::fmt::{format_bytes, panel_title};
 
 const LABEL_WIDTH: usize = 5;
 
 /// Render the Host stats pane into `area`.
 pub fn render(frame: &mut Frame<'_>, area: Rect, host: &HostMetricsSnapshot, palette: &Palette) {
   let block = Block::default()
-    .title(" Host ")
+    .title(panel_title(" Host ", palette))
     .borders(Borders::ALL)
     .border_style(Style::default().fg(palette.accent));
   let inner = block.inner(area);
@@ -59,7 +59,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, host: &HostMetricsSnapshot, pal
     }
     s if s == HostMetricsSnapshot::BACKEND_APPLE_METAL => {
       lines.push(Line::from(vec![
-        Span::styled("GPU  ", Style::default().fg(palette.muted)),
+        Span::styled("GPU  ", Style::default().fg(palette.label)),
         Span::styled("unified memory", Style::default().fg(palette.fg)),
       ]));
     }
@@ -84,7 +84,7 @@ fn cpu_row<'a>(host: &HostMetricsSnapshot, bar_width: usize, palette: &'a Palett
   // RAM / GPU / VRAM all start at the same screen offset.
   let value = format!(" {:.0}%", host.cpu_pct);
   let mut spans = vec![
-    Span::styled("CPU  ", Style::default().fg(palette.muted)),
+    Span::styled("CPU  ", Style::default().fg(palette.label)),
     bar,
     Span::styled(value, Style::default().fg(palette.fg)),
   ];
@@ -122,7 +122,7 @@ fn ram_row<'a>(host: &HostMetricsSnapshot, bar_width: usize, palette: &'a Palett
   };
   let bar = bar(pct, bar_width, gauge_color(pct, palette));
   Line::from(vec![
-    Span::styled(label, Style::default().fg(palette.muted)),
+    Span::styled(label, Style::default().fg(palette.label)),
     bar,
     Span::styled(format!(" {value}"), Style::default().fg(palette.fg)),
   ])
@@ -142,7 +142,7 @@ fn gpu_util_row<'a>(
     .map(|p| format!(" {:.0}%", p))
     .unwrap_or_else(|| " —".into());
   let mut spans = vec![
-    Span::styled("GPU  ", Style::default().fg(palette.muted)),
+    Span::styled("GPU  ", Style::default().fg(palette.label)),
     bar,
     Span::styled(value, Style::default().fg(palette.fg)),
   ];
@@ -169,7 +169,7 @@ fn vram_row<'a>(host: &HostMetricsSnapshot, bar_width: usize, palette: &'a Palet
   };
   let bar = bar(pct, bar_width, gauge_color(pct, palette));
   Line::from(vec![
-    Span::styled("VRAM ", Style::default().fg(palette.muted)),
+    Span::styled("VRAM ", Style::default().fg(palette.label)),
     bar,
     Span::styled(format!(" {value}"), Style::default().fg(palette.fg)),
   ])
@@ -190,7 +190,7 @@ fn backend_row<'a>(host: &HostMetricsSnapshot, palette: &'a Palette) -> Line<'a>
     other => other.to_string(),
   };
   Line::from(vec![
-    Span::styled("backend  ", Style::default().fg(palette.muted)),
+    Span::styled("backend  ", Style::default().fg(palette.label)),
     Span::styled(label, Style::default().fg(palette.fg)),
   ])
 }

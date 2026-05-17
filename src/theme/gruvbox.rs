@@ -10,7 +10,11 @@ const ORANGE: Color = Color::Rgb(0xFE, 0x80, 0x19);
 const GREEN: Color = Color::Rgb(0xB8, 0xBB, 0x26);
 const YELLOW: Color = Color::Rgb(0xFA, 0xBD, 0x2F);
 const RED: Color = Color::Rgb(0xFB, 0x49, 0x34);
-const GRAY: Color = Color::Rgb(0x92, 0x83, 0x74);
+// `#928374` (gruvbox `gray`) on `#1D2021` (hard-dark BG) tested too
+// dim for label / divider text — labels almost vanished on a dim
+// monitor. Bumped to `#A89984` (gruvbox FG4) so labels and dividers
+// stay legible without crossing into "primary text" brightness.
+const GRAY: Color = Color::Rgb(0xA8, 0x99, 0x84);
 const BLUE: Color = Color::Rgb(0x83, 0xA5, 0x98);
 
 pub(crate) const PALETTE: Palette = Palette {
@@ -25,6 +29,8 @@ pub(crate) const PALETTE: Palette = Palette {
   muted: GRAY,
   selection: BG2,
   highlight: YELLOW,
+  panel_title: YELLOW,
+  label: BLUE,
   status_loading: YELLOW,
   status_ready: GREEN,
   status_error: RED,

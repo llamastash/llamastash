@@ -63,9 +63,12 @@ fn block_title_line(app: &App, tabs: &[RightTab], palette: &Palette) -> Line<'st
     if i > 0 {
       spans.push(Span::styled(" │ ", Style::default().fg(palette.muted)));
     }
+    // Active tab gets `panel_title` + bold + underline so it reads
+    // like the panel's heading text (matches Host/Daemon/Models titles).
+    // Inactive tabs stay muted so the heading carries clear focus.
     let style = if *tab == app.right_tab {
       Style::default()
-        .fg(palette.accent)
+        .fg(palette.panel_title)
         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
     } else {
       Style::default().fg(palette.muted)
@@ -87,7 +90,9 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette
   // cursor crosses an unlaunched row.
   let line = match app.right_pane_focus() {
     Some(m) => {
-      let stats = format_per_model_stats(m);
+      let (rss, cpu) = stats_pair(m);
+      let label_style = Style::default().fg(palette.label);
+      let value_style = Style::default().fg(palette.fg);
       Line::from(vec![
         Span::styled(
           model_display_name(&m.path),
@@ -106,7 +111,15 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette
           Style::default().fg(palette.fg),
         ),
         Span::styled("  ", Style::default()),
-        Span::styled(stats, Style::default().fg(palette.muted)),
+        // Split stats into label/value spans so `RAM` and `CPU` read
+        // as blue labels matching the in-pane convention (Host /
+        // Daemon panes) instead of disappearing into the same muted
+        // tone as the value digits.
+        Span::styled(rss, value_style),
+        Span::styled(" RAM", label_style),
+        Span::styled(" · ", Style::default().fg(palette.muted)),
+        Span::styled(cpu, value_style),
+        Span::styled(" CPU", label_style),
       ])
     }
     None => match app.focused_path() {
@@ -124,9 +137,20 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette
 }
 
 /// Format the trailing `4.2G RAM · 312% CPU` portion of the model
-/// header. `None` collapses to `—` so the user sees the column
-/// exists but hasn't been populated yet.
+/// header. The runtime renderer now builds these as separate styled
+/// spans so `RAM` / `CPU` can carry the blue label colour; this
+/// joined form is kept for the `right_pane_title` test helper and
+/// regression tests that grep the flattened text.
+#[cfg(test)]
 fn format_per_model_stats(m: &crate::tui::app::ManagedRow) -> String {
+  let (rss, cpu) = stats_pair(m);
+  format!("{rss} RAM · {cpu} CPU")
+}
+
+/// Split the per-model stats into `(rss, cpu)` strings — needed by
+/// the styled-header path so `RAM` / `CPU` labels can carry the
+/// `palette.label` colour separately from the digit values.
+fn stats_pair(m: &crate::tui::app::ManagedRow) -> (String, String) {
   let rss = match m.rss_bytes {
     Some(b) => format_bytes(b),
     None => "—".into(),
@@ -135,7 +159,7 @@ fn format_per_model_stats(m: &crate::tui::app::ManagedRow) -> String {
     Some(p) => format!("{p:.0}%"),
     None => "—".into(),
   };
-  format!("{rss} RAM · {cpu} CPU")
+  (rss, cpu)
 }
 
 /// Title-text view of [`block_title_line`] for tests that just want

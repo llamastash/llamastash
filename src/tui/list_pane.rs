@@ -412,7 +412,9 @@ pub(crate) fn build_block_title(input: TitleInputs<'_>, palette: &Palette) -> Li
   spans.push(Span::raw(" "));
   spans.push(Span::styled(
     count,
-    Style::default().fg(palette.fg).add_modifier(Modifier::BOLD),
+    Style::default()
+      .fg(palette.panel_title)
+      .add_modifier(Modifier::BOLD),
   ));
   spans.push(Span::styled(
     " · ".to_string(),
@@ -531,7 +533,7 @@ fn render_row<'a>(
       ListItem::new(Line::from(Span::styled(
         line,
         Style::default()
-          .fg(palette.accent)
+          .fg(palette.label)
           .add_modifier(Modifier::BOLD),
       )))
     }
@@ -539,11 +541,14 @@ fn render_row<'a>(
       // Group header (favorites or folder path). Render across the
       // full content width so it visibly separates groups; the label
       // is ellipsised if the directory path is longer than the pane.
+      // Painted with `palette.label` (blue per theme) so folder
+      // names match the in-pane label convention rather than
+      // disappearing into the muted hint tone.
       let shown = cell(label.as_str(), content_w);
       ListItem::new(Line::from(Span::styled(
         shown,
         Style::default()
-          .fg(palette.muted)
+          .fg(palette.label)
           .add_modifier(Modifier::BOLD),
       )))
     }

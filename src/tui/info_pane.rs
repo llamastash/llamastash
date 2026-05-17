@@ -15,6 +15,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::theme::Palette;
 use crate::tui::app::App;
+use crate::tui::fmt::panel_title;
 use crate::util::paths::model_display_name;
 
 const LABEL_WIDTH: usize = 8;
@@ -28,7 +29,7 @@ const LABEL_RUNNING: &str = "running ";
 /// `Daemon`; inner content is five label-prefixed rows.
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   let block = Block::default()
-    .title(" Daemon ")
+    .title(panel_title(" Daemon ", palette))
     .borders(Borders::ALL)
     .border_style(Style::default().fg(palette.accent));
   let inner = block.inner(area);
@@ -78,7 +79,7 @@ fn socket_row<'a>(app: &'a App, budget: usize, palette: &'a Palette) -> Line<'a>
     None => ellipsise(&pid_chunk, budget),
   };
   Line::from(vec![
-    Span::styled(LABEL_SOCKET, Style::default().fg(palette.muted)),
+    Span::styled(LABEL_SOCKET, Style::default().fg(palette.label)),
     Span::styled(value, Style::default().fg(palette.fg)),
   ])
 }
@@ -95,9 +96,9 @@ fn uptime_build_row<'a>(app: &'a App, palette: &'a Palette) -> Line<'a> {
     .map(|v| format!("v{v}"))
     .unwrap_or_else(|| "—".into());
   Line::from(vec![
-    Span::styled(LABEL_UPTIME, Style::default().fg(palette.muted)),
+    Span::styled(LABEL_UPTIME, Style::default().fg(palette.label)),
     Span::styled(uptime, Style::default().fg(palette.fg)),
-    Span::styled("   build  ", Style::default().fg(palette.muted)),
+    Span::styled("   build  ", Style::default().fg(palette.label)),
     Span::styled(build, Style::default().fg(palette.fg)),
   ])
 }
@@ -118,7 +119,7 @@ fn server_row<'a>(app: &'a App, budget: usize, palette: &'a Palette) -> Line<'a>
       let path_budget = budget.saturating_sub(flavor_chunk.width());
       let path_truncated = ellipsise(p, path_budget);
       Line::from(vec![
-        Span::styled(LABEL_SERVER, Style::default().fg(palette.muted)),
+        Span::styled(LABEL_SERVER, Style::default().fg(palette.label)),
         Span::styled(path_truncated, Style::default().fg(palette.fg)),
         Span::styled(flavor_chunk, Style::default().fg(palette.muted)),
       ])
@@ -127,7 +128,7 @@ fn server_row<'a>(app: &'a App, budget: usize, palette: &'a Palette) -> Line<'a>
       let hint = "Not found in usual paths. Set LLAMADASH_LLAMA_SERVER or pass --llama-server";
       let trimmed = right_ellipsise(hint, budget);
       Line::from(vec![
-        Span::styled(LABEL_SERVER, Style::default().fg(palette.muted)),
+        Span::styled(LABEL_SERVER, Style::default().fg(palette.label)),
         Span::styled(trimmed, Style::default().fg(palette.error)),
       ])
     }
@@ -164,7 +165,7 @@ fn counts_row<'a>(app: &'a App, palette: &'a Palette) -> Line<'a> {
   let total = app.models.len();
   if total == 0 {
     return Line::from(vec![
-      Span::styled(LABEL_COUNTS, Style::default().fg(palette.muted)),
+      Span::styled(LABEL_COUNTS, Style::default().fg(palette.label)),
       Span::styled("no models found", Style::default().fg(palette.muted)),
     ]);
   }
@@ -175,7 +176,7 @@ fn counts_row<'a>(app: &'a App, palette: &'a Palette) -> Line<'a> {
     .count();
   let favorites = app.favorites.len();
   Line::from(vec![
-    Span::styled(LABEL_COUNTS, Style::default().fg(palette.muted)),
+    Span::styled(LABEL_COUNTS, Style::default().fg(palette.label)),
     Span::styled(format!("{total} found"), Style::default().fg(palette.fg)),
     Span::styled(" · ", Style::default().fg(palette.muted)),
     Span::styled(format!("{ready} ready"), Style::default().fg(palette.fg)),
@@ -191,7 +192,7 @@ fn running_row<'a>(app: &'a App, budget: usize, palette: &'a Palette) -> Line<'a
   let n = app.managed.len();
   if n == 0 {
     return Line::from(vec![
-      Span::styled(LABEL_RUNNING, Style::default().fg(palette.muted)),
+      Span::styled(LABEL_RUNNING, Style::default().fg(palette.label)),
       Span::styled("0", Style::default().fg(palette.muted)),
     ]);
   }
@@ -212,7 +213,7 @@ fn running_row<'a>(app: &'a App, budget: usize, palette: &'a Palette) -> Line<'a
   let joined = parts.join(" · ");
   let trimmed = right_ellipsise(&joined, list_budget);
   Line::from(vec![
-    Span::styled(LABEL_RUNNING, Style::default().fg(palette.muted)),
+    Span::styled(LABEL_RUNNING, Style::default().fg(palette.label)),
     Span::styled(prefix, Style::default().fg(palette.fg)),
     Span::styled(trimmed, Style::default().fg(palette.fg)),
     Span::styled(suffix, Style::default().fg(palette.fg)),

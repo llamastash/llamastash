@@ -27,6 +27,8 @@ pub(crate) const PALETTE: Palette = Palette {
   muted: SUBTEXT0,
   selection: SURFACE0,
   highlight: YELLOW,
+  panel_title: YELLOW,
+  label: BLUE,
   status_loading: YELLOW,
   status_ready: GREEN,
   status_error: RED,
