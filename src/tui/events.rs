@@ -644,16 +644,27 @@ fn edit_focus_for_tab(tab: RightTab) -> Option<Focus> {
   }
 }
 
+/// Resolve the focused managed row or toast a context-specific
+/// "no Ready model focused for `<action>`" message. Audit §1.1 #6
+/// — the same lookup + toast guard was duplicated across
+/// `apply_send_chat`, `apply_embed_submit`, `apply_rerank_submit`
+/// and the right-pane yank handlers.
+fn focused_managed_or_toast(app: &mut App, action: &str) -> Option<crate::tui::app::ManagedRow> {
+  match app.focused_managed() {
+    Some(m) => Some(m.clone()),
+    None => {
+      app.show_toast(format!("no Ready model focused for {action}"));
+      None
+    }
+  }
+}
+
 /// Trigger an OpenAI streaming chat completion against the focused
 /// Ready model. Stashes the receiver on `app.chat` so the render
 /// loop can drain it without blocking input.
 fn apply_send_chat(app: &mut App) {
-  let managed = match app.focused_managed() {
-    Some(m) => m.clone(),
-    None => {
-      app.show_toast("no Ready model focused for chat");
-      return;
-    }
+  let Some(managed) = focused_managed_or_toast(app, "chat") else {
+    return;
   };
   if app.chat.prompt.trim().is_empty() {
     app.show_toast("prompt is empty");
@@ -670,12 +681,8 @@ fn apply_send_chat(app: &mut App) {
 /// captured straight into `app.embed` because `EmbedTabState` lives
 /// on `App`.
 fn apply_embed_submit(app: &mut App) {
-  let managed = match app.focused_managed() {
-    Some(m) => m.clone(),
-    None => {
-      app.show_toast("no Ready model focused for embed");
-      return;
-    }
+  let Some(managed) = focused_managed_or_toast(app, "embed") else {
+    return;
   };
   if app.embed.input.trim().is_empty() {
     app.show_toast("embed input is empty");
@@ -698,12 +705,8 @@ fn apply_embed_submit(app: &mut App) {
 
 /// One-shot rerank call. Same async pattern as `apply_embed_submit`.
 fn apply_rerank_submit(app: &mut App) {
-  let managed = match app.focused_managed() {
-    Some(m) => m.clone(),
-    None => {
-      app.show_toast("no Ready model focused for rerank");
-      return;
-    }
+  let Some(managed) = focused_managed_or_toast(app, "rerank") else {
+    return;
   };
   if app.rerank.query.trim().is_empty() {
     app.show_toast("rerank query is empty");

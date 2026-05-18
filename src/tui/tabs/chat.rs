@@ -118,10 +118,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
         .fg(palette.warning)
         .add_modifier(Modifier::BOLD),
     )),
-    (_, Some(err), _) => Line::from(Span::styled(
-      format!("error: {err}"),
-      palette.error_style(),
-    )),
+    (_, Some(err), _) => Line::from(Span::styled(format!("error: {err}"), palette.error_style())),
     (_, _, Some(reason)) => Line::from(Span::styled(
       format!("finished: {reason}"),
       palette.muted_style(),

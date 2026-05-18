@@ -242,9 +242,7 @@ pub enum ModeHint {
 
 /// Distil a parsed header into [`ModelMetadata`].
 pub fn summarise(header: &GgufHeader) -> ModelMetadata {
-  let arch_raw = header
-    .string(&["general.architecture"])
-    .map(str::to_string);
+  let arch_raw = header.string(&["general.architecture"]).map(str::to_string);
   let arch_key = arch_raw.as_deref();
 
   let native_ctx = arch_key.and_then(|a| header.u64(&[format!("{a}.context_length")]));
@@ -252,9 +250,7 @@ pub fn summarise(header: &GgufHeader) -> ModelMetadata {
   let chat_template = header
     .string(&["tokenizer.chat_template"])
     .map(str::to_string);
-  let tokenizer_kind = header
-    .string(&["tokenizer.ggml.model"])
-    .map(str::to_string);
+  let tokenizer_kind = header.string(&["tokenizer.ggml.model"]).map(str::to_string);
 
   let total_parameters = parameter_count(header, arch_key);
   let parameter_label = total_parameters.and_then(label_for_param_count);

@@ -80,10 +80,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette, f
 /// border but tinted with `muted` to keep it secondary.
 fn render_separator(frame: &mut Frame<'_>, area: Rect, palette: &Palette) {
   let line: String = "─".repeat(area.width as usize);
-  let para = Paragraph::new(Line::from(Span::styled(
-    line,
-    palette.muted_style(),
-  )));
+  let para = Paragraph::new(Line::from(Span::styled(line, palette.muted_style())));
   frame.render_widget(para, area);
 }
 
@@ -196,19 +193,14 @@ fn block_title_line(app: &App, tabs: &[RightTab], palette: &Palette) -> Line<'st
     // like the panel's heading text (matches Host/Daemon/Models titles).
     // Inactive tabs stay muted so the heading carries clear focus.
     let style = if *tab == app.right_tab {
-      palette
-        .title_style()
-        .add_modifier(Modifier::UNDERLINED)
+      palette.title_style().add_modifier(Modifier::UNDERLINED)
     } else {
       palette.muted_style()
     };
     spans.push(Span::styled(tab.label().to_string(), style));
   }
   for hint in hints {
-    spans.push(Span::styled(
-      " · ".to_string(),
-      palette.muted_style(),
-    ));
+    spans.push(Span::styled(" · ".to_string(), palette.muted_style()));
     spans.push(Span::styled(hint, palette.muted_style()));
   }
   spans.push(Span::raw(" "));
@@ -264,10 +256,7 @@ fn render_header_stats(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &P
       ])
     }
     None => match app.focused_path() {
-      Some(_) => Line::from(Span::styled(
-        "not launched",
-        palette.muted_style(),
-      )),
+      Some(_) => Line::from(Span::styled("not launched", palette.muted_style())),
       None => Line::from(Span::raw("")),
     },
   };

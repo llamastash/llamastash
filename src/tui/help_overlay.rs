@@ -380,10 +380,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
           .fg(palette.panel_title)
           .add_modifier(Modifier::BOLD),
       ),
-      Span::styled(
-        format!("· {close_chip} "),
-        palette.muted_style(),
-      ),
+      Span::styled(format!("· {close_chip} "), palette.muted_style()),
     ]))
     .borders(Borders::ALL)
     .border_style(palette.accent_style())

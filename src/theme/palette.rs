@@ -224,11 +224,7 @@ impl Palette {
   /// otherwise it uses `palette.muted`. The title is painted
   /// through `fmt::panel_title` for the same `BOLD + panel_title`
   /// shape every panel uses.
-  pub fn panel_block(
-    &self,
-    title: &str,
-    focused: bool,
-  ) -> ratatui::widgets::Block<'static> {
+  pub fn panel_block(&self, title: &str, focused: bool) -> ratatui::widgets::Block<'static> {
     let border = if focused { self.accent } else { self.muted };
     ratatui::widgets::Block::default()
       .borders(ratatui::widgets::Borders::ALL)

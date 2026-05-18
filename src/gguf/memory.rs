@@ -103,9 +103,7 @@ impl MemoryEstimate {
 /// Estimate the launch-time memory footprint for the supplied GGUF header
 /// and launch parameters.
 pub fn estimate(header: &GgufHeader, opts: EstimateOptions) -> MemoryEstimate {
-  let arch = header
-    .string(&["general.architecture"])
-    .map(str::to_string);
+  let arch = header.string(&["general.architecture"]).map(str::to_string);
   let arch_key = arch.as_deref();
 
   let weights_total = weights_bytes(header);

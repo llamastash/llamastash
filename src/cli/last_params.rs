@@ -33,9 +33,7 @@ pub async fn handle(args: LastParamsArgs, cli: &Cli, config: &Config) -> CliResu
     let catalog = fetch_catalog(&mut client).await?;
     let row = resolve_model(&catalog, target)?;
     rows.retain(|r| {
-      r.get("id")
-        .and_then(|id| id.get("path"))
-        .and_then(Value::as_str)
+      crate::cli::output::row_path(r)
         .map(|p| p == row.path)
         .unwrap_or(false)
     });
@@ -62,11 +60,7 @@ pub async fn handle(args: LastParamsArgs, cli: &Cli, config: &Config) -> CliResu
   }
   println!("MODEL\tCTX\tREASONING\tADVANCED");
   for r in &rows {
-    let path = r
-      .get("id")
-      .and_then(|id| id.get("path"))
-      .and_then(Value::as_str)
-      .unwrap_or("?");
+    let path = crate::cli::output::row_path(r).unwrap_or("?");
     let params = r.get("params");
     let ctx = params
       .and_then(|p| p.get("ctx"))

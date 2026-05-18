@@ -12,6 +12,16 @@ use serde_json::Value;
 
 use crate::cli::resolve::{CatalogRow, RunningRow, StatusSnapshot};
 
+/// Decode the canonical model path out of a daemon row's nested
+/// `id.path` shape. Centralised so the five CLI subcommands that
+/// project status / list_models / favorites / last_params rows
+/// stop respelling the same two-level `get` (audit §1.1 #7).
+pub fn row_path(v: &Value) -> Option<&str> {
+  v.get("id")
+    .and_then(|id| id.get("path"))
+    .and_then(Value::as_str)
+}
+
 /// Render `list_models` rows as TSV. Columns: id, path, arch, quant,
 /// native_ctx (one line per model, header line first).
 pub fn list_human(rows: &[CatalogRow]) -> String {
@@ -78,11 +88,7 @@ pub fn favorites_json(rows: &[Value]) -> Value {
   let arr: Vec<Value> = rows
     .iter()
     .map(|r| {
-      let path = r
-        .get("id")
-        .and_then(|id| id.get("path"))
-        .and_then(Value::as_str)
-        .unwrap_or("");
+      let path = row_path(r).unwrap_or("");
       let name = std::path::Path::new(path)
         .file_stem()
         .and_then(|s| s.to_str())

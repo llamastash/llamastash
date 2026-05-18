@@ -45,12 +45,9 @@ pub fn render(
     .constraints([Constraint::Min(1), Constraint::Length(1)])
     .split(inner);
 
-  let prompt = Paragraph::new(Line::from(Span::styled(
-    body,
-    palette.text_style(),
-  )))
-  .wrap(Wrap { trim: true })
-  .alignment(Alignment::Center);
+  let prompt = Paragraph::new(Line::from(Span::styled(body, palette.text_style())))
+    .wrap(Wrap { trim: true })
+    .alignment(Alignment::Center);
   frame.render_widget(prompt, chunks[0]);
 
   // Resolve the Submit/Cancel labels live from the keymap so a

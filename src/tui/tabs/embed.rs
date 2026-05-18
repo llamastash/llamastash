@@ -96,10 +96,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
         .fg(palette.warning)
         .add_modifier(Modifier::BOLD),
     )),
-    (_, Some(err)) => Line::from(Span::styled(
-      format!("error: {err}"),
-      palette.error_style(),
-    )),
+    (_, Some(err)) => Line::from(Span::styled(format!("error: {err}"), palette.error_style())),
     _ => input_pane::idle_status_line(&idle_status_chips(app, active), palette),
   };
 

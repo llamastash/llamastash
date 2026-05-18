@@ -1138,7 +1138,8 @@ fn parse_quant(label: &str) -> crate::gguf::metadata::Quant {
   // `Unknown(0)` sentinel without crashing the TUI on a future
   // quant tag the daemon learns about first. The `0` payload is
   // just "unknown ggml type" — not surfaced back to the user.
-  crate::gguf::metadata::Quant::from_label(label).unwrap_or(crate::gguf::metadata::Quant::Unknown(0))
+  crate::gguf::metadata::Quant::from_label(label)
+    .unwrap_or(crate::gguf::metadata::Quant::Unknown(0))
 }
 
 fn parse_external_row(row: &Value) -> Option<ManagedRow> {
@@ -1753,11 +1754,7 @@ mod tests {
     // (empty /m/y group is pruned by `build_rows`)
     let mut app = App::new(AppOptions::default());
     app.models = vec![fake("/m/x/a.gguf", "/m/x"), fake("/m/y/b.gguf", "/m/y")];
-    app.managed = vec![ready_managed(
-      "/m/y/b.gguf",
-      42100,
-      SurfaceState::Launching,
-    )];
+    app.managed = vec![ready_managed("/m/y/b.gguf", 42100, SurfaceState::Launching)];
     app.list_cursor = 4; // model a (catalog row)
     app.open_launch_picker();
     assert_eq!(app.launch_picker.as_ref().unwrap().model_name, "a");

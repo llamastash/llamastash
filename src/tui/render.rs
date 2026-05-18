@@ -182,10 +182,10 @@ fn render_title_row(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Pale
       .direction(Direction::Horizontal)
       .constraints([Constraint::Min(min_brand_w), Constraint::Length(hint_slot)])
       .split(area);
-    render_title_left(frame, split[0], app, &palette);
-    help_bar::render_global(frame, split[1], app, &palette);
+    render_title_left(frame, split[0], app, palette);
+    help_bar::render_global(frame, split[1], app, palette);
   } else {
-    render_title_left(frame, area, app, &palette);
+    render_title_left(frame, area, app, palette);
   }
 }
 
@@ -248,10 +248,10 @@ fn render_info_row(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palet
     .direction(Direction::Horizontal)
     .constraints(constraints)
     .split(area);
-  host_stats_pane::render(frame, split[0], &app.host_metrics, &palette);
-  info_pane::render(frame, split[1], app, &palette);
+  host_stats_pane::render(frame, split[0], &app.host_metrics, palette);
+  info_pane::render(frame, split[1], app, palette);
   if show_logo {
-    logo_pane::render(frame, split[2], app, &palette);
+    logo_pane::render(frame, split[2], app, palette);
   }
 }
 
@@ -275,7 +275,7 @@ fn render_body(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) 
   let list_focused = list_is_focused(app.focus);
   let right_focused = right_is_focused(app.focus);
   if rows.is_empty() {
-    render_empty_state(frame, split[0], &palette, title, &filter_chip, list_focused);
+    render_empty_state(frame, split[0], palette, title, &filter_chip, list_focused);
   } else {
     list_pane::render(
       frame,
@@ -291,7 +291,7 @@ fn render_body(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) 
     );
   }
   if show_right {
-    right_pane::render(frame, split[1], app, &palette, right_focused);
+    right_pane::render(frame, split[1], app, palette, right_focused);
   }
 }
 
@@ -432,7 +432,7 @@ fn render_empty_state(
   focused: bool,
 ) {
   use ratatui::widgets::{Block, Borders};
-  let title_line = list_pane::build_block_title(title, filter_chip, &palette);
+  let title_line = list_pane::build_block_title(title, filter_chip, palette);
   let border_color = list_pane::border_color(palette, focused);
   let block = Block::default()
     .title(title_line)
@@ -441,10 +441,7 @@ fn render_empty_state(
   let inner = block.inner(area);
   frame.render_widget(block, area);
   let lines = vec![
-    Line::from(Span::styled(
-      "No GGUFs surfaced yet.",
-      palette.text_style(),
-    )),
+    Line::from(Span::styled("No GGUFs surfaced yet.", palette.text_style())),
     Line::from(Span::styled(
       "Drop a `.gguf` into a watched directory or run `llamadash --model-path <DIR>`.",
       palette.muted_style(),
@@ -493,7 +490,10 @@ mod tests {
       "placeholder must surface current size: {body}"
     );
     // No panels should have been drawn.
-    assert!(!body.contains("LlamaDash"), "panels must not render: {body}");
+    assert!(
+      !body.contains("LlamaDash"),
+      "panels must not render: {body}"
+    );
   }
 
   #[test]

@@ -474,10 +474,7 @@ fn build_status_legend(palette: &Palette) -> Line<'static> {
       Style::default().fg(colour_for(*state, palette)),
     ));
     spans.push(Span::raw(" "));
-    spans.push(Span::styled(
-      (*label).to_string(),
-      palette.muted_style(),
-    ));
+    spans.push(Span::styled((*label).to_string(), palette.muted_style()));
   }
   spans.push(Span::raw(" "));
   Line::from(spans)
@@ -635,10 +632,7 @@ pub(crate) fn build_block_title(
   let mut spans: Vec<Span<'static>> = Vec::with_capacity(8);
   spans.push(Span::raw(" "));
   spans.push(Span::styled(count, palette.title_style()));
-  spans.push(Span::styled(
-    " · ".to_string(),
-    palette.muted_style(),
-  ));
+  spans.push(Span::styled(" · ".to_string(), palette.muted_style()));
 
   // Filter slot. Inactive chip uses the same muted style as the
   // other hints so the title reads as a uniform hint strip.
@@ -656,10 +650,7 @@ pub(crate) fn build_block_title(
           .fg(palette.accent)
           .add_modifier(Modifier::BOLD),
       ));
-      spans.push(Span::styled(
-        buffer.to_string(),
-        palette.text_style(),
-      ));
+      spans.push(Span::styled(buffer.to_string(), palette.text_style()));
       if focused {
         spans.push(crate::tui::fmt::caret(palette));
       }
@@ -668,10 +659,7 @@ pub(crate) fn build_block_title(
 
   // Hint chips, separated by ` · `.
   for h in hints {
-    spans.push(Span::styled(
-      " · ".to_string(),
-      palette.muted_style(),
-    ));
+    spans.push(Span::styled(" · ".to_string(), palette.muted_style()));
     spans.push(Span::styled(h, palette.muted_style()));
   }
   spans.push(Span::raw(" "));

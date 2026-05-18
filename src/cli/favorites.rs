@@ -33,11 +33,7 @@ pub async fn handle(args: FavoritesArgs, cli: &Cli, config: &Config) -> CliResul
         println!("(no favorites)");
       } else {
         for fav in &arr {
-          let path = fav
-            .get("id")
-            .and_then(|id| id.get("path"))
-            .and_then(Value::as_str)
-            .unwrap_or("?");
+          let path = crate::cli::output::row_path(fav).unwrap_or("?");
           println!("{path}");
         }
       }

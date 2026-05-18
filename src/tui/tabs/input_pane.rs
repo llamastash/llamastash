@@ -79,10 +79,7 @@ fn render_prompt(frame: &mut Frame<'_>, area: Rect, field: &PromptField<'_>, pal
   // Round-8: drop the leading `▌ ` block; align the caret style
   // with the Models pane filter (`▏` + REVERSED) so all single-line
   // text inputs read the same.
-  let mut spans = vec![Span::styled(
-    field.text.to_string(),
-    palette.text_style(),
-  )];
+  let mut spans = vec![Span::styled(field.text.to_string(), palette.text_style())];
   if field.active {
     spans.push(crate::tui::fmt::caret(palette));
   }
@@ -102,10 +99,7 @@ pub fn idle_status_line<'a>(chips: &[String], palette: &Palette) -> Line<'a> {
     if i > 0 {
       spans.push(Span::styled(" · ", palette.muted_style()));
     }
-    spans.push(Span::styled(
-      chip.clone(),
-      palette.muted_style(),
-    ));
+    spans.push(Span::styled(chip.clone(), palette.muted_style()));
   }
   Line::from(spans)
 }

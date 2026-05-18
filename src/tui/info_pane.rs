@@ -176,10 +176,7 @@ fn counts_row<'a>(app: &'a App, palette: &'a Palette) -> Line<'a> {
     Span::styled(" · ", palette.muted_style()),
     Span::styled(format!("{ready} ready"), palette.text_style()),
     Span::styled(" · ", palette.muted_style()),
-    Span::styled(
-      format!("{favorites} ★"),
-      palette.warning_style(),
-    ),
+    Span::styled(format!("{favorites} ★"), palette.warning_style()),
   ])
 }
 

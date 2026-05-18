@@ -211,12 +211,10 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
 /// chip alone if either label is missing the conventional
 /// `key:desc` shape.
 fn bidirectional_chip(reverse: &str, forward: &str, description: &str) -> String {
-  let key = |chip: &str| -> Option<String> {
-    chip.split(':').next().map(str::to_string)
-  };
+  let key = |chip: &str| -> Option<String> { chip.split(':').next().map(str::to_string) };
   match (key(reverse), key(forward)) {
     (Some(r), Some(f)) if r != f => format!("{r}{f}:{description}"),
-    _ => format!("{forward}"),
+    _ => forward.to_string(),
   }
 }
 
@@ -317,15 +315,9 @@ fn kv_focused(
     label_style,
   ));
   if focused && cyclable {
-    spans.push(Span::styled(
-      "◀ ".to_string(),
-      palette.accent_style(),
-    ));
+    spans.push(Span::styled("◀ ".to_string(), palette.accent_style()));
     spans.push(Span::styled(value, palette.text_style()));
-    spans.push(Span::styled(
-      " ▶".to_string(),
-      palette.accent_style(),
-    ));
+    spans.push(Span::styled(" ▶".to_string(), palette.accent_style()));
   } else {
     spans.push(Span::styled(value, palette.text_style()));
   }
