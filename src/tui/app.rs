@@ -146,16 +146,6 @@ pub struct App {
   pub should_exit: bool,
   /// Whether the modal help overlay is visible. Bound to `?`.
   pub show_help: bool,
-  /// When `true`, the right pane is shown even if no model is
-  /// currently running. Set by `open_launch_picker` so pressing
-  /// Enter on a not-yet-running model pops the Settings tab into
-  /// view. Cleared by `close_launch_picker` (Esc).
-  pub right_pane_force_open: bool,
-  /// Sticky path of the running model whose Logs/Chat the right
-  /// pane should display when the list cursor lands on a row that
-  /// has no managed launch of its own. Updated whenever the cursor
-  /// moves to a running model.
-  pub right_pane_sticky_path: Option<PathBuf>,
   /// Modal "are you sure?" prompt. `Some(...)` shows a centred
   /// confirmation overlay that captures `y` / Enter to dispatch
   /// the inner action and `n` / Esc to dismiss. Used by stop-model
@@ -200,17 +190,16 @@ impl App {
       host_metrics: HostMetricsSnapshot::default(),
       should_exit: false,
       show_help: false,
-      right_pane_force_open: false,
-      right_pane_sticky_path: None,
       confirm_dialog: None,
     }
   }
 
-  /// True when the right pane should render. Hidden until either a
-  /// model is running OR the user pressed Enter:launch (which sets
-  /// `right_pane_force_open`).
+  /// True when the right pane should render. We always show it as
+  /// long as the user has at least one discovered model — the pane
+  /// follows the cursor and surfaces Settings (and Logs/Chat when
+  /// running) for whatever model is currently selected.
   pub fn right_pane_visible(&self) -> bool {
-    self.right_pane_force_open || !self.managed.is_empty()
+    !self.models.is_empty()
   }
 
   /// Toggle the modal help overlay. Bound to `?`. Esc also closes
@@ -562,35 +551,13 @@ impl App {
     self.managed.iter().find(|m| m.path == path)
   }
 
-  /// The ManagedRow the right pane should display: prefers the
-  /// model the cursor sits on (when running), otherwise falls back
-  /// to the sticky path set the last time the cursor landed on a
-  /// running model. Returns `None` when no managed launches exist.
+  /// The ManagedRow the right pane should display — the model the
+  /// cursor sits on, or `None` when the cursor row has no managed
+  /// launch. The right pane follows the cursor with no sticky
+  /// fallback: an unlaunched row shows just the Settings tab for
+  /// the selected model.
   pub fn right_pane_focus(&self) -> Option<&ManagedRow> {
-    if let Some(m) = self.focused_managed() {
-      return Some(m);
-    }
-    let sticky = self.right_pane_sticky_path.as_ref()?;
-    self.managed.iter().find(|m| &m.path == sticky)
-  }
-
-  /// Refresh `right_pane_sticky_path` from the current cursor.
-  /// Called after every navigation event so the right pane follows
-  /// the cursor *when it lands on a running model* and otherwise
-  /// stays pinned to the last running model the user inspected.
-  pub fn refresh_right_pane_sticky(&mut self) {
-    if let Some(m) = self.focused_managed() {
-      self.right_pane_sticky_path = Some(m.path.clone());
-    } else if let Some(sticky) = &self.right_pane_sticky_path {
-      // Drop the sticky reference if its underlying launch
-      // disappeared (stopped). The next cursor move that lands on a
-      // running model will rehydrate it.
-      if !self.managed.iter().any(|m| &m.path == sticky) {
-        self.right_pane_sticky_path = self.managed.first().map(|m| m.path.clone());
-      }
-    } else if let Some(first) = self.managed.first() {
-      self.right_pane_sticky_path = Some(first.path.clone());
-    }
+    self.focused_managed()
   }
 
   /// Open the launch picker for the focused model. Seeds from
@@ -626,18 +593,16 @@ impl App {
     }
     state.active_instances = active_count;
     self.launch_picker = Some(state);
-    // New behaviour: pressing Enter:launch on a model routes the
-    // user to the Settings tab in the right pane instead of the
-    // centred popup. The pane also flips to RightPane focus so the
-    // Enter→Settings flow needs no extra keystroke.
+    // Pressing Enter:launch on a model routes the user to the
+    // Settings tab in the right pane. The pane itself is always
+    // visible (it follows the cursor) so we only have to flip the
+    // focus + active tab — no `force_open` plumbing required.
     self.right_tab = RightTab::Settings;
-    self.right_pane_force_open = true;
     self.focus = Focus::RightPane;
   }
 
   pub fn close_launch_picker(&mut self) {
     self.launch_picker = None;
-    self.right_pane_force_open = false;
     self.focus = Focus::List;
     // Snap the right tab back to Logs so the next launch doesn't
     // re-open on a stale Settings view.
@@ -689,25 +654,36 @@ impl App {
   }
 
   /// Tabs the right pane should expose for the currently focused
-  /// model. `Logs` is always present; Ready models gain a mode-
-  /// appropriate second tab (Chat / Embed / Rerank). Non-Ready
-  /// models render `Logs` only.
+  /// model. The rule is binary: a *running* selection (Launching /
+  /// Loading / Ready) gets Logs + the mode-appropriate input tab +
+  /// Settings; an unlaunched / stopped / errored / unfocused
+  /// selection gets only Settings. There's no sticky fallback —
+  /// what the user sees in the right pane is the model under the
+  /// cursor, nothing else.
   pub fn available_right_tabs(&self) -> Vec<RightTab> {
-    // Non-Ready focus: Logs (recent log lines from a stopped/failed
-    // launch may still be useful) + Settings (so the user can review
-    // / edit launch params before pressing Enter again).
     let managed = match self.focused_managed() {
-      Some(m) if m.state == SurfaceState::Ready => m,
-      _ => return vec![RightTab::Logs, RightTab::Settings],
+      Some(m) => m,
+      None => return vec![RightTab::Settings],
     };
-    let mode = self
-      .models
-      .iter()
-      .find(|m| m.path == managed.path)
-      .and_then(|m| m.metadata.as_ref())
-      .map(|md| md.mode_hint)
-      .unwrap_or(crate::gguf::metadata::ModeHint::Chat);
-    tabs_for_mode(mode)
+    match managed.state {
+      SurfaceState::Ready => {
+        let mode = self
+          .models
+          .iter()
+          .find(|m| m.path == managed.path)
+          .and_then(|m| m.metadata.as_ref())
+          .map(|md| md.mode_hint)
+          .unwrap_or(crate::gguf::metadata::ModeHint::Chat);
+        tabs_for_mode(mode)
+      }
+      // Process alive but not yet serving — Logs help the user
+      // watch the startup pipeline, Settings stay available for
+      // launch-time tweaks once the model is back to NotLaunched.
+      SurfaceState::Launching | SurfaceState::Loading => {
+        vec![RightTab::Logs, RightTab::Settings]
+      }
+      _ => vec![RightTab::Settings],
+    }
   }
 
   /// Advance the right-pane tab. Skips tabs that aren't reachable
@@ -1231,6 +1207,64 @@ mod tests {
     assert!(
       app.right_pane_visible(),
       "right pane must be visible after open_launch_picker"
+    );
+  }
+
+  fn ready_managed(path: &str, port: u16, state: SurfaceState) -> ManagedRow {
+    ManagedRow {
+      launch_id: format!("L-{port}"),
+      path: PathBuf::from(path),
+      port,
+      state,
+      rss_bytes: None,
+      cpu_pct: None,
+    }
+  }
+
+  #[test]
+  fn right_pane_follows_cursor_no_sticky_fallback() {
+    // Two models — one running (qwen), one not (phi). Cursor on the
+    // running row exposes the running model's mode-appropriate tabs;
+    // moving the cursor to the unlaunched row collapses the tab set
+    // to Settings only and clears `right_pane_focus()` — no sticky
+    // reference to qwen survives.
+    let mut app = App::new(AppOptions::default());
+    app.models = vec![fake("/m/qwen.gguf", "/m"), fake("/m/phi.gguf", "/m")];
+    app.managed = vec![ready_managed("/m/qwen.gguf", 41100, SurfaceState::Ready)];
+    // Row layout: [TableHeader, Header(/m), Model(phi), Model(qwen)].
+    // (alphabetical: phi < qwen). Place cursor on qwen first.
+    app.list_cursor = 3;
+    assert_eq!(
+      app.available_right_tabs(),
+      vec![RightTab::Logs, RightTab::Chat, RightTab::Settings],
+      "running selection exposes mode-appropriate tabs"
+    );
+    assert!(app.right_pane_focus().is_some());
+    // Now cursor on phi (not launched).
+    app.list_cursor = 2;
+    assert_eq!(
+      app.available_right_tabs(),
+      vec![RightTab::Settings],
+      "unlaunched selection collapses to Settings only"
+    );
+    assert!(
+      app.right_pane_focus().is_none(),
+      "no sticky fallback — right pane has no managed handle to draw"
+    );
+  }
+
+  #[test]
+  fn loading_selection_shows_logs_and_settings_but_not_chat() {
+    // A model mid-startup (Launching/Loading) keeps Logs visible so
+    // the user can watch the pipeline; Chat would mislead — the
+    // server isn't accepting requests yet.
+    let mut app = App::new(AppOptions::default());
+    app.models = vec![fake("/m/qwen.gguf", "/m")];
+    app.managed = vec![ready_managed("/m/qwen.gguf", 41100, SurfaceState::Loading)];
+    app.list_cursor = 2;
+    assert_eq!(
+      app.available_right_tabs(),
+      vec![RightTab::Logs, RightTab::Settings]
     );
   }
 

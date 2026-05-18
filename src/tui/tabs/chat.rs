@@ -90,7 +90,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &ChatTabState, palette: 
   };
   let body_lines: Vec<Line<'_>> = if body_text.is_empty() {
     vec![Line::from(Span::styled(
-      "Send a prompt with Ctrl+Enter. Responses stream here.",
+      "Send a prompt with Enter (Shift+Enter for newline). Responses stream here.",
       Style::default().fg(palette.muted),
     ))]
   } else {
@@ -142,7 +142,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &ChatTabState, palette: 
       Style::default().fg(palette.muted),
     )),
     _ => Line::from(Span::styled(
-      "ready — Ctrl+Enter to send, r toggles reasoning collapse",
+      "ready — Enter to send (Shift+Enter newline), Ctrl+r toggles reasoning collapse",
       Style::default().fg(palette.muted),
     )),
   };

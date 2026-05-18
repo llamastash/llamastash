@@ -127,10 +127,13 @@ Override semantics mirror kdash: the action's existing default binding(s) are re
 | `toggle_help` | `?` | List, right pane |
 | `stop_model` | `s` | List |
 | `kill_daemon` | `Q` (shift+q) | List — triggers a confirmation popup |
-| `focus_list` | `Esc` | Right pane / tab inputs |
+| `focus_list` | `Esc`, `Shift+M` | Right pane / tab inputs |
+| `focus_logs_tab` | `Shift+L` | List, right pane — gated on a running model |
+| `focus_chat_tab` | `Shift+C` | List, right pane — mode-appropriate (Chat / Embed / Rerank), gated on a running model |
+| `focus_settings_tab` | `Shift+S` | List, right pane — always available |
 | `next_focus` / `prev_focus` | `Tab` / `Shift+Tab`, `→`/`l`, `←`/`h` | Cross-pane navigation |
 | `enter_edit` / `exit_edit` | `e` / `Esc` | Right pane → tab input |
-| `send_chat` | `Ctrl+Enter` | Chat input |
+| `send_chat` | `Enter` (Shift+Enter inserts newline on kitty-protocol terminals) | Chat input |
 | `toggle_think_collapse` | `Ctrl+r` | Chat input |
 | `toggle_auto_scroll` | `s` | Right pane (Logs) |
 | `stage_rerank_candidate` | `Tab` | Rerank input |
@@ -266,6 +269,7 @@ These are the defaults. Override any binding via the `keybindings:` block in `co
 | `y` / `Y` / `p` | Yank URL / curl / model path |
 | `t` | Cycle theme |
 | `Tab` | Move focus to right pane |
+| `Shift+M` / `Shift+L` / `Shift+C` / `Shift+S` | Jump focus to Models / Logs / Chat / Settings respectively. `L` and `C` only fire when the focused model is running. |
 
 ### Launch picker
 
@@ -281,7 +285,8 @@ These are the defaults. Override any binding via the `keybindings:` block in `co
 | Key | Action |
 |---|---|
 | `Tab` | Cycle tab (Logs → Chat / Embed / Rerank when Ready) |
-| `Esc` / `Shift+Tab` | Return focus to the list |
+| `Esc` / `Shift+Tab` / `Shift+M` | Return focus to the list |
+| `Shift+L` / `Shift+C` / `Shift+S` | Jump to Logs / Chat / Settings tab. `L` and `C` are gated on a running model. |
 | `s` | Toggle Logs auto-scroll |
 
 ### Chat tab (`Focus::ChatInput`)
@@ -289,7 +294,8 @@ These are the defaults. Override any binding via the `keybindings:` block in `co
 | Key | Action |
 |---|---|
 | (alphanumerics / Backspace) | Edit prompt buffer |
-| `Ctrl+Enter` | Send prompt |
+| `Enter` | Send prompt |
+| `Shift+Enter` | Insert newline (only on kitty-protocol terminals; collapses to send elsewhere) |
 | `Ctrl+r` | Toggle `<think>` block collapse |
 
 ### Embed tab (`Focus::EmbedInput`)

@@ -97,7 +97,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &EmbedTabState, palette:
     }
   } else {
     body.push(Line::from(Span::styled(
-      "Press Ctrl+Enter to embed the input above.",
+      "Press Enter to embed the input above.",
       Style::default().fg(palette.muted),
     )));
   }
@@ -115,7 +115,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &EmbedTabState, palette:
       Style::default().fg(palette.error),
     )),
     _ => Line::from(Span::styled(
-      "Ctrl+Enter to embed · Esc to clear",
+      "Enter to embed · Esc to clear",
       Style::default().fg(palette.muted),
     )),
   };

@@ -3,9 +3,11 @@
 //! The right pane is a single bordered Block. The block's title
 //! carries the tab strip (`Logs │ Chat`) so the active surface is
 //! visible without a separate strip row. Inside the block:
-//!  1. A header line — focused model name · port · state · RAM ·
-//!     CPU.
-//!  2. The active tab's content rendered directly into the area
+//!  1. A model-name line — bold, full width so long filenames have
+//!     somewhere to breathe.
+//!  2. A stats line — `:port  state  RAM  CPU`.
+//!  3. A muted separator rule.
+//!  4. The active tab's content rendered directly into the area
 //!     beneath. Tab renderers no longer wrap themselves in a
 //!     second Block — borders here are owned by this dispatcher,
 //!     keeping the panel a single unnested rectangle.
@@ -41,13 +43,14 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette, f
   let inner = outer.inner(area);
   frame.render_widget(outer, area);
 
-  // Inner stack: 1 blank pad, header (1 row), separator line, tab
-  // content. The contextual hint chips now ride alongside the tab
-  // strip in the block title (kdash-style, matching the Models
-  // pane), so the inner stack saves a row for the actual content.
+  // Inner stack: 1 blank pad, name (1 row), stats (1 row), separator
+  // line, tab content. The contextual hint chips ride alongside the
+  // tab strip in the block title (kdash-style, matching the Models
+  // pane), so the inner stack stays focused on identity + content.
   let layout = Layout::default()
     .direction(Direction::Vertical)
     .constraints([
+      Constraint::Length(1),
       Constraint::Length(1),
       Constraint::Length(1),
       Constraint::Length(1),
@@ -55,9 +58,10 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette, f
     ])
     .split(inner);
 
-  render_header(frame, layout[1], app, palette);
-  render_separator(frame, layout[2], palette);
-  let body_area = layout[3];
+  render_header_name(frame, layout[1], app, palette);
+  render_header_stats(frame, layout[2], app, palette);
+  render_separator(frame, layout[3], palette);
+  let body_area = layout[4];
 
   match app.right_tab {
     RightTab::Logs => logs::render(frame, body_area, &app.logs_state, palette),
@@ -186,29 +190,37 @@ fn block_title_line(app: &App, tabs: &[RightTab], palette: &Palette) -> Line<'st
   Line::from(spans)
 }
 
-/// Render the model-header line inside the block: name · port ·
-/// state · RAM · CPU. Falls back to `not launched` / `—` when no
-/// managed launch exists or no model is focused.
-fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
+/// Render line 1 of the header: the model's display name in bold.
+/// Falls back to `—` when nothing is focused.
+fn render_header_name(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   use crate::util::paths::model_display_name;
-  // `right_pane_focus()` follows the cursor when it lands on a
-  // running model; otherwise it stays pinned to the last running
-  // model so the header doesn't whip back to `—` every time the
-  // cursor crosses an unlaunched row.
-  let line = match app.right_pane_focus() {
+  let name_line = match app.right_pane_focus() {
+    Some(m) => Line::from(Span::styled(
+      model_display_name(&m.path),
+      Style::default().fg(palette.fg).add_modifier(Modifier::BOLD),
+    )),
+    None => match app.focused_path() {
+      Some(p) => Line::from(Span::styled(
+        model_display_name(&p),
+        Style::default().fg(palette.fg).add_modifier(Modifier::BOLD),
+      )),
+      None => Line::from(Span::styled("—", Style::default().fg(palette.muted))),
+    },
+  };
+  frame.render_widget(Paragraph::new(name_line), area);
+}
+
+/// Render line 2 of the header: `:port  state  RAM  CPU` for a
+/// running model, `not launched` when the focused model has no
+/// supervisor row, blank when nothing is focused.
+fn render_header_stats(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
+  let stats_line = match app.right_pane_focus() {
     Some(m) => {
       let (rss, cpu) = stats_pair(m);
       let label_style = Style::default().fg(palette.label);
       let value_style = Style::default().fg(palette.fg);
       Line::from(vec![
-        Span::styled(
-          model_display_name(&m.path),
-          Style::default().fg(palette.fg).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-          format!("  :{}  ", m.port),
-          Style::default().fg(palette.muted),
-        ),
+        Span::styled(format!(":{}  ", m.port), Style::default().fg(palette.muted)),
         Span::styled(
           format!("{} ", glyph_for(m.state)),
           Style::default().fg(crate::tui::status_icons::colour_for(m.state, palette)),
@@ -230,17 +242,11 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette
       ])
     }
     None => match app.focused_path() {
-      Some(p) => Line::from(vec![
-        Span::styled(
-          model_display_name(&p),
-          Style::default().fg(palette.fg).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("  not launched", Style::default().fg(palette.muted)),
-      ]),
-      None => Line::from(Span::styled("—", Style::default().fg(palette.muted))),
+      Some(_) => Line::from(Span::styled("not launched", Style::default().fg(palette.muted))),
+      None => Line::from(Span::raw("")),
     },
   };
-  frame.render_widget(Paragraph::new(line), area);
+  frame.render_widget(Paragraph::new(stats_line), area);
 }
 
 /// Format the trailing `4.2G RAM · 312% CPU` portion of the model
@@ -361,17 +367,17 @@ mod tests {
       contextual_hints(&app_with_focus(Focus::ChatInput, RightTab::Chat)),
       vec![
         "Esc:clear".to_string(),
-        "Ctrl+Enter:send".to_string(),
+        "Enter:send".to_string(),
         "Ctrl+r:think".to_string(),
       ]
     );
     assert_eq!(
       contextual_hints(&app_with_focus(Focus::EmbedInput, RightTab::Embed)),
-      vec!["Esc:clear".to_string(), "Ctrl+Enter:embed".to_string()]
+      vec!["Esc:clear".to_string(), "Enter:embed".to_string()]
     );
     assert_eq!(
       contextual_hints(&app_with_focus(Focus::RerankInput, RightTab::Rerank)),
-      vec!["Esc:clear".to_string(), "Ctrl+Enter:rerank".to_string()]
+      vec!["Esc:clear".to_string(), "Enter:rerank".to_string()]
     );
   }
 
@@ -477,21 +483,16 @@ mod tests {
   }
 
   #[test]
-  fn tab_strip_is_suppressed_when_only_logs_is_reachable() {
-    // A non-Ready (or unlaunched) model exposes only the Logs tab.
-    // The render path should omit the strip row entirely — no other
-    // tab labels visible, no `│` separator from `render_tab_strip`.
+  fn unlaunched_selection_shows_settings_only() {
+    // The right pane follows the cursor. When the cursor sits on a
+    // model with no managed launch (or no model at all), only the
+    // Settings tab is reachable — Logs, Chat, Embed, Rerank stay
+    // hidden until the model is running.
     use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
     use ratatui::Terminal;
-    // Settings is always reachable, but mode-specific tabs (Chat /
-    // Embed / Rerank) stay hidden when no model is Ready. So an
-    // unlaunched default app exposes only `Logs` + `Settings`.
     let app = App::new(AppOptions::default());
-    assert_eq!(
-      app.available_right_tabs(),
-      vec![RightTab::Logs, RightTab::Settings]
-    );
+    assert_eq!(app.available_right_tabs(), vec![RightTab::Settings]);
     let palette = app.palette();
     let mut term = Terminal::new(TestBackend::new(50, 12)).unwrap();
     term
@@ -507,12 +508,63 @@ mod tests {
       rows.push(row);
     }
     let body = rows.join("\n");
-    // None of the mode-specific labels appear when the model isn't Ready.
-    for label in ["Chat", "Embed", "Rerank"] {
+    for label in ["Logs", "Chat", "Embed", "Rerank"] {
       assert!(
         !body.contains(label),
-        "expected `{label}` absent when no Ready model: {body}"
+        "expected `{label}` absent for an unlaunched selection: {body}"
       );
     }
+    assert!(body.contains("Settings"), "Settings must remain visible");
+  }
+
+  #[test]
+  fn header_splits_name_and_stats_across_two_lines() {
+    // The model name belongs on its own row (so long filenames stop
+    // crowding `:port  state  RAM  CPU`); the stats sit on the row
+    // immediately below.
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+    use ratatui::Terminal;
+    let mut app = App::new(AppOptions::default());
+    app.models = vec![crate::discovery::DiscoveredModel {
+      path: PathBuf::from("/m/qwen.gguf"),
+      parent: PathBuf::from("/m"),
+      source: crate::discovery::ModelSource::UserPath,
+      metadata: None,
+      parse_error: None,
+      split_siblings: Vec::new(),
+    }];
+    app.managed = vec![ready_managed("qwen", Some(4_500_000_000), Some(312.0))];
+    app.list_cursor = 2;
+    let palette = app.palette();
+    let mut term = Terminal::new(TestBackend::new(60, 18)).unwrap();
+    term
+      .draw(|f| render(f, Rect::new(0, 0, 60, 18), &app, palette, false))
+      .unwrap();
+    let buf = term.backend().buffer().clone();
+    let mut rows: Vec<String> = Vec::with_capacity(buf.area.height as usize);
+    for y in 0..buf.area.height {
+      let mut row = String::with_capacity(buf.area.width as usize);
+      for x in 0..buf.area.width {
+        row.push_str(buf.cell((x, y)).unwrap().symbol());
+      }
+      rows.push(row);
+    }
+    let name_row = rows.iter().position(|r| r.contains("qwen")).unwrap();
+    assert!(
+      !rows[name_row].contains(":41100"),
+      "stats must not share the name row: {:?}",
+      rows[name_row]
+    );
+    let stats_row = rows.iter().position(|r| r.contains(":41100")).unwrap();
+    assert!(
+      stats_row > name_row,
+      "stats row {stats_row} should sit below name row {name_row}"
+    );
+    assert!(
+      rows[stats_row].contains("4.2G RAM") && rows[stats_row].contains("312% CPU"),
+      "stats row missing RAM/CPU: {:?}",
+      rows[stats_row]
+    );
   }
 }

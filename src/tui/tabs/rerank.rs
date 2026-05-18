@@ -161,7 +161,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &RerankTabState, palette
   if state.ranked.is_empty() {
     body.push(Line::from(Span::styled(
       format!(
-        "{} candidate(s) staged. Press Ctrl+Enter to rank.",
+        "{} candidate(s) staged. Press Enter to rank.",
         state.candidates.len()
       ),
       Style::default().fg(palette.muted),
@@ -201,7 +201,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &RerankTabState, palette
       Style::default().fg(palette.error),
     )),
     _ => Line::from(Span::styled(
-      "Tab cycles field · Tab stages candidate · Ctrl+Enter ranks",
+      "Tab cycles field · Tab stages candidate · Enter ranks",
       Style::default().fg(palette.muted),
     )),
   };

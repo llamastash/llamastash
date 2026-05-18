@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
@@ -146,12 +146,20 @@ fn handle_key(app: &mut App, key: KeyEvent, writer: Option<&mpsc::Sender<WriterC
 }
 
 /// Text-capture handler for the chat / embed / rerank prompt
-/// buffers. Bound actions (Ctrl+Enter, Tab, Esc, etc.) are routed
+/// buffers. Bound actions (Enter, Tab, Esc, etc.) are routed
 /// through [`apply_action`] *before* this is called — see
 /// [`handle_key`] — so alphanumerics fall through to the buffer
 /// without trampling the surrounding keybindings.
 fn handle_tab_input(app: &mut App, key: KeyEvent) {
   match (app.focus, key.code) {
+    // Shift+Enter inserts a newline so multi-line chat prompts are
+    // possible. Only fires on terminals that implement the kitty
+    // keyboard protocol — elsewhere Shift+Enter collapses to plain
+    // Enter and submits the prompt, which matches the universal
+    // single-line expectation for terminals without disambiguation.
+    (Focus::ChatInput, KeyCode::Enter) if key.modifiers.contains(KeyModifiers::SHIFT) => {
+      app.chat.prompt.push('\n');
+    }
     (Focus::ChatInput, KeyCode::Backspace) => {
       app.chat.prompt.pop();
     }
@@ -320,7 +328,48 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
       // (Tab / Shift+Tab / h / l) instead of the buffer.
       app.focus = Focus::RightPane;
     }
+    Action::FocusLogsTab => apply_focus_logs_tab(app),
+    Action::FocusChatTab => apply_focus_chat_tab(app),
+    Action::FocusSettingsTab => apply_focus_settings_tab(app),
   }
+}
+
+/// `L` quick-jump: park focus on the Logs tab when it's reachable.
+/// Logs is only available for running launches, so we toast and
+/// stay put for an unlaunched selection.
+fn apply_focus_logs_tab(app: &mut App) {
+  if app.available_right_tabs().contains(&RightTab::Logs) {
+    app.right_tab = RightTab::Logs;
+    app.focus = Focus::RightPane;
+  } else {
+    app.show_toast("Logs unavailable — focus a running model");
+  }
+}
+
+/// `C` quick-jump: park focus on whichever mode-specific tab is
+/// reachable for the focused model (Chat for chat models, Embed
+/// for embedding models, Rerank for rerank models). Toasts when
+/// the selection isn't a running model.
+fn apply_focus_chat_tab(app: &mut App) {
+  let tabs = app.available_right_tabs();
+  let target = [RightTab::Chat, RightTab::Embed, RightTab::Rerank]
+    .into_iter()
+    .find(|t| tabs.contains(t));
+  match target {
+    Some(t) => {
+      app.right_tab = t;
+      app.focus = Focus::RightPane;
+    }
+    None => app.show_toast("Chat/Embed/Rerank unavailable — focus a running model"),
+  }
+}
+
+/// `S` quick-jump: park focus on the Settings tab. Settings is
+/// always reachable so this never fails — even on an empty
+/// selection the renderer shows the editable launch form.
+fn apply_focus_settings_tab(app: &mut App) {
+  app.right_tab = RightTab::Settings;
+  app.focus = Focus::RightPane;
 }
 
 /// Stage a stop-model confirmation. The actual `stop_model` RPC is
@@ -429,19 +478,16 @@ fn cycle_focus(app: &mut App, dir: FocusDir) {
   };
   if next_pos == 0 {
     app.focus = Focus::List;
-    app.right_pane_force_open = false;
   } else {
     let tab = tabs[next_pos - 1];
     app.right_tab = tab;
     // KDash-style edit mode: navigation lands on RightPane focus
     // regardless of which tab is active. The user presses `e` to
     // enter the tab's text-input focus (ChatInput/EmbedInput/
-    // RerankInput) and `Esc` to step back out.
+    // RerankInput) and `Esc` to step back out. The right pane is
+    // always visible (it follows the cursor) so there's no force
+    // -open flag to toggle.
     app.focus = Focus::RightPane;
-    // Make sure the pane is visible when the user explicitly walks
-    // into it — otherwise Tabbing into a not-yet-running model would
-    // leave them with focus on a hidden surface.
-    app.right_pane_force_open = true;
   }
 }
 
@@ -812,6 +858,9 @@ fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
 /// Fully-featured TUI run-loop. Drives the App from real crossterm
 /// events + a daemon refresher, rendering on each tick.
 pub async fn run(app: App, socket: PathBuf) -> Result<()> {
+  use crossterm::event::{
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+  };
   use crossterm::execute;
   use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -828,6 +877,17 @@ pub async fn run(app: App, socket: PathBuf) -> Result<()> {
   // mouse capture off lets users copy text out of the dashboard the
   // way they would from any other terminal program.
   execute!(stdout, EnterAlternateScreen)?;
+  // Opt into the kitty keyboard protocol so Shift+Enter (and any
+  // other Shift/Ctrl + Enter variants) arrive as distinct events on
+  // supporting terminals (kitty / foot / wezterm / alacritty). On
+  // terminals that don't implement the protocol the escape sequence
+  // is silently ignored, so this is safe everywhere. Paired with a
+  // PopKeyboardEnhancementFlags below.
+  let pushed_kitty = execute!(
+    stdout,
+    PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+  )
+  .is_ok();
   let backend = CrosstermBackend::new(stdout);
   let mut terminal = Terminal::new(backend)?;
 
@@ -870,7 +930,12 @@ pub async fn run(app: App, socket: PathBuf) -> Result<()> {
     }
   }
 
-  // Restore the terminal even on early returns above.
+  // Restore the terminal even on early returns above. Pop the kitty
+  // protocol flags first so the next program inheriting the tty
+  // doesn't accidentally inherit the disambiguation state.
+  if pushed_kitty {
+    let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
+  }
   disable_raw_mode()?;
   execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
   terminal.show_cursor()?;
@@ -1542,6 +1607,78 @@ mod tests {
     app.go_top();
     let text = super::build_yank_text(&app, Action::YankUrl).expect("url");
     assert_eq!(text, "http://127.0.0.1:41100/v1");
+  }
+
+  #[test]
+  fn shift_m_jumps_focus_to_models_list_from_right_pane() {
+    use crate::tui::tabs::RightTab;
+    let mut app = App::new(Default::default());
+    app.focus = Focus::RightPane;
+    app.right_tab = RightTab::Settings;
+    pump_input(&mut app, key(KeyCode::Char('M'), KeyModifiers::SHIFT));
+    assert_eq!(app.focus, Focus::List, "Shift+M must focus the models list");
+  }
+
+  #[test]
+  fn shift_s_focuses_settings_tab_from_models_list_with_no_running_model() {
+    use crate::tui::tabs::RightTab;
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.go_top();
+    // Settings is always reachable — even without a running launch.
+    pump_input(&mut app, key(KeyCode::Char('S'), KeyModifiers::SHIFT));
+    assert_eq!(app.focus, Focus::RightPane);
+    assert_eq!(app.right_tab, RightTab::Settings);
+  }
+
+  #[test]
+  fn shift_l_focuses_logs_tab_only_when_model_is_running() {
+    use crate::tui::tabs::RightTab;
+    // Not running → Shift+L toasts and stays put.
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.go_top();
+    pump_input(&mut app, key(KeyCode::Char('L'), KeyModifiers::SHIFT));
+    assert_eq!(app.focus, Focus::List, "no running model = no jump");
+    assert!(
+      app
+        .toast_message()
+        .map(|s| s.contains("Logs unavailable"))
+        .unwrap_or(false),
+      "toast should explain the gate: {:?}",
+      app.toast_message()
+    );
+
+    // Running → Shift+L parks focus on Logs.
+    app.managed = vec![ready_managed_for_events("/m/qwen.gguf", 41100)];
+    pump_input(&mut app, key(KeyCode::Char('L'), KeyModifiers::SHIFT));
+    assert_eq!(app.focus, Focus::RightPane);
+    assert_eq!(app.right_tab, RightTab::Logs);
+  }
+
+  #[test]
+  fn shift_c_focuses_mode_tab_when_running_else_toasts() {
+    use crate::tui::tabs::RightTab;
+    // Not running → toast + no jump.
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.go_top();
+    pump_input(&mut app, key(KeyCode::Char('C'), KeyModifiers::SHIFT));
+    assert_eq!(app.focus, Focus::List);
+    assert!(
+      app
+        .toast_message()
+        .map(|s| s.contains("Chat/Embed/Rerank unavailable"))
+        .unwrap_or(false),
+      "toast should explain the gate: {:?}",
+      app.toast_message()
+    );
+
+    // Running chat model → Shift+C parks focus on the Chat tab.
+    app.managed = vec![ready_managed_for_events("/m/qwen.gguf", 41100)];
+    pump_input(&mut app, key(KeyCode::Char('C'), KeyModifiers::SHIFT));
+    assert_eq!(app.focus, Focus::RightPane);
+    assert_eq!(app.right_tab, RightTab::Chat);
   }
 
   #[test]

@@ -23,8 +23,8 @@ use crate::tui::keybindings::{Action, Focus};
 /// - `Single` resolves a single `(focus, action)` lookup and renders
 ///   the live key + the binding's own description.
 /// - `Multi` covers several `(focus, action)` pairs that share a
-///   key (e.g. all three right-pane submit actions on `Ctrl+Enter`)
-///   and collapses them into a single row with an editorial joined
+///   key (e.g. all three right-pane submit actions on `Enter`) and
+///   collapses them into a single row with an editorial joined
 ///   description. If a config override breaks the shared-key
 ///   invariant, the renderer falls back to one line per part so
 ///   nothing is hidden.
@@ -61,6 +61,12 @@ const GENERAL: &[Row] = &[
   Row::Single { focus: Focus::List, action: Action::CycleTheme },
   Row::Single { focus: Focus::List, action: Action::NextFocus },
   Row::Single { focus: Focus::List, action: Action::PrevFocus },
+  // Shift-letter pane jumps. Bound from either Models or the right
+  // pane so they're TUI-wide rather than focus-specific.
+  Row::Single { focus: Focus::List, action: Action::FocusList },
+  Row::Single { focus: Focus::List, action: Action::FocusLogsTab },
+  Row::Single { focus: Focus::List, action: Action::FocusChatTab },
+  Row::Single { focus: Focus::List, action: Action::FocusSettingsTab },
 ];
 
 /// Models pane's `Enter` collapse: applies the live filter buffer
@@ -100,7 +106,7 @@ const LOGS: &[Row] = &[
 ];
 
 /// The three submit actions across the right-pane inputs collapse
-/// into one row at the default `Ctrl+Enter` binding.
+/// into one row at the default `Enter` binding.
 const SUBMIT_TRIPLET: &[(Focus, Action)] = &[
   (Focus::ChatInput, Action::SendChat),
   (Focus::EmbedInput, Action::Submit),
@@ -435,7 +441,16 @@ mod tests {
       "collapsed row should split after override:\n{frame}"
     );
     assert!(frame.contains("F12"), "F12 send binding missing:\n{frame}");
-    assert!(frame.contains("Ctrl+Enter"), "Ctrl+Enter row missing:\n{frame}");
+    // Embed/Rerank still on plain Enter so their per-part rows show
+    // up with each binding's own description.
+    assert!(
+      frame.contains("Enter") && frame.contains("embed"),
+      "embed row should remain visible after the chat-only override:\n{frame}"
+    );
+    assert!(
+      frame.contains("rank"),
+      "rerank row should remain visible after the chat-only override:\n{frame}"
+    );
   }
 
   #[test]

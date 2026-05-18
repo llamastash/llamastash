@@ -33,13 +33,13 @@ pub enum Focus {
   /// Text-capture variants below cover the live input surfaces.
   RightPane,
   /// Chat tab prompt input — alphanumerics/backspace extend the
-  /// prompt buffer; Ctrl+Enter sends.
+  /// prompt buffer; Enter sends, Shift+Enter inserts a newline (on
+  /// terminals that implement the kitty keyboard protocol).
   ChatInput,
-  /// Embed tab input — Ctrl+Enter calls /v1/embeddings on the
-  /// focused model.
+  /// Embed tab input — Enter calls /v1/embeddings on the focused
+  /// model.
   EmbedInput,
-  /// Rerank tab input — Tab stages a candidate, Ctrl+Enter
-  /// rerank-calls.
+  /// Rerank tab input — Tab stages a candidate, Enter rerank-calls.
   RerankInput,
 }
 
@@ -78,7 +78,9 @@ pub enum Action {
   /// `Shift+Tab`, `Left`, and `h`. Wraps.
   PrevFocus,
   /// Send the buffered chat prompt to `/v1/chat/completions`.
-  /// Bound to `Ctrl+Enter` in [`Focus::ChatInput`].
+  /// Bound to plain `Enter` in [`Focus::ChatInput`] — `Ctrl+Enter`
+  /// can't be reliably distinguished outside terminals that ship
+  /// the kitty keyboard protocol.
   SendChat,
   /// Toggle the per-message `<think>...</think>` collapse in the
   /// Chat tab (R32 reasoning-aware view).
@@ -102,6 +104,17 @@ pub enum Action {
   /// Kill the daemon entirely (after a confirmation popup). Bound
   /// to `Q` (Shift+q) in the model list focus.
   KillDaemon,
+  /// Jump focus to the Logs tab in the right pane. No-op (with a
+  /// toast) when the focused model isn't running, since Logs is
+  /// only reachable for live launches.
+  FocusLogsTab,
+  /// Jump focus to whichever mode-specific tab is reachable for the
+  /// focused model (Chat / Embed / Rerank). No-op + toast when the
+  /// model isn't running.
+  FocusChatTab,
+  /// Jump focus to the Settings tab in the right pane. Always
+  /// available because Settings exists for every selection.
+  FocusSettingsTab,
 }
 
 /// One binding in the table.
@@ -321,6 +334,38 @@ const LIST_BINDINGS: &[Binding] = &[
     label: "h",
     description: "prev pane",
   },
+  // Shift-letter quick-jumps so the user can hop straight to a
+  // specific surface without walking the focus chain. The lowercase
+  // counterparts (`m`/`l`/`c`/`s`) are already in use for unrelated
+  // actions, so the shifted form is the distinct keystroke.
+  Binding {
+    key: KeyCode::Char('M'),
+    mods: KeyModifiers::SHIFT,
+    action: Action::FocusList,
+    label: "M",
+    description: "models",
+  },
+  Binding {
+    key: KeyCode::Char('L'),
+    mods: KeyModifiers::SHIFT,
+    action: Action::FocusLogsTab,
+    label: "L",
+    description: "logs",
+  },
+  Binding {
+    key: KeyCode::Char('C'),
+    mods: KeyModifiers::SHIFT,
+    action: Action::FocusChatTab,
+    label: "C",
+    description: "chat",
+  },
+  Binding {
+    key: KeyCode::Char('S'),
+    mods: KeyModifiers::SHIFT,
+    action: Action::FocusSettingsTab,
+    label: "S",
+    description: "settings",
+  },
 ];
 
 const FILTER_BINDINGS: &[Binding] = &[
@@ -536,6 +581,36 @@ const RIGHT_PANE_BINDINGS: &[Binding] = &[
     label: "↑",
     description: "scroll up",
   },
+  // Mirror the LIST_BINDINGS shift-letter quick-jumps so the user
+  // can hop between surfaces from either pane.
+  Binding {
+    key: KeyCode::Char('M'),
+    mods: KeyModifiers::SHIFT,
+    action: Action::FocusList,
+    label: "M",
+    description: "models",
+  },
+  Binding {
+    key: KeyCode::Char('L'),
+    mods: KeyModifiers::SHIFT,
+    action: Action::FocusLogsTab,
+    label: "L",
+    description: "logs",
+  },
+  Binding {
+    key: KeyCode::Char('C'),
+    mods: KeyModifiers::SHIFT,
+    action: Action::FocusChatTab,
+    label: "C",
+    description: "chat",
+  },
+  Binding {
+    key: KeyCode::Char('S'),
+    mods: KeyModifiers::SHIFT,
+    action: Action::FocusSettingsTab,
+    label: "S",
+    description: "settings",
+  },
 ];
 
 const CHAT_INPUT_BINDINGS: &[Binding] = &[
@@ -560,11 +635,17 @@ const CHAT_INPUT_BINDINGS: &[Binding] = &[
     label: "Shift+Tab",
     description: "prev pane",
   },
+  // Plain Enter so submit fires on every terminal — Ctrl+Enter is
+  // ambiguous unless the kitty keyboard protocol is active, which
+  // many terminals (gnome-terminal, konsole, macOS Terminal) don't
+  // implement. Shift+Enter inserts a newline in the prompt buffer
+  // (only distinguishable on kitty-protocol terminals; elsewhere it
+  // collapses to plain Enter and submits — fine for v1).
   Binding {
     key: KeyCode::Enter,
-    mods: KeyModifiers::CONTROL,
+    mods: KeyModifiers::NONE,
     action: Action::SendChat,
-    label: "Ctrl+Enter",
+    label: "Enter",
     description: "send",
   },
   Binding {
@@ -598,14 +679,12 @@ const EMBED_INPUT_BINDINGS: &[Binding] = &[
     label: "Shift+Tab",
     description: "prev pane",
   },
-  // Ctrl+Enter matches the Chat tab's send shortcut so the
-  // right-pane submit gesture is consistent across Chat / Embed /
-  // Rerank.
+  // Plain Enter — see CHAT_INPUT_BINDINGS for the rationale.
   Binding {
     key: KeyCode::Enter,
-    mods: KeyModifiers::CONTROL,
+    mods: KeyModifiers::NONE,
     action: Action::Submit,
-    label: "Ctrl+Enter",
+    label: "Enter",
     description: "embed",
   },
 ];
@@ -632,12 +711,12 @@ const RERANK_INPUT_BINDINGS: &[Binding] = &[
     label: "Shift+Tab",
     description: "prev pane",
   },
-  // Ctrl+Enter for parity with Chat (`send`) and Embed (`embed`).
+  // Plain Enter — see CHAT_INPUT_BINDINGS for the rationale.
   Binding {
     key: KeyCode::Enter,
-    mods: KeyModifiers::CONTROL,
+    mods: KeyModifiers::NONE,
     action: Action::Submit,
-    label: "Ctrl+Enter",
+    label: "Enter",
     description: "rank",
   },
 ];
@@ -841,6 +920,9 @@ impl Action {
     ("enter_edit", Action::EnterEdit),
     ("exit_edit", Action::ExitEdit),
     ("kill_daemon", Action::KillDaemon),
+    ("focus_logs_tab", Action::FocusLogsTab),
+    ("focus_chat_tab", Action::FocusChatTab),
+    ("focus_settings_tab", Action::FocusSettingsTab),
   ];
 
   /// Parse a config-name (snake_case or kebab-case) into an action.
@@ -1035,9 +1117,12 @@ mod tests {
   }
 
   #[test]
-  fn chat_input_ctrl_enter_sends() {
+  fn chat_input_enter_sends() {
+    // Plain Enter — Ctrl+Enter relies on the kitty keyboard protocol
+    // which most terminals don't implement, so we settle on the
+    // universal binding (R0).
     assert_eq!(
-      action_for(Focus::ChatInput, KeyCode::Enter, KeyModifiers::CONTROL,),
+      action_for(Focus::ChatInput, KeyCode::Enter, KeyModifiers::NONE),
       Some(Action::SendChat),
     );
   }
@@ -1051,27 +1136,27 @@ mod tests {
   }
 
   #[test]
-  fn embed_input_ctrl_enter_submits() {
-    assert_eq!(
-      action_for(Focus::EmbedInput, KeyCode::Enter, KeyModifiers::CONTROL),
-      Some(Action::Submit),
-    );
-    // Plain Enter falls through to the per-tab character handler so
-    // it neither submits nor inserts a newline.
+  fn embed_input_enter_submits() {
     assert_eq!(
       action_for(Focus::EmbedInput, KeyCode::Enter, KeyModifiers::NONE),
+      Some(Action::Submit),
+    );
+    // Shift+Enter has no binding so it falls through to the per-tab
+    // handler (currently a no-op for embed — single-line input).
+    assert_eq!(
+      action_for(Focus::EmbedInput, KeyCode::Enter, KeyModifiers::SHIFT),
       None,
     );
   }
 
   #[test]
-  fn rerank_input_ctrl_enter_submits() {
+  fn rerank_input_enter_submits() {
     assert_eq!(
-      action_for(Focus::RerankInput, KeyCode::Enter, KeyModifiers::CONTROL),
+      action_for(Focus::RerankInput, KeyCode::Enter, KeyModifiers::NONE),
       Some(Action::Submit),
     );
     assert_eq!(
-      action_for(Focus::RerankInput, KeyCode::Enter, KeyModifiers::NONE),
+      action_for(Focus::RerankInput, KeyCode::Enter, KeyModifiers::SHIFT),
       None,
     );
   }

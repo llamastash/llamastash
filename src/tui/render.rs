@@ -40,7 +40,6 @@ const MIN_LOGO_INNER_WIDTH: u16 = 9;
 pub fn render(frame: &mut Frame<'_>, app: &mut App) {
   app.expire_toast();
   app.ensure_right_tab_reachable();
-  app.refresh_right_pane_sticky();
   let palette = app.palette();
   let area = frame.area();
 
