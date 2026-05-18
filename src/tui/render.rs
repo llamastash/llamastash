@@ -40,7 +40,15 @@ const MIN_LOGO_INNER_WIDTH: u16 = 9;
 pub fn render(frame: &mut Frame<'_>, app: &mut App) {
   app.expire_toast();
   app.ensure_right_tab_reachable();
-  let palette = app.palette();
+  // Prime the per-frame `rendered_rows` memo so the 12+ in-frame
+  // calls (focused_path / focused_managed / right_pane / settings)
+  // amortise to a single build (audit §4.1 #1). Cleared at the
+  // bottom so event-handler invocations between frames recompute.
+  // `Palette` is `Copy`, so take a snapshot up front and free
+  // the borrow on `app` for the `prime_rows_cache` / mutable cache
+  // dance at the frame boundary.
+  let palette: Palette = *app.palette();
+  app.prime_rows_cache();
   let area = frame.area();
 
   // Paint the root area with the theme's background first so light
@@ -70,13 +78,13 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     .split(area);
 
   let mut idx = 0;
-  render_title_row(frame, chunks[idx], app, palette);
+  render_title_row(frame, chunks[idx], app, &palette);
   idx += 1;
   if show_info_row {
-    render_info_row(frame, chunks[idx], app, palette);
+    render_info_row(frame, chunks[idx], app, &palette);
     idx += 1;
   }
-  render_body(frame, chunks[idx], app, palette);
+  render_body(frame, chunks[idx], app, &palette);
 
   // Overlays last. The launch picker no longer has a modal — the
   // form lives inline in the right pane's Settings tab. The
@@ -84,18 +92,19 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
   // dedicated overlay is painted.
   if app.focus == Focus::AdvancedPanel {
     if let Some(state) = &app.advanced_panel {
-      advanced_panel::render(frame, area, state, palette);
+      advanced_panel::render(frame, area, state, &palette);
     }
   }
   if app.show_help {
-    help_overlay::render(frame, area, app, palette);
+    help_overlay::render(frame, area, app, &palette);
   }
   // Confirmation overlay paints last so it sits on top of every
   // other modal — by design: a destructive action wins focus
   // unconditionally until the user resolves it.
   if let Some(action) = app.confirm_dialog.as_ref() {
-    confirm_overlay::render(frame, area, app, action, palette);
+    confirm_overlay::render(frame, area, app, action, &palette);
   }
+  app.clear_rows_cache();
 }
 
 /// Render the accent-bg title row: brand + daemon dot on the left,
@@ -122,10 +131,10 @@ fn render_title_row(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Pale
       .direction(Direction::Horizontal)
       .constraints([Constraint::Min(min_brand_w), Constraint::Length(hint_slot)])
       .split(area);
-    render_title_left(frame, split[0], app, palette);
-    help_bar::render_global(frame, split[1], app, palette);
+    render_title_left(frame, split[0], app, &palette);
+    help_bar::render_global(frame, split[1], app, &palette);
   } else {
-    render_title_left(frame, area, app, palette);
+    render_title_left(frame, area, app, &palette);
   }
 }
 
@@ -188,10 +197,10 @@ fn render_info_row(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palet
     .direction(Direction::Horizontal)
     .constraints(constraints)
     .split(area);
-  host_stats_pane::render(frame, split[0], &app.host_metrics, palette);
-  info_pane::render(frame, split[1], app, palette);
+  host_stats_pane::render(frame, split[0], &app.host_metrics, &palette);
+  info_pane::render(frame, split[1], app, &palette);
   if show_logo {
-    logo_pane::render(frame, split[2], app, palette);
+    logo_pane::render(frame, split[2], app, &palette);
   }
 }
 
@@ -215,7 +224,7 @@ fn render_body(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) 
   let list_focused = list_is_focused(app.focus);
   let right_focused = right_is_focused(app.focus);
   if rows.is_empty() {
-    render_empty_state(frame, split[0], palette, title, &filter_chip, list_focused);
+    render_empty_state(frame, split[0], &palette, title, &filter_chip, list_focused);
   } else {
     list_pane::render(
       frame,
@@ -231,7 +240,7 @@ fn render_body(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) 
     );
   }
   if show_right {
-    right_pane::render(frame, split[1], app, palette, right_focused);
+    right_pane::render(frame, split[1], app, &palette, right_focused);
   }
 }
 
@@ -365,7 +374,7 @@ fn render_empty_state(
   focused: bool,
 ) {
   use ratatui::widgets::{Block, Borders};
-  let title_line = list_pane::build_block_title(title, filter_chip, palette);
+  let title_line = list_pane::build_block_title(title, filter_chip, &palette);
   let border_color = list_pane::border_color(palette, focused);
   let block = Block::default()
     .title(title_line)

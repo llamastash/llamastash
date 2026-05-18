@@ -165,6 +165,14 @@ pub struct App {
   /// and kill-daemon so a fat-finger doesn't drop a running model
   /// or the whole supervisor.
   pub confirm_dialog: Option<ConfirmAction>,
+  /// Per-frame memo of `rendered_rows()`. Primed at the top of
+  /// `render::render` and cleared at the bottom — see audit §4.1
+  /// #1 (the biggest single perf finding). The same `Vec<ListRow>`
+  /// used to be rebuilt 5+ times per frame via `focused_path`,
+  /// `focused_managed`, `focused_name`, and the right-pane render
+  /// helpers. None outside a frame so event handlers always see
+  /// fresh state.
+  pub(crate) rows_cache: Option<Vec<ListRow>>,
 }
 
 /// Action awaiting user confirmation in the modal popup. Captured
@@ -224,7 +232,25 @@ impl App {
       should_exit: false,
       show_help: false,
       confirm_dialog: None,
+      rows_cache: None,
     }
+  }
+
+  /// Memoize `rendered_rows()` for the duration of one frame so the
+  /// 12+ `rendered_rows()` calls inside a single `render::render`
+  /// pass amortise to a single `build_rows` + filter walk. Paired
+  /// with [`Self::clear_rows_cache`] at the frame boundary. See
+  /// audit §4.1 #1.
+  pub(crate) fn prime_rows_cache(&mut self) {
+    let rows = self.rendered_rows_uncached();
+    self.rows_cache = Some(rows);
+  }
+
+  /// Drop the per-frame `rendered_rows` memo. The cache must not
+  /// outlive a frame: event handlers between frames mutate models
+  /// / managed / favorites freely and would observe stale rows.
+  pub(crate) fn clear_rows_cache(&mut self) {
+    self.rows_cache = None;
   }
 
   /// True when the right pane should render. We always show it as
@@ -483,6 +509,16 @@ impl App {
   /// snapshots are small (hundreds of rows) and the filter is
   /// hand-rolled subsequence matching.
   pub fn rendered_rows(&self) -> Vec<ListRow> {
+    if let Some(cached) = self.rows_cache.as_ref() {
+      return cached.clone();
+    }
+    self.rendered_rows_uncached()
+  }
+
+  /// The expensive `build_rows + apply_filter` walk. Public only
+  /// for the cache primer; every other caller goes through
+  /// [`Self::rendered_rows`] so the per-frame memo applies.
+  fn rendered_rows_uncached(&self) -> Vec<ListRow> {
     let model_states = self.surface_states();
     let model_ports = self.surface_ports();
     let running: Vec<RunningLaunchRow> = self
@@ -1616,6 +1652,36 @@ mod tests {
     app.right_tab = RightTab::Chat;
     app.ensure_right_tab_reachable();
     assert_eq!(app.right_tab, RightTab::Settings);
+  }
+
+  #[test]
+  fn rendered_rows_cache_returns_memoized_value_inside_frame() {
+    // Tier-C hoist: `rendered_rows()` is memoized via `rows_cache`
+    // for the duration of a single render frame. The primer must
+    // populate the cache, and subsequent calls must return the
+    // memoized rows even if a state mutation lands between the
+    // primer and the consumer (which is exactly what happens
+    // during a frame — the cache holds the rows the *frame*
+    // committed to, not a stale half-build).
+    let mut app = App::new(AppOptions::default());
+    app.models = vec![fake("/m/x/a.gguf", "/m/x")];
+    let baseline = app.rendered_rows();
+    app.prime_rows_cache();
+    // Mutate the underlying model set; cache MUST hide the change
+    // until cleared.
+    app.models.push(fake("/m/y/b.gguf", "/m/y"));
+    let cached = app.rendered_rows();
+    assert_eq!(
+      cached.len(),
+      baseline.len(),
+      "cache must hide mid-frame mutations"
+    );
+    app.clear_rows_cache();
+    let fresh = app.rendered_rows();
+    assert!(
+      fresh.len() > baseline.len(),
+      "post-clear render reflects the mutation"
+    );
   }
 
   #[test]
