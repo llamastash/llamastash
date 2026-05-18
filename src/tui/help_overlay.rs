@@ -55,18 +55,48 @@ struct Group {
 // the `Focus` named in the row so a config override flows through.
 
 const GENERAL: &[Row] = &[
-  Row::Single { focus: Focus::List, action: Action::ToggleHelp },
-  Row::Single { focus: Focus::List, action: Action::Quit },
-  Row::Single { focus: Focus::List, action: Action::KillDaemon },
-  Row::Single { focus: Focus::List, action: Action::CycleTheme },
-  Row::Single { focus: Focus::List, action: Action::NextFocus },
-  Row::Single { focus: Focus::List, action: Action::PrevFocus },
+  Row::Single {
+    focus: Focus::List,
+    action: Action::ToggleHelp,
+  },
+  Row::Single {
+    focus: Focus::List,
+    action: Action::Quit,
+  },
+  Row::Single {
+    focus: Focus::List,
+    action: Action::KillDaemon,
+  },
+  Row::Single {
+    focus: Focus::List,
+    action: Action::CycleTheme,
+  },
+  Row::Single {
+    focus: Focus::List,
+    action: Action::NextFocus,
+  },
+  Row::Single {
+    focus: Focus::List,
+    action: Action::PrevFocus,
+  },
   // Shift-letter pane jumps. Bound from either Models or the right
   // pane so they're TUI-wide rather than focus-specific.
-  Row::Single { focus: Focus::List, action: Action::FocusList },
-  Row::Single { focus: Focus::List, action: Action::FocusLogsTab },
-  Row::Single { focus: Focus::List, action: Action::FocusChatTab },
-  Row::Single { focus: Focus::List, action: Action::FocusSettingsTab },
+  Row::Single {
+    focus: Focus::List,
+    action: Action::FocusList,
+  },
+  Row::Single {
+    focus: Focus::List,
+    action: Action::FocusLogsTab,
+  },
+  Row::Single {
+    focus: Focus::List,
+    action: Action::FocusChatTab,
+  },
+  Row::Single {
+    focus: Focus::List,
+    action: Action::FocusSettingsTab,
+  },
 ];
 
 /// Models pane's `Enter` collapse: applies the live filter buffer
@@ -78,31 +108,85 @@ const MODELS_ENTER: &[(Focus, Action)] = &[
 ];
 
 const MODELS: &[Row] = &[
-  Row::Single { focus: Focus::List, action: Action::MoveUp },
-  Row::Single { focus: Focus::List, action: Action::MoveDown },
-  Row::Single { focus: Focus::List, action: Action::PageUp },
-  Row::Single { focus: Focus::List, action: Action::PageDown },
-  Row::Single { focus: Focus::List, action: Action::GoTop },
-  Row::Single { focus: Focus::List, action: Action::GoBottom },
-  Row::Single { focus: Focus::List, action: Action::OpenFilter },
+  Row::Single {
+    focus: Focus::List,
+    action: Action::MoveUp,
+  },
+  Row::Single {
+    focus: Focus::List,
+    action: Action::MoveDown,
+  },
+  Row::Single {
+    focus: Focus::List,
+    action: Action::PageUp,
+  },
+  Row::Single {
+    focus: Focus::List,
+    action: Action::PageDown,
+  },
+  Row::Single {
+    focus: Focus::List,
+    action: Action::GoTop,
+  },
+  Row::Single {
+    focus: Focus::List,
+    action: Action::GoBottom,
+  },
+  Row::Single {
+    focus: Focus::List,
+    action: Action::OpenFilter,
+  },
   Row::Multi {
     parts: MODELS_ENTER,
     description: "apply filter/launch",
   },
-  Row::Single { focus: Focus::Filter, action: Action::ClearFilter },
-  Row::Single { focus: Focus::List, action: Action::ToggleFavorite },
-  Row::Single { focus: Focus::List, action: Action::OpenAdvancedPanel },
-  Row::Single { focus: Focus::List, action: Action::YankUrl },
-  Row::Single { focus: Focus::List, action: Action::YankCurl },
-  Row::Single { focus: Focus::List, action: Action::YankPath },
-  Row::Single { focus: Focus::List, action: Action::StopModel },
+  Row::Single {
+    focus: Focus::Filter,
+    action: Action::ClearFilter,
+  },
+  Row::Single {
+    focus: Focus::List,
+    action: Action::ToggleFavorite,
+  },
+  Row::Single {
+    focus: Focus::List,
+    action: Action::OpenAdvancedPanel,
+  },
+  Row::Single {
+    focus: Focus::List,
+    action: Action::YankUrl,
+  },
+  Row::Single {
+    focus: Focus::List,
+    action: Action::YankCurl,
+  },
+  Row::Single {
+    focus: Focus::List,
+    action: Action::YankPath,
+  },
+  Row::Single {
+    focus: Focus::List,
+    action: Action::StopModel,
+  },
 ];
 
 const LOGS: &[Row] = &[
-  Row::Single { focus: Focus::RightPane, action: Action::ToggleAutoScroll },
-  Row::Single { focus: Focus::RightPane, action: Action::MoveUp },
-  Row::Single { focus: Focus::RightPane, action: Action::MoveDown },
-  Row::Single { focus: Focus::RightPane, action: Action::FocusList },
+  Row::Single {
+    focus: Focus::RightPane,
+    action: Action::ToggleAutoScroll,
+  },
+  Row::Single {
+    focus: Focus::RightPane,
+    action: Action::MoveUp,
+  },
+  Row::Single {
+    focus: Focus::RightPane,
+    action: Action::MoveDown,
+  },
+  Row::Single {
+    focus: Focus::RightPane,
+    action: Action::FocusList,
+  },
 ];
 
 /// The three submit actions across the right-pane inputs collapse
@@ -114,14 +198,32 @@ const SUBMIT_TRIPLET: &[(Focus, Action)] = &[
 ];
 
 const CHAT_EMBED_RERANK: &[Row] = &[
-  Row::Single { focus: Focus::RightPane, action: Action::EnterEdit },
-  Row::Single { focus: Focus::ChatInput, action: Action::ExitEdit },
+  Row::Single {
+    focus: Focus::RightPane,
+    action: Action::EnterEdit,
+  },
+  Row::Single {
+    focus: Focus::ChatInput,
+    action: Action::ExitEdit,
+  },
   Row::Multi {
     parts: SUBMIT_TRIPLET,
     description: "send/embed/rerank",
   },
-  Row::Single { focus: Focus::ChatInput, action: Action::ToggleThinkCollapse },
-  Row::Single { focus: Focus::RerankInput, action: Action::StageRerankCandidate },
+  Row::Single {
+    focus: Focus::ChatInput,
+    action: Action::ToggleThinkCollapse,
+  },
+  Row::Single {
+    focus: Focus::RerankInput,
+    action: Action::StageRerankCandidate,
+  },
+  // Shift+Tab in rerank cycles back to the query field. Surfaced
+  // here so the help overlay teaches the reverse direction.
+  Row::Single {
+    focus: Focus::RerankInput,
+    action: Action::PrevField,
+  },
 ];
 
 /// Three different Enter destinations across the Settings flow —
@@ -148,7 +250,22 @@ const SETTINGS: &[Row] = &[
     parts: SETTINGS_ENTER,
     description: "launch/save",
   },
-  Row::Single { focus: Focus::LaunchPicker, action: Action::MoveDown },
+  Row::Single {
+    focus: Focus::LaunchPicker,
+    action: Action::MoveDown,
+  },
+  // Tab/Shift+Tab cycle the form fields (ctx / reasoning / advanced)
+  // inside the right pane's Settings tab. Surfaced from
+  // `Focus::RightPane` because that's the focus the user occupies
+  // when reading the form inline.
+  Row::Single {
+    focus: Focus::RightPane,
+    action: Action::NextField,
+  },
+  Row::Single {
+    focus: Focus::RightPane,
+    action: Action::PrevField,
+  },
   Row::Multi {
     parts: SETTINGS_ESC,
     description: "cancel/back",
@@ -162,15 +279,30 @@ const SETTINGS: &[Row] = &[
 // own column; the smaller groups pair up on either side.
 
 const COLUMN_1: &[Group] = &[
-  Group { title: "General", rows: GENERAL },
-  Group { title: "Logs", rows: LOGS },
+  Group {
+    title: "General",
+    rows: GENERAL,
+  },
+  Group {
+    title: "Logs",
+    rows: LOGS,
+  },
 ];
 
-const COLUMN_2: &[Group] = &[Group { title: "Models", rows: MODELS }];
+const COLUMN_2: &[Group] = &[Group {
+  title: "Models",
+  rows: MODELS,
+}];
 
 const COLUMN_3: &[Group] = &[
-  Group { title: "Chat / Embed / Rerank", rows: CHAT_EMBED_RERANK },
-  Group { title: "Settings", rows: SETTINGS },
+  Group {
+    title: "Chat / Embed / Rerank",
+    rows: CHAT_EMBED_RERANK,
+  },
+  Group {
+    title: "Settings",
+    rows: SETTINGS,
+  },
 ];
 
 /// Render the overlay. Caller is responsible for only invoking
@@ -289,10 +421,7 @@ fn render_binding_line(keys: &str, description: &str, palette: &Palette) -> Line
         .fg(palette.label)
         .add_modifier(Modifier::BOLD),
     ),
-    Span::styled(
-      description.to_string(),
-      Style::default().fg(palette.fg),
-    ),
+    Span::styled(description.to_string(), Style::default().fg(palette.fg)),
   ])
 }
 
@@ -357,8 +486,17 @@ mod tests {
   fn overlay_shows_all_five_group_titles() {
     let app = App::new(AppOptions::default());
     let frame = render_to_string(140, 36, &app);
-    for title in ["General", "Models", "Logs", "Chat / Embed / Rerank", "Settings"] {
-      assert!(frame.contains(title), "missing group `{title}` in:\n{frame}");
+    for title in [
+      "General",
+      "Models",
+      "Logs",
+      "Chat / Embed / Rerank",
+      "Settings",
+    ] {
+      assert!(
+        frame.contains(title),
+        "missing group `{title}` in:\n{frame}"
+      );
     }
   }
 
@@ -381,7 +519,10 @@ mod tests {
       "Models Enter row should be the collapsed `apply filter/launch`:\n{frame}"
     );
     let occurrences = frame.matches("apply filter/launch").count();
-    assert_eq!(occurrences, 1, "expected exactly one collapsed row:\n{frame}");
+    assert_eq!(
+      occurrences, 1,
+      "expected exactly one collapsed row:\n{frame}"
+    );
   }
 
   #[test]
@@ -413,8 +554,9 @@ mod tests {
   #[test]
   fn overlay_reflects_config_keybinding_overrides() {
     let mut keymap = KeyMap::default();
-    let overrides: BTreeMap<String, String> =
-      [(String::from("quit"), String::from("ctrl+q"))].into_iter().collect();
+    let overrides: BTreeMap<String, String> = [(String::from("quit"), String::from("ctrl+q"))]
+      .into_iter()
+      .collect();
     let warnings = keymap.apply_overrides(&overrides);
     assert!(warnings.is_empty(), "{warnings:?}");
 
@@ -423,7 +565,10 @@ mod tests {
       ..AppOptions::default()
     });
     let frame = render_to_string(140, 36, &app);
-    assert!(frame.contains("Ctrl+q"), "remapped quit key missing: {frame}");
+    assert!(
+      frame.contains("Ctrl+q"),
+      "remapped quit key missing: {frame}"
+    );
     assert!(
       !frame.contains("q,Ctrl+C"),
       "stale default quit aliases still rendered: {frame}"
@@ -433,8 +578,9 @@ mod tests {
   #[test]
   fn submit_row_falls_back_to_per_part_lines_when_override_diverges_keys() {
     let mut keymap = KeyMap::default();
-    let overrides: BTreeMap<String, String> =
-      [(String::from("send_chat"), String::from("f12"))].into_iter().collect();
+    let overrides: BTreeMap<String, String> = [(String::from("send_chat"), String::from("f12"))]
+      .into_iter()
+      .collect();
     let warnings = keymap.apply_overrides(&overrides);
     assert!(warnings.is_empty(), "{warnings:?}");
 

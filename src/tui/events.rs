@@ -59,6 +59,11 @@ pub enum WriterCmd {
     /// compatibility for the picker until catalog plumbing is
     /// wired through.
     mode: Option<crate::launch::mode::LaunchMode>,
+    /// Soft port preference. Emitted as `prefer_port` on the wire;
+    /// the daemon honours when free and falls back to allocate
+    /// otherwise. Seeded from `last_params[path].port` so a
+    /// returning user lands on the same port.
+    prefer_port: Option<u16>,
   },
   /// `stop_model` — graceful shutdown of the supplied launch.
   /// Dispatched by the `s` hotkey when the cursor sits on a
@@ -337,6 +342,46 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
       },
       _ => {}
     },
+    // Tab/Shift+Tab cycle the cursor across the form's input fields
+    // rather than across panes. Only meaningful in the Settings tab
+    // (cycles ctx / reasoning / advanced) and the Rerank input
+    // (cycles query / candidate). Elsewhere it's a no-op so the
+    // chord doesn't accidentally double as pane navigation.
+    Action::NextField => apply_next_field(app),
+    Action::PrevField => apply_prev_field(app),
+  }
+}
+
+fn apply_next_field(app: &mut App) {
+  match app.focus {
+    Focus::RerankInput => app.rerank.cycle_field(),
+    Focus::RightPane if app.right_tab == RightTab::Settings => {
+      if app.launch_picker.is_none() {
+        app.open_launch_picker();
+      }
+      if let Some(p) = app.launch_picker.as_mut() {
+        p.next_field();
+      }
+    }
+    _ => {}
+  }
+}
+
+fn apply_prev_field(app: &mut App) {
+  match app.focus {
+    // Rerank is a 2-field cycle, so prev and next land on the same
+    // place. Calling `cycle_field` keeps the implementation honest
+    // (one source of truth) rather than duplicating the toggle.
+    Focus::RerankInput => app.rerank.cycle_field(),
+    Focus::RightPane if app.right_tab == RightTab::Settings => {
+      if app.launch_picker.is_none() {
+        app.open_launch_picker();
+      }
+      if let Some(p) = app.launch_picker.as_mut() {
+        p.prev_field();
+      }
+    }
+    _ => {}
   }
 }
 
@@ -698,6 +743,7 @@ fn apply_launch_submit(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) 
     reasoning: picker.reasoning,
     advanced,
     mode,
+    prefer_port: picker.prefer_port,
   };
 
   match writer {
@@ -845,6 +891,7 @@ fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
       reasoning,
       advanced,
       mode,
+      prefer_port,
     } => {
       let mode_str = mode.map(|m| match m {
         crate::launch::mode::LaunchMode::Chat => "chat",
@@ -859,6 +906,7 @@ fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
           "reasoning": reasoning,
           "advanced": advanced,
           "mode": mode_str,
+          "prefer_port": prefer_port,
         }),
       )
     }
@@ -1693,6 +1741,98 @@ mod tests {
     pump_input(&mut app, key(KeyCode::Char('C'), KeyModifiers::SHIFT));
     assert_eq!(app.focus, Focus::RightPane);
     assert_eq!(app.right_tab, RightTab::Chat);
+  }
+
+  #[test]
+  fn tab_in_settings_tab_cycles_picker_fields_not_panes() {
+    // Tab in Focus::RightPane while right_tab == Settings cycles the
+    // launch-picker form fields (ctx → reasoning → advanced → ctx)
+    // instead of jumping to the next pane. Arrows still cycle panes.
+    use crate::tui::launch_picker::PickerField;
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.go_top();
+    app.focus = Focus::RightPane;
+    app.right_tab = RightTab::Settings;
+
+    pump_input(&mut app, key(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(app.focus, Focus::RightPane, "Tab must not leave the pane");
+    let field = app
+      .launch_picker
+      .as_ref()
+      .map(|p| p.field)
+      .expect("Tab in Settings should materialise the picker form");
+    assert_eq!(field, PickerField::Reasoning);
+
+    pump_input(&mut app, key(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(
+      app.launch_picker.as_ref().unwrap().field,
+      PickerField::Advanced
+    );
+  }
+
+  #[test]
+  fn shift_tab_in_settings_tab_cycles_picker_fields_backward() {
+    use crate::tui::launch_picker::PickerField;
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.go_top();
+    app.focus = Focus::RightPane;
+    app.right_tab = RightTab::Settings;
+
+    pump_input(&mut app, key(KeyCode::BackTab, KeyModifiers::SHIFT));
+    assert_eq!(app.focus, Focus::RightPane);
+    assert_eq!(
+      app.launch_picker.as_ref().expect("picker").field,
+      PickerField::Advanced
+    );
+  }
+
+  #[test]
+  fn shift_tab_in_rerank_input_cycles_field_not_pane() {
+    use crate::tui::tabs::rerank::RerankField;
+    let mut app = App::new(Default::default());
+    app.focus = Focus::RerankInput;
+    assert_eq!(app.rerank.field, RerankField::Query);
+    pump_input(&mut app, key(KeyCode::BackTab, KeyModifiers::SHIFT));
+    assert_eq!(
+      app.focus,
+      Focus::RerankInput,
+      "Shift+Tab must not leave the input"
+    );
+    assert_eq!(app.rerank.field, RerankField::Candidate);
+  }
+
+  #[test]
+  fn arrows_in_right_pane_still_cycle_panes_after_tab_remap() {
+    // The Tab remap mustn't accidentally strand the user: → / ← keep
+    // doing pane focus so navigation between Models and the right
+    // pane still works.
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.go_top();
+    app.focus = Focus::RightPane;
+    app.right_tab = RightTab::Settings;
+    pump_input(&mut app, key(KeyCode::Left, KeyModifiers::NONE));
+    assert_eq!(app.focus, Focus::List, "arrows still cycle panes");
+  }
+
+  #[test]
+  fn tab_in_right_pane_logs_tab_is_a_no_op() {
+    // We only remap Tab to field cycling where there are fields to
+    // cycle. In Logs (or any non-Settings right tab), Tab does
+    // nothing — arrows still cycle panes.
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.go_top();
+    app.focus = Focus::RightPane;
+    app.right_tab = RightTab::Logs;
+    pump_input(&mut app, key(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(app.focus, Focus::RightPane);
+    assert!(
+      app.launch_picker.is_none(),
+      "Tab in Logs must not materialise the picker"
+    );
   }
 
   #[test]

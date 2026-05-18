@@ -18,13 +18,18 @@ use crate::tui::advanced_panel::AdvancedPanelState;
 use crate::tui::filter::rank;
 use crate::tui::keybindings::{Action, Focus, KeyMap};
 use crate::tui::launch_picker::LaunchPickerState;
-use crate::tui::list_pane::{build_rows, ListRow, RowInputs};
+use crate::tui::list_pane::{build_rows, ListRow, RowInputs, RunningLaunchRow};
 use crate::tui::status_icons::SurfaceState;
 use crate::tui::tabs::{tabs_for_mode, RightTab};
 
 /// Maximum age of a toast before the App auto-clears it. Keeps
 /// transient yank confirmations from sticking around forever.
 const TOAST_TTL: Duration = Duration::from_secs(3);
+
+/// How many entries the `🕘 Recent` section surfaces. Five matches
+/// what the user picked during planning; the daemon's storage
+/// itself isn't capped — the cap is purely a render-side window.
+const RECENT_LIST_CAP: usize = 5;
 
 /// In-memory snapshot of one launched model the daemon is
 /// supervising. Mirrors the IPC `status` shape — kept in App so
@@ -52,6 +57,10 @@ pub struct LastParamsRow {
   pub ctx: Option<u32>,
   pub reasoning: bool,
   pub advanced: Vec<String>,
+  /// Port the model was last successfully bound on. The picker
+  /// passes this back as a soft preference (`prefer_port`) so a
+  /// returning user lands on the same port if it's still free.
+  pub port: Option<u16>,
 }
 
 /// Snapshot of the daemon-side metadata the Daemon info panel
@@ -111,6 +120,10 @@ pub struct App {
   /// Last-known persisted launch params per model path. Keyed off
   /// the canonical `ModelId.path` the daemon emits.
   pub last_params: BTreeMap<PathBuf, LastParamsRow>,
+  /// Top-N recently-launched paths in recency order (most recent
+  /// first). Surfaced via the `🕘 Recent` section. Populated from
+  /// `last_params_list`; see `RECENT_LIST_CAP`.
+  pub recent_paths: Vec<PathBuf>,
   /// Selected right-pane tab. `Logs` is always reachable; mode-
   /// specific tabs (`Chat` / `Embed` / `Rerank`) become reachable
   /// when the focused model is Ready.
@@ -175,6 +188,7 @@ impl App {
       managed: Vec::new(),
       external: Vec::new(),
       last_params: BTreeMap::new(),
+      recent_paths: Vec::new(),
       right_tab: RightTab::Logs,
       chat: Default::default(),
       embed: Default::default(),
@@ -300,7 +314,41 @@ impl App {
     // continue offering a stop affordance for a launch the daemon no
     // longer tracks.
     if let Some(arr) = body.get("models").and_then(Value::as_array) {
-      self.managed = arr.iter().filter_map(parse_status_row).collect();
+      let next: Vec<ManagedRow> = arr.iter().filter_map(parse_status_row).collect();
+      let prev_ids: std::collections::BTreeSet<String> =
+        self.managed.iter().map(|m| m.launch_id.clone()).collect();
+      // Merge while preserving recency order:
+      //   1. Launches that are new in this tick land at the top
+      //      (newest first per the daemon's emission order).
+      //   2. Launches that were already present keep their prior
+      //      relative position.
+      //   3. Launches that vanished (stopped) drop out.
+      let next_by_id: BTreeMap<String, ManagedRow> = next
+        .iter()
+        .map(|m| (m.launch_id.clone(), m.clone()))
+        .collect();
+      let mut merged: Vec<ManagedRow> = Vec::with_capacity(next.len());
+      let mut newest: Option<String> = None;
+      for row in &next {
+        if !prev_ids.contains(&row.launch_id) {
+          if newest.is_none() {
+            newest = Some(row.launch_id.clone());
+          }
+          merged.push(row.clone());
+        }
+      }
+      for prev in &self.managed {
+        if let Some(updated) = next_by_id.get(&prev.launch_id) {
+          merged.push(updated.clone());
+        }
+      }
+      self.managed = merged;
+      // Snap the cursor onto the newest running launch so the user
+      // sees their just-launched model selected. Only fires when a
+      // genuinely new launch_id appeared on this tick.
+      if let Some(launch_id) = newest {
+        self.snap_cursor_to_launch(&launch_id);
+      }
     } else {
       self.managed.clear();
     }
@@ -343,7 +391,12 @@ impl App {
       Some(a) => a,
       None => return,
     };
+    // Track the IPC response order separately — the daemon emits
+    // `last_params` newest-first now (see
+    // `state_store::upsert_last_params`), so we use that order to
+    // populate `recent_paths` for the `🕘 Recent` section.
     let mut next: BTreeMap<PathBuf, LastParamsRow> = BTreeMap::new();
+    let mut recent: Vec<PathBuf> = Vec::with_capacity(RECENT_LIST_CAP);
     for row in arr {
       let path = row
         .get("model_path")
@@ -366,17 +419,26 @@ impl App {
               .collect()
           })
           .unwrap_or_default();
+        let port = params
+          .get("port")
+          .and_then(Value::as_u64)
+          .and_then(|n| u16::try_from(n).ok());
+        if recent.len() < RECENT_LIST_CAP {
+          recent.push(path.clone());
+        }
         next.insert(
           path,
           LastParamsRow {
             ctx,
             reasoning,
             advanced,
+            port,
           },
         );
       }
     }
     self.last_params = next;
+    self.recent_paths = recent;
   }
 
   /// Apply a `favorite_list` IPC response.
@@ -403,15 +465,47 @@ impl App {
   /// hand-rolled subsequence matching.
   pub fn rendered_rows(&self) -> Vec<ListRow> {
     let model_states = self.surface_states();
+    let model_ports = self.surface_ports();
+    let running: Vec<RunningLaunchRow> = self
+      .managed
+      .iter()
+      .map(|m| RunningLaunchRow {
+        launch_id: m.launch_id.clone(),
+        path: m.path.clone(),
+        port: m.port,
+        state: m.state,
+      })
+      .collect();
     let mut all = build_rows(RowInputs {
       models: &self.models,
       favorites: &self.favorites,
       model_states: &model_states,
+      model_ports: &model_ports,
+      running: &running,
+      recent_paths: &self.recent_paths,
     });
     if !self.filter_buffer.is_empty() {
       all = apply_filter(&all, &self.filter_buffer);
     }
     all
+  }
+
+  /// Move `list_cursor` onto the row whose `launch_id` matches.
+  /// Used by `ingest_status` to land the user on a just-spawned
+  /// launch so they don't have to chase it manually. No-op when
+  /// the row isn't found (the merge may have ordered things
+  /// differently on this tick).
+  fn snap_cursor_to_launch(&mut self, launch_id: &str) {
+    let rows = self.rendered_rows();
+    if let Some((idx, _)) = rows.iter().enumerate().find(|(_, r)| match r {
+      ListRow::Model {
+        launch_id: Some(id),
+        ..
+      } => id == launch_id,
+      _ => false,
+    }) {
+      self.list_cursor = idx;
+    }
   }
 
   fn surface_states(&self) -> BTreeMap<PathBuf, SurfaceState> {
@@ -427,6 +521,24 @@ impl App {
     }
     for m in &self.managed {
       out.insert(m.path.clone(), m.state);
+    }
+    out
+  }
+
+  /// Companion to [`Self::surface_states`] — collapses every active
+  /// launch the daemon knows about into one `path → port` map for
+  /// the Port column. The list pane is currently one row per
+  /// discovered path, so the duplicate-launch case (which lives in
+  /// the Running group after the next polish round) deliberately
+  /// keeps just the last entry seen; the table cell still resolves
+  /// to a useful port, just not a uniqueness-aware one.
+  fn surface_ports(&self) -> BTreeMap<PathBuf, u16> {
+    let mut out: BTreeMap<PathBuf, u16> = BTreeMap::new();
+    for m in &self.external {
+      out.insert(m.path.clone(), m.port);
+    }
+    for m in &self.managed {
+      out.insert(m.path.clone(), m.port);
     }
     out
   }
@@ -547,8 +659,16 @@ impl App {
   }
 
   pub fn focused_managed(&self) -> Option<&ManagedRow> {
-    let path = self.focused_path()?;
-    self.managed.iter().find(|m| m.path == path)
+    let rows = self.rendered_rows();
+    let row = rows.get(self.list_cursor)?;
+    match row {
+      ListRow::Model {
+        launch_id: Some(id),
+        ..
+      } => self.managed.iter().find(|m| &m.launch_id == id),
+      ListRow::Model { path, .. } => self.managed.iter().find(|m| &m.path == path),
+      _ => None,
+    }
   }
 
   /// The ManagedRow the right pane should display — the model the
@@ -584,6 +704,7 @@ impl App {
             .iter()
             .position(|val| *val == c)
         });
+        state.prefer_port = last.port;
         if !last.advanced.is_empty() {
           let buffer = last.advanced.join(" ");
           let cursor = buffer.len();
@@ -1210,6 +1331,38 @@ mod tests {
     );
   }
 
+  #[test]
+  fn open_launch_picker_prefills_from_persisted_last_params() {
+    // Item 6: a returning user lands on the same ctx / reasoning /
+    // advanced argv they shipped on the previous launch. The daemon
+    // exposes the snapshot via `last_params_list`; the App ingests it
+    // into `self.last_params`; the picker seeds from it.
+    let mut app = App::new(AppOptions::default());
+    let path = PathBuf::from("/m/a.gguf");
+    app.models = vec![fake("/m/a.gguf", "/m")];
+    app.list_cursor = 2;
+    app.last_params.insert(
+      path.clone(),
+      LastParamsRow {
+        ctx: Some(16384),
+        reasoning: true,
+        advanced: vec!["--flash-attn".into(), "--n-gpu-layers".into(), "20".into()],
+        port: Some(41105),
+      },
+    );
+    app.open_launch_picker();
+    let picker = app.launch_picker.as_ref().expect("picker state");
+    assert_eq!(picker.ctx, Some(16384), "ctx must seed from last_params");
+    assert!(picker.reasoning, "reasoning must seed from last_params");
+    assert_eq!(picker.prefer_port, Some(41105), "port must seed too");
+    let advanced = app
+      .advanced_panel
+      .as_ref()
+      .map(|p| p.buffer.clone())
+      .expect("advanced panel must materialise when last_params carries flags");
+    assert_eq!(advanced, "--flash-attn --n-gpu-layers 20");
+  }
+
   fn ready_managed(path: &str, port: u16, state: SurfaceState) -> ManagedRow {
     ManagedRow {
       launch_id: format!("L-{port}"),
@@ -1222,26 +1375,92 @@ mod tests {
   }
 
   #[test]
+  fn ingest_status_snaps_cursor_to_newly_appeared_launch() {
+    // A new launch_id arriving in a status tick should pull the
+    // cursor onto its Running row so the user sees the model they
+    // just launched selected — matches the kdash-style "latest
+    // run goes to top + becomes selection" behaviour the user
+    // confirmed during planning.
+    let mut app = App::new(AppOptions::default());
+    app.models = vec![fake("/m/qwen.gguf", "/m")];
+    let body = serde_json::json!({
+      "models": [{
+        "launch_id": "L1",
+        "id": { "path": "/m/qwen.gguf", "header_hash": "h" },
+        "port": 41100,
+        "state": { "state": "ready" },
+      }]
+    });
+    app.ingest_status(&body);
+    // Row 2 should be the Running qwen row.
+    let rows = app.rendered_rows();
+    let cursor_row = rows.get(app.list_cursor).expect("cursor lands in bounds");
+    match cursor_row {
+      ListRow::Model {
+        launch_id: Some(id),
+        ..
+      } => assert_eq!(id, "L1", "cursor must land on the new launch"),
+      other => panic!("cursor must land on a launch row, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn focused_managed_uses_launch_id_when_present_for_duplicate_launches() {
+    // When two launches share a path, the Running rows must
+    // disambiguate by launch_id — picking the wrong one would
+    // route Logs/Chat/Settings to the other instance.
+    let mut app = App::new(AppOptions::default());
+    app.models = vec![fake("/m/qwen.gguf", "/m")];
+    app.managed = vec![
+      ready_managed("/m/qwen.gguf", 41100, SurfaceState::Ready),
+      ready_managed("/m/qwen.gguf", 41101, SurfaceState::Ready),
+    ];
+    // Row layout: [TableHeader, Header(★ Running), Model(L-41100), Model(L-41101), Header(/m), Model(qwen catalog)]
+    // The merge order in `ingest_status` is "new launches first"
+    // but here we set `app.managed` directly, so the rows reflect
+    // Vec order. The first managed row (L-41100) appears first.
+    app.list_cursor = 2;
+    let first = app.focused_managed().expect("focused managed at row 2");
+    assert_eq!(first.launch_id, "L-41100");
+    app.list_cursor = 3;
+    let second = app.focused_managed().expect("focused managed at row 3");
+    assert_eq!(second.launch_id, "L-41101");
+  }
+
+  #[test]
   fn right_pane_follows_cursor_no_sticky_fallback() {
-    // Two models — one running (qwen), one not (phi). Cursor on the
-    // running row exposes the running model's mode-appropriate tabs;
-    // moving the cursor to the unlaunched row collapses the tab set
-    // to Settings only and clears `right_pane_focus()` — no sticky
-    // reference to qwen survives.
+    // Two models — one running (qwen), one not (phi). The list now
+    // pins a `★ Running` section at the top with a per-launch row,
+    // so the row layout becomes:
+    //   0: TableHeader
+    //   1: Header(★ Running)
+    //   2: Model(qwen, launch_id) — Ready
+    //   3: Header(/m)
+    //   4: Model(phi) — NotLaunched
+    //   5: Model(qwen) — Ready (catalog entry, no launch_id)
     let mut app = App::new(AppOptions::default());
     app.models = vec![fake("/m/qwen.gguf", "/m"), fake("/m/phi.gguf", "/m")];
     app.managed = vec![ready_managed("/m/qwen.gguf", 41100, SurfaceState::Ready)];
-    // Row layout: [TableHeader, Header(/m), Model(phi), Model(qwen)].
-    // (alphabetical: phi < qwen). Place cursor on qwen first.
-    app.list_cursor = 3;
+    app.list_cursor = 2;
     assert_eq!(
       app.available_right_tabs(),
       vec![RightTab::Logs, RightTab::Chat, RightTab::Settings],
-      "running selection exposes mode-appropriate tabs"
+      "Running-row selection exposes mode-appropriate tabs"
     );
     assert!(app.right_pane_focus().is_some());
-    // Now cursor on phi (not launched).
-    app.list_cursor = 2;
+
+    // Catalog qwen row (no launch_id) still resolves to the managed
+    // launch via path lookup — the right pane stays useful from
+    // either entry point.
+    app.list_cursor = 5;
+    assert_eq!(
+      app.available_right_tabs(),
+      vec![RightTab::Logs, RightTab::Chat, RightTab::Settings],
+      "catalog qwen row still resolves the running launch by path"
+    );
+
+    // phi has no managed launch → Settings-only.
+    app.list_cursor = 4;
     assert_eq!(
       app.available_right_tabs(),
       vec![RightTab::Settings],

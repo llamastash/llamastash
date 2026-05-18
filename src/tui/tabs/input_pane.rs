@@ -104,10 +104,7 @@ pub fn idle_status_line<'a>(chips: &[String], palette: &Palette) -> Line<'a> {
   let mut spans: Vec<Span<'a>> = Vec::with_capacity(chips.len() * 2);
   for (i, chip) in chips.iter().filter(|c| !c.is_empty()).enumerate() {
     if i > 0 {
-      spans.push(Span::styled(
-        " · ",
-        Style::default().fg(palette.muted),
-      ));
+      spans.push(Span::styled(" · ", Style::default().fg(palette.muted)));
     }
     spans.push(Span::styled(
       chip.clone(),
@@ -126,10 +123,7 @@ mod tests {
   fn idle_status_joins_chips_with_middot_separator() {
     let palette = palette_for(ThemeName::Macchiato);
     let line = idle_status_line(
-      &[
-        "Shift+Enter:newline".to_string(),
-        "Esc:clear".to_string(),
-      ],
+      &["Shift+Enter:newline".to_string(), "Esc:clear".to_string()],
       palette,
     );
     let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();

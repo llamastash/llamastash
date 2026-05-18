@@ -98,13 +98,14 @@ impl DaemonState {
       .collect()
   }
 
-  /// Insert or replace the last successful params for `id`.
+  /// Insert or replace the last successful params for `id`. New
+  /// entries land at the **front** so the storage Vec order doubles
+  /// as the "recent launches" projection the TUI surfaces in its
+  /// `🕘 Recent` section. On re-upsert of an existing id the entry
+  /// moves to the front too — re-launching a model "promotes" it.
   pub fn upsert_last_params(&mut self, id: ModelId, params: LaunchParams) {
-    if let Some(entry) = self.last_params.iter_mut().find(|e| e.id == id) {
-      entry.params = params;
-    } else {
-      self.last_params.push(LastParamsEntry { id, params });
-    }
+    self.last_params.retain(|e| e.id != id);
+    self.last_params.insert(0, LastParamsEntry { id, params });
   }
 
   /// Insert or replace the preset list for `id`.
@@ -374,14 +375,24 @@ mod tests {
   }
 
   #[test]
-  fn upsert_last_params_replaces_in_place() {
+  fn upsert_last_params_replaces_in_place_and_promotes_to_front() {
+    // Re-upserting an existing id replaces the params *and* moves
+    // the entry to the front. That keeps the storage Vec order in
+    // sync with recency, which the TUI's `🕘 Recent` section reads
+    // directly via `last_params_list`.
     let mut s = DaemonState::default();
-    let mid = id("/m/a.gguf", 1);
-    s.upsert_last_params(mid.clone(), fake_params("/m/a.gguf"));
+    let a = id("/m/a.gguf", 1);
+    let b = id("/m/b.gguf", 2);
+    s.upsert_last_params(a.clone(), fake_params("/m/a.gguf"));
+    s.upsert_last_params(b.clone(), fake_params("/m/b.gguf"));
+    assert_eq!(s.last_params[0].id, b, "newest insertion sits at the front");
+
+    // Re-launch `a` — it should hop to the front again.
     let mut p2 = fake_params("/m/a.gguf");
     p2.ctx = Some(32768);
-    s.upsert_last_params(mid.clone(), p2.clone());
-    assert_eq!(s.last_params.len(), 1);
+    s.upsert_last_params(a.clone(), p2.clone());
+    assert_eq!(s.last_params.len(), 2, "re-upsert is in-place, not append");
+    assert_eq!(s.last_params[0].id, a, "promoted to front on re-launch");
     assert_eq!(s.last_params[0].params, p2);
   }
 

@@ -295,10 +295,9 @@ mod tests {
     // If the user remaps `quit: ctrl+q` in config, the title strip
     // must surface `Ctrl+q:quit` — not the stale default `q:quit`.
     let mut keymap = KeyMap::default();
-    let overrides: BTreeMap<String, String> =
-      [(String::from("quit"), String::from("ctrl+q"))]
-        .into_iter()
-        .collect();
+    let overrides: BTreeMap<String, String> = [(String::from("quit"), String::from("ctrl+q"))]
+      .into_iter()
+      .collect();
     let warnings = keymap.apply_overrides(&overrides);
     assert!(warnings.is_empty(), "{warnings:?}");
     let app = App::new(AppOptions {
@@ -327,10 +326,9 @@ mod tests {
     let mut keymap = KeyMap::default();
     // Use a key that doesn't already host a global action so we don't
     // accidentally drop a different chip.
-    let overrides: BTreeMap<String, String> =
-      [(String::from("cycle_theme"), String::from("F9"))]
-        .into_iter()
-        .collect();
+    let overrides: BTreeMap<String, String> = [(String::from("cycle_theme"), String::from("F9"))]
+      .into_iter()
+      .collect();
     let warnings = keymap.apply_overrides(&overrides);
     assert!(warnings.is_empty(), "{warnings:?}");
     let app = App::new(AppOptions {

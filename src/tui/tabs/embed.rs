@@ -158,10 +158,7 @@ mod tests {
     let chips = idle_status_chips(&app, true);
     assert_eq!(
       chips,
-      vec![
-        "Shift+Enter:newline".to_string(),
-        "Esc:clear".to_string(),
-      ]
+      vec!["Shift+Enter:newline".to_string(), "Esc:clear".to_string(),]
     );
   }
 

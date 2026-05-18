@@ -863,6 +863,14 @@ struct StartParams {
   ctx: Option<u32>,
   #[serde(default)]
   port: Option<u16>,
+  /// Soft port preference — if the supplied port is free at
+  /// reservation time, use it; otherwise allocate from the
+  /// configured range. Distinct from `port` which is strict and
+  /// errors on conflict. The TUI sets this so a returning user
+  /// lands on their previously-bound port without scripted clients
+  /// silently losing strict semantics.
+  #[serde(default)]
+  prefer_port: Option<u16>,
   #[serde(default)]
   reasoning: Option<bool>,
   /// Free-form passthrough flags appended after the bundled set.
@@ -929,6 +937,15 @@ async fn start_model_handler(
   params: Option<Value>,
 ) -> Result<Value, ErrorObject> {
   let parsed: StartParams = parse_params(params)?;
+  // Pure input-validation lives before the daemon's launch-env
+  // lookup so a malformed request gives an actionable
+  // `InvalidParams` error even on misconfigured daemons.
+  if parsed.port.is_some() && parsed.prefer_port.is_some() {
+    return Err(ErrorObject::new(
+      ErrorCode::InvalidParams,
+      "set exactly one of `port` (strict) or `prefer_port` (soft preference)",
+    ));
+  }
   let env = ctx.launch.as_ref().ok_or_else(|| {
     ErrorObject::new(
       ErrorCode::InternalError,
@@ -953,8 +970,8 @@ async fn start_model_handler(
   // or require root: 0 means "OS pick" (llama-server would pick a
   // port we never track), <1024 needs root and is almost certainly
   // a typo / hostile.
-  if let Some(p) = parsed.port {
-    if p == 0 || p < 1024 {
+  for p in parsed.port.iter().chain(parsed.prefer_port.iter()) {
+    if *p == 0 || *p < 1024 {
       return Err(ErrorObject::new(
         ErrorCode::InvalidParams,
         format!("port {p} is not in the allowed range (>= 1024, not 0)"),
@@ -978,16 +995,39 @@ async fn start_model_handler(
   // reservation mutex, since `collect_in_use_ports` itself awaits
   // supervisor read locks.
   let live_in_use = collect_in_use_ports(ctx).await;
-  let port = ctx
-    .supervisors
-    .reserve_port(parsed.port, &live_in_use, &env.port_range)
-    .await
-    .map_err(|e| {
-      ErrorObject::new(
-        ErrorCode::InternalError,
-        format!("port allocation failed: {e}"),
-      )
-    })?;
+  let port = if let Some(preferred) = parsed.prefer_port {
+    // Soft preference: try the requested port first; on conflict
+    // fall back to the auto-allocator so a returning TUI user
+    // doesn't fail launches just because their old port is taken.
+    match ctx
+      .supervisors
+      .reserve_port(Some(preferred), &live_in_use, &env.port_range)
+      .await
+    {
+      Ok(p) => p,
+      Err(_) => ctx
+        .supervisors
+        .reserve_port(None, &live_in_use, &env.port_range)
+        .await
+        .map_err(|e| {
+          ErrorObject::new(
+            ErrorCode::InternalError,
+            format!("port allocation failed: {e}"),
+          )
+        })?,
+    }
+  } else {
+    ctx
+      .supervisors
+      .reserve_port(parsed.port, &live_in_use, &env.port_range)
+      .await
+      .map_err(|e| {
+        ErrorObject::new(
+          ErrorCode::InternalError,
+          format!("port allocation failed: {e}"),
+        )
+      })?
+  };
 
   // Compose LaunchParams.
   let mut launch_params = LaunchParams::new(parsed.model_path.clone(), mode);

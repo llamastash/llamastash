@@ -109,7 +109,10 @@ fn contextual_hints(app: &App) -> Vec<String> {
     // ExitEdit binding's `exit edit` description with `clear` so
     // the chip stays short.
     (Focus::ChatInput, _) => {
-      push(&mut out, app.hint_with(Focus::ChatInput, Action::ExitEdit, "clear"));
+      push(
+        &mut out,
+        app.hint_with(Focus::ChatInput, Action::ExitEdit, "clear"),
+      );
       push(&mut out, app.hint(Focus::ChatInput, Action::SendChat));
       // `collapse think` is descriptive in the help overlay but
       // wordy in a chip — override with `think`.
@@ -119,11 +122,17 @@ fn contextual_hints(app: &App) -> Vec<String> {
       );
     }
     (Focus::EmbedInput, _) => {
-      push(&mut out, app.hint_with(Focus::EmbedInput, Action::ExitEdit, "clear"));
+      push(
+        &mut out,
+        app.hint_with(Focus::EmbedInput, Action::ExitEdit, "clear"),
+      );
       push(&mut out, app.hint(Focus::EmbedInput, Action::Submit));
     }
     (Focus::RerankInput, _) => {
-      push(&mut out, app.hint_with(Focus::RerankInput, Action::ExitEdit, "clear"));
+      push(
+        &mut out,
+        app.hint_with(Focus::RerankInput, Action::ExitEdit, "clear"),
+      );
       // The RerankInput Submit description is `rank` in the help
       // overlay (kept terse to align with the Chat/Embed triplet
       // collapse). The chip would rather show the full surface
@@ -135,7 +144,10 @@ fn contextual_hints(app: &App) -> Vec<String> {
     }
     // Navigation focuses surface the entry-point keystroke per tab.
     (_, RightTab::Logs) => {
-      push(&mut out, app.hint(Focus::RightPane, Action::ToggleAutoScroll));
+      push(
+        &mut out,
+        app.hint(Focus::RightPane, Action::ToggleAutoScroll),
+      );
     }
     (_, RightTab::Chat | RightTab::Embed | RightTab::Rerank) => {
       push(&mut out, app.hint(Focus::RightPane, Action::EnterEdit));
@@ -149,7 +161,10 @@ fn contextual_hints(app: &App) -> Vec<String> {
         &mut out,
         app.hint_with(Focus::RightPane, Action::Submit, "launch"),
       );
-      push(&mut out, app.hint(Focus::RightPane, Action::OpenAdvancedPanel));
+      push(
+        &mut out,
+        app.hint(Focus::RightPane, Action::OpenAdvancedPanel),
+      );
     }
   }
   out
@@ -242,7 +257,10 @@ fn render_header_stats(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &P
       ])
     }
     None => match app.focused_path() {
-      Some(_) => Line::from(Span::styled("not launched", Style::default().fg(palette.muted))),
+      Some(_) => Line::from(Span::styled(
+        "not launched",
+        Style::default().fg(palette.muted),
+      )),
       None => Line::from(Span::raw("")),
     },
   };
@@ -388,10 +406,9 @@ mod tests {
     // Rebind enter_edit to F4 — the Chat tab's nav-mode chip must
     // surface `F4:edit`, not the stale default `e:edit`.
     let mut keymap = KeyMap::default();
-    let overrides: BTreeMap<String, String> =
-      [(String::from("enter_edit"), String::from("f4"))]
-        .into_iter()
-        .collect();
+    let overrides: BTreeMap<String, String> = [(String::from("enter_edit"), String::from("f4"))]
+      .into_iter()
+      .collect();
     let warnings = keymap.apply_overrides(&overrides);
     assert!(warnings.is_empty(), "{warnings:?}");
     let mut app = App::new(AppOptions {

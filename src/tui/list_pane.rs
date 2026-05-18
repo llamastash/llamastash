@@ -63,6 +63,16 @@ pub enum ListRow {
     /// Whether this row is favorited (drives the `★` glyph).
     favorite: bool,
     state: SurfaceState,
+    /// Port the row's launch (if any) is listening on. `None` for
+    /// rows that aren't currently running — the column renders `—`
+    /// in that case so the slot stays aligned across the table.
+    port: Option<u16>,
+    /// Launch identity the row is bound to. `Some(id)` only for
+    /// rows in the `★ Running` group — that's how the right pane
+    /// disambiguates between duplicate launches of the same model.
+    /// `None` for rows in Favorites / folders / Recent (those
+    /// resolve their managed launch by path, if any).
+    launch_id: Option<String>,
   },
 }
 
@@ -82,11 +92,33 @@ impl ListRow {
 /// Inputs to [`build_rows`]. `model_states` is a snapshot of every
 /// `(model_path → surface_state)` pair the daemon reports as
 /// supervised; rows for paths absent from the map land as
-/// `NotLaunched`.
+/// `NotLaunched`. `model_ports` carries the same set of paths to
+/// their bound port so the row can render `:12345` instead of `—`
+/// in the Port column. `running` carries one entry per active
+/// launch (path may repeat for duplicate launches of the same
+/// model) — these become the `★ Running` section at the top of
+/// the list. `recent_paths` is the persisted top-N recently-
+/// launched paths the `🕘 Recent` section surfaces; entries whose
+/// path is currently running are skipped so the same model isn't
+/// shown in both groups.
 pub struct RowInputs<'a> {
   pub models: &'a [DiscoveredModel],
   pub favorites: &'a [PathBuf],
   pub model_states: &'a BTreeMap<PathBuf, SurfaceState>,
+  pub model_ports: &'a BTreeMap<PathBuf, u16>,
+  pub running: &'a [RunningLaunchRow],
+  pub recent_paths: &'a [PathBuf],
+}
+
+/// One active managed launch the `★ Running` group should render.
+/// Mirrors the subset of `app::ManagedRow` the list pane cares about
+/// without coupling `list_pane` to the heavier ManagedRow type.
+#[derive(Debug, Clone)]
+pub struct RunningLaunchRow {
+  pub launch_id: String,
+  pub path: PathBuf,
+  pub port: u16,
+  pub state: SurfaceState,
 }
 
 /// Group `models` into:
@@ -105,10 +137,65 @@ pub fn build_rows(inputs: RowInputs<'_>) -> Vec<ListRow> {
   if inputs.models.is_empty() {
     return Vec::new();
   }
-  let mut rows: Vec<ListRow> = Vec::with_capacity(inputs.models.len() + 4);
+  let mut rows: Vec<ListRow> = Vec::with_capacity(inputs.models.len() + inputs.running.len() + 6);
   rows.push(ListRow::TableHeader);
 
   let favorite_set: std::collections::BTreeSet<&PathBuf> = inputs.favorites.iter().collect();
+
+  // Build a `path → DiscoveredModel` lookup so the Running and
+  // Recent sections can synthesise rows even when their paths
+  // aren't in the favorites/folder groupings below.
+  let by_path: BTreeMap<&PathBuf, &DiscoveredModel> =
+    inputs.models.iter().map(|m| (&m.path, m)).collect();
+
+  // ★ Running — one row per active managed launch. Order comes
+  // from the caller (App preserves latest-first across status
+  // ticks) so a re-launch of an existing model still bubbles to
+  // the top of the group.
+  if !inputs.running.is_empty() {
+    rows.push(ListRow::Header {
+      label: "★ Running".into(),
+    });
+    for launch in inputs.running {
+      // If the path doesn't appear in the catalog (e.g. an
+      // adopted external launch the discovery sweep hasn't yet
+      // surfaced), synthesise a thin row so the launch still
+      // shows up. Most launches resolve to the catalog and pull
+      // metadata cleanly.
+      let row = match by_path.get(&launch.path) {
+        Some(m) => running_row(m, launch),
+        None => running_row_stub(launch),
+      };
+      rows.push(row);
+    }
+  }
+
+  // 🕘 Recent — top of the persisted "last launched" history that
+  // isn't already shown in Running. Filtered against `by_path` so
+  // entries pointing at vanished GGUFs don't surface as ghost rows.
+  let running_paths: std::collections::BTreeSet<&PathBuf> =
+    inputs.running.iter().map(|r| &r.path).collect();
+  let recent_visible: Vec<&DiscoveredModel> = inputs
+    .recent_paths
+    .iter()
+    .filter(|p| !running_paths.contains(*p))
+    .filter_map(|p| by_path.get(p).copied())
+    .collect();
+  if !recent_visible.is_empty() {
+    rows.push(ListRow::Header {
+      label: "🕘 Recent".into(),
+    });
+    for m in recent_visible {
+      let fav = favorite_set.contains(&m.path);
+      rows.push(model_row(
+        m,
+        fav,
+        surface_state_for(m, inputs.model_states),
+        inputs.model_ports.get(&m.path).copied(),
+        None,
+      ));
+    }
+  }
 
   // Favorites section.
   let favorites: Vec<&DiscoveredModel> = inputs
@@ -127,6 +214,8 @@ pub fn build_rows(inputs: RowInputs<'_>) -> Vec<ListRow> {
         m,
         true,
         surface_state_for(m, inputs.model_states),
+        inputs.model_ports.get(&m.path).copied(),
+        None,
       ));
     }
   }
@@ -145,11 +234,57 @@ pub fn build_rows(inputs: RowInputs<'_>) -> Vec<ListRow> {
     entries.sort_by_key(|a| display_name(a));
     for m in entries {
       let fav = favorite_set.contains(&m.path);
-      rows.push(model_row(m, fav, surface_state_for(m, inputs.model_states)));
+      rows.push(model_row(
+        m,
+        fav,
+        surface_state_for(m, inputs.model_states),
+        inputs.model_ports.get(&m.path).copied(),
+        None,
+      ));
     }
   }
 
   rows
+}
+
+fn running_row(m: &DiscoveredModel, launch: &RunningLaunchRow) -> ListRow {
+  let mut row = model_row(
+    m,
+    false,
+    launch.state,
+    Some(launch.port),
+    Some(launch.launch_id.clone()),
+  );
+  // The favorite glyph drops on Running rows so two launches of the
+  // same favorited model don't both wear a star — the user can
+  // already see the original star on the row in the Favorites
+  // group below. Achieved by passing `favorite=false` above.
+  if let ListRow::Model { ref mut path, .. } = row {
+    // `model_row` cloned the catalog path; preserve as-is.
+    let _ = path;
+  }
+  row
+}
+
+fn running_row_stub(launch: &RunningLaunchRow) -> ListRow {
+  ListRow::Model {
+    path: launch.path.clone(),
+    name: launch
+      .path
+      .file_stem()
+      .and_then(|s| s.to_str())
+      .unwrap_or("(unknown)")
+      .to_string(),
+    arch: String::new(),
+    quant: String::new(),
+    native_ctx: None,
+    weights_bytes: None,
+    mode_hint: "unknown".into(),
+    favorite: false,
+    state: launch.state,
+    port: Some(launch.port),
+    launch_id: Some(launch.launch_id.clone()),
+  }
 }
 
 fn surface_state_for(
@@ -170,7 +305,13 @@ fn display_name(m: &DiscoveredModel) -> String {
     .unwrap_or_else(|| m.path.display().to_string())
 }
 
-fn model_row(m: &DiscoveredModel, favorite: bool, state: SurfaceState) -> ListRow {
+fn model_row(
+  m: &DiscoveredModel,
+  favorite: bool,
+  state: SurfaceState,
+  port: Option<u16>,
+  launch_id: Option<String>,
+) -> ListRow {
   let (arch, quant, native_ctx, mode_hint, weights_bytes) = match &m.metadata {
     Some(md) => (
       md.arch.clone().unwrap_or_default(),
@@ -191,6 +332,8 @@ fn model_row(m: &DiscoveredModel, favorite: bool, state: SurfaceState) -> ListRo
     mode_hint,
     favorite,
     state,
+    port,
+    launch_id,
   }
 }
 
@@ -228,9 +371,12 @@ const COL_QUANT_W: usize = 7;
 const COL_CTX_W: usize = 7;
 const COL_SIZE_W: usize = 6;
 const COL_MODE_W: usize = 10;
+/// `:port` for a u16 → max 6 cells (`:65535`). Keep the column flush
+/// at 6 cells so the header label "Port" lines up with values.
+const COL_PORT_W: usize = 6;
 const COL_SEP_W: usize = 1; // space between columns
 const RIGHT_COLS_W: usize =
-  COL_ARCH_W + COL_QUANT_W + COL_CTX_W + COL_SIZE_W + COL_MODE_W + COL_SEP_W * 5;
+  COL_ARCH_W + COL_QUANT_W + COL_CTX_W + COL_SIZE_W + COL_MODE_W + COL_PORT_W + COL_SEP_W * 6;
 /// Minimum number of columns the Name column always reserves.
 const MIN_NAME_W: usize = 8;
 
@@ -572,6 +718,8 @@ fn render_row<'a>(
       line.push_str(&cell("Size", COL_SIZE_W));
       line.push(' ');
       line.push_str(&cell("Mode", COL_MODE_W));
+      line.push(' ');
+      line.push_str(&cell("Port", COL_PORT_W));
       ListItem::new(Line::from(Span::styled(
         line,
         Style::default()
@@ -603,6 +751,7 @@ fn render_row<'a>(
       mode_hint,
       favorite,
       state,
+      port,
       ..
     } => {
       // The whole row carries a single semantic foreground via
@@ -657,6 +806,9 @@ fn render_row<'a>(
       spans.push(Span::raw(cell(&size, COL_SIZE_W)));
       spans.push(Span::raw(" "));
       spans.push(Span::raw(cell(mode_hint.as_str(), COL_MODE_W)));
+      spans.push(Span::raw(" "));
+      let port_str = port.map(|p| format!(":{p}")).unwrap_or_else(|| "—".into());
+      spans.push(Span::raw(cell(&port_str, COL_PORT_W)));
       // `ListItem::style` is the canonical place to apply
       // `Modifier::REVERSED` to the *whole* row uniformly. Setting
       // fg here makes every unset-fg span (name + columns +
@@ -703,6 +855,9 @@ mod tests {
       models: std::slice::from_ref(&m),
       favorites: &[],
       model_states: &states,
+      model_ports: &BTreeMap::new(),
+      running: &[],
+      recent_paths: &[],
     });
     assert_eq!(rows.first(), Some(&ListRow::TableHeader));
   }
@@ -717,6 +872,9 @@ mod tests {
       models: &[],
       favorites: &[],
       model_states: &states,
+      model_ports: &BTreeMap::new(),
+      running: &[],
+      recent_paths: &[],
     });
     assert!(rows.is_empty(), "no models → no rows at all");
   }
@@ -736,6 +894,9 @@ mod tests {
       models: std::slice::from_ref(&m),
       favorites: &[],
       model_states: &states,
+      model_ports: &BTreeMap::new(),
+      running: &[],
+      recent_paths: &[],
     });
     assert!(
       !rows
@@ -754,6 +915,9 @@ mod tests {
       models: &[a.clone(), b.clone()],
       favorites: std::slice::from_ref(&a.path),
       model_states: &states,
+      model_ports: &BTreeMap::new(),
+      running: &[],
+      recent_paths: &[],
     });
     // Row 0 is the table header; row 1 should be the favorites group.
     assert_eq!(rows[0], ListRow::TableHeader);
@@ -774,6 +938,148 @@ mod tests {
   }
 
   #[test]
+  fn build_rows_places_running_section_at_top_with_per_launch_rows() {
+    // Two launches of the same model should produce two Running
+    // rows, each carrying its own `launch_id` and port. The section
+    // header sits above them so the user can scan kdash-style.
+    let m = fake("/m/a.gguf", "/m");
+    let running = vec![
+      RunningLaunchRow {
+        launch_id: "L2".into(),
+        path: m.path.clone(),
+        port: 41101,
+        state: SurfaceState::Ready,
+      },
+      RunningLaunchRow {
+        launch_id: "L1".into(),
+        path: m.path.clone(),
+        port: 41100,
+        state: SurfaceState::Ready,
+      },
+    ];
+    let rows = build_rows(RowInputs {
+      models: std::slice::from_ref(&m),
+      favorites: &[],
+      model_states: &BTreeMap::new(),
+      model_ports: &BTreeMap::new(),
+      running: &running,
+      recent_paths: &[],
+    });
+    // Expect: [TableHeader, Header(★ Running), Model(L2), Model(L1), Header(/m), Model(catalog)]
+    assert_eq!(rows.first(), Some(&ListRow::TableHeader));
+    let running_header = rows.iter().find_map(|r| match r {
+      ListRow::Header { label } if label.contains("Running") => Some(label.clone()),
+      _ => None,
+    });
+    assert!(running_header.is_some(), "Running header must appear");
+    let launch_ids: Vec<String> = rows
+      .iter()
+      .filter_map(|r| match r {
+        ListRow::Model {
+          launch_id: Some(id),
+          ..
+        } => Some(id.clone()),
+        _ => None,
+      })
+      .collect();
+    assert_eq!(
+      launch_ids,
+      vec!["L2".to_string(), "L1".to_string()],
+      "duplicate launches surface as separate rows in caller order"
+    );
+  }
+
+  #[test]
+  fn build_rows_recent_section_skips_paths_currently_running() {
+    // The Recent group shouldn't duplicate rows that already
+    // appear in the Running section — that would clutter the list
+    // and mislead the user about how many instances are live.
+    let a = fake("/m/a.gguf", "/m");
+    let b = fake("/m/b.gguf", "/m");
+    let running = vec![RunningLaunchRow {
+      launch_id: "L1".into(),
+      path: a.path.clone(),
+      port: 41100,
+      state: SurfaceState::Ready,
+    }];
+    let recent = vec![a.path.clone(), b.path.clone()];
+    let rows = build_rows(RowInputs {
+      models: &[a.clone(), b.clone()],
+      favorites: &[],
+      model_states: &BTreeMap::new(),
+      model_ports: &BTreeMap::new(),
+      running: &running,
+      recent_paths: &recent,
+    });
+    let recent_section_idx = rows.iter().position(|r| match r {
+      ListRow::Header { label } => label.contains("Recent"),
+      _ => false,
+    });
+    let recent_idx = recent_section_idx.expect("Recent section must appear");
+    // Rows immediately after the Recent header — until the next
+    // Header — are the section's contents.
+    let section_paths: Vec<&PathBuf> = rows[recent_idx + 1..]
+      .iter()
+      .take_while(|r| !matches!(r, ListRow::Header { .. }))
+      .filter_map(|r| match r {
+        ListRow::Model { path, .. } => Some(path),
+        _ => None,
+      })
+      .collect();
+    assert_eq!(
+      section_paths,
+      vec![&b.path],
+      "Recent must skip paths currently in Running"
+    );
+  }
+
+  #[test]
+  fn build_rows_attaches_port_to_running_model_row() {
+    // When the daemon reports a path with a bound port, the
+    // corresponding Model row carries it in the new `port` field so
+    // the Port column can render `:port` instead of `—`.
+    let m = fake("/m/a.gguf", "/m");
+    let states = BTreeMap::new();
+    let mut ports: BTreeMap<PathBuf, u16> = BTreeMap::new();
+    ports.insert(m.path.clone(), 41100);
+    let rows = build_rows(RowInputs {
+      models: std::slice::from_ref(&m),
+      favorites: &[],
+      model_states: &states,
+      model_ports: &ports,
+      running: &[],
+      recent_paths: &[],
+    });
+    let row_port = rows.iter().find_map(|r| match r {
+      ListRow::Model { port, .. } => Some(*port),
+      _ => None,
+    });
+    assert_eq!(row_port, Some(Some(41100)));
+  }
+
+  #[test]
+  fn build_rows_leaves_port_unset_for_paths_without_a_launch() {
+    // Discovered-but-not-running paths get `port: None` so the
+    // Port column renders the `—` glyph instead of a stale port
+    // from a previous session.
+    let m = fake("/m/a.gguf", "/m");
+    let states = BTreeMap::new();
+    let rows = build_rows(RowInputs {
+      models: std::slice::from_ref(&m),
+      favorites: &[],
+      model_states: &states,
+      model_ports: &BTreeMap::new(),
+      running: &[],
+      recent_paths: &[],
+    });
+    let row_port = rows.iter().find_map(|r| match r {
+      ListRow::Model { port, .. } => Some(*port),
+      _ => None,
+    });
+    assert_eq!(row_port, Some(None));
+  }
+
+  #[test]
   fn directory_groups_render_sorted_by_parent() {
     let a = fake("/m/x/a.gguf", "/m/x");
     let b = fake("/m/y/b.gguf", "/m/y");
@@ -782,6 +1088,9 @@ mod tests {
       models: &[a, b],
       favorites: &[],
       model_states: &states,
+      model_ports: &BTreeMap::new(),
+      running: &[],
+      recent_paths: &[],
     });
     let headers: Vec<String> = rows
       .iter()
@@ -808,9 +1117,9 @@ mod tests {
   fn full_hints() -> Vec<String> {
     vec![
       "Enter:launch".into(),
+      "s:stop".into(),
       "f:fav".into(),
       "p:path".into(),
-      "s:stop".into(),
       "u:url".into(),
       "c:curl".into(),
     ]
@@ -884,9 +1193,19 @@ mod tests {
       macchiato(),
     );
     let text = title_text(&title);
-    assert!(text.contains("Enter:apply"), "expected Enter:apply: {text:?}");
+    assert!(
+      text.contains("Enter:apply"),
+      "expected Enter:apply: {text:?}"
+    );
     assert!(text.contains("Esc:clear"), "expected Esc:clear: {text:?}");
-    for missing in ["Enter:launch", "f:fav", "p:path", "s:stop", "u:url", "c:curl"] {
+    for missing in [
+      "Enter:launch",
+      "f:fav",
+      "p:path",
+      "s:stop",
+      "u:url",
+      "c:curl",
+    ] {
       assert!(
         !text.contains(missing),
         "filter-active strip must drop `{missing}`: {text:?}"
@@ -977,8 +1296,9 @@ mod tests {
   fn title_drops_hints_right_to_left_under_pressure() {
     // A 40-col area can't fit the whole strip; the title builder
     // should drop hints from the tail. With the chip order the
-    // caller supplies, the running-row trio (s:stop · u:url ·
-    // c:curl) sits at the tail and is the first to go.
+    // caller supplies, the yank pair (u:url · c:curl) sits at the
+    // tail and is the first to go. `s:stop` now sits near the head
+    // so it survives — that's the point of the reorder.
     let title = build_block_title(
       TitleInputs {
         total: 127,
@@ -1014,6 +1334,9 @@ mod tests {
       models: std::slice::from_ref(&m),
       favorites: &[],
       model_states: &states,
+      model_ports: &BTreeMap::new(),
+      running: &[],
+      recent_paths: &[],
     });
     let model_row = rows
       .iter()

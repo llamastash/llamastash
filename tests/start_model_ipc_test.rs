@@ -299,6 +299,128 @@ async fn start_model_drives_supervisor_status_logs_stop_and_last_params() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prefer_port_falls_back_to_range_allocator_when_busy() {
+  // `prefer_port` is the soft preference the TUI uses to honour the
+  // user's previous binding. When the requested port is already
+  // taken by another launch, the daemon must auto-allocate from the
+  // configured range instead of refusing the launch — that's the
+  // "Daemon picks any free port, update memory" behaviour the user
+  // confirmed during planning. We force the collision by reusing
+  // the first launch's port as the second launch's preference.
+  let state = unique_temp("prefer-port");
+  let model_dir = unique_temp("prefer-port-models");
+  let model_path = model_dir.join("m.gguf");
+  std::fs::write(&model_path, build_minimal_gguf("llama")).unwrap();
+  let model_path_canon = std::fs::canonicalize(&model_path).unwrap();
+
+  // Two-port range so the fallback has somewhere to land.
+  let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
+  let p0 = probe.local_addr().unwrap().port();
+  drop(probe);
+  let probe2 = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
+  let p1 = probe2.local_addr().unwrap().port();
+  drop(probe2);
+  let (lo, hi) = if p0 < p1 { (p0, p1) } else { (p1, p0) };
+  let range = PortRange { start: lo, end: hi };
+
+  let opts = DaemonOptions {
+    binary: Some(fake_binary()),
+    port_range: range,
+    ..DaemonOptions::rooted_at(state.clone())
+  };
+  let socket = opts.socket_path.clone();
+  let daemon = tokio::spawn(async move { run_foreground(opts).await });
+  wait_for_socket(&socket).await;
+  let mut client = Client::connect(&socket).await.expect("connect");
+
+  // First launch — prefer the low port; daemon should bind it.
+  let first = client
+    .call(
+      "start_model",
+      Some(json!({
+        "model_path": &model_path_canon,
+        "mode": "chat",
+        "prefer_port": lo,
+      })),
+    )
+    .await
+    .expect("start_model 1");
+  assert_eq!(
+    first["port"].as_u64(),
+    Some(lo as u64),
+    "first launch must honour prefer_port when free"
+  );
+
+  // Second launch — same preference, but lo is now busy. Daemon
+  // must auto-allocate the remaining port rather than error.
+  let second = client
+    .call(
+      "start_model",
+      Some(json!({
+        "model_path": &model_path_canon,
+        "mode": "chat",
+        "prefer_port": lo,
+      })),
+    )
+    .await
+    .expect("start_model 2 must succeed via fallback");
+  let assigned = second["port"].as_u64().expect("port present");
+  assert_ne!(
+    assigned, lo as u64,
+    "fallback must pick a different port: {second:?}"
+  );
+  // The allocator walks `lo..=hi` linearly probing free ports — the
+  // exact landing slot depends on which ports happen to be free on
+  // the test box. Assert it stays inside the configured range so
+  // the test doesn't paper over a regression that escapes the
+  // range entirely.
+  assert!(
+    assigned > lo as u64 && assigned <= hi as u64,
+    "fallback must stay within the configured range ({lo}..={hi}), got {assigned}"
+  );
+
+  let _ = client.call("shutdown", None).await;
+  let _ = timeout(Duration::from_secs(3), daemon).await;
+  std::fs::remove_dir_all(&state).ok();
+  std::fs::remove_dir_all(&model_dir).ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn start_model_refuses_both_port_and_prefer_port() {
+  // Strict pin (`port`) and soft preference (`prefer_port`) express
+  // different intents — accepting both leaves the daemon guessing
+  // which to honour. The handler rejects the combination at parse
+  // time before any reservation work.
+  let state = unique_temp("port-conflict");
+  let opts = DaemonOptions::rooted_at(state.clone());
+  let socket = opts.socket_path.clone();
+  let daemon = tokio::spawn(async move { run_foreground(opts).await });
+  wait_for_socket(&socket).await;
+  let mut client = Client::connect(&socket).await.expect("connect");
+
+  let err = client
+    .call(
+      "start_model",
+      Some(json!({
+        "model_path": "/nowhere/m.gguf",
+        "port": 41100,
+        "prefer_port": 41100,
+      })),
+    )
+    .await
+    .expect_err("daemon must refuse both");
+  let msg = format!("{err}");
+  assert!(
+    msg.contains("port") && msg.contains("prefer_port"),
+    "error must name the conflicting fields: {msg}"
+  );
+
+  let _ = client.call("shutdown", None).await;
+  let _ = timeout(Duration::from_secs(3), daemon).await;
+  std::fs::remove_dir_all(&state).ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn start_model_returns_error_when_binary_unconfigured() {
   // Production daemon resolves the binary at startup; if it wasn't
   // resolved (e.g. user has no `llama-server` on PATH), `start_model`

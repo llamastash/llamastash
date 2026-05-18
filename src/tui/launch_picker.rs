@@ -39,6 +39,10 @@ pub struct LaunchPickerState {
   /// instance on a fresh port — but the picker surfaces a heads-up
   /// so the user isn't surprised.
   pub active_instances: usize,
+  /// Soft port preference seeded from the daemon's `last_params`
+  /// snapshot. Submitted as `prefer_port` so the daemon honours it
+  /// when free and falls back to range allocation otherwise.
+  pub prefer_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +61,7 @@ impl LaunchPickerState {
       preset_idx: None,
       field: PickerField::Ctx,
       active_instances: 0,
+      prefer_port: None,
     }
   }
 
@@ -81,6 +86,17 @@ impl LaunchPickerState {
       PickerField::Ctx => PickerField::Reasoning,
       PickerField::Reasoning => PickerField::Advanced,
       PickerField::Advanced => PickerField::Ctx,
+    };
+  }
+
+  /// Cycle backward through the field set. Symmetric inverse of
+  /// [`Self::next_field`] so `Shift+Tab` walks the form in the
+  /// opposite direction.
+  pub fn prev_field(&mut self) {
+    self.field = match self.field {
+      PickerField::Ctx => PickerField::Advanced,
+      PickerField::Reasoning => PickerField::Ctx,
+      PickerField::Advanced => PickerField::Reasoning,
     };
   }
 }
@@ -238,6 +254,21 @@ mod tests {
     s.next_field();
     assert_eq!(s.field, PickerField::Advanced);
     s.next_field();
+    assert_eq!(s.field, PickerField::Ctx);
+  }
+
+  #[test]
+  fn prev_field_is_inverse_of_next_field() {
+    // Shift+Tab walks the form in reverse — Ctx → Advanced →
+    // Reasoning → Ctx — so three calls land back on the start. This
+    // is what makes the picker form feel reversible.
+    let mut s = LaunchPickerState::for_model("qwen");
+    assert_eq!(s.field, PickerField::Ctx);
+    s.prev_field();
+    assert_eq!(s.field, PickerField::Advanced);
+    s.prev_field();
+    assert_eq!(s.field, PickerField::Reasoning);
+    s.prev_field();
     assert_eq!(s.field, PickerField::Ctx);
   }
 }

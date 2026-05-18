@@ -127,6 +127,17 @@ pub enum Action {
   /// that implement the kitty keyboard protocol — elsewhere
   /// Shift+Enter collapses to plain Enter and triggers Submit.
   InsertNewline,
+  /// Cycle to the next input field within the focused pane. Bound
+  /// to `Tab` in the Right pane (cycles the Settings-tab launch
+  /// form), and used as the backward complement to
+  /// [`Action::StageRerankCandidate`] in the Rerank input. Arrow
+  /// keys keep their pane-cycle meaning so this remap doesn't
+  /// strand users — Tab now means "next field where one exists"
+  /// rather than the redundant "next pane".
+  NextField,
+  /// Cycle to the previous input field within the focused pane.
+  /// Bound to `Shift+Tab` in the Right pane and the Rerank input.
+  PrevField,
 }
 
 /// One binding in the table.
@@ -506,16 +517,16 @@ const RIGHT_PANE_BINDINGS: &[Binding] = &[
   Binding {
     key: KeyCode::Tab,
     mods: KeyModifiers::NONE,
-    action: Action::NextFocus,
+    action: Action::NextField,
     label: "Tab",
-    description: "next pane",
+    description: "next field",
   },
   Binding {
     key: KeyCode::BackTab,
     mods: KeyModifiers::SHIFT,
-    action: Action::PrevFocus,
+    action: Action::PrevField,
     label: "Shift+Tab",
-    description: "prev pane",
+    description: "prev field",
   },
   Binding {
     key: KeyCode::Right,
@@ -734,9 +745,9 @@ const RERANK_INPUT_BINDINGS: &[Binding] = &[
   Binding {
     key: KeyCode::BackTab,
     mods: KeyModifiers::SHIFT,
-    action: Action::PrevFocus,
+    action: Action::PrevField,
     label: "Shift+Tab",
-    description: "prev pane",
+    description: "prev field",
   },
   // Plain Enter — see CHAT_INPUT_BINDINGS for the rationale.
   Binding {
@@ -975,6 +986,8 @@ impl Action {
     ("focus_chat_tab", Action::FocusChatTab),
     ("focus_settings_tab", Action::FocusSettingsTab),
     ("insert_newline", Action::InsertNewline),
+    ("next_field", Action::NextField),
+    ("prev_field", Action::PrevField),
   ];
 
   /// Parse a config-name (snake_case or kebab-case) into an action.

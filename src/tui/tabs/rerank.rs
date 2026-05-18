@@ -285,9 +285,7 @@ mod tests {
     });
     let chips = idle_status_chips(&app, true);
     assert!(
-      chips
-        .iter()
-        .any(|c| c == "F2:cycle field/stage candidate"),
+      chips.iter().any(|c| c == "F2:cycle field/stage candidate"),
       "F2 binding missing: {chips:?}"
     );
   }

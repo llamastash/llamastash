@@ -143,8 +143,11 @@ pub(crate) fn idle_status_chips(app: &App, input_active: bool) -> Vec<String> {
   if let Some(c) = app.hint(Focus::ChatInput, Action::InsertNewline) {
     chips.push(c);
   }
-  if let Some(c) = app.hint_with(Focus::ChatInput, Action::ToggleThinkCollapse, "toggle reasoning")
-  {
+  if let Some(c) = app.hint_with(
+    Focus::ChatInput,
+    Action::ToggleThinkCollapse,
+    "toggle reasoning",
+  ) {
     chips.push(c);
   }
   let trailing = if input_active {

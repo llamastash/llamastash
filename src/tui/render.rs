@@ -302,6 +302,15 @@ fn build_models_hints(app: &App, filter_active: bool, on_running: bool) -> Vec<S
     if let Some(h) = app.hint(Focus::List, Action::OpenLaunchPicker) {
       out.push(h);
     }
+    // When the cursor sits on a running row, `s:stop` is the most
+    // valuable next keystroke — hoist it ahead of `f:fav` so it
+    // doesn't get clipped first under width pressure and reads as
+    // the headline action for that row.
+    if on_running {
+      if let Some(h) = app.hint(Focus::List, Action::StopModel) {
+        out.push(h);
+      }
+    }
     // `favorite` is the canonical description; override here to
     // keep the chip terse without renaming the help-overlay entry.
     if let Some(h) = app.hint_with(Focus::List, Action::ToggleFavorite, "fav") {
@@ -311,9 +320,6 @@ fn build_models_hints(app: &App, filter_active: bool, on_running: bool) -> Vec<S
       out.push(h);
     }
     if on_running {
-      if let Some(h) = app.hint(Focus::List, Action::StopModel) {
-        out.push(h);
-      }
       if let Some(h) = app.hint(Focus::List, Action::YankUrl) {
         out.push(h);
       }
@@ -566,5 +572,44 @@ mod tests {
       !rows.iter().any(|r| r.starts_with("/ ")),
       "no separate filter row should render: {rows:#?}"
     );
+  }
+
+  #[test]
+  fn running_row_hint_order_puts_stop_before_fav() {
+    // When the focused row is running, `s:stop` is the most valuable
+    // next action. It must appear *before* `f:fav` in the chip strip
+    // so a narrow Models pane drops the lower-value chips first and
+    // keeps the headline action visible.
+    let app = App::new(AppOptions::default());
+    let hints = build_models_hints(
+      &app, /*filter_active=*/ false, /*on_running=*/ true,
+    );
+    let stop_at = hints
+      .iter()
+      .position(|h| h.contains("stop"))
+      .expect("s:stop must appear when on_running");
+    let fav_at = hints
+      .iter()
+      .position(|h| h.contains("fav"))
+      .expect("f:fav must appear");
+    assert!(
+      stop_at < fav_at,
+      "s:stop must come before f:fav, got {hints:?}"
+    );
+  }
+
+  #[test]
+  fn non_running_row_hint_strip_omits_stop_and_yank_chips() {
+    // When the cursor sits on a not-launched row, the stop/url/curl
+    // chips drop entirely — only the always-applicable launch / fav /
+    // path keys remain so the strip stays uncluttered.
+    let app = App::new(AppOptions::default());
+    let hints = build_models_hints(
+      &app, /*filter_active=*/ false, /*on_running=*/ false,
+    );
+    assert!(!hints.iter().any(|h| h.contains("stop")), "{hints:?}");
+    assert!(!hints.iter().any(|h| h.contains(":url")), "{hints:?}");
+    assert!(!hints.iter().any(|h| h.contains(":curl")), "{hints:?}");
+    assert!(hints.iter().any(|h| h.contains("fav")), "{hints:?}");
   }
 }

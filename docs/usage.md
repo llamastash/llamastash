@@ -131,12 +131,13 @@ Override semantics mirror kdash: the action's existing default binding(s) are re
 | `focus_logs_tab` | `Shift+L` | List, right pane — gated on a running model |
 | `focus_chat_tab` | `Shift+C` | List, right pane — mode-appropriate (Chat / Embed / Rerank), gated on a running model |
 | `focus_settings_tab` | `Shift+S` | List, right pane — always available |
-| `next_focus` / `prev_focus` | `Tab` / `Shift+Tab`, `→`/`l`, `←`/`h` | Cross-pane navigation |
+| `next_focus` / `prev_focus` | `→`/`l`, `←`/`h` | Cross-pane navigation (arrows + vim-style; `Tab` is reserved for field cycling) |
+| `next_field` / `prev_field` | `Tab` / `Shift+Tab` | Right pane (Settings tab cycles ctx/reasoning/advanced) · Rerank input (cycles Query/Candidate) |
 | `enter_edit` / `exit_edit` | `e` / `Esc` | Right pane → tab input |
 | `send_chat` | `Enter` (Shift+Enter inserts newline on kitty-protocol terminals) | Chat input |
 | `toggle_think_collapse` | `Ctrl+r` | Chat input |
 | `toggle_auto_scroll` | `s` | Right pane (Logs) |
-| `stage_rerank_candidate` | `Tab` | Rerank input |
+| `stage_rerank_candidate` | `Tab` | Rerank input — stages the candidate buffer and advances to the next field |
 
 ### Environment variables
 
@@ -268,7 +269,7 @@ These are the defaults. Override any binding via the `keybindings:` block in `co
 | `a` | Open advanced flags panel |
 | `y` / `Y` / `p` | Yank URL / curl / model path |
 | `t` | Cycle theme |
-| `Tab` | Move focus to right pane |
+| `Tab` / `Shift+Tab` | Move focus across panes (arrows / `h` / `l` do the same) |
 | `Shift+M` / `Shift+L` / `Shift+C` / `Shift+S` | Jump focus to Models / Logs / Chat / Settings respectively. `L` and `C` only fire when the focused model is running. |
 
 ### Launch picker
@@ -284,8 +285,9 @@ These are the defaults. Override any binding via the `keybindings:` block in `co
 
 | Key | Action |
 |---|---|
-| `Tab` | Cycle tab (Logs → Chat / Embed / Rerank when Ready) |
-| `Esc` / `Shift+Tab` / `Shift+M` | Return focus to the list |
+| `Tab` / `Shift+Tab` | In the Settings tab, cycles through form fields (ctx → reasoning → advanced). In other right-pane tabs, no-op — use arrows / `h` / `l` to navigate panes. |
+| `→` / `l`, `←` / `h` | Cycle pane focus |
+| `Esc` / `Shift+M` | Return focus to the Models list |
 | `Shift+L` / `Shift+C` / `Shift+S` | Jump to Logs / Chat / Settings tab. `L` and `C` are gated on a running model. |
 | `s` | Toggle Logs auto-scroll |
 
@@ -310,5 +312,6 @@ These are the defaults. Override any binding via the `keybindings:` block in `co
 | Key | Action |
 |---|---|
 | (alphanumerics / Backspace) | Edit current field |
-| `Tab` | Stage candidate buffer, or cycle between Query and Candidate fields |
+| `Tab` | Stage candidate buffer, or cycle to the next field (Query ↔ Candidate) |
+| `Shift+Tab` | Cycle back to the previous field |
 | `Enter` | Call `/v1/rerank` |
