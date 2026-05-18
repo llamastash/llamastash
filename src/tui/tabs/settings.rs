@@ -85,11 +85,20 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
 
   // Otherwise show the editable form. When the user hasn't opened
   // the picker yet, render its would-be-default contents so they
-  // can see what pressing Enter will dispatch.
-  let picker_view = app.launch_picker.clone().unwrap_or_else(|| {
-    let name = app.focused_name().unwrap_or_else(|| "(none)".into());
-    LaunchPickerState::for_model(name)
-  });
+  // can see what pressing Enter will dispatch. Audit §F4.1 #1:
+  // borrow the live picker when one exists so the Settings tab
+  // doesn't pay a `LaunchPickerState::clone()` (which copies the
+  // `advanced: Vec<String>`) per frame; only materialise the
+  // default when the picker is absent.
+  let default_picker: LaunchPickerState;
+  let picker_view: &LaunchPickerState = match app.launch_picker.as_ref() {
+    Some(p) => p,
+    None => {
+      let name = app.focused_name().unwrap_or_else(|| "(none)".into());
+      default_picker = LaunchPickerState::for_model(name);
+      &default_picker
+    }
+  };
   let no_focus = app.focused_path().is_none();
 
   lines.push(heading(

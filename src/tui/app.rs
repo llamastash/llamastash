@@ -173,6 +173,11 @@ pub struct App {
   /// helpers. None outside a frame so event handlers always see
   /// fresh state.
   pub(crate) rows_cache: Option<Vec<ListRow>>,
+  /// Per-frame memo of `available_right_tabs()`. Three calls per
+  /// frame used to walk `models` linearly + allocate a fresh
+  /// `Vec<RightTab>` each time (audit §F4.1 #2). Same lifetime
+  /// rules as `rows_cache`.
+  pub(crate) right_tabs_cache: Option<Vec<RightTab>>,
 }
 
 /// Action awaiting user confirmation in the modal popup. Captured
@@ -233,24 +238,38 @@ impl App {
       show_help: false,
       confirm_dialog: None,
       rows_cache: None,
+      right_tabs_cache: None,
     }
   }
 
-  /// Memoize `rendered_rows()` for the duration of one frame so the
-  /// 12+ `rendered_rows()` calls inside a single `render::render`
-  /// pass amortise to a single `build_rows` + filter walk. Paired
-  /// with [`Self::clear_rows_cache`] at the frame boundary. See
-  /// audit §4.1 #1.
-  pub(crate) fn prime_rows_cache(&mut self) {
-    let rows = self.rendered_rows_uncached();
-    self.rows_cache = Some(rows);
+  /// Memoize `rendered_rows()` and `available_right_tabs()` for the
+  /// duration of one frame so the 12+ in-frame `rendered_rows()`
+  /// calls and 3+ in-frame `available_right_tabs()` calls amortise
+  /// to a single build each. Paired with
+  /// [`Self::clear_frame_caches`]. See audit §4.1 #1 and §F4.1 #2.
+  pub(crate) fn prime_frame_caches(&mut self) {
+    self.rows_cache = Some(self.rendered_rows_uncached());
+    self.right_tabs_cache = Some(self.available_right_tabs_uncached());
   }
 
-  /// Drop the per-frame `rendered_rows` memo. The cache must not
-  /// outlive a frame: event handlers between frames mutate models
-  /// / managed / favorites freely and would observe stale rows.
-  pub(crate) fn clear_rows_cache(&mut self) {
+  /// Drop the per-frame memos. They must not outlive a frame —
+  /// event handlers between frames mutate models / managed /
+  /// favorites freely and would observe stale state.
+  pub(crate) fn clear_frame_caches(&mut self) {
     self.rows_cache = None;
+    self.right_tabs_cache = None;
+  }
+
+  /// Back-compat shim; new code should call `prime_frame_caches`.
+  #[doc(hidden)]
+  pub(crate) fn prime_rows_cache(&mut self) {
+    self.prime_frame_caches();
+  }
+
+  /// Back-compat shim; new code should call `clear_frame_caches`.
+  #[doc(hidden)]
+  pub(crate) fn clear_rows_cache(&mut self) {
+    self.clear_frame_caches();
   }
 
   /// True when the right pane should render. We always show it as
@@ -880,6 +899,14 @@ impl App {
   /// what the user sees in the right pane is the model under the
   /// cursor, nothing else.
   pub fn available_right_tabs(&self) -> Vec<RightTab> {
+    if let Some(cached) = self.right_tabs_cache.as_ref() {
+      return cached.clone();
+    }
+    self.available_right_tabs_uncached()
+  }
+
+  /// The expensive compute path. Public only for the cache primer.
+  fn available_right_tabs_uncached(&self) -> Vec<RightTab> {
     let managed = match self.focused_managed() {
       Some(m) => m,
       None => return vec![RightTab::Settings],
