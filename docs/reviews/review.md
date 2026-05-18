@@ -3,6 +3,7 @@
 **Scope:** Full codebase, root commit → HEAD
 **Intent:** Comprehensive review of llamatui v1 — greenfield Rust TUI + CLI launcher for llama.cpp
 **Verdict:** **No-Go on v1 without addressing the P0 and the security/correctness P1 cluster** — fixable, but several issues calcify into the wire/CLI contract after the first tagged release.
+**Status**: All fixed.
 
 This document consolidates **two independent `ce-review` runs**:
 

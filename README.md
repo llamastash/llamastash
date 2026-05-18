@@ -17,17 +17,6 @@ Heavy abstractions (Ollama, LM Studio) hide llama.cpp; raw `llama-server` use is
 - **Smoke-tests models** via a right-pane Chat / Embed / Rerank tab that hits the same OpenAI-compatible endpoints any external client would use.
 - **Exposes a complete non-interactive CLI** — `list`, `start`, `stop`, `status`, `logs`, `presets`, `favorites`, `daemon`. Every read command supports `--json`. Distinct exit codes per failure class.
 
-## v2 and beyond will add:
-- Init command to install llama.cpp (brew or custom), set up config, etc.
-- Skills
-- HuggingFace pull (origin: R46).
-- Custom themes
-- HTTP and MCP surfaces (origin: R34).
-- Anthropic API compatibility
-- Maybe MLX and vLLM if its easy to add
-- Docker Ready
-- **Per-PID VRAM attribution via NVML.** Today the right-pane block title surfaces per-model RAM + CPU%; per-model VRAM is reported only at the host level. v2 unlocks per-launch VRAM via NVML's `nvmlDeviceGetComputeRunningProcesses` (Linux + Windows; AMD/Apple parity depends on upstream surface).
-
 ## Install
 
 > Pre-1.0 binaries are not yet published. Build from source for now.
@@ -72,19 +61,19 @@ Full subcommand reference: [`docs/usage.md`](docs/usage.md). Architecture and IP
 
 Every non-interactive subcommand returns a documented exit code so agent scripts can branch on failure class. Pin against numbers, not message text — they are the public contract.
 
-| Code | Meaning |
-|------|---------|
-| `0`  | Success |
-| `64` | Usage error (missing required arg, invalid combination — clap-emitted) |
-| `65` | Daemon unreachable (socket missing, peer hung up, timeout) |
-| `66` | Model reference matched zero or multiple models (stderr lists candidates) |
-| `67` | `start_model` failed at the supervisor (probe timeout, port allocation failure) |
-| `68` | `stop_model` / `stop_all` failed |
-| `69` | Reserved for `pull` (lands with R46 in v2) |
+| Code | Meaning                                                                                  |
+| ---- | ---------------------------------------------------------------------------------------- |
+| `0`  | Success                                                                                  |
+| `64` | Usage error (missing required arg, invalid combination — clap-emitted)                   |
+| `65` | Daemon unreachable (socket missing, peer hung up, timeout)                               |
+| `66` | Model reference matched zero or multiple models (stderr lists candidates)                |
+| `67` | `start_model` failed at the supervisor (probe timeout, port allocation failure)          |
+| `68` | `stop_model` / `stop_all` failed                                                         |
+| `69` | Reserved for `pull` (lands with R46 in v2)                                               |
 | `70` | `llama-server` binary not found (`--llama-server`, `LLAMADASH_LLAMA_SERVER`, or `$PATH`) |
-| `71` | Unexpected error (catch-all) |
+| `71` | Unexpected error (catch-all)                                                             |
 
-> **Note on sysexits.h**: the numbers above are deliberately reused from `<sysexits.h>` for familiarity, but LlamaDash's *meanings* diverge from the standard ones. Scripts that import `EX_NOHOST` (68) expecting "host unreachable" will get our "stop failed"; `EX_DATAERR` (65) is reused for "daemon unreachable", not "data error". Branch on LlamaDash's table above, not the libc constants.
+> **Note on sysexits.h**: the numbers above are deliberately reused from `<sysexits.h>` for familiarity, but LlamaDash's _meanings_ diverge from the standard ones. Scripts that import `EX_NOHOST` (68) expecting "host unreachable" will get our "stop failed"; `EX_DATAERR` (65) is reused for "daemon unreachable", not "data error". Branch on LlamaDash's table above, not the libc constants.
 
 ## Configuration
 
@@ -92,36 +81,36 @@ LlamaDash reads `$XDG_CONFIG_HOME/llamadash/config.yaml` (macOS: `~/Library/Appl
 
 Quick tour of the top-level keys:
 
-| Key | What it controls |
-|---|---|
-| `theme` | Built-in palette: `macchiato` (default), `latte`, `gruvbox-dark`, `solarized-dark`, `mono`. Set to `custom` to use the `custom_theme` block. Cycle live with `t:theme`. |
-| `custom_theme` | User-defined palette. Inherits unspecified slots from `base:` (default macchiato). Accepts `#RRGGBB` hex or ANSI names. Once defined, `Custom` joins the `t:theme` cycle. |
-| `model_paths` | Extra directories to scan for `.gguf` files. Merged with `-p/--model-path` and `LLAMADASH_MODEL_PATHS`. |
-| `disable_default_cache_paths` | Per-bucket toggles (`huggingface`, `ollama`, `lm_studio`) for the auto-walked caches. |
-| `disable_scan` | Skip filesystem scanning entirely. Same as `--no-scan` / `LLAMADASH_NO_SCAN=1`. |
-| `port_range` | Inclusive `{start, end}` TCP range the supervisor picks from. Default `41100..=41300`. |
-| `llama_server_path` | Absolute path to `llama-server`. Overridable by `--llama-server` and `LLAMADASH_LLAMA_SERVER`. |
-| `probe_timeout_secs` | Health-probe deadline per launch. Default `120`. Bump for 70B+ on slow disks. |
-| `keybindings` | Action-name → key-spec overrides. Kdash-style dialect (`ctrl+q`, `shift+tab`, `f1`, …). |
+| Key                           | What it controls                                                                                                                                                          |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `theme`                       | Built-in palette: `macchiato` (default), `latte`, `gruvbox-dark`, `solarized-dark`, `mono`. Set to `custom` to use the `custom_theme` block. Cycle live with `t:theme`.   |
+| `custom_theme`                | User-defined palette. Inherits unspecified slots from `base:` (default macchiato). Accepts `#RRGGBB` hex or ANSI names. Once defined, `Custom` joins the `t:theme` cycle. |
+| `model_paths`                 | Extra directories to scan for `.gguf` files. Merged with `-p/--model-path` and `LLAMADASH_MODEL_PATHS`.                                                                   |
+| `disable_default_cache_paths` | Per-bucket toggles (`huggingface`, `ollama`, `lm_studio`) for the auto-walked caches.                                                                                     |
+| `disable_scan`                | Skip filesystem scanning entirely. Same as `--no-scan` / `LLAMADASH_NO_SCAN=1`.                                                                                           |
+| `port_range`                  | Inclusive `{start, end}` TCP range the supervisor picks from. Default `41100..=41300`.                                                                                    |
+| `llama_server_path`           | Absolute path to `llama-server`. Overridable by `--llama-server` and `LLAMADASH_LLAMA_SERVER`.                                                                            |
+| `probe_timeout_secs`          | Health-probe deadline per launch. Default `120`. Bump for 70B+ on slow disks.                                                                                             |
+| `keybindings`                 | Action-name → key-spec overrides. Kdash-style dialect (`ctrl+q`, `shift+tab`, `f1`, …).                                                                                   |
 
 Environment variables:
 
-| Variable | Purpose |
-|---|---|
-| `LLAMADASH_CONFIG` | Override config-file path |
-| `LLAMADASH_LLAMA_SERVER` | Path to `llama-server` |
-| `LLAMADASH_NO_SCAN` | Skip filesystem scanning |
-| `LLAMADASH_SOCKET` | Point a CLI at a non-default daemon socket |
+| Variable                 | Purpose                                    |
+| ------------------------ | ------------------------------------------ |
+| `LLAMADASH_CONFIG`       | Override config-file path                  |
+| `LLAMADASH_LLAMA_SERVER` | Path to `llama-server`                     |
+| `LLAMADASH_NO_SCAN`      | Skip filesystem scanning                   |
+| `LLAMADASH_SOCKET`       | Point a CLI at a non-default daemon socket |
 
 ### Default scan paths
 
 When `model_paths` and `--model-path` are empty, LlamaDash walks these caches automatically. Each bucket is independently toggleable via `disable_default_cache_paths.<bucket>: true` in `config.yaml`, or globally via `--no-scan` / `LLAMADASH_NO_SCAN=1`.
 
-| Bucket | Linux | macOS |
-|---|---|---|
-| HuggingFace | `~/.cache/huggingface/hub` | `~/Library/Caches/huggingface/hub` |
-| Ollama | `~/.ollama/models` | `~/.ollama/models` |
-| LM Studio | `~/.lmstudio/models`, `~/.cache/lm-studio/models` | `~/Library/Caches/LMStudio/models`, `~/.lmstudio/models` |
+| Bucket      | Linux                                             | macOS                                                    |
+| ----------- | ------------------------------------------------- | -------------------------------------------------------- |
+| HuggingFace | `~/.cache/huggingface/hub`                        | `~/Library/Caches/huggingface/hub`                       |
+| Ollama      | `~/.ollama/models`                                | `~/.ollama/models`                                       |
+| LM Studio   | `~/.lmstudio/models`, `~/.cache/lm-studio/models` | `~/Library/Caches/LMStudio/models`, `~/.lmstudio/models` |
 
 Files anywhere under these roots that end in `.gguf` (and aren't `.gguf.part`) get parsed and added to the catalog.
 
@@ -137,6 +126,10 @@ Linux (x86_64, aarch64) and macOS (Apple Silicon, Intel). Windows is out of scop
 ## Contributing
 
 Bug reports, design discussion, and PRs welcome. Start with [`CONTRIBUTING.md`](CONTRIBUTING.md) and the implementation plan referenced at the top of this file.
+
+## AI Usage
+
+Multiple AI Coding Harnesses and LLMs were heavily used to create this project.
 
 ## License
 

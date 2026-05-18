@@ -8,3 +8,4 @@
 *.swo
 .context/
 .claude/
+temp/
