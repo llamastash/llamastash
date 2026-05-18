@@ -308,8 +308,15 @@ fn build_models_hints(app: &App, filter_active: bool, on_running: bool) -> Vec<S
       out.push(h);
     }
   } else {
-    if let Some(h) = app.hint(Focus::List, Action::OpenLaunchPicker) {
-      out.push(h);
+    // Audit §F5 #23: only surface `Enter:launch` when the cursor
+    // sits on a launchable row. `open_launch_picker` is silently a
+    // no-op on header rows (`★ Favorites`, `↺ Recent`, folder
+    // group headings), so showing the chip there would teach a
+    // binding that doesn't fire.
+    if app.focused_name().is_some() {
+      if let Some(h) = app.hint(Focus::List, Action::OpenLaunchPicker) {
+        out.push(h);
+      }
     }
     // When the cursor sits on a running row, `s:stop` is the most
     // valuable next keystroke — hoist it ahead of `f:fav` so it

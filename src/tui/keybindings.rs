@@ -71,8 +71,9 @@ pub enum Action {
   YankPath,
   CycleTheme,
   /// Snap focus back to the Models list. Bound to `Esc` in the
-  /// right pane (closes the pane) and in the LaunchPicker /
-  /// AdvancedPanel overlays.
+  /// right pane (closes the pane) and in the AdvancedPanel
+  /// overlay. The LaunchPicker is no longer a modal — Settings
+  /// renders the form inline (round-6).
   FocusList,
   /// Walk one step forward in the focus chain
   /// `[List, ...available_right_tabs()]`. Bound to `Tab`, `Right`,

@@ -189,6 +189,14 @@ impl LaunchPickerState {
     }
   }
 
+  /// True when the focused field has at least one alternate value
+  /// the user can cycle to. Lets the dispatcher distinguish a real
+  /// no-op (`Advanced`) from a silent value cycle so the help chip
+  /// strip and toasts can be honest about what `←/→` will do.
+  pub fn focused_field_is_cyclable(&self) -> bool {
+    !matches!(self.field, PickerField::Advanced)
+  }
+
   pub fn next_field(&mut self) {
     self.field = match self.field {
       PickerField::Ctx => PickerField::Reasoning,

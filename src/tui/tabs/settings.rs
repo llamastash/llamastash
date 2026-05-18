@@ -1,11 +1,10 @@
 //! Settings tab — launch-parameter form for the focused model.
 //!
-//! MVP rendering: shows the editable form fields when no managed
-//! launch exists for the focused model, or the live params when a
-//! launch is running (read-only). The form's actual field-editing
-//! plumbing still flows through `LaunchPickerState` for now; this
-//! renderer just paints its current contents inline in the right
-//! pane instead of as a centred overlay.
+//! Renders the editable form fields when no managed launch exists
+//! for the focused model, or the live params when a launch is
+//! running (read-only). Field-editing state lives in
+//! `LaunchPickerState` — round-6 dropped the centred picker overlay
+//! and these helpers paint the same state inline in the right pane.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -198,15 +197,44 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
 /// field-value cursor → yank affordances. `u` / `c` (live URL,
 /// live `curl`) only surface when the focused model already has a
 /// managed launch since they need a running endpoint.
+/// Collapse a (forward, reverse) `label:description` pair into a
+/// single chip like `↑↓:cycle fields`. Falls back to the forward
+/// chip alone if either label is missing the conventional
+/// `key:desc` shape.
+fn bidirectional_chip(reverse: &str, forward: &str, description: &str) -> String {
+  let key = |chip: &str| -> Option<String> {
+    chip.split(':').next().map(str::to_string)
+  };
+  match (key(reverse), key(forward)) {
+    (Some(r), Some(f)) if r != f => format!("{r}{f}:{description}"),
+    _ => format!("{forward}"),
+  }
+}
+
 fn build_form_hints(app: &App) -> Vec<String> {
   let mut chips: Vec<String> = Vec::with_capacity(6);
   if let Some(c) = app.hint(Focus::RightPane, Action::OpenAdvancedPanel) {
     chips.push(c);
   }
-  if let Some(c) = app.hint_with(Focus::RightPane, Action::MoveDown, "cycle fields") {
+  // Audit §F5 #22: surface both axes of motion so the chip strip
+  // doesn't read as a forward-only model when `↑` and `←` are
+  // bound too. Pair the up/down and prev/next labels so the chip
+  // says `↑↓:cycle fields` / `←→:cycle value` regardless of the
+  // user's keymap remap.
+  if let (Some(down), Some(up)) = (
+    app.hint_with(Focus::RightPane, Action::MoveDown, "cycle fields"),
+    app.hint_with(Focus::RightPane, Action::MoveUp, "cycle fields"),
+  ) {
+    chips.push(bidirectional_chip(&up, &down, "cycle fields"));
+  } else if let Some(c) = app.hint_with(Focus::RightPane, Action::MoveDown, "cycle fields") {
     chips.push(c);
   }
-  if let Some(c) = app.hint_with(Focus::RightPane, Action::CycleValueNext, "cycle value") {
+  if let (Some(next), Some(prev)) = (
+    app.hint_with(Focus::RightPane, Action::CycleValueNext, "cycle value"),
+    app.hint_with(Focus::RightPane, Action::CycleValuePrev, "cycle value"),
+  ) {
+    chips.push(bidirectional_chip(&prev, &next, "cycle value"));
+  } else if let Some(c) = app.hint_with(Focus::RightPane, Action::CycleValueNext, "cycle value") {
     chips.push(c);
   }
   if let Some(c) = app.hint(Focus::RightPane, Action::YankPath) {
@@ -326,8 +354,11 @@ mod tests {
       chips,
       vec![
         "a:advanced".to_string(),
-        "↓:cycle fields".to_string(),
-        "→:cycle value".to_string(),
+        // Audit §F5 #22: bidirectional axes — both up/down and
+        // prev/next surface as paired chips so the strip stops
+        // teaching a forward-only model.
+        "↑↓:cycle fields".to_string(),
+        "←→:cycle value".to_string(),
         "p:path".to_string(),
       ]
     );
@@ -350,5 +381,26 @@ mod tests {
     assert!(chips.contains(&"u:url".to_string()), "got: {chips:?}");
     assert!(chips.contains(&"c:curl".to_string()), "got: {chips:?}");
     assert!(chips.contains(&"p:path".to_string()), "got: {chips:?}");
+  }
+
+  #[test]
+  fn bidirectional_chip_collapses_paired_keys_into_one_label() {
+    // Forward / reverse arrows share a single chip so the strip
+    // doesn't double up. Distinct keys merge; identical keys fall
+    // back to the forward label so a remap that collapses both
+    // directions to the same chord renders cleanly.
+    assert_eq!(
+      bidirectional_chip("↑:cycle fields", "↓:cycle fields", "cycle fields"),
+      "↑↓:cycle fields"
+    );
+    assert_eq!(
+      bidirectional_chip("←:cycle value", "→:cycle value", "cycle value"),
+      "←→:cycle value"
+    );
+    // Same key on both → just keep the forward chip.
+    assert_eq!(
+      bidirectional_chip("k:cycle fields", "k:cycle fields", "cycle fields"),
+      "k:cycle fields"
+    );
   }
 }

@@ -403,10 +403,21 @@ fn apply_cycle_value(app: &mut App, dir: ValueDir) {
   if !(app.focus == Focus::RightPane && app.right_tab == RightTab::Settings) {
     return;
   }
+  // Audit §F5 #21: the chip strip advertises `←/→:cycle value`
+  // even when the focused field (e.g. Advanced) is non-cyclable.
+  // Toast on miss so the user understands why nothing changed.
   with_picker(app, |p| match dir {
     ValueDir::Next => p.cycle_focused_value_next(),
     ValueDir::Prev => p.cycle_focused_value_prev(),
   });
+  let cyclable = app
+    .launch_picker
+    .as_ref()
+    .map(|p| p.focused_field_is_cyclable())
+    .unwrap_or(false);
+  if !cyclable {
+    app.show_toast("nothing to cycle — focused field has no preset values");
+  }
 }
 
 /// Auto-materialise the inline Settings picker if absent, then run

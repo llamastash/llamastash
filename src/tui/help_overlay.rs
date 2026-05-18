@@ -218,11 +218,28 @@ const CHAT_EMBED_RERANK: &[Row] = &[
     focus: Focus::RerankInput,
     action: Action::StageRerankCandidate,
   },
-  // Shift+Tab in rerank cycles back to the query field. Surfaced
-  // here so the help overlay teaches the reverse direction.
+  // ↑ in rerank cycles back to the previous field (round-7 moved
+  // the reverse-field motion from Shift+Tab to ↑ so Tab / Shift+Tab
+  // stay on the pane-cycle axis).
   Row::Single {
     focus: Focus::RerankInput,
     action: Action::PrevField,
+  },
+  // Round-8 yank affordances reachable from the right pane —
+  // Chat/Embed/Rerank inherit `p` / `u` / `c` from RIGHT_PANE_BINDINGS,
+  // so surface them here too so the user can discover the keys
+  // without bouncing back to the Models list.
+  Row::Single {
+    focus: Focus::RightPane,
+    action: Action::YankPath,
+  },
+  Row::Single {
+    focus: Focus::RightPane,
+    action: Action::YankUrl,
+  },
+  Row::Single {
+    focus: Focus::RightPane,
+    action: Action::YankCurl,
   },
 ];
 
@@ -243,10 +260,24 @@ const SETTINGS_ENTER: &[(Focus, Action)] = &[
 const SETTINGS_FIELD_NEXT: &[(Focus, Action)] = &[(Focus::RightPane, Action::MoveDown)];
 const SETTINGS_FIELD_PREV: &[(Focus, Action)] = &[(Focus::RightPane, Action::MoveUp)];
 
+/// On the Settings tab `s` routes through `apply_stop_model` (round-8)
+/// rather than toggling Logs auto-scroll. The default
+/// `Action::ToggleAutoScroll` description (`"auto-scroll"`) doesn't
+/// reflect that, so we override the row description.
+const SETTINGS_STOP: &[(Focus, Action)] = &[(Focus::RightPane, Action::ToggleAutoScroll)];
+
 const SETTINGS: &[Row] = &[
   Row::Multi {
     parts: SETTINGS_ENTER,
     description: "launch/save",
+  },
+  // `s` on Settings stops the focused managed launch when one
+  // exists; toasts otherwise. Override the default description so
+  // the overlay teaches the correct meaning (the same binding on
+  // Logs toggles auto-scroll).
+  Row::Multi {
+    parts: SETTINGS_STOP,
+    description: "stop focused launch",
   },
   // ↑/↓ cycle the form's fields. Descriptions overridden because
   // the same bindings mean `scroll up/down` on the Logs tab.
