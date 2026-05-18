@@ -15,6 +15,7 @@ use ratatui::Frame;
 
 use crate::theme::Palette;
 use crate::tui::app::App;
+use crate::tui::keybindings::{Action, Focus};
 use crate::tui::launch_picker::{LaunchPickerState, PickerField};
 
 /// Render the Settings tab body into `area`. The caller (right
@@ -107,19 +108,27 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
     picker_view.field == PickerField::Reasoning,
     palette,
   ));
+  let advanced_hint = app
+    .hint(Focus::RightPane, Action::OpenAdvancedPanel)
+    .map(|chip| format!("(open with `{}`)", chip_label(&chip)))
+    .unwrap_or_else(|| "(advanced binding removed)".to_string());
   lines.push(kv_focused(
     "advanced",
-    "(open with `Ctrl+A`)".into(),
+    advanced_hint,
     picker_view.field == PickerField::Advanced,
     palette,
   ));
   lines.push(Line::default());
+  let launch_chip = app
+    .hint_with(Focus::RightPane, Action::Submit, "launch")
+    .map(|chip| format!("Press {} to launch with these settings.", chip_label(&chip)))
+    .unwrap_or_else(|| "Launch binding removed — set `submit` in config.".to_string());
   lines.push(
     Span::styled(
       if no_focus {
-        "Select a model in the list to configure launch settings."
+        "Select a model in the list to configure launch settings.".to_string()
       } else {
-        "Press Enter to launch with these settings."
+        launch_chip
       },
       Style::default().fg(palette.muted),
     )
@@ -143,6 +152,13 @@ fn kv(label: &str, value: String, palette: &Palette) -> Line<'static> {
     Span::styled(format!("  {label:<10}"), Style::default().fg(palette.muted)),
     Span::styled(value, Style::default().fg(palette.fg)),
   ])
+}
+
+/// Strip the `:description` suffix off a chip string, leaving just
+/// the key label (e.g. `"a:advanced"` → `"a"`). Used by inline
+/// hints that want a bare keycap, not a full `key:label` chip.
+fn chip_label(chip: &str) -> &str {
+  chip.split(':').next().unwrap_or(chip)
 }
 
 fn kv_focused(label: &str, value: String, focused: bool, palette: &Palette) -> Line<'static> {

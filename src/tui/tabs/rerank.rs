@@ -1,13 +1,15 @@
 //! Rerank tab — call `/v1/rerank` with a query + candidate list
 //! and render ranked scores top-to-bottom.
 
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::theme::Palette;
+use crate::tui::app::App;
+use crate::tui::keybindings::{Action, Focus};
+use crate::tui::tabs::input_pane::{self, InputPaneOpts, PromptField};
 
 /// Which sub-field of the Rerank tab the user is typing into.
 /// `Tab` cycles between the query and the candidate buffer; the
@@ -86,84 +88,16 @@ impl RerankTabState {
 
 /// Render the Rerank tab body into `area`. Block borders are owned
 /// by the right pane caller.
-pub fn render(frame: &mut Frame<'_>, area: Rect, state: &RerankTabState, palette: &Palette) {
-  let layout = Layout::default()
-    .direction(Direction::Vertical)
-    .constraints([
-      Constraint::Length(3),
-      Constraint::Length(3),
-      Constraint::Min(1),
-      Constraint::Length(1),
-    ])
-    .split(area);
-
-  // Query field — caret visible only when this is the active
-  // sub-field, so the user has an unambiguous typing target.
-  let query_active = state.field == RerankField::Query;
-  let query_block = Block::default()
-    .title(" Query ")
-    .borders(Borders::ALL)
-    .border_style(Style::default().fg(if query_active {
-      palette.accent
-    } else {
-      palette.muted
-    }));
-  let query_inner = query_block.inner(layout[0]);
-  frame.render_widget(query_block, layout[0]);
-  let mut query_spans = vec![
-    Span::styled("▌ ", Style::default().fg(palette.accent)),
-    Span::styled(&state.query, Style::default().fg(palette.fg)),
-  ];
-  if query_active {
-    query_spans.push(Span::styled(
-      "│",
-      Style::default()
-        .fg(palette.accent)
-        .add_modifier(Modifier::REVERSED),
-    ));
-  }
-  frame.render_widget(
-    Paragraph::new(Line::from(query_spans)).wrap(Wrap { trim: false }),
-    query_inner,
-  );
-
-  // Candidate buffer field — accepts text input when active, and
-  // shows the staged list (with the size hint) below.
-  let cand_active = state.field == RerankField::Candidate;
-  let cand_block = Block::default()
-    .title(" Candidate (Tab stages) ")
-    .borders(Borders::ALL)
-    .border_style(Style::default().fg(if cand_active {
-      palette.accent
-    } else {
-      palette.muted
-    }));
-  let cand_inner = cand_block.inner(layout[1]);
-  frame.render_widget(cand_block, layout[1]);
-  let mut cand_spans = vec![
-    Span::styled("▌ ", Style::default().fg(palette.accent)),
-    Span::styled(&state.candidate_buffer, Style::default().fg(palette.fg)),
-  ];
-  if cand_active {
-    cand_spans.push(Span::styled(
-      "│",
-      Style::default()
-        .fg(palette.accent)
-        .add_modifier(Modifier::REVERSED),
-    ));
-  }
-  frame.render_widget(
-    Paragraph::new(Line::from(cand_spans)).wrap(Wrap { trim: false }),
-    cand_inner,
-  );
+pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
+  let state = &app.rerank;
+  let input_active = app.focus == Focus::RerankInput;
+  let query_active = input_active && state.field == RerankField::Query;
+  let cand_active = input_active && state.field == RerankField::Candidate;
 
   let mut body: Vec<Line<'_>> = Vec::new();
   if state.ranked.is_empty() {
     body.push(Line::from(Span::styled(
-      format!(
-        "{} candidate(s) staged. Press Enter to rank.",
-        state.candidates.len()
-      ),
+      format!("{} candidate(s) staged.", state.candidates.len()),
       Style::default().fg(palette.muted),
     )));
     for (i, c) in state.candidates.iter().enumerate() {
@@ -187,7 +121,6 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &RerankTabState, palette
       ]));
     }
   }
-  frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), layout[2]);
 
   let status = match (state.busy, &state.last_error) {
     (true, _) => Line::from(Span::styled(
@@ -200,17 +133,63 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &RerankTabState, palette
       format!("error: {err}"),
       Style::default().fg(palette.error),
     )),
-    _ => Line::from(Span::styled(
-      "Tab cycles field · Tab stages candidate · Enter ranks",
-      Style::default().fg(palette.muted),
-    )),
+    _ => input_pane::idle_status_line(&idle_status_chips(app, input_active), palette),
   };
-  frame.render_widget(Paragraph::new(status), layout[3]);
+
+  let prompts = [
+    PromptField {
+      title: "Query",
+      text: &state.query,
+      active: query_active,
+    },
+    PromptField {
+      title: "Candidate",
+      text: &state.candidate_buffer,
+      active: cand_active,
+    },
+  ];
+  input_pane::render(
+    frame,
+    area,
+    InputPaneOpts {
+      prompts: &prompts,
+      body,
+      status,
+      bold_body: false,
+    },
+    palette,
+  );
+}
+
+/// Chip strip for the idle status line. Tab carries dual duty
+/// (cycle field / stage candidate); Shift+Enter inserts a newline
+/// into whichever sub-field is active; the trailing chip flips
+/// between `clear` and `edit` based on focus.
+pub(crate) fn idle_status_chips(app: &App, input_active: bool) -> Vec<String> {
+  let mut chips: Vec<String> = Vec::with_capacity(3);
+  if let Some(c) = app.hint(Focus::RerankInput, Action::StageRerankCandidate) {
+    chips.push(c);
+  }
+  if let Some(c) = app.hint(Focus::RerankInput, Action::InsertNewline) {
+    chips.push(c);
+  }
+  let trailing = if input_active {
+    app.hint_with(Focus::RerankInput, Action::ExitEdit, "clear")
+  } else {
+    app.hint(Focus::RightPane, Action::EnterEdit)
+  };
+  if let Some(c) = trailing {
+    chips.push(c);
+  }
+  chips
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::tui::app::AppOptions;
+  use crate::tui::keybindings::KeyMap;
+  use std::collections::BTreeMap;
 
   #[test]
   fn add_candidate_skips_empty() {
@@ -267,5 +246,49 @@ mod tests {
     };
     assert!(!s.stage_candidate());
     assert!(s.candidates.is_empty());
+  }
+
+  #[test]
+  fn idle_chips_when_input_active_use_keymap_labels() {
+    let app = App::new(AppOptions::default());
+    let chips = idle_status_chips(&app, true);
+    assert_eq!(
+      chips,
+      vec![
+        "Tab:cycle field/stage candidate".to_string(),
+        "Shift+Enter:newline".to_string(),
+        "Esc:clear".to_string(),
+      ]
+    );
+  }
+
+  #[test]
+  fn idle_chips_when_input_inactive_swap_clear_for_edit() {
+    let app = App::new(AppOptions::default());
+    let chips = idle_status_chips(&app, false);
+    assert_eq!(chips.last().map(String::as_str), Some("e:edit"));
+  }
+
+  #[test]
+  fn idle_chips_pick_up_config_keybinding_overrides() {
+    // Rebind stage_rerank_candidate to F2 — the chip label flips.
+    let mut keymap = KeyMap::default();
+    let overrides: BTreeMap<String, String> =
+      [(String::from("stage_rerank_candidate"), String::from("f2"))]
+        .into_iter()
+        .collect();
+    let warnings = keymap.apply_overrides(&overrides);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let app = App::new(AppOptions {
+      keymap,
+      ..AppOptions::default()
+    });
+    let chips = idle_status_chips(&app, true);
+    assert!(
+      chips
+        .iter()
+        .any(|c| c == "F2:cycle field/stage candidate"),
+      "F2 binding missing: {chips:?}"
+    );
   }
 }

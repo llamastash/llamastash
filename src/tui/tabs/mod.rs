@@ -7,6 +7,7 @@
 
 pub mod chat;
 pub mod embed;
+pub mod input_pane;
 pub mod logs;
 pub mod rerank;
 pub mod settings;

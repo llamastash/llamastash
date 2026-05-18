@@ -65,9 +65,9 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette, f
 
   match app.right_tab {
     RightTab::Logs => logs::render(frame, body_area, &app.logs_state, palette),
-    RightTab::Chat => chat::render(frame, body_area, &app.chat, palette),
-    RightTab::Embed => embed::render(frame, body_area, &app.embed, palette),
-    RightTab::Rerank => rerank::render(frame, body_area, &app.rerank, palette),
+    RightTab::Chat => chat::render(frame, body_area, app, palette),
+    RightTab::Embed => embed::render(frame, body_area, app, palette),
+    RightTab::Rerank => rerank::render(frame, body_area, app, palette),
     RightTab::Settings => settings::render(frame, body_area, app, palette),
   }
 }

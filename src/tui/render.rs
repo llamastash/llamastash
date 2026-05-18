@@ -96,7 +96,7 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
   // other modal — by design: a destructive action wins focus
   // unconditionally until the user resolves it.
   if let Some(action) = app.confirm_dialog.as_ref() {
-    confirm_overlay::render(frame, area, action, palette);
+    confirm_overlay::render(frame, area, app, action, palette);
   }
 }
 

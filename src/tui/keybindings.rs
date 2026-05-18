@@ -41,6 +41,12 @@ pub enum Focus {
   EmbedInput,
   /// Rerank tab input — Tab stages a candidate, Enter rerank-calls.
   RerankInput,
+  /// Modal "are you sure?" popup (stop model / kill daemon). Only
+  /// Submit / Cancel are bindable; the hardcoded `y` / `n`
+  /// char-matches in [`super::events`] remain as the foot-gun
+  /// resistant fallback so a stray keypress doesn't confirm a
+  /// destructive action.
+  ConfirmPopup,
 }
 
 /// Symbolic action a binding triggers. Renderers / event handlers
@@ -115,6 +121,12 @@ pub enum Action {
   /// Jump focus to the Settings tab in the right pane. Always
   /// available because Settings exists for every selection.
   FocusSettingsTab,
+  /// Insert a literal newline into the active text-input buffer
+  /// (Chat / Embed / Rerank). Bound to `Shift+Enter` so plain
+  /// `Enter` keeps its submit semantics. Only fires on terminals
+  /// that implement the kitty keyboard protocol — elsewhere
+  /// Shift+Enter collapses to plain Enter and triggers Submit.
+  InsertNewline,
 }
 
 /// One binding in the table.
@@ -142,6 +154,7 @@ pub const DEFAULT_BINDINGS: &[(Focus, &[Binding])] = &[
   (Focus::ChatInput, CHAT_INPUT_BINDINGS),
   (Focus::EmbedInput, EMBED_INPUT_BINDINGS),
   (Focus::RerankInput, RERANK_INPUT_BINDINGS),
+  (Focus::ConfirmPopup, CONFIRM_POPUP_BINDINGS),
 ];
 
 const LIST_BINDINGS: &[Binding] = &[
@@ -649,11 +662,18 @@ const CHAT_INPUT_BINDINGS: &[Binding] = &[
     description: "send",
   },
   Binding {
+    key: KeyCode::Enter,
+    mods: KeyModifiers::SHIFT,
+    action: Action::InsertNewline,
+    label: "Shift+Enter",
+    description: "newline",
+  },
+  Binding {
     key: KeyCode::Char('r'),
     mods: KeyModifiers::CONTROL,
     action: Action::ToggleThinkCollapse,
     label: "Ctrl+r",
-    description: "collapse think",
+    description: "toggle reasoning",
   },
 ];
 
@@ -687,6 +707,13 @@ const EMBED_INPUT_BINDINGS: &[Binding] = &[
     label: "Enter",
     description: "embed",
   },
+  Binding {
+    key: KeyCode::Enter,
+    mods: KeyModifiers::SHIFT,
+    action: Action::InsertNewline,
+    label: "Shift+Enter",
+    description: "newline",
+  },
 ];
 
 const RERANK_INPUT_BINDINGS: &[Binding] = &[
@@ -702,7 +729,7 @@ const RERANK_INPUT_BINDINGS: &[Binding] = &[
     mods: KeyModifiers::NONE,
     action: Action::StageRerankCandidate,
     label: "Tab",
-    description: "stage / next pane",
+    description: "cycle field/stage candidate",
   },
   Binding {
     key: KeyCode::BackTab,
@@ -717,7 +744,31 @@ const RERANK_INPUT_BINDINGS: &[Binding] = &[
     mods: KeyModifiers::NONE,
     action: Action::Submit,
     label: "Enter",
-    description: "rank",
+    description: "rerank",
+  },
+  Binding {
+    key: KeyCode::Enter,
+    mods: KeyModifiers::SHIFT,
+    action: Action::InsertNewline,
+    label: "Shift+Enter",
+    description: "newline",
+  },
+];
+
+const CONFIRM_POPUP_BINDINGS: &[Binding] = &[
+  Binding {
+    key: KeyCode::Enter,
+    mods: KeyModifiers::NONE,
+    action: Action::Submit,
+    label: "Enter",
+    description: "confirm",
+  },
+  Binding {
+    key: KeyCode::Esc,
+    mods: KeyModifiers::NONE,
+    action: Action::Cancel,
+    label: "Esc",
+    description: "cancel",
   },
 ];
 
@@ -923,6 +974,7 @@ impl Action {
     ("focus_logs_tab", Action::FocusLogsTab),
     ("focus_chat_tab", Action::FocusChatTab),
     ("focus_settings_tab", Action::FocusSettingsTab),
+    ("insert_newline", Action::InsertNewline),
   ];
 
   /// Parse a config-name (snake_case or kebab-case) into an action.
@@ -1141,11 +1193,11 @@ mod tests {
       action_for(Focus::EmbedInput, KeyCode::Enter, KeyModifiers::NONE),
       Some(Action::Submit),
     );
-    // Shift+Enter has no binding so it falls through to the per-tab
-    // handler (currently a no-op for embed — single-line input).
+    // Shift+Enter inserts a newline (only distinguishable on kitty-
+    // protocol terminals; elsewhere it collapses to plain Enter).
     assert_eq!(
       action_for(Focus::EmbedInput, KeyCode::Enter, KeyModifiers::SHIFT),
-      None,
+      Some(Action::InsertNewline),
     );
   }
 
@@ -1157,7 +1209,7 @@ mod tests {
     );
     assert_eq!(
       action_for(Focus::RerankInput, KeyCode::Enter, KeyModifiers::SHIFT),
-      None,
+      Some(Action::InsertNewline),
     );
   }
 

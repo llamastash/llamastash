@@ -184,6 +184,14 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   );
   frame.render_widget(Clear, rect);
 
+  // The close chip is keymap-driven — whichever key the user has
+  // bound to `toggle_help` is what we surface in the title. Esc
+  // also closes the modal but is hardcoded modal-dismiss (not an
+  // Action), so we don't claim it here; the user can rely on the
+  // bound `?` (or its override) without having to guess.
+  let close_chip = app
+    .hint_with(Focus::List, Action::ToggleHelp, "close")
+    .unwrap_or_else(|| "?:close".to_string());
   let block = Block::default()
     .title(Line::from(vec![
       Span::styled(
@@ -193,7 +201,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
           .add_modifier(Modifier::BOLD),
       ),
       Span::styled(
-        "· Esc or ? to close ",
+        format!("· {close_chip} "),
         Style::default().fg(palette.muted),
       ),
     ]))

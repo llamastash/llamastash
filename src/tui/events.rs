@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
@@ -108,21 +108,24 @@ fn handle_key(app: &mut App, key: KeyEvent, writer: Option<&mpsc::Sender<WriterC
     app.show_help = false;
     return;
   }
-  // Confirmation dialog steals all input. `y` / Enter confirms,
-  // anything else (Esc / n / Ctrl+C / unrecognised) cancels — a
-  // foot-gun-resistant default so a stray keypress doesn't drop
-  // a running model or kill the daemon.
+  // Confirmation dialog steals all input. Submit (default `Enter`)
+  // confirms; Cancel (default `Esc`) explicitly cancels. The hard-
+  // coded `y` / `Y` shortcut also confirms; *any* other key cancels
+  // — a foot-gun-resistant default so a stray keypress doesn't drop
+  // a running model or kill the daemon. The Submit/Cancel keys are
+  // resolved through the live keymap so config overrides flow
+  // through to both the dispatch and the popup's chip labels.
   if app.confirm_dialog.is_some() {
-    match key.code {
-      KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
-        let pending = app.confirm_dialog.take();
-        if let Some(action) = pending {
-          apply_confirmed(app, action, writer);
-        }
+    let bound = app.action_for(Focus::ConfirmPopup, key.code, key.modifiers);
+    let confirmed = matches!(bound, Some(Action::Submit))
+      || matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y'));
+    if confirmed {
+      let pending = app.confirm_dialog.take();
+      if let Some(action) = pending {
+        apply_confirmed(app, action, writer);
       }
-      _ => {
-        app.confirm_dialog = None;
-      }
+    } else {
+      app.confirm_dialog = None;
     }
     return;
   }
@@ -149,17 +152,11 @@ fn handle_key(app: &mut App, key: KeyEvent, writer: Option<&mpsc::Sender<WriterC
 /// buffers. Bound actions (Enter, Tab, Esc, etc.) are routed
 /// through [`apply_action`] *before* this is called — see
 /// [`handle_key`] — so alphanumerics fall through to the buffer
-/// without trampling the surrounding keybindings.
+/// without trampling the surrounding keybindings. Shift+Enter is
+/// also bound (`Action::InsertNewline`); it never reaches this
+/// fallthrough.
 fn handle_tab_input(app: &mut App, key: KeyEvent) {
   match (app.focus, key.code) {
-    // Shift+Enter inserts a newline so multi-line chat prompts are
-    // possible. Only fires on terminals that implement the kitty
-    // keyboard protocol — elsewhere Shift+Enter collapses to plain
-    // Enter and submits the prompt, which matches the universal
-    // single-line expectation for terminals without disambiguation.
-    (Focus::ChatInput, KeyCode::Enter) if key.modifiers.contains(KeyModifiers::SHIFT) => {
-      app.chat.prompt.push('\n');
-    }
     (Focus::ChatInput, KeyCode::Backspace) => {
       app.chat.prompt.pop();
     }
@@ -331,6 +328,15 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
     Action::FocusLogsTab => apply_focus_logs_tab(app),
     Action::FocusChatTab => apply_focus_chat_tab(app),
     Action::FocusSettingsTab => apply_focus_settings_tab(app),
+    Action::InsertNewline => match app.focus {
+      Focus::ChatInput => app.chat.prompt.push('\n'),
+      Focus::EmbedInput => app.embed.input.push('\n'),
+      Focus::RerankInput => match app.rerank.field {
+        RerankField::Query => app.rerank.query.push('\n'),
+        RerankField::Candidate => app.rerank.candidate_buffer.push('\n'),
+      },
+      _ => {}
+    },
   }
 }
 
@@ -572,7 +578,15 @@ fn apply_rerank_submit(app: &mut App) {
   // pressed Tab on yet — saves a keystroke for the common case.
   app.rerank.stage_candidate();
   if app.rerank.candidates.is_empty() {
-    app.show_toast("stage at least one candidate (Tab to add)");
+    let stage_key = app
+      .hint(Focus::RerankInput, Action::StageRerankCandidate)
+      .map(|chip| {
+        // chip is "Tab:cycle field/stage candidate" — pull off
+        // the label so the toast reads "(Tab to add)".
+        chip.split(':').next().unwrap_or("Tab").to_string()
+      })
+      .unwrap_or_else(|| "Tab".to_string());
+    app.show_toast(format!("stage at least one candidate ({stage_key} to add)"));
     return;
   }
   let query = app.rerank.query.clone();

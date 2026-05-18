@@ -1,13 +1,15 @@
 //! Embed tab — call `/v1/embeddings` on the focused model and
 //! show the result's dimensionality + first eight values + L2 norm.
 
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::theme::Palette;
+use crate::tui::app::App;
+use crate::tui::keybindings::{Action, Focus};
+use crate::tui::tabs::input_pane::{self, InputPaneOpts, PromptField};
 
 #[derive(Debug, Default)]
 pub struct EmbedTabState {
@@ -40,36 +42,9 @@ impl EmbedTabState {
 
 /// Render the Embed tab body into `area`. Block borders are owned
 /// by the right pane caller.
-pub fn render(frame: &mut Frame<'_>, area: Rect, state: &EmbedTabState, palette: &Palette) {
-  let layout = Layout::default()
-    .direction(Direction::Vertical)
-    .constraints([
-      Constraint::Length(3),
-      Constraint::Min(1),
-      Constraint::Length(1),
-    ])
-    .split(area);
-
-  let prompt_block = Block::default()
-    .title(" Input ")
-    .borders(Borders::ALL)
-    .border_style(Style::default().fg(palette.muted));
-  let prompt_inner = prompt_block.inner(layout[0]);
-  frame.render_widget(prompt_block, layout[0]);
-  frame.render_widget(
-    Paragraph::new(Line::from(vec![
-      Span::styled("▌ ", Style::default().fg(palette.accent)),
-      Span::styled(&state.input, Style::default().fg(palette.fg)),
-      Span::styled(
-        "│",
-        Style::default()
-          .fg(palette.accent)
-          .add_modifier(Modifier::REVERSED),
-      ),
-    ]))
-    .wrap(Wrap { trim: false }),
-    prompt_inner,
-  );
+pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
+  let state = &app.embed;
+  let active = app.focus == Focus::EmbedInput;
 
   let mut body: Vec<Line<'_>> = Vec::new();
   if let Some(dim) = state.dim {
@@ -97,11 +72,10 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &EmbedTabState, palette:
     }
   } else {
     body.push(Line::from(Span::styled(
-      "Press Enter to embed the input above.",
+      "Embed the input with Enter.",
       Style::default().fg(palette.muted),
     )));
   }
-  frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: true }), layout[1]);
 
   let status = match (state.busy, &state.last_error) {
     (true, _) => Line::from(Span::styled(
@@ -114,18 +88,54 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &EmbedTabState, palette:
       format!("error: {err}"),
       Style::default().fg(palette.error),
     )),
-    _ => Line::from(Span::styled(
-      "Enter to embed · Esc to clear",
-      Style::default().fg(palette.muted),
-    )),
+    _ => input_pane::idle_status_line(&idle_status_chips(app, active), palette),
   };
-  frame.render_widget(Paragraph::new(status), layout[2]);
+
+  let prompt = PromptField {
+    title: "Input",
+    text: &state.input,
+    active,
+  };
+  input_pane::render(
+    frame,
+    area,
+    InputPaneOpts {
+      prompts: &[prompt],
+      body,
+      status,
+      bold_body: false,
+    },
+    palette,
+  );
+}
+
+/// Chip strip for the idle status line. Mirrors Chat's chip
+/// strategy: `Shift+Enter:newline` is always available; the
+/// trailing chip is `Esc:clear` when the input is focused and
+/// `e:edit` when navigation focus has the right pane.
+pub(crate) fn idle_status_chips(app: &App, input_active: bool) -> Vec<String> {
+  let mut chips: Vec<String> = Vec::with_capacity(2);
+  if let Some(c) = app.hint(Focus::EmbedInput, Action::InsertNewline) {
+    chips.push(c);
+  }
+  let trailing = if input_active {
+    app.hint_with(Focus::EmbedInput, Action::ExitEdit, "clear")
+  } else {
+    app.hint(Focus::RightPane, Action::EnterEdit)
+  };
+  if let Some(c) = trailing {
+    chips.push(c);
+  }
+  chips
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::tui::app::AppOptions;
+  use crate::tui::keybindings::KeyMap;
   use crate::tui::oai_client::EmbedResult;
+  use std::collections::BTreeMap;
 
   #[test]
   fn record_overrides_previous_error() {
@@ -140,5 +150,46 @@ mod tests {
     });
     assert_eq!(s.dim, Some(1024));
     assert!(s.last_error.is_none());
+  }
+
+  #[test]
+  fn idle_chips_when_input_active_use_keymap_labels() {
+    let app = App::new(AppOptions::default());
+    let chips = idle_status_chips(&app, true);
+    assert_eq!(
+      chips,
+      vec![
+        "Shift+Enter:newline".to_string(),
+        "Esc:clear".to_string(),
+      ]
+    );
+  }
+
+  #[test]
+  fn idle_chips_when_input_inactive_swap_clear_for_edit() {
+    let app = App::new(AppOptions::default());
+    let chips = idle_status_chips(&app, false);
+    assert_eq!(chips.last().map(String::as_str), Some("e:edit"));
+  }
+
+  #[test]
+  fn idle_chips_pick_up_config_keybinding_overrides() {
+    // Rebind insert_newline to alt+enter — Embed chip must follow.
+    let mut keymap = KeyMap::default();
+    let overrides: BTreeMap<String, String> =
+      [(String::from("insert_newline"), String::from("alt+enter"))]
+        .into_iter()
+        .collect();
+    let warnings = keymap.apply_overrides(&overrides);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let app = App::new(AppOptions {
+      keymap,
+      ..AppOptions::default()
+    });
+    let chips = idle_status_chips(&app, true);
+    assert!(
+      chips.iter().any(|c| c == "Alt+Enter:newline"),
+      "Alt+Enter binding missing: {chips:?}"
+    );
   }
 }
