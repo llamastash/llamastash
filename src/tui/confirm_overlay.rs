@@ -1,7 +1,7 @@
 //! Modal "are you sure?" confirmation popup used by destructive
 //! actions (stop a managed launch, kill the whole daemon).
 //!
-//! `y` / Enter confirms, anything else cancels — see
+//! Enter / `y` confirms, Esc / `n` (or any other key) cancels — see
 //! [`events::handle_key`] for the key-routing precedence.
 
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
@@ -62,7 +62,7 @@ pub fn render(
   let cancel_label = keymap_label(app, KeyAction::Cancel, "Esc");
   let hint = Paragraph::new(Line::from(vec![
     Span::styled(
-      format!("y / {submit_label}"),
+      format!("{submit_label} / y"),
       Style::default()
         .fg(palette.success)
         .add_modifier(Modifier::BOLD),

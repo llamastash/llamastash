@@ -23,11 +23,14 @@ use crate::tui::app::App;
 use crate::tui::keybindings::{Action, Binding, Focus};
 
 /// One global chip — a stable description plus the action(s) whose
-/// live key labels populate the chip. Multiple actions are joined
-/// with `/` so the "focus" chip can carry both `NextFocus` and
-/// `PrevFocus` keys.
+/// live key labels populate the chip. `focus` is which binding table
+/// the resolver should consult (most chips share the same key across
+/// focuses, but `fields` is only registered in `Focus::RightPane`).
+/// Multiple actions are joined with `/` so the `panes` chip can
+/// carry both `NextFocus` and `PrevFocus` keys.
 struct GlobalChip {
   description: &'static str,
+  focus: Focus,
   actions: &'static [Action],
 }
 
@@ -38,27 +41,31 @@ struct GlobalChip {
 const GLOBAL_CHIPS: &[GlobalChip] = &[
   GlobalChip {
     description: "help",
+    focus: Focus::List,
     actions: &[Action::ToggleHelp],
   },
-  // Focus chain has two halves — show one representative key per
-  // direction so the user knows which keys cycle panes regardless of
-  // how the chain is bound. `cycle_first_label` picks the first
-  // binding per action, so a config that rebinds `next_focus` flows
-  // through cleanly.
+  // Tab cycles panes everywhere now. `panes` surfaces both
+  // directions; the picker prefers `Tab` for forward and
+  // `Shift+Tab` for backward (the canonical surface across every
+  // GUI/TUI).
   GlobalChip {
-    description: "focus",
+    description: "panes",
+    focus: Focus::List,
     actions: &[Action::NextFocus, Action::PrevFocus],
   },
   GlobalChip {
     description: "kill daemon",
+    focus: Focus::List,
     actions: &[Action::KillDaemon],
   },
   GlobalChip {
     description: "theme",
+    focus: Focus::List,
     actions: &[Action::CycleTheme],
   },
   GlobalChip {
     description: "quit",
+    focus: Focus::List,
     actions: &[Action::Quit],
   },
 ];
@@ -66,18 +73,17 @@ const GLOBAL_CHIPS: &[GlobalChip] = &[
 const HINT_SEP: &str = " · ";
 
 /// Resolve a chip's keys against the supplied keymap. Single-action
-/// chips just show the first binding's label. The two-action focus
-/// chip (`NextFocus + PrevFocus`) gets a curated picker so the strip
-/// reads `Tab/←/→` rather than `Tab/Shift+Tab` — i.e. we prefer Tab
-/// for the forward direction, and arrow glyphs for the alternatives,
-/// because that's what most users reach for. If a config override
-/// removes those preferred keys, the resolver falls back to whatever
-/// the user has bound. Missing actions (user unbound them entirely)
-/// silently drop — nothing is ever shown without a working key.
+/// chips just show the first binding's label. The `panes` chip
+/// (`NextFocus + PrevFocus`) gets a curated picker so the strip
+/// reads `Tab/Shift+Tab` — that's the canonical pane-cycle surface.
+/// If a config override removes those preferred keys, the resolver
+/// falls back to whatever the user has bound. Missing actions
+/// (user unbound them entirely) silently drop — nothing is ever
+/// shown without a working key.
 fn chip_keys(app: &App, chip: &GlobalChip) -> Option<String> {
-  let bindings = app.bindings_for(Focus::List);
+  let bindings = app.bindings_for(chip.focus);
   let labels = if chip.actions == [Action::NextFocus, Action::PrevFocus] {
-    focus_chip_labels(bindings)
+    pane_chip_labels(bindings)
   } else {
     let mut acc: Vec<String> = Vec::new();
     for action in chip.actions {
@@ -94,20 +100,22 @@ fn chip_keys(app: &App, chip: &GlobalChip) -> Option<String> {
   }
 }
 
-/// Curated label picker for the focus chip. Walks the live bindings
-/// and emits, in order:
+/// Curated label picker for the `panes` chip. Walks the live
+/// bindings and emits, in order:
 ///
-/// 1. Tab (if `NextFocus` is bound to it) — the canonical forward
-///    key, called out first because new users reach for Tab.
-/// 2. The PrevFocus binding for `Left` if present — the arrow
-///    glyph reads better in the strip than `Shift+Tab`.
-/// 3. The NextFocus binding for `Right` if present — symmetric
-///    with the PrevFocus arrow.
+/// 1. The `NextFocus` binding on `Tab` if present — the canonical
+///    forward pane-cycle key across every GUI/TUI.
+/// 2. The `PrevFocus` binding on `BackTab` (Shift+Tab) if present
+///    — symmetric reverse.
 ///
-/// If none of the curated picks land, we fall back to first binding
-/// per action so a fully-rebound keymap still surfaces something
-/// useful in the strip.
-fn focus_chip_labels(bindings: &[Binding]) -> Vec<String> {
+/// Arrow keys are deliberately not picked here: round-7 reassigned
+/// ←/→ to value cycling in the Settings tab. Surfacing arrows in
+/// the `panes` chip would teach the wrong mental model.
+///
+/// If neither Tab nor Shift+Tab is bound, fall back to first
+/// binding per action so a fully-rebound keymap still surfaces
+/// something useful in the strip.
+fn pane_chip_labels(bindings: &[Binding]) -> Vec<String> {
   let mut acc: Vec<String> = Vec::new();
   let push_label = |dst: &mut Vec<String>, candidate: &Binding| {
     let s = candidate.label.to_string();
@@ -118,24 +126,18 @@ fn focus_chip_labels(bindings: &[Binding]) -> Vec<String> {
   let next_tab = bindings
     .iter()
     .find(|b| b.action == Action::NextFocus && b.key == KeyCode::Tab);
-  let prev_left = bindings
+  let prev_back_tab = bindings
     .iter()
-    .find(|b| b.action == Action::PrevFocus && b.key == KeyCode::Left);
-  let next_right = bindings
-    .iter()
-    .find(|b| b.action == Action::NextFocus && b.key == KeyCode::Right);
+    .find(|b| b.action == Action::PrevFocus && b.key == KeyCode::BackTab);
   if let Some(b) = next_tab {
     push_label(&mut acc, b);
   }
-  if let Some(b) = prev_left {
-    push_label(&mut acc, b);
-  }
-  if let Some(b) = next_right {
+  if let Some(b) = prev_back_tab {
     push_label(&mut acc, b);
   }
   if acc.is_empty() {
-    // Fallback: no curated keys are bound — surface first binding
-    // per action so the user still sees what their keymap exposes.
+    // Fallback: Tab pair isn't bound — surface first binding per
+    // action so the user still sees what their keymap exposes.
     for action in [Action::NextFocus, Action::PrevFocus] {
       if let Some(b) = bindings.iter().find(|b| b.action == action) {
         push_label(&mut acc, b);
@@ -235,10 +237,23 @@ mod tests {
     let app = default_app();
     let text = global_hint_text(&app);
     assert!(text.contains("?:help"), "got: {text}");
-    // Curated focus picker: Tab (forward) + ← / → arrow alternatives.
-    // Shift+Tab + h / l are valid alternatives but kept out of the
-    // top-bar chip so the strip stays scannable.
-    assert!(text.contains("Tab/←/→:focus"), "got: {text}");
+    // Tab/Shift+Tab is the canonical pane-cycle surface.
+    // ←/→ are no longer pane-cycle keys (they cycle values in
+    // Settings now), so the chip carries only the Tab pair.
+    assert!(text.contains("Tab/Shift+Tab:panes"), "got: {text}");
+    // Pre-round-7 surfaces must be gone.
+    assert!(
+      !text.contains(":fields"),
+      "fields chip removed in round-7 (↑/↓ cycle fields now): {text}"
+    );
+    assert!(
+      !text.contains("←/→:panes"),
+      "arrows are not pane-cycle keys any more: {text}"
+    );
+    assert!(
+      !text.contains(":focus"),
+      "stale `focus` chip must not reappear: {text}"
+    );
     assert!(text.contains("Q:kill daemon"), "got: {text}");
     assert!(text.contains("t:theme"), "got: {text}");
     assert!(text.contains("q:quit"), "got: {text}");
@@ -251,10 +266,10 @@ mod tests {
   }
 
   #[test]
-  fn focus_chip_falls_back_when_user_removes_curated_keys() {
-    // If a user remaps `next_focus` and `prev_focus` to non-curated
-    // keys (e.g. F7 / F8), the chip should surface those rather than
-    // emitting nothing.
+  fn panes_chip_falls_back_when_user_removes_curated_keys() {
+    // If a user remaps `next_focus` and `prev_focus` away from the
+    // curated Tab pair, the chip should surface whatever they
+    // bound rather than emitting nothing.
     let mut keymap = KeyMap::default();
     let overrides: BTreeMap<String, String> = [
       (String::from("next_focus"), String::from("f7")),
@@ -269,7 +284,7 @@ mod tests {
       ..AppOptions::default()
     });
     let text = global_hint_text(&app);
-    assert!(text.contains("F7/F8:focus"), "got: {text}");
+    assert!(text.contains("F7/F8:panes"), "got: {text}");
   }
 
   #[test]

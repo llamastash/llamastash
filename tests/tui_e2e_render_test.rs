@@ -91,9 +91,12 @@ fn seeded_dashboard_app() -> App {
   ];
   // Two favourites: qwen-7b is currently running (so it lives in
   // the Running group, not Favorites — running paths drop out of
-  // the catalog groupings), mistral-7b is not running so it shows
-  // up in Favorites. The golden therefore exercises Running +
-  // Favorites + folder groups in one frame.
+  // the catalog groupings entirely), mistral-7b is not running so
+  // it shows up in Favorites **and** in its `/m/x` folder group
+  // (favorited paths stay in their original folder; the Favorites
+  // section is an extra shortcut, not a relocation). The golden
+  // therefore exercises Running + Favorites + Divider + folder
+  // groups in one frame.
   app.favorites = vec![
     PathBuf::from("/m/x/qwen-7b.gguf"),
     PathBuf::from("/m/x/mistral-7b.gguf"),
@@ -205,8 +208,9 @@ fn dashboard_render_carries_key_landmarks() {
   // Logo pane (visible at width 120).
   assert!(frame.contains("macchiato"));
   // Models pane: section headers + per-row badges. Running has a
-  // launch for qwen-7b; mistral-7b is the only Favorite left after
-  // running paths drop out; phi-3 lands in its folder group.
+  // launch for qwen-7b; mistral-7b appears in both Favorites and
+  // the /m/x folder group (favorited paths stay in their folder);
+  // phi-3 lands in its /m/y folder group.
   assert!(
     frame.contains("󰑐 Running"),
     "Running header missing: {frame}"
@@ -218,6 +222,25 @@ fn dashboard_render_carries_key_landmarks() {
   assert!(frame.contains("qwen-7b"));
   assert!(frame.contains("mistral-7b"));
   assert!(frame.contains("phi-3"));
+  // Folder headers reappear once Favorites no longer hides them.
+  assert!(
+    frame.contains("/m/x"),
+    "/m/x folder header missing: {frame}"
+  );
+  assert!(
+    frame.contains("/m/y"),
+    "/m/y folder header missing: {frame}"
+  );
+  // The horizontal rule between Favorites and the folder sections
+  // is painted with `─` (U+2500) — assert at least one full-width
+  // run sits between the Favorites header and the /m/x header.
+  let fav_at = frame.find("★ Favorites").expect("Favorites header");
+  let mx_at = frame.find("/m/x").expect("/m/x header");
+  let between = &frame[fav_at..mx_at];
+  assert!(
+    between.contains("──────"),
+    "Divider rule must sit between Favorites and folder groups: {between:?}"
+  );
   // Right pane: focused-model header carries the launch metadata.
   assert!(frame.contains(":41100"));
   assert!(frame.contains("ready"));

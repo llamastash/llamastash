@@ -250,12 +250,15 @@ mod tests {
 
   #[test]
   fn idle_chips_when_input_active_use_keymap_labels() {
+    // Round-7: staging migrated from Tab → `+` / `=` (same
+    // physical key on US keyboards). The chip picks up the first
+    // bound key, which is `+`.
     let app = App::new(AppOptions::default());
     let chips = idle_status_chips(&app, true);
     assert_eq!(
       chips,
       vec![
-        "Tab:cycle field/stage candidate".to_string(),
+        "+:stage candidate".to_string(),
         "Shift+Enter:newline".to_string(),
         "Esc:clear".to_string(),
       ]
@@ -285,7 +288,7 @@ mod tests {
     });
     let chips = idle_status_chips(&app, true);
     assert!(
-      chips.iter().any(|c| c == "F2:cycle field/stage candidate"),
+      chips.iter().any(|c| c == "F2:stage candidate"),
       "F2 binding missing: {chips:?}"
     );
   }

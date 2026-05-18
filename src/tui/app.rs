@@ -737,9 +737,13 @@ impl App {
 
   pub fn close_advanced_panel(&mut self) {
     self.advanced_panel = None;
-    // Return to launch picker if it was the previous focus, else List.
+    // The launch form lives inline in the right pane's Settings
+    // tab now, so closing the advanced panel returns there. If
+    // the user wasn't in the form at all (no picker state), drop
+    // back to the model list.
     self.focus = if self.launch_picker.is_some() {
-      Focus::LaunchPicker
+      self.right_tab = RightTab::Settings;
+      Focus::RightPane
     } else {
       Focus::List
     };
@@ -924,6 +928,13 @@ fn apply_filter(rows: &[ListRow], query: &str) -> Vec<ListRow> {
         if kept.contains(&i) {
           out.push(rows[i].clone());
         }
+        i += 1;
+      }
+      ListRow::Divider => {
+        // Dividers are purely structural — they separate Favorites
+        // from the folder groups in the unfiltered view. The
+        // filtered view re-derives sections from kept rows, so the
+        // divider has nothing to separate and just drops out.
         i += 1;
       }
     }

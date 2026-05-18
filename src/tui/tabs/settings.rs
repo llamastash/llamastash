@@ -110,12 +110,14 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
     "ctx",
     ctx_value,
     picker_view.field == PickerField::Ctx,
+    true,
     palette,
   ));
   lines.push(kv_focused(
     "reasoning",
     if picker_view.reasoning { "on" } else { "off" }.into(),
     picker_view.field == PickerField::Reasoning,
+    true,
     palette,
   ));
   let advanced_hint = app
@@ -126,6 +128,9 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
     "advanced",
     advanced_hint,
     picker_view.field == PickerField::Advanced,
+    // Advanced opens a separate editor; Up/Down don't cycle a
+    // value here, so the `◀ … ▶` glyphs would be misleading.
+    false,
     palette,
   ));
   lines.push(Line::default());
@@ -181,9 +186,18 @@ fn heading<'a>(text: &'a str, palette: &Palette) -> Line<'a> {
   ))
 }
 
+/// Width of the label column in `kv` / `kv_focused` rows. Wide
+/// enough to fit the longest label (`reasoning`, `advanced`, `ctx`,
+/// `model`) plus one trailing space gap so values never kiss the
+/// label.
+const LABEL_W: usize = 12;
+
 fn kv(label: &str, value: String, palette: &Palette) -> Line<'static> {
   Line::from(vec![
-    Span::styled(format!("  {label:<10}"), Style::default().fg(palette.muted)),
+    Span::styled(
+      format!("  {label:<width$}", width = LABEL_W),
+      Style::default().fg(palette.muted),
+    ),
     Span::styled(value, Style::default().fg(palette.fg)),
   ])
 }
@@ -195,17 +209,42 @@ fn chip_label(chip: &str) -> &str {
   chip.split(':').next().unwrap_or(chip)
 }
 
-fn kv_focused(label: &str, value: String, focused: bool, palette: &Palette) -> Line<'static> {
+/// Render an editable form row. When focused **and** the field is
+/// cyclable (`cyclable = true`), the value is wrapped in `◀ … ▶`
+/// so the user sees that Up/Down change it. Non-cyclable focused
+/// rows (Advanced) just get the `→` cursor without arrow glyphs.
+fn kv_focused(
+  label: &str,
+  value: String,
+  focused: bool,
+  cyclable: bool,
+  palette: &Palette,
+) -> Line<'static> {
   let marker = if focused { "→ " } else { "  " };
-  let style = if focused {
+  let label_style = if focused {
     Style::default()
       .fg(palette.accent)
       .add_modifier(Modifier::BOLD)
   } else {
     Style::default().fg(palette.muted)
   };
-  Line::from(vec![
-    Span::styled(format!("{marker}{label:<8}"), style),
-    Span::styled(value, Style::default().fg(palette.fg)),
-  ])
+  let mut spans: Vec<Span<'static>> = Vec::with_capacity(5);
+  spans.push(Span::styled(
+    format!("{marker}{label:<width$}", width = LABEL_W),
+    label_style,
+  ));
+  if focused && cyclable {
+    spans.push(Span::styled(
+      "◀ ".to_string(),
+      Style::default().fg(palette.accent),
+    ));
+    spans.push(Span::styled(value, Style::default().fg(palette.fg)));
+    spans.push(Span::styled(
+      " ▶".to_string(),
+      Style::default().fg(palette.accent),
+    ));
+  } else {
+    spans.push(Span::styled(value, Style::default().fg(palette.fg)));
+  }
+  Line::from(spans)
 }

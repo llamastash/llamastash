@@ -226,49 +226,54 @@ const CHAT_EMBED_RERANK: &[Row] = &[
   },
 ];
 
-/// Three different Enter destinations across the Settings flow —
-/// open the picker from the Settings tab, launch the model from
-/// inside the picker, save & close from the Advanced flags panel.
-/// User-facing summary collapses them as `launch/save`.
+/// Two Enter destinations across the Settings flow — launch the
+/// model from the inline form, save & close from the Advanced flags
+/// panel. User-facing summary collapses them as `launch/save`.
 const SETTINGS_ENTER: &[(Focus, Action)] = &[
   (Focus::RightPane, Action::Submit),
-  (Focus::LaunchPicker, Action::Submit),
   (Focus::AdvancedPanel, Action::Submit),
 ];
 
-/// Picker dismiss vs. advanced-panel dismiss share `Esc` but mean
-/// slightly different things (cancel the launch vs. discard flag
-/// edits and step back). Both collapse under one row as
-/// `cancel/back`.
-const SETTINGS_ESC: &[(Focus, Action)] = &[
-  (Focus::LaunchPicker, Action::Cancel),
-  (Focus::AdvancedPanel, Action::Cancel),
-];
+/// `Action::MoveDown` / `MoveUp` on `Focus::RightPane` carry the
+/// description `scroll down/up` because that's their meaning on the
+/// Logs tab. In the Settings tab the same keys cycle the form's
+/// fields (ctx → reasoning → advanced), so the help row needs a
+/// context-appropriate override. Wrapping the action in a
+/// single-part `Row::Multi` is the renderer's mechanism for that.
+const SETTINGS_FIELD_NEXT: &[(Focus, Action)] = &[(Focus::RightPane, Action::MoveDown)];
+const SETTINGS_FIELD_PREV: &[(Focus, Action)] = &[(Focus::RightPane, Action::MoveUp)];
 
 const SETTINGS: &[Row] = &[
   Row::Multi {
     parts: SETTINGS_ENTER,
     description: "launch/save",
   },
-  Row::Single {
-    focus: Focus::LaunchPicker,
-    action: Action::MoveDown,
-  },
-  // Tab/Shift+Tab cycle the form fields (ctx / reasoning / advanced)
-  // inside the right pane's Settings tab. Surfaced from
-  // `Focus::RightPane` because that's the focus the user occupies
-  // when reading the form inline.
-  Row::Single {
-    focus: Focus::RightPane,
-    action: Action::NextField,
-  },
-  Row::Single {
-    focus: Focus::RightPane,
-    action: Action::PrevField,
+  // ↑/↓ cycle the form's fields. Descriptions overridden because
+  // the same bindings mean `scroll up/down` on the Logs tab.
+  Row::Multi {
+    parts: SETTINGS_FIELD_NEXT,
+    description: "next field",
   },
   Row::Multi {
-    parts: SETTINGS_ESC,
-    description: "cancel/back",
+    parts: SETTINGS_FIELD_PREV,
+    description: "prev field",
+  },
+  // ←/→ change the focused field's value (ctx preset, reasoning
+  // toggle). Round-7 introduced these dedicated keys so values
+  // and fields don't share the same axis.
+  Row::Single {
+    focus: Focus::RightPane,
+    action: Action::CycleValueNext,
+  },
+  Row::Single {
+    focus: Focus::RightPane,
+    action: Action::CycleValuePrev,
+  },
+  // Esc on the Advanced flags panel discards edits and steps back
+  // to the Settings form.
+  Row::Single {
+    focus: Focus::AdvancedPanel,
+    action: Action::Cancel,
   },
 ];
 
@@ -316,14 +321,19 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   );
   frame.render_widget(Clear, rect);
 
-  // The close chip is keymap-driven — whichever key the user has
-  // bound to `toggle_help` is what we surface in the title. Esc
-  // also closes the modal but is hardcoded modal-dismiss (not an
-  // Action), so we don't claim it here; the user can rely on the
-  // bound `?` (or its override) without having to guess.
-  let close_chip = app
-    .hint_with(Focus::List, Action::ToggleHelp, "close")
-    .unwrap_or_else(|| "?:close".to_string());
+  // Close chip carries both keys that dismiss the overlay:
+  //  - `Esc` is hardcoded modal-dismiss in `events::handle_key`
+  //    (not an Action), so it always works regardless of the
+  //    `toggle_help` binding; we hardcode it here too.
+  //  - The `toggle_help` action's live key (default `?`) is
+  //    surfaced second so config overrides flow through.
+  let toggle_key = app
+    .bindings_for(Focus::List)
+    .iter()
+    .find(|b| b.action == Action::ToggleHelp)
+    .map(|b| b.label.to_string())
+    .unwrap_or_else(|| "?".to_string());
+  let close_chip = format!("Esc/{toggle_key}:close");
   let block = Block::default()
     .title(Line::from(vec![
       Span::styled(
@@ -538,16 +548,97 @@ mod tests {
   }
 
   #[test]
-  fn settings_collapses_enter_and_esc() {
+  fn settings_group_lists_canonical_rows() {
+    // The Settings group must teach the four canonical edit
+    // surfaces: launch/save, cycle value (Up/Down), cycle fields
+    // (Tab/Shift+Tab), and Esc → models list.
     let app = App::new(AppOptions::default());
     let frame = render_to_string(140, 36, &app);
     assert!(
       frame.contains("launch/save"),
       "Settings Enter row should be `launch/save`:\n{frame}"
     );
+    // Round-7 navigation: ↑/↓ cycle form fields, ←/→ cycle the
+    // focused field's value.
     assert!(
-      frame.contains("cancel/back"),
-      "Settings Esc row should be `cancel/back`:\n{frame}"
+      frame.contains("next field"),
+      "Settings must surface the ↓ next-field row:\n{frame}"
+    );
+    assert!(
+      frame.contains("cycle value"),
+      "Settings must surface the ←/→ cycle-value rows:\n{frame}"
+    );
+    // The `next field` row must render exactly once (regression
+    // guard: pre-round-7 the dead `Focus::LaunchPicker` binding
+    // and the live `RightPane.NextField` description both said
+    // `next field`, producing a visible duplicate). The renderer
+    // now sources the row from `Focus::RightPane.MoveDown` via a
+    // Multi override, so any future drift fails this loudly.
+    let contexts: Vec<&str> = frame
+      .match_indices("next field")
+      .map(|(i, _)| {
+        let start = i.saturating_sub(40);
+        let end = (i + 30).min(frame.len());
+        &frame[start..end]
+      })
+      .collect();
+    assert_eq!(
+      contexts.len(),
+      1,
+      "`next field` row must render exactly once. Contexts: {contexts:#?}"
+    );
+  }
+
+  #[test]
+  fn overlay_title_close_chip_surfaces_esc_and_toggle_help_key() {
+    // Default keymap: `?` toggles the overlay; Esc always closes
+    // it. Both keys must appear in the title so the user can
+    // discover either path.
+    let app = App::new(AppOptions::default());
+    let frame = render_to_string(140, 36, &app);
+    assert!(
+      frame.contains("Esc/?:close"),
+      "title close chip must list both Esc and the toggle_help key: {frame}"
+    );
+  }
+
+  #[test]
+  fn overlay_title_close_chip_follows_toggle_help_rebind() {
+    // Remap `toggle_help` to F1 — the close chip should now read
+    // `Esc/F1:close` (Esc stays because it's the hardcoded modal
+    // dismiss).
+    let mut keymap = KeyMap::default();
+    let overrides: BTreeMap<String, String> = [(String::from("toggle_help"), String::from("f1"))]
+      .into_iter()
+      .collect();
+    let warnings = keymap.apply_overrides(&overrides);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let app = App::new(AppOptions {
+      keymap,
+      ..AppOptions::default()
+    });
+    let frame = render_to_string(140, 36, &app);
+    assert!(
+      frame.contains("Esc/F1:close"),
+      "remapped toggle_help must flow through to the close chip: {frame}"
+    );
+    assert!(
+      !frame.contains("Esc/?:close"),
+      "stale default `?` chip must drop when toggle_help is rebound: {frame}"
+    );
+  }
+
+  #[test]
+  fn general_chat_jump_row_describes_chat_embed_rerank() {
+    // Shift+C dispatches `Action::FocusChatTab`, which picks the
+    // first available of Chat / Embed / Rerank for the focused
+    // model. The help row must mirror that — `chat` alone would
+    // mislead users on embedding-only or reranker models.
+    let app = App::new(AppOptions::default());
+    let frame = render_to_string(140, 36, &app);
+    assert!(
+      frame.contains("chat/embed/rerank"),
+      "Shift+C row must describe all three mode targets: {frame}"
     );
   }
 

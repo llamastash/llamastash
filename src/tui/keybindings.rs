@@ -25,8 +25,6 @@ pub enum Focus {
   /// Filter input is captured live; alphanumerics extend the filter
   /// buffer instead of triggering hotkeys.
   Filter,
-  /// Launch picker overlay — Ctx / Reasoning / Advanced.
-  LaunchPicker,
   /// Advanced flags panel.
   AdvancedPanel,
   /// Right pane in a non-input mode (the Logs tab, primarily).
@@ -128,16 +126,23 @@ pub enum Action {
   /// Shift+Enter collapses to plain Enter and triggers Submit.
   InsertNewline,
   /// Cycle to the next input field within the focused pane. Bound
-  /// to `Tab` in the Right pane (cycles the Settings-tab launch
-  /// form), and used as the backward complement to
-  /// [`Action::StageRerankCandidate`] in the Rerank input. Arrow
-  /// keys keep their pane-cycle meaning so this remap doesn't
-  /// strand users — Tab now means "next field where one exists"
-  /// rather than the redundant "next pane".
+  /// to `↓` in the Right pane (cycles the Settings-tab launch
+  /// form) and in the Rerank input (toggles query ↔ candidate).
+  /// `Tab` belongs to pane-cycle now, so field-cycle migrates to
+  /// the arrow keys, matching system-form conventions (Windows /
+  /// macOS settings dialogs, HTML `<form>`).
   NextField,
   /// Cycle to the previous input field within the focused pane.
-  /// Bound to `Shift+Tab` in the Right pane and the Rerank input.
+  /// Bound to `↑` in the Right pane and the Rerank input.
   PrevField,
+  /// Cycle the focused field's value forward. Bound to `→` in the
+  /// Right pane; dispatches only when the active right tab is
+  /// Settings (Ctx preset, Reasoning toggle).
+  CycleValueNext,
+  /// Cycle the focused field's value backward. Bound to `←` in the
+  /// Right pane; dispatches only when the active right tab is
+  /// Settings.
+  CycleValuePrev,
 }
 
 /// One binding in the table.
@@ -159,7 +164,6 @@ pub struct Binding {
 pub const DEFAULT_BINDINGS: &[(Focus, &[Binding])] = &[
   (Focus::List, LIST_BINDINGS),
   (Focus::Filter, FILTER_BINDINGS),
-  (Focus::LaunchPicker, LAUNCH_PICKER_BINDINGS),
   (Focus::AdvancedPanel, ADVANCED_BINDINGS),
   (Focus::RightPane, RIGHT_PANE_BINDINGS),
   (Focus::ChatInput, CHAT_INPUT_BINDINGS),
@@ -247,10 +251,24 @@ const LIST_BINDINGS: &[Binding] = &[
     description: "top",
   },
   Binding {
+    key: KeyCode::Home,
+    mods: KeyModifiers::NONE,
+    action: Action::GoTop,
+    label: "Home",
+    description: "top",
+  },
+  Binding {
     key: KeyCode::Char('G'),
     mods: KeyModifiers::SHIFT,
     action: Action::GoBottom,
     label: "G",
+    description: "bottom",
+  },
+  Binding {
+    key: KeyCode::End,
+    mods: KeyModifiers::NONE,
+    action: Action::GoBottom,
+    label: "End",
     description: "bottom",
   },
   Binding {
@@ -316,6 +334,10 @@ const LIST_BINDINGS: &[Binding] = &[
     label: "s",
     description: "stop",
   },
+  // Tab/Shift+Tab cycle panes (Models → Logs → Chat/Embed/Rerank
+  // → Settings → wrap). Arrow keys are reserved: ↑/↓ scroll the
+  // list cursor, ←/→ cycle values in the Settings tab. h/l stay
+  // as vi-style pane-cycle aliases for home-row navigators.
   Binding {
     key: KeyCode::Tab,
     mods: KeyModifiers::NONE,
@@ -328,20 +350,6 @@ const LIST_BINDINGS: &[Binding] = &[
     mods: KeyModifiers::SHIFT,
     action: Action::PrevFocus,
     label: "Shift+Tab",
-    description: "prev pane",
-  },
-  Binding {
-    key: KeyCode::Right,
-    mods: KeyModifiers::NONE,
-    action: Action::NextFocus,
-    label: "→",
-    description: "next pane",
-  },
-  Binding {
-    key: KeyCode::Left,
-    mods: KeyModifiers::NONE,
-    action: Action::PrevFocus,
-    label: "←",
     description: "prev pane",
   },
   Binding {
@@ -381,7 +389,11 @@ const LIST_BINDINGS: &[Binding] = &[
     mods: KeyModifiers::SHIFT,
     action: Action::FocusChatTab,
     label: "C",
-    description: "chat",
+    // `apply_focus_chat_tab` (events.rs) jumps to whichever mode tab
+    // is live for the focused model — Chat for chat models, Embed
+    // for embedding-only models, Rerank for rerankers. The
+    // description has to mirror that so the help pane doesn't lie.
+    description: "chat/embed/rerank",
   },
   Binding {
     key: KeyCode::Char('S'),
@@ -406,44 +418,6 @@ const FILTER_BINDINGS: &[Binding] = &[
     action: Action::Submit,
     label: "Enter",
     description: "apply",
-  },
-];
-
-const LAUNCH_PICKER_BINDINGS: &[Binding] = &[
-  Binding {
-    key: KeyCode::Esc,
-    mods: KeyModifiers::NONE,
-    action: Action::Cancel,
-    label: "Esc",
-    description: "cancel",
-  },
-  Binding {
-    key: KeyCode::Char('?'),
-    mods: KeyModifiers::NONE,
-    action: Action::ToggleHelp,
-    label: "?",
-    description: "help",
-  },
-  Binding {
-    key: KeyCode::Enter,
-    mods: KeyModifiers::NONE,
-    action: Action::Submit,
-    label: "Enter",
-    description: "launch",
-  },
-  Binding {
-    key: KeyCode::Tab,
-    mods: KeyModifiers::NONE,
-    action: Action::MoveDown,
-    label: "Tab",
-    description: "next field",
-  },
-  Binding {
-    key: KeyCode::Char('a'),
-    mods: KeyModifiers::NONE,
-    action: Action::OpenAdvancedPanel,
-    label: "a",
-    description: "advanced",
   },
 ];
 
@@ -517,31 +491,36 @@ const RIGHT_PANE_BINDINGS: &[Binding] = &[
   Binding {
     key: KeyCode::Tab,
     mods: KeyModifiers::NONE,
-    action: Action::NextField,
+    action: Action::NextFocus,
     label: "Tab",
-    description: "next field",
+    description: "next pane",
   },
   Binding {
     key: KeyCode::BackTab,
     mods: KeyModifiers::SHIFT,
-    action: Action::PrevField,
+    action: Action::PrevFocus,
     label: "Shift+Tab",
-    description: "prev field",
+    description: "prev pane",
   },
+  // ←/→ change the focused Settings field's value. Outside the
+  // Settings tab the action is a no-op (see `apply_cycle_value`),
+  // so the keys don't double as pane navigation anywhere.
   Binding {
     key: KeyCode::Right,
     mods: KeyModifiers::NONE,
-    action: Action::NextFocus,
+    action: Action::CycleValueNext,
     label: "→",
-    description: "next pane",
+    description: "cycle value",
   },
   Binding {
     key: KeyCode::Left,
     mods: KeyModifiers::NONE,
-    action: Action::PrevFocus,
+    action: Action::CycleValuePrev,
     label: "←",
-    description: "prev pane",
+    description: "cycle value",
   },
+  // vi aliases stay — h/l remain the canonical pane-cycle pair for
+  // users who don't want to leave the home row.
   Binding {
     key: KeyCode::Char('l'),
     mods: KeyModifiers::NONE,
@@ -577,20 +556,11 @@ const RIGHT_PANE_BINDINGS: &[Binding] = &[
     label: "a",
     description: "advanced",
   },
-  Binding {
-    key: KeyCode::Char('j'),
-    mods: KeyModifiers::NONE,
-    action: Action::MoveDown,
-    label: "j",
-    description: "scroll down",
-  },
-  Binding {
-    key: KeyCode::Char('k'),
-    mods: KeyModifiers::NONE,
-    action: Action::MoveUp,
-    label: "k",
-    description: "scroll up",
-  },
+  // Arrows are the canonical surface — the Settings tab uses ↑/↓
+  // for field-cycle and the Logs tab uses them for scroll. Vi
+  // aliases `j`/`k` follow so home-row users have a fallback.
+  // Ordering matters: `hint()` returns the first binding it finds,
+  // so the chip strip surfaces the arrow glyphs.
   Binding {
     key: KeyCode::Down,
     mods: KeyModifiers::NONE,
@@ -603,6 +573,20 @@ const RIGHT_PANE_BINDINGS: &[Binding] = &[
     mods: KeyModifiers::NONE,
     action: Action::MoveUp,
     label: "↑",
+    description: "scroll up",
+  },
+  Binding {
+    key: KeyCode::Char('j'),
+    mods: KeyModifiers::NONE,
+    action: Action::MoveDown,
+    label: "j",
+    description: "scroll down",
+  },
+  Binding {
+    key: KeyCode::Char('k'),
+    mods: KeyModifiers::NONE,
+    action: Action::MoveUp,
+    label: "k",
     description: "scroll up",
   },
   // Mirror the LIST_BINDINGS shift-letter quick-jumps so the user
@@ -626,7 +610,11 @@ const RIGHT_PANE_BINDINGS: &[Binding] = &[
     mods: KeyModifiers::SHIFT,
     action: Action::FocusChatTab,
     label: "C",
-    description: "chat",
+    // Mirrors the LIST_BINDINGS entry — `apply_focus_chat_tab` picks
+    // the first available of Chat/Embed/Rerank. Description must
+    // stay in sync across the two binding tables so the help
+    // overlay's `resolve_one` lifts a consistent string.
+    description: "chat/embed/rerank",
   },
   Binding {
     key: KeyCode::Char('S'),
@@ -735,19 +723,58 @@ const RERANK_INPUT_BINDINGS: &[Binding] = &[
     label: "Esc",
     description: "exit edit",
   },
+  // Tab/Shift+Tab cycle panes everywhere — including inside the
+  // rerank input. Staging a candidate moves to `+` / `=` (same
+  // physical key on US keyboards, with and without Shift).
   Binding {
     key: KeyCode::Tab,
     mods: KeyModifiers::NONE,
-    action: Action::StageRerankCandidate,
+    action: Action::NextFocus,
     label: "Tab",
-    description: "cycle field/stage candidate",
+    description: "next pane",
   },
   Binding {
     key: KeyCode::BackTab,
     mods: KeyModifiers::SHIFT,
-    action: Action::PrevField,
+    action: Action::PrevFocus,
     label: "Shift+Tab",
+    description: "prev pane",
+  },
+  // ↑/↓ cycle the input field (query ↔ candidate). Two fields →
+  // both directions land on the same place, but binding both keeps
+  // the arrow surface symmetric with the Settings tab's field
+  // cycle.
+  Binding {
+    key: KeyCode::Down,
+    mods: KeyModifiers::NONE,
+    action: Action::NextField,
+    label: "↓",
+    description: "next field",
+  },
+  Binding {
+    key: KeyCode::Up,
+    mods: KeyModifiers::NONE,
+    action: Action::PrevField,
+    label: "↑",
     description: "prev field",
+  },
+  // `+` and `=` both stage the current candidate buffer onto the
+  // candidate list. `=` covers the no-shift case on US keyboards
+  // (same key as `+` without Shift); `+` lets users who hold
+  // Shift hit it naturally.
+  Binding {
+    key: KeyCode::Char('+'),
+    mods: KeyModifiers::SHIFT,
+    action: Action::StageRerankCandidate,
+    label: "+",
+    description: "stage candidate",
+  },
+  Binding {
+    key: KeyCode::Char('='),
+    mods: KeyModifiers::NONE,
+    action: Action::StageRerankCandidate,
+    label: "=",
+    description: "stage candidate",
   },
   // Plain Enter — see CHAT_INPUT_BINDINGS for the rationale.
   Binding {
@@ -988,6 +1015,8 @@ impl Action {
     ("insert_newline", Action::InsertNewline),
     ("next_field", Action::NextField),
     ("prev_field", Action::PrevField),
+    ("cycle_value_next", Action::CycleValueNext),
+    ("cycle_value_prev", Action::CycleValuePrev),
   ];
 
   /// Parse a config-name (snake_case or kebab-case) into an action.
@@ -1095,8 +1124,14 @@ fn format_key_label(key: &KeyCode, mods: KeyModifiers) -> String {
   if mods.contains(KeyModifiers::SUPER) {
     out.push_str("Super+");
   }
-  let show_shift = mods.contains(KeyModifiers::SHIFT)
-    && !matches!(key, KeyCode::Char(c) if c.is_ascii_uppercase());
+  // Suppress an explicit `Shift+` prefix when the key already
+  // encodes Shift in its name or glyph:
+  //  - Uppercase `Char` (terminal emits Shift+letter as `Char(C)`)
+  //  - `BackTab` (the named code for Shift+Tab — adding Shift+
+  //    would render as `Shift+Shift+Tab`)
+  let key_already_encodes_shift =
+    matches!(key, KeyCode::Char(c) if c.is_ascii_uppercase()) || matches!(key, KeyCode::BackTab);
+  let show_shift = mods.contains(KeyModifiers::SHIFT) && !key_already_encodes_shift;
   if show_shift {
     out.push_str("Shift+");
   }
@@ -1166,9 +1201,37 @@ mod tests {
   }
 
   #[test]
-  fn launch_picker_focus_can_open_advanced() {
+  fn list_focus_home_and_end_alias_go_top_and_go_bottom() {
+    // Home / End mirror the vi-style `g` / `G` bindings so users who
+    // reach for nav keys instead of vi motions land in the same
+    // place. Both pairs must resolve to the same action so the
+    // dispatcher stays single-pathed.
     assert_eq!(
-      action_for(Focus::LaunchPicker, KeyCode::Char('a'), KeyModifiers::NONE),
+      action_for(Focus::List, KeyCode::Char('g'), KeyModifiers::NONE),
+      Some(Action::GoTop)
+    );
+    assert_eq!(
+      action_for(Focus::List, KeyCode::Home, KeyModifiers::NONE),
+      Some(Action::GoTop)
+    );
+    assert_eq!(
+      action_for(Focus::List, KeyCode::Char('G'), KeyModifiers::SHIFT),
+      Some(Action::GoBottom)
+    );
+    assert_eq!(
+      action_for(Focus::List, KeyCode::End, KeyModifiers::NONE),
+      Some(Action::GoBottom)
+    );
+  }
+
+  #[test]
+  fn right_pane_focus_can_open_advanced_from_settings_tab() {
+    // The Settings tab in the right pane hosts the launch form;
+    // `a` opens the Advanced flags editor without leaving Settings.
+    // (Previously this binding lived on the dead `Focus::LaunchPicker`
+    // modal — the assertion moved with the binding.)
+    assert_eq!(
+      action_for(Focus::RightPane, KeyCode::Char('a'), KeyModifiers::NONE),
       Some(Action::OpenAdvancedPanel)
     );
   }
@@ -1227,10 +1290,45 @@ mod tests {
   }
 
   #[test]
-  fn rerank_input_tab_stages_candidate() {
+  fn rerank_input_plus_and_equals_stage_candidate() {
+    // Round-7 freed Tab for pane-cycle, so staging migrated to
+    // `+` / `=` (same physical key on US keyboards with and
+    // without Shift).
+    assert_eq!(
+      action_for(Focus::RerankInput, KeyCode::Char('+'), KeyModifiers::SHIFT),
+      Some(Action::StageRerankCandidate),
+    );
+    assert_eq!(
+      action_for(Focus::RerankInput, KeyCode::Char('='), KeyModifiers::NONE),
+      Some(Action::StageRerankCandidate),
+    );
+  }
+
+  #[test]
+  fn rerank_input_tab_cycles_panes_not_stages_candidate() {
+    // The pre-round-7 Tab → StageRerankCandidate binding moved to
+    // `+` / `=`. Tab must now flow the universal pane-cycle path.
     assert_eq!(
       action_for(Focus::RerankInput, KeyCode::Tab, KeyModifiers::NONE),
-      Some(Action::StageRerankCandidate),
+      Some(Action::NextFocus),
+    );
+    assert_eq!(
+      action_for(Focus::RerankInput, KeyCode::BackTab, KeyModifiers::SHIFT),
+      Some(Action::PrevFocus),
+    );
+  }
+
+  #[test]
+  fn rerank_input_up_down_cycle_fields() {
+    // ↑/↓ replace Shift+Tab as the field-cycle surface inside the
+    // rerank input — symmetric with the Settings tab.
+    assert_eq!(
+      action_for(Focus::RerankInput, KeyCode::Down, KeyModifiers::NONE),
+      Some(Action::NextField),
+    );
+    assert_eq!(
+      action_for(Focus::RerankInput, KeyCode::Up, KeyModifiers::NONE),
+      Some(Action::PrevField),
     );
   }
 
@@ -1390,5 +1488,135 @@ mod tests {
       all_quit_keys_in_list.is_empty(),
       "expected CycleTheme to lose its binding"
     );
+  }
+
+  // ── format_key_label rendering ────────────────────────────────
+  //
+  // Every hint chip, help row, and title pulls its key text from
+  // `format_key_label` (or the per-binding `label` literal that
+  // mirrors it). Pin the rendered string for every match arm so a
+  // refactor of the formatter fails loudly instead of silently
+  // drifting through every surface.
+
+  #[test]
+  fn format_key_label_plain_char_renders_as_char() {
+    assert_eq!(
+      format_key_label(&KeyCode::Char('q'), KeyModifiers::NONE),
+      "q"
+    );
+  }
+
+  #[test]
+  fn format_key_label_uppercase_char_omits_shift_prefix() {
+    // crossterm reports Shift+letter as a `Char('Q')` plus
+    // SHIFT modifier — surfacing `Shift+Q` would be redundant.
+    assert_eq!(
+      format_key_label(&KeyCode::Char('Q'), KeyModifiers::SHIFT),
+      "Q"
+    );
+  }
+
+  #[test]
+  fn format_key_label_lowercase_char_with_shift_keeps_prefix() {
+    // Shift on a lowercase char is unusual (the terminal would
+    // normally upcase it) but possible with kitty-protocol — keep
+    // the modifier visible so the binding stays unambiguous.
+    assert_eq!(
+      format_key_label(&KeyCode::Char('q'), KeyModifiers::SHIFT),
+      "Shift+q"
+    );
+  }
+
+  #[test]
+  fn format_key_label_ctrl_char_renders_with_ctrl_prefix() {
+    assert_eq!(
+      format_key_label(&KeyCode::Char('c'), KeyModifiers::CONTROL),
+      "Ctrl+c"
+    );
+  }
+
+  #[test]
+  fn format_key_label_ctrl_shift_lowercase_emits_both_prefixes() {
+    let mods = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+    assert_eq!(format_key_label(&KeyCode::Char('c'), mods), "Ctrl+Shift+c");
+  }
+
+  #[test]
+  fn format_key_label_alt_char_renders_with_alt_prefix() {
+    assert_eq!(
+      format_key_label(&KeyCode::Char('x'), KeyModifiers::ALT),
+      "Alt+x"
+    );
+  }
+
+  #[test]
+  fn format_key_label_space_renders_as_word() {
+    assert_eq!(
+      format_key_label(&KeyCode::Char(' '), KeyModifiers::NONE),
+      "Space"
+    );
+  }
+
+  #[test]
+  fn format_key_label_named_keys_render_with_their_word() {
+    assert_eq!(
+      format_key_label(&KeyCode::Enter, KeyModifiers::NONE),
+      "Enter"
+    );
+    assert_eq!(format_key_label(&KeyCode::Esc, KeyModifiers::NONE), "Esc");
+    assert_eq!(format_key_label(&KeyCode::Tab, KeyModifiers::NONE), "Tab");
+    assert_eq!(
+      format_key_label(&KeyCode::BackTab, KeyModifiers::SHIFT),
+      "Shift+Tab"
+    );
+    assert_eq!(
+      format_key_label(&KeyCode::Backspace, KeyModifiers::NONE),
+      "Backspace"
+    );
+    assert_eq!(
+      format_key_label(&KeyCode::Delete, KeyModifiers::NONE),
+      "Del"
+    );
+    assert_eq!(
+      format_key_label(&KeyCode::Insert, KeyModifiers::NONE),
+      "Ins"
+    );
+  }
+
+  #[test]
+  fn format_key_label_arrows_render_as_glyphs() {
+    assert_eq!(format_key_label(&KeyCode::Up, KeyModifiers::NONE), "↑");
+    assert_eq!(format_key_label(&KeyCode::Down, KeyModifiers::NONE), "↓");
+    assert_eq!(format_key_label(&KeyCode::Left, KeyModifiers::NONE), "←");
+    assert_eq!(format_key_label(&KeyCode::Right, KeyModifiers::NONE), "→");
+  }
+
+  #[test]
+  fn format_key_label_home_end_pageup_pagedown() {
+    assert_eq!(format_key_label(&KeyCode::Home, KeyModifiers::NONE), "Home");
+    assert_eq!(format_key_label(&KeyCode::End, KeyModifiers::NONE), "End");
+    assert_eq!(
+      format_key_label(&KeyCode::PageUp, KeyModifiers::NONE),
+      "PgUp"
+    );
+    assert_eq!(
+      format_key_label(&KeyCode::PageDown, KeyModifiers::NONE),
+      "PgDn"
+    );
+  }
+
+  #[test]
+  fn format_key_label_function_keys_render_with_number() {
+    assert_eq!(format_key_label(&KeyCode::F(1), KeyModifiers::NONE), "F1");
+    assert_eq!(format_key_label(&KeyCode::F(7), KeyModifiers::NONE), "F7");
+    assert_eq!(format_key_label(&KeyCode::F(12), KeyModifiers::NONE), "F12");
+  }
+
+  #[test]
+  fn format_key_label_combines_ctrl_alt_super_modifiers_in_order() {
+    // Order is fixed (Ctrl → Alt → Super → Shift) so the rendered
+    // string is canonical — easier to grep for in help dumps.
+    let mods = KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER;
+    assert_eq!(format_key_label(&KeyCode::F(5), mods), "Ctrl+Alt+Super+F5");
   }
 }

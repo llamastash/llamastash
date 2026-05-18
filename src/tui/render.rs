@@ -25,8 +25,8 @@ use crate::theme::Palette;
 use crate::tui::app::App;
 use crate::tui::keybindings::Focus;
 use crate::tui::{
-  advanced_panel, confirm_overlay, help_bar, help_overlay, host_stats_pane, info_pane,
-  launch_picker, list_pane, logo_pane, right_pane,
+  advanced_panel, confirm_overlay, help_bar, help_overlay, host_stats_pane, info_pane, list_pane,
+  logo_pane, right_pane,
 };
 
 const INFO_ROW_HEIGHT: u16 = 7;
@@ -78,12 +78,10 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
   }
   render_body(frame, chunks[idx], app, palette);
 
-  // Overlays last.
-  if app.focus == Focus::LaunchPicker {
-    if let Some(state) = &app.launch_picker {
-      launch_picker::render(frame, area, state, palette);
-    }
-  }
+  // Overlays last. The launch picker no longer has a modal — the
+  // form lives inline in the right pane's Settings tab. The
+  // `launch_picker` module still owns the form state struct, but no
+  // dedicated overlay is painted.
   if app.focus == Focus::AdvancedPanel {
     if let Some(state) = &app.advanced_panel {
       advanced_panel::render(frame, area, state, palette);

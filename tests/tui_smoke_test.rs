@@ -179,6 +179,118 @@ fn enter_on_model_opens_inline_launch_picker_in_settings_tab() {
 }
 
 #[test]
+fn arrows_in_settings_tab_cycle_fields_and_values() {
+  // Round-7 navigation model: ↑/↓ in the Settings tab cycle the
+  // form's fields (ctx → reasoning → advanced), and ←/→ cycle
+  // the focused field's value. Tab cycles panes universally.
+  use llamadash::tui::keybindings::Focus;
+  use llamadash::tui::launch_picker::PickerField;
+  use llamadash::tui::launch_picker::CTX_PRESETS;
+  use llamadash::tui::RightTab;
+  let mut app = App::new(AppOptions::default());
+  app.models = vec![fake_model("/m/qwen.gguf", "/m")];
+  app.go_top();
+  pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::NONE));
+  assert_eq!(app.focus, Focus::RightPane);
+  assert_eq!(app.right_tab, RightTab::Settings);
+  let picker = app.launch_picker.as_ref().expect("picker");
+  assert_eq!(picker.field, PickerField::Ctx);
+  assert_eq!(picker.ctx, None, "ctx defaults to native");
+  // → advances the focused field's value.
+  pump_input(&mut app, key(KeyCode::Right, KeyModifiers::NONE));
+  assert_eq!(
+    app.launch_picker.as_ref().unwrap().ctx,
+    Some(CTX_PRESETS[0])
+  );
+  // ← walks it back to native.
+  pump_input(&mut app, key(KeyCode::Left, KeyModifiers::NONE));
+  assert_eq!(app.launch_picker.as_ref().unwrap().ctx, None);
+  // ↓ moves the cursor to the next field.
+  pump_input(&mut app, key(KeyCode::Down, KeyModifiers::NONE));
+  assert_eq!(
+    app.launch_picker.as_ref().unwrap().field,
+    PickerField::Reasoning
+  );
+  // → toggles the reasoning value on (now that Reasoning is focused).
+  pump_input(&mut app, key(KeyCode::Right, KeyModifiers::NONE));
+  assert!(app.launch_picker.as_ref().unwrap().reasoning);
+}
+
+#[test]
+fn arrow_on_settings_auto_stages_picker_when_none() {
+  // Landing on Settings via `Shift+S` doesn't open the picker,
+  // but any field-cycle or value-cycle keystroke immediately
+  // should — lets the user start editing without first reaching
+  // for Enter.
+  use llamadash::tui::keybindings::Focus;
+  use llamadash::tui::RightTab;
+  let mut app = App::new(AppOptions::default());
+  app.models = vec![fake_model("/m/qwen.gguf", "/m")];
+  app.go_top();
+  // Shift+S jump (focus settings) without going through Enter.
+  pump_input(&mut app, key(KeyCode::Char('S'), KeyModifiers::SHIFT));
+  assert_eq!(app.focus, Focus::RightPane);
+  assert_eq!(app.right_tab, RightTab::Settings);
+  assert!(
+    app.launch_picker.is_none(),
+    "Shift+S alone must not stage the picker"
+  );
+  // ↓ (field-cycle) auto-stages.
+  pump_input(&mut app, key(KeyCode::Down, KeyModifiers::NONE));
+  assert!(
+    app.launch_picker.is_some(),
+    "↓ on Settings must auto-stage the picker"
+  );
+  // Same auto-stage holds for the value axis.
+  app.launch_picker = None;
+  pump_input(&mut app, key(KeyCode::Right, KeyModifiers::NONE));
+  assert!(
+    app.launch_picker.is_some(),
+    "→ on Settings must auto-stage the picker"
+  );
+}
+
+#[test]
+fn launch_picker_modal_no_longer_renders() {
+  // Round-6 removed the centred launch-picker overlay. Pressing
+  // Enter on a model stages the form inline in the Settings tab —
+  // the old `Launch · qwen` modal title must not appear in any
+  // rendered frame.
+  let mut app = App::new(AppOptions::default());
+  app.models = vec![fake_model("/m/qwen.gguf", "/m")];
+  app.go_top();
+  pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::NONE));
+  let frame = render_to_string(&mut app, 120, 24);
+  assert!(
+    !frame.contains("Launch · qwen"),
+    "no centred modal should render: {frame}"
+  );
+  // The inline Settings heading is the canonical surface.
+  assert!(
+    frame.contains("Launch settings"),
+    "inline Settings heading must render instead: {frame}"
+  );
+}
+
+#[test]
+fn settings_focused_cyclable_field_renders_arrow_glyphs() {
+  // The user needs a visible hint that Up/Down cycle the focused
+  // field's value. The Settings render wraps cyclable fields'
+  // values in `◀ … ▶` when the row is focused; non-cyclable
+  // (Advanced) stays plain.
+  let mut app = App::new(AppOptions::default());
+  app.models = vec![fake_model("/m/qwen.gguf", "/m")];
+  app.go_top();
+  pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::NONE));
+  // Cursor lands on Ctx (the first field) by default.
+  let frame = render_to_string(&mut app, 120, 24);
+  assert!(
+    frame.contains("◀") && frame.contains("▶"),
+    "focused cyclable field must show ◀ … ▶ value hint: {frame}"
+  );
+}
+
+#[test]
 fn theme_cycle_swaps_palette_without_restart() {
   let mut app = App::new(AppOptions {
     theme: ThemeName::Macchiato,
@@ -421,25 +533,44 @@ fn s_in_right_pane_toggles_logs_auto_scroll() {
 }
 
 #[test]
-fn rerank_tab_input_stages_candidates_via_tab() {
+fn rerank_input_cycles_field_with_down_and_stages_via_equals() {
+  // Round-7 navigation: ↓ cycles between the Rerank query and
+  // candidate fields, and `=` (no Shift) stages the candidate
+  // onto the list. Tab is now the universal pane-cycle.
   use llamadash::tui::keybindings::Focus;
   use llamadash::tui::tabs::rerank::RerankField;
   let mut app = App::new(AppOptions::default());
   app.focus = Focus::RerankInput;
-  // Type a query then Tab to candidate field.
+  // Type a query then ↓ to candidate field.
   for ch in "what?".chars() {
     pump_input(&mut app, key(KeyCode::Char(ch), KeyModifiers::NONE));
   }
-  pump_input(&mut app, key(KeyCode::Tab, KeyModifiers::NONE));
+  pump_input(&mut app, key(KeyCode::Down, KeyModifiers::NONE));
   assert_eq!(app.rerank.field, RerankField::Candidate);
-  // Type a candidate then Tab to stage.
+  // Type a candidate then `=` (the no-shift alias for `+`) to stage.
   for ch in "doc one".chars() {
     pump_input(&mut app, key(KeyCode::Char(ch), KeyModifiers::NONE));
   }
-  pump_input(&mut app, key(KeyCode::Tab, KeyModifiers::NONE));
+  pump_input(&mut app, key(KeyCode::Char('='), KeyModifiers::NONE));
   assert_eq!(app.rerank.query, "what?");
   assert_eq!(app.rerank.candidates, vec!["doc one".to_string()]);
   assert!(app.rerank.candidate_buffer.is_empty());
+}
+
+#[test]
+fn rerank_plus_with_shift_also_stages_candidate() {
+  // `+` mirrors `=` for users who naturally hold Shift. Both
+  // alias to `StageRerankCandidate`.
+  use llamadash::tui::keybindings::Focus;
+  use llamadash::tui::tabs::rerank::RerankField;
+  let mut app = App::new(AppOptions::default());
+  app.focus = Focus::RerankInput;
+  app.rerank.field = RerankField::Candidate;
+  for ch in "doc two".chars() {
+    pump_input(&mut app, key(KeyCode::Char(ch), KeyModifiers::NONE));
+  }
+  pump_input(&mut app, key(KeyCode::Char('+'), KeyModifiers::SHIFT));
+  assert_eq!(app.rerank.candidates, vec!["doc two".to_string()]);
 }
 
 #[test]

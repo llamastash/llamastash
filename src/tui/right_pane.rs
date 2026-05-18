@@ -165,6 +165,19 @@ fn contextual_hints(app: &App) -> Vec<String> {
         &mut out,
         app.hint(Focus::RightPane, Action::OpenAdvancedPanel),
       );
+      // Round-7 nav: ↑/↓ cycle fields, ←/→ cycle the focused
+      // field's value. Chip uses MoveDown's key (↓) and
+      // CycleValueNext's key (→) since rendering both directions
+      // would double the chip count; the help overlay carries the
+      // full reverse pair.
+      push(
+        &mut out,
+        app.hint_with(Focus::RightPane, Action::MoveDown, "cycle fields"),
+      );
+      push(
+        &mut out,
+        app.hint_with(Focus::RightPane, Action::CycleValueNext, "cycle value"),
+      );
     }
   }
   out
@@ -378,7 +391,12 @@ mod tests {
     );
     assert_eq!(
       contextual_hints(&app_with_focus(Focus::RightPane, RightTab::Settings)),
-      vec!["Enter:launch".to_string(), "a:advanced".to_string()]
+      vec![
+        "Enter:launch".to_string(),
+        "a:advanced".to_string(),
+        "↓:cycle fields".to_string(),
+        "→:cycle value".to_string(),
+      ]
     );
     // Edit-mode focuses surface the in-buffer keystrokes.
     assert_eq!(

@@ -1,17 +1,15 @@
-//! Launch picker overlay.
+//! Launch picker form state.
 //!
-//! Modal-style three-control overlay: context length, reasoning
-//! toggle, and an "Advanced…" entry that opens the free-form flag
-//! editor (see [`super::advanced_panel`]). `Enter` dispatches
-//! `start_model` against the daemon; `Esc` cancels.
-
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
-use ratatui::Frame;
-
-use crate::theme::Palette;
+//! Three-field form (context length / reasoning / advanced) the
+//! Settings tab renders inline in the right pane. Originally lived
+//! in a centred modal overlay; round-5 (kdash-style polish) moved
+//! the rendering into `tabs::settings` so the form sits side-by-side
+//! with the models list. This module is the form's data carrier —
+//! cursor (`field`), values (`ctx`, `reasoning`), and metadata
+//! (`active_instances`, `prefer_port`).
+//!
+//! `Enter` on Settings dispatches `start_model` against the daemon;
+//! `Esc` from `Focus::RightPane` snaps back to the model list.
 
 /// Pre-canned context-length presets surfaced as quick picks.
 /// Plan reference R12. Custom values flow through the same field
@@ -77,8 +75,46 @@ impl LaunchPickerState {
     self.ctx = next.map(|i| CTX_PRESETS[i]);
   }
 
+  /// Cycle backward through ctx presets. Symmetric inverse of
+  /// [`Self::cycle_ctx_preset`] so `Up` walks the list opposite to
+  /// `Down`. The `None` (native) slot sits at the boundary: pressing
+  /// Up on the first preset lands on `None`, then on the last preset.
+  pub fn cycle_ctx_preset_prev(&mut self) {
+    let next = match self.preset_idx {
+      Some(0) => None,
+      Some(i) => Some(i - 1),
+      None => Some(CTX_PRESETS.len() - 1),
+    };
+    self.preset_idx = next;
+    self.ctx = next.map(|i| CTX_PRESETS[i]);
+  }
+
   pub fn toggle_reasoning(&mut self) {
     self.reasoning = !self.reasoning;
+  }
+
+  /// Cycle the focused field's value forward (Down arrow).
+  /// - `Ctx` cycles through the preset list.
+  /// - `Reasoning` toggles on/off.
+  /// - `Advanced` is a no-op here; the dedicated `a` keystroke
+  ///   opens the flag editor since "next value" is meaningless for
+  ///   free-form text.
+  pub fn cycle_focused_value_next(&mut self) {
+    match self.field {
+      PickerField::Ctx => self.cycle_ctx_preset(),
+      PickerField::Reasoning => self.toggle_reasoning(),
+      PickerField::Advanced => {}
+    }
+  }
+
+  /// Cycle the focused field's value backward (Up arrow). Mirrors
+  /// [`Self::cycle_focused_value_next`].
+  pub fn cycle_focused_value_prev(&mut self) {
+    match self.field {
+      PickerField::Ctx => self.cycle_ctx_preset_prev(),
+      PickerField::Reasoning => self.toggle_reasoning(),
+      PickerField::Advanced => {}
+    }
   }
 
   pub fn next_field(&mut self) {
@@ -99,122 +135,6 @@ impl LaunchPickerState {
       PickerField::Advanced => PickerField::Reasoning,
     };
   }
-}
-
-/// Render the picker centred over `area`. Clears the underlying
-/// region first so the picker reads as a true modal even though
-/// the caller draws everything to one frame.
-pub fn render(frame: &mut Frame<'_>, area: Rect, state: &LaunchPickerState, palette: &Palette) {
-  let modal = centered_rect(60, 30, area);
-  frame.render_widget(Clear, modal);
-
-  let block = Block::default()
-    .title(format!(" Launch · {} ", state.model_name))
-    .borders(Borders::ALL)
-    .border_style(Style::default().fg(palette.accent));
-  frame.render_widget(block.clone(), modal);
-  let inner = block.inner(modal);
-
-  let warning_lines = if state.active_instances > 0 { 1 } else { 0 };
-  let rows = Layout::default()
-    .direction(Direction::Vertical)
-    .constraints([
-      Constraint::Length(2),
-      Constraint::Length(2),
-      Constraint::Length(2),
-      Constraint::Length(warning_lines as u16),
-      Constraint::Min(0),
-    ])
-    .split(inner);
-
-  let ctx_text = match state.ctx {
-    Some(n) => format!("{n} tokens"),
-    None => "native (GGUF default)".into(),
-  };
-  frame.render_widget(
-    field_line(
-      "Context",
-      &ctx_text,
-      state.field == PickerField::Ctx,
-      palette,
-    ),
-    rows[0],
-  );
-  let reasoning_text = if state.reasoning { "on" } else { "off" };
-  frame.render_widget(
-    field_line(
-      "Reasoning",
-      reasoning_text,
-      state.field == PickerField::Reasoning,
-      palette,
-    ),
-    rows[1],
-  );
-  frame.render_widget(
-    field_line(
-      "Advanced",
-      "open editor (a)",
-      state.field == PickerField::Advanced,
-      palette,
-    ),
-    rows[2],
-  );
-  if warning_lines > 0 {
-    let warn = format!(
-      "⚠ {} instance(s) already running — submit launches a new one on a fresh port",
-      state.active_instances
-    );
-    frame.render_widget(
-      Paragraph::new(Line::from(Span::styled(
-        warn,
-        Style::default()
-          .fg(palette.warning)
-          .add_modifier(Modifier::BOLD),
-      ))),
-      rows[3],
-    );
-  }
-}
-
-fn field_line<'a>(
-  label: &'a str,
-  value: &'a str,
-  focused: bool,
-  palette: &Palette,
-) -> Paragraph<'a> {
-  let label_style = if focused {
-    Style::default()
-      .fg(palette.accent)
-      .add_modifier(Modifier::BOLD)
-  } else {
-    Style::default().fg(palette.muted)
-  };
-  let value_style = Style::default().fg(palette.fg);
-  Paragraph::new(Line::from(vec![
-    Span::raw(if focused { "▌ " } else { "  " }),
-    Span::styled(format!("{label:<10}"), label_style),
-    Span::styled(value.to_string(), value_style),
-  ]))
-}
-
-/// Compute a centred rect with `pct_x` × `pct_y` of `area`.
-fn centered_rect(pct_x: u16, pct_y: u16, area: Rect) -> Rect {
-  let v = Layout::default()
-    .direction(Direction::Vertical)
-    .constraints([
-      Constraint::Percentage((100 - pct_y) / 2),
-      Constraint::Percentage(pct_y),
-      Constraint::Percentage((100 - pct_y) / 2),
-    ])
-    .split(area);
-  Layout::default()
-    .direction(Direction::Horizontal)
-    .constraints([
-      Constraint::Percentage((100 - pct_x) / 2),
-      Constraint::Percentage(pct_x),
-      Constraint::Percentage((100 - pct_x) / 2),
-    ])
-    .split(v[1])[1]
 }
 
 #[cfg(test)]
@@ -255,6 +175,66 @@ mod tests {
     assert_eq!(s.field, PickerField::Advanced);
     s.next_field();
     assert_eq!(s.field, PickerField::Ctx);
+  }
+
+  #[test]
+  fn cycle_ctx_preset_prev_is_inverse_of_cycle_ctx_preset() {
+    // Up should walk the preset list in reverse. `None` (native)
+    // sits at the boundary so a fresh state with `None` jumps to
+    // the last preset on Up, then walks down to the first, then
+    // back to `None` on the next Up.
+    let mut s = LaunchPickerState::for_model("qwen");
+    assert_eq!(s.ctx, None);
+    s.cycle_ctx_preset_prev();
+    assert_eq!(s.ctx, Some(*CTX_PRESETS.last().unwrap()));
+    for preset in CTX_PRESETS.iter().rev().skip(1) {
+      s.cycle_ctx_preset_prev();
+      assert_eq!(s.ctx, Some(*preset));
+    }
+    s.cycle_ctx_preset_prev();
+    assert_eq!(s.ctx, None, "wraps back to native after the first preset");
+  }
+
+  #[test]
+  fn cycle_focused_value_walks_ctx_when_ctx_focused() {
+    let mut s = LaunchPickerState::for_model("qwen");
+    assert_eq!(s.field, PickerField::Ctx);
+    s.cycle_focused_value_next();
+    assert_eq!(
+      s.ctx,
+      Some(CTX_PRESETS[0]),
+      "Down on Ctx should advance the preset"
+    );
+    s.cycle_focused_value_prev();
+    assert_eq!(s.ctx, None, "Up on Ctx returns to native");
+  }
+
+  #[test]
+  fn cycle_focused_value_toggles_reasoning_when_reasoning_focused() {
+    let mut s = LaunchPickerState::for_model("qwen");
+    s.field = PickerField::Reasoning;
+    assert!(!s.reasoning);
+    s.cycle_focused_value_next();
+    assert!(s.reasoning, "Down on Reasoning toggles on");
+    s.cycle_focused_value_prev();
+    assert!(!s.reasoning, "Up on Reasoning toggles back off");
+  }
+
+  #[test]
+  fn cycle_focused_value_is_noop_when_advanced_focused() {
+    // Advanced is free-form text edited in a separate panel —
+    // "next value" has no meaning here, so Up/Down stay inert and
+    // the user opens the editor with `a`.
+    let mut s = LaunchPickerState::for_model("qwen");
+    s.field = PickerField::Advanced;
+    let snapshot = (s.ctx, s.reasoning);
+    s.cycle_focused_value_next();
+    s.cycle_focused_value_prev();
+    assert_eq!(
+      (s.ctx, s.reasoning),
+      snapshot,
+      "Advanced field must not bleed into Ctx/Reasoning state"
+    );
   }
 
   #[test]

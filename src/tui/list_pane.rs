@@ -1,12 +1,16 @@
 //! Model list rows for the left pane.
 //!
-//! Three row variants live here:
+//! Four row variants live here:
 //!  1. [`ListRow::TableHeader`] — the column-label row pinned to the
 //!     very top of the list. Always first, never selectable, kept in
 //!     lock-step with the per-model row layout so the columns align.
 //!  2. [`ListRow::Header`] — folder-group / `★ Favorites` section
 //!     header that introduces the rows beneath it.
 //!  3. [`ListRow::Model`] — one rendered row per discovered GGUF.
+//!  4. [`ListRow::Divider`] — thin horizontal rule injected between
+//!     sections that share content (e.g. after `★ Favorites` when
+//!     folder groups follow, since favorited models also appear in
+//!     their original folder).
 //!
 //! Per-state colour: rows pick their foreground from the surface
 //! state — `Ready` is rendered with `palette.success`, `Error` with
@@ -39,6 +43,12 @@ pub enum ListRow {
   TableHeader,
   /// Section header (Favorites, or one parent directory).
   Header { label: String },
+  /// Visual separator (horizontal rule) between sections. Not
+  /// selectable. Currently injected only after the `★ Favorites`
+  /// block when folder groups follow, so the user can tell the
+  /// favorited rows above apart from the same favorited rows
+  /// reappearing in their parent folder below.
+  Divider,
   /// One model row. `state` is the surface-level lifecycle for any
   /// active launch of this model, or `NotLaunched` when no
   /// supervisor has touched it.
@@ -84,7 +94,7 @@ impl ListRow {
   pub fn path(&self) -> Option<&std::path::Path> {
     match self {
       ListRow::Model { path, .. } => Some(path),
-      ListRow::Header { .. } | ListRow::TableHeader => None,
+      ListRow::Header { .. } | ListRow::TableHeader | ListRow::Divider => None,
     }
   }
 }
@@ -197,10 +207,23 @@ pub fn build_rows(inputs: RowInputs<'_>) -> Vec<ListRow> {
     }
   }
 
+  // Pre-compute the folder grouping so we know whether to inject a
+  // divider after the Favorites section. Running paths drop out
+  // because the user already sees a live row up top — the catalog
+  // representation would be noise. Favorited paths are *kept*: the
+  // user expects to find them in their original folder, the
+  // `★ Favorites` section is an extra shortcut, not a relocation.
+  let mut grouped: BTreeMap<&PathBuf, Vec<&DiscoveredModel>> = BTreeMap::new();
+  for m in inputs.models {
+    if !running_paths.contains(&m.path) {
+      grouped.entry(&m.parent).or_default().push(m);
+    }
+  }
+  let has_folder_groups = !grouped.is_empty();
+
   // Favorites section. Paths currently in the Running group drop
-  // out so a model never appears in two places — the user already
-  // sees a live row up top, the catalog representation here would
-  // be noise. Same rule applies to the folder groups below.
+  // out so a model never appears as both a live row and a starred
+  // shortcut — the user already sees the live row up top.
   let favorites: Vec<&DiscoveredModel> = inputs
     .models
     .iter()
@@ -222,15 +245,18 @@ pub fn build_rows(inputs: RowInputs<'_>) -> Vec<ListRow> {
         None,
       ));
     }
-  }
-
-  // Group remaining (non-favorite, non-running) rows by parent directory.
-  let mut grouped: BTreeMap<&PathBuf, Vec<&DiscoveredModel>> = BTreeMap::new();
-  for m in inputs.models {
-    if !favorite_set.contains(&m.path) && !running_paths.contains(&m.path) {
-      grouped.entry(&m.parent).or_default().push(m);
+    // Visual separator between favorites and folder groups —
+    // favorited rows reappear in their parent folder below, so a
+    // thin rule helps the eye tell the two surfaces apart. Skipped
+    // when there's nothing after to separate from.
+    if has_folder_groups {
+      rows.push(ListRow::Divider);
     }
   }
+
+  // Folder groups — one section per parent directory, alphabetical
+  // by parent. Favorited rows reappear here with their `★` glyph
+  // preserved.
   for (parent, mut entries) in grouped {
     rows.push(ListRow::Header {
       label: parent.display().to_string(),
@@ -686,15 +712,21 @@ fn cell(s: &str, w: usize) -> String {
 }
 
 /// Foreground colour for a model row, encoding launch state into the
-/// row colour. Running (`Ready`) → success, failed (`Error`) →
-/// error, everything else → default `fg`. Loading / Stopped /
-/// External keep the default fg so the eye is drawn to the active
-/// states only.
+/// row colour so the whole strip reads as one semantic unit (matches
+/// the glyph colour from `colour_for`). Active states paint:
+///  - `Ready` → `success` (green)
+///  - `Launching` / `Loading` → `status_loading` (yellow)
+///  - `Error` → `error` (red)
+///
+/// Terminal states (`Stopped` / `External` / `NotLaunched`) fall back
+/// to the default `fg` so the eye is drawn to live/changing rows
+/// rather than rows that are just sitting there.
 fn row_fg(state: SurfaceState, palette: &Palette) -> ratatui::style::Color {
   match state {
     SurfaceState::Ready => palette.success,
+    SurfaceState::Launching | SurfaceState::Loading => palette.status_loading,
     SurfaceState::Error => palette.error,
-    _ => palette.fg,
+    SurfaceState::NotLaunched | SurfaceState::Stopped | SurfaceState::External => palette.fg,
   }
 }
 
@@ -747,6 +779,16 @@ fn render_row<'a>(
         Style::default()
           .fg(palette.label)
           .add_modifier(Modifier::BOLD),
+      )))
+    }
+    ListRow::Divider => {
+      // Thin horizontal rule painted across the full inner width in
+      // the muted palette so it reads as ambient separation rather
+      // than data. Drawn with `─` (U+2500) so it lines up with the
+      // box-drawing border characters already on the block.
+      ListItem::new(Line::from(Span::styled(
+        "─".repeat(content_w),
+        Style::default().fg(palette.muted),
       )))
     }
     ListRow::Model {
@@ -1087,6 +1129,132 @@ mod tests {
   }
 
   #[test]
+  fn favorited_model_appears_in_both_favorites_and_its_folder_group() {
+    // Running paths drop from the catalog groupings, but favorited
+    // paths *don't* — the user expects to find their model in its
+    // original folder, with the `★ Favorites` section just acting as
+    // a shortcut.
+    let a = fake("/m/x/a.gguf", "/m/x");
+    let b = fake("/m/x/b.gguf", "/m/x");
+    let rows = build_rows(RowInputs {
+      models: &[a.clone(), b.clone()],
+      favorites: std::slice::from_ref(&a.path),
+      model_states: &BTreeMap::new(),
+      model_ports: &BTreeMap::new(),
+      running: &[],
+      recent_paths: &[],
+    });
+    let a_rows = rows
+      .iter()
+      .filter(|r| matches!(r, ListRow::Model { path, .. } if path == &a.path))
+      .count();
+    assert_eq!(
+      a_rows, 2,
+      "favorited model must surface in both Favorites and its folder, got {a_rows} rows"
+    );
+    // The folder copy must still wear the favorite star so the user
+    // doesn't lose the favorited signal when scanning by folder.
+    let folder_copy_is_favorite = rows.iter().any(|r| {
+      matches!(
+        r,
+        ListRow::Model { path, favorite: true, .. } if path == &a.path
+      )
+    });
+    assert!(
+      folder_copy_is_favorite,
+      "favorite star must persist in the folder group"
+    );
+  }
+
+  #[test]
+  fn divider_separates_favorites_from_folder_groups() {
+    // A row layout with both Favorites and folder groups must carry
+    // a `Divider` between them so the eye can tell the shortcut
+    // section apart from the original-folder section (favorited rows
+    // appear in both now).
+    let a = fake("/m/x/a.gguf", "/m/x");
+    let b = fake("/m/y/b.gguf", "/m/y");
+    let rows = build_rows(RowInputs {
+      models: &[a.clone(), b.clone()],
+      favorites: std::slice::from_ref(&a.path),
+      model_states: &BTreeMap::new(),
+      model_ports: &BTreeMap::new(),
+      running: &[],
+      recent_paths: &[],
+    });
+    let divider_idx = rows
+      .iter()
+      .position(|r| matches!(r, ListRow::Divider))
+      .expect("Divider must appear between Favorites and folder groups");
+    // Whatever sits immediately before the divider must be a Model
+    // row (the last favorite); whatever sits immediately after must
+    // be a Header (the first folder group). That's how we know the
+    // divider's neighbours are the two sections it's separating.
+    assert!(
+      matches!(rows[divider_idx - 1], ListRow::Model { .. }),
+      "row before divider must be the last Favorites entry"
+    );
+    assert!(
+      matches!(rows[divider_idx + 1], ListRow::Header { .. }),
+      "row after divider must be the first folder header"
+    );
+  }
+
+  #[test]
+  fn divider_is_omitted_when_no_folder_groups_follow_favorites() {
+    // Edge case: every catalog entry is a favorite, so there are no
+    // folder groups left to separate from. A trailing divider with
+    // nothing under it would just clutter the bottom of the list.
+    let a = fake("/m/x/a.gguf", "/m/x");
+    let rows = build_rows(RowInputs {
+      models: std::slice::from_ref(&a),
+      favorites: std::slice::from_ref(&a.path),
+      model_states: &BTreeMap::new(),
+      model_ports: &BTreeMap::new(),
+      running: &[],
+      recent_paths: &[],
+    });
+    // No divider expected since the favorited row also fills the
+    // /m/x folder slot — meaning the folder group does exist.
+    // Re-run with a running launch so the path drops from the
+    // folder group entirely, leaving Favorites as the sole section.
+    let running = vec![RunningLaunchRow {
+      launch_id: "L1".into(),
+      path: a.path.clone(),
+      port: 41100,
+      state: SurfaceState::Ready,
+    }];
+    let rows_with_running = build_rows(RowInputs {
+      models: std::slice::from_ref(&a),
+      favorites: std::slice::from_ref(&a.path),
+      model_states: &BTreeMap::new(),
+      model_ports: &BTreeMap::new(),
+      running: &running,
+      recent_paths: &[],
+    });
+    // First Vec carries Favorites + /m/x folder → divider expected.
+    assert!(
+      rows.iter().any(|r| matches!(r, ListRow::Divider)),
+      "divider expected when /m/x folder section still emits"
+    );
+    // Second Vec — running drops the path from the folder, leaving
+    // no folder groups → no divider.
+    assert!(
+      !rows_with_running
+        .iter()
+        .any(|r| matches!(r, ListRow::Divider)),
+      "divider must drop when no folder section follows"
+    );
+  }
+
+  #[test]
+  fn divider_is_not_selectable_and_carries_no_path() {
+    let d = ListRow::Divider;
+    assert!(!d.is_selectable(), "divider is decoration, not a target");
+    assert!(d.path().is_none(), "divider has no associated path");
+  }
+
+  #[test]
   fn directory_groups_render_sorted_by_parent() {
     let a = fake("/m/x/a.gguf", "/m/x");
     let b = fake("/m/y/b.gguf", "/m/y");
@@ -1372,15 +1540,27 @@ mod tests {
   }
 
   #[test]
-  fn row_fg_maps_ready_to_success_and_error_to_error() {
+  fn row_fg_paints_whole_row_per_lifecycle_state() {
+    // Active states (Ready / Launching / Loading / Error) paint the
+    // whole row in their semantic colour so the strip reads as one
+    // unit alongside the status glyph. Terminal states stay in `fg`
+    // so the eye isn't drawn to rows that aren't doing anything.
     use crate::theme::{palette_for, ThemeName};
     let p = palette_for(ThemeName::Macchiato);
     assert_eq!(row_fg(SurfaceState::Ready, p), p.success);
     assert_eq!(row_fg(SurfaceState::Error, p), p.error);
-    // Default fg for the rest so colour stays semantic.
+    assert_eq!(
+      row_fg(SurfaceState::Launching, p),
+      p.status_loading,
+      "starting rows should paint yellow so the user sees activity"
+    );
+    assert_eq!(
+      row_fg(SurfaceState::Loading, p),
+      p.status_loading,
+      "model-load rows should match the launching colour"
+    );
+    // Terminal / inactive states drop back to the default fg.
     assert_eq!(row_fg(SurfaceState::NotLaunched, p), p.fg);
-    assert_eq!(row_fg(SurfaceState::Loading, p), p.fg);
-    assert_eq!(row_fg(SurfaceState::Launching, p), p.fg);
     assert_eq!(row_fg(SurfaceState::Stopped, p), p.fg);
     assert_eq!(row_fg(SurfaceState::External, p), p.fg);
   }
