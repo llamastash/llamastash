@@ -168,7 +168,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   }
   let launch_chip = app
     .hint_with(Focus::RightPane, Action::Submit, "launch")
-    .map(|chip| format!("Press {} to launch with these settings.", chip_label(&chip)))
+    .map(|chip| {
+      format!(
+        "Press {} again to launch with these settings.",
+        chip_label(&chip)
+      )
+    })
     .unwrap_or_else(|| "Launch binding removed — set `submit` in config.".to_string());
   lines.push(
     Span::styled(
@@ -382,6 +387,37 @@ mod tests {
     assert!(chips.contains(&"u:url".to_string()), "got: {chips:?}");
     assert!(chips.contains(&"c:curl".to_string()), "got: {chips:?}");
     assert!(chips.contains(&"p:path".to_string()), "got: {chips:?}");
+  }
+
+  #[test]
+  fn launch_hint_reads_press_enter_again_to_launch() {
+    // The Settings tab confirms the two-step launch flow ("Enter
+    // first stages the picker, Enter again dispatches") via the
+    // muted hint line under the form. Tab → Enter must read like
+    // a *re-press*, not the first press.
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+    use ratatui::Terminal;
+    let mut app = App::new(AppOptions::default());
+    app.models = vec![fake_model("/m/qwen.gguf", "/m")];
+    app.list_cursor = 2;
+    let palette = app.palette();
+    let mut term = Terminal::new(TestBackend::new(60, 20)).unwrap();
+    term
+      .draw(|f| render(f, Rect::new(0, 0, 60, 20), &app, palette))
+      .unwrap();
+    let buf = term.backend().buffer().clone();
+    let mut joined = String::new();
+    for y in 0..buf.area.height {
+      for x in 0..buf.area.width {
+        joined.push_str(buf.cell((x, y)).unwrap().symbol());
+      }
+      joined.push('\n');
+    }
+    assert!(
+      joined.contains("Enter again to launch with these settings."),
+      "launch hint must read 'Enter again to launch': {joined}"
+    );
   }
 
   #[test]

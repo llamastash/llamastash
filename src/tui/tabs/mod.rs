@@ -14,28 +14,30 @@ pub mod settings;
 
 use crate::gguf::metadata::ModeHint;
 
-/// Identifier for one right-pane tab. `Logs` is always reachable;
-/// the mode-specific tabs become reachable when the focused model
-/// is `Ready` and its `ModeHint` matches.
+/// Identifier for one right-pane tab. `Settings` is always
+/// reachable; the mode-specific tabs become reachable when the
+/// focused model is `Ready` and its `ModeHint` matches. Variant
+/// order matches the user-facing tab strip: Settings is the
+/// canonical first stop, Logs follows, then the mode tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RightTab {
+  /// Launch-parameter form. Editable for not-yet-launched models;
+  /// read-only for running models (shows the params used).
+  Settings,
   Logs,
   Chat,
   Embed,
   Rerank,
-  /// Launch-parameter form. Editable for not-yet-launched models;
-  /// read-only for running models (shows the params used).
-  Settings,
 }
 
 impl RightTab {
   pub fn label(&self) -> &'static str {
     match self {
+      RightTab::Settings => "Settings",
       RightTab::Logs => "Logs",
       RightTab::Chat => "Chat",
       RightTab::Embed => "Embed",
       RightTab::Rerank => "Rerank",
-      RightTab::Settings => "Settings",
     }
   }
 }
@@ -59,14 +61,15 @@ pub enum TabEvent {
 /// renderer only exposes the second tab when the model is `Ready`;
 /// this helper just declares which tab type is appropriate.
 pub fn tabs_for_mode(mode: ModeHint) -> Vec<RightTab> {
-  // Settings is always present so the user can review/edit launch
-  // params for the focused model. The mode-specific surface (Chat /
-  // Embed / Rerank) sits between Logs and Settings.
+  // Settings leads (it's always present and the home for launch
+  // params); Logs follows so a running model's process pipeline
+  // is one Tab away; the mode-specific surface (Chat / Embed /
+  // Rerank) trails as the third tab.
   match mode {
-    ModeHint::Chat => vec![RightTab::Logs, RightTab::Chat, RightTab::Settings],
-    ModeHint::Embedding => vec![RightTab::Logs, RightTab::Embed, RightTab::Settings],
-    ModeHint::Rerank => vec![RightTab::Logs, RightTab::Rerank, RightTab::Settings],
-    ModeHint::Unknown => vec![RightTab::Logs, RightTab::Settings],
+    ModeHint::Chat => vec![RightTab::Settings, RightTab::Logs, RightTab::Chat],
+    ModeHint::Embedding => vec![RightTab::Settings, RightTab::Logs, RightTab::Embed],
+    ModeHint::Rerank => vec![RightTab::Settings, RightTab::Logs, RightTab::Rerank],
+    ModeHint::Unknown => vec![RightTab::Settings, RightTab::Logs],
   }
 }
 
@@ -75,26 +78,26 @@ mod tests {
   use super::*;
 
   #[test]
-  fn unknown_mode_exposes_logs_and_settings() {
+  fn unknown_mode_exposes_settings_and_logs() {
     assert_eq!(
       tabs_for_mode(ModeHint::Unknown),
-      vec![RightTab::Logs, RightTab::Settings]
+      vec![RightTab::Settings, RightTab::Logs]
     );
   }
 
   #[test]
-  fn chat_mode_pairs_logs_chat_settings() {
+  fn chat_mode_orders_settings_logs_chat() {
     assert_eq!(
       tabs_for_mode(ModeHint::Chat),
-      vec![RightTab::Logs, RightTab::Chat, RightTab::Settings]
+      vec![RightTab::Settings, RightTab::Logs, RightTab::Chat]
     );
   }
 
   #[test]
-  fn embedding_mode_pairs_logs_embed_settings() {
+  fn embedding_mode_orders_settings_logs_embed() {
     assert_eq!(
       tabs_for_mode(ModeHint::Embedding),
-      vec![RightTab::Logs, RightTab::Embed, RightTab::Settings]
+      vec![RightTab::Settings, RightTab::Logs, RightTab::Embed]
     );
   }
 }

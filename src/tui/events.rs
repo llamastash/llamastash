@@ -1874,6 +1874,35 @@ mod tests {
   }
 
   #[test]
+  fn shift_r_and_shift_e_are_aliases_for_shift_c() {
+    // A model only ever exposes one of Chat/Embed/Rerank — the
+    // three shifted letters all map through `apply_focus_chat_tab`
+    // and land on whichever mode tab is reachable. Provides
+    // mnemonic muscle memory ("press E for embed") without
+    // mode-specific routing.
+    use crate::tui::tabs::RightTab;
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.managed = vec![ready_managed_for_events("/m/qwen.gguf", 41100)];
+    app.go_top();
+    for letter in ['R', 'E'] {
+      app.focus = Focus::List;
+      app.right_tab = RightTab::Settings;
+      pump_input(&mut app, key(KeyCode::Char(letter), KeyModifiers::SHIFT));
+      assert_eq!(
+        app.focus,
+        Focus::RightPane,
+        "Shift+{letter} should park focus on the right pane"
+      );
+      assert_eq!(
+        app.right_tab,
+        RightTab::Chat,
+        "Shift+{letter} should land on whichever mode tab is live"
+      );
+    }
+  }
+
+  #[test]
   fn up_down_in_settings_tab_cycle_picker_fields() {
     // Round-7 navigation model: ↑/↓ in `Focus::RightPane` while
     // right_tab == Settings cycle the launch-picker form fields
@@ -1989,7 +2018,7 @@ mod tests {
     app.right_tab = RightTab::Logs;
     pump_input(&mut app, key(KeyCode::Tab, KeyModifiers::NONE));
     // Focus advances along the chain — for a Ready chat model the
-    // chain is [List, Logs, Chat, Settings]; Tab from Logs lands
+    // chain is [List, Settings, Logs, Chat]; Tab from Logs lands
     // on the next entry (still RightPane focus, right_tab moves).
     assert_eq!(app.focus, Focus::RightPane);
     assert_eq!(app.right_tab, RightTab::Chat, "Tab walks the right tabs");

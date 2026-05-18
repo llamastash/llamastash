@@ -6,25 +6,25 @@
 │VRAM ██████░░░░ 14G/24G   ││models  3 found · 1 ready · 2 ★                                                ││ ██      │
 │backend  NVML · 1 GPU     ││running 1 (qwen-7b :41100)                                                     ││ ███████ │
 └──────────────────────────┘└───────────────────────────────────────────────────────────────────────────────┘└─────────┘
-┌ Models [3] · /:filter · Enter:launch · s:stop · f:fav · p:path ──────┐┌ Logs │ Chat │ Settings · s:auto-scroll ──────┐
+┌ Models [3] · /:filter · Enter:launch · s:stop · f:fav · p:path ──────┐┌ Settings │ Logs │ Chat · Enter:launch · s:sto┐
 │      Name           Arch     Quant   Ctx     Size   Mode       Port  ││                                              │
 │▶ Running                                                             ││qwen-7b                                       │
 │ ● => qwen-7b        qwen3    Q4_K    32k     4.2G   chat       :41100││                                              │
 │★ Favorites                                                           ││:41100  ● ready  4.2G RAM · 312% CPU          │
 │   ★  mistral-7b     llama    Q4_K    8.0k    4.0G   chat       —     ││──────────────────────────────────────────────│
-│──────────────────────────────────────────────────────────────────────││no log lines yet — launch a model or wait for │
-│/m/x                                                                  ││the daemon to forward stderr                  │
-│   ★  mistral-7b     llama    Q4_K    8.0k    4.0G   chat       —     ││                                              │
-│/m/y                                                                  ││                                              │
-│      phi-3          phi      Q4_K    8.0k    3.9G   chat       —     ││                                              │
+│──────────────────────────────────────────────────────────────────────││Running launch                                │
+│/m/x                                                                  ││  launch      L1                              │
+│   ★  mistral-7b     llama    Q4_K    8.0k    4.0G   chat       —     ││  port        :41100                          │
+│/m/y                                                                  ││  state       Ready                           │
+│      phi-3          phi      Q4_K    8.0k    3.9G   chat       —     ││  rss         4.2G                            │
+│                                                                      ││  cpu         312%                            │
 │                                                                      ││                                              │
+│                                                                      ││Launch params                                 │
+│                                                                      ││  ctx         native                          │
+│                                                                      ││  reasoning   off                             │
+│                                                                      ││  advanced    (none)                          │
 │                                                                      ││                                              │
-│                                                                      ││                                              │
-│                                                                      ││                                              │
-│                                                                      ││                                              │
-│                                                                      ││                                              │
-│                                                                      ││                                              │
-│                                                                      ││                                              │
-│                                                                      ││                                              │
+│                                                                      ││Stop this launch with `s` to re-launch with   │
+│                                                                      ││new settings.                                 │
 │                                                                      ││                                              │
 └ ◌ launching · ◐ loading · ● ready · ▲ error · ○ stopped · ⇪ external ┘└──────────────────────────────────────────────┘

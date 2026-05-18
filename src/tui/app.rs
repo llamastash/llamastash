@@ -124,9 +124,9 @@ pub struct App {
   /// first). Surfaced via the `↺ Recent` section. Populated from
   /// `last_params_list`; see `RECENT_LIST_CAP`.
   pub recent_paths: Vec<PathBuf>,
-  /// Selected right-pane tab. `Logs` is always reachable; mode-
-  /// specific tabs (`Chat` / `Embed` / `Rerank`) become reachable
-  /// when the focused model is Ready.
+  /// Selected right-pane tab. `Settings` is always reachable;
+  /// `Logs` plus the mode-specific tab (`Chat` / `Embed` /
+  /// `Rerank`) become reachable when the focused model is running.
   pub right_tab: RightTab,
   /// Working chat session for the right-pane Chat tab. Holds the
   /// in-progress prompt and the most recent response so the render
@@ -221,7 +221,7 @@ impl App {
       external: Vec::new(),
       last_params: BTreeMap::new(),
       recent_paths: Vec::new(),
-      right_tab: RightTab::Logs,
+      right_tab: RightTab::Settings,
       chat: Default::default(),
       embed: Default::default(),
       rerank: Default::default(),
@@ -838,9 +838,11 @@ impl App {
   pub fn close_launch_picker(&mut self) {
     self.launch_picker = None;
     self.focus = Focus::List;
-    // Snap the right tab back to Logs so the next launch doesn't
-    // re-open on a stale Settings view.
-    self.right_tab = RightTab::Logs;
+    // Snap the right tab back to Settings — the canonical home
+    // for any selection regardless of launch state — so the next
+    // model-list visit lands on a meaningful tab even when the
+    // new selection has no managed launch yet.
+    self.right_tab = RightTab::Settings;
   }
 
   pub fn open_advanced_panel(&mut self) {
@@ -922,11 +924,12 @@ impl App {
           .unwrap_or(crate::gguf::metadata::ModeHint::Chat);
         tabs_for_mode(mode)
       }
-      // Process alive but not yet serving — Logs help the user
-      // watch the startup pipeline, Settings stay available for
-      // launch-time tweaks once the model is back to NotLaunched.
+      // Process alive but not yet serving — Settings stays the
+      // canonical first stop so the user can still tweak relaunch
+      // params, Logs sits next so the startup pipeline is one
+      // Tab away.
       SurfaceState::Launching | SurfaceState::Loading => {
-        vec![RightTab::Logs, RightTab::Settings]
+        vec![RightTab::Settings, RightTab::Logs]
       }
       _ => vec![RightTab::Settings],
     }
@@ -1571,8 +1574,8 @@ mod tests {
     app.list_cursor = 2;
     assert_eq!(
       app.available_right_tabs(),
-      vec![RightTab::Logs, RightTab::Chat, RightTab::Settings],
-      "Running-row selection exposes mode-appropriate tabs"
+      vec![RightTab::Settings, RightTab::Logs, RightTab::Chat],
+      "Running-row selection exposes mode-appropriate tabs (Settings first)"
     );
     assert!(app.right_pane_focus().is_some());
 
@@ -1615,7 +1618,7 @@ mod tests {
     app.list_cursor = 2;
     assert_eq!(
       app.available_right_tabs(),
-      vec![RightTab::Logs, RightTab::Settings]
+      vec![RightTab::Settings, RightTab::Logs]
     );
   }
 

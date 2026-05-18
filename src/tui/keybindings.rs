@@ -405,6 +405,24 @@ const LIST_BINDINGS: &[Binding] = &[
     // description has to mirror that so the help pane doesn't lie.
     description: "chat/embed/rerank",
   },
+  // R / E mirror C: a model only ever exposes one of
+  // Chat/Embed/Rerank at a time, so all three keys map to the same
+  // "jump to mode tab" action. Lets a user with muscle memory for
+  // "press E for embed" land on the right tab without thinking.
+  Binding {
+    key: KeyCode::Char('R'),
+    mods: KeyModifiers::SHIFT,
+    action: Action::FocusChatTab,
+    label: "R",
+    description: "chat/embed/rerank",
+  },
+  Binding {
+    key: KeyCode::Char('E'),
+    mods: KeyModifiers::SHIFT,
+    action: Action::FocusChatTab,
+    label: "E",
+    description: "chat/embed/rerank",
+  },
   Binding {
     key: KeyCode::Char('S'),
     mods: KeyModifiers::SHIFT,
@@ -655,6 +673,22 @@ const RIGHT_PANE_BINDINGS: &[Binding] = &[
     // the first available of Chat/Embed/Rerank. Description must
     // stay in sync across the two binding tables so the help
     // overlay's `resolve_one` lifts a consistent string.
+    description: "chat/embed/rerank",
+  },
+  // R / E aliases for C — mirrors LIST_BINDINGS so the user can
+  // press the mnemonic for Rerank / Embed from the right pane too.
+  Binding {
+    key: KeyCode::Char('R'),
+    mods: KeyModifiers::SHIFT,
+    action: Action::FocusChatTab,
+    label: "R",
+    description: "chat/embed/rerank",
+  },
+  Binding {
+    key: KeyCode::Char('E'),
+    mods: KeyModifiers::SHIFT,
+    action: Action::FocusChatTab,
+    label: "E",
     description: "chat/embed/rerank",
   },
   Binding {

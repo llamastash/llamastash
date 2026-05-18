@@ -354,7 +354,9 @@ fn ready_chat_model_exposes_chat_tab_via_cycle() {
   app.go_top();
   let tabs = app.available_right_tabs();
   assert!(tabs.contains(&RightTab::Chat));
-  // Cycle from Logs → Chat.
+  // Tab order is [Settings, Logs, Chat] now; default lands on
+  // Settings, so two cycle steps reach Chat (Settings → Logs → Chat).
+  app.cycle_right_tab();
   app.cycle_right_tab();
   assert_eq!(app.right_tab, RightTab::Chat);
   let frame = render_to_string(&mut app, 120, 24);
@@ -533,8 +535,12 @@ fn ctrl_r_in_chat_input_toggles_think_collapse() {
 #[test]
 fn s_in_right_pane_toggles_logs_auto_scroll() {
   use llamadash::tui::keybindings::Focus;
+  use llamadash::tui::RightTab;
   let mut app = App::new(AppOptions::default());
   app.focus = Focus::RightPane;
+  // Default right tab is Settings now — flip to Logs so `s`
+  // exercises the auto-scroll toggle the test names.
+  app.right_tab = RightTab::Logs;
   assert!(app.logs_state.auto_scroll);
   pump_input(&mut app, key(KeyCode::Char('s'), KeyModifiers::NONE));
   assert!(!app.logs_state.auto_scroll);
