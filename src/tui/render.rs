@@ -32,6 +32,12 @@ use crate::tui::{
 const INFO_ROW_HEIGHT: u16 = 7;
 const MIN_HEIGHT_FOR_INFO_ROW: u16 = 18;
 const HOST_PANEL_WIDTH: u16 = 28;
+/// Lower bound on what `render()` will paint a full dashboard into.
+/// Matches the `--render-size` parser's minimum (40×10). Anything
+/// smaller renders the placeholder instead so a sub-minimum terminal
+/// doesn't silently clip every panel (audit §5 #9).
+const MIN_RENDER_WIDTH: u16 = 40;
+const MIN_RENDER_HEIGHT: u16 = 10;
 // COMPACT_BANNER is 7 cells wide; +1 cell padding each side + 2
 // border cells = 11. Drop the panel entirely on narrower terminals.
 const LOGO_PANEL_WIDTH: u16 = 11;
@@ -50,6 +56,16 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
   let palette: Palette = *app.palette();
   app.prime_rows_cache();
   let area = frame.area();
+
+  // Sub-minimum terminals: paint a clear "too small" message
+  // instead of silently clipping every panel. The placeholder
+  // still updates with the current size so the user knows when
+  // they've grown the terminal enough.
+  if area.width < MIN_RENDER_WIDTH || area.height < MIN_RENDER_HEIGHT {
+    render_too_small(frame, area, &palette);
+    app.clear_rows_cache();
+    return;
+  }
 
   // Paint the root area with the theme's background first so light
   // palettes (Latte) actually show on a light surface — without this,
@@ -105,6 +121,41 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     confirm_overlay::render(frame, area, app, action, &palette);
   }
   app.clear_rows_cache();
+}
+
+/// Placeholder shown when the terminal is below the `MIN_RENDER_*`
+/// floor. A multi-panel dashboard at sub-40×10 paints garbled or
+/// truncated borders, so we replace it with a single centred line
+/// that tells the user what to do. The text updates with the live
+/// size so growing the terminal shows the change before the full
+/// dashboard kicks back in.
+fn render_too_small(frame: &mut Frame<'_>, area: Rect, palette: &Palette) {
+  if palette.bg != Color::Reset {
+    let bg = Paragraph::new("").style(Style::default().bg(palette.bg).fg(palette.fg));
+    frame.render_widget(bg, area);
+  }
+  let msg = Paragraph::new(vec![
+    Line::from(Span::styled(
+      "Terminal too small".to_string(),
+      palette.title_style(),
+    )),
+    Line::from(Span::styled(
+      format!(
+        "have {}×{}, need at least {}×{}",
+        area.width, area.height, MIN_RENDER_WIDTH, MIN_RENDER_HEIGHT
+      ),
+      palette.muted_style(),
+    )),
+  ])
+  .alignment(ratatui::layout::Alignment::Center);
+  let centred = Rect {
+    x: area.x,
+    // Centre vertically: 2-line message, so reserve area.height/2 - 1 rows above.
+    y: area.y + area.height.saturating_sub(2) / 2,
+    width: area.width,
+    height: area.height.min(2),
+  };
+  frame.render_widget(msg, centred);
 }
 
 /// Render the accent-bg title row: brand + daemon dot on the left,
@@ -422,6 +473,27 @@ mod tests {
       rows.push(row.trim_end().to_string());
     }
     rows
+  }
+
+  #[test]
+  fn sub_minimum_size_renders_too_small_placeholder() {
+    // Audit §5 #9: sub-`MIN_RENDER_*` terminals used to paint the
+    // full dashboard with clipped borders. The placeholder now
+    // surfaces "too small" instead so the user understands why
+    // the dashboard isn't drawing.
+    let app = App::new(AppOptions::default());
+    let rows = render_into(30, 8, app);
+    let body = rows.join("\n");
+    assert!(
+      body.contains("Terminal too small"),
+      "placeholder missing: {body}"
+    );
+    assert!(
+      body.contains("30×8"),
+      "placeholder must surface current size: {body}"
+    );
+    // No panels should have been drawn.
+    assert!(!body.contains("LlamaDash"), "panels must not render: {body}");
   }
 
   #[test]

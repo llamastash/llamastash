@@ -315,3 +315,21 @@ These are the defaults. Override any binding via the `keybindings:` block in `co
 | `Tab` | Stage candidate buffer, or cycle to the next field (Query ↔ Candidate) |
 | `Shift+Tab` | Cycle back to the previous field |
 | `Enter` | Call `/v1/rerank` |
+
+## Toasts
+
+Transient status messages (yank confirmations, "nothing to stop" hints,
+no-op cycle attempts, theme changes) surface as a short toast string in
+the bottom-right of the active panel. Toasts:
+
+- auto-clear after ~3 seconds (`TOAST_TTL` in `src/tui/app.rs`);
+- stack one-at-a-time — a newer toast replaces the previous one
+  rather than queueing;
+- never appear over a modal popup (confirm dialog, help overlay,
+  advanced flags) — those overlays paint on top, and the toast
+  surfaces again once the overlay is dismissed.
+
+A "terminal too small" placeholder takes over the whole frame when
+the terminal drops below the rendering floor (40×10). The display
+shows the current size + required minimum so resizing the window
+gives immediate feedback.

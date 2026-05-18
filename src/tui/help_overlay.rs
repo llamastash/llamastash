@@ -99,13 +99,13 @@ const GENERAL: &[Row] = &[
   },
 ];
 
-/// Models pane's `Enter` collapse: applies the live filter buffer
-/// when the user is inside the inline filter input, otherwise opens
-/// the launch picker for the focused model.
-const MODELS_ENTER: &[(Focus, Action)] = &[
-  (Focus::Filter, Action::Submit),
-  (Focus::List, Action::OpenLaunchPicker),
-];
+/// `Enter` while filtering — applies the buffer, returns focus to the
+/// list. Surfaces as its own help row so users learn the two
+/// distinct contexts (filter vs row action) rather than collapsing
+/// them into one ambiguous `apply filter/launch` cell (§5 #6).
+const MODELS_ENTER_FILTER: &[(Focus, Action)] = &[(Focus::Filter, Action::Submit)];
+/// `Enter` on a list row — opens the inline launch form.
+const MODELS_ENTER_LAUNCH: &[(Focus, Action)] = &[(Focus::List, Action::OpenLaunchPicker)];
 
 const MODELS: &[Row] = &[
   Row::Single {
@@ -136,9 +136,16 @@ const MODELS: &[Row] = &[
     focus: Focus::List,
     action: Action::OpenFilter,
   },
+  // Split the two Enter contexts so users learn that the same key
+  // applies the filter while typing and opens the launch form
+  // otherwise — instead of seeing one ambiguous collapsed row.
   Row::Multi {
-    parts: MODELS_ENTER,
-    description: "apply filter/launch",
+    parts: MODELS_ENTER_FILTER,
+    description: "apply filter",
+  },
+  Row::Multi {
+    parts: MODELS_ENTER_LAUNCH,
+    description: "launch focused model",
   },
   Row::Single {
     focus: Focus::Filter,
@@ -552,17 +559,19 @@ mod tests {
   }
 
   #[test]
-  fn models_enter_collapses_filter_and_launch() {
+  fn models_enter_renders_two_contextual_rows() {
+    // Audit §5 #6: the previous single `apply filter/launch` row
+    // collapsed two distinct meanings into one cell. Render them
+    // separately so users can tell the two contexts apart.
     let app = App::new(AppOptions::default());
     let frame = render_to_string(140, 36, &app);
     assert!(
-      frame.contains("apply filter/launch"),
-      "Models Enter row should be the collapsed `apply filter/launch`:\n{frame}"
+      frame.contains("apply filter"),
+      "filter-context Enter row missing:\n{frame}"
     );
-    let occurrences = frame.matches("apply filter/launch").count();
-    assert_eq!(
-      occurrences, 1,
-      "expected exactly one collapsed row:\n{frame}"
+    assert!(
+      frame.contains("launch focused model"),
+      "launch-context Enter row missing:\n{frame}"
     );
   }
 
