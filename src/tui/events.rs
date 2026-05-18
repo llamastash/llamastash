@@ -799,6 +799,14 @@ fn apply_launch_submit(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) 
       return;
     }
   };
+  // Stage the picker on-demand when the user lands on Settings via
+  // Tab/Left/Shift+S and hits Enter without first cycling fields.
+  // Without this, Enter on a fresh Settings focus silently dropped
+  // because `launch_picker` was None — the user had to tap an arrow
+  // first to materialise the form, then Enter to launch.
+  if app.launch_picker.is_none() {
+    app.open_launch_picker();
+  }
   let picker = match app.launch_picker.as_ref() {
     Some(p) => p.clone(),
     None => return,
@@ -2241,6 +2249,33 @@ mod tests {
     let cmd = rx.try_recv().expect("writer must receive start_model");
     assert!(matches!(cmd, WriterCmd::StartModel { .. }));
     assert!(app.confirm_dialog.is_none(), "no confirm popup expected");
+  }
+
+  #[test]
+  fn enter_on_settings_without_prior_arrow_press_still_launches() {
+    // Repro the user-reported bug: focus a model, Tab/Left/Shift+S
+    // to land on the Settings tab, press Enter — must launch.
+    // Pre-fix, Enter early-returned when `launch_picker == None`
+    // and the user had to tap an arrow first to materialise the
+    // form. With the auto-stage in `apply_launch_submit`, the
+    // first Enter dispatches StartModel directly.
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.go_top();
+    // Walk to Settings via Tab (cycle_focus), exactly like the user
+    // would after focusing the list. After Phase 1, the chain is
+    // [List, Settings] for an unlaunched selection so one Tab lands.
+    pump_input(&mut app, key(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(app.focus, Focus::RightPane);
+    assert_eq!(app.right_tab, RightTab::Settings);
+    assert!(
+      app.launch_picker.is_none(),
+      "picker must not be staged just by tabbing into Settings"
+    );
+    let (tx, mut rx) = mpsc::channel::<WriterCmd>(8);
+    pump_input_with_writer(&mut app, key(KeyCode::Enter, KeyModifiers::NONE), Some(&tx));
+    let cmd = rx.try_recv().expect("Enter must dispatch StartModel");
+    assert!(matches!(cmd, WriterCmd::StartModel { .. }));
   }
 
   #[test]

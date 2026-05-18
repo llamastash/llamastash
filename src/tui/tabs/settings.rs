@@ -84,18 +84,24 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   }
 
   // Otherwise show the editable form. When the user hasn't opened
-  // the picker yet, render its would-be-default contents so they
-  // can see what pressing Enter will dispatch. Audit §F4.1 #1:
-  // borrow the live picker when one exists so the Settings tab
-  // doesn't pay a `LaunchPickerState::clone()` (which copies the
-  // `advanced: Vec<String>`) per frame; only materialise the
-  // default when the picker is absent.
+  // the picker yet, derive the would-be-default contents from
+  // `App::build_default_picker` so the form already reflects
+  // persisted `last_params` (ctx / reasoning / preset) on first
+  // landing — without this, ctx and reasoning silently read as
+  // `native` / `model default` until the user taps an arrow or
+  // presses Enter, which surprised users who expected the last-
+  // used values to show up immediately on selection.
+  // Audit §F4.1 #1: borrow the live picker when one exists so the
+  // Settings tab doesn't pay a `LaunchPickerState::clone()` per
+  // frame; only materialise the default when the picker is absent.
   let default_picker: LaunchPickerState;
   let picker_view: &LaunchPickerState = match app.launch_picker.as_ref() {
     Some(p) => p,
     None => {
-      let name = app.focused_name().unwrap_or_else(|| "(none)".into());
-      default_picker = LaunchPickerState::for_model(name);
+      default_picker = app.build_default_picker().unwrap_or_else(|| {
+        let name = app.focused_name().unwrap_or_else(|| "(none)".into());
+        LaunchPickerState::for_model(name)
+      });
       &default_picker
     }
   };
@@ -387,6 +393,57 @@ mod tests {
     assert!(chips.contains(&"u:url".to_string()), "got: {chips:?}");
     assert!(chips.contains(&"c:curl".to_string()), "got: {chips:?}");
     assert!(chips.contains(&"p:path".to_string()), "got: {chips:?}");
+  }
+
+  #[test]
+  fn settings_form_reflects_last_params_on_first_render() {
+    // User-reported bug: ctx / reasoning fields rendered as the
+    // hard defaults (`native`, `model default`) until the user
+    // pressed Enter or an arrow to materialise the picker. The
+    // Settings tab now derives its default-render contents from
+    // `App::build_default_picker`, which seeds from persisted
+    // `last_params` — so the form shows the user's previous choices
+    // the moment they highlight the model, without interaction.
+    use crate::tui::app::LastParamsRow;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+    use ratatui::Terminal;
+    let mut app = App::new(AppOptions::default());
+    let path = PathBuf::from("/m/qwen.gguf");
+    app.models = vec![fake_model("/m/qwen.gguf", "/m")];
+    app.last_params.insert(
+      path.clone(),
+      LastParamsRow {
+        ctx: Some(16384),
+        reasoning: true,
+        advanced: vec!["--flash-attn".into()],
+        port: Some(41100),
+      },
+    );
+    app.list_cursor = 2;
+    // No picker staged; no arrow key pressed.
+    assert!(app.launch_picker.is_none());
+    let palette = app.palette();
+    let mut term = Terminal::new(TestBackend::new(60, 24)).unwrap();
+    term
+      .draw(|f| render(f, Rect::new(0, 0, 60, 24), &app, palette))
+      .unwrap();
+    let buf = term.backend().buffer().clone();
+    let mut joined = String::new();
+    for y in 0..buf.area.height {
+      for x in 0..buf.area.width {
+        joined.push_str(buf.cell((x, y)).unwrap().symbol());
+      }
+      joined.push('\n');
+    }
+    assert!(
+      joined.contains("16384"),
+      "ctx must reflect persisted last_params on first render: {joined}"
+    );
+    assert!(
+      joined.contains("on"),
+      "reasoning must reflect persisted last_params on first render: {joined}"
+    );
   }
 
   #[test]

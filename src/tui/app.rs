@@ -788,15 +788,16 @@ impl App {
     self.focused_managed()
   }
 
-  /// Open the launch picker for the focused model. Seeds from
-  /// persisted `last_params` (R20) when the daemon has reported any
-  /// for the focused path, so a returning user lands on the params
-  /// they last shipped. No-op when the cursor is on a header.
-  pub fn open_launch_picker(&mut self) {
-    let name = match self.focused_name() {
-      Some(n) => n,
-      None => return,
-    };
+  /// Build a [`LaunchPickerState`] seeded for the currently
+  /// focused model — pure, no side effects. Returns `None` when
+  /// the cursor sits on a header (no model focused). Both
+  /// [`Self::open_launch_picker`] and the Settings tab's
+  /// default-render path use this so the form contents (ctx,
+  /// reasoning, preset_idx, prefer_port, active_instances) reflect
+  /// persisted `last_params` even before the user has interacted
+  /// with the picker.
+  pub fn build_default_picker(&self) -> Option<LaunchPickerState> {
+    let name = self.focused_name()?;
     let path = self.focused_path();
     let active_count = path
       .as_ref()
@@ -806,10 +807,10 @@ impl App {
     if let Some(p) = &path {
       if let Some(last) = self.last_params.get(p) {
         state.ctx = last.ctx;
-        // Round-8: returning users land on their last explicit
-        // on/off choice. Only a brand-new picker shows the
-        // model-default tri-state — `from_persisted` collapses the
-        // daemon-side `bool` back into the explicit pair.
+        // Returning users land on their last explicit on/off
+        // choice. Only a brand-new picker shows the model-default
+        // tri-state — `from_persisted` collapses the daemon-side
+        // `bool` back into the explicit pair.
         state.reasoning =
           crate::tui::launch_picker::ReasoningSetting::from_persisted(last.reasoning);
         state.preset_idx = last.ctx.and_then(|c| {
@@ -818,6 +819,27 @@ impl App {
             .position(|val| *val == c)
         });
         state.prefer_port = last.port;
+      }
+    }
+    state.active_instances = active_count;
+    Some(state)
+  }
+
+  /// Open the launch picker for the focused model. Seeds from
+  /// persisted `last_params` (R20) when the daemon has reported any
+  /// for the focused path, so a returning user lands on the params
+  /// they last shipped. No-op when the cursor is on a header.
+  pub fn open_launch_picker(&mut self) {
+    let picker = match self.build_default_picker() {
+      Some(p) => p,
+      None => return,
+    };
+    // Materialise the advanced-panel buffer too when persisted
+    // flags exist for the focused path. This side effect is owned
+    // by `open_launch_picker` — `build_default_picker` stays pure
+    // so render paths can call it freely.
+    if let Some(path) = self.focused_path() {
+      if let Some(last) = self.last_params.get(&path) {
         if !last.advanced.is_empty() {
           let buffer = last.advanced.join(" ");
           let cursor = buffer.len();
@@ -825,8 +847,7 @@ impl App {
         }
       }
     }
-    state.active_instances = active_count;
-    self.launch_picker = Some(state);
+    self.launch_picker = Some(picker);
     // Pressing Enter:launch on a model routes the user to the
     // Settings tab in the right pane. The pane itself is always
     // visible (it follows the cursor) so we only have to flip the
