@@ -1921,7 +1921,7 @@ mod tests {
     // Models list: `→` enters the right pane (mirrors kdash-style
     // "open the panel to my right"); `←` stays unbound because
     // Esc handles the return path and pane-cycle still works via
-    // Tab/󰘶+Tab/h/l.
+    // Tab/⇧+Tab/h/l.
     let mut app = App::new(Default::default());
     app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
     app.go_top();

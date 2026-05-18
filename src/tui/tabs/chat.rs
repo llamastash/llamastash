@@ -227,7 +227,7 @@ mod tests {
     // idle status row.
     let app = App::new(AppOptions::default());
     let chips = idle_status_chips(&app, true);
-    for stale in ["newline", "toggle reasoning", "Shift+", "󰘶+Enter:newline"] {
+    for stale in ["newline", "toggle reasoning", "Shift+", "⇧+Enter:newline"] {
       assert!(
         !chips.iter().any(|c| c.contains(stale)),
         "stale chip text `{stale}` resurfaced: {chips:?}"

@@ -1,4 +1,4 @@
- 🦙  LlamaDash v0.1.0-dev · ● daemon · ◐ macchiato           ?:help · Tab/󰘶+Tab:panes · Q:kill daemon · t:theme · q:quit
+ 🦙  LlamaDash v0.1.0-dev · ● daemon · ◐ macchiato           ?:help · Tab/⇧+Tab:panes · Q:kill daemon · t:theme · q:quit
 ┌ Host ────────────────────┐┌ Daemon ───────────────────────────────────────────────────────────────────────┐┌─────────┐
 │CPU  █████░░░░░ 48%  54°C ││socket  /run/user/1000/llamadash/daemon.sock  pid 4242                         ││ ██      │
 │RAM  ███░░░░░░░ 11G/32G   ││uptime  3h12m   build  v0.1.0                                                  ││ ██  🦙   │
@@ -8,7 +8,7 @@
 └──────────────────────────┘└───────────────────────────────────────────────────────────────────────────────┘└─────────┘
 ┌ Models [3] · /:filter · Enter:launch · s:stop · f:fav · p:path ──────┐┌ Logs │ Chat │ Settings · s:auto-scroll ──────┐
 │      Name           Arch     Quant   Ctx     Size   Mode       Port  ││                                              │
-│󰑐 Running                                                             ││qwen-7b                                       │
+│▶ Running                                                             ││qwen-7b                                       │
 │ ● => qwen-7b        qwen3    Q4_K    32k     4.2G   chat       :41100││                                              │
 │★ Favorites                                                           ││:41100  ● ready  4.2G RAM · 312% CPU          │
 │   ★  mistral-7b     llama    Q4_K    8.0k    4.0G   chat       —     ││──────────────────────────────────────────────│

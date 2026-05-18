@@ -132,11 +132,11 @@ mod tests {
   fn idle_status_joins_chips_with_middot_separator() {
     let palette = palette_for(ThemeName::Macchiato);
     let line = idle_status_line(
-      &["󰘶+Enter:newline".to_string(), "Esc:clear".to_string()],
+      &["⇧+Enter:newline".to_string(), "Esc:clear".to_string()],
       palette,
     );
     let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-    assert_eq!(text, "󰘶+Enter:newline · Esc:clear");
+    assert_eq!(text, "⇧+Enter:newline · Esc:clear");
   }
 
   #[test]

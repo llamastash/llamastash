@@ -181,7 +181,7 @@ mod tests {
   fn idle_chips_drop_newline_chip_in_round_8() {
     let app = App::new(AppOptions::default());
     let chips = idle_status_chips(&app, true);
-    for stale in ["newline", "Shift+", "󰘶+Enter:newline"] {
+    for stale in ["newline", "Shift+", "⇧+Enter:newline"] {
       assert!(
         !chips.iter().any(|c| c.contains(stale)),
         "stale chip text `{stale}` resurfaced: {chips:?}"

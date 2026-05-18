@@ -111,7 +111,7 @@ fn seeded_dashboard_app() -> App {
   }];
   // Park the cursor on the Running launch row so the right pane
   // header carries live launch metadata (port / state / RAM / CPU).
-  // Row 0 is the table header, row 1 is the `󰑐 Running` group,
+  // Row 0 is the table header, row 1 is the `▶ Running` group,
   // row 2 is the running qwen-7b launch.
   app.list_cursor = 2;
   app
@@ -212,7 +212,7 @@ fn dashboard_render_carries_key_landmarks() {
   // the /m/x folder group (favorited paths stay in their folder);
   // phi-3 lands in its /m/y folder group.
   assert!(
-    frame.contains("󰑐 Running"),
+    frame.contains("▶ Running"),
     "Running header missing: {frame}"
   );
   assert!(

@@ -445,7 +445,7 @@ fn picker_warns_when_focused_model_already_has_active_instance() {
     rss_bytes: None,
     cpu_pct: None,
   }];
-  // Row layout: [TableHeader, Header(󰑐 Running), Model(L1)].
+  // Row layout: [TableHeader, Header(▶ Running), Model(L1)].
   app.list_cursor = 2;
   app.open_launch_picker();
   assert_eq!(

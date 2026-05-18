@@ -101,7 +101,7 @@ impl DaemonState {
   /// Insert or replace the last successful params for `id`. New
   /// entries land at the **front** so the storage Vec order doubles
   /// as the "recent launches" projection the TUI surfaces in its
-  /// `󱑎 Recent` section. On re-upsert of an existing id the entry
+  /// `↺ Recent` section. On re-upsert of an existing id the entry
   /// moves to the front too — re-launching a model "promotes" it.
   pub fn upsert_last_params(&mut self, id: ModelId, params: LaunchParams) {
     self.last_params.retain(|e| e.id != id);
@@ -378,7 +378,7 @@ mod tests {
   fn upsert_last_params_replaces_in_place_and_promotes_to_front() {
     // Re-upserting an existing id replaces the params *and* moves
     // the entry to the front. That keeps the storage Vec order in
-    // sync with recency, which the TUI's `󱑎 Recent` section reads
+    // sync with recency, which the TUI's `↺ Recent` section reads
     // directly via `last_params_list`.
     let mut s = DaemonState::default();
     let a = id("/m/a.gguf", 1);
