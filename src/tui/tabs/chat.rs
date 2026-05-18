@@ -20,7 +20,7 @@ use tokio::sync::mpsc;
 
 use crate::theme::Palette;
 use crate::tui::app::App;
-use crate::tui::keybindings::{Action, Focus};
+use crate::tui::keybindings::Focus;
 use crate::tui::oai_client::{collapse_think_blocks, ChatStreamMsg};
 use crate::tui::tabs::input_pane::{self, InputPaneOpts, PromptField};
 
@@ -111,6 +111,10 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
       .collect()
   };
 
+  // The status row carries only live-state messages (streaming /
+  // error / finished). Idle key-hint chips moved to the right
+  // pane's bottom border — keeps the in-body row from doubling up
+  // with the same information.
   let status = match (state.streaming, &state.last_error, &state.finish_reason) {
     (true, _, _) => Line::from(Span::styled(
       "streaming…",
@@ -123,7 +127,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
       format!("finished: {reason}"),
       palette.muted_style(),
     )),
-    _ => input_pane::idle_status_line(&idle_status_chips(app, active), palette),
+    _ => Line::from(""),
   };
 
   let prompt = PromptField {
@@ -145,30 +149,9 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   );
 }
 
-/// Chip strip for the idle status line. Round-8 trimmed this to
-/// only the trailing `clear` / `edit` chip — newline and reasoning
-/// chips lived right beside the prompt block they describe and felt
-/// noisy on a status line. Their keys are still discoverable through
-/// the `?` help overlay.
-pub(crate) fn idle_status_chips(app: &App, input_active: bool) -> Vec<String> {
-  let mut chips: Vec<String> = Vec::with_capacity(1);
-  let trailing = if input_active {
-    app.hint_with(Focus::ChatInput, Action::ExitEdit, "clear")
-  } else {
-    app.hint(Focus::RightPane, Action::EnterEdit)
-  };
-  if let Some(c) = trailing {
-    chips.push(c);
-  }
-  chips
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::tui::app::AppOptions;
-  use crate::tui::keybindings::KeyMap;
-  use std::collections::BTreeMap;
 
   #[test]
   fn append_delta_concatenates() {
@@ -198,55 +181,5 @@ mod tests {
       ..Default::default()
     };
     assert!(!s.collapse_thinks);
-  }
-
-  #[test]
-  fn idle_chips_when_input_active_carry_only_clear() {
-    // Round-8 strip: idle status keeps only the trailing
-    // clear/edit chip. Newline + reasoning keys still work but
-    // their discoverability moved to the `?` help overlay.
-    let app = App::new(AppOptions::default());
-    let chips = idle_status_chips(&app, true);
-    assert_eq!(chips, vec!["Esc:clear".to_string()]);
-  }
-
-  #[test]
-  fn idle_chips_when_input_inactive_swap_clear_for_edit() {
-    let app = App::new(AppOptions::default());
-    let chips = idle_status_chips(&app, false);
-    assert_eq!(chips, vec!["e:edit".to_string()]);
-  }
-
-  #[test]
-  fn idle_chips_drop_newline_and_reasoning_in_round_8() {
-    // Regression guard for round-8: neither Shift+Enter:newline
-    // nor Ctrl+r:toggle reasoning should appear on the chat tab's
-    // idle status row.
-    let app = App::new(AppOptions::default());
-    let chips = idle_status_chips(&app, true);
-    for stale in ["newline", "toggle reasoning", "Shift+", "⇧+Enter:newline"] {
-      assert!(
-        !chips.iter().any(|c| c.contains(stale)),
-        "stale chip text `{stale}` resurfaced: {chips:?}"
-      );
-    }
-  }
-
-  #[test]
-  fn idle_chips_pick_up_enter_edit_rebind() {
-    // The remaining chip resolves live against the keymap. Rebind
-    // `enter_edit` and the inactive-state chip follows.
-    let mut keymap = KeyMap::default();
-    let overrides: BTreeMap<String, String> = [(String::from("enter_edit"), String::from("f4"))]
-      .into_iter()
-      .collect();
-    let warnings = keymap.apply_overrides(&overrides);
-    assert!(warnings.is_empty(), "{warnings:?}");
-    let app = App::new(AppOptions {
-      keymap,
-      ..AppOptions::default()
-    });
-    let chips = idle_status_chips(&app, false);
-    assert_eq!(chips, vec!["F4:edit".to_string()]);
   }
 }

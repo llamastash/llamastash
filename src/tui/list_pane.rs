@@ -631,7 +631,25 @@ pub(crate) fn build_block_title(
   // Now build the actual Line with styled spans.
   let mut spans: Vec<Span<'static>> = Vec::with_capacity(8);
   spans.push(Span::raw(" "));
-  spans.push(Span::styled(count, palette.title_style()));
+  // Underline the leading `M` of `Models` so it reads as a
+  // press-this-letter shortcut (Shift+M re-focuses the list). The
+  // title_style already calls focus through bold; the underline
+  // adds the mnemonic affordance without competing with it.
+  let title_style = palette.title_style();
+  let mut count_chars = count.chars();
+  match count_chars.next() {
+    Some(first) => {
+      spans.push(Span::styled(
+        first.to_string(),
+        title_style.add_modifier(Modifier::UNDERLINED),
+      ));
+      let rest: String = count_chars.collect();
+      if !rest.is_empty() {
+        spans.push(Span::styled(rest, title_style));
+      }
+    }
+    None => spans.push(Span::styled(count, title_style)),
+  }
   spans.push(Span::styled(" · ".to_string(), palette.muted_style()));
 
   // Filter slot. Inactive chip uses the same muted style as the
@@ -1557,6 +1575,34 @@ mod tests {
     // Name floors at MIN_NAME_W; the right columns spill into the
     // border-clipped overflow (same behaviour as v0).
     assert_eq!(column_name_budget(30), MIN_NAME_W);
+  }
+
+  #[test]
+  fn models_title_underlines_leading_m_as_shift_jump_mnemonic() {
+    // Shift+M re-focuses the model list. The leading `M` of
+    // `Models [N]` carries the UNDERLINED modifier on top of the
+    // panel-title bold so it reads as a press-this-letter hint.
+    use crate::theme::{palette_for, ThemeName};
+    let palette = palette_for(ThemeName::Macchiato);
+    let line = build_block_title(
+      TitleInputs {
+        area_width: 80,
+        total: 3,
+        filter: FilterTitle::Inactive,
+        hints: vec!["Enter:launch".to_string()],
+      },
+      ":filter",
+      palette,
+    );
+    let m_span = line
+      .spans
+      .iter()
+      .find(|s| s.content.as_ref() == "M")
+      .expect("leading M span present in title");
+    assert!(
+      m_span.style.add_modifier.contains(Modifier::UNDERLINED),
+      "leading M must be underlined as a mnemonic"
+    );
   }
 
   #[test]

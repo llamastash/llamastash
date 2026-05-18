@@ -30,16 +30,25 @@ use crate::tui::tabs::{chat, embed, logs, rerank, settings, RightTab};
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette, focused: bool) {
   let tabs = app.available_right_tabs();
   let title_line = block_title_line(app, &tabs, palette);
+  let bottom_chips = bottom_hint_chips(app);
   let border_color = if focused {
     Color::Yellow
   } else {
     palette.accent
   };
 
-  let outer = Block::default()
+  let mut outer = Block::default()
     .title(title_line)
     .borders(Borders::ALL)
     .border_style(Style::default().fg(border_color));
+  // All right-pane key hints live on the bottom border now —
+  // contextual to the active tab and the current focus. Keeps the
+  // top reserved for the tab strip alone (cleaner mnemonic
+  // underlines) and gives the user one stable place to scan for
+  // active keys.
+  if !bottom_chips.is_empty() {
+    outer = outer.title_bottom(bottom_hint_line(&bottom_chips, palette));
+  }
   let inner = outer.inner(area);
   frame.render_widget(outer, area);
 
@@ -84,127 +93,196 @@ fn render_separator(frame: &mut Frame<'_>, area: Rect, palette: &Palette) {
   frame.render_widget(para, area);
 }
 
-/// Contextual hint chips that ride alongside the tab strip in the
-/// block title. Each chip is resolved live against the App's
-/// `KeyMap` so a `keybindings:` config override flows through
-/// automatically. Empty vec means "no chips for this combination"
-/// — the strip stays scannable.
+/// Contextual hint chips that ride on the right pane's *bottom*
+/// border. The strip resolves live against the App's `KeyMap` so a
+/// `keybindings:` config override flows through automatically.
 ///
-/// Some descriptions use overrides (e.g. `clear` on the input
-/// `Esc` rather than the binding's `exit edit` description) to
-/// keep the chip terse without making the help-overlay row
-/// ambiguous.
-fn contextual_hints(app: &App) -> Vec<String> {
+/// Each (focus, tab) combination picks its own set so the strip
+/// stays scannable. Settings has two distinct contexts — the
+/// read-only running view (focused model has a managed launch and
+/// no picker is open) gets the yank + stop chips, while the
+/// editable launch form gets cycle / advanced / Enter chips.
+/// `c` / `u` are intentionally absent from the editable form: the
+/// running URL belongs to the live instance, not to whatever
+/// duplicate the user is staging.
+pub(crate) fn bottom_hint_chips(app: &App) -> Vec<String> {
   use crate::tui::keybindings::{Action, Focus};
-  let mut out: Vec<String> = Vec::with_capacity(3);
-  let push = |chips: &mut Vec<String>, h: Option<String>| {
+  let mut chips: Vec<String> = Vec::with_capacity(6);
+  let push = |c: &mut Vec<String>, h: Option<String>| {
     if let Some(h) = h {
-      chips.push(h);
+      c.push(h);
     }
   };
   match (app.focus, app.right_tab) {
-    // Edit-mode focuses surface the keys the user needs while their
-    // cursor is in the prompt buffer. `Esc:clear` matches kdash's
-    // filter-active idiom — Esc unwinds the edit. Override the
-    // ExitEdit binding's `exit edit` description with `clear` so
-    // the chip stays short.
+    // Edit-mode focuses surface the keys live inside the buffer.
+    // Override descriptions to keep the chips short without
+    // muddying the help-overlay rows.
     (Focus::ChatInput, _) => {
       push(
-        &mut out,
+        &mut chips,
         app.hint_with(Focus::ChatInput, Action::ExitEdit, "clear"),
       );
-      push(&mut out, app.hint(Focus::ChatInput, Action::SendChat));
-      // `collapse think` is descriptive in the help overlay but
-      // wordy in a chip — override with `think`.
+      push(&mut chips, app.hint(Focus::ChatInput, Action::SendChat));
       push(
-        &mut out,
+        &mut chips,
         app.hint_with(Focus::ChatInput, Action::ToggleThinkCollapse, "think"),
       );
     }
     (Focus::EmbedInput, _) => {
       push(
-        &mut out,
+        &mut chips,
         app.hint_with(Focus::EmbedInput, Action::ExitEdit, "clear"),
       );
-      push(&mut out, app.hint(Focus::EmbedInput, Action::Submit));
+      push(&mut chips, app.hint(Focus::EmbedInput, Action::Submit));
     }
     (Focus::RerankInput, _) => {
       push(
-        &mut out,
+        &mut chips,
         app.hint_with(Focus::RerankInput, Action::ExitEdit, "clear"),
       );
-      // The RerankInput Submit description is `rank` in the help
-      // overlay (kept terse to align with the Chat/Embed triplet
-      // collapse). The chip would rather show the full surface
-      // name — override with `rerank`.
       push(
-        &mut out,
+        &mut chips,
         app.hint_with(Focus::RerankInput, Action::Submit, "rerank"),
+      );
+      push(
+        &mut chips,
+        app.hint(Focus::RerankInput, Action::StageRerankCandidate),
       );
     }
     // Navigation focuses surface the entry-point keystroke per tab.
     (_, RightTab::Logs) => {
       push(
-        &mut out,
+        &mut chips,
         app.hint(Focus::RightPane, Action::ToggleAutoScroll),
       );
     }
     (_, RightTab::Chat | RightTab::Embed | RightTab::Rerank) => {
-      push(&mut out, app.hint(Focus::RightPane, Action::EnterEdit));
+      push(&mut chips, app.hint(Focus::RightPane, Action::EnterEdit));
     }
     (_, RightTab::Settings) => {
-      // Round-8: keep the title strip minimal — Enter:launch and
-      // s:stop (when a managed launch exists). The rest of the
-      // edit affordances (advanced, cycle fields, cycle value,
-      // p / u / c yanks) ride inside the pane body, beside the
-      // "Press Enter to launch with these settings" hint.
-      push(
-        &mut out,
-        app.hint_with(Focus::RightPane, Action::Submit, "launch"),
-      );
-      if app.focused_managed().is_some() {
-        // `s` resolves to ToggleAutoScroll in the binding table,
-        // but the dispatcher reroutes it to StopModel on the
-        // Settings tab. Override the chip description so the user
-        // sees the tab-appropriate verb.
+      let running_readonly = app.launch_picker.is_none() && app.focused_managed().is_some();
+      if running_readonly {
+        // Read-only running view — `c` (curl) / `u` (url) target
+        // the live instance, so they belong here, not on the
+        // editable form. `s` doubles as `stop` when the dispatcher
+        // sees it on Settings.
         push(
-          &mut out,
+          &mut chips,
           app.hint_with(Focus::RightPane, Action::ToggleAutoScroll, "stop"),
         );
+        push(&mut chips, app.hint(Focus::RightPane, Action::YankPath));
+        push(&mut chips, app.hint(Focus::RightPane, Action::YankUrl));
+        push(&mut chips, app.hint(Focus::RightPane, Action::YankCurl));
+      } else if app.focused_path().is_some() {
+        // Editable launch form — surface launch + the field/value
+        // cycle pairs + `a:advanced` + `p:path`. No `u`/`c` here
+        // because the user is editing settings, not addressing a
+        // running instance.
+        push(
+          &mut chips,
+          app.hint_with(Focus::RightPane, Action::Submit, "launch"),
+        );
+        push(
+          &mut chips,
+          app.hint(Focus::RightPane, Action::OpenAdvancedPanel),
+        );
+        if let (Some(down), Some(up)) = (
+          app.hint_with(Focus::RightPane, Action::MoveDown, "cycle fields"),
+          app.hint_with(Focus::RightPane, Action::MoveUp, "cycle fields"),
+        ) {
+          chips.push(bidirectional_chip(&up, &down, "cycle fields"));
+        }
+        if let (Some(next), Some(prev)) = (
+          app.hint_with(Focus::RightPane, Action::CycleValueNext, "cycle value"),
+          app.hint_with(Focus::RightPane, Action::CycleValuePrev, "cycle value"),
+        ) {
+          chips.push(bidirectional_chip(&prev, &next, "cycle value"));
+        }
+        push(&mut chips, app.hint(Focus::RightPane, Action::YankPath));
       }
     }
   }
-  out
+  chips
 }
 
-/// Compose the block title as a styled line: ` Logs │ Chat │ ... ·
-/// hint · hint · ... `. The active tab is highlighted and the
-/// contextual key hints sit alongside it so the user doesn't have
-/// to scan past the model header to see which keys are live.
+/// Collapse a (reverse, forward) `key:description` pair into a
+/// single chip like `↑↓:cycle fields`. Falls back to the forward
+/// chip alone if the keys match (the binding collapsed to one
+/// chord).
+fn bidirectional_chip(reverse: &str, forward: &str, description: &str) -> String {
+  let key = |chip: &str| -> Option<String> { chip.split(':').next().map(str::to_string) };
+  match (key(reverse), key(forward)) {
+    (Some(r), Some(f)) if r != f => format!("{r}{f}:{description}"),
+    _ => forward.to_string(),
+  }
+}
+
+/// Render the bottom-border hint strip as a styled line. Chips are
+/// muted and separated by ` · `, matching the in-block status row
+/// chips so the visual cadence carries across panes.
+fn bottom_hint_line(chips: &[String], palette: &Palette) -> Line<'static> {
+  let mut spans: Vec<Span<'static>> = Vec::with_capacity(chips.len() * 2 + 2);
+  spans.push(Span::raw(" "));
+  for (i, chip) in chips.iter().enumerate() {
+    if i > 0 {
+      spans.push(Span::styled(" · ", palette.muted_style()));
+    }
+    spans.push(Span::styled(chip.clone(), palette.muted_style()));
+  }
+  spans.push(Span::raw(" "));
+  Line::from(spans)
+}
+
+/// Compose the block title as a styled line: ` Settings │ Logs │
+/// Chat `. The active tab is highlighted; all key hints live on
+/// the *bottom* border now (see [`bottom_hint_chips`]) so the
+/// top stays a clean tab strip.
 fn block_title_line(app: &App, tabs: &[RightTab], palette: &Palette) -> Line<'static> {
-  let hints = contextual_hints(app);
-  let mut spans: Vec<Span<'static>> = Vec::with_capacity(tabs.len() * 3 + hints.len() * 2 + 4);
+  let mut spans: Vec<Span<'static>> = Vec::with_capacity(tabs.len() * 3 + 4);
   spans.push(Span::raw(" "));
   for (i, tab) in tabs.iter().enumerate() {
     if i > 0 {
       spans.push(Span::styled(" │ ", palette.muted_style()));
     }
-    // Active tab gets `panel_title` + bold + underline so it reads
-    // like the panel's heading text (matches Host/Daemon/Models titles).
+    // Active tab gets `panel_title` + bold so it reads like the
+    // panel's heading text (matches Host/Daemon/Models titles).
     // Inactive tabs stay muted so the heading carries clear focus.
-    let style = if *tab == app.right_tab {
-      palette.title_style().add_modifier(Modifier::UNDERLINED)
-    } else {
-      palette.muted_style()
-    };
-    spans.push(Span::styled(tab.label().to_string(), style));
-  }
-  for hint in hints {
-    spans.push(Span::styled(" · ".to_string(), palette.muted_style()));
-    spans.push(Span::styled(hint, palette.muted_style()));
+    // The mnemonic underline (first letter) is applied separately
+    // by [`mnemonic_spans`].
+    let active = *tab == app.right_tab;
+    spans.extend(mnemonic_spans(tab.label(), active, palette));
   }
   spans.push(Span::raw(" "));
   Line::from(spans)
+}
+
+/// Split a tab label into spans that underline the first character
+/// when it should serve as a quick-jump mnemonic. The selected tab
+/// drops the underline (its panel_title style already calls focus
+/// to it; doubling up with an underline reads as noise).
+fn mnemonic_spans(label: &str, active: bool, palette: &Palette) -> Vec<Span<'static>> {
+  let base_style = if active {
+    palette.title_style()
+  } else {
+    palette.muted_style()
+  };
+  let mut chars = label.chars();
+  let first = match chars.next() {
+    Some(c) => c.to_string(),
+    None => return vec![Span::styled(label.to_string(), base_style)],
+  };
+  let rest: String = chars.collect();
+  let first_style = if active {
+    base_style
+  } else {
+    base_style.add_modifier(Modifier::UNDERLINED)
+  };
+  let mut spans: Vec<Span<'static>> = Vec::with_capacity(2);
+  spans.push(Span::styled(first, first_style));
+  if !rest.is_empty() {
+    spans.push(Span::styled(rest, base_style));
+  }
+  spans
 }
 
 /// Render line 1 of the header: the model's display name in bold
@@ -353,35 +431,32 @@ mod tests {
   }
 
   #[test]
-  fn contextual_hints_match_each_focus_tab_combo() {
+  fn bottom_hint_chips_match_each_focus_tab_combo() {
     use crate::tui::keybindings::Focus;
     // Navigation focuses surface the entry-point keystroke per tab.
     assert_eq!(
-      contextual_hints(&app_with_focus(Focus::RightPane, RightTab::Logs)),
+      bottom_hint_chips(&app_with_focus(Focus::RightPane, RightTab::Logs)),
       vec!["s:auto-scroll".to_string()]
     );
     assert_eq!(
-      contextual_hints(&app_with_focus(Focus::RightPane, RightTab::Chat)),
+      bottom_hint_chips(&app_with_focus(Focus::RightPane, RightTab::Chat)),
       vec!["e:edit".to_string()]
     );
     assert_eq!(
-      contextual_hints(&app_with_focus(Focus::RightPane, RightTab::Embed)),
+      bottom_hint_chips(&app_with_focus(Focus::RightPane, RightTab::Embed)),
       vec!["e:edit".to_string()]
     );
     assert_eq!(
-      contextual_hints(&app_with_focus(Focus::RightPane, RightTab::Rerank)),
+      bottom_hint_chips(&app_with_focus(Focus::RightPane, RightTab::Rerank)),
       vec!["e:edit".to_string()]
     );
-    // Round-8: Settings title strip keeps only Enter:launch when
-    // no launch is running. Advanced / cycle / yank chips moved
-    // into the pane body beside the "Press Enter to launch" hint.
-    assert_eq!(
-      contextual_hints(&app_with_focus(Focus::RightPane, RightTab::Settings)),
-      vec!["Enter:launch".to_string()]
-    );
+    // Settings on an unfocused selection has no model to act on,
+    // so no chips fire — the bottom border stays bare instead of
+    // teaching keys that no-op.
+    assert!(bottom_hint_chips(&app_with_focus(Focus::RightPane, RightTab::Settings)).is_empty());
     // Edit-mode focuses surface the in-buffer keystrokes.
     assert_eq!(
-      contextual_hints(&app_with_focus(Focus::ChatInput, RightTab::Chat)),
+      bottom_hint_chips(&app_with_focus(Focus::ChatInput, RightTab::Chat)),
       vec![
         "Esc:clear".to_string(),
         "Enter:send".to_string(),
@@ -389,42 +464,88 @@ mod tests {
       ]
     );
     assert_eq!(
-      contextual_hints(&app_with_focus(Focus::EmbedInput, RightTab::Embed)),
+      bottom_hint_chips(&app_with_focus(Focus::EmbedInput, RightTab::Embed)),
       vec!["Esc:clear".to_string(), "Enter:embed".to_string()]
     );
     assert_eq!(
-      contextual_hints(&app_with_focus(Focus::RerankInput, RightTab::Rerank)),
-      vec!["Esc:clear".to_string(), "Enter:rerank".to_string()]
+      bottom_hint_chips(&app_with_focus(Focus::RerankInput, RightTab::Rerank)),
+      vec![
+        "Esc:clear".to_string(),
+        "Enter:rerank".to_string(),
+        "+:stage candidate".to_string(),
+      ]
     );
   }
 
-  #[test]
-  fn settings_header_chip_surfaces_stop_when_managed_launch_present() {
-    // Round-8: the Settings title chip strip adds `s:stop` only
-    // when a managed launch is focused — for an unlaunched
-    // selection the chip would be misleading (nothing to stop).
-    use crate::tui::keybindings::Focus;
-    let mut app = App::new(AppOptions::default());
-    app.models = vec![crate::discovery::DiscoveredModel {
+  fn fake_model() -> crate::discovery::DiscoveredModel {
+    crate::discovery::DiscoveredModel {
       path: PathBuf::from("/m/qwen.gguf"),
       parent: PathBuf::from("/m"),
       source: crate::discovery::ModelSource::UserPath,
       metadata: None,
       parse_error: None,
       split_siblings: Vec::new(),
-    }];
+    }
+  }
+
+  #[test]
+  fn settings_bottom_chips_split_running_readonly_vs_launch_form() {
+    // Read-only running view (managed launch present, no picker
+    // staged) carries the live-instance verbs: s:stop, p/u/c.
+    // The editable launch form carries Enter:launch +
+    // advanced + cycle + path — no u/c, since the URL belongs to
+    // the running instance, not whatever duplicate the user is
+    // staging.
+    use crate::tui::keybindings::Focus;
+    let mut app = App::new(AppOptions::default());
+    app.models = vec![fake_model()];
     app.managed = vec![ready_managed("qwen", None, None)];
     app.list_cursor = 2;
     app.focus = Focus::RightPane;
     app.right_tab = RightTab::Settings;
+    // Read-only view: no picker open, managed launch present.
     assert_eq!(
-      contextual_hints(&app),
-      vec!["Enter:launch".to_string(), "s:stop".to_string()]
+      bottom_hint_chips(&app),
+      vec![
+        "s:stop".to_string(),
+        "p:path".to_string(),
+        "u:url".to_string(),
+        "c:curl".to_string(),
+      ]
     );
+    // Open the picker — the user is now editing a staged launch.
+    // Chips switch to launch+cycle+advanced. u/c are intentionally
+    // omitted on the editable form.
+    app.open_launch_picker();
+    let chips = bottom_hint_chips(&app);
+    assert!(chips.contains(&"Enter:launch".to_string()));
+    assert!(chips.contains(&"a:advanced".to_string()));
+    assert!(chips.contains(&"↑↓:cycle fields".to_string()));
+    assert!(chips.contains(&"←→:cycle value".to_string()));
+    assert!(chips.contains(&"p:path".to_string()));
+    assert!(!chips.iter().any(|c| c.contains("u:url")));
+    assert!(!chips.iter().any(|c| c.contains("c:curl")));
   }
 
   #[test]
-  fn contextual_hints_pick_up_config_keybinding_overrides() {
+  fn settings_bottom_chips_for_unlaunched_focus_show_launch_form() {
+    // Unlaunched selection: the form is the only context, so the
+    // chips read launch + cycle + path.
+    use crate::tui::keybindings::Focus;
+    let mut app = App::new(AppOptions::default());
+    app.models = vec![fake_model()];
+    app.list_cursor = 2;
+    app.focus = Focus::RightPane;
+    app.right_tab = RightTab::Settings;
+    let chips = bottom_hint_chips(&app);
+    assert!(chips.contains(&"Enter:launch".to_string()));
+    assert!(chips.contains(&"a:advanced".to_string()));
+    assert!(chips.contains(&"p:path".to_string()));
+    assert!(!chips.iter().any(|c| c.contains("u:url")));
+  }
+
+  #[test]
+  fn bottom_hint_chips_pick_up_config_keybinding_overrides() {
     use crate::tui::keybindings::{Action, KeyMap};
     use std::collections::BTreeMap;
     // Rebind enter_edit to F4 — the Chat tab's nav-mode chip must
@@ -442,7 +563,7 @@ mod tests {
     app.focus = crate::tui::keybindings::Focus::RightPane;
     app.right_tab = RightTab::Chat;
     assert_eq!(
-      contextual_hints(&app),
+      bottom_hint_chips(&app),
       vec!["F4:edit".to_string()],
       "remapped enter_edit must flow into the chip"
     );
@@ -455,18 +576,13 @@ mod tests {
   }
 
   #[test]
-  fn block_title_includes_contextual_hints_alongside_tab_strip() {
+  fn block_title_strip_carries_only_tab_labels() {
+    // Round-9: hints moved off the top title to the bottom border.
+    // The top stays a clean tab strip so the mnemonic underlines
+    // read clearly.
     use crate::tui::keybindings::Focus;
     let mut app = App::new(AppOptions::default());
-    // Force a focused running model so Chat tab is reachable.
-    app.models = vec![crate::discovery::DiscoveredModel {
-      path: PathBuf::from("/m/qwen.gguf"),
-      parent: PathBuf::from("/m"),
-      source: crate::discovery::ModelSource::UserPath,
-      metadata: None,
-      parse_error: None,
-      split_siblings: Vec::new(),
-    }];
+    app.models = vec![fake_model()];
     app.managed = vec![ready_managed("qwen", None, None)];
     app.list_cursor = 2;
     app.right_tab = RightTab::Logs;
@@ -476,9 +592,68 @@ mod tests {
     let line = block_title_line(&app, &tabs, palette);
     let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
     assert!(text.contains("Logs"));
+    assert!(text.contains("Settings"));
+    assert!(text.contains("Chat"));
     assert!(
-      text.contains("s:auto-scroll"),
-      "Logs tab must surface s:auto-scroll in title: {text:?}"
+      !text.contains("auto-scroll"),
+      "top title must not carry hints: {text:?}"
+    );
+    assert!(
+      !text.contains("Enter:"),
+      "top title must not carry hints: {text:?}"
+    );
+  }
+
+  #[test]
+  fn block_title_underlines_mnemonic_letter_for_inactive_tabs() {
+    // The first letter of each *inactive* tab label carries the
+    // UNDERLINED modifier so it reads as a press-this-letter
+    // shortcut hint. The active tab drops the underline so it
+    // doesn't double up with the bold focus styling.
+    use crate::tui::keybindings::Focus;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+    use ratatui::style::Modifier;
+    use ratatui::Terminal;
+    let mut app = App::new(AppOptions::default());
+    app.models = vec![fake_model()];
+    app.managed = vec![ready_managed("qwen", None, None)];
+    app.list_cursor = 2;
+    app.right_tab = RightTab::Settings; // active
+    app.focus = Focus::RightPane;
+    let palette = app.palette();
+    let mut term = Terminal::new(TestBackend::new(80, 18)).unwrap();
+    term
+      .draw(|f| render(f, Rect::new(0, 0, 80, 18), &app, palette, false))
+      .unwrap();
+    let buf = term.backend().buffer().clone();
+    // Iterate cells on the top border row tracking column (x)
+    // directly — `row.find(ch)` returns byte offsets and the `│`
+    // separators are multi-byte in UTF-8, throwing the column
+    // alignment off if we go through a String first.
+    let mut settings_x: Option<u16> = None;
+    let mut logs_x: Option<u16> = None;
+    for x in 0..buf.area.width {
+      let sym = buf.cell((x, 0)).unwrap().symbol();
+      if settings_x.is_none() && sym == "S" {
+        settings_x = Some(x);
+      } else if logs_x.is_none() && sym == "L" {
+        logs_x = Some(x);
+      }
+    }
+    let s_cell = buf
+      .cell((settings_x.expect("S of Settings on top row"), 0))
+      .unwrap();
+    let l_cell = buf
+      .cell((logs_x.expect("L of Logs on top row"), 0))
+      .unwrap();
+    assert!(
+      !s_cell.modifier.contains(Modifier::UNDERLINED),
+      "active Settings tab's first letter must NOT be underlined"
+    );
+    assert!(
+      l_cell.modifier.contains(Modifier::UNDERLINED),
+      "inactive Logs tab's first letter must be underlined as a mnemonic"
     );
   }
 

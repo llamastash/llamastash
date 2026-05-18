@@ -8,8 +8,8 @@ use ratatui::Frame;
 
 use crate::theme::Palette;
 use crate::tui::app::App;
-use crate::tui::keybindings::{Action, Focus};
-use crate::tui::tabs::input_pane::{self, InputPaneOpts, PromptField};
+use crate::tui::keybindings::Focus;
+use crate::tui::tabs::input_pane::{InputPaneOpts, PromptField};
 
 /// Which sub-field of the Rerank tab the user is typing into.
 /// `Tab` cycles between the query and the candidate buffer; the
@@ -134,6 +134,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
     }
   }
 
+  // Status row carries only the live busy / error state; idle key
+  // hint chips moved to the right pane's bottom border.
   let status = match (state.busy, &state.last_error) {
     (true, _) => Line::from(Span::styled(
       "calling /v1/rerank…",
@@ -142,7 +144,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
         .add_modifier(Modifier::BOLD),
     )),
     (_, Some(err)) => Line::from(Span::styled(format!("error: {err}"), palette.error_style())),
-    _ => input_pane::idle_status_line(&idle_status_chips(app, input_active), palette),
+    _ => Line::from(""),
   };
 
   let prompts = [
@@ -157,7 +159,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
       active: cand_active,
     },
   ];
-  input_pane::render(
+  crate::tui::tabs::input_pane::render(
     frame,
     area,
     InputPaneOpts {
@@ -171,32 +173,9 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   );
 }
 
-/// Chip strip for the idle status line. Round-8 trimmed this to
-/// just the stage-candidate chip and the trailing `clear`/`edit`
-/// — newline keys live in the `?` help overlay now so the status
-/// row stays scannable.
-pub(crate) fn idle_status_chips(app: &App, input_active: bool) -> Vec<String> {
-  let mut chips: Vec<String> = Vec::with_capacity(2);
-  if let Some(c) = app.hint(Focus::RerankInput, Action::StageRerankCandidate) {
-    chips.push(c);
-  }
-  let trailing = if input_active {
-    app.hint_with(Focus::RerankInput, Action::ExitEdit, "clear")
-  } else {
-    app.hint(Focus::RightPane, Action::EnterEdit)
-  };
-  if let Some(c) = trailing {
-    chips.push(c);
-  }
-  chips
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::tui::app::AppOptions;
-  use crate::tui::keybindings::KeyMap;
-  use std::collections::BTreeMap;
 
   #[test]
   fn add_candidate_skips_empty() {
@@ -253,60 +232,5 @@ mod tests {
     };
     assert!(!s.stage_candidate());
     assert!(s.candidates.is_empty());
-  }
-
-  #[test]
-  fn idle_chips_when_input_active_use_keymap_labels() {
-    // Round-7: staging migrated from Tab → `+` / `=` (same
-    // physical key on US keyboards). The chip picks up the first
-    // bound key, which is `+`.
-    // Round-8: dropped the `⇧+Enter:newline` chip from the idle
-    // row — only stage + clear/edit survive.
-    let app = App::new(AppOptions::default());
-    let chips = idle_status_chips(&app, true);
-    assert_eq!(
-      chips,
-      vec!["+:stage candidate".to_string(), "Esc:clear".to_string(),]
-    );
-  }
-
-  #[test]
-  fn idle_chips_drop_newline_chip_in_round_8() {
-    let app = App::new(AppOptions::default());
-    let chips = idle_status_chips(&app, true);
-    for stale in ["newline", "Shift+", "⇧+Enter:newline"] {
-      assert!(
-        !chips.iter().any(|c| c.contains(stale)),
-        "stale chip text `{stale}` resurfaced: {chips:?}"
-      );
-    }
-  }
-
-  #[test]
-  fn idle_chips_when_input_inactive_swap_clear_for_edit() {
-    let app = App::new(AppOptions::default());
-    let chips = idle_status_chips(&app, false);
-    assert_eq!(chips.last().map(String::as_str), Some("e:edit"));
-  }
-
-  #[test]
-  fn idle_chips_pick_up_config_keybinding_overrides() {
-    // Rebind stage_rerank_candidate to F2 — the chip label flips.
-    let mut keymap = KeyMap::default();
-    let overrides: BTreeMap<String, String> =
-      [(String::from("stage_rerank_candidate"), String::from("f2"))]
-        .into_iter()
-        .collect();
-    let warnings = keymap.apply_overrides(&overrides);
-    assert!(warnings.is_empty(), "{warnings:?}");
-    let app = App::new(AppOptions {
-      keymap,
-      ..AppOptions::default()
-    });
-    let chips = idle_status_chips(&app, true);
-    assert!(
-      chips.iter().any(|c| c == "F2:stage candidate"),
-      "F2 binding missing: {chips:?}"
-    );
   }
 }

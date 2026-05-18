@@ -193,80 +193,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
     .into(),
   );
 
-  // Round-8: advanced / cycle fields / cycle value / yank chips
-  // moved out of the title strip and into the body so the title
-  // strip stays minimal. `u` and `c` only render when a managed
-  // launch is focused (they need a running endpoint). `p` always
-  // shows because a path yank works on any focused model.
-  if !no_focus {
-    let hints = build_form_hints(app);
-    if !hints.is_empty() {
-      lines.push(Line::from(Span::styled(
-        hints.join(" · "),
-        palette.muted_style(),
-      )));
-    }
-  }
+  // Round-9: the in-body chip strip moved to the right pane's
+  // bottom border. Settings here owns its prose and form rows; the
+  // bottom border owns the contextual key hints. Saves a row of
+  // vertical space and stops duplicate-chip noise.
 
   frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
-}
-
-/// Chip strip rendered below the "Press Enter to launch" line on
-/// the editable form. Order matches the rhythm a user follows when
-/// configuring a launch: advanced flags → field cursor →
-/// field-value cursor → yank affordances. `u` / `c` (live URL,
-/// live `curl`) only surface when the focused model already has a
-/// managed launch since they need a running endpoint.
-/// Collapse a (forward, reverse) `label:description` pair into a
-/// single chip like `↑↓:cycle fields`. Falls back to the forward
-/// chip alone if either label is missing the conventional
-/// `key:desc` shape.
-fn bidirectional_chip(reverse: &str, forward: &str, description: &str) -> String {
-  let key = |chip: &str| -> Option<String> { chip.split(':').next().map(str::to_string) };
-  match (key(reverse), key(forward)) {
-    (Some(r), Some(f)) if r != f => format!("{r}{f}:{description}"),
-    _ => forward.to_string(),
-  }
-}
-
-fn build_form_hints(app: &App) -> Vec<String> {
-  let mut chips: Vec<String> = Vec::with_capacity(6);
-  if let Some(c) = app.hint(Focus::RightPane, Action::OpenAdvancedPanel) {
-    chips.push(c);
-  }
-  // Audit §F5 #22: surface both axes of motion so the chip strip
-  // doesn't read as a forward-only model when `↑` and `←` are
-  // bound too. Pair the up/down and prev/next labels so the chip
-  // says `↑↓:cycle fields` / `←→:cycle value` regardless of the
-  // user's keymap remap.
-  if let (Some(down), Some(up)) = (
-    app.hint_with(Focus::RightPane, Action::MoveDown, "cycle fields"),
-    app.hint_with(Focus::RightPane, Action::MoveUp, "cycle fields"),
-  ) {
-    chips.push(bidirectional_chip(&up, &down, "cycle fields"));
-  } else if let Some(c) = app.hint_with(Focus::RightPane, Action::MoveDown, "cycle fields") {
-    chips.push(c);
-  }
-  if let (Some(next), Some(prev)) = (
-    app.hint_with(Focus::RightPane, Action::CycleValueNext, "cycle value"),
-    app.hint_with(Focus::RightPane, Action::CycleValuePrev, "cycle value"),
-  ) {
-    chips.push(bidirectional_chip(&prev, &next, "cycle value"));
-  } else if let Some(c) = app.hint_with(Focus::RightPane, Action::CycleValueNext, "cycle value") {
-    chips.push(c);
-  }
-  if let Some(c) = app.hint(Focus::RightPane, Action::YankPath) {
-    chips.push(c);
-  }
-  if app.focused_managed().is_some() {
-    if let Some(c) = app.hint(Focus::RightPane, Action::YankUrl) {
-      chips.push(c);
-    }
-    if let Some(c) = app.hint(Focus::RightPane, Action::YankCurl) {
-      chips.push(c);
-    }
-  }
-  chips
 }
 
 fn heading<'a>(text: &'a str, palette: &Palette) -> Line<'a> {
@@ -338,8 +270,7 @@ fn kv_focused(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::tui::app::{App, AppOptions, ManagedRow};
-  use crate::tui::status_icons::SurfaceState;
+  use crate::tui::app::{App, AppOptions};
   use std::path::PathBuf;
 
   fn fake_model(path: &str, parent: &str) -> crate::discovery::DiscoveredModel {
@@ -351,48 +282,6 @@ mod tests {
       parse_error: None,
       split_siblings: Vec::new(),
     }
-  }
-
-  #[test]
-  fn form_hints_for_unlaunched_model_omit_url_and_curl() {
-    // Round-8: `u` / `c` (live URL / live `curl`) require a
-    // running endpoint and stay hidden when nothing is launched.
-    // `p` (path), advanced, cycle fields, and cycle value remain.
-    let mut app = App::new(AppOptions::default());
-    app.models = vec![fake_model("/m/qwen.gguf", "/m")];
-    app.list_cursor = 2;
-    let chips = build_form_hints(&app);
-    assert_eq!(
-      chips,
-      vec![
-        "a:advanced".to_string(),
-        // Audit §F5 #22: bidirectional axes — both up/down and
-        // prev/next surface as paired chips so the strip stops
-        // teaching a forward-only model.
-        "↑↓:cycle fields".to_string(),
-        "←→:cycle value".to_string(),
-        "p:path".to_string(),
-      ]
-    );
-  }
-
-  #[test]
-  fn form_hints_for_running_model_include_url_and_curl() {
-    let mut app = App::new(AppOptions::default());
-    app.models = vec![fake_model("/m/qwen.gguf", "/m")];
-    app.managed = vec![ManagedRow {
-      launch_id: "L1".into(),
-      path: PathBuf::from("/m/qwen.gguf"),
-      port: 41100,
-      state: SurfaceState::Ready,
-      rss_bytes: None,
-      cpu_pct: None,
-    }];
-    app.list_cursor = 2;
-    let chips = build_form_hints(&app);
-    assert!(chips.contains(&"u:url".to_string()), "got: {chips:?}");
-    assert!(chips.contains(&"c:curl".to_string()), "got: {chips:?}");
-    assert!(chips.contains(&"p:path".to_string()), "got: {chips:?}");
   }
 
   #[test]
@@ -474,27 +363,6 @@ mod tests {
     assert!(
       joined.contains("Enter again to launch with these settings."),
       "launch hint must read 'Enter again to launch': {joined}"
-    );
-  }
-
-  #[test]
-  fn bidirectional_chip_collapses_paired_keys_into_one_label() {
-    // Forward / reverse arrows share a single chip so the strip
-    // doesn't double up. Distinct keys merge; identical keys fall
-    // back to the forward label so a remap that collapses both
-    // directions to the same chord renders cleanly.
-    assert_eq!(
-      bidirectional_chip("↑:cycle fields", "↓:cycle fields", "cycle fields"),
-      "↑↓:cycle fields"
-    );
-    assert_eq!(
-      bidirectional_chip("←:cycle value", "→:cycle value", "cycle value"),
-      "←→:cycle value"
-    );
-    // Same key on both → just keep the forward chip.
-    assert_eq!(
-      bidirectional_chip("k:cycle fields", "k:cycle fields", "cycle fields"),
-      "k:cycle fields"
     );
   }
 }

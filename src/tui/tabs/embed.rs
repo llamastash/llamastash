@@ -8,8 +8,8 @@ use ratatui::Frame;
 
 use crate::theme::Palette;
 use crate::tui::app::App;
-use crate::tui::keybindings::{Action, Focus};
-use crate::tui::tabs::input_pane::{self, InputPaneOpts, PromptField};
+use crate::tui::keybindings::Focus;
+use crate::tui::tabs::input_pane::{InputPaneOpts, PromptField};
 
 #[derive(Debug, Default)]
 pub struct EmbedTabState {
@@ -89,6 +89,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
     )));
   }
 
+  // Idle key-hint chips moved to the right pane's bottom border.
+  // Status row carries only the live busy / error state.
   let status = match (state.busy, &state.last_error) {
     (true, _) => Line::from(Span::styled(
       "calling /v1/embeddings…",
@@ -97,7 +99,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
         .add_modifier(Modifier::BOLD),
     )),
     (_, Some(err)) => Line::from(Span::styled(format!("error: {err}"), palette.error_style())),
-    _ => input_pane::idle_status_line(&idle_status_chips(app, active), palette),
+    _ => Line::from(""),
   };
 
   let prompt = PromptField {
@@ -105,7 +107,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
     text: &state.input,
     active,
   };
-  input_pane::render(
+  crate::tui::tabs::input_pane::render(
     frame,
     area,
     InputPaneOpts {
@@ -119,29 +121,10 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   );
 }
 
-/// Chip strip for the idle status line. Mirrors Chat — round-8
-/// trimmed this to just the trailing `Esc:clear` / `e:edit` chip
-/// so the newline key doesn't crowd the status row.
-pub(crate) fn idle_status_chips(app: &App, input_active: bool) -> Vec<String> {
-  let mut chips: Vec<String> = Vec::with_capacity(1);
-  let trailing = if input_active {
-    app.hint_with(Focus::EmbedInput, Action::ExitEdit, "clear")
-  } else {
-    app.hint(Focus::RightPane, Action::EnterEdit)
-  };
-  if let Some(c) = trailing {
-    chips.push(c);
-  }
-  chips
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::tui::app::AppOptions;
-  use crate::tui::keybindings::KeyMap;
   use crate::tui::oai_client::EmbedResult;
-  use std::collections::BTreeMap;
 
   #[test]
   fn record_overrides_previous_error() {
@@ -156,49 +139,5 @@ mod tests {
     });
     assert_eq!(s.dim, Some(1024));
     assert!(s.last_error.is_none());
-  }
-
-  #[test]
-  fn idle_chips_when_input_active_carry_only_clear() {
-    // Round-8: newline chip is gone from the idle row. Only the
-    // trailing `Esc:clear` survives.
-    let app = App::new(AppOptions::default());
-    let chips = idle_status_chips(&app, true);
-    assert_eq!(chips, vec!["Esc:clear".to_string()]);
-  }
-
-  #[test]
-  fn idle_chips_when_input_inactive_swap_clear_for_edit() {
-    let app = App::new(AppOptions::default());
-    let chips = idle_status_chips(&app, false);
-    assert_eq!(chips, vec!["e:edit".to_string()]);
-  }
-
-  #[test]
-  fn idle_chips_drop_newline_chip_in_round_8() {
-    let app = App::new(AppOptions::default());
-    let chips = idle_status_chips(&app, true);
-    for stale in ["newline", "Shift+", "⇧+Enter:newline"] {
-      assert!(
-        !chips.iter().any(|c| c.contains(stale)),
-        "stale chip text `{stale}` resurfaced: {chips:?}"
-      );
-    }
-  }
-
-  #[test]
-  fn idle_chips_pick_up_enter_edit_rebind() {
-    let mut keymap = KeyMap::default();
-    let overrides: BTreeMap<String, String> = [(String::from("enter_edit"), String::from("f4"))]
-      .into_iter()
-      .collect();
-    let warnings = keymap.apply_overrides(&overrides);
-    assert!(warnings.is_empty(), "{warnings:?}");
-    let app = App::new(AppOptions {
-      keymap,
-      ..AppOptions::default()
-    });
-    let chips = idle_status_chips(&app, false);
-    assert_eq!(chips, vec!["F4:edit".to_string()]);
   }
 }

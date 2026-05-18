@@ -6,7 +6,7 @@
 │VRAM ██████░░░░ 14G/24G   ││models  3 found · 1 ready · 2 ★                                                ││ ██      │
 │backend  NVML · 1 GPU     ││running 1 (qwen-7b :41100)                                                     ││ ███████ │
 └──────────────────────────┘└───────────────────────────────────────────────────────────────────────────────┘└─────────┘
-┌ Models [3] · /:filter · Enter:launch · s:stop · f:fav · p:path ──────┐┌ Settings │ Logs │ Chat · Enter:launch · s:sto┐
+┌ Models [3] · /:filter · Enter:launch · s:stop · f:fav · p:path ──────┐┌ Settings │ Logs │ Chat ──────────────────────┐
 │      Name           Arch     Quant   Ctx     Size   Mode       Port  ││                                              │
 │▶ Running                                                             ││qwen-7b                                       │
 │ ● => qwen-7b        qwen3    Q4_K    32k     4.2G   chat       :41100││                                              │
@@ -27,4 +27,4 @@
 │                                                                      ││Stop this launch with `s` to re-launch with   │
 │                                                                      ││new settings.                                 │
 │                                                                      ││                                              │
-└ ◌ launching · ◐ loading · ● ready · ▲ error · ○ stopped · ⇪ external ┘└──────────────────────────────────────────────┘
+└ ◌ launching · ◐ loading · ● ready · ▲ error · ○ stopped · ⇪ external ┘└ s:stop · p:path · u:url · c:curl ────────────┘
