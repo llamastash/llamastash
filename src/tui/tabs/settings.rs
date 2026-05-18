@@ -71,9 +71,13 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
         .unwrap_or_else(|| "(none)".into());
       lines.push(kv("advanced", advanced, palette));
       lines.push(Line::default());
+      let edit_chip = app
+        .hint_with(Focus::RightPane, Action::EnterEdit, "edit for launch")
+        .map(|c| chip_label(&c).to_string())
+        .unwrap_or_else(|| "e".to_string());
       lines.push(
         Span::styled(
-          "Stop this launch with `s` to re-launch with new settings.",
+          format!("Press `{edit_chip}` to edit next-launch params, or `s` to stop and re-launch."),
           palette.muted_style(),
         )
         .into(),

@@ -24,7 +24,7 @@
 │                                                                      ││  reasoning   off                             │
 │                                                                      ││  advanced    (none)                          │
 │                                                                      ││                                              │
-│                                                                      ││Stop this launch with `s` to re-launch with   │
-│                                                                      ││new settings.                                 │
+│                                                                      ││Press `e` to edit next-launch params, or `s`  │
+│                                                                      ││to stop and re-launch.                        │
 │                                                                      ││                                              │
-└ ◌ launching · ◐ loading · ● ready · ▲ error · ○ stopped · ⇪ external ┘└ s:stop · p:path · u:url · c:curl ────────────┘
+└ ◌ launching · ◐ loading · ● ready · ▲ error · ○ stopped · ⇪ external ┘└ e:edit for launch · s:stop · p:path · u:url ·┘

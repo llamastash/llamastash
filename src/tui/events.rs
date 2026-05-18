@@ -254,6 +254,17 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
         app.show_help = false;
       } else if app.focus == Focus::AdvancedPanel {
         app.close_advanced_panel();
+      } else if app.focus == Focus::RightPane
+        && app.right_tab == RightTab::Settings
+        && app.launch_picker.is_some()
+        && app.focused_managed().is_some()
+      {
+        // `e` staged the edit-for-launch picker over a running
+        // model's read-only view. Esc dismisses the picker back to
+        // the live params display without leaving the Settings tab.
+        // Direct null (rather than `close_launch_picker`) because
+        // that helper would also flip focus back to the Models list.
+        app.launch_picker = None;
       }
     }
     Action::YankUrl | Action::YankCurl | Action::YankPath => {
@@ -275,7 +286,26 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
       app.show_toast(format!("theme: {}", app.options.theme.canonical()));
     }
     Action::ToggleHelp => app.toggle_help(),
-    Action::FocusList => app.focus = Focus::List,
+    Action::FocusList => {
+      // When `e` staged an edit-for-launch picker over a running
+      // model's read-only Settings view, Esc-on-RightPane discards
+      // the staging back to the live params display instead of
+      // leaving the right pane entirely. A second Esc (or any
+      // FocusList press once the picker is gone) then jumps to the
+      // Models list — same as before. We can't call
+      // `close_launch_picker` here because that helper also flips
+      // focus back to `List`, which is precisely what we want to
+      // suppress in the edit-over-running case.
+      if app.focus == Focus::RightPane
+        && app.right_tab == RightTab::Settings
+        && app.launch_picker.is_some()
+        && app.focused_managed().is_some()
+      {
+        app.launch_picker = None;
+      } else {
+        app.focus = Focus::List;
+      }
+    }
     Action::NextFocus => cycle_focus(app, FocusDir::Next),
     Action::PrevFocus => cycle_focus(app, FocusDir::Prev),
     Action::SendChat => apply_send_chat(app),
@@ -308,10 +338,22 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
       app.confirm_dialog = Some(ConfirmAction::KillDaemon);
     }
     Action::EnterEdit => {
-      // Only entry into a tab that actually captures text. Logs /
-      // Settings stay in RightPane focus.
+      // Tab-aware:
+      //  - Chat / Embed / Rerank: shift focus into the input buffer
+      //    so subsequent keystrokes go to the prompt.
+      //  - Settings on a running launch: stage the launch picker so
+      //    the user can edit next-launch params over the live
+      //    read-only view (the arrow-keys path no longer
+      //    auto-stages — `e` is the explicit gate).
+      //  - Anywhere else: no-op.
       if let Some(target) = edit_focus_for_tab(app.right_tab) {
         app.focus = target;
+      } else if app.right_tab == RightTab::Settings && app.launch_picker.is_none() {
+        if app.focused_path().is_some() {
+          app.open_launch_picker();
+        } else {
+          app.show_toast("no model focused");
+        }
       }
     }
     Action::ExitEdit => {
@@ -403,6 +445,9 @@ fn apply_cycle_value(app: &mut App, dir: ValueDir) {
   if !(app.focus == Focus::RightPane && app.right_tab == RightTab::Settings) {
     return;
   }
+  if running_view_is_locked(app) {
+    return;
+  }
   // Audit §F5 #21: the chip strip advertises `←/→:cycle value`
   // even when the focused field (e.g. Advanced) is non-cyclable.
   // Toast on miss so the user understands why nothing changed.
@@ -437,6 +482,9 @@ fn apply_next_field(app: &mut App) {
   match app.focus {
     Focus::RerankInput => app.rerank.cycle_field(),
     Focus::RightPane if app.right_tab == RightTab::Settings => {
+      if running_view_is_locked(app) {
+        return;
+      }
       with_picker(app, |p| p.next_field());
     }
     _ => {}
@@ -450,10 +498,26 @@ fn apply_prev_field(app: &mut App) {
     // (one source of truth) rather than duplicating the toggle.
     Focus::RerankInput => app.rerank.cycle_field(),
     Focus::RightPane if app.right_tab == RightTab::Settings => {
+      if running_view_is_locked(app) {
+        return;
+      }
       with_picker(app, |p| p.prev_field());
     }
     _ => {}
   }
+}
+
+/// True when the Settings tab is showing the read-only running-launch
+/// view (focused row has a managed launch + no picker is staged) —
+/// the case where arrow keys must NOT silently swap the pane to the
+/// next-launch editor. The user originally saw the live params and
+/// expected `↑/↓/←/→` to scroll or do nothing; auto-staging the
+/// picker hid the running params behind the form and surprised them.
+/// `e` (Action::EnterEdit) is the explicit opt-in to start editing.
+fn running_view_is_locked(app: &App) -> bool {
+  app.right_tab == RightTab::Settings
+    && app.launch_picker.is_none()
+    && app.focused_managed().is_some()
 }
 
 /// `L` quick-jump: park focus on the Logs tab when it's reachable.
@@ -1998,6 +2062,84 @@ mod tests {
     );
     // Pane focus must not have moved.
     assert_eq!(app.focus, Focus::RightPane);
+  }
+
+  #[test]
+  fn arrows_in_settings_do_not_open_picker_over_running_launch() {
+    // Regression: with a managed launch focused and no picker
+    // staged, any arrow key used to silently call `with_picker` and
+    // swap the read-only "Running launch" pane for the editable
+    // form. That hid the live params behind the form and surprised
+    // users. Arrows must now be a no-op in this state; `e` is the
+    // explicit gate.
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.managed = vec![ready_managed_for_events("/m/qwen.gguf", 41100)];
+    app.go_top();
+    app.focus = Focus::RightPane;
+    app.right_tab = RightTab::Settings;
+    for code in [KeyCode::Up, KeyCode::Down, KeyCode::Left, KeyCode::Right] {
+      pump_input(&mut app, key(code, KeyModifiers::NONE));
+      assert!(
+        app.launch_picker.is_none(),
+        "{code:?} must not stage a picker while a managed launch is focused"
+      );
+    }
+  }
+
+  #[test]
+  fn e_in_settings_opens_picker_over_running_launch() {
+    // `e` (Action::EnterEdit) on the Settings tab is the explicit
+    // gate that replaces the old auto-stage-on-arrow behaviour.
+    // With a managed launch focused, it stages the picker so the
+    // user can edit next-launch params over the read-only running
+    // view.
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.managed = vec![ready_managed_for_events("/m/qwen.gguf", 41100)];
+    app.go_top();
+    app.focus = Focus::RightPane;
+    app.right_tab = RightTab::Settings;
+    assert!(app.launch_picker.is_none());
+    pump_input(&mut app, key(KeyCode::Char('e'), KeyModifiers::NONE));
+    assert!(
+      app.launch_picker.is_some(),
+      "`e` on Settings must stage the launch picker over a running launch"
+    );
+    assert_eq!(app.focus, Focus::RightPane, "focus must stay on the pane");
+  }
+
+  #[test]
+  fn esc_in_edit_for_launch_mode_closes_picker_instead_of_leaving_pane() {
+    // Esc on RightPane normally returns focus to the Models list.
+    // When `e` staged the launch picker over a running launch,
+    // Esc must instead discard the picker — same rationale as
+    // closing the Advanced panel: dismiss the modal interaction
+    // first, leave the pane only on a second press.
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.managed = vec![ready_managed_for_events("/m/qwen.gguf", 41100)];
+    app.go_top();
+    app.focus = Focus::RightPane;
+    app.right_tab = RightTab::Settings;
+    pump_input(&mut app, key(KeyCode::Char('e'), KeyModifiers::NONE));
+    assert!(app.launch_picker.is_some());
+
+    pump_input(&mut app, key(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(
+      app.launch_picker.is_none(),
+      "first Esc must close the edit-for-launch picker"
+    );
+    assert_eq!(
+      app.focus,
+      Focus::RightPane,
+      "first Esc must keep focus on the pane, not jump to Models list"
+    );
+
+    // A second Esc should fall through to the standard
+    // `FocusList` behaviour now that the picker is gone.
+    pump_input(&mut app, key(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.focus, Focus::List, "second Esc returns to Models list");
   }
 
   #[test]

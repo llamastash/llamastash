@@ -164,10 +164,17 @@ pub(crate) fn bottom_hint_chips(app: &App) -> Vec<String> {
     (_, RightTab::Settings) => {
       let running_readonly = app.launch_picker.is_none() && app.focused_managed().is_some();
       if running_readonly {
-        // Read-only running view — `c` (curl) / `u` (url) target
-        // the live instance, so they belong here, not on the
-        // editable form. `s` doubles as `stop` when the dispatcher
-        // sees it on Settings.
+        // Read-only running view — `e` stages the launch-edit
+        // picker, `c` (curl) / `u` (url) target the live instance,
+        // `s` doubles as `stop` when the dispatcher sees it on
+        // Settings. `e` leads because the user's primary mutation
+        // here is "edit for next launch" — arrows no longer
+        // auto-stage the picker, so the chip is the discoverable
+        // path.
+        push(
+          &mut chips,
+          app.hint_with(Focus::RightPane, Action::EnterEdit, "edit for launch"),
+        );
         push(
           &mut chips,
           app.hint_with(Focus::RightPane, Action::ToggleAutoScroll, "stop"),
@@ -184,6 +191,19 @@ pub(crate) fn bottom_hint_chips(app: &App) -> Vec<String> {
           &mut chips,
           app.hint_with(Focus::RightPane, Action::Submit, "launch"),
         );
+        // When the picker was staged via `e` over a running launch
+        // (edit-for-next-launch mode), surface `Esc:discard` so the
+        // user can step back to the read-only running view without
+        // committing the edits. The keycap comes from the live
+        // FocusList binding (default `Esc`) — that's the action
+        // `apply_focus_list` intercepts to close the picker when a
+        // managed launch is present, rather than dropping focus to
+        // the Models list.
+        if app.launch_picker.is_some() && app.focused_managed().is_some() {
+          if let Some(chip) = app.hint_with(Focus::RightPane, Action::FocusList, "discard") {
+            chips.push(chip);
+          }
+        }
         push(
           &mut chips,
           app.hint(Focus::RightPane, Action::OpenAdvancedPanel),
@@ -514,9 +534,12 @@ mod tests {
     app.focus = Focus::RightPane;
     app.right_tab = RightTab::Settings;
     // Read-only view: no picker open, managed launch present.
+    // `e:edit for launch` leads — it's the new explicit gate that
+    // replaces the old auto-stage-on-arrow behaviour.
     assert_eq!(
       bottom_hint_chips(&app),
       vec![
+        "e:edit for launch".to_string(),
         "s:stop".to_string(),
         "p:path".to_string(),
         "u:url".to_string(),
