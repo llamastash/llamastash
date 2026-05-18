@@ -97,9 +97,9 @@ fn render_separator(frame: &mut Frame<'_>, area: Rect, palette: &Palette) {
 fn contextual_hints(app: &App) -> Vec<String> {
   use crate::tui::keybindings::{Action, Focus};
   let mut out: Vec<String> = Vec::with_capacity(3);
-  let push = |out: &mut Vec<String>, h: Option<String>| {
+  let push = |chips: &mut Vec<String>, h: Option<String>| {
     if let Some(h) = h {
-      out.push(h);
+      chips.push(h);
     }
   };
   match (app.focus, app.right_tab) {

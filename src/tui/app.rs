@@ -26,7 +26,7 @@ use crate::tui::tabs::{tabs_for_mode, RightTab};
 /// transient yank confirmations from sticking around forever.
 const TOAST_TTL: Duration = Duration::from_secs(3);
 
-/// How many entries the `🕘 Recent` section surfaces. Five matches
+/// How many entries the `󱑎 Recent` section surfaces. Five matches
 /// what the user picked during planning; the daemon's storage
 /// itself isn't capped — the cap is purely a render-side window.
 const RECENT_LIST_CAP: usize = 5;
@@ -121,7 +121,7 @@ pub struct App {
   /// the canonical `ModelId.path` the daemon emits.
   pub last_params: BTreeMap<PathBuf, LastParamsRow>,
   /// Top-N recently-launched paths in recency order (most recent
-  /// first). Surfaced via the `🕘 Recent` section. Populated from
+  /// first). Surfaced via the `󱑎 Recent` section. Populated from
   /// `last_params_list`; see `RECENT_LIST_CAP`.
   pub recent_paths: Vec<PathBuf>,
   /// Selected right-pane tab. `Logs` is always reachable; mode-
@@ -394,7 +394,7 @@ impl App {
     // Track the IPC response order separately — the daemon emits
     // `last_params` newest-first now (see
     // `state_store::upsert_last_params`), so we use that order to
-    // populate `recent_paths` for the `🕘 Recent` section.
+    // populate `recent_paths` for the `󱑎 Recent` section.
     let mut next: BTreeMap<PathBuf, LastParamsRow> = BTreeMap::new();
     let mut recent: Vec<PathBuf> = Vec::with_capacity(RECENT_LIST_CAP);
     for row in arr {
@@ -1415,7 +1415,7 @@ mod tests {
       ready_managed("/m/qwen.gguf", 41100, SurfaceState::Ready),
       ready_managed("/m/qwen.gguf", 41101, SurfaceState::Ready),
     ];
-    // Row layout: [TableHeader, Header(★ Running), Model(L-41100), Model(L-41101), Header(/m), Model(qwen catalog)]
+    // Row layout: [TableHeader, Header(󰑐 Running), Model(L-41100), Model(L-41101), Header(/m), Model(qwen catalog)]
     // The merge order in `ingest_status` is "new launches first"
     // but here we set `app.managed` directly, so the rows reflect
     // Vec order. The first managed row (L-41100) appears first.
@@ -1430,14 +1430,14 @@ mod tests {
   #[test]
   fn right_pane_follows_cursor_no_sticky_fallback() {
     // Two models — one running (qwen), one not (phi). The list now
-    // pins a `★ Running` section at the top with a per-launch row,
-    // so the row layout becomes:
+    // pins a `󰑐 Running` section at the top with a per-launch row,
+    // and the running path drops out of its catalog group so it
+    // never shows twice. Row layout:
     //   0: TableHeader
-    //   1: Header(★ Running)
+    //   1: Header(󰑐 Running)
     //   2: Model(qwen, launch_id) — Ready
     //   3: Header(/m)
     //   4: Model(phi) — NotLaunched
-    //   5: Model(qwen) — Ready (catalog entry, no launch_id)
     let mut app = App::new(AppOptions::default());
     app.models = vec![fake("/m/qwen.gguf", "/m"), fake("/m/phi.gguf", "/m")];
     app.managed = vec![ready_managed("/m/qwen.gguf", 41100, SurfaceState::Ready)];
@@ -1449,16 +1449,6 @@ mod tests {
     );
     assert!(app.right_pane_focus().is_some());
 
-    // Catalog qwen row (no launch_id) still resolves to the managed
-    // launch via path lookup — the right pane stays useful from
-    // either entry point.
-    app.list_cursor = 5;
-    assert_eq!(
-      app.available_right_tabs(),
-      vec![RightTab::Logs, RightTab::Chat, RightTab::Settings],
-      "catalog qwen row still resolves the running launch by path"
-    );
-
     // phi has no managed launch → Settings-only.
     app.list_cursor = 4;
     assert_eq!(
@@ -1469,6 +1459,21 @@ mod tests {
     assert!(
       app.right_pane_focus().is_none(),
       "no sticky fallback — right pane has no managed handle to draw"
+    );
+
+    // Running paths must not duplicate into Favorites / folder
+    // groups — only the Running-section row should carry qwen.
+    let rows = app.rendered_rows();
+    let qwen_rows = rows
+      .iter()
+      .filter(|r| match r {
+        ListRow::Model { path, .. } => path.ends_with("qwen.gguf"),
+        _ => false,
+      })
+      .count();
+    assert_eq!(
+      qwen_rows, 1,
+      "running qwen must appear only in the Running group, got {qwen_rows} rows"
     );
   }
 

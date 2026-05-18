@@ -68,7 +68,7 @@ pub enum ListRow {
     /// in that case so the slot stays aligned across the table.
     port: Option<u16>,
     /// Launch identity the row is bound to. `Some(id)` only for
-    /// rows in the `★ Running` group — that's how the right pane
+    /// rows in the `󰑐 Running` group — that's how the right pane
     /// disambiguates between duplicate launches of the same model.
     /// `None` for rows in Favorites / folders / Recent (those
     /// resolve their managed launch by path, if any).
@@ -96,9 +96,9 @@ impl ListRow {
 /// their bound port so the row can render `:12345` instead of `—`
 /// in the Port column. `running` carries one entry per active
 /// launch (path may repeat for duplicate launches of the same
-/// model) — these become the `★ Running` section at the top of
+/// model) — these become the `󰑐 Running` section at the top of
 /// the list. `recent_paths` is the persisted top-N recently-
-/// launched paths the `🕘 Recent` section surfaces; entries whose
+/// launched paths the `󱑎 Recent` section surfaces; entries whose
 /// path is currently running are skipped so the same model isn't
 /// shown in both groups.
 pub struct RowInputs<'a> {
@@ -110,7 +110,7 @@ pub struct RowInputs<'a> {
   pub recent_paths: &'a [PathBuf],
 }
 
-/// One active managed launch the `★ Running` group should render.
+/// One active managed launch the `󰑐 Running` group should render.
 /// Mirrors the subset of `app::ManagedRow` the list pane cares about
 /// without coupling `list_pane` to the heavier ManagedRow type.
 #[derive(Debug, Clone)]
@@ -148,13 +148,13 @@ pub fn build_rows(inputs: RowInputs<'_>) -> Vec<ListRow> {
   let by_path: BTreeMap<&PathBuf, &DiscoveredModel> =
     inputs.models.iter().map(|m| (&m.path, m)).collect();
 
-  // ★ Running — one row per active managed launch. Order comes
+  // 󰑐 Running — one row per active managed launch. Order comes
   // from the caller (App preserves latest-first across status
   // ticks) so a re-launch of an existing model still bubbles to
   // the top of the group.
   if !inputs.running.is_empty() {
     rows.push(ListRow::Header {
-      label: "★ Running".into(),
+      label: "󰑐 Running".into(),
     });
     for launch in inputs.running {
       // If the path doesn't appear in the catalog (e.g. an
@@ -170,7 +170,7 @@ pub fn build_rows(inputs: RowInputs<'_>) -> Vec<ListRow> {
     }
   }
 
-  // 🕘 Recent — top of the persisted "last launched" history that
+  // 󱑎 Recent — top of the persisted "last launched" history that
   // isn't already shown in Running. Filtered against `by_path` so
   // entries pointing at vanished GGUFs don't surface as ghost rows.
   let running_paths: std::collections::BTreeSet<&PathBuf> =
@@ -183,7 +183,7 @@ pub fn build_rows(inputs: RowInputs<'_>) -> Vec<ListRow> {
     .collect();
   if !recent_visible.is_empty() {
     rows.push(ListRow::Header {
-      label: "🕘 Recent".into(),
+      label: "󱑎 Recent".into(),
     });
     for m in recent_visible {
       let fav = favorite_set.contains(&m.path);
@@ -197,11 +197,15 @@ pub fn build_rows(inputs: RowInputs<'_>) -> Vec<ListRow> {
     }
   }
 
-  // Favorites section.
+  // Favorites section. Paths currently in the Running group drop
+  // out so a model never appears in two places — the user already
+  // sees a live row up top, the catalog representation here would
+  // be noise. Same rule applies to the folder groups below.
   let favorites: Vec<&DiscoveredModel> = inputs
     .models
     .iter()
     .filter(|m| favorite_set.contains(&m.path))
+    .filter(|m| !running_paths.contains(&m.path))
     .collect();
   if !favorites.is_empty() {
     rows.push(ListRow::Header {
@@ -220,10 +224,10 @@ pub fn build_rows(inputs: RowInputs<'_>) -> Vec<ListRow> {
     }
   }
 
-  // Group remaining (non-favorite) rows by parent directory.
+  // Group remaining (non-favorite, non-running) rows by parent directory.
   let mut grouped: BTreeMap<&PathBuf, Vec<&DiscoveredModel>> = BTreeMap::new();
   for m in inputs.models {
-    if !favorite_set.contains(&m.path) {
+    if !favorite_set.contains(&m.path) && !running_paths.contains(&m.path) {
       grouped.entry(&m.parent).or_default().push(m);
     }
   }
@@ -453,19 +457,21 @@ fn build_status_legend(palette: &Palette) -> Line<'static> {
   Line::from(spans)
 }
 
+/// Inputs to [`render`] — bundled into a struct so the call site
+/// stays readable and the function stays under clippy's
+/// `too_many_arguments` threshold. `filter_chip_label` is the
+/// resolved `/:filter` label (live from the keymap) used when the
+/// filter is inactive; `focused` paints the focus border colour.
+pub struct RenderInputs<'a> {
+  pub rows: &'a [ListRow],
+  pub selected: usize,
+  pub title: TitleInputs<'a>,
+  pub filter_chip_label: &'a str,
+  pub focused: bool,
+}
+
 /// Render `rows` into the supplied area using the active palette.
-/// `filter_chip_label` is the resolved `/:filter` label (live from
-/// the keymap) used when the filter is inactive.
-pub fn render(
-  frame: &mut Frame<'_>,
-  area: Rect,
-  rows: &[ListRow],
-  selected: usize,
-  title: TitleInputs<'_>,
-  filter_chip_label: &str,
-  palette: &Palette,
-  focused: bool,
-) {
+pub fn render(frame: &mut Frame<'_>, area: Rect, palette: &Palette, input: RenderInputs<'_>) {
   // Width inside the borders is `area.width - 2`. Subtract the
   // highlight gutter ratatui reserves for the selection marker
   // (`HIGHLIGHT_GUTTER` cells on every row, even unselected ones,
@@ -474,10 +480,11 @@ pub fn render(
   let content_w = inner_w.saturating_sub(HIGHLIGHT_GUTTER);
   let name_w = column_name_budget(content_w);
 
+  let rows = input.rows;
   let safe_selected = if rows.is_empty() {
     None
   } else {
-    Some(selected.min(rows.len().saturating_sub(1)))
+    Some(input.selected.min(rows.len().saturating_sub(1)))
   };
   let items: Vec<ListItem<'_>> = rows
     .iter()
@@ -487,9 +494,9 @@ pub fn render(
       render_row(r, palette, name_w, content_w, is_selected)
     })
     .collect();
-  let title_line = build_block_title(title, filter_chip_label, palette);
+  let title_line = build_block_title(input.title, input.filter_chip_label, palette);
   let legend = build_status_legend(palette);
-  let border_color = border_color(palette, focused);
+  let border_color = border_color(palette, input.focused);
   let list = List::new(items)
     .block(
       Block::default()
@@ -965,7 +972,7 @@ mod tests {
       running: &running,
       recent_paths: &[],
     });
-    // Expect: [TableHeader, Header(★ Running), Model(L2), Model(L1), Header(/m), Model(catalog)]
+    // Expect: [TableHeader, Header(󰑐 Running), Model(L2), Model(L1), Header(/m), Model(catalog)]
     assert_eq!(rows.first(), Some(&ListRow::TableHeader));
     let running_header = rows.iter().find_map(|r| match r {
       ListRow::Header { label } if label.contains("Running") => Some(label.clone()),

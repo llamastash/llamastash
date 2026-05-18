@@ -80,9 +80,24 @@ fn seeded_dashboard_app() -> App {
   };
   app.models = vec![
     fake_model("/m/x/qwen-7b.gguf", "/m/x", "qwen3", 32_768, 4_500_000_000),
+    fake_model(
+      "/m/x/mistral-7b.gguf",
+      "/m/x",
+      "llama",
+      8_192,
+      4_300_000_000,
+    ),
     fake_model("/m/y/phi-3.gguf", "/m/y", "phi", 8_192, 4_200_000_000),
   ];
-  app.favorites = vec![PathBuf::from("/m/x/qwen-7b.gguf")];
+  // Two favourites: qwen-7b is currently running (so it lives in
+  // the Running group, not Favorites — running paths drop out of
+  // the catalog groupings), mistral-7b is not running so it shows
+  // up in Favorites. The golden therefore exercises Running +
+  // Favorites + folder groups in one frame.
+  app.favorites = vec![
+    PathBuf::from("/m/x/qwen-7b.gguf"),
+    PathBuf::from("/m/x/mistral-7b.gguf"),
+  ];
   app.managed = vec![ManagedRow {
     launch_id: "L1".into(),
     path: PathBuf::from("/m/x/qwen-7b.gguf"),
@@ -91,10 +106,10 @@ fn seeded_dashboard_app() -> App {
     rss_bytes: Some(4_500_000_000),
     cpu_pct: Some(312.0),
   }];
-  // Park the cursor on the first model row (favorite) so the right
-  // pane title carries the focused launch metadata. Row 0 is the
-  // table header, row 1 is the `★ Favorites` group, row 2 is the
-  // favorited model.
+  // Park the cursor on the Running launch row so the right pane
+  // header carries live launch metadata (port / state / RAM / CPU).
+  // Row 0 is the table header, row 1 is the `󰑐 Running` group,
+  // row 2 is the running qwen-7b launch.
   app.list_cursor = 2;
   app
 }
@@ -189,9 +204,19 @@ fn dashboard_render_carries_key_landmarks() {
   assert!(frame.contains("llama-server"));
   // Logo pane (visible at width 120).
   assert!(frame.contains("macchiato"));
-  // Models pane: section headers + per-row badges.
-  assert!(frame.contains("★ Favorites"));
+  // Models pane: section headers + per-row badges. Running has a
+  // launch for qwen-7b; mistral-7b is the only Favorite left after
+  // running paths drop out; phi-3 lands in its folder group.
+  assert!(
+    frame.contains("󰑐 Running"),
+    "Running header missing: {frame}"
+  );
+  assert!(
+    frame.contains("★ Favorites"),
+    "Favorites header missing: {frame}"
+  );
   assert!(frame.contains("qwen-7b"));
+  assert!(frame.contains("mistral-7b"));
   assert!(frame.contains("phi-3"));
   // Right pane: focused-model header carries the launch metadata.
   assert!(frame.contains(":41100"));

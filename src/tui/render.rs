@@ -222,12 +222,14 @@ fn render_body(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) 
     list_pane::render(
       frame,
       split[0],
-      &rows,
-      app.list_cursor,
-      title,
-      &filter_chip,
       palette,
-      list_focused,
+      list_pane::RenderInputs {
+        rows: &rows,
+        selected: app.list_cursor,
+        title,
+        filter_chip_label: &filter_chip,
+        focused: list_focused,
+      },
     );
   }
   if show_right {

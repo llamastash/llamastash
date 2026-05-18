@@ -97,8 +97,27 @@ async fn version_reports_pid_uptime_and_connections() {
   assert_eq!(v["name"], json!("llamadash"));
   assert_eq!(v["pid"], json!(std::process::id()));
   assert!(v["uptime_seconds"].is_number());
-  // We have one live connection (ours) at the time the daemon returns.
-  assert_eq!(v["connections"], json!(1));
+
+  // `connections` should settle to 1 (this client) once the probe
+  // connection that `spawn_daemon` used to wait for the socket has
+  // been fully torn down on the daemon side. The decrement runs in
+  // the per-connection task *after* it returns from
+  // `serve_connection`, so on a busy scheduler the first `version`
+  // call here can race with that decrement and observe 2. Poll a
+  // few times until the count settles before asserting, so the
+  // test stays meaningful (we still verify the count is exposed and
+  // accurate) without flaking on scheduling.
+  let mut connections = v["connections"].as_u64().expect("connections present");
+  let deadline = std::time::Instant::now() + Duration::from_secs(2);
+  while connections != 1 && std::time::Instant::now() < deadline {
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let v = client.call("version", None).await.expect("version retry");
+    connections = v["connections"].as_u64().expect("connections present");
+  }
+  assert_eq!(
+    connections, 1,
+    "connections must settle to 1 (this client) once the probe tears down"
+  );
 
   let _ = client.call("shutdown", None).await.expect("shutdown");
   timeout(Duration::from_secs(3), handle)

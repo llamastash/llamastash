@@ -96,21 +96,23 @@ fn chip_keys(app: &App, chip: &GlobalChip) -> Option<String> {
 
 /// Curated label picker for the focus chip. Walks the live bindings
 /// and emits, in order:
-///   1. Tab (if `NextFocus` is bound to it) — the canonical forward
-///      key, called out first because new users reach for Tab.
-///   2. The PrevFocus binding for `Left` if present — the arrow
-///      glyph reads better in the strip than `Shift+Tab`.
-///   3. The NextFocus binding for `Right` if present — symmetric
-///      with the PrevFocus arrow.
+///
+/// 1. Tab (if `NextFocus` is bound to it) — the canonical forward
+///    key, called out first because new users reach for Tab.
+/// 2. The PrevFocus binding for `Left` if present — the arrow
+///    glyph reads better in the strip than `Shift+Tab`.
+/// 3. The NextFocus binding for `Right` if present — symmetric
+///    with the PrevFocus arrow.
+///
 /// If none of the curated picks land, we fall back to first binding
 /// per action so a fully-rebound keymap still surfaces something
 /// useful in the strip.
 fn focus_chip_labels(bindings: &[Binding]) -> Vec<String> {
-  let mut labels: Vec<String> = Vec::new();
-  let push_label = |labels: &mut Vec<String>, candidate: &Binding| {
+  let mut acc: Vec<String> = Vec::new();
+  let push_label = |dst: &mut Vec<String>, candidate: &Binding| {
     let s = candidate.label.to_string();
-    if !labels.contains(&s) {
-      labels.push(s);
+    if !dst.contains(&s) {
+      dst.push(s);
     }
   };
   let next_tab = bindings
@@ -123,24 +125,24 @@ fn focus_chip_labels(bindings: &[Binding]) -> Vec<String> {
     .iter()
     .find(|b| b.action == Action::NextFocus && b.key == KeyCode::Right);
   if let Some(b) = next_tab {
-    push_label(&mut labels, b);
+    push_label(&mut acc, b);
   }
   if let Some(b) = prev_left {
-    push_label(&mut labels, b);
+    push_label(&mut acc, b);
   }
   if let Some(b) = next_right {
-    push_label(&mut labels, b);
+    push_label(&mut acc, b);
   }
-  if labels.is_empty() {
+  if acc.is_empty() {
     // Fallback: no curated keys are bound — surface first binding
     // per action so the user still sees what their keymap exposes.
     for action in [Action::NextFocus, Action::PrevFocus] {
       if let Some(b) = bindings.iter().find(|b| b.action == action) {
-        push_label(&mut labels, b);
+        push_label(&mut acc, b);
       }
     }
   }
-  labels
+  acc
 }
 
 /// Build the (keys, description) pairs for every chip in display

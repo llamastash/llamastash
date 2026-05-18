@@ -23,55 +23,65 @@ use crate::tui::launch_picker::{LaunchPickerState, PickerField};
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   let mut lines: Vec<Line<'_>> = Vec::new();
 
-  // If a managed launch is running, show what params were used.
-  if let Some(m) = app.focused_managed() {
-    lines.push(heading("Running launch", palette));
-    lines.push(kv("launch", m.launch_id.clone(), palette));
-    lines.push(kv("port", format!(":{}", m.port), palette));
-    lines.push(kv(
-      "state",
-      crate::tui::status_icons::label_for(m.state).to_string(),
-      palette,
-    ));
-    if let Some(rss) = m.rss_bytes {
-      lines.push(kv("rss", crate::tui::fmt::format_bytes(rss), palette));
+  // If the user explicitly opened the picker (via Enter on a row or
+  // the launch chip), show the editable form even when a managed
+  // launch already exists for the focused path — they're staging a
+  // *new* launch (v1 supports duplicate instances on fresh ports).
+  // The duplicate-launch heads-up rendered below keys off
+  // `picker_view.active_instances`.
+  //
+  // If a managed launch is running and the picker isn't open, show
+  // what params were used.
+  if app.launch_picker.is_none() {
+    if let Some(m) = app.focused_managed() {
+      lines.push(heading("Running launch", palette));
+      lines.push(kv("launch", m.launch_id.clone(), palette));
+      lines.push(kv("port", format!(":{}", m.port), palette));
+      lines.push(kv(
+        "state",
+        crate::tui::status_icons::label_for(m.state).to_string(),
+        palette,
+      ));
+      if let Some(rss) = m.rss_bytes {
+        lines.push(kv("rss", crate::tui::fmt::format_bytes(rss), palette));
+      }
+      if let Some(cpu) = m.cpu_pct {
+        lines.push(kv("cpu", format!("{cpu:.0}%"), palette));
+      }
+      // Surface the last-known launch parameters (ctx, reasoning,
+      // advanced argv) when the daemon's last_params_list snapshot
+      // covers this model. Falls back to "—" rows so the user still
+      // sees the field labels and knows the slot exists.
+      let last = app.last_params.get(&m.path);
+      lines.push(Line::default());
+      lines.push(heading("Launch params", palette));
+      let ctx_value = last
+        .and_then(|p| p.ctx)
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "native".into());
+      lines.push(kv("ctx", ctx_value, palette));
+      let reasoning_value = last.map(|p| p.reasoning).unwrap_or(false);
+      lines.push(kv(
+        "reasoning",
+        if reasoning_value { "on" } else { "off" }.into(),
+        palette,
+      ));
+      let advanced: String = last
+        .map(|p| p.advanced.join(" "))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "(none)".into());
+      lines.push(kv("advanced", advanced, palette));
+      lines.push(Line::default());
+      lines.push(
+        Span::styled(
+          "Stop this launch with `s` from the model list to re-launch with new settings.",
+          Style::default().fg(palette.muted),
+        )
+        .into(),
+      );
+      frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+      return;
     }
-    if let Some(cpu) = m.cpu_pct {
-      lines.push(kv("cpu", format!("{cpu:.0}%"), palette));
-    }
-    // Surface the last-known launch parameters (ctx, reasoning,
-    // advanced argv) when the daemon's last_params_list snapshot
-    // covers this model. Falls back to "—" rows so the user still
-    // sees the field labels and knows the slot exists.
-    let last = app.last_params.get(&m.path);
-    lines.push(Line::default());
-    lines.push(heading("Launch params", palette));
-    let ctx_value = last
-      .and_then(|p| p.ctx)
-      .map(|c| c.to_string())
-      .unwrap_or_else(|| "native".into());
-    lines.push(kv("ctx", ctx_value, palette));
-    let reasoning_value = last.map(|p| p.reasoning).unwrap_or(false);
-    lines.push(kv(
-      "reasoning",
-      if reasoning_value { "on" } else { "off" }.into(),
-      palette,
-    ));
-    let advanced: String = last
-      .map(|p| p.advanced.join(" "))
-      .filter(|s| !s.is_empty())
-      .unwrap_or_else(|| "(none)".into());
-    lines.push(kv("advanced", advanced, palette));
-    lines.push(Line::default());
-    lines.push(
-      Span::styled(
-        "Stop this launch with `s` from the model list to re-launch with new settings.",
-        Style::default().fg(palette.muted),
-      )
-      .into(),
-    );
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
-    return;
   }
 
   // Otherwise show the editable form. When the user hasn't opened
@@ -119,6 +129,30 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
     palette,
   ));
   lines.push(Line::default());
+  // Heads-up when a launch already exists for this model. The
+  // picker still happily spawns another instance on a fresh port —
+  // duplicate launches are a v1 feature — but the user shouldn't
+  // be surprised by it.
+  if picker_view.active_instances > 0 {
+    lines.push(
+      Span::styled(
+        format!(
+          "⚠ {n} instance{plural} already running — Enter launches a new one on a fresh port",
+          n = picker_view.active_instances,
+          plural = if picker_view.active_instances == 1 {
+            ""
+          } else {
+            "s"
+          }
+        ),
+        Style::default()
+          .fg(palette.warning)
+          .add_modifier(Modifier::BOLD),
+      )
+      .into(),
+    );
+    lines.push(Line::default());
+  }
   let launch_chip = app
     .hint_with(Focus::RightPane, Action::Submit, "launch")
     .map(|chip| format!("Press {} to launch with these settings.", chip_label(&chip)))

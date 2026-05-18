@@ -151,20 +151,31 @@ fn slash_opens_filter_and_keystrokes_extend_buffer() {
 }
 
 #[test]
-fn enter_on_model_opens_launch_picker_overlay() {
+fn enter_on_model_opens_inline_launch_picker_in_settings_tab() {
+  // The launch picker no longer pops a centred modal — pressing
+  // Enter on a Models row parks focus on the right pane's Settings
+  // tab and renders the picker form inline (kdash-style). The
+  // surrounding right pane (with the picker form) shares one frame
+  // with the Models list, so assertions check the inline form
+  // fields rather than a `Launch · qwen` modal title.
+  use llamadash::tui::keybindings::Focus;
+  use llamadash::tui::RightTab;
   let mut app = App::new(AppOptions::default());
   app.models = vec![fake_model("/m/qwen.gguf", "/m")];
-  // Snap to the first model row (skipping the header).
   app.go_top();
   pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::NONE));
+  assert_eq!(app.focus, Focus::RightPane);
+  assert_eq!(app.right_tab, RightTab::Settings);
+  assert!(app.launch_picker.is_some(), "picker state must materialise");
   let frame = render_to_string(&mut app, 120, 24);
   assert!(
-    frame.contains("Launch · qwen"),
-    "launch picker title missing: {frame}"
+    frame.contains("Launch settings"),
+    "Settings tab heading missing: {frame}"
   );
-  assert!(frame.contains("Context"));
-  assert!(frame.contains("Reasoning"));
-  assert!(frame.contains("Advanced"));
+  assert!(
+    frame.contains("ctx") && frame.contains("reasoning") && frame.contains("advanced"),
+    "inline picker fields missing: {frame}"
+  );
 }
 
 #[test]
@@ -182,16 +193,30 @@ fn theme_cycle_swaps_palette_without_restart() {
 }
 
 #[test]
-fn right_pane_starts_on_logs_tab_for_unlaunched_model() {
+fn right_pane_shows_settings_only_for_unlaunched_model() {
+  // Pre-launch, the right pane has nothing live to surface for the
+  // model — Logs / Chat / Embed / Rerank all need a running
+  // supervisor. The tab set collapses to just Settings so the user
+  // can configure and dispatch the launch from the same pane.
   use llamadash::tui::RightTab;
   let mut app = App::new(AppOptions::default());
   app.models = vec![fake_model("/m/qwen.gguf", "/m")];
   app.go_top();
+  assert_eq!(
+    app.available_right_tabs(),
+    vec![RightTab::Settings],
+    "unlaunched selection collapses to Settings only"
+  );
   let frame = render_to_string(&mut app, 120, 24);
-  assert_eq!(app.right_tab, RightTab::Logs, "Logs is the default tab");
   assert!(
-    frame.contains("Logs"),
-    "Logs tab label must render in the right pane strip: {frame}"
+    frame.contains("Settings"),
+    "Settings tab must render in the right pane: {frame}"
+  );
+  // Logs / Chat / Embed / Rerank labels are gated on Ready state,
+  // so none of them should render for the unlaunched model.
+  assert!(
+    !frame.contains(" Logs "),
+    "Logs label must not render pre-launch: {frame}"
   );
 }
 
@@ -282,6 +307,12 @@ fn launch_picker_seeds_from_persisted_last_params() {
 
 #[test]
 fn picker_warns_when_focused_model_already_has_active_instance() {
+  // Submitting the picker on a model that already has a running
+  // launch is allowed (v1 supports duplicate launches on fresh
+  // ports), but the Settings tab must surface a heads-up so the
+  // user isn't surprised. Running paths drop out of Favorites /
+  // folder groups, so the only row for this model is the Running
+  // entry itself — that's where the cursor lands.
   use llamadash::tui::app::ManagedRow;
   use llamadash::tui::status_icons::SurfaceState;
   let mut app = App::new(AppOptions::default());
@@ -294,7 +325,8 @@ fn picker_warns_when_focused_model_already_has_active_instance() {
     rss_bytes: None,
     cpu_pct: None,
   }];
-  app.go_top();
+  // Row layout: [TableHeader, Header(󰑐 Running), Model(L1)].
+  app.list_cursor = 2;
   app.open_launch_picker();
   assert_eq!(
     app.launch_picker.as_ref().unwrap().active_instances,
@@ -304,7 +336,7 @@ fn picker_warns_when_focused_model_already_has_active_instance() {
   let frame = render_to_string(&mut app, 120, 24);
   assert!(
     frame.contains("already running"),
-    "picker must surface duplicate-launch heads-up: {frame}"
+    "Settings tab must surface duplicate-launch heads-up: {frame}"
   );
 }
 
@@ -324,9 +356,14 @@ fn list_pane_renders_est_mem_badge() {
 
 #[test]
 fn typing_into_chat_input_extends_prompt_buffer() {
+  // Tab/Shift+Tab now cycle form fields rather than pane focus
+  // (see `kdash-style polish round 5`), so this test drives the
+  // pane chain with → / e instead: → moves Models → RightPane on
+  // the Chat tab, then `e` enters edit mode → ChatInput.
   use llamadash::tui::app::ManagedRow;
   use llamadash::tui::keybindings::Focus;
   use llamadash::tui::status_icons::SurfaceState;
+  use llamadash::tui::RightTab;
   let mut app = App::new(AppOptions::default());
   app.models = vec![fake_model("/m/qwen.gguf", "/m")];
   app.managed = vec![ManagedRow {
@@ -338,11 +375,23 @@ fn typing_into_chat_input_extends_prompt_buffer() {
     cpu_pct: None,
   }];
   app.go_top();
-  // Tab from list to right pane → Chat tab is current → focus is
-  // ChatInput. Cycle once to land on Chat.
-  pump_input(&mut app, key(KeyCode::Tab, KeyModifiers::NONE));
-  pump_input(&mut app, key(KeyCode::Tab, KeyModifiers::NONE));
-  assert_eq!(app.focus, Focus::ChatInput, "Chat tab → ChatInput focus");
+  // Shift+C is the canonical jump to the Chat tab (gated on a
+  // running model). Combines the Models → RightPane pane hop and
+  // the right_tab selection into one keystroke so the test doesn't
+  // depend on the tab-cycle default landing on Logs.
+  pump_input(&mut app, key(KeyCode::Char('C'), KeyModifiers::SHIFT));
+  assert_eq!(app.focus, Focus::RightPane);
+  assert_eq!(
+    app.right_tab,
+    RightTab::Chat,
+    "Shift+C jumps to the Chat tab"
+  );
+  pump_input(&mut app, key(KeyCode::Char('e'), KeyModifiers::NONE));
+  assert_eq!(
+    app.focus,
+    Focus::ChatInput,
+    "`e` enters edit on the Chat tab"
+  );
   for ch in "hello".chars() {
     pump_input(&mut app, key(KeyCode::Char(ch), KeyModifiers::NONE));
   }
