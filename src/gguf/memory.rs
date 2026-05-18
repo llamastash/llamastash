@@ -104,14 +104,14 @@ impl MemoryEstimate {
 /// and launch parameters.
 pub fn estimate(header: &GgufHeader, opts: EstimateOptions) -> MemoryEstimate {
   let arch = header
-    .get_string(&["general.architecture"])
+    .string(&["general.architecture"])
     .map(str::to_string);
   let arch_key = arch.as_deref();
 
   let weights_total = weights_bytes(header);
 
   let n_layers = arch_key
-    .and_then(|a| header.get_u64(&[format!("{a}.block_count")]))
+    .and_then(|a| header.u64(&[format!("{a}.block_count")]))
     .unwrap_or(0);
   let gpu_fraction = gpu_fraction(opts.n_gpu_layers, n_layers);
   let weights_vram = (weights_total as f64 * gpu_fraction) as u64;
@@ -178,17 +178,17 @@ pub fn kv_bytes(header: &GgufHeader, arch: Option<&str>, opts: EstimateOptions) 
 /// `None` if any required field is missing.
 fn attention_geometry(header: &GgufHeader, arch: Option<&str>) -> Option<(u64, u64, u64)> {
   let a = arch?;
-  let n_layers = header.get_u64(&[format!("{a}.block_count")])?;
-  let n_heads = header.get_u64(&[format!("{a}.attention.head_count")])?;
+  let n_layers = header.u64(&[format!("{a}.block_count")])?;
+  let n_heads = header.u64(&[format!("{a}.attention.head_count")])?;
   let n_kv_heads = header
-    .get_u64(&[format!("{a}.attention.head_count_kv")])
+    .u64(&[format!("{a}.attention.head_count_kv")])
     .unwrap_or(n_heads);
   // head_dim: explicit `attention.key_length` if present, else
   // `embedding_length / head_count`.
-  let head_dim = if let Some(k) = header.get_u64(&[format!("{a}.attention.key_length")]) {
+  let head_dim = if let Some(k) = header.u64(&[format!("{a}.attention.key_length")]) {
     k
   } else {
-    let embed = header.get_u64(&[format!("{a}.embedding_length")])?;
+    let embed = header.u64(&[format!("{a}.embedding_length")])?;
     if n_heads == 0 {
       return None;
     }

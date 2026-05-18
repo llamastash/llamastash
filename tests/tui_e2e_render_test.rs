@@ -42,7 +42,7 @@ fn fake_model(path: &str, parent: &str, arch: &str, ctx: u64, weights: u64) -> D
       native_ctx: Some(ctx),
       chat_template: None,
       tokenizer_kind: None,
-      reasoning_hint: None,
+      reasoning_hint: false,
       mode_hint: ModeHint::Chat,
       weights_bytes: Some(weights),
     }),

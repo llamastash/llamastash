@@ -32,6 +32,4 @@ pub use errors::{GgufError, GgufResult};
 pub use header::{read_path, GgufHeader, GgufValue, HeaderReadOptions, ReadHeader, TensorInfo};
 pub use identity::{compute as compute_identity, ModelId};
 pub use memory::{estimate as estimate_memory, CacheType, EstimateOptions, MemoryEstimate};
-pub use metadata::{
-  summarise as summarise_metadata, ModeHint, ModelMetadata, Quant, ReasoningHint,
-};
+pub use metadata::{summarise as summarise_metadata, ModeHint, ModelMetadata, Quant};

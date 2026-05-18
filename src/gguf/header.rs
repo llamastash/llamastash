@@ -181,7 +181,7 @@ impl GgufHeader {
   }
 
   /// First metadata string under any of the given keys.
-  pub fn get_string<'a, K: AsRef<str>>(&'a self, keys: &[K]) -> Option<&'a str> {
+  pub fn string<'a, K: AsRef<str>>(&'a self, keys: &[K]) -> Option<&'a str> {
     for k in keys {
       if let Some(v) = self.metadata.get(k.as_ref()).and_then(|v| v.as_str()) {
         return Some(v);
@@ -191,7 +191,7 @@ impl GgufHeader {
   }
 
   /// First metadata integer under any of the given keys, coerced to u64.
-  pub fn get_u64<K: AsRef<str>>(&self, keys: &[K]) -> Option<u64> {
+  pub fn u64<K: AsRef<str>>(&self, keys: &[K]) -> Option<u64> {
     for k in keys {
       if let Some(v) = self.metadata.get(k.as_ref()).and_then(|v| v.as_u64()) {
         return Some(v);
@@ -454,7 +454,7 @@ mod tests {
     assert_eq!(read.header.version, 3);
     assert_eq!(read.header.tensor_count, 0);
     assert_eq!(
-      read.header.get_string(&["general.architecture"]).unwrap(),
+      read.header.string(&["general.architecture"]).unwrap(),
       "llama"
     );
     // The raw bytes must exactly equal what we consumed — the contract relied

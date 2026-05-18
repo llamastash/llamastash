@@ -330,7 +330,7 @@ fn reasoning_hint_surfaces_in_summary() {
   let path = tmp.write("qwen3.gguf", &bytes);
   let read = read_path(&path, HeaderReadOptions::default()).unwrap();
   let meta = summarise_metadata(&read.header);
-  assert!(meta.reasoning_hint.is_some());
+  assert!(meta.reasoning_hint);
 }
 
 // --- tiny tmpdir helper (avoids adding a `tempfile` dev-dep just for this) ---

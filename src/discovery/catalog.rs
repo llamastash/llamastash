@@ -101,10 +101,10 @@ fn model_row(m: &DiscoveredModel) -> Value {
         "native_ctx": md.native_ctx,
         "tokenizer_kind": md.tokenizer_kind,
         "mode_hint": mode_hint_label(md.mode_hint),
-        "has_reasoning_hint": md.reasoning_hint.is_some(),
+        "has_reasoning_hint": md.reasoning_hint,
         // Deprecated alias — kept until v2 to avoid breaking pinned
         // parsers. Same value as `has_reasoning_hint`.
-        "reasoning_hint": md.reasoning_hint.is_some(),
+        "reasoning_hint": md.reasoning_hint,
         "has_chat_template": md.chat_template.is_some(),
         "weights_bytes": md.weights_bytes,
       })
@@ -127,7 +127,7 @@ mod tests {
   use super::*;
 
   use crate::discovery::ModelSource;
-  use crate::gguf::metadata::{ModelMetadata, Quant, ReasoningHint};
+  use crate::gguf::metadata::{ModelMetadata, Quant};
 
   fn fake_model(path: &str, source: ModelSource) -> DiscoveredModel {
     DiscoveredModel {
@@ -142,7 +142,7 @@ mod tests {
         native_ctx: Some(8192),
         chat_template: Some("{% ... %}".to_string()),
         tokenizer_kind: Some("llama".to_string()),
-        reasoning_hint: None,
+        reasoning_hint: false,
         mode_hint: ModeHint::Chat,
         weights_bytes: Some(4_000_000_000),
       }),
@@ -216,7 +216,7 @@ mod tests {
     let cat = ModelCatalog::new();
     let mut m = fake_model("/m/a.gguf", ModelSource::HuggingFace);
     if let Some(meta) = m.metadata.as_mut() {
-      meta.reasoning_hint = Some(ReasoningHint::Deepseek);
+      meta.reasoning_hint = true;
     }
     cat.upsert(m).await;
 

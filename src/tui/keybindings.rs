@@ -850,19 +850,11 @@ const CONFIRM_POPUP_BINDINGS: &[Binding] = &[
   },
 ];
 
-/// Look up the action triggered by `(key, mods)` in the supplied
-/// focus. Returns `None` when nothing matches.
-pub fn action_for(focus: Focus, key: KeyCode, mods: KeyModifiers) -> Option<Action> {
-  for binding in bindings_for(focus) {
-    if binding.key == key && binding.mods == mods {
-      return Some(binding.action);
-    }
-  }
-  None
-}
-
 /// Bindings the help bar should show in the supplied focus.
-pub fn bindings_for(focus: Focus) -> &'static [Binding] {
+/// Looks at the compile-time defaults — runtime keymap overrides
+/// flow through [`KeyMap::bindings_for`] instead.
+#[cfg(test)]
+fn default_bindings_for(focus: Focus) -> &'static [Binding] {
   for (f, b) in DEFAULT_BINDINGS {
     if *f == focus {
       return b;
@@ -1215,6 +1207,22 @@ fn format_key_label(key: &KeyCode, mods: KeyModifiers) -> String {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  /// Helper: resolve `(focus, key, mods)` against the compile-time
+  /// defaults — what `KeyMap::default()` produces at startup. Used by
+  /// the binding-shape tests below; production reads through
+  /// `App::action_for` which routes via the active `KeyMap`.
+  fn action_for(focus: Focus, key: KeyCode, mods: KeyModifiers) -> Option<Action> {
+    default_bindings_for(focus)
+      .iter()
+      .find(|b| b.key == key && b.mods == mods)
+      .map(|b| b.action)
+  }
+
+  /// Helper: default bindings slice for a focus.
+  fn bindings_for(focus: Focus) -> &'static [Binding] {
+    default_bindings_for(focus)
+  }
 
   #[test]
   fn list_focus_resolves_quit_via_q_or_ctrl_c() {

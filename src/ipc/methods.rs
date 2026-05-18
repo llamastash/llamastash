@@ -198,15 +198,6 @@ impl MethodContext {
     self
   }
 
-  /// Builder helper: override the peercred decision. Test-only.
-  pub fn with_peer_authorizer<F>(mut self, auth: F) -> Self
-  where
-    F: Fn(crate::daemon::peercred::PeerCred) -> bool + Send + Sync + 'static,
-  {
-    self.peer_authorizer = Arc::new(auth);
-    self
-  }
-
   /// Builder helper: seed the external (unmanaged `llama-server`)
   /// process snapshot. Production wiring populates it from the
   /// startup orphan sweep.
@@ -231,19 +222,8 @@ impl MethodContext {
     self
   }
 
-  /// Builder helper: attach the shared host-metrics snapshot the
-  /// sampler updates. Production wiring passes the
-  /// [`crate::daemon::host_metrics::spawn`] return value here so
-  /// every `status` call reads the freshest reading.
-  pub fn with_host_metrics(mut self, snap: Arc<RwLock<HostMetricsSnapshot>>) -> Self {
-    self.host_metrics = Some(snap);
-    self
-  }
-
   /// Builder helper: attach both sampler cells (host snapshot + live
-  /// GpuInfo) in one call. Production wiring uses this; tests that
-  /// only need the host snapshot keep using
-  /// [`Self::with_host_metrics`] alone.
+  /// GpuInfo) in one call. Production wiring uses this.
   pub fn with_sampler(mut self, handles: SamplerHandles) -> Self {
     self.host_metrics = Some(handles.snapshot);
     self.gpu_live = Some(handles.gpu);
@@ -1487,7 +1467,7 @@ mod tests {
           native_ctx: Some(8192),
           chat_template: None,
           tokenizer_kind: Some("llama".to_string()),
-          reasoning_hint: None,
+          reasoning_hint: false,
           mode_hint: ModeHint::Chat,
           weights_bytes: Some(4_000_000_000),
         }),

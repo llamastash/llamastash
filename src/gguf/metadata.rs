@@ -26,7 +26,11 @@ pub struct ModelMetadata {
   pub native_ctx: Option<u64>,
   pub chat_template: Option<String>,
   pub tokenizer_kind: Option<String>,
-  pub reasoning_hint: Option<ReasoningHint>,
+  /// Set when the GGUF advertises a `<think>` special token (DeepSeek-R1,
+  /// Qwen3, Marco-O1, …). Implies `--reasoning-format deepseek --jinja`.
+  /// Collapsed from a single-variant enum until a second reasoning style
+  /// is in scope.
+  pub reasoning_hint: bool,
   pub mode_hint: ModeHint,
   /// Sum of per-tensor storage bytes (the GGUF weights footprint).
   /// `None` when the header has no usable tensor info — typical for
@@ -152,13 +156,6 @@ impl Quant {
     }
   }
 
-  /// Bytes per element, derived from [`Self::block_geometry`]. Used by the
-  /// estimator and unit tests that want an `f64` view of the quant cost.
-  pub fn bytes_per_elem(&self) -> f64 {
-    let (elems, bytes) = self.block_geometry();
-    bytes as f64 / elems as f64
-  }
-
   /// Estimate on-disk tensor bytes for a GGML tensor with these dimensions.
   ///
   /// Quantized GGML blocks are row-oriented: the first dimension is rounded
@@ -228,30 +225,20 @@ pub enum ModeHint {
   Unknown,
 }
 
-/// Reasoning-style hint surfaced from token-list inspection. Used by the
-/// launch picker (Unit 6) to default the "Reasoning" toggle on when the
-/// model evidently supports `<think>` tokens.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReasoningHint {
-  /// Model has `<think>` / `</think>` special tokens (DeepSeek-R1, Qwen3,
-  /// Marco-O1, …). Implies `--reasoning-format deepseek --jinja`.
-  Deepseek,
-}
-
 /// Distil a parsed header into [`ModelMetadata`].
 pub fn summarise(header: &GgufHeader) -> ModelMetadata {
   let arch_raw = header
-    .get_string(&["general.architecture"])
+    .string(&["general.architecture"])
     .map(str::to_string);
   let arch_key = arch_raw.as_deref();
 
-  let native_ctx = arch_key.and_then(|a| header.get_u64(&[format!("{a}.context_length")]));
+  let native_ctx = arch_key.and_then(|a| header.u64(&[format!("{a}.context_length")]));
 
   let chat_template = header
-    .get_string(&["tokenizer.chat_template"])
+    .string(&["tokenizer.chat_template"])
     .map(str::to_string);
   let tokenizer_kind = header
-    .get_string(&["tokenizer.ggml.model"])
+    .string(&["tokenizer.ggml.model"])
     .map(str::to_string);
 
   let total_parameters = parameter_count(header, arch_key);
@@ -286,12 +273,12 @@ pub fn summarise(header: &GgufHeader) -> ModelMetadata {
 /// Parameter count: prefer `general.parameter_count` (explicit), then sum
 /// of element counts across "weight" tensors as a fallback.
 fn parameter_count(header: &GgufHeader, arch: Option<&str>) -> Option<u64> {
-  if let Some(p) = header.get_u64(&["general.parameter_count"]) {
+  if let Some(p) = header.u64(&["general.parameter_count"]) {
     return Some(p);
   }
   // Architecture-prefixed variants seen in some GGUFs.
   if let Some(a) = arch {
-    if let Some(p) = header.get_u64(&[format!("{a}.parameter_count")]) {
+    if let Some(p) = header.u64(&[format!("{a}.parameter_count")]) {
       return Some(p);
     }
   }
@@ -372,11 +359,11 @@ fn infer_mode_hint(header: &GgufHeader, arch: Option<&str>) -> ModeHint {
 
   let arch_hint = arch.unwrap_or("").to_ascii_lowercase();
   let tags_lc = header
-    .get_string(&["general.tags"])
+    .string(&["general.tags"])
     .map(|s| s.to_ascii_lowercase())
     .unwrap_or_default();
   let name_lc = header
-    .get_string(&["general.name"])
+    .string(&["general.name"])
     .map(|s| s.to_ascii_lowercase())
     .unwrap_or_default();
 
@@ -425,7 +412,7 @@ fn infer_mode_hint(header: &GgufHeader, arch: Option<&str>) -> ModeHint {
   // Older fallback: arch advertises embedding_length without any
   // output projection — almost certainly an encoder.
   if let Some(a) = arch {
-    if header.get_u64(&[format!("{a}.embedding_length")]).is_some() {
+    if header.u64(&[format!("{a}.embedding_length")]).is_some() {
       return ModeHint::Embedding;
     }
   }
@@ -433,19 +420,19 @@ fn infer_mode_hint(header: &GgufHeader, arch: Option<&str>) -> ModeHint {
   ModeHint::Unknown
 }
 
-fn infer_reasoning_hint(header: &GgufHeader) -> Option<ReasoningHint> {
+fn infer_reasoning_hint(header: &GgufHeader) -> bool {
   // Scan the tokenizer.ggml.tokens array (when present) for `<think>` —
   // a strong, model-agnostic signal that the model emits explicit reasoning.
   if let Some(GgufValue::Array(items)) = header.metadata.get("tokenizer.ggml.tokens") {
     for v in items {
       if let GgufValue::String(s) = v {
         if s == "<think>" {
-          return Some(ReasoningHint::Deepseek);
+          return true;
         }
       }
     }
   }
-  None
+  false
 }
 
 #[cfg(test)]
@@ -591,7 +578,18 @@ mod tests {
       )
       .build();
     let m = parse(bytes);
-    assert_eq!(m.reasoning_hint, Some(ReasoningHint::Deepseek));
+    assert!(m.reasoning_hint);
+  }
+
+  #[test]
+  fn reasoning_hint_absent_without_think_token() {
+    // Tier-A YAGNI sweep collapsed `Option<ReasoningHint>` to `bool`.
+    // The absence path used to be `None`; it's now `false`, but the
+    // observable behaviour (no `<think>` ⇒ no reasoning hint) must
+    // be unchanged.
+    let bytes = FixtureBuilder::new().with_arch("llama").build();
+    let m = parse(bytes);
+    assert!(!m.reasoning_hint);
   }
 
   #[test]

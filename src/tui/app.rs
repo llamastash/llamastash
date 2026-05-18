@@ -1040,7 +1040,7 @@ fn parse_list_models_row(row: &Value) -> Option<DiscoveredModel> {
           .get("tokenizer_kind")
           .and_then(Value::as_str)
           .map(String::from),
-        reasoning_hint: None,
+        reasoning_hint: false,
         mode_hint: parse_mode_hint(md.get("mode_hint").and_then(Value::as_str)),
         weights_bytes: md.get("weights_bytes").and_then(Value::as_u64),
       })
@@ -1172,7 +1172,7 @@ mod tests {
         native_ctx: Some(8192),
         chat_template: None,
         tokenizer_kind: None,
-        reasoning_hint: None,
+        reasoning_hint: false,
         mode_hint: ModeHint::Chat,
         weights_bytes: Some(4_200_000_000),
       }),

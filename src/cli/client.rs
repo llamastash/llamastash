@@ -85,7 +85,10 @@ async fn reconcile_binary_with_running_daemon(
   let Some(cli_binary) = cli.llama_server.as_ref() else {
     return Ok(client);
   };
-  let desired = match std::fs::canonicalize(cli_binary) {
+  // `tokio::fs::canonicalize` so the reconcile gate doesn't block
+  // the async runtime on a slow inode lookup (network mounts,
+  // unresponsive filesystems).
+  let desired = match tokio::fs::canonicalize(cli_binary).await {
     Ok(p) => p,
     Err(_) => {
       // Let the daemon-side locator surface the path error later;

@@ -31,7 +31,7 @@ fn fake_model(path: &str, parent: &str) -> DiscoveredModel {
       native_ctx: Some(8192),
       chat_template: None,
       tokenizer_kind: None,
-      reasoning_hint: None,
+      reasoning_hint: false,
       mode_hint: ModeHint::Chat,
       weights_bytes: Some(4_200_000_000),
     }),
