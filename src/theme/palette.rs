@@ -234,6 +234,36 @@ impl Palette {
         self.title_style(),
       )))
   }
+
+  /// Border colour for focus-aware panes. Focused panes adopt
+  /// `palette.highlight` so the active pane reads with the same
+  /// warm "this row is live" tone the list selection uses; the
+  /// fallback to `palette.accent` covers themes whose `highlight`
+  /// is `Color::Reset` (Mono opts out so the focus border doesn't
+  /// disappear into the terminal default). Centralised here so
+  /// every pane-border render goes through the palette — no
+  /// hard-coded `Color::Yellow` left in the renderers.
+  pub fn focus_border(&self, focused: bool) -> ratatui::style::Color {
+    if focused && self.highlight != ratatui::style::Color::Reset {
+      self.highlight
+    } else {
+      self.accent
+    }
+  }
+
+  /// `Style` to paint under a popup or modal so the dialog's
+  /// interior adopts `palette.bg` rather than the terminal default
+  /// that `Clear` leaves behind. Subsequent foreground-only spans
+  /// inherit the bg from the cells this style paints. Returns
+  /// `None` for themes whose `bg` is `Color::Reset` (Mono opts out
+  /// so the terminal's own surface tone still shows through).
+  pub fn popup_bg_style(&self) -> Option<ratatui::style::Style> {
+    if self.bg == ratatui::style::Color::Reset {
+      None
+    } else {
+      Some(ratatui::style::Style::default().bg(self.bg).fg(self.fg))
+    }
+  }
 }
 
 /// Resolve a `ThemeName` to its concrete `Palette`. Returns a `'static`
@@ -383,5 +413,49 @@ mod tests {
     let t = p.title_style();
     assert_eq!(t.fg, Some(p.panel_title));
     assert!(t.add_modifier.contains(Modifier::BOLD));
+  }
+
+  #[test]
+  fn focus_border_routes_through_highlight_then_falls_back_to_accent() {
+    // Themes with a real highlight slot (every built-in except Mono)
+    // must use it for focus so the focused border matches the
+    // list-row highlight tone.
+    for theme in [
+      ThemeName::Macchiato,
+      ThemeName::Latte,
+      ThemeName::GruvboxDark,
+      ThemeName::SolarizedDark,
+    ] {
+      let p = palette_for(theme);
+      assert_eq!(p.focus_border(true), p.highlight, "{theme:?} focused");
+      assert_eq!(p.focus_border(false), p.accent, "{theme:?} unfocused");
+    }
+    // Mono opts out (`highlight == Color::Reset`); falling back to
+    // accent keeps the focused border visible against the terminal.
+    let mono = palette_for(ThemeName::Mono);
+    assert_eq!(mono.highlight, Color::Reset);
+    assert_eq!(mono.focus_border(true), mono.accent);
+    assert_eq!(mono.focus_border(false), mono.accent);
+  }
+
+  #[test]
+  fn popup_bg_style_emits_palette_bg_for_concrete_themes_and_none_for_mono() {
+    // Concrete-bg themes must hand back a Style that paints both bg
+    // and fg so overlays inherit the theme surface after `Clear`.
+    for theme in [
+      ThemeName::Macchiato,
+      ThemeName::Latte,
+      ThemeName::GruvboxDark,
+      ThemeName::SolarizedDark,
+    ] {
+      let p = palette_for(theme);
+      let style = p
+        .popup_bg_style()
+        .unwrap_or_else(|| panic!("{theme:?} should produce a popup bg style"));
+      assert_eq!(style.bg, Some(p.bg));
+      assert_eq!(style.fg, Some(p.fg));
+    }
+    // Mono's `bg == Color::Reset` is the explicit opt-out signal.
+    assert!(palette_for(ThemeName::Mono).popup_bg_style().is_none());
   }
 }

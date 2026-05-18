@@ -358,6 +358,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
     area.height.saturating_sub(4).max(20),
   );
   frame.render_widget(Clear, rect);
+  // `Clear` resets every cell to the terminal default, so paint
+  // `palette.bg` back over the rect before rendering text. Without
+  // this the overlay reads as transparent on light themes (Latte)
+  // and as a coloured-text-on-terminal-bg patch on dark themes that
+  // tint their root surface.
+  crate::tui::render::paint_theme_bg(frame, rect, palette);
 
   // Close chip carries both keys that dismiss the overlay:
   //  - `Esc` is hardcoded modal-dismiss in `events::handle_key`

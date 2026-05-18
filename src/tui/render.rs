@@ -16,7 +16,7 @@
 //! block title. The global hint strip is on row 1.
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
@@ -42,6 +42,17 @@ const MIN_RENDER_HEIGHT: u16 = 10;
 // border cells = 11. Drop the panel entirely on narrower terminals.
 const LOGO_PANEL_WIDTH: u16 = 11;
 const MIN_LOGO_INNER_WIDTH: u16 = 9;
+
+/// Paint `palette.bg` over `area` so subsequent foreground-only
+/// widgets inherit the theme surface rather than the terminal
+/// default. Mono opts out via `Color::Reset` so its modals still let
+/// the terminal palette show through. Used both by the root layout
+/// and by every overlay so a light-theme popup actually looks light.
+pub(crate) fn paint_theme_bg(frame: &mut Frame<'_>, area: Rect, palette: &Palette) {
+  if let Some(style) = palette.popup_bg_style() {
+    frame.render_widget(Paragraph::new("").style(style), area);
+  }
+}
 
 pub fn render(frame: &mut Frame<'_>, app: &mut App) {
   app.expire_toast();
@@ -72,10 +83,7 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
   // the terminal's native background bleeds through every gap between
   // bordered Blocks. `Color::Reset` opts out (used by `mono`) so the
   // terminal default keeps winning for that theme.
-  if palette.bg != Color::Reset {
-    let bg = Paragraph::new("").style(Style::default().bg(palette.bg).fg(palette.fg));
-    frame.render_widget(bg, area);
-  }
+  paint_theme_bg(frame, area, &palette);
 
   let show_info_row = area.height >= MIN_HEIGHT_FOR_INFO_ROW;
 
@@ -130,10 +138,7 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
 /// size so growing the terminal shows the change before the full
 /// dashboard kicks back in.
 fn render_too_small(frame: &mut Frame<'_>, area: Rect, palette: &Palette) {
-  if palette.bg != Color::Reset {
-    let bg = Paragraph::new("").style(Style::default().bg(palette.bg).fg(palette.fg));
-    frame.render_widget(bg, area);
-  }
+  paint_theme_bg(frame, area, palette);
   let msg = Paragraph::new(vec![
     Line::from(Span::styled(
       "Terminal too small".to_string(),
@@ -455,6 +460,7 @@ mod tests {
   use super::*;
   use crate::tui::app::AppOptions;
   use ratatui::backend::TestBackend;
+  use ratatui::style::Color;
   use ratatui::Terminal;
 
   fn render_into(width: u16, height: u16, mut app: App) -> Vec<String> {
@@ -584,6 +590,57 @@ mod tests {
     term.draw(|f| render(f, &mut app_mut)).unwrap();
     let buf = term.backend().buffer().clone();
     let cell = buf.cell((1, 1)).unwrap();
+    assert_eq!(cell.bg, Color::Reset);
+  }
+
+  #[test]
+  fn help_overlay_paints_theme_bg_on_light_palette() {
+    // Regression: pre-fix, `frame.render_widget(Clear, rect)` reset
+    // the overlay cells to `Color::Reset`, so the help dialog on
+    // Latte (light theme) rendered as a dark patch where the
+    // terminal's default bg bled through. The overlay now follows
+    // `Clear` with `paint_theme_bg`, so cells inside the dialog
+    // must carry `palette.bg`.
+    use crate::theme::{palette_for, ThemeName};
+    use crate::tui::keybindings::KeyMap;
+    let mut app = App::new(AppOptions {
+      theme: ThemeName::Latte,
+      custom_palette: None,
+      keymap: KeyMap::default(),
+    });
+    app.show_help = true;
+    let mut term = Terminal::new(TestBackend::new(140, 40)).unwrap();
+    term.draw(|f| render(f, &mut app)).unwrap();
+    let buf = term.backend().buffer().clone();
+    let palette = palette_for(ThemeName::Latte);
+    // Pick an interior cell well inside the centred overlay — the
+    // rect math (`area.width.saturating_sub(4).min(130)` centred in
+    // 140 cols) puts the overlay's centre near (70, 20).
+    let cell = buf.cell((70, 20)).unwrap();
+    assert_eq!(
+      cell.bg, palette.bg,
+      "help overlay interior must paint palette.bg, got {:?}",
+      cell.bg
+    );
+  }
+
+  #[test]
+  fn mono_help_overlay_keeps_terminal_default_bg() {
+    // Mono explicitly opts out of bg painting; the overlay must
+    // honour the same opt-out so the user's terminal palette still
+    // shows underneath the dialog body.
+    use crate::theme::ThemeName;
+    use crate::tui::keybindings::KeyMap;
+    let mut app = App::new(AppOptions {
+      theme: ThemeName::Mono,
+      custom_palette: None,
+      keymap: KeyMap::default(),
+    });
+    app.show_help = true;
+    let mut term = Terminal::new(TestBackend::new(140, 40)).unwrap();
+    term.draw(|f| render(f, &mut app)).unwrap();
+    let buf = term.backend().buffer().clone();
+    let cell = buf.cell((70, 20)).unwrap();
     assert_eq!(cell.bg, Color::Reset);
   }
 

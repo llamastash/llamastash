@@ -70,6 +70,10 @@ impl AdvancedPanelState {
 pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AdvancedPanelState, palette: &Palette) {
   let modal = centered_rect(80, 50, area);
   frame.render_widget(Clear, modal);
+  // Paint the theme surface back over the cleared area so the
+  // dialog body honours `palette.bg` (e.g. Latte's light surface)
+  // instead of falling through to the terminal default.
+  crate::tui::render::paint_theme_bg(frame, modal, palette);
   let block = palette.panel_block(" Advanced flags ", true);
   frame.render_widget(block.clone(), modal);
   let inner = block.inner(modal);

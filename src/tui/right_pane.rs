@@ -13,7 +13,7 @@
 //!     keeping the panel a single unnested rectangle.
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
@@ -25,17 +25,14 @@ use crate::tui::status_icons::{glyph_for, label_for};
 use crate::tui::tabs::{chat, embed, logs, rerank, settings, RightTab};
 
 /// Render the right-pane area as a single unnested Block. `focused`
-/// flips the border to yellow so the user can see which side of the
+/// flips the border to the theme's focus tone (`palette.highlight`
+/// with `accent` fallback) so the user can see which side of the
 /// dashboard owns the keyboard chain at a glance.
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette, focused: bool) {
   let tabs = app.available_right_tabs();
   let title_line = block_title_line(app, &tabs, palette);
   let bottom_chips = bottom_hint_chips(app);
-  let border_color = if focused {
-    Color::Yellow
-  } else {
-    palette.accent
-  };
+  let border_color = palette.focus_border(focused);
 
   let mut outer = Block::default()
     .title(title_line)

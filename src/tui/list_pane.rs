@@ -437,15 +437,13 @@ pub struct TitleInputs<'a> {
   pub hints: Vec<String>,
 }
 
-/// Yellow border when the pane has keyboard focus, otherwise the
-/// theme's `accent`. Re-used by the empty-state path in
+/// Border colour for the Models pane based on focus. Delegates to
+/// `Palette::focus_border` so every focus indicator across the TUI
+/// reads with the same theme-aware tone (`highlight` when set,
+/// `accent` fallback for Mono). Re-used by the empty-state path in
 /// `render.rs` so both surfaces share one focus rule.
 pub fn border_color(palette: &Palette, focused: bool) -> Color {
-  if focused {
-    Color::Yellow
-  } else {
-    palette.accent
-  }
+  palette.focus_border(focused)
 }
 
 /// Compose the bottom-edge status legend that explains every

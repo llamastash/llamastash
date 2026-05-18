@@ -27,6 +27,10 @@ pub fn render(
 
   let rect = centred(area, 60, 8);
   frame.render_widget(Clear, rect);
+  // Restore the theme surface tone after `Clear` so the popup
+  // body reads on `palette.bg` instead of the terminal default.
+  // Mono opts out (`palette.bg == Color::Reset`).
+  crate::tui::render::paint_theme_bg(frame, rect, palette);
 
   let block = Block::default()
     .title(Line::from(Span::styled(
