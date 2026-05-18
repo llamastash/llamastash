@@ -91,25 +91,83 @@ fn allocate_port_range_pair() -> PortRange {
 }
 
 struct DaemonHandle {
-  join: JoinHandle<anyhow::Result<llamadash::daemon::StartOutcome>>,
+  /// `Option` so `shutdown()` can `.take()` the handle without
+  /// preventing the `Drop` impl from running on the rest of the
+  /// struct. `Drop` checks `is_some` as "explicit shutdown was not
+  /// reached" — typically because a test panicked partway through.
+  join: Option<JoinHandle<anyhow::Result<llamadash::daemon::StartOutcome>>>,
   socket: PathBuf,
   state: PathBuf,
   model_dir: PathBuf,
 }
 
 impl DaemonHandle {
-  async fn shutdown(self) {
+  async fn shutdown(mut self) {
     if let Ok(mut client) = Client::connect(&self.socket).await {
       let _ = client.call("shutdown", None).await;
     }
-    let _ = tokio::time::timeout(Duration::from_secs(3), self.join).await;
-    std::fs::remove_dir_all(&self.state).ok();
-    std::fs::remove_dir_all(&self.model_dir).ok();
+    if let Some(join) = self.join.take() {
+      let _ = tokio::time::timeout(Duration::from_secs(3), join).await;
+    }
+    // Temp dirs cleaned by `Drop` so the panic path uses the same
+    // code as the happy path.
   }
 
   async fn client(&self) -> Client {
     Client::connect(&self.socket).await.expect("connect")
   }
+}
+
+impl Drop for DaemonHandle {
+  fn drop(&mut self) {
+    // `shutdown()` consumes `join`, so a still-present handle means
+    // the test didn't reach its explicit cleanup — typically a panic
+    // mid-test. Send a synchronous `shutdown` over the socket so the
+    // daemon's run_foreground hits its `stop_all_managed` step (the
+    // Fix #1 wiring) and SIGTERM→SIGKILLs every supervised
+    // `fake_llama_server` before the runtime tears it down. Without
+    // this, `setsid`-detached children become init-owned orphans —
+    // historically the source of hundreds of leaked test fixtures.
+    if let Some(join) = self.join.take() {
+      let _ = best_effort_sync_shutdown(&self.socket);
+      // Poll for the daemon to remove its socket file (the last
+      // step of run_foreground), bounded so a wedged daemon can't
+      // pin the test process forever. 5 s matches the per-launch
+      // SIGTERM grace baked into `stop_all_managed`.
+      let deadline = Instant::now() + Duration::from_secs(5);
+      while self.socket.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+      }
+      join.abort();
+    }
+    std::fs::remove_dir_all(&self.state).ok();
+    std::fs::remove_dir_all(&self.model_dir).ok();
+  }
+}
+
+/// Sync-only IPC shutdown for use from `DaemonHandle::Drop`. Drop runs
+/// during unwind and can't drive an async client; this writes one
+/// length-prefixed JSON-RPC `shutdown` frame on a `std::os::unix::net`
+/// stream. The daemon's IPC `shutdown` method trips its shutdown
+/// token, which causes `serve` to exit and `run_foreground` to run
+/// its `stop_all_managed` step — that's where the kill of managed
+/// children actually happens.
+fn best_effort_sync_shutdown(socket: &Path) -> std::io::Result<()> {
+  use std::io::{Read, Write};
+  use std::os::unix::net::UnixStream;
+  let mut stream = UnixStream::connect(socket)?;
+  stream.set_write_timeout(Some(Duration::from_secs(1)))?;
+  stream.set_read_timeout(Some(Duration::from_secs(1)))?;
+  let body = br#"{"jsonrpc":"2.0","id":1,"method":"shutdown"}"#;
+  let prefix = (body.len() as u32).to_be_bytes();
+  stream.write_all(&prefix)?;
+  stream.write_all(body)?;
+  // Drain the response so the daemon's writer doesn't block on a
+  // full peer buffer. We don't parse it — the only thing that
+  // matters is that the shutdown token was tripped.
+  let mut len_buf = [0u8; 4];
+  let _ = stream.read_exact(&mut len_buf);
+  Ok(())
 }
 
 async fn spawn_daemon_with_model(label: &str, model_name: &str, arch: &str) -> DaemonHandle {
@@ -131,7 +189,7 @@ async fn spawn_daemon_with_model(label: &str, model_name: &str, arch: &str) -> D
   wait_for_socket(&socket).await;
   await_catalog_populated(&socket).await;
   DaemonHandle {
-    join,
+    join: Some(join),
     socket,
     state,
     model_dir,
@@ -529,7 +587,7 @@ async fn spawn_daemon_with_model_wide_range(
   wait_for_socket(&socket).await;
   await_catalog_populated(&socket).await;
   DaemonHandle {
-    join,
+    join: Some(join),
     socket,
     state,
     model_dir,
@@ -732,7 +790,7 @@ async fn start_ctx_above_native_succeeds_and_duplicate_launch_uses_new_port() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn logs_follow_returns_daemon_unreachable_when_daemon_dies() {
-  let h = spawn_daemon_with_model_wide_range("logsdrop", "m.gguf", "llama").await;
+  let mut h = spawn_daemon_with_model_wide_range("logsdrop", "m.gguf", "llama").await;
 
   // Launch a model so `logs --follow` has a target.
   let code = run_dispatch_at(
@@ -807,10 +865,13 @@ async fn logs_follow_returns_daemon_unreachable_when_daemon_dies() {
     "logs --follow must exit 65 when daemon disappears",
   );
 
-  // Drop temp dirs (daemon already shut down).
-  std::fs::remove_dir_all(&h.state).ok();
-  std::fs::remove_dir_all(&h.model_dir).ok();
-  let _ = tokio::time::timeout(Duration::from_secs(2), h.join).await;
+  // Daemon already shut down via the IPC call above. Drop the
+  // handle's join future explicitly so it doesn't outlive the test;
+  // the rest of the handle's cleanup (temp dirs + best-effort
+  // shutdown) runs from `Drop` when `h` falls out of scope.
+  if let Some(join) = h.join.take() {
+    let _ = tokio::time::timeout(Duration::from_secs(2), join).await;
+  }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -710,14 +710,37 @@ async fn stop_all_handler(
   };
   let grace_secs = parsed.grace_secs.unwrap_or_else(default_grace_secs);
   check_grace_secs(grace_secs)?;
-  let snap = ctx.supervisors.snapshot().await;
-  // Run the per-launch stops concurrently. Sequential iteration on
-  // the original implementation serialised N × grace_secs, which
-  // could blow the default IPC client timeout (5 s) for 2+ stuck
-  // launches. `join_all` brings the wall-clock back to the slowest
-  // stop, not the sum.
+  let outcomes = stop_all_managed(ctx, Duration::from_secs(grace_secs)).await;
+  let stopped: Vec<Value> = outcomes
+    .iter()
+    .map(|(launch_id, state)| json!({"launch_id": launch_id, "state": flatten_state(state)}))
+    .collect();
+  let count = stopped.len();
+  Ok(json!({"stopped": stopped, "count": count}))
+}
+
+/// SIGTERM-then-SIGKILL every managed launch concurrently, drop them
+/// from the registry, and prune `state.running`. Returns the
+/// (launch_id, final_state) pairs for callers that need to surface
+/// them on the wire.
+///
+/// Exposed so the daemon's shutdown path can kill its supervised
+/// children before `run_foreground` returns. The supervisor spawns
+/// `llama-server` with `setsid`, so without this hook a graceful
+/// `daemon stop` / SIGINT / IPC `shutdown` leaves the children
+/// running as init-owned orphans. R42's orphan adoption only intends
+/// to rescue children from *crashes* (SIGKILL, segfault); it should
+/// not turn deliberate shutdown into a leak.
+///
+/// The `join_all` keeps wall-clock equal to the slowest stop rather
+/// than the sum — the original sequential loop blew the default IPC
+/// client timeout for 2+ stuck launches.
+pub(crate) async fn stop_all_managed(
+  ctx: &MethodContext,
+  grace: Duration,
+) -> Vec<(LaunchId, ManagedState)> {
   use futures::future::join_all;
-  let grace = Duration::from_secs(grace_secs);
+  let snap = ctx.supervisors.snapshot().await;
   let stops = snap.into_iter().map(|(launch_id, model)| async move {
     let final_state = model.stop(grace).await;
     let model_id = model.id().clone();
@@ -726,12 +749,12 @@ async fn stop_all_handler(
   });
   let outcomes = join_all(stops).await;
 
-  let mut stopped: Vec<Value> = Vec::with_capacity(outcomes.len());
+  let mut stopped: Vec<(LaunchId, ManagedState)> = Vec::with_capacity(outcomes.len());
   let mut stopped_keys: Vec<(ModelId, u16)> = Vec::with_capacity(outcomes.len());
   for (launch_id, model_id, port, final_state) in outcomes {
     ctx.supervisors.remove(&launch_id).await;
     stopped_keys.push((model_id, port));
-    stopped.push(json!({"launch_id": launch_id, "state": flatten_state(&final_state)}));
+    stopped.push((launch_id, final_state));
   }
   if !stopped_keys.is_empty() {
     ctx
@@ -745,8 +768,7 @@ async fn stop_all_handler(
       })
       .await;
   }
-  let count = stopped.len();
-  Ok(json!({"stopped": stopped, "count": count}))
+  stopped
 }
 
 #[derive(Deserialize)]

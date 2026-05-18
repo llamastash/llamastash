@@ -288,8 +288,26 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
     );
   }
 
+  // Hold a second handle to the dispatcher context so the
+  // post-serve cleanup step (below) can reach the supervisor
+  // registry after `serve` consumes its copy. `MethodContext` is
+  // Arc-backed, so the clone is cheap and shares state.
+  let cleanup_ctx = ctx.clone();
+
   // 9. Accept loop until shutdown is triggered.
   let result = server::serve(listener, ctx).await;
+
+  // 9b. SIGTERM-then-SIGKILL every supervised `llama-server` before
+  // exiting. The supervisor's `pre_exec(setsid)` makes each child a
+  // session leader so it survives a daemon crash (R42's orphan
+  // adoption rescues those on the next start). For *deliberate*
+  // exits — `daemon stop`, SIGINT, SIGTERM, IPC `shutdown` — we
+  // don't want children to leak. The 5 s grace mirrors
+  // `default_grace_secs` in the IPC `stop_model` handler.
+  let stopped = crate::ipc::methods::stop_all_managed(&cleanup_ctx, Duration::from_secs(5)).await;
+  if !stopped.is_empty() {
+    log::info!("shutdown: stopped {} managed launch(es)", stopped.len());
+  }
 
   // 10. Cleanup. Lockfile cleans itself in Drop; the socket file is
   // removed here. We let the listener drop naturally.
