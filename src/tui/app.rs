@@ -514,6 +514,11 @@ impl App {
   /// launch so they don't have to chase it manually. No-op when
   /// the row isn't found (the merge may have ordered things
   /// differently on this tick).
+  ///
+  /// Routes through `sync_picker_to_focus` so any picker staged
+  /// for the prior focused path is cleared when the snap lands on
+  /// a different model — otherwise Settings would keep painting
+  /// the stale picker's name/port for the just-snapped row.
   fn snap_cursor_to_launch(&mut self, launch_id: &str) {
     let rows = self.rendered_rows();
     if let Some((idx, _)) = rows.iter().enumerate().find(|(_, r)| match r {
@@ -523,7 +528,9 @@ impl App {
       } => id == launch_id,
       _ => false,
     }) {
+      let before = self.focused_path();
       self.list_cursor = idx;
+      self.sync_picker_to_focus(before);
     }
   }
 
@@ -866,26 +873,26 @@ impl App {
   /// for the current focus (e.g. Chat when the model isn't Ready).
   pub fn cycle_right_tab(&mut self) {
     let tabs = self.available_right_tabs();
-    if tabs.is_empty() {
-      self.right_tab = RightTab::Logs;
+    let Some(first) = tabs.first().copied() else {
+      self.right_tab = RightTab::Settings;
       return;
-    }
+    };
     let pos = tabs.iter().position(|t| *t == self.right_tab).unwrap_or(0);
     let next = (pos + 1) % tabs.len();
-    self.right_tab = tabs[next];
+    self.right_tab = tabs.get(next).copied().unwrap_or(first);
   }
 
   /// Cycle to the previous right-pane tab — used by `Left` arrow
   /// alongside [`Self::cycle_right_tab`] (`Right` arrow / Tab).
   pub fn cycle_right_tab_prev(&mut self) {
     let tabs = self.available_right_tabs();
-    if tabs.is_empty() {
-      self.right_tab = RightTab::Logs;
+    let Some(first) = tabs.first().copied() else {
+      self.right_tab = RightTab::Settings;
       return;
-    }
+    };
     let pos = tabs.iter().position(|t| *t == self.right_tab).unwrap_or(0);
     let prev = (pos + tabs.len() - 1) % tabs.len();
-    self.right_tab = tabs[prev];
+    self.right_tab = tabs.get(prev).copied().unwrap_or(first);
   }
 
   /// Clamp `right_tab` back to a reachable choice if the focused
@@ -1627,6 +1634,64 @@ mod tests {
     app.right_tab = RightTab::Chat;
     app.ensure_right_tab_reachable();
     assert_eq!(app.right_tab, RightTab::Settings);
+  }
+
+  #[test]
+  fn cycle_right_tab_falls_back_to_settings_when_unreachable() {
+    // F1 #2: the cycle helpers used to hardcode `Logs` as the
+    // empty-set fallback, contradicting `ensure_right_tab_reachable`
+    // which lands on Settings. Now both helpers walk the reachable
+    // list and snap to its first entry (Settings is universal).
+    let mut app = App::new(AppOptions::default());
+    // No models loaded → focused_managed() is None → tabs = [Settings]
+    app.right_tab = RightTab::Logs;
+    app.cycle_right_tab();
+    assert_eq!(
+      app.right_tab,
+      RightTab::Settings,
+      "cycle_right_tab must land in the reachable set"
+    );
+    app.right_tab = RightTab::Chat;
+    app.cycle_right_tab_prev();
+    assert_eq!(
+      app.right_tab,
+      RightTab::Settings,
+      "cycle_right_tab_prev must land in the reachable set"
+    );
+  }
+
+  #[test]
+  fn snap_cursor_to_launch_clears_stale_launch_picker() {
+    // F1 #3: `snap_cursor_to_launch` is the only `list_cursor`
+    // writer that used to skip `sync_picker_to_focus`. When a
+    // status snapshot lands during launch and snaps to a different
+    // path than the picker was staged for, Settings would render
+    // ports/name for the *previous* path. Snap must now clear the
+    // stale picker just like `move_up` / `move_down` do.
+    //
+    // With managed = [b], the row layout is:
+    //   0: TableHeader
+    //   1: Header(▶ Running)
+    //   2: Model b (launch L-42100)
+    //   3: Header(/m/x)
+    //   4: Model a (catalog)
+    // (empty /m/y group is pruned by `build_rows`)
+    let mut app = App::new(AppOptions::default());
+    app.models = vec![fake("/m/x/a.gguf", "/m/x"), fake("/m/y/b.gguf", "/m/y")];
+    app.managed = vec![ready_managed(
+      "/m/y/b.gguf",
+      42100,
+      SurfaceState::Launching,
+    )];
+    app.list_cursor = 4; // model a (catalog row)
+    app.open_launch_picker();
+    assert_eq!(app.launch_picker.as_ref().unwrap().model_name, "a");
+    app.snap_cursor_to_launch("L-42100");
+    assert_eq!(app.list_cursor, 2, "snap must move cursor to launch row");
+    assert!(
+      app.launch_picker.is_none(),
+      "snap_cursor_to_launch must clear a picker staged for the prior path"
+    );
   }
 
   #[test]

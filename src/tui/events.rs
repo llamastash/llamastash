@@ -116,12 +116,11 @@ fn handle_key(app: &mut App, key: KeyEvent, writer: Option<&mpsc::Sender<WriterC
     return;
   }
   // Confirmation dialog steals all input. Submit (default `Enter`)
-  // confirms; Cancel (default `Esc`) explicitly cancels. The hard-
-  // coded `y` / `Y` shortcut also confirms; *any* other key cancels
-  // — a foot-gun-resistant default so a stray keypress doesn't drop
-  // a running model or kill the daemon. The Submit/Cancel keys are
-  // resolved through the live keymap so config overrides flow
-  // through to both the dispatch and the popup's chip labels.
+  // or `y` / `Y` confirms; everything else cancels. We treat
+  // `n` / `N` as the named cancel keys so the popup's "Esc / n
+  // cancel" hint matches an intentional binding, while every other
+  // key still cancels via the foot-gun-resistant catchall so a
+  // stray keypress can't drop a running model or kill the daemon.
   if app.confirm_dialog.is_some() {
     let bound = app.action_for(Focus::ConfirmPopup, key.code, key.modifiers);
     let confirmed = matches!(bound, Some(Action::Submit))
@@ -315,11 +314,11 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
       //  - Settings tab → stop the focused managed launch (round-8).
       //  - Any other right tab → no-op so we don't accidentally
       //    fire a stop or scroll toggle on Chat/Embed/Rerank.
+      // Only toggle auto-scroll on the Logs surface; on Settings let
+      // `apply_stop_model` handle the no-managed case (it toasts).
       if app.focus == Focus::RightPane && app.right_tab == RightTab::Settings {
-        if app.focused_managed().is_some() {
-          apply_stop_model(app);
-        }
-      } else {
+        apply_stop_model(app);
+      } else if app.right_tab == RightTab::Logs {
         app.logs_state.auto_scroll = !app.logs_state.auto_scroll;
       }
     }
@@ -2061,10 +2060,12 @@ mod tests {
   }
 
   #[test]
-  fn s_on_settings_tab_is_noop_without_managed_launch() {
-    // Pressing `s` on the Settings tab for an unlaunched model
-    // does nothing (no confirm dialog, no toast spam) — there's
-    // nothing to stop.
+  fn s_on_settings_tab_toasts_without_managed_launch() {
+    // F1 #5: pressing `s` on Settings for an unlaunched model used
+    // to be a silent no-op. Now it routes through
+    // `apply_stop_model` so the user sees the standard "nothing to
+    // stop" toast. The chip is still gated on a managed launch,
+    // but the keybinding is always live.
     let mut app = App::new(Default::default());
     app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
     app.go_top();
@@ -2072,6 +2073,34 @@ mod tests {
     app.right_tab = RightTab::Settings;
     pump_input(&mut app, key(KeyCode::Char('s'), KeyModifiers::NONE));
     assert!(app.confirm_dialog.is_none());
+    assert!(
+      app.toast.is_some(),
+      "Settings `s` with no managed row must toast, not silently no-op"
+    );
+  }
+
+  #[test]
+  fn s_on_chat_tab_does_not_flip_logs_auto_scroll() {
+    // F1 #1 (P0 regression fix): the fall-through `else` of
+    // `ToggleAutoScroll` used to flip `logs_state.auto_scroll` for
+    // every RightPane focus that wasn't Settings — including Chat
+    // / Embed / Rerank. Repro: focus a running model, switch to
+    // Chat, press `s`, switch back to Logs → auto_scroll silently
+    // flipped. Gate the toggle on `RightTab::Logs` to close it.
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.managed = vec![ready_managed_for_events("/m/qwen.gguf", 41100)];
+    app.go_top();
+    app.focus = Focus::RightPane;
+    app.logs_state.auto_scroll = true;
+    for tab in [RightTab::Chat, RightTab::Embed, RightTab::Rerank] {
+      app.right_tab = tab;
+      pump_input(&mut app, key(KeyCode::Char('s'), KeyModifiers::NONE));
+      assert!(
+        app.logs_state.auto_scroll,
+        "`s` on {tab:?} must not toggle the Logs auto-scroll"
+      );
+    }
   }
 
   #[test]
