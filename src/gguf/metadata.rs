@@ -177,6 +177,21 @@ impl Quant {
       .saturating_mul(bytes_per_block)
   }
 
+  /// Reverse of [`Self::label`] — parses the canonical wire label
+  /// (`"Q4_K"`, `"IQ3_S"`, …) back into a `Quant`. Returns `None`
+  /// for unrecognised labels so the caller decides between
+  /// `Unknown(0)` and a hard error. Stays in sync with `label()`
+  /// because it walks the same enum.
+  pub fn from_label(label: &str) -> Option<Self> {
+    use Quant::*;
+    let all = [
+      F32, F16, BF16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q8_1, Q2_K, Q3_K, Q4_K, Q5_K, Q6_K, Q8_K,
+      IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S, IQ1_S, IQ1_M, IQ4_NL, IQ4_XS, TQ1_0, TQ2_0, I8, I16,
+      I32, I64, F64,
+    ];
+    all.into_iter().find(|q| q.label() == label)
+  }
+
   pub fn label(&self) -> &'static str {
     match self {
       Quant::F32 => "F32",
@@ -579,6 +594,31 @@ mod tests {
       .build();
     let m = parse(bytes);
     assert!(m.reasoning_hint);
+  }
+
+  #[test]
+  fn quant_from_label_round_trips_every_variant() {
+    // Tier-B sweep replaced an open-coded 15-arm `parse_quant`
+    // with the canonical `Quant::from_label`. The contract is
+    // strict round-tripping: every `label()` output must parse
+    // back to the same variant. `Unknown(_)` is the only special
+    // case — its label is the literal "Unknown" sentinel rather
+    // than a round-trippable tag.
+    use Quant::*;
+    let canonical = [
+      F32, F16, BF16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q8_1, Q2_K, Q3_K, Q4_K, Q5_K, Q6_K, Q8_K,
+      IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S, IQ1_S, IQ1_M, IQ4_NL, IQ4_XS, TQ1_0, TQ2_0, I8, I16,
+      I32, I64, F64,
+    ];
+    for q in canonical {
+      let label = q.label();
+      assert_eq!(
+        Quant::from_label(label),
+        Some(q),
+        "round-trip failed for {label}",
+      );
+    }
+    assert_eq!(Quant::from_label("nope"), None);
   }
 
   #[test]

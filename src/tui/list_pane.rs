@@ -467,7 +467,7 @@ fn build_status_legend(palette: &Palette) -> Line<'static> {
   spans.push(Span::raw(" "));
   for (i, (state, label)) in entries.iter().enumerate() {
     if i > 0 {
-      spans.push(Span::styled(" · ", Style::default().fg(palette.muted)));
+      spans.push(Span::styled(" · ", palette.muted_style()));
     }
     spans.push(Span::styled(
       glyph_for(*state).to_string(),
@@ -476,7 +476,7 @@ fn build_status_legend(palette: &Palette) -> Line<'static> {
     spans.push(Span::raw(" "));
     spans.push(Span::styled(
       (*label).to_string(),
-      Style::default().fg(palette.muted),
+      palette.muted_style(),
     ));
   }
   spans.push(Span::raw(" "));
@@ -634,15 +634,10 @@ pub(crate) fn build_block_title(
   // Now build the actual Line with styled spans.
   let mut spans: Vec<Span<'static>> = Vec::with_capacity(8);
   spans.push(Span::raw(" "));
-  spans.push(Span::styled(
-    count,
-    Style::default()
-      .fg(palette.panel_title)
-      .add_modifier(Modifier::BOLD),
-  ));
+  spans.push(Span::styled(count, palette.title_style()));
   spans.push(Span::styled(
     " · ".to_string(),
-    Style::default().fg(palette.muted),
+    palette.muted_style(),
   ));
 
   // Filter slot. Inactive chip uses the same muted style as the
@@ -651,7 +646,7 @@ pub(crate) fn build_block_title(
     FilterTitle::Inactive => {
       spans.push(Span::styled(
         filter_chip_label.to_string(),
-        Style::default().fg(palette.muted),
+        palette.muted_style(),
       ));
     }
     FilterTitle::Active { buffer, focused } => {
@@ -663,7 +658,7 @@ pub(crate) fn build_block_title(
       ));
       spans.push(Span::styled(
         buffer.to_string(),
-        Style::default().fg(palette.fg),
+        palette.text_style(),
       ));
       if focused {
         spans.push(Span::styled(
@@ -680,9 +675,9 @@ pub(crate) fn build_block_title(
   for h in hints {
     spans.push(Span::styled(
       " · ".to_string(),
-      Style::default().fg(palette.muted),
+      palette.muted_style(),
     ));
-    spans.push(Span::styled(h, Style::default().fg(palette.muted)));
+    spans.push(Span::styled(h, palette.muted_style()));
   }
   spans.push(Span::raw(" "));
 
@@ -788,7 +783,7 @@ fn render_row<'a>(
       // box-drawing border characters already on the block.
       ListItem::new(Line::from(Span::styled(
         "─".repeat(content_w),
-        Style::default().fg(palette.muted),
+        palette.muted_style(),
       )))
     }
     ListRow::Model {
@@ -835,7 +830,7 @@ fn render_row<'a>(
           Style::default().add_modifier(Modifier::BOLD),
         )
       } else if *favorite {
-        ("★  ".to_string(), Style::default().fg(palette.warning))
+        ("★  ".to_string(), palette.warning_style())
       } else {
         ("   ".to_string(), Style::default())
       };

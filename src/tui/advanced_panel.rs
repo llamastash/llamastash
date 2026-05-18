@@ -9,7 +9,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::theme::Palette;
@@ -71,10 +71,7 @@ impl AdvancedPanelState {
 pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AdvancedPanelState, palette: &Palette) {
   let modal = centered_rect(80, 50, area);
   frame.render_widget(Clear, modal);
-  let block = Block::default()
-    .title(" Advanced flags ")
-    .borders(Borders::ALL)
-    .border_style(Style::default().fg(palette.accent));
+  let block = palette.panel_block(" Advanced flags ", true);
   frame.render_widget(block.clone(), modal);
   let inner = block.inner(modal);
 
@@ -85,7 +82,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AdvancedPanelState, pal
 
   let intro = Paragraph::new(Line::from(vec![Span::styled(
     "Edit `llama-server` flags. They append AFTER bundled flags so they trump the picker.",
-    Style::default().fg(palette.muted),
+    palette.muted_style(),
   )]))
   .wrap(Wrap { trim: true });
   frame.render_widget(intro, layout[0]);
@@ -94,7 +91,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AdvancedPanelState, pal
   // `▌ ` block, `▏` cursor) so every text-input in the TUI reads
   // identically.
   let body = Paragraph::new(Line::from(vec![
-    Span::styled(&state.buffer, Style::default().fg(palette.fg)),
+    Span::styled(&state.buffer, palette.text_style()),
     Span::styled(
       "▏",
       Style::default()

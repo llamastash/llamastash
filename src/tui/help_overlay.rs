@@ -344,11 +344,11 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
       ),
       Span::styled(
         format!("· {close_chip} "),
-        Style::default().fg(palette.muted),
+        palette.muted_style(),
       ),
     ]))
     .borders(Borders::ALL)
-    .border_style(Style::default().fg(palette.accent))
+    .border_style(palette.accent_style())
     // Breathing room inside the border so column titles and key
     // labels don't kiss the frame on either side.
     .padding(Padding::new(2, 2, 1, 1));
@@ -431,7 +431,7 @@ fn render_binding_line(keys: &str, description: &str, palette: &Palette) -> Line
         .fg(palette.label)
         .add_modifier(Modifier::BOLD),
     ),
-    Span::styled(description.to_string(), Style::default().fg(palette.fg)),
+    Span::styled(description.to_string(), palette.text_style()),
   ])
 }
 

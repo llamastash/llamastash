@@ -10,7 +10,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::theme::Palette;
@@ -73,15 +73,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, opts: InputPaneOpts<'_>, palett
 }
 
 fn render_prompt(frame: &mut Frame<'_>, area: Rect, field: &PromptField<'_>, palette: &Palette) {
-  let border = if field.active {
-    palette.accent
-  } else {
-    palette.muted
-  };
-  let block = Block::default()
-    .title(format!(" {} ", field.title))
-    .borders(Borders::ALL)
-    .border_style(Style::default().fg(border));
+  let block = palette.panel_block(&format!(" {} ", field.title), field.active);
   let inner = block.inner(area);
   frame.render_widget(block, area);
   // Round-8: drop the leading `▌ ` block; align the caret style
@@ -89,7 +81,7 @@ fn render_prompt(frame: &mut Frame<'_>, area: Rect, field: &PromptField<'_>, pal
   // text inputs read the same.
   let mut spans = vec![Span::styled(
     field.text.to_string(),
-    Style::default().fg(palette.fg),
+    palette.text_style(),
   )];
   if field.active {
     spans.push(Span::styled(
@@ -113,11 +105,11 @@ pub fn idle_status_line<'a>(chips: &[String], palette: &Palette) -> Line<'a> {
   let mut spans: Vec<Span<'a>> = Vec::with_capacity(chips.len() * 2);
   for (i, chip) in chips.iter().filter(|c| !c.is_empty()).enumerate() {
     if i > 0 {
-      spans.push(Span::styled(" · ", Style::default().fg(palette.muted)));
+      spans.push(Span::styled(" · ", palette.muted_style()));
     }
     spans.push(Span::styled(
       chip.clone(),
-      Style::default().fg(palette.muted),
+      palette.muted_style(),
     ));
   }
   Line::from(spans)

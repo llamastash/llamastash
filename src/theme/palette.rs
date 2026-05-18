@@ -158,6 +158,88 @@ pub struct Palette {
   pub status_external: Color,
 }
 
+impl Palette {
+  // ─── Single-slot style helpers ────────────────────────────────
+  //
+  // Each helper returns `Style::default().fg(palette.<slot>)`. They
+  // exist so render callers don't repeat the 6-token incantation
+  // 100+ times across the TUI tree, and so a slot rename here
+  // (e.g. dropping `panel_title` for `title`) is a one-line change.
+  //
+  // BOLD-bearing helpers (`title_style`, `accent_bold_style`) keep
+  // the modifier together with the slot so emphasized labels stay
+  // visually consistent even when a theme leaves bold off the
+  // panel-title slot.
+
+  /// `palette.fg` foreground for primary body text.
+  pub fn text_style(&self) -> ratatui::style::Style {
+    ratatui::style::Style::default().fg(self.fg)
+  }
+
+  /// `palette.muted` foreground for secondary text (dividers,
+  /// timestamps, dimmed metadata).
+  pub fn muted_style(&self) -> ratatui::style::Style {
+    ratatui::style::Style::default().fg(self.muted)
+  }
+
+  /// `palette.accent` foreground — primary-action highlight, panel
+  /// borders, focus indicators.
+  pub fn accent_style(&self) -> ratatui::style::Style {
+    ratatui::style::Style::default().fg(self.accent)
+  }
+
+  /// `palette.label` foreground for label prefixes (`CPU  `,
+  /// `socket  `, group headers).
+  pub fn label_style(&self) -> ratatui::style::Style {
+    ratatui::style::Style::default().fg(self.label)
+  }
+
+  /// `palette.error` foreground for error chrome / destructive
+  /// confirmations.
+  pub fn error_style(&self) -> ratatui::style::Style {
+    ratatui::style::Style::default().fg(self.error)
+  }
+
+  /// `palette.warning` foreground.
+  pub fn warning_style(&self) -> ratatui::style::Style {
+    ratatui::style::Style::default().fg(self.warning)
+  }
+
+  /// `palette.success` foreground.
+  pub fn success_style(&self) -> ratatui::style::Style {
+    ratatui::style::Style::default().fg(self.success)
+  }
+
+  /// `palette.panel_title` foreground + BOLD modifier. The
+  /// canonical block-title style — used by `panel_block` and by
+  /// the right-pane title strip / list-pane filter chip.
+  pub fn title_style(&self) -> ratatui::style::Style {
+    ratatui::style::Style::default()
+      .fg(self.panel_title)
+      .add_modifier(ratatui::style::Modifier::BOLD)
+  }
+
+  /// Build a standard panel block with consistent border + title
+  /// styling. `focused` switches the border to `palette.accent`;
+  /// otherwise it uses `palette.muted`. The title is painted
+  /// through `fmt::panel_title` for the same `BOLD + panel_title`
+  /// shape every panel uses.
+  pub fn panel_block(
+    &self,
+    title: &str,
+    focused: bool,
+  ) -> ratatui::widgets::Block<'static> {
+    let border = if focused { self.accent } else { self.muted };
+    ratatui::widgets::Block::default()
+      .borders(ratatui::widgets::Borders::ALL)
+      .border_style(ratatui::style::Style::default().fg(border))
+      .title(ratatui::text::Line::from(ratatui::text::Span::styled(
+        title.to_string(),
+        self.title_style(),
+      )))
+  }
+}
+
 /// Resolve a `ThemeName` to its concrete `Palette`. Returns a `'static`
 /// reference because all built-in palettes are compile-time constants.
 /// `Custom` is a runtime-loaded palette that cannot be `'static`; this
@@ -289,5 +371,21 @@ mod tests {
 
     assert!(palette_for(ThemeName::Mono).is_dark);
     assert_eq!(palette_for(ThemeName::Mono).bg, Color::Reset);
+  }
+
+  #[test]
+  fn helpers_paint_correct_slot() {
+    use ratatui::style::Modifier;
+    let p = palette_for(ThemeName::Macchiato);
+    assert_eq!(p.text_style().fg, Some(p.fg));
+    assert_eq!(p.muted_style().fg, Some(p.muted));
+    assert_eq!(p.accent_style().fg, Some(p.accent));
+    assert_eq!(p.label_style().fg, Some(p.label));
+    assert_eq!(p.error_style().fg, Some(p.error));
+    assert_eq!(p.warning_style().fg, Some(p.warning));
+    assert_eq!(p.success_style().fg, Some(p.success));
+    let t = p.title_style();
+    assert_eq!(t.fg, Some(p.panel_title));
+    assert!(t.add_modifier.contains(Modifier::BOLD));
   }
 }

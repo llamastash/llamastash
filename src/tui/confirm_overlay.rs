@@ -36,7 +36,7 @@ pub fn render(
         .add_modifier(Modifier::BOLD),
     )))
     .borders(Borders::ALL)
-    .border_style(Style::default().fg(palette.error));
+    .border_style(palette.error_style());
   let inner = block.inner(rect);
   frame.render_widget(block, rect);
 
@@ -47,7 +47,7 @@ pub fn render(
 
   let prompt = Paragraph::new(Line::from(Span::styled(
     body,
-    Style::default().fg(palette.fg),
+    palette.text_style(),
   )))
   .wrap(Wrap { trim: true })
   .alignment(Alignment::Center);
@@ -67,14 +67,14 @@ pub fn render(
         .fg(palette.success)
         .add_modifier(Modifier::BOLD),
     ),
-    Span::styled(" confirm  ·  ", Style::default().fg(palette.muted)),
+    Span::styled(" confirm  ·  ", palette.muted_style()),
     Span::styled(
       format!("{cancel_label} / n"),
       Style::default()
         .fg(palette.warning)
         .add_modifier(Modifier::BOLD),
     ),
-    Span::styled(" cancel", Style::default().fg(palette.muted)),
+    Span::styled(" cancel", palette.muted_style()),
   ]))
   .alignment(Alignment::Center);
   frame.render_widget(hint, chunks[1]);

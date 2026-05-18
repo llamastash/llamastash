@@ -176,29 +176,24 @@ fn gpu_label(gpu: &Value) -> Option<String> {
   // which the current wire shape never emits, so every non-CpuOnly
   // backend silently fell through to the JSON-blob branch. Match on
   // the tagged-enum shape instead.
+  use crate::daemon::host_metrics::GpuFlavor;
   if gpu.is_null() {
     return None;
   }
   let obj = gpu.as_object()?;
-  match obj.get("backend").and_then(Value::as_str) {
-    Some("cpu_only") => Some("CPU only".to_string()),
-    Some("nvidia") => {
-      let count = obj
-        .get("devices")
-        .and_then(Value::as_array)
-        .map(|a| a.len())
-        .unwrap_or(0);
-      Some(format!("NVIDIA GPU(s): {count}"))
-    }
-    Some("amd") => {
-      let count = obj
-        .get("devices")
-        .and_then(Value::as_array)
-        .map(|a| a.len())
-        .unwrap_or(0);
-      Some(format!("AMD GPU(s): {count}"))
-    }
-    Some("apple_metal") => {
+  let raw = obj.get("backend").and_then(Value::as_str)?;
+  let count = || {
+    obj
+      .get("devices")
+      .and_then(Value::as_array)
+      .map(|a| a.len())
+      .unwrap_or(0)
+  };
+  match GpuFlavor::from_label(raw) {
+    GpuFlavor::CpuOnly => Some("CPU only".to_string()),
+    GpuFlavor::Nvidia => Some(format!("NVIDIA GPU(s): {}", count())),
+    GpuFlavor::Amd => Some(format!("AMD GPU(s): {}", count())),
+    GpuFlavor::AppleMetal => {
       let total = obj
         .get("total_memory_bytes")
         .and_then(Value::as_u64)
@@ -206,17 +201,11 @@ fn gpu_label(gpu: &Value) -> Option<String> {
       let gib = total as f64 / (1024.0 * 1024.0 * 1024.0);
       Some(format!("Apple Silicon: {gib:.0}G unified"))
     }
-    Some("unknown") => {
-      let count = obj
-        .get("devices")
-        .and_then(Value::as_array)
-        .map(|a| a.len())
-        .unwrap_or(0);
-      Some(format!(
-        "Unknown GPU vendor (Vulkan-only): {count} device(s)"
-      ))
-    }
-    _ => Some(serde_json::to_string(gpu).unwrap_or_else(|_| "?".to_string())),
+    GpuFlavor::Unknown => Some(format!(
+      "Unknown GPU vendor (Vulkan-only): {} device(s)",
+      count()
+    )),
+    GpuFlavor::Unsampled => Some(serde_json::to_string(gpu).unwrap_or_else(|_| "?".to_string())),
   }
 }
 

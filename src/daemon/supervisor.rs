@@ -63,6 +63,29 @@ pub enum ManagedState {
   Stopped,
 }
 
+impl ManagedState {
+  /// Lowercase wire label (`"launching"`, `"ready"`, …). Stable —
+  /// pinned parsers depend on these strings (P2-16).
+  pub fn label(&self) -> &'static str {
+    match self {
+      ManagedState::Launching => "launching",
+      ManagedState::Loading => "loading",
+      ManagedState::Ready => "ready",
+      ManagedState::Error { .. } => "error",
+      ManagedState::Stopping => "stopping",
+      ManagedState::Stopped => "stopped",
+    }
+  }
+
+  /// Error cause string, if any. `Some` only for `Error{cause}`.
+  pub fn cause(&self) -> Option<&str> {
+    match self {
+      ManagedState::Error { cause } => Some(cause.as_str()),
+      _ => None,
+    }
+  }
+}
+
 /// Inputs to a launch. Owned by the caller (the IPC handler);
 /// supervisor takes them and never hands them back.
 #[derive(Debug, Clone)]
@@ -728,6 +751,33 @@ impl RingBuffer {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn managed_state_label_and_cause_match_wire_shape() {
+    // The label table backs the IPC `status` projection (P2-16).
+    // `cause` is `Some` only for `Error{...}`.
+    assert_eq!(ManagedState::Launching.label(), "launching");
+    assert_eq!(ManagedState::Loading.label(), "loading");
+    assert_eq!(ManagedState::Ready.label(), "ready");
+    assert_eq!(ManagedState::Stopping.label(), "stopping");
+    assert_eq!(ManagedState::Stopped.label(), "stopped");
+    assert_eq!(
+      ManagedState::Error {
+        cause: "boom".into(),
+      }
+      .label(),
+      "error"
+    );
+
+    assert!(ManagedState::Launching.cause().is_none());
+    assert_eq!(
+      ManagedState::Error {
+        cause: "boom".into(),
+      }
+      .cause(),
+      Some("boom")
+    );
+  }
 
   #[test]
   fn ring_buffer_drops_oldest_when_full() {

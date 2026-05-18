@@ -4,24 +4,8 @@
 //! when three panes each defined their own `format_bytes` with subtly
 //! different thresholds.
 
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-
-use crate::theme::Palette;
-
-/// Style a panel block-title strip (` Host `, ` Daemon `, ` Models `).
-/// Returns a single-`Span` `Line` painted in `palette.panel_title` and
-/// bolded. Use this instead of passing a bare `&str` to
-/// `Block::title(...)` so the title pops in a hue distinct from the
-/// panel border (which keeps `palette.accent`).
-pub(crate) fn panel_title(label: &str, palette: &Palette) -> Line<'static> {
-  Line::from(Span::styled(
-    label.to_string(),
-    Style::default()
-      .fg(palette.panel_title)
-      .add_modifier(Modifier::BOLD),
-  ))
-}
+// `panel_title` moved to `Palette::title_style()` / `Palette::panel_block`
+// during the Tier-B sweep — see `src/theme/palette.rs`.
 
 /// Format a token count for the Ctx column / launch picker:
 /// `131072` → `128k`, `262144` → `256k`, `2_000_000` → `2.0M`.

@@ -7,15 +7,13 @@
 //! and Logo (fixed 25 when present).
 
 use ratatui::layout::Rect;
-use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use crate::theme::Palette;
 use crate::tui::app::App;
-use crate::tui::fmt::panel_title;
 use crate::util::paths::model_display_name;
 
 const LABEL_WIDTH: usize = 8;
@@ -28,10 +26,7 @@ const LABEL_RUNNING: &str = "running ";
 /// Render the Daemon info panel into `area`. The block title is
 /// `Daemon`; inner content is five label-prefixed rows.
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
-  let block = Block::default()
-    .title(panel_title(" Daemon ", palette))
-    .borders(Borders::ALL)
-    .border_style(Style::default().fg(palette.accent));
+  let block = palette.panel_block(" Daemon ", true);
   let inner = block.inner(area);
   frame.render_widget(block, area);
 
@@ -79,8 +74,8 @@ fn socket_row<'a>(app: &'a App, budget: usize, palette: &'a Palette) -> Line<'a>
     None => ellipsise(&pid_chunk, budget),
   };
   Line::from(vec![
-    Span::styled(LABEL_SOCKET, Style::default().fg(palette.label)),
-    Span::styled(value, Style::default().fg(palette.fg)),
+    Span::styled(LABEL_SOCKET, palette.label_style()),
+    Span::styled(value, palette.text_style()),
   ])
 }
 
@@ -96,10 +91,10 @@ fn uptime_build_row<'a>(app: &'a App, palette: &'a Palette) -> Line<'a> {
     .map(|v| format!("v{v}"))
     .unwrap_or_else(|| "—".into());
   Line::from(vec![
-    Span::styled(LABEL_UPTIME, Style::default().fg(palette.label)),
-    Span::styled(uptime, Style::default().fg(palette.fg)),
-    Span::styled("   build  ", Style::default().fg(palette.label)),
-    Span::styled(build, Style::default().fg(palette.fg)),
+    Span::styled(LABEL_UPTIME, palette.label_style()),
+    Span::styled(uptime, palette.text_style()),
+    Span::styled("   build  ", palette.label_style()),
+    Span::styled(build, palette.text_style()),
   ])
 }
 
@@ -119,17 +114,17 @@ fn server_row<'a>(app: &'a App, budget: usize, palette: &'a Palette) -> Line<'a>
       let path_budget = budget.saturating_sub(flavor_chunk.width());
       let path_truncated = ellipsise(p, path_budget);
       Line::from(vec![
-        Span::styled(LABEL_SERVER, Style::default().fg(palette.label)),
-        Span::styled(path_truncated, Style::default().fg(palette.fg)),
-        Span::styled(flavor_chunk, Style::default().fg(palette.muted)),
+        Span::styled(LABEL_SERVER, palette.label_style()),
+        Span::styled(path_truncated, palette.text_style()),
+        Span::styled(flavor_chunk, palette.muted_style()),
       ])
     }
     None => {
       let hint = "Not found in usual paths. Set LLAMADASH_LLAMA_SERVER or pass --llama-server";
       let trimmed = right_ellipsise(hint, budget);
       Line::from(vec![
-        Span::styled(LABEL_SERVER, Style::default().fg(palette.label)),
-        Span::styled(trimmed, Style::default().fg(palette.error)),
+        Span::styled(LABEL_SERVER, palette.label_style()),
+        Span::styled(trimmed, palette.error_style()),
       ])
     }
   }
@@ -165,8 +160,8 @@ fn counts_row<'a>(app: &'a App, palette: &'a Palette) -> Line<'a> {
   let total = app.models.len();
   if total == 0 {
     return Line::from(vec![
-      Span::styled(LABEL_MODELS, Style::default().fg(palette.label)),
-      Span::styled("no models found", Style::default().fg(palette.muted)),
+      Span::styled(LABEL_MODELS, palette.label_style()),
+      Span::styled("no models found", palette.muted_style()),
     ]);
   }
   let ready = app
@@ -176,14 +171,14 @@ fn counts_row<'a>(app: &'a App, palette: &'a Palette) -> Line<'a> {
     .count();
   let favorites = app.favorites.len();
   Line::from(vec![
-    Span::styled(LABEL_MODELS, Style::default().fg(palette.label)),
-    Span::styled(format!("{total} found"), Style::default().fg(palette.fg)),
-    Span::styled(" · ", Style::default().fg(palette.muted)),
-    Span::styled(format!("{ready} ready"), Style::default().fg(palette.fg)),
-    Span::styled(" · ", Style::default().fg(palette.muted)),
+    Span::styled(LABEL_MODELS, palette.label_style()),
+    Span::styled(format!("{total} found"), palette.text_style()),
+    Span::styled(" · ", palette.muted_style()),
+    Span::styled(format!("{ready} ready"), palette.text_style()),
+    Span::styled(" · ", palette.muted_style()),
     Span::styled(
       format!("{favorites} ★"),
-      Style::default().fg(palette.warning),
+      palette.warning_style(),
     ),
   ])
 }
@@ -192,8 +187,8 @@ fn running_row<'a>(app: &'a App, budget: usize, palette: &'a Palette) -> Line<'a
   let n = app.managed.len();
   if n == 0 {
     return Line::from(vec![
-      Span::styled(LABEL_RUNNING, Style::default().fg(palette.label)),
-      Span::styled("0", Style::default().fg(palette.muted)),
+      Span::styled(LABEL_RUNNING, palette.label_style()),
+      Span::styled("0", palette.muted_style()),
     ]);
   }
   // Layout: `running 3 (name1 :port1 · name2 :port2 · …)`. The
@@ -213,21 +208,22 @@ fn running_row<'a>(app: &'a App, budget: usize, palette: &'a Palette) -> Line<'a
   let joined = parts.join(" · ");
   let trimmed = right_ellipsise(&joined, list_budget);
   Line::from(vec![
-    Span::styled(LABEL_RUNNING, Style::default().fg(palette.label)),
-    Span::styled(prefix, Style::default().fg(palette.fg)),
-    Span::styled(trimmed, Style::default().fg(palette.fg)),
-    Span::styled(suffix, Style::default().fg(palette.fg)),
+    Span::styled(LABEL_RUNNING, palette.label_style()),
+    Span::styled(prefix, palette.text_style()),
+    Span::styled(trimmed, palette.text_style()),
+    Span::styled(suffix, palette.text_style()),
   ])
 }
 
 /// Backend → human-readable flavor tag used in the `server` row.
 fn flavor_label(app: &App) -> Option<&'static str> {
-  match app.host_metrics.gpu_backend.as_str() {
-    "nvidia" => Some("cuda"),
-    "amd" => Some("rocm"),
-    "apple_metal" => Some("metal"),
-    "cpu_only" => Some("cpu"),
-    _ => None,
+  use crate::daemon::host_metrics::GpuFlavor;
+  match app.host_metrics.flavor() {
+    GpuFlavor::Nvidia => Some("cuda"),
+    GpuFlavor::Amd => Some("rocm"),
+    GpuFlavor::AppleMetal => Some("metal"),
+    GpuFlavor::CpuOnly => Some("cpu"),
+    GpuFlavor::Unknown | GpuFlavor::Unsampled => None,
   }
 }
 

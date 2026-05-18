@@ -1070,30 +1070,12 @@ fn parse_mode_hint(label: Option<&str>) -> crate::gguf::metadata::ModeHint {
 }
 
 fn parse_quant(label: &str) -> crate::gguf::metadata::Quant {
-  use crate::gguf::metadata::Quant;
-  // Accept the canonical labels emitted by `Quant::label`. Anything
-  // else lands as `Unknown(0)` so we don't crash on a future quant
-  // tag the daemon learns about before the TUI does. The `0`
-  // payload is just the "unknown ggml type" sentinel — we don't
-  // surface it back to the user.
-  match label {
-    "F32" => Quant::F32,
-    "F16" => Quant::F16,
-    "BF16" => Quant::BF16,
-    "Q4_0" => Quant::Q4_0,
-    "Q4_1" => Quant::Q4_1,
-    "Q5_0" => Quant::Q5_0,
-    "Q5_1" => Quant::Q5_1,
-    "Q8_0" => Quant::Q8_0,
-    "Q8_1" => Quant::Q8_1,
-    "Q2_K" => Quant::Q2_K,
-    "Q3_K" => Quant::Q3_K,
-    "Q4_K" => Quant::Q4_K,
-    "Q5_K" => Quant::Q5_K,
-    "Q6_K" => Quant::Q6_K,
-    "Q8_K" => Quant::Q8_K,
-    _ => Quant::Unknown(0),
-  }
+  // Route through the canonical `Quant::from_label` so the table
+  // stays single-sourced; missing labels fall through to the
+  // `Unknown(0)` sentinel without crashing the TUI on a future
+  // quant tag the daemon learns about first. The `0` payload is
+  // just "unknown ggml type" — not surfaced back to the user.
+  crate::gguf::metadata::Quant::from_label(label).unwrap_or(crate::gguf::metadata::Quant::Unknown(0))
 }
 
 fn parse_external_row(row: &Value) -> Option<ManagedRow> {

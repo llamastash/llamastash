@@ -71,6 +71,42 @@ impl HostMetricsSnapshot {
   /// `gpu_backend` value emitted when vulkaninfo found a device but
   /// neither NVIDIA nor ROCm probes succeeded. The vendor is unknown.
   pub const BACKEND_UNKNOWN: &'static str = "unknown";
+
+  /// Classify the raw `gpu_backend` string into a typed variant.
+  /// Render layers should branch on this enum instead of comparing
+  /// the wire string at the callsite (audit §1.1 #4).
+  pub fn flavor(&self) -> GpuFlavor {
+    GpuFlavor::from_label(self.gpu_backend.as_str())
+  }
+}
+
+/// Typed view of `HostMetricsSnapshot::gpu_backend`. The wire string
+/// stays the source of truth (clients pin against it); this enum is
+/// purely a render-layer convenience so the TUI / CLI don't each
+/// open-code the same `match string` ladder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpuFlavor {
+  /// Sampler hasn't run yet.
+  Unsampled,
+  CpuOnly,
+  Nvidia,
+  Amd,
+  AppleMetal,
+  /// Vulkan saw a device but vendor classification didn't resolve.
+  Unknown,
+}
+
+impl GpuFlavor {
+  pub fn from_label(label: &str) -> Self {
+    match label {
+      HostMetricsSnapshot::UNINITIALIZED_BACKEND => GpuFlavor::Unsampled,
+      HostMetricsSnapshot::BACKEND_CPU_ONLY => GpuFlavor::CpuOnly,
+      HostMetricsSnapshot::BACKEND_NVIDIA => GpuFlavor::Nvidia,
+      HostMetricsSnapshot::BACKEND_AMD => GpuFlavor::Amd,
+      HostMetricsSnapshot::BACKEND_APPLE_METAL => GpuFlavor::AppleMetal,
+      _ => GpuFlavor::Unknown,
+    }
+  }
 }
 
 /// One-shot synchronous sample. The first refresh of `cpu_usage`
@@ -262,6 +298,41 @@ fn aggregate_gpu(info: &GpuInfo) -> (Option<f32>, Option<u64>, Option<u64>, Opti
 mod tests {
   use super::*;
   use crate::gpu::GpuDevice;
+
+  #[test]
+  fn gpu_flavor_classifies_each_documented_label() {
+    // The wire string set is pinned (P2-16); the typed `flavor()`
+    // view collapses three open-coded `match string` ladders into
+    // one. Round-trip every documented label.
+    assert_eq!(
+      GpuFlavor::from_label(HostMetricsSnapshot::UNINITIALIZED_BACKEND),
+      GpuFlavor::Unsampled
+    );
+    assert_eq!(
+      GpuFlavor::from_label(HostMetricsSnapshot::BACKEND_CPU_ONLY),
+      GpuFlavor::CpuOnly
+    );
+    assert_eq!(
+      GpuFlavor::from_label(HostMetricsSnapshot::BACKEND_NVIDIA),
+      GpuFlavor::Nvidia
+    );
+    assert_eq!(
+      GpuFlavor::from_label(HostMetricsSnapshot::BACKEND_AMD),
+      GpuFlavor::Amd
+    );
+    assert_eq!(
+      GpuFlavor::from_label(HostMetricsSnapshot::BACKEND_APPLE_METAL),
+      GpuFlavor::AppleMetal
+    );
+    assert_eq!(
+      GpuFlavor::from_label(HostMetricsSnapshot::BACKEND_UNKNOWN),
+      GpuFlavor::Unknown
+    );
+    // Any string outside the documented set classifies as `Unknown`
+    // so the daemon never panics on a wire-side addition the TUI
+    // hasn't been rebuilt with yet.
+    assert_eq!(GpuFlavor::from_label("future-backend"), GpuFlavor::Unknown);
+  }
 
   #[test]
   fn aggregate_cpu_only_returns_all_none_and_zero_devices() {

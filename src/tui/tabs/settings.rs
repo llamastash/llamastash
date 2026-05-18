@@ -75,7 +75,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
       lines.push(
         Span::styled(
           "Stop this launch with `s` to re-launch with new settings.",
-          Style::default().fg(palette.muted),
+          palette.muted_style(),
         )
         .into(),
       );
@@ -169,7 +169,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
       } else {
         launch_chip
       },
-      Style::default().fg(palette.muted),
+      palette.muted_style(),
     )
     .into(),
   );
@@ -184,7 +184,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
     if !hints.is_empty() {
       lines.push(Line::from(Span::styled(
         hints.join(" · "),
-        Style::default().fg(palette.muted),
+        palette.muted_style(),
       )));
     }
   }
@@ -242,9 +242,9 @@ fn kv(label: &str, value: String, palette: &Palette) -> Line<'static> {
   Line::from(vec![
     Span::styled(
       format!("  {label:<width$}", width = LABEL_W),
-      Style::default().fg(palette.muted),
+      palette.muted_style(),
     ),
-    Span::styled(value, Style::default().fg(palette.fg)),
+    Span::styled(value, palette.text_style()),
   ])
 }
 
@@ -272,7 +272,7 @@ fn kv_focused(
       .fg(palette.accent)
       .add_modifier(Modifier::BOLD)
   } else {
-    Style::default().fg(palette.muted)
+    palette.muted_style()
   };
   let mut spans: Vec<Span<'static>> = Vec::with_capacity(5);
   spans.push(Span::styled(
@@ -282,15 +282,15 @@ fn kv_focused(
   if focused && cyclable {
     spans.push(Span::styled(
       "◀ ".to_string(),
-      Style::default().fg(palette.accent),
+      palette.accent_style(),
     ));
-    spans.push(Span::styled(value, Style::default().fg(palette.fg)));
+    spans.push(Span::styled(value, palette.text_style()));
     spans.push(Span::styled(
       " ▶".to_string(),
-      Style::default().fg(palette.accent),
+      palette.accent_style(),
     ));
   } else {
-    spans.push(Span::styled(value, Style::default().fg(palette.fg)));
+    spans.push(Span::styled(value, palette.text_style()));
   }
   Line::from(spans)
 }

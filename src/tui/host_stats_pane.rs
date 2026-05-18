@@ -19,21 +19,18 @@
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::daemon::host_metrics::HostMetricsSnapshot;
 use crate::theme::Palette;
-use crate::tui::fmt::{format_bytes, panel_title};
+use crate::tui::fmt::format_bytes;
 
 const LABEL_WIDTH: usize = 5;
 
 /// Render the Host stats pane into `area`.
 pub fn render(frame: &mut Frame<'_>, area: Rect, host: &HostMetricsSnapshot, palette: &Palette) {
-  let block = Block::default()
-    .title(panel_title(" Host ", palette))
-    .borders(Borders::ALL)
-    .border_style(Style::default().fg(palette.accent));
+  let block = palette.panel_block(" Host ", true);
   let inner = block.inner(area);
   frame.render_widget(block, area);
 
@@ -59,8 +56,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, host: &HostMetricsSnapshot, pal
     }
     s if s == HostMetricsSnapshot::BACKEND_APPLE_METAL => {
       lines.push(Line::from(vec![
-        Span::styled("GPU  ", Style::default().fg(palette.label)),
-        Span::styled("unified memory", Style::default().fg(palette.fg)),
+        Span::styled("GPU  ", palette.label_style()),
+        Span::styled("unified memory", palette.text_style()),
       ]));
     }
     _ => {
@@ -84,9 +81,9 @@ fn cpu_row<'a>(host: &HostMetricsSnapshot, bar_width: usize, palette: &'a Palett
   // RAM / GPU / VRAM all start at the same screen offset.
   let value = format!(" {:.0}%", host.cpu_pct);
   let mut spans = vec![
-    Span::styled("CPU  ", Style::default().fg(palette.label)),
+    Span::styled("CPU  ", palette.label_style()),
     bar,
-    Span::styled(value, Style::default().fg(palette.fg)),
+    Span::styled(value, palette.text_style()),
   ];
   // CPU temperature renders next to the percent so the row reads
   // symmetrically with the GPU row, when sysinfo's component
@@ -122,9 +119,9 @@ fn ram_row<'a>(host: &HostMetricsSnapshot, bar_width: usize, palette: &'a Palett
   };
   let bar = bar(pct, bar_width, gauge_color(pct, palette));
   Line::from(vec![
-    Span::styled(label, Style::default().fg(palette.label)),
+    Span::styled(label, palette.label_style()),
     bar,
-    Span::styled(format!(" {value}"), Style::default().fg(palette.fg)),
+    Span::styled(format!(" {value}"), palette.text_style()),
   ])
 }
 
@@ -142,9 +139,9 @@ fn gpu_util_row<'a>(
     .map(|p| format!(" {:.0}%", p))
     .unwrap_or_else(|| " —".into());
   let mut spans = vec![
-    Span::styled("GPU  ", Style::default().fg(palette.label)),
+    Span::styled("GPU  ", palette.label_style()),
     bar,
-    Span::styled(value, Style::default().fg(palette.fg)),
+    Span::styled(value, palette.text_style()),
   ];
   if let Some(temp) = host.gpu_temp_c {
     spans.push(Span::raw("  "));
@@ -169,29 +166,28 @@ fn vram_row<'a>(host: &HostMetricsSnapshot, bar_width: usize, palette: &'a Palet
   };
   let bar = bar(pct, bar_width, gauge_color(pct, palette));
   Line::from(vec![
-    Span::styled("VRAM ", Style::default().fg(palette.label)),
+    Span::styled("VRAM ", palette.label_style()),
     bar,
-    Span::styled(format!(" {value}"), Style::default().fg(palette.fg)),
+    Span::styled(format!(" {value}"), palette.text_style()),
   ])
 }
 
 fn backend_row<'a>(host: &HostMetricsSnapshot, palette: &'a Palette) -> Line<'a> {
-  let label = match host.gpu_backend.as_str() {
-    s if s == HostMetricsSnapshot::BACKEND_NVIDIA => {
-      format!("NVML · {}", pluralize_gpu(host.gpu_device_count))
-    }
-    s if s == HostMetricsSnapshot::BACKEND_AMD => {
-      format!("ROCm · {}", pluralize_gpu(host.gpu_device_count))
-    }
-    s if s == HostMetricsSnapshot::BACKEND_APPLE_METAL => "apple metal".into(),
-    s if s == HostMetricsSnapshot::BACKEND_CPU_ONLY => "cpu only".into(),
-    s if s == HostMetricsSnapshot::UNINITIALIZED_BACKEND => "unsampled".into(),
-    s if s == HostMetricsSnapshot::BACKEND_UNKNOWN => "unknown".into(),
-    other => other.to_string(),
+  use crate::daemon::host_metrics::GpuFlavor;
+  let label = match host.flavor() {
+    GpuFlavor::Nvidia => format!("NVML · {}", pluralize_gpu(host.gpu_device_count)),
+    GpuFlavor::Amd => format!("ROCm · {}", pluralize_gpu(host.gpu_device_count)),
+    GpuFlavor::AppleMetal => "apple metal".into(),
+    GpuFlavor::CpuOnly => "cpu only".into(),
+    GpuFlavor::Unsampled => "unsampled".into(),
+    // Pass the raw label through so a future backend label not yet
+    // classified by `GpuFlavor` still surfaces a debuggable string
+    // (rather than a generic "unknown") in the Host pane.
+    GpuFlavor::Unknown => host.gpu_backend.clone(),
   };
   Line::from(vec![
-    Span::styled("backend  ", Style::default().fg(palette.label)),
-    Span::styled(label, Style::default().fg(palette.fg)),
+    Span::styled("backend  ", palette.label_style()),
+    Span::styled(label, palette.text_style()),
   ])
 }
 

@@ -110,12 +110,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   if state.ranked.is_empty() {
     body.push(Line::from(Span::styled(
       format!("{} candidate(s) staged.", state.candidates.len()),
-      Style::default().fg(palette.muted),
+      palette.muted_style(),
     )));
     for (i, c) in state.candidates.iter().enumerate() {
       body.push(Line::from(Span::styled(
         format!("  [{i}] {c}"),
-        Style::default().fg(palette.fg),
+        palette.text_style(),
       )));
     }
   } else {
@@ -128,8 +128,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
             .fg(palette.accent)
             .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!("{score:.3}  "), Style::default().fg(palette.muted)),
-        Span::styled(text, Style::default().fg(palette.fg)),
+        Span::styled(format!("{score:.3}  "), palette.muted_style()),
+        Span::styled(text, palette.text_style()),
       ]));
     }
   }
@@ -143,7 +143,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
     )),
     (_, Some(err)) => Line::from(Span::styled(
       format!("error: {err}"),
-      Style::default().fg(palette.error),
+      palette.error_style(),
     )),
     _ => input_pane::idle_status_line(&idle_status_chips(app, input_active), palette),
   };

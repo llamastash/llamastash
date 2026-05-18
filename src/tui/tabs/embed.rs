@@ -62,7 +62,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   if let Some(dim) = state.dim {
     body.push(Line::from(Span::styled(
       format!("dim = {dim}"),
-      Style::default().fg(palette.fg),
+      palette.text_style(),
     )));
     if !state.preview.is_empty() {
       let preview = state
@@ -73,19 +73,19 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
         .join(", ");
       body.push(Line::from(Span::styled(
         format!("first8 = [{preview}]"),
-        Style::default().fg(palette.muted),
+        palette.muted_style(),
       )));
     }
     if let Some(n) = state.norm {
       body.push(Line::from(Span::styled(
         format!("L2 norm = {n:.4}"),
-        Style::default().fg(palette.muted),
+        palette.muted_style(),
       )));
     }
   } else {
     body.push(Line::from(Span::styled(
       "Embed the input with Enter.",
-      Style::default().fg(palette.muted),
+      palette.muted_style(),
     )));
   }
 
@@ -98,7 +98,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
     )),
     (_, Some(err)) => Line::from(Span::styled(
       format!("error: {err}"),
-      Style::default().fg(palette.error),
+      palette.error_style(),
     )),
     _ => input_pane::idle_status_line(&idle_status_chips(app, active), palette),
   };

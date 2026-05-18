@@ -376,11 +376,11 @@ fn render_empty_state(
   let lines = vec![
     Line::from(Span::styled(
       "No GGUFs surfaced yet.",
-      Style::default().fg(palette.fg),
+      palette.text_style(),
     )),
     Line::from(Span::styled(
       "Drop a `.gguf` into a watched directory or run `llamadash --model-path <DIR>`.",
-      Style::default().fg(palette.muted),
+      palette.muted_style(),
     )),
   ];
   frame.render_widget(Paragraph::new(lines), inner);

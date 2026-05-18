@@ -319,58 +319,19 @@ pub async fn dispatch_request(ctx: &MethodContext, req: Request) -> Response {
       Response::ok(id, body)
     }
     "status" => Response::ok(id, status_response(ctx).await),
-    "start_model" => match start_model_handler(ctx, req.params).await {
-      Ok(v) => Response::ok(id, v),
-      Err(e) => Response::err(id, e),
-    },
-    "stop_model" => match stop_model_handler(ctx, req.params).await {
-      Ok(v) => Response::ok(id, v),
-      Err(e) => Response::err(id, e),
-    },
-    "stop_all" => match stop_all_handler(ctx, req.params).await {
-      Ok(v) => Response::ok(id, v),
-      Err(e) => Response::err(id, e),
-    },
-    "stop_external" => match stop_external_handler(ctx, req.params).await {
-      Ok(v) => Response::ok(id, v),
-      Err(e) => Response::err(id, e),
-    },
-    "logs_tail" => match logs_tail_handler(ctx, req.params).await {
-      Ok(v) => Response::ok(id, v),
-      Err(e) => Response::err(id, e),
-    },
-    "presets_list" => match presets_list_handler(ctx, req.params).await {
-      Ok(v) => Response::ok(id, v),
-      Err(e) => Response::err(id, e),
-    },
-    "presets_save" => match presets_save_handler(ctx, req.params).await {
-      Ok(v) => Response::ok(id, v),
-      Err(e) => Response::err(id, e),
-    },
-    "presets_delete" => match presets_delete_handler(ctx, req.params).await {
-      Ok(v) => Response::ok(id, v),
-      Err(e) => Response::err(id, e),
-    },
-    "presets_show" => match presets_show_handler(ctx, req.params).await {
-      Ok(v) => Response::ok(id, v),
-      Err(e) => Response::err(id, e),
-    },
-    "favorite_add" => match favorite_add_handler(ctx, req.params).await {
-      Ok(v) => Response::ok(id, v),
-      Err(e) => Response::err(id, e),
-    },
-    "favorite_remove" => match favorite_remove_handler(ctx, req.params).await {
-      Ok(v) => Response::ok(id, v),
-      Err(e) => Response::err(id, e),
-    },
-    "favorite_list" => match favorite_list_handler(ctx).await {
-      Ok(v) => Response::ok(id, v),
-      Err(e) => Response::err(id, e),
-    },
-    "last_params_list" => match last_params_list_handler(ctx).await {
-      Ok(v) => Response::ok(id, v),
-      Err(e) => Response::err(id, e),
-    },
+    "start_model" => respond(id, start_model_handler(ctx, req.params).await),
+    "stop_model" => respond(id, stop_model_handler(ctx, req.params).await),
+    "stop_all" => respond(id, stop_all_handler(ctx, req.params).await),
+    "stop_external" => respond(id, stop_external_handler(ctx, req.params).await),
+    "logs_tail" => respond(id, logs_tail_handler(ctx, req.params).await),
+    "presets_list" => respond(id, presets_list_handler(ctx, req.params).await),
+    "presets_save" => respond(id, presets_save_handler(ctx, req.params).await),
+    "presets_delete" => respond(id, presets_delete_handler(ctx, req.params).await),
+    "presets_show" => respond(id, presets_show_handler(ctx, req.params).await),
+    "favorite_add" => respond(id, favorite_add_handler(ctx, req.params).await),
+    "favorite_remove" => respond(id, favorite_remove_handler(ctx, req.params).await),
+    "favorite_list" => respond(id, favorite_list_handler(ctx).await),
+    "last_params_list" => respond(id, last_params_list_handler(ctx).await),
     other => Response::err(
       id,
       ErrorObject::new(
@@ -378,6 +339,16 @@ pub async fn dispatch_request(ctx: &MethodContext, req: Request) -> Response {
         format!("unknown method: {other}"),
       ),
     ),
+  }
+}
+
+/// Lift a `Result<Value, ErrorObject>` into a `Response`. Collapses the
+/// 14 near-identical `match { Ok(v) => Response::ok(id, v), Err(e) =>
+/// Response::err(id, e) }` arms in the dispatcher.
+fn respond(id: Value, result: Result<Value, ErrorObject>) -> Response {
+  match result {
+    Ok(v) => Response::ok(id, v),
+    Err(e) => Response::err(id, e),
   }
 }
 
@@ -397,18 +368,9 @@ async fn status_response(ctx: &MethodContext) -> Value {
     // (preserving existing pinned parsers) but `Error{cause}` now
     // surfaces the cause as a sibling string field instead of being
     // hidden in serde tagged-enum content.
-    let (state_label, error_cause) = match &state {
-      ManagedState::Launching => ("launching", None),
-      ManagedState::Loading => ("loading", None),
-      ManagedState::Ready => ("ready", None),
-      ManagedState::Error { cause } => ("error", Some(cause.clone())),
-      ManagedState::Stopping => ("stopping", None),
-      ManagedState::Stopped => ("stopped", None),
-    };
-    let state_obj = if let Some(cause) = &error_cause {
-      json!({"state": state_label, "cause": cause})
-    } else {
-      json!({"state": state_label})
+    let state_obj = match state.cause() {
+      Some(cause) => json!({"state": state.label(), "cause": cause}),
+      None => json!({"state": state.label()}),
     };
     // `params` so an agent can reproduce the launch without a
     // separate `last_params_list` call.
@@ -572,23 +534,13 @@ async fn stop_model_handler(
 }
 
 /// Flatten `ManagedState` to a JSON object whose `state` field is a
-/// lowercase string label plus an optional `error_cause`. Used by
+/// lowercase string label plus an optional `cause`. Used by
 /// `stop_model` and `stop_all` responses so the shape matches the
 /// `status` rows (P2-16) and the legacy nested-enum form is gone.
 fn flatten_state(state: &ManagedState) -> Value {
-  match state {
-    ManagedState::Error { cause } => json!({"state": "error", "cause": cause}),
-    other => {
-      let label = match other {
-        ManagedState::Launching => "launching",
-        ManagedState::Loading => "loading",
-        ManagedState::Ready => "ready",
-        ManagedState::Stopping => "stopping",
-        ManagedState::Stopped => "stopped",
-        ManagedState::Error { .. } => unreachable!(),
-      };
-      json!({"state": label})
-    }
+  match state.cause() {
+    Some(cause) => json!({"state": state.label(), "cause": cause}),
+    None => json!({"state": state.label()}),
   }
 }
 

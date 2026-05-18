@@ -102,12 +102,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   let body: Vec<Line<'_>> = if body_text.is_empty() {
     vec![Line::from(Span::styled(
       "Send a prompt with Enter. Responses stream here.",
-      Style::default().fg(palette.muted),
+      palette.muted_style(),
     ))]
   } else {
     body_text
       .lines()
-      .map(|l| Line::from(Span::styled(l.to_string(), Style::default().fg(palette.fg))))
+      .map(|l| Line::from(Span::styled(l.to_string(), palette.text_style())))
       .collect()
   };
 
@@ -120,11 +120,11 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
     )),
     (_, Some(err), _) => Line::from(Span::styled(
       format!("error: {err}"),
-      Style::default().fg(palette.error),
+      palette.error_style(),
     )),
     (_, _, Some(reason)) => Line::from(Span::styled(
       format!("finished: {reason}"),
-      Style::default().fg(palette.muted),
+      palette.muted_style(),
     )),
     _ => input_pane::idle_status_line(&idle_status_chips(app, active), palette),
   };

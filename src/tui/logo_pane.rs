@@ -24,7 +24,7 @@ const LLAMA_GLYPH: &str = "🦙";
 pub fn render(frame: &mut Frame<'_>, area: Rect, _app: &App, palette: &Palette) {
   let block = Block::default()
     .borders(Borders::ALL)
-    .border_style(Style::default().fg(palette.accent));
+    .border_style(palette.accent_style());
   let inner = block.inner(area);
   frame.render_widget(block, area);
 

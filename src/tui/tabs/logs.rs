@@ -148,7 +148,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &LogsTabState, palette: 
   if state.lines.is_empty() {
     let hint = Paragraph::new(Line::from(Span::styled(
       "no log lines yet — launch a model or wait for the daemon to forward stderr",
-      Style::default().fg(palette.muted),
+      palette.muted_style(),
     )))
     .wrap(Wrap { trim: true });
     frame.render_widget(hint, area);
@@ -168,7 +168,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &LogsTabState, palette: 
     .iter()
     .skip(start)
     .take(visible)
-    .map(|l| Line::from(Span::styled(l.as_str(), Style::default().fg(palette.fg))))
+    .map(|l| Line::from(Span::styled(l.as_str(), palette.text_style())))
     .collect();
   let mut p = Paragraph::new(body).wrap(Wrap { trim: false });
   if !state.auto_scroll {

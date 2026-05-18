@@ -82,7 +82,7 @@ fn render_separator(frame: &mut Frame<'_>, area: Rect, palette: &Palette) {
   let line: String = "─".repeat(area.width as usize);
   let para = Paragraph::new(Line::from(Span::styled(
     line,
-    Style::default().fg(palette.muted),
+    palette.muted_style(),
   )));
   frame.render_widget(para, area);
 }
@@ -190,26 +190,26 @@ fn block_title_line(app: &App, tabs: &[RightTab], palette: &Palette) -> Line<'st
   spans.push(Span::raw(" "));
   for (i, tab) in tabs.iter().enumerate() {
     if i > 0 {
-      spans.push(Span::styled(" │ ", Style::default().fg(palette.muted)));
+      spans.push(Span::styled(" │ ", palette.muted_style()));
     }
     // Active tab gets `panel_title` + bold + underline so it reads
     // like the panel's heading text (matches Host/Daemon/Models titles).
     // Inactive tabs stay muted so the heading carries clear focus.
     let style = if *tab == app.right_tab {
-      Style::default()
-        .fg(palette.panel_title)
-        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+      palette
+        .title_style()
+        .add_modifier(Modifier::UNDERLINED)
     } else {
-      Style::default().fg(palette.muted)
+      palette.muted_style()
     };
     spans.push(Span::styled(tab.label().to_string(), style));
   }
   for hint in hints {
     spans.push(Span::styled(
       " · ".to_string(),
-      Style::default().fg(palette.muted),
+      palette.muted_style(),
     ));
-    spans.push(Span::styled(hint, Style::default().fg(palette.muted)));
+    spans.push(Span::styled(hint, palette.muted_style()));
   }
   spans.push(Span::raw(" "));
   Line::from(spans)
@@ -221,14 +221,12 @@ fn block_title_line(app: &App, tabs: &[RightTab], palette: &Palette) -> Line<'st
 /// Falls back to `—` when nothing is focused.
 fn render_header_name(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   use crate::util::paths::model_display_name;
-  let name_style = Style::default()
-    .fg(palette.panel_title)
-    .add_modifier(Modifier::BOLD);
+  let name_style = palette.title_style();
   let name_line = match app.right_pane_focus() {
     Some(m) => Line::from(Span::styled(model_display_name(&m.path), name_style)),
     None => match app.focused_path() {
       Some(p) => Line::from(Span::styled(model_display_name(&p), name_style)),
-      None => Line::from(Span::styled("—", Style::default().fg(palette.muted))),
+      None => Line::from(Span::styled("—", palette.muted_style())),
     },
   };
   frame.render_widget(Paragraph::new(name_line), area);
@@ -241,17 +239,17 @@ fn render_header_stats(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &P
   let stats_line = match app.right_pane_focus() {
     Some(m) => {
       let (rss, cpu) = stats_pair(m);
-      let label_style = Style::default().fg(palette.label);
-      let value_style = Style::default().fg(palette.fg);
+      let label_style = palette.label_style();
+      let value_style = palette.text_style();
       Line::from(vec![
-        Span::styled(format!(":{}  ", m.port), Style::default().fg(palette.muted)),
+        Span::styled(format!(":{}  ", m.port), palette.muted_style()),
         Span::styled(
           format!("{} ", glyph_for(m.state)),
           Style::default().fg(crate::tui::status_icons::colour_for(m.state, palette)),
         ),
         Span::styled(
           label_for(m.state).to_ascii_lowercase(),
-          Style::default().fg(palette.fg),
+          palette.text_style(),
         ),
         Span::styled("  ", Style::default()),
         // Split stats into label/value spans so `RAM` and `CPU` read
@@ -260,7 +258,7 @@ fn render_header_stats(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &P
         // tone as the value digits.
         Span::styled(rss, value_style),
         Span::styled(" RAM", label_style),
-        Span::styled(" · ", Style::default().fg(palette.muted)),
+        Span::styled(" · ", palette.muted_style()),
         Span::styled(cpu, value_style),
         Span::styled(" CPU", label_style),
       ])
@@ -268,7 +266,7 @@ fn render_header_stats(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &P
     None => match app.focused_path() {
       Some(_) => Line::from(Span::styled(
         "not launched",
-        Style::default().fg(palette.muted),
+        palette.muted_style(),
       )),
       None => Line::from(Span::raw("")),
     },
