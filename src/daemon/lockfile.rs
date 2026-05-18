@@ -77,37 +77,26 @@ impl Drop for Lockfile {
 
 /// Errors that prevent `acquire` from reaching a definitive answer. A
 /// healthy daemon never returns these.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum LockfileError {
   /// State directory was missing or unwritable.
-  StateDir(io::Error),
+  #[error("could not prepare state dir: {0}")]
+  StateDir(#[source] io::Error),
   /// Lockfile content was unreadable or corrupt.
-  CorruptLockfile(PathBuf, String),
+  #[error("lockfile {} is corrupt ({reason}); remove it and retry", path.display())]
+  CorruptLockfile { path: PathBuf, reason: String },
   /// Filesystem error not covered by the cases above.
-  Io(io::Error),
+  #[error("lockfile i/o: {0}")]
+  Io(#[source] io::Error),
 }
 
-impl std::fmt::Display for LockfileError {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    match self {
-      Self::StateDir(e) => write!(f, "could not prepare state dir: {e}"),
-      Self::CorruptLockfile(p, msg) => {
-        write!(
-          f,
-          "lockfile {} is corrupt ({msg}); remove it and retry",
-          p.display()
-        )
-      }
-      Self::Io(e) => write!(f, "lockfile i/o: {e}"),
-    }
-  }
-}
-
-impl std::error::Error for LockfileError {}
-
+// Manual `From<io::Error>` because two variants in this enum wrap
+// `io::Error` (`StateDir` and `Io`), so `#[from]` cannot disambiguate.
+// The fallback is `Io` — the more specific `StateDir` is opted into by
+// the explicit `LockfileError::StateDir(e)` constructor.
 impl From<io::Error> for LockfileError {
   fn from(e: io::Error) -> Self {
-    Self::Io(e)
+    LockfileError::Io(e)
   }
 }
 
@@ -139,10 +128,10 @@ pub fn acquire(state_dir: &Path) -> Result<AcquireOutcome, LockfileError> {
     let meta = file.metadata()?;
     let mode = meta.mode() & libc::S_IFMT;
     if mode != libc::S_IFREG {
-      return Err(LockfileError::CorruptLockfile(
-        path.clone(),
-        format!("not a regular file (mode {mode:o})"),
-      ));
+      return Err(LockfileError::CorruptLockfile {
+        path: path.clone(),
+        reason: format!("not a regular file (mode {mode:o})"),
+      });
     }
   }
 
@@ -213,7 +202,10 @@ fn read_pid(path: &Path) -> Result<i32, LockfileError> {
   }
   trimmed
     .parse::<i32>()
-    .map_err(|e| LockfileError::CorruptLockfile(path.to_path_buf(), e.to_string()))
+    .map_err(|e| LockfileError::CorruptLockfile {
+      path: path.to_path_buf(),
+      reason: e.to_string(),
+    })
 }
 
 #[cfg(test)]

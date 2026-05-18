@@ -16,35 +16,17 @@ pub const MAX_FRAME_SIZE: usize = 1024 * 1024;
 
 /// Structured errors so callers (and tests) can distinguish a protocol
 /// violation from a transport-level failure.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum FrameError {
   /// Peer sent a length prefix larger than `MAX_FRAME_SIZE`.
+  #[error("peer announced a {advertised}-byte frame; max is {max}")]
   TooLarge { advertised: usize, max: usize },
   /// Peer closed the connection at or before the prefix completed.
+  #[error("peer closed the connection mid-frame")]
   PeerClosed,
   /// Any other I/O error from the underlying socket.
-  Io(io::Error),
-}
-
-impl std::fmt::Display for FrameError {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    match self {
-      Self::TooLarge { advertised, max } => {
-        write!(f, "peer announced a {advertised}-byte frame; max is {max}")
-      }
-      Self::PeerClosed => write!(f, "peer closed the connection mid-frame"),
-      Self::Io(e) => write!(f, "frame i/o error: {e}"),
-    }
-  }
-}
-
-impl std::error::Error for FrameError {
-  fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-    match self {
-      Self::Io(e) => Some(e),
-      _ => None,
-    }
-  }
+  #[error("frame i/o error: {0}")]
+  Io(#[source] io::Error),
 }
 
 impl From<io::Error> for FrameError {

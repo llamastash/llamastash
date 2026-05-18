@@ -19,8 +19,6 @@ use std::time::Duration;
 
 use serde::Serialize;
 use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
 
 use crate::daemon::state_store::RunningSnapshot;
 
@@ -159,61 +157,39 @@ fn pid_alive(sys: &System, pid: i32) -> bool {
 /// network error, non-200 response, malformed body, or mismatched
 /// id evaluates to `false` — the sweep treats those as stale.
 async fn models_endpoint_matches(port: u16, expected: &Path, timeout: Duration) -> bool {
-  match tokio::time::timeout(timeout, fetch_models_body(port)).await {
-    Ok(Ok((200, body))) => body_mentions_path(&body, expected),
+  match fetch_models_body(port, timeout).await {
+    Ok((200, body)) => body_mentions_path(&body, expected),
     _ => false,
   }
 }
 
-/// Hand-rolled GET so the orphan path doesn't drag in a heavy HTTP
-/// client. We only need the response status + body bytes; the
-/// matcher is tolerant of any body shape that contains the model
-/// path.
-async fn fetch_models_body(port: u16) -> std::io::Result<(u16, Vec<u8>)> {
-  let mut sock = TcpStream::connect(("127.0.0.1", port)).await?;
-  let req = b"GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nAccept: application/json\r\n\r\n";
-  sock.write_all(req).await?;
-  let mut buf = Vec::with_capacity(4096);
-  // Cap the body we care about — `/v1/models` is small, but a
-  // misbehaving peer shouldn't be able to balloon our memory.
-  let mut chunk = [0u8; 1024];
-  let mut total = 0usize;
-  while total < 32 * 1024 {
-    let n = sock.read(&mut chunk).await?;
-    if n == 0 {
-      break;
-    }
-    buf.extend_from_slice(&chunk[..n]);
-    total += n;
-  }
-  let (status, body) = split_status_and_body(&buf)
-    .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "bad HTTP framing"))?;
-  Ok((status, body.to_vec()))
-}
-
-/// Parse the status code + body out of an HTTP/1.1 response. Tolerant
-/// to LF-only and CRLF endings; finds the `\r\n\r\n` (or `\n\n`) header
-/// terminator and returns the body suffix verbatim.
-fn split_status_and_body(bytes: &[u8]) -> Option<(u16, &[u8])> {
-  let crlf = b"\r\n\r\n";
-  let lf = b"\n\n";
-  let header_end = bytes
-    .windows(crlf.len())
-    .position(|w| w == crlf)
-    .map(|i| (i, crlf.len()))
-    .or_else(|| {
-      bytes
-        .windows(lf.len())
-        .position(|w| w == lf)
-        .map(|i| (i, lf.len()))
-    })?;
-  let head = std::str::from_utf8(&bytes[..header_end.0]).ok()?;
-  let first = head.lines().next()?;
-  let mut parts = first.split_whitespace();
-  let _version = parts.next()?;
-  let status: u16 = parts.next()?.parse().ok()?;
-  let body = &bytes[header_end.0 + header_end.1..];
-  Some((status, body))
+/// GET `/v1/models` via `reqwest` — the same client the right-pane
+/// chat tab uses, so the orphan probe doesn't carry its own HTTP/1.1
+/// framing. Capped at 32 KiB so a misbehaving peer can't balloon our
+/// memory (audit §2.2). Returns `(status, body)` or an io error.
+async fn fetch_models_body(port: u16, timeout: Duration) -> std::io::Result<(u16, Vec<u8>)> {
+  let client = reqwest::Client::builder()
+    .timeout(timeout)
+    .build()
+    .map_err(|e| std::io::Error::other(e.to_string()))?;
+  let url = format!("http://127.0.0.1:{port}/v1/models");
+  let resp = client
+    .get(&url)
+    .send()
+    .await
+    .map_err(|e| std::io::Error::other(e.to_string()))?;
+  let status = resp.status().as_u16();
+  // Cap the response body the matcher inspects. `/v1/models` is
+  // small in practice; the cap defends against an unrelated peer
+  // streaming an unbounded body on the recorded port.
+  const MAX_BODY: usize = 32 * 1024;
+  let mut body = resp
+    .bytes()
+    .await
+    .map_err(|e| std::io::Error::other(e.to_string()))?
+    .to_vec();
+  body.truncate(MAX_BODY);
+  Ok((status, body))
 }
 
 /// Strict match: parse the `/v1/models` body as JSON and accept
@@ -277,6 +253,7 @@ mod tests {
   use super::*;
 
   use std::path::PathBuf;
+  use tokio::io::{AsyncReadExt, AsyncWriteExt};
   use tokio::net::TcpListener;
 
   use crate::gguf::identity::ModelId;
@@ -359,15 +336,6 @@ mod tests {
 
     let bare: Vec<String> = vec!["llama-server".into()];
     assert_eq!(extract_model_path(&bare), None);
-  }
-
-  #[test]
-  fn split_status_and_body_handles_canonical_response() {
-    let raw =
-      b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}".to_vec();
-    let (status, body) = split_status_and_body(&raw).expect("parse");
-    assert_eq!(status, 200);
-    assert_eq!(body, b"{}");
   }
 
   #[test]

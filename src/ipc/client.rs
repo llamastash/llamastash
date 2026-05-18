@@ -22,41 +22,26 @@ use super::protocol::{ErrorObject, Request, Response};
 pub const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Errors a caller of `Client::call` may see.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ClientError {
   /// `connect()` failed — daemon socket missing or unreachable.
-  Connect(io::Error),
+  #[error("could not connect to daemon socket: {0}")]
+  Connect(#[source] io::Error),
   /// Frame-level transport problem.
-  Frame(FrameError),
+  #[error("ipc frame error: {0}")]
+  Frame(#[from] FrameError),
   /// Response body wasn't valid JSON-RPC.
-  Decode(serde_json::Error),
+  #[error("could not decode daemon response: {0}")]
+  Decode(#[source] serde_json::Error),
   /// Daemon returned a JSON-RPC error object.
+  #[error("daemon error {}: {}", .0.code, .0.message)]
   Remote(ErrorObject),
   /// Local request body couldn't be serialised.
-  Encode(serde_json::Error),
+  #[error("could not encode request body: {0}")]
+  Encode(#[source] serde_json::Error),
   /// Call exceeded the supplied timeout.
+  #[error("ipc call exceeded {0:?}")]
   Timeout(Duration),
-}
-
-impl std::fmt::Display for ClientError {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    match self {
-      Self::Connect(e) => write!(f, "could not connect to daemon socket: {e}"),
-      Self::Frame(e) => write!(f, "ipc frame error: {e}"),
-      Self::Decode(e) => write!(f, "could not decode daemon response: {e}"),
-      Self::Encode(e) => write!(f, "could not encode request body: {e}"),
-      Self::Remote(err) => write!(f, "daemon error {}: {}", err.code, err.message),
-      Self::Timeout(d) => write!(f, "ipc call exceeded {:?}", d),
-    }
-  }
-}
-
-impl std::error::Error for ClientError {}
-
-impl From<FrameError> for ClientError {
-  fn from(e: FrameError) -> Self {
-    Self::Frame(e)
-  }
 }
 
 /// JSON-RPC client. Owns one open `UnixStream`. Drop the value to close

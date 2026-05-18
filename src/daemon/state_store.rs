@@ -169,137 +169,63 @@ pub fn load(state_dir: &Path) -> Result<DaemonState, LoadError> {
 }
 
 /// Persist `state` to `state_dir/state.json` atomically. Creates the
-/// directory if it doesn't exist. Writes to
-/// `state.json.tmp.<pid>.<rand>` first, then `rename`s — which is
-/// atomic on every POSIX filesystem and guarantees the on-disk file
-/// is always either the old content or the new content, never partial.
+/// directory if it doesn't exist. Writes to a unique
+/// `state.json.tmp.*` first, then `rename`s — which is atomic on
+/// every POSIX filesystem and guarantees the on-disk file is always
+/// either the old content or the new content, never partial.
 ///
-/// The tmp filename includes both the daemon PID and a per-save
-/// random suffix. The random suffix defeats a same-UID attacker who
-/// could otherwise predict the tmp path and plant a symlink at it
-/// between the `remove_file` and re-`open` in the AlreadyExists
-/// retry branch (the `O_NOFOLLOW` defence holds either way, but a
-/// predictable target lets the attacker persistently DoS state
-/// saves). `O_NOFOLLOW + O_EXCL` defends against a symlink-swap
-/// shape on the macOS `/tmp` fallback.
+/// Implementation: `tempfile::NamedTempFile` handles the unique-name
+/// + O_EXCL + 0o600 dance natively (audit §2.1 #2 — replaces ~80
+/// lines of hand-rolled `write_tmp_safely` + `random_suffix`). The
+/// crate's mkstemp-style naming is unpredictable across processes,
+/// preserving the same-UID-symlink-DoS defence the manual code had.
 pub fn save(state_dir: &Path, state: &DaemonState) -> Result<(), SaveError> {
+  use std::io::Write as _;
+
   std::fs::create_dir_all(state_dir).map_err(|e| SaveError::Io {
     path: state_dir.to_path_buf(),
     error: e.to_string(),
   })?;
   let final_path = path(state_dir);
-  let tmp_path = state_dir.join(format!(
-    "state.json.tmp.{}.{:016x}",
-    std::process::id(),
-    random_suffix()
-  ));
   let body = serde_json::to_vec_pretty(state).map_err(|e| SaveError::Serialise(e.to_string()))?;
-  write_tmp_safely(&tmp_path, &body).map_err(|e| SaveError::Io {
-    path: tmp_path.clone(),
+
+  let mut tmp = tempfile::Builder::new()
+    .prefix("state.json.tmp.")
+    .tempfile_in(state_dir)
+    .map_err(|e| SaveError::Io {
+      path: state_dir.to_path_buf(),
+      error: e.to_string(),
+    })?;
+  tmp.write_all(&body).map_err(|e| SaveError::Io {
+    path: tmp.path().to_path_buf(),
     error: e.to_string(),
   })?;
-  std::fs::rename(&tmp_path, &final_path).map_err(|e| SaveError::Io {
+  tmp.as_file().sync_all().map_err(|e| SaveError::Io {
+    path: tmp.path().to_path_buf(),
+    error: e.to_string(),
+  })?;
+  tmp.persist(&final_path).map_err(|e| SaveError::Io {
     path: final_path,
-    error: e.to_string(),
+    error: e.error.to_string(),
   })?;
   Ok(())
 }
 
-/// 64 bits of randomness for the tmp filename. Uses time + counter so
-/// we don't pull a CSPRNG dep just for filename uniqueness — the
-/// security property here is "unpredictable to a same-UID attacker
-/// observing readdir + clock skew", not cryptographic-grade entropy.
-fn random_suffix() -> u64 {
-  use std::sync::atomic::{AtomicU64, Ordering};
-  use std::time::{SystemTime, UNIX_EPOCH};
-  static COUNTER: AtomicU64 = AtomicU64::new(0);
-  let nanos = SystemTime::now()
-    .duration_since(UNIX_EPOCH)
-    .map(|d| d.as_nanos() as u64)
-    .unwrap_or(0);
-  let bump = COUNTER.fetch_add(1, Ordering::Relaxed);
-  nanos ^ (bump.wrapping_mul(0x9e3779b97f4a7c15))
-}
-
-#[cfg(unix)]
-fn write_tmp_safely(tmp: &Path, body: &[u8]) -> std::io::Result<()> {
-  use std::io::Write as _;
-  use std::os::unix::fs::OpenOptionsExt;
-
-  // O_EXCL + O_NOFOLLOW + O_CREAT: refuses to clobber an existing file
-  // (so we can't be tricked into following a planted symlink and
-  // truncating an attacker-chosen target). If a stale tmp from a
-  // crashed daemon exists, the rare-but-possible cleanup is to unlink
-  // it first; on the common path the rename in `save` removes it.
-  let result = std::fs::OpenOptions::new()
-    .write(true)
-    .create_new(true)
-    .custom_flags(libc::O_NOFOLLOW)
-    .mode(0o600)
-    .open(tmp);
-  let mut f = match result {
-    Ok(f) => f,
-    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-      // Stale tmp (e.g. from a previous crash). Remove and retry; this
-      // single-shot retry still cannot follow a symlink because the
-      // subsequent open still has O_NOFOLLOW set.
-      std::fs::remove_file(tmp)?;
-      std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .mode(0o600)
-        .open(tmp)?
-    }
-    Err(e) => return Err(e),
-  };
-  f.write_all(body)?;
-  f.sync_all()?;
-  Ok(())
-}
-
-#[cfg(not(unix))]
-fn write_tmp_safely(tmp: &Path, body: &[u8]) -> std::io::Result<()> {
-  std::fs::write(tmp, body)
-}
-
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum LoadError {
+  #[error("state-store I/O at {}: {error}", path.display())]
   Io { path: PathBuf, error: String },
+  #[error("state-store parse at {}: {error}; the daemon is running with defaults — back up the file and remove it to clear", path.display())]
   Parse { path: PathBuf, error: String },
 }
 
-impl std::fmt::Display for LoadError {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    match self {
-      Self::Io { path, error } => write!(f, "state-store I/O at {}: {error}", path.display()),
-      Self::Parse { path, error } => write!(
-        f,
-        "state-store parse at {}: {error}; the daemon is running with defaults — back up the file and remove it to clear",
-        path.display()
-      ),
-    }
-  }
-}
-
-impl std::error::Error for LoadError {}
-
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum SaveError {
+  #[error("state-store I/O at {}: {error}", path.display())]
   Io { path: PathBuf, error: String },
+  #[error("state-store serialise: {0}")]
   Serialise(String),
 }
-
-impl std::fmt::Display for SaveError {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    match self {
-      Self::Io { path, error } => write!(f, "state-store I/O at {}: {error}", path.display()),
-      Self::Serialise(e) => write!(f, "state-store serialise: {e}"),
-    }
-  }
-}
-
-impl std::error::Error for SaveError {}
 
 #[cfg(test)]
 mod tests {

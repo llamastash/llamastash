@@ -23,45 +23,24 @@ pub struct LocateInputs {
 }
 
 /// What went wrong when [`locate`] couldn't find `llama-server`.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum LocateError {
   /// None of the supplied sources pointed at a real, executable file
   /// and `which` found nothing on `$PATH`.
+  #[error("could not find `llama-server` — set `--llama-server <path>` or `LLAMADASH_LLAMA_SERVER`, or add it to your $PATH")]
   NotFound,
   /// A specific path was supplied (flag/env/config) but it doesn't
   /// exist or isn't a regular file. Distinct from `NotFound` so the
   /// UI can surface the right error.
+  #[error("configured `llama-server` path does not exist: {}", .0.display())]
   ExplicitPathMissing(PathBuf),
   /// A specific path was supplied (flag/env/config) and exists, but
   /// it is not executable by the current user. Caught here so the
   /// supervisor doesn't need to translate a generic spawn failure into
   /// a user-actionable message later.
+  #[error("configured `llama-server` path is not executable: {p} — run `chmod +x {p}` or point `--llama-server` / `LLAMADASH_LLAMA_SERVER` at the real binary", p = .0.display())]
   ExplicitPathNotExecutable(PathBuf),
 }
-
-impl std::fmt::Display for LocateError {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    match self {
-      Self::NotFound => write!(
-        f,
-        "could not find `llama-server` — set `--llama-server <path>` or `LLAMADASH_LLAMA_SERVER`, or add it to your $PATH"
-      ),
-      Self::ExplicitPathMissing(p) => {
-        write!(f, "configured `llama-server` path does not exist: {}", p.display())
-      }
-      Self::ExplicitPathNotExecutable(p) => {
-        write!(
-          f,
-          "configured `llama-server` path is not executable: {} — run `chmod +x {}` or point `--llama-server` / `LLAMADASH_LLAMA_SERVER` at the real binary",
-          p.display(),
-          p.display()
-        )
-      }
-    }
-  }
-}
-
-impl std::error::Error for LocateError {}
 
 /// Resolve `llama-server`'s on-disk path. Returns the canonicalised
 /// path on success.

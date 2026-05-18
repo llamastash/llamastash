@@ -19,31 +19,16 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 /// Outcome of a clipboard write.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ClipboardError {
   /// Neither the native backend nor any shell-out helper worked.
+  #[error("no clipboard backend available — tried: {}. Copy manually.", tried.join(", "))]
   NoBackend { tried: Vec<String> },
   /// A backend was found but failed (non-zero exit / IO error /
   /// arboard error). `backend` names which one was attempted.
+  #[error("{backend} clipboard write failed: {error}")]
   BackendFailed { backend: String, error: String },
 }
-
-impl std::fmt::Display for ClipboardError {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    match self {
-      Self::NoBackend { tried } => write!(
-        f,
-        "no clipboard backend available — tried: {}. Copy manually.",
-        tried.join(", ")
-      ),
-      Self::BackendFailed { backend, error } => {
-        write!(f, "{backend} clipboard write failed: {error}")
-      }
-    }
-  }
-}
-
-impl std::error::Error for ClipboardError {}
 
 /// Copy `text` into the system clipboard. Returns the name of the
 /// backend that succeeded (e.g. `arboard`, `wl-copy`) so the

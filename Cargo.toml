@@ -92,6 +92,23 @@ tokio = { version = "1.50", default-features = false, features = [
   "time",
 ] }
 which = "8"
+# Hand-rolled error enums migrated to `thiserror` derives during the
+# Tier-D audit pass (audit §3 #4).
+thiserror = "2"
+# `fd-lock` replaces the hand-rolled PID lockfile (audit §2.1 #1).
+# Same crate Cargo uses for its own lockfile.
+fd-lock = "4"
+# `tempfile` replaces the hand-rolled atomic state-write path
+# (audit §2.1 #2). Already transitive via dev-deps; pulled to
+# the top level so production code can call `persist` directly.
+tempfile = "3"
+# Audit §2.1 #3 flagged grandchild SIGTERM leaks. The fix is a
+# single character — `libc::kill(-pid, sig)` instead of
+# `libc::kill(pid, sig)` — because `pre_exec` already ran
+# `setsid()`, so the child's PGID equals its PID and the
+# negative form signals the whole process group. Pulling in
+# the `command-group` crate would boil down to the same syscall
+# on Unix and is not needed.
 
 [lib]
 name = "llamadash"

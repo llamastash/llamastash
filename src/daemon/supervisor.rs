@@ -522,34 +522,34 @@ async fn signal_child_with_guard(model: &ManagedModel, sig: libc::c_int) {
     return;
   }
   let Some(pid) = child.id() else { return };
-  // SAFETY: `kill(2)` with a positive pid signals a single process.
-  // `pid` came from a `tokio::process::Child` that is still alive
-  // (we just verified via `try_wait`) and we hold the mutex across
-  // the call so it cannot be reaped between the check and the send.
+  // SAFETY: `kill(2)` with a *negative* pid signals every process
+  // in the corresponding process group. `pre_exec` ran `setsid()`
+  // for the child, which made it both a session leader and a
+  // process-group leader whose PGID equals its PID — so the
+  // negated PID here is the PGID of llama-server and every
+  // grandchild it spawned. We hold the child mutex across the
+  // call so the kernel can't reap and recycle the PGID between
+  // our `try_wait` check and the signal delivery.
+  //
+  // Audit §2.1 #3: signalling just `pid` left grandchildren
+  // running after SIGTERM. The fix is a one-character negation
+  // (the alternative is pulling in the `command-group` crate,
+  // which boils down to the same syscall on Unix).
   unsafe {
-    libc::kill(pid as i32, sig);
+    libc::kill(-(pid as i32), sig);
   }
 }
 
 /// Errors `spawn` can return synchronously.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum SpawnError {
   /// `Command::spawn` failed (binary not executable, etc.).
+  #[error("could not spawn llama-server: {0}")]
   Spawn(String),
   /// Log file could not be opened.
+  #[error("could not open log file: {0}")]
   Log(String),
 }
-
-impl std::fmt::Display for SpawnError {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    match self {
-      Self::Spawn(s) => write!(f, "could not spawn llama-server: {s}"),
-      Self::Log(s) => write!(f, "could not open log file: {s}"),
-    }
-  }
-}
-
-impl std::error::Error for SpawnError {}
 
 async fn pump_stream<R>(
   mut reader: BufReader<R>,

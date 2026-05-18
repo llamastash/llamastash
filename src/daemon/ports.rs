@@ -14,34 +14,17 @@ use std::ops::RangeInclusive;
 use crate::config::loader::PortRange;
 
 /// Errors from [`allocate`].
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum AllocateError {
   /// No port in the configured range was bindable.
+  #[error("no free port in {}-{} ({} reserved by caller)", range.0, range.1, in_use.len())]
   NoFreePort { range: (u16, u16), in_use: Vec<u16> },
   /// Inverted or empty range — caller bug, surfaces as a structured
   /// error so the supervisor can refuse the launch instead of
   /// looping forever.
+  #[error("port range is empty or inverted")]
   EmptyRange,
 }
-
-impl std::fmt::Display for AllocateError {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    match self {
-      Self::NoFreePort { range, in_use } => {
-        write!(
-          f,
-          "no free port in {}-{} ({} reserved by caller)",
-          range.0,
-          range.1,
-          in_use.len()
-        )
-      }
-      Self::EmptyRange => write!(f, "port range is empty or inverted"),
-    }
-  }
-}
-
-impl std::error::Error for AllocateError {}
 
 /// Allocate a free port from `range`, skipping any already in
 /// `reserved` (the supervisor's set of ports it has handed out but
