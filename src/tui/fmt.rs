@@ -7,6 +7,25 @@
 // `panel_title` moved to `Palette::title_style()` / `Palette::panel_block`
 // during the Tier-B sweep — see `src/theme/palette.rs`.
 
+use ratatui::style::{Modifier, Style};
+use ratatui::text::Span;
+
+use crate::theme::Palette;
+
+/// Single caret span (`▏` painted in `palette.accent` + REVERSED).
+/// Used by every single-line text input so the cursor reads
+/// identically across the TUI (audit §F2.1 #4 — replaces three
+/// open-coded `Span::styled("▏", …)` sites in `advanced_panel`,
+/// `list_pane`'s filter chip, and `tabs/input_pane`).
+pub(crate) fn caret(palette: &Palette) -> Span<'static> {
+  Span::styled(
+    "▏",
+    Style::default()
+      .fg(palette.accent)
+      .add_modifier(Modifier::REVERSED),
+  )
+}
+
 /// Format a token count for the Ctx column / launch picker:
 /// `131072` → `128k`, `262144` → `256k`, `2_000_000` → `2.0M`.
 /// Sub-1024 values render as raw integers (e.g., `512`).

@@ -226,34 +226,8 @@ fn handle_advanced_input(app: &mut App, key: KeyEvent) {
 fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<WriterCmd>>) {
   match action {
     Action::Quit => app.should_exit = true,
-    Action::MoveDown => match app.focus {
-      Focus::RightPane if app.right_tab == RightTab::Logs => {
-        app.logs_state.scroll_down();
-      }
-      // Settings tab: ↑/↓ cycle the form's fields (ctx →
-      // reasoning → advanced). The actual NextField/PrevField
-      // dispatch handles the picker materialisation.
-      Focus::RightPane if app.right_tab == RightTab::Settings => apply_next_field(app),
-      // Round-8: Chat/Embed/Rerank output viewports scroll on the
-      // same arrow keys as the Logs pane while focus stays on
-      // the right pane (no edit mode).
-      Focus::RightPane if app.right_tab == RightTab::Chat => app.chat.scroll_down(),
-      Focus::RightPane if app.right_tab == RightTab::Embed => app.embed.scroll_down(),
-      Focus::RightPane if app.right_tab == RightTab::Rerank => app.rerank.scroll_down(),
-      Focus::RightPane => {}
-      _ => app.move_down(),
-    },
-    Action::MoveUp => match app.focus {
-      Focus::RightPane if app.right_tab == RightTab::Logs => {
-        app.logs_state.scroll_up();
-      }
-      Focus::RightPane if app.right_tab == RightTab::Settings => apply_prev_field(app),
-      Focus::RightPane if app.right_tab == RightTab::Chat => app.chat.scroll_up(),
-      Focus::RightPane if app.right_tab == RightTab::Embed => app.embed.scroll_up(),
-      Focus::RightPane if app.right_tab == RightTab::Rerank => app.rerank.scroll_up(),
-      Focus::RightPane => {}
-      _ => app.move_up(),
-    },
+    Action::MoveDown => apply_arrow_in_pane(app, ArrowDir::Down),
+    Action::MoveUp => apply_arrow_in_pane(app, ArrowDir::Up),
     Action::PageUp => app.move_by(-10),
     Action::PageDown => app.move_by(10),
     Action::GoTop => app.go_top(),
@@ -378,18 +352,73 @@ enum ValueDir {
   Prev,
 }
 
+#[derive(Clone, Copy)]
+enum ArrowDir {
+  Up,
+  Down,
+}
+
+/// Per-pane policy for what an ↑/↓ arrow does. Centralises the five
+/// near-identical match arms `Action::MoveUp` and `Action::MoveDown`
+/// used to spell out (audit §F2.1 #1).
+fn apply_arrow_in_pane(app: &mut App, dir: ArrowDir) {
+  match app.focus {
+    Focus::RightPane => match app.right_tab {
+      // Logs: scroll the log buffer.
+      RightTab::Logs => match dir {
+        ArrowDir::Up => app.logs_state.scroll_up(),
+        ArrowDir::Down => app.logs_state.scroll_down(),
+      },
+      // Settings: cycle the form's fields (ctx → reasoning →
+      // advanced). The picker materialisation happens in
+      // `apply_next_field` / `apply_prev_field`.
+      RightTab::Settings => match dir {
+        ArrowDir::Up => apply_prev_field(app),
+        ArrowDir::Down => apply_next_field(app),
+      },
+      // Round-8: Chat/Embed/Rerank output viewports scroll on the
+      // same arrow keys as Logs while focus stays on the right
+      // pane (no edit mode).
+      RightTab::Chat => match dir {
+        ArrowDir::Up => app.chat.scroll_up(),
+        ArrowDir::Down => app.chat.scroll_down(),
+      },
+      RightTab::Embed => match dir {
+        ArrowDir::Up => app.embed.scroll_up(),
+        ArrowDir::Down => app.embed.scroll_down(),
+      },
+      RightTab::Rerank => match dir {
+        ArrowDir::Up => app.rerank.scroll_up(),
+        ArrowDir::Down => app.rerank.scroll_down(),
+      },
+    },
+    _ => match dir {
+      ArrowDir::Up => app.move_up(),
+      ArrowDir::Down => app.move_down(),
+    },
+  }
+}
+
 fn apply_cycle_value(app: &mut App, dir: ValueDir) {
   if !(app.focus == Focus::RightPane && app.right_tab == RightTab::Settings) {
     return;
   }
+  with_picker(app, |p| match dir {
+    ValueDir::Next => p.cycle_focused_value_next(),
+    ValueDir::Prev => p.cycle_focused_value_prev(),
+  });
+}
+
+/// Auto-materialise the inline Settings picker if absent, then run
+/// `f` against it. Audit §F2.1 #3 — collapses the three
+/// `if app.launch_picker.is_none() { app.open_launch_picker(); } if
+/// let Some(p) = app.launch_picker.as_mut() { ... }` blocks.
+fn with_picker<F: FnOnce(&mut crate::tui::launch_picker::LaunchPickerState)>(app: &mut App, f: F) {
   if app.launch_picker.is_none() {
     app.open_launch_picker();
   }
   if let Some(p) = app.launch_picker.as_mut() {
-    match dir {
-      ValueDir::Next => p.cycle_focused_value_next(),
-      ValueDir::Prev => p.cycle_focused_value_prev(),
-    }
+    f(p);
   }
 }
 
@@ -397,12 +426,7 @@ fn apply_next_field(app: &mut App) {
   match app.focus {
     Focus::RerankInput => app.rerank.cycle_field(),
     Focus::RightPane if app.right_tab == RightTab::Settings => {
-      if app.launch_picker.is_none() {
-        app.open_launch_picker();
-      }
-      if let Some(p) = app.launch_picker.as_mut() {
-        p.next_field();
-      }
+      with_picker(app, |p| p.next_field());
     }
     _ => {}
   }
@@ -415,12 +439,7 @@ fn apply_prev_field(app: &mut App) {
     // (one source of truth) rather than duplicating the toggle.
     Focus::RerankInput => app.rerank.cycle_field(),
     Focus::RightPane if app.right_tab == RightTab::Settings => {
-      if app.launch_picker.is_none() {
-        app.open_launch_picker();
-      }
-      if let Some(p) = app.launch_picker.as_mut() {
-        p.prev_field();
-      }
+      with_picker(app, |p| p.prev_field());
     }
     _ => {}
   }

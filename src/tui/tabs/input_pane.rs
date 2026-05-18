@@ -84,12 +84,7 @@ fn render_prompt(frame: &mut Frame<'_>, area: Rect, field: &PromptField<'_>, pal
     palette.text_style(),
   )];
   if field.active {
-    spans.push(Span::styled(
-      "▏",
-      Style::default()
-        .fg(palette.accent)
-        .add_modifier(Modifier::REVERSED),
-    ));
+    spans.push(crate::tui::fmt::caret(palette));
   }
   frame.render_widget(
     Paragraph::new(Line::from(spans)).wrap(Wrap { trim: false }),

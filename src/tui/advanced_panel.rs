@@ -7,7 +7,6 @@
 //! over common flags are deferred to a follow-up.
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph, Wrap};
 use ratatui::Frame;
@@ -92,12 +91,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AdvancedPanelState, pal
   // identically.
   let body = Paragraph::new(Line::from(vec![
     Span::styled(&state.buffer, palette.text_style()),
-    Span::styled(
-      "▏",
-      Style::default()
-        .fg(palette.accent)
-        .add_modifier(Modifier::REVERSED),
-    ),
+    crate::tui::fmt::caret(palette),
   ]))
   .wrap(Wrap { trim: false });
   frame.render_widget(body, layout[1]);

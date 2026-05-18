@@ -22,6 +22,14 @@ All notable changes to llamadash will be documented in this file. The format fol
 - HTTP and MCP server surfaces (R34).
 - HuggingFace pull worker (R46). CLI `pull` subcommand scaffold is hidden from `--help` until then.
 
+### Notes
+- Commit `43cce21` (round-8 polish) describes the Shift key glyph
+  as the Nerd Font codepoint `󰘶`. The shipped code never used that
+  codepoint — `SHIFT_GLYPH` in `src/tui/keybindings.rs` is the
+  standard Unicode `⇧` (U+21E7). The Nerd Font codepoints were
+  scrubbed wholesale in the very next commit (`0ee01df`). No
+  behaviour change; this note is for archaeology.
+
 ## How to read this file
 
 Future releases will land under their own version heading once the project tags `v0.1.0` and beyond. Until then, every meaningful change appears under **Unreleased** so the file stays useful for in-progress users and reviewers.

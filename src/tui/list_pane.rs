@@ -661,12 +661,7 @@ pub(crate) fn build_block_title(
         palette.text_style(),
       ));
       if focused {
-        spans.push(Span::styled(
-          "▏".to_string(),
-          Style::default()
-            .fg(palette.accent)
-            .add_modifier(Modifier::REVERSED),
-        ));
+        spans.push(crate::tui::fmt::caret(palette));
       }
     }
   }
