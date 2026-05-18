@@ -43,13 +43,16 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette, f
   let inner = outer.inner(area);
   frame.render_widget(outer, area);
 
-  // Inner stack: 1 blank pad, name (1 row), stats (1 row), separator
-  // line, tab content. The contextual hint chips ride alongside the
-  // tab strip in the block title (kdash-style, matching the Models
-  // pane), so the inner stack stays focused on identity + content.
+  // Inner stack: 1 blank pad, name (1 row), 1 blank gap, stats
+  // (1 row), separator line, tab content. The blank gap below the
+  // name lets the bold-blue model heading breathe before the dense
+  // `:port  state  RAM  CPU` line — matching kdash's panel header
+  // rhythm. The contextual hint chips ride alongside the tab strip
+  // in the block title.
   let layout = Layout::default()
     .direction(Direction::Vertical)
     .constraints([
+      Constraint::Length(1),
       Constraint::Length(1),
       Constraint::Length(1),
       Constraint::Length(1),
@@ -59,9 +62,9 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette, f
     .split(inner);
 
   render_header_name(frame, layout[1], app, palette);
-  render_header_stats(frame, layout[2], app, palette);
-  render_separator(frame, layout[3], palette);
-  let body_area = layout[4];
+  render_header_stats(frame, layout[3], app, palette);
+  render_separator(frame, layout[4], palette);
+  let body_area = layout[5];
 
   match app.right_tab {
     RightTab::Logs => logs::render(frame, body_area, &app.logs_state, palette),
@@ -153,31 +156,25 @@ fn contextual_hints(app: &App) -> Vec<String> {
       push(&mut out, app.hint(Focus::RightPane, Action::EnterEdit));
     }
     (_, RightTab::Settings) => {
-      // `launch (Settings)` is the canonical description (kept
-      // disambiguated in the help overlay). The chip already sits
-      // next to the `Settings` tab label, so the trailing
-      // `(Settings)` is redundant — override with `launch`.
+      // Round-8: keep the title strip minimal — Enter:launch and
+      // s:stop (when a managed launch exists). The rest of the
+      // edit affordances (advanced, cycle fields, cycle value,
+      // p / u / c yanks) ride inside the pane body, beside the
+      // "Press Enter to launch with these settings" hint.
       push(
         &mut out,
         app.hint_with(Focus::RightPane, Action::Submit, "launch"),
       );
-      push(
-        &mut out,
-        app.hint(Focus::RightPane, Action::OpenAdvancedPanel),
-      );
-      // Round-7 nav: ↑/↓ cycle fields, ←/→ cycle the focused
-      // field's value. Chip uses MoveDown's key (↓) and
-      // CycleValueNext's key (→) since rendering both directions
-      // would double the chip count; the help overlay carries the
-      // full reverse pair.
-      push(
-        &mut out,
-        app.hint_with(Focus::RightPane, Action::MoveDown, "cycle fields"),
-      );
-      push(
-        &mut out,
-        app.hint_with(Focus::RightPane, Action::CycleValueNext, "cycle value"),
-      );
+      if app.focused_managed().is_some() {
+        // `s` resolves to ToggleAutoScroll in the binding table,
+        // but the dispatcher reroutes it to StopModel on the
+        // Settings tab. Override the chip description so the user
+        // sees the tab-appropriate verb.
+        push(
+          &mut out,
+          app.hint_with(Focus::RightPane, Action::ToggleAutoScroll, "stop"),
+        );
+      }
     }
   }
   out
@@ -218,20 +215,19 @@ fn block_title_line(app: &App, tabs: &[RightTab], palette: &Palette) -> Line<'st
   Line::from(spans)
 }
 
-/// Render line 1 of the header: the model's display name in bold.
+/// Render line 1 of the header: the model's display name in bold
+/// blue (`panel_title` slot — same hue as the `Host` / `Daemon` /
+/// `Models` panel headings so the right pane reads as a peer panel).
 /// Falls back to `—` when nothing is focused.
 fn render_header_name(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   use crate::util::paths::model_display_name;
+  let name_style = Style::default()
+    .fg(palette.panel_title)
+    .add_modifier(Modifier::BOLD);
   let name_line = match app.right_pane_focus() {
-    Some(m) => Line::from(Span::styled(
-      model_display_name(&m.path),
-      Style::default().fg(palette.fg).add_modifier(Modifier::BOLD),
-    )),
+    Some(m) => Line::from(Span::styled(model_display_name(&m.path), name_style)),
     None => match app.focused_path() {
-      Some(p) => Line::from(Span::styled(
-        model_display_name(&p),
-        Style::default().fg(palette.fg).add_modifier(Modifier::BOLD),
-      )),
+      Some(p) => Line::from(Span::styled(model_display_name(&p), name_style)),
       None => Line::from(Span::styled("—", Style::default().fg(palette.muted))),
     },
   };
@@ -389,14 +385,12 @@ mod tests {
       contextual_hints(&app_with_focus(Focus::RightPane, RightTab::Rerank)),
       vec!["e:edit".to_string()]
     );
+    // Round-8: Settings title strip keeps only Enter:launch when
+    // no launch is running. Advanced / cycle / yank chips moved
+    // into the pane body beside the "Press Enter to launch" hint.
     assert_eq!(
       contextual_hints(&app_with_focus(Focus::RightPane, RightTab::Settings)),
-      vec![
-        "Enter:launch".to_string(),
-        "a:advanced".to_string(),
-        "↓:cycle fields".to_string(),
-        "→:cycle value".to_string(),
-      ]
+      vec!["Enter:launch".to_string()]
     );
     // Edit-mode focuses surface the in-buffer keystrokes.
     assert_eq!(
@@ -414,6 +408,31 @@ mod tests {
     assert_eq!(
       contextual_hints(&app_with_focus(Focus::RerankInput, RightTab::Rerank)),
       vec!["Esc:clear".to_string(), "Enter:rerank".to_string()]
+    );
+  }
+
+  #[test]
+  fn settings_header_chip_surfaces_stop_when_managed_launch_present() {
+    // Round-8: the Settings title chip strip adds `s:stop` only
+    // when a managed launch is focused — for an unlaunched
+    // selection the chip would be misleading (nothing to stop).
+    use crate::tui::keybindings::Focus;
+    let mut app = App::new(AppOptions::default());
+    app.models = vec![crate::discovery::DiscoveredModel {
+      path: PathBuf::from("/m/qwen.gguf"),
+      parent: PathBuf::from("/m"),
+      source: crate::discovery::ModelSource::UserPath,
+      metadata: None,
+      parse_error: None,
+      split_siblings: Vec::new(),
+    }];
+    app.managed = vec![ready_managed("qwen", None, None)];
+    app.list_cursor = 2;
+    app.focus = Focus::RightPane;
+    app.right_tab = RightTab::Settings;
+    assert_eq!(
+      contextual_hints(&app),
+      vec!["Enter:launch".to_string(), "s:stop".to_string()]
     );
   }
 
@@ -596,10 +615,79 @@ mod tests {
       stats_row > name_row,
       "stats row {stats_row} should sit below name row {name_row}"
     );
+    // Round-8: the name and stats lines are separated by exactly
+    // one blank row so the bold-blue heading breathes.
+    assert_eq!(
+      stats_row,
+      name_row + 2,
+      "stats row should sit one blank line below the name row"
+    );
+    let gap_row = name_row + 1;
+    let gap_inner = rows[gap_row].trim_matches(|c| c == '│' || c == ' ');
+    assert!(
+      gap_inner.is_empty(),
+      "expected blank gap row between name and stats, got: {:?}",
+      rows[gap_row]
+    );
     assert!(
       rows[stats_row].contains("4.2G RAM") && rows[stats_row].contains("312% CPU"),
       "stats row missing RAM/CPU: {:?}",
       rows[stats_row]
     );
+  }
+
+  #[test]
+  fn header_name_renders_in_panel_title_blue_and_bold() {
+    // The model heading shares the `panel_title` hue with the
+    // Host/Daemon/Models block titles so the right pane reads as a
+    // peer panel. Asserting the styled cell colour pins both the
+    // colour swap and the BOLD modifier introduced in round-8.
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+    use ratatui::style::Modifier;
+    use ratatui::Terminal;
+    let mut app = App::new(AppOptions::default());
+    app.models = vec![crate::discovery::DiscoveredModel {
+      path: PathBuf::from("/m/qwen.gguf"),
+      parent: PathBuf::from("/m"),
+      source: crate::discovery::ModelSource::UserPath,
+      metadata: None,
+      parse_error: None,
+      split_siblings: Vec::new(),
+    }];
+    app.managed = vec![ready_managed("qwen", None, None)];
+    app.list_cursor = 2;
+    let palette = app.palette();
+    let mut term = Terminal::new(TestBackend::new(60, 18)).unwrap();
+    term
+      .draw(|f| render(f, Rect::new(0, 0, 60, 18), &app, palette, false))
+      .unwrap();
+    let buf = term.backend().buffer().clone();
+    // Locate the `q` of `qwen` and inspect its cell style.
+    let mut found = false;
+    for y in 0..buf.area.height {
+      for x in 0..buf.area.width.saturating_sub(3) {
+        let cell = buf.cell((x, y)).unwrap();
+        if cell.symbol() == "q"
+          && buf.cell((x + 1, y)).unwrap().symbol() == "w"
+          && buf.cell((x + 2, y)).unwrap().symbol() == "e"
+          && buf.cell((x + 3, y)).unwrap().symbol() == "n"
+        {
+          assert_eq!(
+            cell.fg, palette.panel_title,
+            "model name must be painted in panel_title (blue) hue"
+          );
+          assert!(
+            cell.modifier.contains(Modifier::BOLD),
+            "model name must be bold"
+          );
+          found = true;
+        }
+      }
+      if found {
+        break;
+      }
+    }
+    assert!(found, "did not locate `qwen` in the header line");
   }
 }

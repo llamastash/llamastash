@@ -334,10 +334,19 @@ const LIST_BINDINGS: &[Binding] = &[
     label: "s",
     description: "stop",
   },
-  // Tab/Shift+Tab cycle panes (Models → Logs → Chat/Embed/Rerank
-  // → Settings → wrap). Arrow keys are reserved: ↑/↓ scroll the
-  // list cursor, ←/→ cycle values in the Settings tab. h/l stay
-  // as vi-style pane-cycle aliases for home-row navigators.
+  // Tab/󰘶+Tab cycle panes (Models → Logs → Chat/Embed/Rerank →
+  // Settings → wrap). ↑/↓ scroll the list cursor. Right (→) jumps
+  // into the right pane from the model list (asymmetric — Left
+  // stays unbound here because the user lives in Models by
+  // default; Esc on the right pane snaps back). h/l stay as
+  // vi-style pane-cycle aliases for home-row navigators.
+  Binding {
+    key: KeyCode::Right,
+    mods: KeyModifiers::NONE,
+    action: Action::NextFocus,
+    label: "→",
+    description: "right pane",
+  },
   Binding {
     key: KeyCode::Tab,
     mods: KeyModifiers::NONE,
@@ -349,7 +358,7 @@ const LIST_BINDINGS: &[Binding] = &[
     key: KeyCode::BackTab,
     mods: KeyModifiers::SHIFT,
     action: Action::PrevFocus,
-    label: "Shift+Tab",
+    label: "󰘶+Tab",
     description: "prev pane",
   },
   Binding {
@@ -499,7 +508,7 @@ const RIGHT_PANE_BINDINGS: &[Binding] = &[
     key: KeyCode::BackTab,
     mods: KeyModifiers::SHIFT,
     action: Action::PrevFocus,
-    label: "Shift+Tab",
+    label: "󰘶+Tab",
     description: "prev pane",
   },
   // ←/→ change the focused Settings field's value. Outside the
@@ -535,12 +544,43 @@ const RIGHT_PANE_BINDINGS: &[Binding] = &[
     label: "h",
     description: "prev pane",
   },
+  // `s` carries two meanings, dispatched tab-aware in
+  // `apply_action`: on the Logs tab it toggles auto-scroll; on the
+  // Settings tab it stops the focused launch. The binding row sits
+  // under `ToggleAutoScroll` so the dispatcher reads a single
+  // action; the per-tab semantics live in the handler.
   Binding {
     key: KeyCode::Char('s'),
     mods: KeyModifiers::NONE,
     action: Action::ToggleAutoScroll,
     label: "s",
     description: "auto-scroll",
+  },
+  // Round-8: yank affordances reachable from the right pane so the
+  // Settings tab can surface `p / u / c` without forcing the user
+  // back to the Models list. Yank handlers already check
+  // `focused_managed()` and emit toasts on misses, so the bindings
+  // stay safe on Logs / Settings without a managed launch.
+  Binding {
+    key: KeyCode::Char('u'),
+    mods: KeyModifiers::NONE,
+    action: Action::YankUrl,
+    label: "u",
+    description: "url",
+  },
+  Binding {
+    key: KeyCode::Char('c'),
+    mods: KeyModifiers::NONE,
+    action: Action::YankCurl,
+    label: "c",
+    description: "curl",
+  },
+  Binding {
+    key: KeyCode::Char('p'),
+    mods: KeyModifiers::NONE,
+    action: Action::YankPath,
+    label: "p",
+    description: "path",
   },
   Binding {
     key: KeyCode::Char('e'),
@@ -644,7 +684,7 @@ const CHAT_INPUT_BINDINGS: &[Binding] = &[
     key: KeyCode::BackTab,
     mods: KeyModifiers::SHIFT,
     action: Action::PrevFocus,
-    label: "Shift+Tab",
+    label: "󰘶+Tab",
     description: "prev pane",
   },
   // Plain Enter so submit fires on every terminal — Ctrl+Enter is
@@ -664,7 +704,7 @@ const CHAT_INPUT_BINDINGS: &[Binding] = &[
     key: KeyCode::Enter,
     mods: KeyModifiers::SHIFT,
     action: Action::InsertNewline,
-    label: "Shift+Enter",
+    label: "󰘶+Enter",
     description: "newline",
   },
   Binding {
@@ -695,7 +735,7 @@ const EMBED_INPUT_BINDINGS: &[Binding] = &[
     key: KeyCode::BackTab,
     mods: KeyModifiers::SHIFT,
     action: Action::PrevFocus,
-    label: "Shift+Tab",
+    label: "󰘶+Tab",
     description: "prev pane",
   },
   // Plain Enter — see CHAT_INPUT_BINDINGS for the rationale.
@@ -710,7 +750,7 @@ const EMBED_INPUT_BINDINGS: &[Binding] = &[
     key: KeyCode::Enter,
     mods: KeyModifiers::SHIFT,
     action: Action::InsertNewline,
-    label: "Shift+Enter",
+    label: "󰘶+Enter",
     description: "newline",
   },
 ];
@@ -737,7 +777,7 @@ const RERANK_INPUT_BINDINGS: &[Binding] = &[
     key: KeyCode::BackTab,
     mods: KeyModifiers::SHIFT,
     action: Action::PrevFocus,
-    label: "Shift+Tab",
+    label: "󰘶+Tab",
     description: "prev pane",
   },
   // ↑/↓ cycle the input field (query ↔ candidate). Two fields →
@@ -788,7 +828,7 @@ const RERANK_INPUT_BINDINGS: &[Binding] = &[
     key: KeyCode::Enter,
     mods: KeyModifiers::SHIFT,
     action: Action::InsertNewline,
-    label: "Shift+Enter",
+    label: "󰘶+Enter",
     description: "newline",
   },
 ];
@@ -1113,6 +1153,13 @@ fn parse_key_token(tok: &str) -> Result<(KeyCode, bool), String> {
   Ok((code, false))
 }
 
+/// Nerd Font glyph rendered in place of the `Shift+` modifier text.
+/// Centralised so renderers, tests, and binding tables can all
+/// reference the same character without each one carrying the raw
+/// codepoint. The trailing `+` joiner mirrors `Ctrl+` / `Alt+` so
+/// the modifier+key relationship stays visually consistent.
+pub const SHIFT_GLYPH: &str = "󰘶";
+
 fn format_key_label(key: &KeyCode, mods: KeyModifiers) -> String {
   let mut out = String::new();
   if mods.contains(KeyModifiers::CONTROL) {
@@ -1124,16 +1171,17 @@ fn format_key_label(key: &KeyCode, mods: KeyModifiers) -> String {
   if mods.contains(KeyModifiers::SUPER) {
     out.push_str("Super+");
   }
-  // Suppress an explicit `Shift+` prefix when the key already
-  // encodes Shift in its name or glyph:
+  // Suppress an explicit Shift prefix when the key already encodes
+  // Shift in its name or glyph:
   //  - Uppercase `Char` (terminal emits Shift+letter as `Char(C)`)
-  //  - `BackTab` (the named code for Shift+Tab — adding Shift+
-  //    would render as `Shift+Shift+Tab`)
+  //  - `BackTab` (the named code for Shift+Tab — adding the prefix
+  //    again would render as `󰘶+󰘶+Tab`).
   let key_already_encodes_shift =
     matches!(key, KeyCode::Char(c) if c.is_ascii_uppercase()) || matches!(key, KeyCode::BackTab);
   let show_shift = mods.contains(KeyModifiers::SHIFT) && !key_already_encodes_shift;
   if show_shift {
-    out.push_str("Shift+");
+    out.push_str(SHIFT_GLYPH);
+    out.push('+');
   }
   match key {
     KeyCode::Char(' ') => out.push_str("Space"),
@@ -1141,7 +1189,10 @@ fn format_key_label(key: &KeyCode, mods: KeyModifiers) -> String {
     KeyCode::Enter => out.push_str("Enter"),
     KeyCode::Esc => out.push_str("Esc"),
     KeyCode::Tab => out.push_str("Tab"),
-    KeyCode::BackTab => out.push_str("Shift+Tab"),
+    KeyCode::BackTab => {
+      out.push_str(SHIFT_GLYPH);
+      out.push_str("+Tab");
+    }
     KeyCode::Backspace => out.push_str("Backspace"),
     KeyCode::Up => out.push('↑'),
     KeyCode::Down => out.push('↓'),
@@ -1221,6 +1272,25 @@ mod tests {
     assert_eq!(
       action_for(Focus::List, KeyCode::End, KeyModifiers::NONE),
       Some(Action::GoBottom)
+    );
+  }
+
+  #[test]
+  fn list_right_arrow_enters_right_pane_but_left_is_unbound() {
+    // Round-8 nav: from the Models list, `→` opens / focuses the
+    // right pane. `←` is intentionally not bound — Esc on the
+    // right pane handles the return path; binding both would
+    // shadow potential future intents (e.g. column scroll). The
+    // canonical `Tab` / `󰘶+Tab` cycle still works on top.
+    assert_eq!(
+      action_for(Focus::List, KeyCode::Right, KeyModifiers::NONE),
+      Some(Action::NextFocus),
+      "Right arrow from Models must enter the right pane"
+    );
+    assert_eq!(
+      action_for(Focus::List, KeyCode::Left, KeyModifiers::NONE),
+      None,
+      "Left arrow stays unbound in Models — asymmetric on purpose"
     );
   }
 
@@ -1372,6 +1442,10 @@ mod tests {
     let shift_tab = parse_key_spec("Shift+Tab").unwrap();
     assert_eq!(shift_tab.key, KeyCode::Tab);
     assert!(shift_tab.mods.contains(KeyModifiers::SHIFT));
+    assert_eq!(
+      shift_tab.label, "󰘶+Tab",
+      "Shift modifier renders as the Nerd Font glyph"
+    );
 
     let alt_enter = parse_key_spec("alt+enter").unwrap();
     assert_eq!(alt_enter.key, KeyCode::Enter);
@@ -1520,10 +1594,30 @@ mod tests {
   fn format_key_label_lowercase_char_with_shift_keeps_prefix() {
     // Shift on a lowercase char is unusual (the terminal would
     // normally upcase it) but possible with kitty-protocol — keep
-    // the modifier visible so the binding stays unambiguous.
+    // the modifier visible so the binding stays unambiguous. The
+    // visible prefix is the Nerd Font glyph 󰘶, not the word
+    // "Shift".
     assert_eq!(
       format_key_label(&KeyCode::Char('q'), KeyModifiers::SHIFT),
-      "Shift+q"
+      "󰘶+q"
+    );
+  }
+
+  #[test]
+  fn format_key_label_renders_shift_as_nerd_font_glyph() {
+    // Regression guard: every Shift-aware label must surface the
+    // glyph form. The legacy `Shift+` text must never reappear.
+    let shift_tab = format_key_label(&KeyCode::BackTab, KeyModifiers::SHIFT);
+    assert_eq!(shift_tab, "󰘶+Tab");
+    assert!(
+      !shift_tab.contains("Shift"),
+      "Shift+ text must not appear in any key label: {shift_tab}"
+    );
+    let shift_enter = format_key_label(&KeyCode::Enter, KeyModifiers::SHIFT);
+    assert_eq!(shift_enter, "󰘶+Enter");
+    assert!(
+      !shift_enter.contains("Shift"),
+      "Shift+ text must not appear in any key label: {shift_enter}"
     );
   }
 
@@ -1538,7 +1632,7 @@ mod tests {
   #[test]
   fn format_key_label_ctrl_shift_lowercase_emits_both_prefixes() {
     let mods = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
-    assert_eq!(format_key_label(&KeyCode::Char('c'), mods), "Ctrl+Shift+c");
+    assert_eq!(format_key_label(&KeyCode::Char('c'), mods), "Ctrl+󰘶+c");
   }
 
   #[test]
@@ -1567,7 +1661,7 @@ mod tests {
     assert_eq!(format_key_label(&KeyCode::Tab, KeyModifiers::NONE), "Tab");
     assert_eq!(
       format_key_label(&KeyCode::BackTab, KeyModifiers::SHIFT),
-      "Shift+Tab"
+      "󰘶+Tab"
     );
     assert_eq!(
       format_key_label(&KeyCode::Backspace, KeyModifiers::NONE),
@@ -1618,5 +1712,16 @@ mod tests {
     // string is canonical — easier to grep for in help dumps.
     let mods = KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER;
     assert_eq!(format_key_label(&KeyCode::F(5), mods), "Ctrl+Alt+Super+F5");
+  }
+
+  #[test]
+  fn format_key_label_combines_all_modifiers_with_shift_glyph_last() {
+    // Full chain — Shift sits in the Nerd Font glyph slot last.
+    let mods =
+      KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER | KeyModifiers::SHIFT;
+    assert_eq!(
+      format_key_label(&KeyCode::F(5), mods),
+      "Ctrl+Alt+Super+󰘶+F5"
+    );
   }
 }

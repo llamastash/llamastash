@@ -93,6 +93,18 @@ fn describe(action: &ConfirmAction) -> (&'static str, String) {
       "Kill daemon",
       "Shut down the llamadash daemon? All managed launches will be stopped.".to_string(),
     ),
+    ConfirmAction::LaunchDuplicate {
+      name,
+      active_instances,
+      ..
+    } => (
+      "Launch again",
+      format!(
+        "`{name}` already has {active_instances} active instance{plural}. \
+         Launch another on a fresh port?",
+        plural = if *active_instances == 1 { "" } else { "s" }
+      ),
+    ),
   }
 }
 

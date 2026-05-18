@@ -19,6 +19,9 @@ pub struct EmbedTabState {
   pub norm: Option<f64>,
   pub last_error: Option<String>,
   pub busy: bool,
+  /// Top-of-viewport offset into the rendered output. Round-8: ↑/↓
+  /// in `Focus::RightPane` walk this — same shape as Chat / Rerank.
+  pub scroll_offset: u16,
   /// Receiver fed by the background `oai_client::embed` task. The
   /// render loop drains it via `try_recv` so a slow `/v1/embeddings`
   /// call never blocks input.
@@ -32,11 +35,20 @@ impl EmbedTabState {
     self.norm = Some(result.norm);
     self.last_error = None;
     self.busy = false;
+    self.scroll_offset = 0;
   }
 
   pub fn record_error(&mut self, msg: String) {
     self.last_error = Some(msg);
     self.busy = false;
+  }
+
+  pub fn scroll_up(&mut self) {
+    self.scroll_offset = self.scroll_offset.saturating_add(1);
+  }
+
+  pub fn scroll_down(&mut self) {
+    self.scroll_offset = self.scroll_offset.saturating_sub(1);
   }
 }
 
@@ -104,20 +116,17 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
       body,
       status,
       bold_body: false,
+      scroll_offset: state.scroll_offset,
     },
     palette,
   );
 }
 
-/// Chip strip for the idle status line. Mirrors Chat's chip
-/// strategy: `Shift+Enter:newline` is always available; the
-/// trailing chip is `Esc:clear` when the input is focused and
-/// `e:edit` when navigation focus has the right pane.
+/// Chip strip for the idle status line. Mirrors Chat — round-8
+/// trimmed this to just the trailing `Esc:clear` / `e:edit` chip
+/// so the newline key doesn't crowd the status row.
 pub(crate) fn idle_status_chips(app: &App, input_active: bool) -> Vec<String> {
-  let mut chips: Vec<String> = Vec::with_capacity(2);
-  if let Some(c) = app.hint(Focus::EmbedInput, Action::InsertNewline) {
-    chips.push(c);
-  }
+  let mut chips: Vec<String> = Vec::with_capacity(1);
   let trailing = if input_active {
     app.hint_with(Focus::EmbedInput, Action::ExitEdit, "clear")
   } else {
@@ -153,40 +162,46 @@ mod tests {
   }
 
   #[test]
-  fn idle_chips_when_input_active_use_keymap_labels() {
+  fn idle_chips_when_input_active_carry_only_clear() {
+    // Round-8: newline chip is gone from the idle row. Only the
+    // trailing `Esc:clear` survives.
     let app = App::new(AppOptions::default());
     let chips = idle_status_chips(&app, true);
-    assert_eq!(
-      chips,
-      vec!["Shift+Enter:newline".to_string(), "Esc:clear".to_string(),]
-    );
+    assert_eq!(chips, vec!["Esc:clear".to_string()]);
   }
 
   #[test]
   fn idle_chips_when_input_inactive_swap_clear_for_edit() {
     let app = App::new(AppOptions::default());
     let chips = idle_status_chips(&app, false);
-    assert_eq!(chips.last().map(String::as_str), Some("e:edit"));
+    assert_eq!(chips, vec!["e:edit".to_string()]);
   }
 
   #[test]
-  fn idle_chips_pick_up_config_keybinding_overrides() {
-    // Rebind insert_newline to alt+enter — Embed chip must follow.
+  fn idle_chips_drop_newline_chip_in_round_8() {
+    let app = App::new(AppOptions::default());
+    let chips = idle_status_chips(&app, true);
+    for stale in ["newline", "Shift+", "󰘶+Enter:newline"] {
+      assert!(
+        !chips.iter().any(|c| c.contains(stale)),
+        "stale chip text `{stale}` resurfaced: {chips:?}"
+      );
+    }
+  }
+
+  #[test]
+  fn idle_chips_pick_up_enter_edit_rebind() {
     let mut keymap = KeyMap::default();
-    let overrides: BTreeMap<String, String> =
-      [(String::from("insert_newline"), String::from("alt+enter"))]
-        .into_iter()
-        .collect();
+    let overrides: BTreeMap<String, String> = [(String::from("enter_edit"), String::from("f4"))]
+      .into_iter()
+      .collect();
     let warnings = keymap.apply_overrides(&overrides);
     assert!(warnings.is_empty(), "{warnings:?}");
     let app = App::new(AppOptions {
       keymap,
       ..AppOptions::default()
     });
-    let chips = idle_status_chips(&app, true);
-    assert!(
-      chips.iter().any(|c| c == "Alt+Enter:newline"),
-      "Alt+Enter binding missing: {chips:?}"
-    );
+    let chips = idle_status_chips(&app, false);
+    assert_eq!(chips, vec!["F4:edit".to_string()]);
   }
 }

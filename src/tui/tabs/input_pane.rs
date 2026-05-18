@@ -35,6 +35,10 @@ pub struct InputPaneOpts<'a> {
   /// Whether to render the body in BOLD (used by Chat while a
   /// stream is in flight). Has no effect on the prompts or status.
   pub bold_body: bool,
+  /// Top-of-viewport offset into `body`. 0 = pinned to top; larger
+  /// values scroll content upward (round-8 added arrow-key scroll
+  /// for Chat/Embed/Rerank output, mirroring the Logs pane).
+  pub scroll_offset: u16,
 }
 
 /// Render the input pane into `area`. Layout: `Length(3)` per
@@ -58,7 +62,9 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, opts: InputPaneOpts<'_>, palett
   let body_idx = opts.prompts.len();
   let status_idx = body_idx + 1;
 
-  let mut body_widget = Paragraph::new(opts.body).wrap(Wrap { trim: false });
+  let mut body_widget = Paragraph::new(opts.body)
+    .wrap(Wrap { trim: false })
+    .scroll((opts.scroll_offset, 0));
   if opts.bold_body {
     body_widget = body_widget.style(Style::default().add_modifier(Modifier::BOLD));
   }
@@ -78,13 +84,16 @@ fn render_prompt(frame: &mut Frame<'_>, area: Rect, field: &PromptField<'_>, pal
     .border_style(Style::default().fg(border));
   let inner = block.inner(area);
   frame.render_widget(block, area);
-  let mut spans = vec![
-    Span::styled("▌ ", Style::default().fg(palette.accent)),
-    Span::styled(field.text.to_string(), Style::default().fg(palette.fg)),
-  ];
+  // Round-8: drop the leading `▌ ` block; align the caret style
+  // with the Models pane filter (`▏` + REVERSED) so all single-line
+  // text inputs read the same.
+  let mut spans = vec![Span::styled(
+    field.text.to_string(),
+    Style::default().fg(palette.fg),
+  )];
   if field.active {
     spans.push(Span::styled(
-      "│",
+      "▏",
       Style::default()
         .fg(palette.accent)
         .add_modifier(Modifier::REVERSED),
@@ -123,11 +132,60 @@ mod tests {
   fn idle_status_joins_chips_with_middot_separator() {
     let palette = palette_for(ThemeName::Macchiato);
     let line = idle_status_line(
-      &["Shift+Enter:newline".to_string(), "Esc:clear".to_string()],
+      &["󰘶+Enter:newline".to_string(), "Esc:clear".to_string()],
       palette,
     );
     let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-    assert_eq!(text, "Shift+Enter:newline · Esc:clear");
+    assert_eq!(text, "󰘶+Enter:newline · Esc:clear");
+  }
+
+  #[test]
+  fn input_pane_render_accepts_scroll_offset_without_panicking() {
+    // Round-8: the input pane carries a scroll offset for the body
+    // viewport. A non-zero offset shouldn't panic the renderer or
+    // produce an empty buffer even when body is short.
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+    use ratatui::Terminal;
+    let palette = palette_for(ThemeName::Macchiato);
+    let mut term = Terminal::new(TestBackend::new(40, 10)).unwrap();
+    term
+      .draw(|f| {
+        super::render(
+          f,
+          Rect::new(0, 0, 40, 10),
+          InputPaneOpts {
+            prompts: &[],
+            body: (0..6)
+              .map(|i| Line::from(Span::raw(format!("line {i}"))))
+              .collect(),
+            status: Line::from(""),
+            bold_body: false,
+            scroll_offset: 2,
+          },
+          palette,
+        );
+      })
+      .unwrap();
+    let buf = term.backend().buffer().clone();
+    let mut rows: Vec<String> = Vec::new();
+    for y in 0..buf.area.height {
+      let mut r = String::new();
+      for x in 0..buf.area.width {
+        r.push_str(buf.cell((x, y)).unwrap().symbol());
+      }
+      rows.push(r.trim_end().to_string());
+    }
+    let frame = rows.join("\n");
+    // With offset 2 the first body row shown should be "line 2".
+    assert!(
+      frame.contains("line 2"),
+      "scroll_offset must skip earlier lines: {frame}"
+    );
+    assert!(
+      !frame.contains("line 0"),
+      "scroll_offset must hide skipped lines: {frame}"
+    );
   }
 
   #[test]

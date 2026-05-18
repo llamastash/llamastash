@@ -176,6 +176,25 @@ pub enum ConfirmAction {
   StopModel { launch_id: String, name: String },
   /// `Q:kill daemon` — issues a `shutdown` RPC to the daemon.
   KillDaemon,
+  /// `Enter:launch` on a model that already has a managed launch
+  /// (round-8). v1 supports duplicate launches on fresh ports, but
+  /// we ask the user to confirm so a stray Enter doesn't silently
+  /// spin up another instance. The payload mirrors
+  /// `WriterCmd::StartModel` — captured at popup time so the
+  /// launch dispatches even if focus moves while the popup is up.
+  LaunchDuplicate {
+    /// Display name for the popup body.
+    name: String,
+    /// Existing managed instance count, surfaced in the popup
+    /// body so the user understands what they're piling on top of.
+    active_instances: usize,
+    model_path: PathBuf,
+    ctx: Option<u32>,
+    reasoning: Option<bool>,
+    advanced: Vec<String>,
+    mode: Option<crate::launch::mode::LaunchMode>,
+    prefer_port: Option<u16>,
+  },
 }
 
 impl App {
@@ -554,12 +573,33 @@ impl App {
   /// Move cursor down to the next selectable (model) row.
   pub fn move_down(&mut self) {
     let rows = self.rendered_rows();
+    let before = self.focused_path();
     self.move_down_in(&rows);
+    self.sync_picker_to_focus(before);
   }
 
   pub fn move_up(&mut self) {
     let rows = self.rendered_rows();
+    let before = self.focused_path();
     self.move_up_in(&rows);
+    self.sync_picker_to_focus(before);
+  }
+
+  /// Clear `launch_picker` when the cursor moved onto a different
+  /// path. Round-8: the right pane follows the cursor with no
+  /// sticky fallback — letting a picker staged for model A linger
+  /// while the user scrolls to model B would render the wrong
+  /// model name in the Settings tab. Caller passes the focused
+  /// path *before* the move so we can compare against the path
+  /// *after*.
+  fn sync_picker_to_focus(&mut self, before: Option<PathBuf>) {
+    if self.launch_picker.is_none() {
+      return;
+    }
+    let after = self.focused_path();
+    if before != after {
+      self.launch_picker = None;
+    }
   }
 
   fn move_down_in(&mut self, rows: &[ListRow]) {
@@ -595,6 +635,7 @@ impl App {
   /// single keypress doesn't rebuild rows 10×.
   pub fn move_by(&mut self, delta: i32) {
     let rows = self.rendered_rows();
+    let before = self.focused_path();
     if delta >= 0 {
       for _ in 0..delta {
         self.move_down_in(&rows);
@@ -604,26 +645,31 @@ impl App {
         self.move_up_in(&rows);
       }
     }
+    self.sync_picker_to_focus(before);
   }
 
   pub fn go_top(&mut self) {
     let rows = self.rendered_rows();
+    let before = self.focused_path();
     for (i, r) in rows.iter().enumerate() {
       if r.is_selectable() {
         self.list_cursor = i;
-        return;
+        break;
       }
     }
+    self.sync_picker_to_focus(before);
   }
 
   pub fn go_bottom(&mut self) {
     let rows = self.rendered_rows();
+    let before = self.focused_path();
     for (i, r) in rows.iter().enumerate().rev() {
       if r.is_selectable() {
         self.list_cursor = i;
-        return;
+        break;
       }
     }
+    self.sync_picker_to_focus(before);
   }
 
   fn clamp_cursor(&mut self) {
@@ -698,7 +744,12 @@ impl App {
     if let Some(p) = &path {
       if let Some(last) = self.last_params.get(p) {
         state.ctx = last.ctx;
-        state.reasoning = last.reasoning;
+        // Round-8: returning users land on their last explicit
+        // on/off choice. Only a brand-new picker shows the
+        // model-default tri-state — `from_persisted` collapses the
+        // daemon-side `bool` back into the explicit pair.
+        state.reasoning =
+          crate::tui::launch_picker::ReasoningSetting::from_persisted(last.reasoning);
         state.preset_idx = last.ctx.and_then(|c| {
           crate::tui::launch_picker::CTX_PRESETS
             .iter()
@@ -839,11 +890,16 @@ impl App {
 
   /// Clamp `right_tab` back to a reachable choice if the focused
   /// model's available tabs shrink (e.g. the model dropped from
-  /// Ready to Stopped). Called by the renderer before drawing.
+  /// Ready to Stopped, or the cursor moved to an unlaunched row).
+  /// Snaps to the first reachable tab — Round-8 fixed a latent bug
+  /// where the fallback was hardcoded to `Logs`, which isn't part
+  /// of the reachable set for unlaunched models, leaving the right
+  /// pane painting nothing for those rows. Called by the renderer
+  /// before drawing.
   pub fn ensure_right_tab_reachable(&mut self) {
     let tabs = self.available_right_tabs();
     if !tabs.contains(&self.right_tab) {
-      self.right_tab = RightTab::Logs;
+      self.right_tab = tabs.first().copied().unwrap_or(RightTab::Settings);
     }
   }
 
@@ -1364,7 +1420,14 @@ mod tests {
     app.open_launch_picker();
     let picker = app.launch_picker.as_ref().expect("picker state");
     assert_eq!(picker.ctx, Some(16384), "ctx must seed from last_params");
-    assert!(picker.reasoning, "reasoning must seed from last_params");
+    // Round-8: the persisted `bool` reasoning collapses into the
+    // explicit tri-state — a `true` in last_params lands on `On`,
+    // not on `ModelDefault`.
+    assert_eq!(
+      picker.reasoning,
+      crate::tui::launch_picker::ReasoningSetting::On,
+      "reasoning must seed from last_params"
+    );
     assert_eq!(picker.prefer_port, Some(41105), "port must seed too");
     let advanced = app
       .advanced_panel
@@ -1532,6 +1595,38 @@ mod tests {
       vec!["/m/x".to_string()],
       "empty groups must be dropped"
     );
+  }
+
+  #[test]
+  fn cursor_move_clears_stale_launch_picker_when_path_changes() {
+    // Round-8: the right pane is tied to the focused row. A
+    // picker staged for model A must not survive a scroll to
+    // model B — otherwise the Settings tab paints A's name + ctx
+    // form while the user is looking at B.
+    let mut app = App::new(AppOptions::default());
+    app.models = vec![fake("/m/x/a.gguf", "/m/x"), fake("/m/y/b.gguf", "/m/y")];
+    app.list_cursor = 2; // model a
+    app.open_launch_picker();
+    assert_eq!(app.launch_picker.as_ref().unwrap().model_name, "a");
+    app.move_down();
+    assert!(
+      app.launch_picker.is_none(),
+      "scrolling to a different model must clear the stale picker"
+    );
+  }
+
+  #[test]
+  fn ensure_right_tab_reachable_snaps_to_settings_for_unlaunched_focus() {
+    // Round-8 fix: the fallback used to be hardcoded to Logs even
+    // for unlaunched models — leaving `right_tab = Logs` while
+    // `available_right_tabs()` returns `[Settings]`. Now the
+    // fallback walks the reachable list and picks the first entry.
+    let mut app = App::new(AppOptions::default());
+    app.models = vec![fake("/m/a.gguf", "/m")];
+    app.list_cursor = 2;
+    app.right_tab = RightTab::Chat;
+    app.ensure_right_tab_reachable();
+    assert_eq!(app.right_tab, RightTab::Settings);
   }
 
   #[test]

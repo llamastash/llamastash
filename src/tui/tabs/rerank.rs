@@ -32,6 +32,9 @@ pub struct RerankTabState {
   /// the user presses `Tab` in the candidate sub-field.
   pub candidate_buffer: String,
   pub field: RerankField,
+  /// Top-of-viewport offset into the rendered output. Round-8: ↑/↓
+  /// in `Focus::RightPane` walk this — same shape as Chat / Embed.
+  pub scroll_offset: u16,
   /// Receiver for the in-flight `/v1/rerank` call. The render loop
   /// drains it via `try_recv` once per tick.
   pub pending: Option<tokio::sync::mpsc::UnboundedReceiver<crate::tui::tabs::TabEvent>>,
@@ -42,6 +45,15 @@ impl RerankTabState {
     self.ranked = ranked;
     self.last_error = None;
     self.busy = false;
+    self.scroll_offset = 0;
+  }
+
+  pub fn scroll_up(&mut self) {
+    self.scroll_offset = self.scroll_offset.saturating_add(1);
+  }
+
+  pub fn scroll_down(&mut self) {
+    self.scroll_offset = self.scroll_offset.saturating_sub(1);
   }
 
   pub fn record_error(&mut self, msg: String) {
@@ -156,21 +168,19 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
       body,
       status,
       bold_body: false,
+      scroll_offset: state.scroll_offset,
     },
     palette,
   );
 }
 
-/// Chip strip for the idle status line. Tab carries dual duty
-/// (cycle field / stage candidate); Shift+Enter inserts a newline
-/// into whichever sub-field is active; the trailing chip flips
-/// between `clear` and `edit` based on focus.
+/// Chip strip for the idle status line. Round-8 trimmed this to
+/// just the stage-candidate chip and the trailing `clear`/`edit`
+/// — newline keys live in the `?` help overlay now so the status
+/// row stays scannable.
 pub(crate) fn idle_status_chips(app: &App, input_active: bool) -> Vec<String> {
-  let mut chips: Vec<String> = Vec::with_capacity(3);
+  let mut chips: Vec<String> = Vec::with_capacity(2);
   if let Some(c) = app.hint(Focus::RerankInput, Action::StageRerankCandidate) {
-    chips.push(c);
-  }
-  if let Some(c) = app.hint(Focus::RerankInput, Action::InsertNewline) {
     chips.push(c);
   }
   let trailing = if input_active {
@@ -253,16 +263,26 @@ mod tests {
     // Round-7: staging migrated from Tab → `+` / `=` (same
     // physical key on US keyboards). The chip picks up the first
     // bound key, which is `+`.
+    // Round-8: dropped the `󰘶+Enter:newline` chip from the idle
+    // row — only stage + clear/edit survive.
     let app = App::new(AppOptions::default());
     let chips = idle_status_chips(&app, true);
     assert_eq!(
       chips,
-      vec![
-        "+:stage candidate".to_string(),
-        "Shift+Enter:newline".to_string(),
-        "Esc:clear".to_string(),
-      ]
+      vec!["+:stage candidate".to_string(), "Esc:clear".to_string(),]
     );
+  }
+
+  #[test]
+  fn idle_chips_drop_newline_chip_in_round_8() {
+    let app = App::new(AppOptions::default());
+    let chips = idle_status_chips(&app, true);
+    for stale in ["newline", "Shift+", "󰘶+Enter:newline"] {
+      assert!(
+        !chips.iter().any(|c| c.contains(stale)),
+        "stale chip text `{stale}` resurfaced: {chips:?}"
+      );
+    }
   }
 
   #[test]

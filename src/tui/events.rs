@@ -48,11 +48,13 @@ const POLL_INTERVAL: Duration = Duration::from_millis(8);
 #[derive(Debug, Clone)]
 pub enum WriterCmd {
   /// `start_model` — launch the focused model with the picker's
-  /// ctx / reasoning / advanced / mode fields.
+  /// ctx / reasoning / advanced / mode fields. `reasoning: None`
+  /// (round-8) means "omit the field"; the daemon then falls back
+  /// to whatever the model's metadata implies.
   StartModel {
     model_path: PathBuf,
     ctx: Option<u32>,
-    reasoning: bool,
+    reasoning: Option<bool>,
     advanced: Vec<String>,
     /// Catalog-derived mode hint (chat/embedding/rerank). `None`
     /// keeps the daemon's `Chat` default — preserves backwards
@@ -233,6 +235,12 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
       // reasoning → advanced). The actual NextField/PrevField
       // dispatch handles the picker materialisation.
       Focus::RightPane if app.right_tab == RightTab::Settings => apply_next_field(app),
+      // Round-8: Chat/Embed/Rerank output viewports scroll on the
+      // same arrow keys as the Logs pane while focus stays on
+      // the right pane (no edit mode).
+      Focus::RightPane if app.right_tab == RightTab::Chat => app.chat.scroll_down(),
+      Focus::RightPane if app.right_tab == RightTab::Embed => app.embed.scroll_down(),
+      Focus::RightPane if app.right_tab == RightTab::Rerank => app.rerank.scroll_down(),
       Focus::RightPane => {}
       _ => app.move_down(),
     },
@@ -241,6 +249,9 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
         app.logs_state.scroll_up();
       }
       Focus::RightPane if app.right_tab == RightTab::Settings => apply_prev_field(app),
+      Focus::RightPane if app.right_tab == RightTab::Chat => app.chat.scroll_up(),
+      Focus::RightPane if app.right_tab == RightTab::Embed => app.embed.scroll_up(),
+      Focus::RightPane if app.right_tab == RightTab::Rerank => app.rerank.scroll_up(),
       Focus::RightPane => {}
       _ => app.move_up(),
     },
@@ -299,7 +310,18 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
       app.chat.collapse_thinks = !app.chat.collapse_thinks;
     }
     Action::ToggleAutoScroll => {
-      app.logs_state.auto_scroll = !app.logs_state.auto_scroll;
+      // `s` is double-duty in the right pane:
+      //  - Logs tab → toggle auto-scroll (legacy).
+      //  - Settings tab → stop the focused managed launch (round-8).
+      //  - Any other right tab → no-op so we don't accidentally
+      //    fire a stop or scroll toggle on Chat/Embed/Rerank.
+      if app.focus == Focus::RightPane && app.right_tab == RightTab::Settings {
+        if app.focused_managed().is_some() {
+          apply_stop_model(app);
+        }
+      } else {
+        app.logs_state.auto_scroll = !app.logs_state.auto_scroll;
+      }
     }
     Action::StageRerankCandidate => {
       if app.rerank.field == RerankField::Candidate {
@@ -488,6 +510,25 @@ fn apply_confirmed(app: &mut App, action: ConfirmAction, writer: Option<&mpsc::S
         "daemon shutdown failed — writer offline",
         "daemon shutdown (no writer)".into(),
       );
+    }
+    ConfirmAction::LaunchDuplicate {
+      model_path,
+      ctx,
+      reasoning,
+      advanced,
+      mode,
+      prefer_port,
+      ..
+    } => {
+      let cmd = WriterCmd::StartModel {
+        model_path,
+        ctx,
+        reasoning,
+        advanced,
+        mode,
+        prefer_port,
+      };
+      dispatch_launch(app, writer, cmd);
     }
   }
 }
@@ -758,14 +799,42 @@ fn apply_launch_submit(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) 
     .and_then(|md| LaunchMode::resolve(None, md.mode_hint));
 
   let cmd = WriterCmd::StartModel {
-    model_path: path,
+    model_path: path.clone(),
     ctx: picker.ctx,
-    reasoning: picker.reasoning,
-    advanced,
+    // Round-8: ModelDefault → omit the field over the wire.
+    reasoning: picker.reasoning.as_wire(),
+    advanced: advanced.clone(),
     mode,
     prefer_port: picker.prefer_port,
   };
 
+  // Round-8: a Submit on a model that already has managed
+  // instances stages a confirm popup instead of dispatching
+  // immediately. v1 supports duplicate launches on fresh ports,
+  // but a fat-finger shouldn't silently triple-launch a 14B model.
+  let active_instances = app.managed.iter().filter(|m| m.path == path).count();
+  if active_instances > 0 {
+    app.confirm_dialog = Some(ConfirmAction::LaunchDuplicate {
+      name: crate::util::paths::model_display_name(&path),
+      active_instances,
+      model_path: path,
+      ctx: picker.ctx,
+      reasoning: picker.reasoning.as_wire(),
+      advanced,
+      mode,
+      prefer_port: picker.prefer_port,
+    });
+    return;
+  }
+
+  dispatch_launch(app, writer, cmd);
+}
+
+/// Send a fully-assembled `StartModel` payload via the writer
+/// channel and close the picker on success. Shared by the
+/// direct-launch path and the post-confirm dispatch so both flows
+/// emit the same toasts.
+fn dispatch_launch(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>, cmd: WriterCmd) {
   match writer {
     Some(tx) => match tx.try_send(cmd) {
       Ok(()) => {
@@ -918,6 +987,10 @@ fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
         crate::launch::mode::LaunchMode::Embedding => "embedding",
         crate::launch::mode::LaunchMode::Rerank => "rerank",
       });
+      // `reasoning: None` (round-8 ModelDefault) serialises as
+      // JSON null, which the daemon's `Option<bool>` parser treats
+      // the same as a missing key — falling back to the model's
+      // own reasoning hint.
       (
         "start_model",
         json!({
@@ -1401,7 +1474,8 @@ mod tests {
     let p = app.launch_picker.as_mut().unwrap();
     p.cycle_ctx_preset();
     let expected_ctx = p.ctx;
-    p.toggle_reasoning();
+    // Round-8: tri-state cycle — ModelDefault → On.
+    p.cycle_reasoning_next();
 
     let (tx, mut rx) = mpsc::channel::<WriterCmd>(8);
     pump_input_with_writer(&mut app, key(KeyCode::Enter, KeyModifiers::NONE), Some(&tx));
@@ -1416,7 +1490,11 @@ mod tests {
       } => {
         assert_eq!(model_path, PathBuf::from("/m/qwen.gguf"));
         assert_eq!(ctx, expected_ctx);
-        assert!(reasoning, "reasoning toggle must propagate");
+        assert_eq!(
+          reasoning,
+          Some(true),
+          "On reasoning must serialise as Some(true)"
+        );
       }
       other => panic!("expected StartModel, got {other:?}"),
     }
@@ -1838,19 +1916,32 @@ mod tests {
   }
 
   #[test]
-  fn left_right_outside_settings_do_not_change_focus() {
-    // Pre-round-7 ←/→ cycled panes from the model list. Round-7
-    // drops that alias entirely — only Tab/Shift+Tab/h/l cycle
-    // panes. Arrows on the model list are reserved for cursor
-    // movement (handled by `move_up`/`move_down`).
+  fn left_arrow_on_models_list_is_unbound() {
+    // Round-8 reintroduces an asymmetric arrow surface on the
+    // Models list: `→` enters the right pane (mirrors kdash-style
+    // "open the panel to my right"); `←` stays unbound because
+    // Esc handles the return path and pane-cycle still works via
+    // Tab/󰘶+Tab/h/l.
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.go_top();
+    assert_eq!(app.focus, Focus::List);
+    pump_input(&mut app, key(KeyCode::Left, KeyModifiers::NONE));
+    assert_eq!(app.focus, Focus::List, "← must not change focus from List");
+  }
+
+  #[test]
+  fn right_arrow_on_models_list_enters_right_pane() {
     let mut app = App::new(Default::default());
     app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
     app.go_top();
     assert_eq!(app.focus, Focus::List);
     pump_input(&mut app, key(KeyCode::Right, KeyModifiers::NONE));
-    assert_eq!(app.focus, Focus::List, "→ must not change focus from List");
-    pump_input(&mut app, key(KeyCode::Left, KeyModifiers::NONE));
-    assert_eq!(app.focus, Focus::List, "← must not change focus from List");
+    assert_eq!(
+      app.focus,
+      Focus::RightPane,
+      "→ from Models must focus the right pane (round-8)"
+    );
   }
 
   #[test]
@@ -1877,6 +1968,50 @@ mod tests {
   }
 
   #[test]
+  fn arrow_keys_in_right_pane_scroll_chat_output() {
+    // Round-8: Chat/Embed/Rerank output panes get arrow-key
+    // scroll mirroring the Logs pane. Editing focus is not
+    // active, so ↑/↓ walk the response viewport.
+    let mut app = App::new(Default::default());
+    app.focus = Focus::RightPane;
+    app.right_tab = RightTab::Chat;
+    pump_input(&mut app, key(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(app.chat.scroll_offset, 1);
+    pump_input(&mut app, key(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(app.chat.scroll_offset, 2);
+    pump_input(&mut app, key(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.chat.scroll_offset, 1);
+    pump_input(&mut app, key(KeyCode::Down, KeyModifiers::NONE));
+    pump_input(&mut app, key(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(
+      app.chat.scroll_offset, 0,
+      "Down past zero must clamp to 0, not underflow"
+    );
+  }
+
+  #[test]
+  fn arrow_keys_in_right_pane_scroll_embed_and_rerank_outputs() {
+    let mut app = App::new(Default::default());
+    app.focus = Focus::RightPane;
+    app.right_tab = RightTab::Embed;
+    pump_input(&mut app, key(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(app.embed.scroll_offset, 1);
+    app.right_tab = RightTab::Rerank;
+    pump_input(&mut app, key(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(app.rerank.scroll_offset, 1);
+  }
+
+  #[test]
+  fn chat_reset_for_send_clears_scroll_offset() {
+    // Sending a new prompt resets the viewport to the top so the
+    // response streams from the beginning. Round-8 reset path.
+    let mut app = App::new(Default::default());
+    app.chat.scroll_offset = 7;
+    app.chat.reset_for_send();
+    assert_eq!(app.chat.scroll_offset, 0);
+  }
+
+  #[test]
   fn logs_scroll_keys_in_right_pane_disable_auto_scroll() {
     use crate::tui::tabs::RightTab;
     let mut app = App::new(Default::default());
@@ -1896,5 +2031,146 @@ mod tests {
       app.logs_state.auto_scroll,
       "returning to tail re-enables auto-scroll"
     );
+  }
+
+  #[test]
+  fn s_on_settings_tab_opens_stop_confirm_for_running_launch() {
+    // Round-8 dual-duty `s`: on the Logs tab it toggles
+    // auto-scroll; on the Settings tab with a managed launch it
+    // pops the stop-model confirm dialog (same path as `s` in the
+    // Models list).
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.managed = vec![ready_managed_for_events("/m/qwen.gguf", 41100)];
+    app.go_top();
+    app.focus = Focus::RightPane;
+    app.right_tab = RightTab::Settings;
+    pump_input(&mut app, key(KeyCode::Char('s'), KeyModifiers::NONE));
+    match app.confirm_dialog {
+      Some(crate::tui::app::ConfirmAction::StopModel { ref launch_id, .. }) => {
+        assert_eq!(launch_id, "L-41100");
+      }
+      ref other => panic!("expected StopModel confirm, got {other:?}"),
+    }
+    // Auto-scroll must remain untouched — `s` on Settings is
+    // routed away from the logs branch.
+    assert!(
+      app.logs_state.auto_scroll,
+      "Settings `s` must not toggle the logs auto-scroll"
+    );
+  }
+
+  #[test]
+  fn s_on_settings_tab_is_noop_without_managed_launch() {
+    // Pressing `s` on the Settings tab for an unlaunched model
+    // does nothing (no confirm dialog, no toast spam) — there's
+    // nothing to stop.
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.go_top();
+    app.focus = Focus::RightPane;
+    app.right_tab = RightTab::Settings;
+    pump_input(&mut app, key(KeyCode::Char('s'), KeyModifiers::NONE));
+    assert!(app.confirm_dialog.is_none());
+  }
+
+  #[test]
+  fn launch_submit_with_running_instance_stages_confirm_popup() {
+    // Round-8: pressing Enter on the Settings tab for a model
+    // that's already running stages a LaunchDuplicate confirm
+    // popup instead of dispatching immediately. The writer must
+    // not see StartModel until the user explicitly confirms.
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.managed = vec![ready_managed_for_events("/m/qwen.gguf", 41100)];
+    app.go_top();
+    app.open_launch_picker();
+    let (tx, mut rx) = mpsc::channel::<WriterCmd>(8);
+    pump_input_with_writer(&mut app, key(KeyCode::Enter, KeyModifiers::NONE), Some(&tx));
+    // Confirm popup primed; no writer traffic yet.
+    match app.confirm_dialog {
+      Some(crate::tui::app::ConfirmAction::LaunchDuplicate {
+        ref name,
+        active_instances,
+        ..
+      }) => {
+        assert_eq!(active_instances, 1);
+        assert_eq!(name, "qwen");
+      }
+      ref other => panic!("expected LaunchDuplicate confirm, got {other:?}"),
+    }
+    assert!(
+      rx.try_recv().is_err(),
+      "writer must not see a launch until user confirms"
+    );
+    // `y` confirms — writer should now see a StartModel.
+    pump_input_with_writer(
+      &mut app,
+      key(KeyCode::Char('y'), KeyModifiers::NONE),
+      Some(&tx),
+    );
+    let cmd = rx.try_recv().expect("writer must receive start_model");
+    assert!(matches!(cmd, WriterCmd::StartModel { .. }));
+    assert!(
+      app.confirm_dialog.is_none(),
+      "popup must clear after confirm"
+    );
+  }
+
+  #[test]
+  fn launch_submit_with_running_instance_cancels_cleanly_on_esc() {
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.managed = vec![ready_managed_for_events("/m/qwen.gguf", 41100)];
+    app.go_top();
+    app.open_launch_picker();
+    let (tx, mut rx) = mpsc::channel::<WriterCmd>(8);
+    pump_input_with_writer(&mut app, key(KeyCode::Enter, KeyModifiers::NONE), Some(&tx));
+    assert!(app.confirm_dialog.is_some(), "popup primed");
+    pump_input_with_writer(&mut app, key(KeyCode::Esc, KeyModifiers::NONE), Some(&tx));
+    assert!(app.confirm_dialog.is_none(), "popup cleared on Esc");
+    assert!(
+      rx.try_recv().is_err(),
+      "no StartModel should reach the writer on cancel"
+    );
+    // Picker stays open so the user can adjust + retry.
+    assert!(app.launch_picker.is_some());
+  }
+
+  #[test]
+  fn launch_submit_without_running_instance_dispatches_directly() {
+    // No managed launch → no confirm popup. The writer receives
+    // StartModel on the first Enter press from the Settings tab.
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.go_top();
+    app.open_launch_picker();
+    let (tx, mut rx) = mpsc::channel::<WriterCmd>(8);
+    pump_input_with_writer(&mut app, key(KeyCode::Enter, KeyModifiers::NONE), Some(&tx));
+    let cmd = rx.try_recv().expect("writer must receive start_model");
+    assert!(matches!(cmd, WriterCmd::StartModel { .. }));
+    assert!(app.confirm_dialog.is_none(), "no confirm popup expected");
+  }
+
+  #[test]
+  fn u_c_p_yanks_work_from_settings_tab() {
+    // Round-8: `p` always yanks the focused path; `u` and `c`
+    // need a running endpoint. Dispatch happens through the same
+    // `apply_action` path as the Models list, so a successful
+    // yank toast is enough to prove the binding routes.
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.managed = vec![ready_managed_for_events("/m/qwen.gguf", 41100)];
+    app.go_top();
+    app.focus = Focus::RightPane;
+    app.right_tab = RightTab::Settings;
+    pump_input(&mut app, key(KeyCode::Char('p'), KeyModifiers::NONE));
+    assert!(app.toast_message().is_some(), "p must yank the path");
+    app.toast = None;
+    pump_input(&mut app, key(KeyCode::Char('u'), KeyModifiers::NONE));
+    assert!(app.toast_message().is_some(), "u must yank the URL");
+    app.toast = None;
+    pump_input(&mut app, key(KeyCode::Char('c'), KeyModifiers::NONE));
+    assert!(app.toast_message().is_some(), "c must yank the curl");
   }
 }

@@ -41,6 +41,9 @@ pub struct ChatTabState {
   /// Collapse `<think>` blocks. Drives the same toggle the plan
   /// calls out for reasoning-aware models.
   pub collapse_thinks: bool,
+  /// Top-of-viewport offset into the rendered response. 0 pins
+  /// to the top; ↑/↓ in `Focus::RightPane` walk this (round-8).
+  pub scroll_offset: u16,
   /// Receiver for the most recent `spawn_chat_stream` invocation.
   /// The render loop drains it via `try_recv` on every tick — that
   /// way SSE deltas land in [`response`] without the input thread
@@ -69,6 +72,18 @@ impl ChatTabState {
     self.last_error = None;
     self.finish_reason = None;
     self.streaming = true;
+    self.scroll_offset = 0;
+  }
+
+  /// Scroll the output viewport up by one line. Saturating add so
+  /// repeated presses past the top of the response don't overflow.
+  pub fn scroll_up(&mut self) {
+    self.scroll_offset = self.scroll_offset.saturating_add(1);
+  }
+
+  /// Scroll the output viewport down by one line, clamping at 0.
+  pub fn scroll_down(&mut self) {
+    self.scroll_offset = self.scroll_offset.saturating_sub(1);
   }
 }
 
@@ -127,29 +142,19 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
       body,
       status,
       bold_body: state.streaming,
+      scroll_offset: state.scroll_offset,
     },
     palette,
   );
 }
 
-/// Chip strip for the idle status line. Every keycap resolves
-/// against the live keymap so `keybindings:` overrides flow
-/// through. When the prompt is the focused input we surface the
-/// edit-mode keys (newline / reasoning / clear); when focus is on
-/// the right pane navigation we replace `clear` with `edit` so the
-/// user knows how to re-enter the buffer.
+/// Chip strip for the idle status line. Round-8 trimmed this to
+/// only the trailing `clear` / `edit` chip — newline and reasoning
+/// chips lived right beside the prompt block they describe and felt
+/// noisy on a status line. Their keys are still discoverable through
+/// the `?` help overlay.
 pub(crate) fn idle_status_chips(app: &App, input_active: bool) -> Vec<String> {
-  let mut chips: Vec<String> = Vec::with_capacity(3);
-  if let Some(c) = app.hint(Focus::ChatInput, Action::InsertNewline) {
-    chips.push(c);
-  }
-  if let Some(c) = app.hint_with(
-    Focus::ChatInput,
-    Action::ToggleThinkCollapse,
-    "toggle reasoning",
-  ) {
-    chips.push(c);
-  }
+  let mut chips: Vec<String> = Vec::with_capacity(1);
   let trailing = if input_active {
     app.hint_with(Focus::ChatInput, Action::ExitEdit, "clear")
   } else {
@@ -199,45 +204,52 @@ mod tests {
   }
 
   #[test]
-  fn idle_chips_when_input_active_use_keymap_labels() {
+  fn idle_chips_when_input_active_carry_only_clear() {
+    // Round-8 strip: idle status keeps only the trailing
+    // clear/edit chip. Newline + reasoning keys still work but
+    // their discoverability moved to the `?` help overlay.
     let app = App::new(AppOptions::default());
     let chips = idle_status_chips(&app, true);
-    assert_eq!(
-      chips,
-      vec![
-        "Shift+Enter:newline".to_string(),
-        "Ctrl+r:toggle reasoning".to_string(),
-        "Esc:clear".to_string(),
-      ]
-    );
+    assert_eq!(chips, vec!["Esc:clear".to_string()]);
   }
 
   #[test]
   fn idle_chips_when_input_inactive_swap_clear_for_edit() {
     let app = App::new(AppOptions::default());
     let chips = idle_status_chips(&app, false);
-    assert_eq!(chips.last().map(String::as_str), Some("e:edit"));
+    assert_eq!(chips, vec!["e:edit".to_string()]);
   }
 
   #[test]
-  fn idle_chips_pick_up_config_keybinding_overrides() {
-    // Rebind toggle_think_collapse to F8 — the chip must surface
-    // the rebound label without code changes.
+  fn idle_chips_drop_newline_and_reasoning_in_round_8() {
+    // Regression guard for round-8: neither Shift+Enter:newline
+    // nor Ctrl+r:toggle reasoning should appear on the chat tab's
+    // idle status row.
+    let app = App::new(AppOptions::default());
+    let chips = idle_status_chips(&app, true);
+    for stale in ["newline", "toggle reasoning", "Shift+", "󰘶+Enter:newline"] {
+      assert!(
+        !chips.iter().any(|c| c.contains(stale)),
+        "stale chip text `{stale}` resurfaced: {chips:?}"
+      );
+    }
+  }
+
+  #[test]
+  fn idle_chips_pick_up_enter_edit_rebind() {
+    // The remaining chip resolves live against the keymap. Rebind
+    // `enter_edit` and the inactive-state chip follows.
     let mut keymap = KeyMap::default();
-    let overrides: BTreeMap<String, String> =
-      [(String::from("toggle_think_collapse"), String::from("f8"))]
-        .into_iter()
-        .collect();
+    let overrides: BTreeMap<String, String> = [(String::from("enter_edit"), String::from("f4"))]
+      .into_iter()
+      .collect();
     let warnings = keymap.apply_overrides(&overrides);
     assert!(warnings.is_empty(), "{warnings:?}");
     let app = App::new(AppOptions {
       keymap,
       ..AppOptions::default()
     });
-    let chips = idle_status_chips(&app, true);
-    assert!(
-      chips.iter().any(|c| c == "F8:toggle reasoning"),
-      "F8 binding missing from chips: {chips:?}"
-    );
+    let chips = idle_status_chips(&app, false);
+    assert_eq!(chips, vec!["F4:edit".to_string()]);
   }
 }

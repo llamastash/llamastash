@@ -90,16 +90,13 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AdvancedPanelState, pal
   .wrap(Wrap { trim: true });
   frame.render_widget(intro, layout[0]);
 
+  // Round-8: caret style mirrors the filter input (no leading
+  // `▌ ` block, `▏` cursor) so every text-input in the TUI reads
+  // identically.
   let body = Paragraph::new(Line::from(vec![
-    Span::styled(
-      "▌ ",
-      Style::default()
-        .fg(palette.accent)
-        .add_modifier(Modifier::BOLD),
-    ),
     Span::styled(&state.buffer, Style::default().fg(palette.fg)),
     Span::styled(
-      "│",
+      "▏",
       Style::default()
         .fg(palette.accent)
         .add_modifier(Modifier::REVERSED),

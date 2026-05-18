@@ -74,7 +74,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
       lines.push(Line::default());
       lines.push(
         Span::styled(
-          "Stop this launch with `s` from the model list to re-launch with new settings.",
+          "Stop this launch with `s` to re-launch with new settings.",
           Style::default().fg(palette.muted),
         )
         .into(),
@@ -115,7 +115,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   ));
   lines.push(kv_focused(
     "reasoning",
-    if picker_view.reasoning { "on" } else { "off" }.into(),
+    picker_view.reasoning.label().to_string(),
     picker_view.field == PickerField::Reasoning,
     true,
     palette,
@@ -174,7 +174,53 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
     .into(),
   );
 
+  // Round-8: advanced / cycle fields / cycle value / yank chips
+  // moved out of the title strip and into the body so the title
+  // strip stays minimal. `u` and `c` only render when a managed
+  // launch is focused (they need a running endpoint). `p` always
+  // shows because a path yank works on any focused model.
+  if !no_focus {
+    let hints = build_form_hints(app);
+    if !hints.is_empty() {
+      lines.push(Line::from(Span::styled(
+        hints.join(" · "),
+        Style::default().fg(palette.muted),
+      )));
+    }
+  }
+
   frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+}
+
+/// Chip strip rendered below the "Press Enter to launch" line on
+/// the editable form. Order matches the rhythm a user follows when
+/// configuring a launch: advanced flags → field cursor →
+/// field-value cursor → yank affordances. `u` / `c` (live URL,
+/// live `curl`) only surface when the focused model already has a
+/// managed launch since they need a running endpoint.
+fn build_form_hints(app: &App) -> Vec<String> {
+  let mut chips: Vec<String> = Vec::with_capacity(6);
+  if let Some(c) = app.hint(Focus::RightPane, Action::OpenAdvancedPanel) {
+    chips.push(c);
+  }
+  if let Some(c) = app.hint_with(Focus::RightPane, Action::MoveDown, "cycle fields") {
+    chips.push(c);
+  }
+  if let Some(c) = app.hint_with(Focus::RightPane, Action::CycleValueNext, "cycle value") {
+    chips.push(c);
+  }
+  if let Some(c) = app.hint(Focus::RightPane, Action::YankPath) {
+    chips.push(c);
+  }
+  if app.focused_managed().is_some() {
+    if let Some(c) = app.hint(Focus::RightPane, Action::YankUrl) {
+      chips.push(c);
+    }
+    if let Some(c) = app.hint(Focus::RightPane, Action::YankCurl) {
+      chips.push(c);
+    }
+  }
+  chips
 }
 
 fn heading<'a>(text: &'a str, palette: &Palette) -> Line<'a> {
@@ -247,4 +293,62 @@ fn kv_focused(
     spans.push(Span::styled(value, Style::default().fg(palette.fg)));
   }
   Line::from(spans)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::tui::app::{App, AppOptions, ManagedRow};
+  use crate::tui::status_icons::SurfaceState;
+  use std::path::PathBuf;
+
+  fn fake_model(path: &str, parent: &str) -> crate::discovery::DiscoveredModel {
+    crate::discovery::DiscoveredModel {
+      path: PathBuf::from(path),
+      parent: PathBuf::from(parent),
+      source: crate::discovery::ModelSource::UserPath,
+      metadata: None,
+      parse_error: None,
+      split_siblings: Vec::new(),
+    }
+  }
+
+  #[test]
+  fn form_hints_for_unlaunched_model_omit_url_and_curl() {
+    // Round-8: `u` / `c` (live URL / live `curl`) require a
+    // running endpoint and stay hidden when nothing is launched.
+    // `p` (path), advanced, cycle fields, and cycle value remain.
+    let mut app = App::new(AppOptions::default());
+    app.models = vec![fake_model("/m/qwen.gguf", "/m")];
+    app.list_cursor = 2;
+    let chips = build_form_hints(&app);
+    assert_eq!(
+      chips,
+      vec![
+        "a:advanced".to_string(),
+        "↓:cycle fields".to_string(),
+        "→:cycle value".to_string(),
+        "p:path".to_string(),
+      ]
+    );
+  }
+
+  #[test]
+  fn form_hints_for_running_model_include_url_and_curl() {
+    let mut app = App::new(AppOptions::default());
+    app.models = vec![fake_model("/m/qwen.gguf", "/m")];
+    app.managed = vec![ManagedRow {
+      launch_id: "L1".into(),
+      path: PathBuf::from("/m/qwen.gguf"),
+      port: 41100,
+      state: SurfaceState::Ready,
+      rss_bytes: None,
+      cpu_pct: None,
+    }];
+    app.list_cursor = 2;
+    let chips = build_form_hints(&app);
+    assert!(chips.contains(&"u:url".to_string()), "got: {chips:?}");
+    assert!(chips.contains(&"c:curl".to_string()), "got: {chips:?}");
+    assert!(chips.contains(&"p:path".to_string()), "got: {chips:?}");
+  }
 }

@@ -211,9 +211,13 @@ fn arrows_in_settings_tab_cycle_fields_and_values() {
     app.launch_picker.as_ref().unwrap().field,
     PickerField::Reasoning
   );
-  // → toggles the reasoning value on (now that Reasoning is focused).
+  // → walks the reasoning tri-state forward (ModelDefault → On).
   pump_input(&mut app, key(KeyCode::Right, KeyModifiers::NONE));
-  assert!(app.launch_picker.as_ref().unwrap().reasoning);
+  use llamadash::tui::launch_picker::ReasoningSetting;
+  assert_eq!(
+    app.launch_picker.as_ref().unwrap().reasoning,
+    ReasoningSetting::On
+  );
 }
 
 #[test]
@@ -401,8 +405,12 @@ fn launch_picker_seeds_from_persisted_last_params() {
   app.open_launch_picker();
   let picker = app.launch_picker.as_ref().expect("picker open");
   assert_eq!(picker.ctx, Some(8192));
-  assert!(
+  // Round-8: persisted `reasoning: true` lands on the explicit
+  // `On` tri-state, not on the `ModelDefault` neutral slot.
+  use llamadash::tui::launch_picker::ReasoningSetting;
+  assert_eq!(
     picker.reasoning,
+    ReasoningSetting::On,
     "reasoning toggle must seed from last_params"
   );
   let advanced = app

@@ -237,10 +237,18 @@ mod tests {
     let app = default_app();
     let text = global_hint_text(&app);
     assert!(text.contains("?:help"), "got: {text}");
-    // Tab/Shift+Tab is the canonical pane-cycle surface.
+    // Tab/󰘶+Tab is the canonical pane-cycle surface. The 󰘶 glyph
+    // is the Nerd Font rendering of the Shift modifier (item 1).
     // ←/→ are no longer pane-cycle keys (they cycle values in
     // Settings now), so the chip carries only the Tab pair.
-    assert!(text.contains("Tab/Shift+Tab:panes"), "got: {text}");
+    assert!(text.contains("Tab/󰘶+Tab:panes"), "got: {text}");
+    // The legacy `Shift+` text must never appear — keymap rendering
+    // routes every modifier through `format_key_label`, which
+    // surfaces the glyph form.
+    assert!(
+      !text.contains("Shift+"),
+      "Shift+ text must not appear: {text}"
+    );
     // Pre-round-7 surfaces must be gone.
     assert!(
       !text.contains(":fields"),
