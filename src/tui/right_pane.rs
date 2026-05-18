@@ -140,13 +140,18 @@ pub(crate) fn bottom_hint_chips(app: &App) -> Vec<String> {
         &mut chips,
         app.hint_with(Focus::RerankInput, Action::ExitEdit, "clear"),
       );
+      // Submit is dual-duty: in the query field it dispatches
+      // `/v1/rerank`; in the candidate field it stages the buffer
+      // onto the candidate list. The chip description reflects the
+      // currently focused field so it doesn't lie.
+      let submit_desc = if app.rerank.field == crate::tui::tabs::rerank::RerankField::Candidate {
+        "add candidate"
+      } else {
+        "rerank"
+      };
       push(
         &mut chips,
-        app.hint_with(Focus::RerankInput, Action::Submit, "rerank"),
-      );
-      push(
-        &mut chips,
-        app.hint(Focus::RerankInput, Action::StageRerankCandidate),
+        app.hint_with(Focus::RerankInput, Action::Submit, submit_desc),
       );
     }
     // Navigation focuses surface the entry-point keystroke per tab.
@@ -467,13 +472,21 @@ mod tests {
       bottom_hint_chips(&app_with_focus(Focus::EmbedInput, RightTab::Embed)),
       vec!["Esc:clear".to_string(), "Enter:embed".to_string()]
     );
+    // Rerank input: chip strip depends on which sub-field is
+    // active. Default field is Query, so Enter dispatches the
+    // rerank call.
+    let mut app = app_with_focus(Focus::RerankInput, RightTab::Rerank);
     assert_eq!(
-      bottom_hint_chips(&app_with_focus(Focus::RerankInput, RightTab::Rerank)),
-      vec![
-        "Esc:clear".to_string(),
-        "Enter:rerank".to_string(),
-        "+:stage candidate".to_string(),
-      ]
+      bottom_hint_chips(&app),
+      vec!["Esc:clear".to_string(), "Enter:rerank".to_string()]
+    );
+    // Cycling to the candidate field swaps the Enter description
+    // to `add candidate` — Enter now stages the buffer instead of
+    // dispatching `/v1/rerank`.
+    app.rerank.cycle_field();
+    assert_eq!(
+      bottom_hint_chips(&app),
+      vec!["Esc:clear".to_string(), "Enter:add candidate".to_string()]
     );
   }
 

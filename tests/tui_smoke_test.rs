@@ -547,44 +547,46 @@ fn s_in_right_pane_toggles_logs_auto_scroll() {
 }
 
 #[test]
-fn rerank_input_cycles_field_with_down_and_stages_via_equals() {
-  // Round-7 navigation: ↓ cycles between the Rerank query and
-  // candidate fields, and `=` (no Shift) stages the candidate
-  // onto the list. Tab is now the universal pane-cycle.
+fn rerank_enter_in_candidate_field_stages_buffer() {
+  // Round-9: the `+` / `=` dedicated stage chords retire. Enter
+  // in the candidate field now stages the typed candidate onto
+  // the list — no extra chord required. Enter in the query field
+  // still dispatches `/v1/rerank`.
   use llamadash::tui::keybindings::Focus;
   use llamadash::tui::tabs::rerank::RerankField;
   let mut app = App::new(AppOptions::default());
   app.focus = Focus::RerankInput;
-  // Type a query then ↓ to candidate field.
+  // Type a query then ↓ to the candidate field.
   for ch in "what?".chars() {
     pump_input(&mut app, key(KeyCode::Char(ch), KeyModifiers::NONE));
   }
   pump_input(&mut app, key(KeyCode::Down, KeyModifiers::NONE));
   assert_eq!(app.rerank.field, RerankField::Candidate);
-  // Type a candidate then `=` (the no-shift alias for `+`) to stage.
   for ch in "doc one".chars() {
     pump_input(&mut app, key(KeyCode::Char(ch), KeyModifiers::NONE));
   }
-  pump_input(&mut app, key(KeyCode::Char('='), KeyModifiers::NONE));
+  // Enter in the candidate field — stages the buffer onto the
+  // list, clears the buffer, stays in the candidate field so the
+  // user can keep typing.
+  pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::NONE));
   assert_eq!(app.rerank.query, "what?");
   assert_eq!(app.rerank.candidates, vec!["doc one".to_string()]);
   assert!(app.rerank.candidate_buffer.is_empty());
+  assert_eq!(app.rerank.field, RerankField::Candidate);
 }
 
 #[test]
-fn rerank_plus_with_shift_also_stages_candidate() {
-  // `+` mirrors `=` for users who naturally hold Shift. Both
-  // alias to `StageRerankCandidate`.
+fn rerank_enter_in_candidate_field_with_empty_buffer_toasts() {
+  // Empty candidate buffer → no add, just a hint toast so the
+  // user understands why nothing changed.
   use llamadash::tui::keybindings::Focus;
   use llamadash::tui::tabs::rerank::RerankField;
   let mut app = App::new(AppOptions::default());
   app.focus = Focus::RerankInput;
   app.rerank.field = RerankField::Candidate;
-  for ch in "doc two".chars() {
-    pump_input(&mut app, key(KeyCode::Char(ch), KeyModifiers::NONE));
-  }
-  pump_input(&mut app, key(KeyCode::Char('+'), KeyModifiers::SHIFT));
-  assert_eq!(app.rerank.candidates, vec!["doc two".to_string()]);
+  pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::NONE));
+  assert!(app.rerank.candidates.is_empty());
+  assert!(app.toast_message().is_some());
 }
 
 #[test]

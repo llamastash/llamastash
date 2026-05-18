@@ -798,9 +798,10 @@ const RERANK_INPUT_BINDINGS: &[Binding] = &[
     label: "Esc",
     description: "exit edit",
   },
-  // Tab/Shift+Tab cycle panes everywhere — including inside the
-  // rerank input. Staging a candidate moves to `+` / `=` (same
-  // physical key on US keyboards, with and without Shift).
+  // Tab / Shift+Tab cycle panes everywhere — including inside the
+  // rerank input. Staging a candidate now rides on Enter while the
+  // candidate field is focused (see `apply_rerank_submit`), so the
+  // dedicated `+` / `=` chords retire.
   Binding {
     key: KeyCode::Tab,
     mods: KeyModifiers::NONE,
@@ -833,31 +834,18 @@ const RERANK_INPUT_BINDINGS: &[Binding] = &[
     label: "↑",
     description: "prev field",
   },
-  // `+` and `=` both stage the current candidate buffer onto the
-  // candidate list. `=` covers the no-shift case on US keyboards
-  // (same key as `+` without Shift); `+` lets users who hold
-  // Shift hit it naturally.
-  Binding {
-    key: KeyCode::Char('+'),
-    mods: KeyModifiers::SHIFT,
-    action: Action::StageRerankCandidate,
-    label: "+",
-    description: "stage candidate",
-  },
-  Binding {
-    key: KeyCode::Char('='),
-    mods: KeyModifiers::NONE,
-    action: Action::StageRerankCandidate,
-    label: "=",
-    description: "stage candidate",
-  },
-  // Plain Enter — see CHAT_INPUT_BINDINGS for the rationale.
+  // Plain Enter is dual-duty on the Rerank tab:
+  //   - in the Query field   → dispatch `/v1/rerank`
+  //   - in the Candidate field → stage the buffer onto the list
+  // The dispatcher (`apply_rerank_submit`) branches on the
+  // focused field so a single muscle-memory chord drives both
+  // tasks without a dedicated `+:stage` chord.
   Binding {
     key: KeyCode::Enter,
     mods: KeyModifiers::NONE,
     action: Action::Submit,
     label: "Enter",
-    description: "rerank",
+    description: "query/add candidate",
   },
   Binding {
     key: KeyCode::Enter,
@@ -1405,17 +1393,19 @@ mod tests {
   }
 
   #[test]
-  fn rerank_input_plus_and_equals_stage_candidate() {
-    // Round-7 freed Tab for pane-cycle, so staging migrated to
-    // `+` / `=` (same physical key on US keyboards with and
-    // without Shift).
+  fn rerank_input_plus_and_equals_no_longer_bound_to_stage() {
+    // Round-9 dropped the dedicated `+` / `=` stage chords. Enter
+    // in the candidate field now stages the buffer (dispatched by
+    // `apply_rerank_submit` based on focused field). The action is
+    // kept on the dispatch table so a user keymap override can
+    // restore an explicit stage chord if they want.
     assert_eq!(
       action_for(Focus::RerankInput, KeyCode::Char('+'), KeyModifiers::SHIFT),
-      Some(Action::StageRerankCandidate),
+      None,
     );
     assert_eq!(
       action_for(Focus::RerankInput, KeyCode::Char('='), KeyModifiers::NONE),
-      Some(Action::StageRerankCandidate),
+      None,
     );
   }
 

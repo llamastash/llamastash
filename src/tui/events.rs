@@ -703,8 +703,30 @@ fn apply_embed_submit(app: &mut App) {
   });
 }
 
-/// One-shot rerank call. Same async pattern as `apply_embed_submit`.
+/// Dispatch Enter on the Rerank tab. Behaviour branches on the
+/// focused sub-field:
+///
+/// - Candidate field → stage the buffer onto the candidates list.
+///   Stays in the candidate field so the user can keep typing the
+///   next candidate without an extra ↓ press. Empty buffers toast
+///   and stay put.
+/// - Query field → fire the actual `/v1/rerank` call. Auto-stages
+///   any in-progress candidate buffer first so the common
+///   "type a candidate, Tab to candidate field, Enter to rerank"
+///   flow doesn't need an explicit add step.
 fn apply_rerank_submit(app: &mut App) {
+  // Candidate-field Enter is the "add this candidate" gesture.
+  // We dispatch this before checking the focused-managed gate so
+  // a user can stage candidates even when no model is running yet
+  // (rerank submit itself still requires a running endpoint).
+  if app.rerank.field == RerankField::Candidate {
+    let staged = app.rerank.stage_candidate();
+    if !staged {
+      app.show_toast("type a candidate first");
+    }
+    return;
+  }
+
   let Some(managed) = focused_managed_or_toast(app, "rerank") else {
     return;
   };
@@ -712,19 +734,13 @@ fn apply_rerank_submit(app: &mut App) {
     app.show_toast("rerank query is empty");
     return;
   }
-  // Auto-stage any in-progress candidate buffer the user hasn't
-  // pressed Tab on yet — saves a keystroke for the common case.
+  // Auto-stage any in-progress candidate buffer the user has
+  // typed but not yet committed — saves a keystroke for the
+  // common case of typing the last candidate then pressing
+  // Enter in the query field.
   app.rerank.stage_candidate();
   if app.rerank.candidates.is_empty() {
-    let stage_key = app
-      .hint(Focus::RerankInput, Action::StageRerankCandidate)
-      .map(|chip| {
-        // chip is "Tab:cycle field/stage candidate" — pull off
-        // the label so the toast reads "(Tab to add)".
-        chip.split(':').next().unwrap_or("Tab").to_string()
-      })
-      .unwrap_or_else(|| "Tab".to_string());
-    app.show_toast(format!("stage at least one candidate ({stage_key} to add)"));
+    app.show_toast("stage at least one candidate (↓ to candidate field, Enter to add)");
     return;
   }
   let query = app.rerank.query.clone();
