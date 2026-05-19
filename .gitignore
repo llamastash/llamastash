@@ -9,3 +9,8 @@
 .context/
 .claude/
 temp/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/

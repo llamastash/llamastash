@@ -16,6 +16,7 @@ _None — the four vendoring items shipped 2026-05-19 via [`docs/plans/2026-05-1
 
 ## v1+ release blockers
 
+- [ ] /ce:review from commit 5f290d7e27fe0204faf5394895c891f6150dce6b onwards except 07ce5abdede7d9c63e2e4352b34de9c8d5566e40 as thats already reviewed.
 - [ ] if `--llama-server` is passed, add it as fallback in config file and use it when llama-server is not on path.
 - [ ] Better/colorful/formatted CLI output for commands.
 - [ ] Readme and other docs sync.
@@ -27,6 +28,7 @@ _None — the four vendoring items shipped 2026-05-19 via [`docs/plans/2026-05-1
 - [ ] **Need brainstorm/plan**: Test strategy for Nvidia / AMD / Apple GPU support (origin: R34).
 - [ ] Skills.
 - [ ] **In progress**: Release setup: website, brew tap, etc. (KDash-style).
+- [ ] Release pipeline like Kdash
 - [ ] **Need brainstorm/plan**: Release blog.
 - [ ] **Need brainstorm/research/plan**:Social promotion — research an approach for max reach.
 
