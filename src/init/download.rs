@@ -369,8 +369,7 @@ pub async fn download_repo(
 
 /// `llamadash pull <repo>` handler entry-point. Unit 3 wires this in.
 pub async fn run(args: PullArgs, _cli: &Cli, _config: &Config) -> CliResult {
-  let spec =
-    RepoSpec::parse(&args.repo).map_err(|e| CliExit::prefix(PULL_FAILED, "pull", e))?;
+  let spec = RepoSpec::parse(&args.repo).map_err(|e| CliExit::prefix(PULL_FAILED, "pull", e))?;
   let fetch = crate::init::fetch::build_with_offline_check(
     args.offline,
     crate::init::fetch::FetchClientConfig::default(),

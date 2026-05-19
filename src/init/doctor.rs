@@ -321,9 +321,7 @@ pub async fn run(args: DoctorArgs, _cli: &Cli, _config: &Config) -> CliResult {
     Some(dir) => match snapshot::load(&dir) {
       Ok(snap) => snap,
       Err(e) => {
-        log::warn!(
-          "doctor: failed to read init_snapshot.json (quarantined to .broken-<ts>): {e}"
-        );
+        log::warn!("doctor: failed to read init_snapshot.json (quarantined to .broken-<ts>): {e}");
         None
       }
     },

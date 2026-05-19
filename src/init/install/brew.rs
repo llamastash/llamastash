@@ -35,10 +35,7 @@ const BREW_QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 /// digest. Caller decides whether `brew` is on PATH (we surface a
 /// usable error if not).
 pub fn install_via_brew() -> Result<BinaryInstall, InstallError> {
-  let install = run_brew_with_timeout(
-    &["install", "--quiet", "llama.cpp"],
-    BREW_INSTALL_TIMEOUT,
-  )?;
+  let install = run_brew_with_timeout(&["install", "--quiet", "llama.cpp"], BREW_INSTALL_TIMEOUT)?;
   if !install.status.success() {
     let stderr = String::from_utf8_lossy(&install.stderr).into_owned();
     return Err(InstallError::Brew(format!(

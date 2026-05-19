@@ -184,9 +184,9 @@ pub fn save(state_dir: &Path, state: &DaemonState) -> Result<(), SaveError> {
   let body = serde_json::to_vec_pretty(state).map_err(|e| SaveError::Serialise(e.to_string()))?;
   crate::util::atomic_write::write_secure(state_dir, "state.json.tmp.", &final_path, &body, None)
     .map_err(|e| SaveError::Io {
-      path: final_path,
-      error: e.to_string(),
-    })?;
+    path: final_path,
+    error: e.to_string(),
+  })?;
   Ok(())
 }
 

@@ -149,11 +149,12 @@ pub fn safe_extract_tar_gz(
           path: entry_path_str.clone(),
           reason: "symlink with no target".into(),
         })?;
-      let safe_link =
-        safe_symlink_target(&safe_rel, &link_name).map_err(|reason| InstallError::UnsafeArchive {
+      let safe_link = safe_symlink_target(&safe_rel, &link_name).map_err(|reason| {
+        InstallError::UnsafeArchive {
           path: entry_path_str.clone(),
           reason,
-        })?;
+        }
+      })?;
       if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent).map_err(|e| InstallError::Io(e.to_string()))?;
       }
@@ -277,9 +278,7 @@ fn find_llama_server(root: &Path) -> Option<PathBuf> {
           return Some(path);
         }
       }
-      if depth + 1 < MAX_SCAN_DEPTH
-        && entry.file_type().map(|t| t.is_dir()).unwrap_or(false)
-      {
+      if depth + 1 < MAX_SCAN_DEPTH && entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
         queue.push((entry.path(), depth + 1));
       }
     }
@@ -535,12 +534,10 @@ mod tests {
         .is_symlink(),
       "libllama.so should be a symlink"
     );
-    assert!(
-      std::fs::symlink_metadata(&soname)
-        .unwrap()
-        .file_type()
-        .is_symlink()
-    );
+    assert!(std::fs::symlink_metadata(&soname)
+      .unwrap()
+      .file_type()
+      .is_symlink());
     // The chain must resolve to a real file (dynamic linker would
     // follow it the same way at runtime).
     assert!(std::fs::metadata(&unversioned).unwrap().is_file());

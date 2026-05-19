@@ -116,7 +116,8 @@ async fn offline_only_config_completes_without_network() {
   // the offline check leaked into the config step.
   if let Err(e) = &result {
     assert_ne!(
-      e.code, llamadash::cli::exit_codes::INIT_DOWNLOAD_FAILED,
+      e.code,
+      llamadash::cli::exit_codes::INIT_DOWNLOAD_FAILED,
       "config-only run must not surface INIT_DOWNLOAD_FAILED: {:?}",
       e.message
     );
@@ -173,14 +174,7 @@ fn step_plan_only_and_skip_resolve_to_same_set() {
 /// time, never reaches the wizard.
 #[test]
 fn only_and_skip_together_refused_by_clap() {
-  let result = Cli::try_parse_from([
-    "llamadash",
-    "init",
-    "--only",
-    "server",
-    "--skip",
-    "config",
-  ]);
+  let result = Cli::try_parse_from(["llamadash", "init", "--only", "server", "--skip", "config"]);
   assert!(
     result.is_err(),
     "clap should reject mutually-exclusive --only + --skip"

@@ -870,10 +870,7 @@ mod tests {
   #[test]
   fn init_date_is_iso8601() {
     let t = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
-    assert_eq!(
-      crate::util::datetime::iso8601(t),
-      "2023-11-14T22:13:20Z"
-    );
+    assert_eq!(crate::util::datetime::iso8601(t), "2023-11-14T22:13:20Z");
   }
 
   #[test]
