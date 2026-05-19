@@ -8,16 +8,20 @@
 //!   5. smoke launch — `--only` / `--skip` gated (Unit 12 owns the body).
 //!   6. handoff — always runs.
 //!
-//! `--yes` short-circuits prompts to hardware-aware defaults. `--json`
-//! emits a single summary on completion; per-step progress goes to
-//! stderr at `--verbose`. `--offline` constructs an offline
-//! `FetchClient`; steps that need network mark themselves "skipped"
-//! and the user gets an actionable hint.
+//! `--recommended` (or the hidden `--yes` alias) short-circuits every
+//! prompt to its hardware-aware default. Three per-step value flags
+//! (`--install`, `--model`, `--config-step`) pre-answer individual
+//! prompts without skipping the rest of the wizard. `--json` emits a
+//! single summary on completion; per-step progress goes to stderr at
+//! `--verbose`. `--offline` constructs an offline `FetchClient`;
+//! steps that need network mark themselves "skipped" and the user
+//! gets an actionable hint.
 
 use std::path::PathBuf;
 use std::time::SystemTime;
 
 use crate::cli::cli_args::{Cli, InitArgs, InitStep};
+use crate::cli::colors;
 use crate::cli::exit_codes::{CliExit, CliResult, INIT_ABORTED, INIT_SMOKE_FAILED, UNKNOWN};
 use crate::config::Config;
 use crate::init::benchmark::load_bundled;
@@ -28,9 +32,8 @@ use crate::init::fetch::{build_with_offline_check, FetchClient, FetchClientConfi
 use crate::init::install::{
   default_install_method, gh_releases, BinaryInstall, InstallChoice, InstallError,
 };
-use crate::init::recommender::{
-  recommend, OnDiskModel, RecommendOptions, Recommendation, RecommendationKind,
-};
+use crate::init::prompts::{self, ModelChoice};
+use crate::init::recommender::{recommend, OnDiskModel, RecommendOptions};
 use crate::init::snapshot::{self, InstallMethod, ManagedKey};
 
 /// Effective per-step run plan after `--only`/`--skip` resolve. Step 1
@@ -209,7 +212,14 @@ pub async fn run(args: InitArgs, cli: &Cli, config: &Config) -> CliResult {
     ..InitSummary::default()
   };
   summary.steps_ran.push("detect");
-  print_persistent_header(&hardware, args.json);
+  // cliclack intro panel for human-readable runs; JSON callers bypass.
+  if !args.json {
+    prompts::intro(&hardware);
+  }
+  // Per-step value flags pointed at a skipped step: emit a single
+  // stderr warning and proceed. Keeps `--only`/`--skip` and the
+  // override flags' axes independent (W4).
+  warn_on_ignored_step_overrides(&args, &plan);
 
   // Thread the same flag/env/config the daemon does (see
   // `cli/daemon.rs::resolved_inputs`) so `--llama-server <path>` and
@@ -268,8 +278,14 @@ pub async fn run(args: InitArgs, cli: &Cli, config: &Config) -> CliResult {
   // Step 4: config write.
   if plan.config {
     summary.steps_ran.push("config");
-    match run_config_step(&args, install.as_ref(), &hardware) {
-      Ok(c) => summary.config = Some(c),
+    match run_config_step(&args, install.as_ref(), &hardware).await {
+      Ok(Some(c)) => summary.config = Some(c),
+      // User declined the confirm or `--config-step skip` was set:
+      // record the step as skipped so the summary reflects reality.
+      Ok(None) => {
+        summary.steps_ran.retain(|s| *s != "config");
+        summary.steps_skipped.push("config");
+      }
       Err(e) => return Err(e),
     }
   } else {
@@ -387,21 +403,29 @@ fn render_hardware(hw: &HardwareSnapshot) -> HardwareSummary {
   }
 }
 
-fn print_persistent_header(hw: &HardwareSnapshot, json: bool) {
-  if json {
-    return;
+/// Emit a single stderr line per per-step flag pointed at a step the
+/// `--only`/`--skip` plan excludes. The flag is still parsed and
+/// recorded; we just tell the user it's a no-op for this run rather
+/// than silently dropping it (W4).
+fn warn_on_ignored_step_overrides(args: &InitArgs, plan: &StepPlan) {
+  if args.install.is_some() && !plan.server {
+    eprintln!(
+      "{}",
+      colors::warning("--install ignored because the server step is skipped")
+    );
   }
-  let vram = match hw.vram_bytes {
-    Some(b) => format!("{:.1} GB VRAM", b as f64 / 1_073_741_824.0),
-    None => "no GPU".to_string(),
-  };
-  let ram = format!("{:.0} GB RAM", hw.ram_total_bytes as f64 / 1_073_741_824.0);
-  eprintln!(
-    "llamadash init — detected {} · {ram} · {vram} · {:?}/{:?}",
-    hw.gpu.label(),
-    hw.os,
-    hw.cpu_arch,
-  );
+  if args.model.is_some() && !plan.models {
+    eprintln!(
+      "{}",
+      colors::warning("--model ignored because the models step is skipped")
+    );
+  }
+  if args.config_choice.is_some() && !plan.config {
+    eprintln!(
+      "{}",
+      colors::warning("--config-step ignored because the config step is skipped")
+    );
+  }
 }
 
 async fn run_install_step(
@@ -410,10 +434,10 @@ async fn run_install_step(
   hardware: &HardwareSnapshot,
   binary: &BinaryPresence,
 ) -> Result<BinaryInstall, CliExit> {
-  // If the user already has a binary on PATH or at a common location,
-  // pre-select "use existing" under --yes. The wizard's interactive
-  // prompt would offer the choice; the --yes path adopts it.
-  if args.yes {
+  // In recommended mode, if the user already has a safe-to-adopt binary
+  // on PATH or at a common location, prefer adopting it over running a
+  // fresh install. Matches the prior `--yes` behavior.
+  if prompts::is_recommended(args) {
     if let Some(path) = binary.resolved_path.clone() {
       if crate::init::install::custom_path::is_safe_to_adopt(&path) {
         return crate::init::install::custom_path::install_from_custom_path(&path)
@@ -421,7 +445,8 @@ async fn run_install_step(
       }
     }
   }
-  let choice = default_install_method(hardware);
+  let default = default_install_method(hardware);
+  let choice = prompts::pick_install_method(args, default, binary).await?;
   match choice {
     InstallChoice::Brew => {
       crate::init::install::brew::install_via_brew().map_err(install_err_to_exit)
@@ -493,16 +518,12 @@ async fn run_models_step(
   };
   let on_disk: Vec<OnDiskModel> = Vec::new();
   let recs = recommend(&snapshot, hardware, &on_disk, &RecommendOptions::default());
-  let top = recs
-    .into_iter()
-    .find(|r| matches!(r.kind, RecommendationKind::Curated { .. }));
-  let pick = match top {
-    Some(Recommendation {
-      kind: RecommendationKind::Curated { entry },
-      ..
-    }) => entry,
-    _ => {
-      // No model fits — skip with actionable note.
+  let choice = prompts::pick_model(args, &recs).await?;
+  let (repo, pinned_filename, estimated_bytes) = match choice {
+    ModelChoice::Curated(entry) => (entry.repo, Some(entry.file), Some(entry.weights_bytes)),
+    ModelChoice::Paste(repo) => (repo, None, None),
+    ModelChoice::Skip => {
+      // No model fits, user picked "skip", or `--model none` supplied.
       return Ok(ModelsStepResult {
         model: ModelSummary {
           repo: String::new(),
@@ -513,19 +534,18 @@ async fn run_models_step(
       });
     }
   };
-  let _ = args.yes;
   let spec = crate::init::download::RepoSpec {
-    repo_id: pick.repo.clone(),
-    pinned_filename: Some(pick.file.clone()),
+    repo_id: repo.clone(),
+    pinned_filename,
   };
   let options = crate::init::download::DownloadOptions {
     extension_filter: None,
-    estimated_bytes: Some(pick.weights_bytes),
+    estimated_bytes,
   };
   let result = crate::init::download::run_for_init(&spec, fetch, &options).await?;
   Ok(ModelsStepResult {
     model: ModelSummary {
-      repo: pick.repo,
+      repo,
       files: result.paths,
       total_bytes: result.total_bytes,
     },
@@ -533,11 +553,11 @@ async fn run_models_step(
   })
 }
 
-fn run_config_step(
+async fn run_config_step(
   args: &InitArgs,
   install: Option<&BinaryInstall>,
   hardware: &HardwareSnapshot,
-) -> Result<ConfigSummary, CliExit> {
+) -> Result<Option<ConfigSummary>, CliExit> {
   let path =
     crate::util::paths::user_config_file().ok_or_else(|| CliExit::new(UNKNOWN, "no config dir"))?;
   let now = SystemTime::now();
@@ -579,12 +599,27 @@ fn run_config_step(
       .collect(),
     _ => Vec::new(),
   };
+  // Interactive flow: render the diff before asking for confirmation
+  // so the user sees what would be written. `--json` mode emits the
+  // diff as part of the structured summary, so we skip the stderr
+  // preview there. `--recommended` / `--config-step skip` also skip
+  // the preview — `confirm_config_write` resolves their answer
+  // synchronously and no live prompt is rendered.
+  let preview_for_confirm = if args.json || prompts::is_recommended(args) {
+    String::new()
+  } else {
+    let dry = crate::init::config_writer::dry_run_diff(&path, additions_value.clone())
+      .map_err(|e| CliExit::prefix(INIT_ABORTED, "init config", e))?;
+    dry.diff_human
+  };
+  let confirmed = prompts::confirm_config_write(args, &preview_for_confirm).await?;
+  if !confirmed {
+    return Ok(None);
+  }
   let options = crate::init::config_writer::WriteOptions {
-    show_diff_preview: !args.yes && !args.json,
-    // `--json` mode emits the diff as part of the structured summary;
-    // re-rendering it to stderr would mix non-JSON chatter into agent-
-    // facing output. Verbose stderr rendering belongs on the `--verbose`
-    // path (handled inside `write_with_diff`), not on `--json`.
+    // The interactive preview already ran via `dry_run_diff`; the
+    // writer shouldn't double-print it.
+    show_diff_preview: false,
     verbose: false,
   };
   let result = crate::init::config_writer::write_with_diff(&path, additions_value, options)
@@ -619,12 +654,12 @@ fn run_config_step(
     }
   }
   let managed_keys: Vec<String> = managed_records.iter().map(|m| m.path.clone()).collect();
-  Ok(ConfigSummary {
+  Ok(Some(ConfigSummary {
     path: result.path,
     written_bytes: result.written_bytes,
     managed_keys,
     managed_records,
-  })
+  }))
 }
 
 /// Canonical YAML serialisation of `v` suitable for content-digesting.
@@ -776,38 +811,7 @@ fn print_handoff(summary: &InitSummary, json: bool) {
     );
     return;
   }
-  println!("\nllamadash init — summary");
-  println!("  steps_ran:     {:?}", summary.steps_ran);
-  if !summary.steps_skipped.is_empty() {
-    println!("  steps_skipped: {:?}", summary.steps_skipped);
-  }
-  if let Some(install) = &summary.install {
-    println!(
-      "  install:       {} → {}",
-      install.method,
-      install.path.display()
-    );
-  }
-  if let Some(model) = &summary.model {
-    if !model.repo.is_empty() {
-      println!(
-        "  model:         {} ({:.1} MiB across {} file(s))",
-        model.repo,
-        model.total_bytes as f64 / (1024.0 * 1024.0),
-        model.files.len()
-      );
-    }
-  }
-  if let Some(cfg) = &summary.config {
-    println!(
-      "  config:        wrote {} bytes to {}",
-      cfg.written_bytes,
-      cfg.path.display()
-    );
-  }
-  println!(
-    "\nNext: run `llamadash` to enter the TUI, or `llamadash list` to see discovered models."
-  );
+  prompts::outro(summary);
 }
 
 #[cfg(test)]

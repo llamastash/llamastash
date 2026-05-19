@@ -17,7 +17,9 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::config::writer::{merge_and_write, DiffEntry, DiffKind, WriteError, WriteOutcome};
+use crate::config::writer::{
+  diff, merge, merge_and_write, read_or_default, DiffEntry, DiffKind, WriteError, WriteOutcome,
+};
 
 /// Substrings that mark a YAML path as secret-bearing. Case-insensitive
 /// match against the dotted path; a hit redacts the rendered value.
@@ -115,6 +117,30 @@ pub fn render_human(diff: &[RedactedDiffEntry]) -> String {
     out.push_str(&format!("  {marker} {}: {}\n", row.path, row.value_yaml));
   }
   out
+}
+
+/// Diff render produced by [`dry_run_diff`]. No bytes touched on
+/// disk; the wizard can present this to the user, take a confirm
+/// answer, and then call [`write_with_diff`] only when accepted.
+#[derive(Debug, Clone, Serialize)]
+pub struct DryRunDiff {
+  pub diff_human: String,
+  pub diff_json: Vec<RedactedDiffEntry>,
+}
+
+/// Compute the same redacted diff [`write_with_diff`] would emit, but
+/// without writing the file. Used by the interactive wizard's confirm
+/// flow so the diff is visible before the user commits to the write.
+pub fn dry_run_diff(path: &Path, additions: serde_yaml::Value) -> Result<DryRunDiff, WriteError> {
+  let current = read_or_default(path)?;
+  let merged = merge(current.clone(), additions);
+  let raw_diff = diff(&current, &merged);
+  let diff_json = redact_diff(&raw_diff);
+  let diff_human = render_human(&diff_json);
+  Ok(DryRunDiff {
+    diff_human,
+    diff_json,
+  })
 }
 
 /// Wizard-facing wrapper. Writes via Unit 2's primitive, applies

@@ -203,7 +203,11 @@ pub fn merge_and_write(path: &Path, additions: Value) -> Result<WriteOutcome, Wr
   })
 }
 
-fn read_or_default(path: &Path) -> Result<Value, WriteError> {
+/// Read the YAML at `path`, returning an empty mapping when the file
+/// is missing or empty. Exposed so init's dry-run diff path can build
+/// the same `(current, merged)` pair `merge_and_write` does without
+/// committing to disk.
+pub fn read_or_default(path: &Path) -> Result<Value, WriteError> {
   match std::fs::read_to_string(path) {
     Ok(s) if s.trim().is_empty() => Ok(Value::Mapping(serde_yaml::Mapping::new())),
     Ok(s) => serde_yaml::from_str(&s).map_err(|e| WriteError::ParseCurrent {

@@ -181,6 +181,98 @@ fn only_and_skip_together_refused_by_clap() {
   );
 }
 
+/// `--recommended --offline --only config` exercises the same path
+/// the old `--yes --offline --only config` test did; ensures the new
+/// canonical flag behaves identically to the hidden alias.
+#[tokio::test]
+async fn recommended_alias_runs_offline_only_config_like_yes_did() {
+  let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+  let root = isolated_xdg("recommended-offline-only-config");
+  let (cli, args) = parse_init(&[
+    "init",
+    "--recommended",
+    "--offline",
+    "--only",
+    "config",
+    "--json",
+  ]);
+  assert!(args.recommended);
+  let config = Config::default();
+  let result = wizard::run(args, &cli, &config).await;
+  if let Err(e) = &result {
+    assert_ne!(
+      e.code,
+      llamadash::cli::exit_codes::INIT_DOWNLOAD_FAILED,
+      "config-only run must not surface INIT_DOWNLOAD_FAILED: {:?}",
+      e.message
+    );
+  }
+  cleanup_xdg(&root);
+}
+
+/// `--config-step skip` causes the wizard's config step to record
+/// itself as skipped without writing — the dry-run + confirm path
+/// resolves Skip synchronously without prompting.
+#[tokio::test]
+async fn config_step_skip_records_step_as_skipped() {
+  let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+  let root = isolated_xdg("config-step-skip");
+  let (cli, args) = parse_init(&[
+    "init",
+    "--recommended",
+    "--offline",
+    "--only",
+    "config",
+    "--config-step",
+    "skip",
+    "--json",
+  ]);
+  let config = Config::default();
+  let _ = wizard::run(args, &cli, &config).await;
+  // We assert that the config.yaml was NOT created (skip path never
+  // writes). Path: ${XDG_CONFIG_HOME}/llamadash/config.yaml.
+  let config_path = root.join("config").join("llamadash").join("config.yaml");
+  assert!(
+    !config_path.exists(),
+    "--config-step skip must not write {}",
+    config_path.display()
+  );
+  cleanup_xdg(&root);
+}
+
+/// `--install` supplied for a step that `--skip` excludes still
+/// parses cleanly; the wizard logs a stderr warning and proceeds
+/// with the remaining steps. The runtime guard is `--skip server`
+/// + `--install brew`: brew never runs, the warning fires, and the
+/// other steps complete.
+#[tokio::test]
+async fn install_override_with_skipped_server_warns_and_continues() {
+  let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+  let root = isolated_xdg("install-override-skipped");
+  let (cli, args) = parse_init(&[
+    "init",
+    "--recommended",
+    "--offline",
+    "--skip",
+    "server,models",
+    "--install",
+    "brew",
+    "--json",
+  ]);
+  let config = Config::default();
+  // We're not asserting on stderr text here — just that the run
+  // doesn't abort because of the ignored override.
+  let result = wizard::run(args, &cli, &config).await;
+  if let Err(e) = &result {
+    assert_ne!(
+      e.code, INIT_ABORTED,
+      "--install on a skipped step must not abort: {:?}",
+      e.message
+    );
+  }
+  cleanup_xdg(&root);
+}
+
 // Silence unused-var lint on the env-loaded `OsString` paths.
 #[allow(dead_code)]
 fn _unused_osstring() -> OsString {

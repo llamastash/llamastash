@@ -12,11 +12,9 @@
 //! `tokio::task::spawn_blocking` so the wizard's async runtime stays
 //! responsive while the user reads the prompt.
 //!
-//! Unit 4 wires these into `src/init/wizard.rs`. Until that lands the
-//! module is intentionally not invoked from the wizard; the dead-code
-//! allowance keeps the intermediate commit clean.
-
-#![allow(dead_code)]
+//! The wizard's step functions delegate to these helpers; raw
+//! `args.recommended` / `args.yes` reads live in `is_recommended`
+//! only.
 
 use crate::cli::cli_args::{ConfigOverride, InitArgs, InstallOverride, ModelOverride};
 use crate::cli::colors;
@@ -151,26 +149,32 @@ pub async fn pick_install_method(
 
 /// Resolve the model-pick choice. Override / recommended / non-TTY
 /// short-circuits mirror the install picker.
+///
+/// `ModelOverride::Recommended` and the recommended-mode short-circuit
+/// both resolve to the top curated recommendation, so this fn handles
+/// the override + recommended-mode + non-TTY branches uniformly.
 pub async fn pick_model(args: &InitArgs, recs: &[Recommendation]) -> Result<ModelChoice, CliExit> {
-  if let Some(override_value) = &args.model {
-    return Ok(model_override_to_choice(override_value.clone()));
-  }
   let curated_default = recs.iter().find_map(|r| match &r.kind {
     RecommendationKind::Curated { entry } => Some(entry.clone()),
     _ => None,
   });
-  if is_recommended(args) {
-    return Ok(match curated_default {
-      Some(entry) => ModelChoice::Curated(entry),
-      None => ModelChoice::Skip,
+  let curated_or_skip = || match curated_default.clone() {
+    Some(entry) => ModelChoice::Curated(entry),
+    None => ModelChoice::Skip,
+  };
+  if let Some(override_value) = &args.model {
+    return Ok(match override_value {
+      ModelOverride::None => ModelChoice::Skip,
+      ModelOverride::Paste(repo) => ModelChoice::Paste(repo.clone()),
+      ModelOverride::Recommended => curated_or_skip(),
     });
+  }
+  if is_recommended(args) {
+    return Ok(curated_or_skip());
   }
   if !console::user_attended() {
     emit_stderr_warning("stdout is not a terminal; using recommended model default");
-    return Ok(match curated_default {
-      Some(entry) => ModelChoice::Curated(entry),
-      None => ModelChoice::Skip,
-    });
+    return Ok(curated_or_skip());
   }
   let owned_recs: Vec<Recommendation> = recs.to_vec();
   let initial_idx: usize = owned_recs
@@ -259,22 +263,6 @@ fn install_override_to_choice(
           .to_string(),
       )),
     },
-  }
-}
-
-fn model_override_to_choice(override_value: ModelOverride) -> ModelChoice {
-  match override_value {
-    ModelOverride::None => ModelChoice::Skip,
-    ModelOverride::Paste(repo) => ModelChoice::Paste(repo),
-    // The recommender pick is resolved by the caller (it needs the
-    // live `recs` slice). The picker treats `Recommended` as "fall
-    // through to the recommended path" which short-circuits to
-    // `Curated(top)` or `Skip` in the recommended-mode branch above.
-    // To keep the signature simple this returns `Skip` here — the
-    // override path is checked before the recommended-mode branch,
-    // and `--model recommended` reads identically to omitting
-    // `--model` entirely. The caller handles that equivalence.
-    ModelOverride::Recommended => ModelChoice::Skip,
   }
 }
 
@@ -458,31 +446,47 @@ mod tests {
     }
   }
 
-  #[test]
-  fn model_override_none_returns_skip() {
-    assert!(matches!(
-      model_override_to_choice(ModelOverride::None),
-      ModelChoice::Skip
-    ));
-  }
-
-  #[test]
-  fn model_override_paste_carries_repo() {
-    match model_override_to_choice(ModelOverride::Paste("owner/repo".into())) {
+  #[tokio::test]
+  async fn pick_model_paste_override_carries_repo() {
+    let mut args = empty_args();
+    args.model = Some(ModelOverride::Paste("owner/repo".into()));
+    let result = pick_model(&args, &[])
+      .await
+      .expect("override should not fail");
+    match result {
       ModelChoice::Paste(s) => assert_eq!(s, "owner/repo"),
       other => panic!("expected Paste, got {other:?}"),
     }
   }
 
-  #[test]
-  fn model_override_recommended_returns_skip_at_helper_level() {
-    // `Recommended` reads identically to omitting `--model`; the
-    // helper returns Skip and the caller's recommended-mode branch
-    // resolves the actual curated pick from the live recs slice.
-    assert!(matches!(
-      model_override_to_choice(ModelOverride::Recommended),
-      ModelChoice::Skip
-    ));
+  #[tokio::test]
+  async fn pick_model_none_override_returns_skip() {
+    let mut args = empty_args();
+    args.model = Some(ModelOverride::None);
+    let result = pick_model(&args, &[])
+      .await
+      .expect("override should not fail");
+    assert!(matches!(result, ModelChoice::Skip));
+  }
+
+  #[tokio::test]
+  async fn pick_model_recommended_override_with_empty_recs_returns_skip() {
+    let mut args = empty_args();
+    args.model = Some(ModelOverride::Recommended);
+    let result = pick_model(&args, &[])
+      .await
+      .expect("override should not fail");
+    assert!(matches!(result, ModelChoice::Skip));
+  }
+
+  #[tokio::test]
+  async fn pick_model_recommended_mode_with_empty_recs_returns_skip() {
+    let mut args = empty_args();
+    args.recommended = true;
+    let result = pick_model(&args, &[])
+      .await
+      .expect("recommended mode should not fail without recs");
+    assert!(matches!(result, ModelChoice::Skip));
   }
 
   #[test]
