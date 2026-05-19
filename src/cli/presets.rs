@@ -37,9 +37,12 @@ pub async fn handle(args: PresetsArgs, cli: &Cli, config: &Config) -> CliResult 
         // single "always object" rule across the CLI surface.
         println!("{}", pretty_json(&serde_json::json!({"presets": arr})));
       } else if arr.is_empty() {
-        println!("(no presets for {})", row.name());
+        println!(
+          "{}",
+          crate::cli::colors::dim(&format!("(no presets for {})", row.name()))
+        );
       } else {
-        println!("NAME\tCTX\tREASONING\tEXTRA");
+        println!("{}", console::style("NAME\tCTX\tREASONING\tEXTRA").bold());
         for preset in &arr {
           let name = preset.get("name").and_then(Value::as_str).unwrap_or("?");
           let p = preset.get("params");
@@ -128,7 +131,10 @@ pub async fn handle(args: PresetsArgs, cli: &Cli, config: &Config) -> CliResult 
         });
         println!("{}", pretty_json(&out));
       } else if !cli.quiet {
-        println!("removed preset `{name}` for {}", row.name());
+        println!(
+          "{}",
+          crate::cli::colors::success(&format!("removed preset `{name}` for {}", row.name()))
+        );
       }
       Ok(())
     }

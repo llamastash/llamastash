@@ -4,6 +4,7 @@ use serde_json::{json, Value};
 
 use crate::cli::cli_args::{Cli, FavoritesAction, FavoritesArgs};
 use crate::cli::client::connect_or_spawn;
+use crate::cli::colors;
 use crate::cli::exit_codes::{CliExit, CliResult};
 use crate::cli::output::{favorites_json, pretty_json};
 use crate::cli::resolve::{fetch_catalog, resolve_model};
@@ -30,7 +31,7 @@ pub async fn handle(args: FavoritesArgs, cli: &Cli, config: &Config) -> CliResul
         // of the CLI agent contract.
         println!("{}", pretty_json(&favorites_json(&arr)));
       } else if arr.is_empty() {
-        println!("(no favorites)");
+        println!("{}", colors::dim("(no favorites)"));
       } else {
         for fav in &arr {
           let path = crate::cli::output::row_path(fav).unwrap_or("?");
@@ -61,9 +62,12 @@ pub async fn handle(args: FavoritesArgs, cli: &Cli, config: &Config) -> CliResul
         println!("{}", pretty_json(&out));
       } else if !cli.quiet {
         if added {
-          println!("favorited {}", row.name());
+          println!("{}", colors::success(&format!("favorited {}", row.name())));
         } else {
-          println!("{} already favorited (no-op)", row.name());
+          println!(
+            "{}",
+            colors::dim(&format!("{} already favorited (no-op)", row.name()))
+          );
         }
       }
       Ok(())
@@ -93,9 +97,15 @@ pub async fn handle(args: FavoritesArgs, cli: &Cli, config: &Config) -> CliResul
         println!("{}", pretty_json(&out));
       } else if !cli.quiet {
         if removed {
-          println!("unfavorited {}", row.name());
+          println!(
+            "{}",
+            colors::success(&format!("unfavorited {}", row.name()))
+          );
         } else {
-          println!("{} was not in favorites (no-op)", row.name());
+          println!(
+            "{}",
+            colors::dim(&format!("{} was not in favorites (no-op)", row.name()))
+          );
         }
       }
       Ok(())

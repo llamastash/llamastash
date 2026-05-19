@@ -230,7 +230,7 @@ fn emit_response(preset: Option<&str>, row: &CatalogRow, resp: &Value, json: boo
   let preset_label = preset
     .map(|p| format!(" (preset: {p})"))
     .unwrap_or_default();
-  println!(
+  let line = format!(
     "started {name}{preset} → launch_id={lid} port={port} pid={pid}",
     name = row.name(),
     preset = preset_label,
@@ -238,6 +238,7 @@ fn emit_response(preset: Option<&str>, row: &CatalogRow, resp: &Value, json: boo
     port = port.map(|p| p.to_string()).unwrap_or_else(|| "?".into()),
     pid = pid.map(|p| p.to_string()).unwrap_or_else(|| "?".into()),
   );
+  println!("{}", crate::cli::colors::success(&line));
 }
 
 #[cfg(test)]

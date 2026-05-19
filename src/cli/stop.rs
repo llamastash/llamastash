@@ -105,7 +105,10 @@ pub async fn handle(args: StopArgs, cli: &Cli, config: &Config) -> CliResult {
       });
       println!("{}", pretty_json(&body));
     } else if !cli.quiet {
-      println!("stop --all: stopped {stopped_count} launch(es)");
+      println!(
+        "{}",
+        crate::cli::colors::success(&format!("stop --all: stopped {stopped_count} launch(es)"))
+      );
     }
     return Ok(());
   }
@@ -137,9 +140,12 @@ pub async fn handle(args: StopArgs, cli: &Cli, config: &Config) -> CliResult {
       println!("{}", pretty_json(&body));
     } else if !cli.quiet {
       println!(
-        "stopped external pid {} → {}",
-        ext.pid,
-        if killed { "SIGKILL" } else { "SIGTERM" },
+        "{}",
+        crate::cli::colors::success(&format!(
+          "stopped external pid {} → {}",
+          ext.pid,
+          if killed { "SIGKILL" } else { "SIGTERM" },
+        ))
       );
     }
     return Ok(());
@@ -165,7 +171,10 @@ pub async fn handle(args: StopArgs, cli: &Cli, config: &Config) -> CliResult {
     });
     println!("{}", pretty_json(&body));
   } else if !cli.quiet {
-    println!("stopped {} → {state}", row.launch_id);
+    println!(
+      "{}",
+      crate::cli::colors::success(&format!("stopped {} → {state}", row.launch_id))
+    );
   }
   Ok(())
 }

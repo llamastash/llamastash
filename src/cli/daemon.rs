@@ -46,11 +46,17 @@ async fn handle_start(
     // `start_detached` blocks until the child reports socket bound.
     match start_detached(opts)? {
       StartOutcome::RanToCompletion => {
-        println!("daemon: started (detached)");
+        println!(
+          "{}",
+          crate::cli::colors::success("daemon: started (detached)")
+        );
         Ok(())
       }
       StartOutcome::AlreadyRunning(pid) => {
-        println!("daemon: already running (pid {pid})");
+        println!(
+          "{}",
+          crate::cli::colors::dim(&format!("daemon: already running (pid {pid})"))
+        );
         Ok(())
       }
     }
@@ -58,7 +64,10 @@ async fn handle_start(
     match run_foreground(opts).await? {
       StartOutcome::RanToCompletion => Ok(()),
       StartOutcome::AlreadyRunning(pid) => {
-        println!("daemon: already running (pid {pid})");
+        println!(
+          "{}",
+          crate::cli::colors::dim(&format!("daemon: already running (pid {pid})"))
+        );
         Ok(())
       }
     }
@@ -70,11 +79,14 @@ async fn handle_stop() -> Result<()> {
   match Client::connect(&socket).await {
     Ok(mut client) => {
       let _ = client.call("shutdown", None).await?;
-      println!("daemon: shutdown requested");
+      println!(
+        "{}",
+        crate::cli::colors::success("daemon: shutdown requested")
+      );
       Ok(())
     }
     Err(ClientError::Connect(_)) => {
-      println!("daemon: not running");
+      println!("{}", crate::cli::colors::dim("daemon: not running"));
       Ok(())
     }
     Err(other) => Err(other).context("daemon stop"),
@@ -192,7 +204,7 @@ async fn handle_status() -> Result<()> {
       Ok(())
     }
     Err(ClientError::Connect(_)) => {
-      println!("daemon: not running");
+      println!("{}", crate::cli::colors::dim("daemon: not running"));
       Ok(())
     }
     Err(other) => Err(other).context("daemon status"),

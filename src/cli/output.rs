@@ -26,10 +26,13 @@ pub fn row_path(v: &Value) -> Option<&str> {
 /// native_ctx (one line per model, header line first).
 pub fn list_human(rows: &[CatalogRow]) -> String {
   if rows.is_empty() {
-    return String::from("(no models discovered)\n");
+    return format!("{}\n", console::style("(no models discovered)").dim());
   }
   let mut out = String::new();
-  out.push_str("NAME\tARCH\tQUANT\tCTX\tPATH\n");
+  out.push_str(&format!(
+    "{}\n",
+    console::style("NAME\tARCH\tQUANT\tCTX\tPATH").bold()
+  ));
   for r in rows {
     let arch = r.arch.as_deref().unwrap_or("?");
     let quant = r.quant.as_deref().unwrap_or("?");

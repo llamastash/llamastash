@@ -340,22 +340,36 @@ pub async fn run(args: DoctorArgs, _cli: &Cli, _config: &Config) -> CliResult {
 }
 
 fn render_human(report: &DoctorReport) {
+  use crate::cli::colors;
   if report.findings.is_empty() {
-    println!("llamadash doctor: 0 findings — everything looks healthy.");
+    println!(
+      "{}",
+      colors::success("llamadash doctor: 0 findings — everything looks healthy.")
+    );
     if let Some(date) = &report.baseline.init_date {
-      println!("  last init: {date}");
+      println!("  {}", colors::dim(&format!("last init: {date}")));
     }
     return;
   }
-  println!("llamadash doctor: {} finding(s).", report.findings.len());
+  println!(
+    "{}",
+    colors::header(&format!(
+      "llamadash doctor: {} finding(s).",
+      report.findings.len()
+    ))
+  );
   for f in &report.findings {
-    let marker = match f.severity {
-      Severity::Error => "✗",
-      Severity::Warning => "⚠",
-      Severity::Info => "•",
+    let line = format!("[{}] {}", f.id, f.message);
+    let coloured = match f.severity {
+      Severity::Error => colors::error(&line),
+      Severity::Warning => colors::warning(&line),
+      Severity::Info => colors::dim(&line),
     };
-    println!("\n  {marker} [{}] {}", f.id, f.message);
-    println!("    → fix with: {}", f.fix_hint);
+    println!("\n  {coloured}");
+    println!(
+      "    {}",
+      colors::dim(&format!("→ fix with: {}", f.fix_hint))
+    );
   }
 }
 

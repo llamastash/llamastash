@@ -86,7 +86,10 @@ fn report(result: CliResult) -> i32 {
     Ok(()) => exit_codes::SUCCESS,
     Err(exit) => {
       if let Some(msg) = &exit.message {
-        eprintln!("{msg}");
+        // Single render site for all CLI failures — wrapping in
+        // `colors::error` adds the standard ✗ prefix and red colouring
+        // when the global color policy allows.
+        eprintln!("{}", colors::error(msg));
       }
       exit.code
     }
