@@ -46,11 +46,11 @@ Options (also overridable via env var of the same uppercased name):
   --skip-download        do not fetch the model if missing
   -h, --help             show this message
 
-Hardware coverage matrix (run once per backend):
-  CUDA    — NVIDIA host with CUDA-built llama-server
+Hardware coverage matrix (run once per backend; llamadash targets
+Linux + macOS only, so Windows hosts are out of scope):
+  CUDA    — NVIDIA on Linux with CUDA-built llama-server
   HIP     — AMD on Linux with ROCm-built llama-server
-  Vulkan  — AMD/NVIDIA/Intel with Vulkan-built llama-server (worth
-            measuring Linux + Windows on the same AMD silicon)
+  Vulkan  — AMD/NVIDIA/Intel on Linux with Vulkan-built llama-server
   Metal   — Apple Silicon with Metal-built llama-server
 EOF
 }

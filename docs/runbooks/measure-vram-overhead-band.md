@@ -72,7 +72,7 @@ Env-var equivalents exist for every flag (`LLAMA_SERVER`, `BACKEND`,
 
 ## Per-backend gotchas
 
-### CUDA (NVIDIA, Linux/Windows)
+### CUDA (NVIDIA, Linux)
 
 - Build `llama-server` with `cmake -DGGML_CUDA=ON` against the CUDA
   Toolkit matching your driver.
@@ -95,16 +95,13 @@ Env-var equivalents exist for every flag (`LLAMA_SERVER`, `BACKEND`,
 - On hybrid laptops, the dGPU is usually `card1` — pass `--gpu-id 1`.
   Confirm with `lspci -nn | grep VGA`.
 
-### Vulkan (AMD / NVIDIA / Intel, Linux/Windows)
+### Vulkan (AMD / NVIDIA / Intel, Linux)
 
 - Build with `cmake -DGGML_VULKAN=ON`.
 - Vulkan itself doesn't expose per-process VRAM; the sampler reuses
   the vendor path (`nvidia-smi` on NVIDIA, AMDGPU sysfs on AMD) and
   takes a delta from baseline. Close other GPU consumers during the
   run.
-- **Worth measuring twice on the same AMD silicon**: Vulkan-on-Linux
-  vs Vulkan-on-Windows — the AMDVLK / RADV / AMD Windows driver paths
-  differ enough that one number for both is suspect.
 - Intel Arc / iGPU Vulkan: the sampler currently doesn't know about
   Intel; treat the number as a lower-bound and bump the band by 20%
   before committing.
