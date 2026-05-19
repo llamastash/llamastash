@@ -47,6 +47,35 @@ DEFAULT_MIN_VERSION = "0.2.0"
 SNAPSHOT_PATH = REPO_ROOT / "data" / "benchmark-snapshot.json"
 SOURCES_DIR = REPO_ROOT / "scripts" / "benchmark_sources"
 
+# Make ``scripts/`` importable so the vendored adapters resolve under
+# ``benchmark_sources.<name>``. The package itself ships under
+# ``scripts/benchmark_sources/`` per R45 (CI-only, never in the binary).
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+
+from benchmark_sources import aider as _aider_adapter  # noqa: E402
+from benchmark_sources import open_llm_leaderboard as _ollb_adapter  # noqa: E402
+
+# Bundled GGUF rows are keyed by ``(repo, file)``; upstream adapters key
+# their scores by source HuggingFace model id (e.g. the un-quantized
+# instruct repo). This table is the join. Keep one entry per row in
+# ``data/benchmark-snapshot.json::models[]``. Missing entries are
+# tolerated — the bundled ``benchmark_score.value`` is preserved when
+# upstream has no match.
+BUNDLED_ID_TO_SOURCE_HF_ID: Dict[str, str] = {
+    "qwen2.5-coder-1.5b-q4_k_m": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+    "qwen2.5-3b-q4_k_m": "Qwen/Qwen2.5-3B-Instruct",
+    "llama-3.2-3b-q4_k_m": "meta-llama/Llama-3.2-3B-Instruct",
+    "qwen2.5-7b-q4_k_m": "Qwen/Qwen2.5-7B-Instruct",
+    "qwen2.5-coder-7b-q4_k_m": "Qwen/Qwen2.5-Coder-7B-Instruct",
+    "llama-3.1-8b-q4_k_m": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+    "mistral-nemo-12b-q4_k_m": "mistralai/Mistral-Nemo-Instruct-2407",
+    "qwen2.5-14b-q4_k_m": "Qwen/Qwen2.5-14B-Instruct",
+    "qwen2.5-coder-14b-q4_k_m": "Qwen/Qwen2.5-Coder-14B-Instruct",
+    "qwen2.5-32b-q4_k_m": "Qwen/Qwen2.5-32B-Instruct",
+    "qwen2.5-coder-32b-q4_k_m": "Qwen/Qwen2.5-Coder-32B-Instruct",
+    "llama-3.3-70b-q4_k_m": "meta-llama/Llama-3.3-70B-Instruct",
+}
+
 
 @dataclass
 class SourceResult:
@@ -123,48 +152,59 @@ def collect_sources() -> List[SourceResult]:
 
 
 def load_open_llm_leaderboard() -> SourceResult:
-    """Open LLM Leaderboard rows for the general / reasoning lane.
-
-    TODO(unit7-v2-ga): vendor the actual whichllm scraping module
-    under ``scripts/benchmark_sources/`` so the CI loop produces
-    a real snapshot. For now the function returns a placeholder
-    success so the script's framework is exercisable in CI.
+    """Delegate to the vendored adapter under
+    ``scripts/benchmark_sources/open_llm_leaderboard.py``. Returns rows
+    keyed by source HuggingFace id (``hf_id``, ``score``, ``source``);
+    ``build_snapshot()`` owns the join into the bundled
+    ``(repo, file)`` rows via :data:`BUNDLED_ID_TO_SOURCE_HF_ID`.
     """
-    return SourceResult(
-        name="open-llm-leaderboard",
-        ok=True,
-        rows=[],
-        message="placeholder — real fetch lands when whichllm is vendored",
-    )
+    src = _ollb_adapter.fetch()
+    return SourceResult(name=src.name, ok=src.ok, rows=src.rows, message=src.message)
 
 
 def load_aider_leaderboard() -> SourceResult:
-    """Aider polyglot benchmark for the code lane.
-
-    TODO(unit7-v2-ga): vendor the actual Aider leaderboard scrape.
+    """Delegate to the vendored adapter under
+    ``scripts/benchmark_sources/aider.py``. Same row shape as
+    :func:`load_open_llm_leaderboard`.
     """
-    return SourceResult(
-        name="aider",
-        ok=True,
-        rows=[],
-        message="placeholder — real fetch lands when Aider scrape is vendored",
-    )
+    src = _aider_adapter.fetch()
+    return SourceResult(name=src.name, ok=src.ok, rows=src.rows, message=src.message)
 
 
 def build_snapshot(sources: List[SourceResult]) -> Dict[str, Any]:
-    """Merge source rows into the snapshot shape Rust expects. For v2
-    the merge is a no-op (sources are placeholders) and we preserve the
-    committed bundled snapshot's catalog so the corpus gate has data."""
-    bundled_models = []
+    """Merge live source rows into the bundled snapshot's ``models[]``.
+
+    The bundled JSON is the catalog and the source of identity / shape:
+    ``id``, ``repo``, ``file``, ``params``, ``weights_bytes``,
+    ``task_hints``, ``tok_s_factor``, ``recency``, and the bundled
+    ``benchmark_score.source`` tag. Live adapters supply a fresh
+    ``benchmark_score.value`` keyed by source HuggingFace id; we join
+    via :data:`BUNDLED_ID_TO_SOURCE_HF_ID`.
+
+    Policy:
+
+    * A bundled row whose HF id appears in the relevant adapter's rows
+      gets its ``benchmark_score.value`` replaced with the live score.
+    * A bundled row whose HF id is *absent* from upstream keeps the
+      bundled value (don't drop the catalog on transient delistings).
+    * New rows upstream introduces but the bundled snapshot does not
+      have are skipped — they'd need maintainer-curated ``task_hints``
+      and a slot in the corpus, which is out of CI scope.
+    * ``recommender_weights`` (including ``overhead_band_bytes``) is
+      preserved verbatim — it's owned by a separate plan.
+    """
+    bundled_models: List[Dict[str, Any]] = []
+    recommender_weights: Dict[str, Any] = {}
+    remote_url: Optional[str] = None
     if SNAPSHOT_PATH.exists():
         with SNAPSHOT_PATH.open() as f:
             bundled = json.load(f)
-            bundled_models = bundled.get("models", [])
-            recommender_weights = bundled.get("recommender_weights", {})
-            remote_url = bundled.get("remote_url")
-    else:
-        recommender_weights = {}
-        remote_url = None
+        bundled_models = bundled.get("models", [])
+        recommender_weights = bundled.get("recommender_weights", {})
+        remote_url = bundled.get("remote_url")
+
+    scores_by_source = _index_adapter_scores(sources)
+    refreshed = _refresh_bundled_models(bundled_models, scores_by_source)
 
     candidate: Dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -172,9 +212,60 @@ def build_snapshot(sources: List[SourceResult]) -> Dict[str, Any]:
         "min_version": DEFAULT_MIN_VERSION,
         "remote_url": remote_url,
         "recommender_weights": recommender_weights,
-        "models": bundled_models,
+        "models": refreshed,
     }
     return candidate
+
+
+# Bundled ``benchmark_score.source`` tag -> adapter ``name``. The bundled
+# JSON uses ``"openllm-leaderboard"`` and ``"aider"`` as provenance tags;
+# the corresponding adapter names are ``"open-llm-leaderboard"`` and
+# ``"aider"``. Keep this table small — adding a new source means
+# extending both ends.
+_BUNDLED_SOURCE_TAG_TO_ADAPTER: Dict[str, str] = {
+    "openllm-leaderboard": "open-llm-leaderboard",
+    "aider": "aider",
+}
+
+
+def _index_adapter_scores(
+    sources: List[SourceResult],
+) -> Dict[str, Dict[str, float]]:
+    """Index successful adapter results as ``adapter_name -> {hf_id: score}``."""
+    by_source: Dict[str, Dict[str, float]] = {}
+    for src in sources:
+        if not src.ok:
+            continue
+        scores: Dict[str, float] = {}
+        for row in src.rows:
+            hf_id = row.get("hf_id")
+            score = row.get("score")
+            if not isinstance(hf_id, str) or not isinstance(score, (int, float)):
+                continue
+            scores[hf_id] = float(score)
+        by_source[src.name] = scores
+    return by_source
+
+
+def _refresh_bundled_models(
+    bundled_models: List[Dict[str, Any]],
+    scores_by_source: Dict[str, Dict[str, float]],
+) -> List[Dict[str, Any]]:
+    """Return a fresh ``models[]`` list with refreshed
+    ``benchmark_score.value`` fields where upstream had a match."""
+    out: List[Dict[str, Any]] = []
+    for model in bundled_models:
+        refreshed = dict(model)
+        bench = dict(model.get("benchmark_score", {}))
+        bundled_tag = bench.get("source")
+        adapter_name = _BUNDLED_SOURCE_TAG_TO_ADAPTER.get(bundled_tag or "")
+        scores = scores_by_source.get(adapter_name or "")
+        hf_id = BUNDLED_ID_TO_SOURCE_HF_ID.get(model.get("id", ""))
+        if scores and hf_id and hf_id in scores:
+            bench["value"] = scores[hf_id]
+        refreshed["benchmark_score"] = bench
+        out.append(refreshed)
+    return out
 
 
 def write_atomic(path: Path, body: Dict[str, Any]) -> None:

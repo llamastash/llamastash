@@ -4,19 +4,23 @@ Vendored scrapers for the snapshot regen flow (Unit 7).
 
 ## Status
 
-For v2 launch this directory ships **empty** — the regen script
-(`scripts/regenerate-benchmark-snapshot.py`) preserves the maintainer-
-curated `data/benchmark-snapshot.json` and runs the corpus gate so the
-CI workflow's framework is exercisable on day one.
+Vendored at upstream commit
+[`73cd92f`](https://github.com/Andyyyy64/whichllm/commit/73cd92f9a35a1c3f02e01ec3bbf09fb135a1df26)
+on 2026-05-19. Re-syncs are on-demand (R57): refresh when the corpus
+gate regresses or a known-relevant upstream change lands. The pinned
+commit is recorded in `NOTICE` and in `whichllm.py`.
 
-## Planned vendoring (v2-GA)
+## Layout
 
-- `open_llm_leaderboard.py` — adapter for the HuggingFace
-  open-llm-leaderboard dataset. Source:
-  <https://huggingface.co/spaces/open-llm-leaderboard/open_llm_leaderboard>.
-- `aider.py` — adapter for the Aider polyglot benchmark CSV.
-- `whichllm.py` — partial vendoring of the whichllm scoring code under
-  MIT license. Track the upstream commit hash in `NOTICE`.
+- `whichllm.py` — partial vendoring of
+  [`Andyyyy64/whichllm`](https://github.com/Andyyyy64/whichllm) (MIT).
+  Thin attribution shim: vendoring metadata + shared `ExtractionFailed`.
+- `open_llm_leaderboard.py` — adapter for the HuggingFace open-llm-
+  leaderboard dataset (`datasets-server.huggingface.co/rows`). Exposes
+  `fetch() -> SourceResult`.
+- `aider.py` — adapter for the Aider polyglot benchmark
+  (`polyglot_leaderboard.yml` in the Aider GitHub repo). Exposes
+  `fetch() -> SourceResult`.
 
 Vendoring keeps the binary pure-Rust (R45) — these modules run only in
 CI to produce the JSON artefact the Rust binary loads via `include_str!`.

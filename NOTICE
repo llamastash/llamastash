@@ -7,28 +7,35 @@ regeneration flow (Unit 7 of the v2 plan). The Rust binary does not link
 or embed any of the sources below; they run only in the CI workflow
 that produces `data/benchmark-snapshot.json`.
 
-When a source is vendored (planned for v2-GA), the upstream commit
-hash and license must be recorded next to the corresponding adapter
-under `scripts/benchmark_sources/`.
+When a source is vendored, the upstream commit hash and license are
+recorded next to the corresponding adapter under
+`scripts/benchmark_sources/`.
 
-Planned vendored sources
-------------------------
+Vendored sources
+----------------
 
-1. whichllm (https://github.com/cpacker/whichllm)
+1. whichllm (https://github.com/Andyyyy64/whichllm)
    License: MIT
-   Usage: composite-score weighting algorithm, partial scoring code.
-   Vendored upstream commit: TODO(unit7-v2-ga) — record on first
-   vendoring PR.
+   Usage: benchmark-source adapter shape (Open LLM Leaderboard parquet
+   + rows-API fallback; Aider polyglot YAML scrape) and the
+   AIDER_NAME_TO_HF_IDS curated map.
+   Vendored upstream commit: 73cd92f9a35a1c3f02e01ec3bbf09fb135a1df26
+   Vendored on: 2026-05-19
+   See scripts/benchmark_sources/whichllm.py for the attribution shim.
 
 2. Open LLM Leaderboard (https://huggingface.co/spaces/open-llm-leaderboard/open_llm_leaderboard)
    License: Apache-2.0 for the leaderboard code; CC-BY for the data.
    Usage: general-purpose benchmark scores in the snapshot's
-   `benchmark_score` field.
+   `benchmark_score` field. Accessed via the public
+   datasets-server.huggingface.co rows API in
+   scripts/benchmark_sources/open_llm_leaderboard.py.
 
 3. Aider polyglot benchmark (https://aider.chat/docs/leaderboards/)
    License: Apache-2.0.
    Usage: code-lane benchmark scores in the snapshot's `benchmark_score`
-   field when `task_hints` includes `"code"`.
+   field when `task_hints` includes `"code"`. Source data fetched from
+   the polyglot_leaderboard.yml in Aider's GitHub repo by
+   scripts/benchmark_sources/aider.py.
 
 If you ship a binary build of llamadash, you do not need to redistribute
 this NOTICE — none of the above is in the compiled artefact. The file

@@ -18,6 +18,10 @@ All notable changes to llamadash will be documented in this file. The format fol
 - **Exit codes 72/73/74** — `INIT_ABORTED` (integrity check failed, daemon stop/restart could not be coerced), `INIT_DOWNLOAD_FAILED` (wizard's download step), `INIT_SMOKE_FAILED` (probe phase). Distinct from `PULL_FAILED=69` so agents branch on cause.
 - **Smoke phase 1 + `--version` probe (`src/init/smoke.rs`)** — pre-launch VRAM ceiling check + binary executes-cleanly probe with `env_clear()` minimal env. Phase 2 (daemon-mediated `/health` + `/v1/chat/completions`) is deferred to v2.1.
 
+### Internal
+
+- **Vendored benchmark scrapers** — `scripts/benchmark_sources/{whichllm,open_llm_leaderboard,aider}.py` now run live against the Open LLM Leaderboard rows API and Aider's polyglot YAML in the daily snapshot regen cron, replacing the `TODO(unit7-v2-ga)` placeholders. Partial vendoring of [`Andyyyy64/whichllm`](https://github.com/Andyyyy64/whichllm) (MIT) pinned at commit `73cd92f`; deps pinned in `scripts/requirements.txt`. CI-only — R45 single-binary invariant preserved, no Rust artefact change.
+
 ### Added (v1 — launcher + smoke-test + CLI)
 
 - Daemon-on-demand architecture: single `llamadash` binary that acts as TUI, CLI, **and** daemon depending on the subcommand. Daemon owns `llama-server` children and persisted state; clients attach over a `0600` Unix socket authenticated via peer credentials.

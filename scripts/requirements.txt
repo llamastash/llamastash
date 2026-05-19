@@ -1,0 +1,6 @@
+# Pinned CI deps for scripts/regenerate-benchmark-snapshot.py and the
+# vendored adapters under scripts/benchmark_sources/.
+#
+# Conservative bounds — the daily cron is release-blocking, we'd rather
+# pick up dep bumps via Dependabot than via a silent breakage.
+httpx>=0.27,<1.0
