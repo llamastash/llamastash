@@ -40,7 +40,7 @@ Heavy abstractions (Ollama, LM Studio) hide llama.cpp; raw `llama-server` use is
 > Pre-1.0 binaries are not yet published. Build from source for now.
 
 ```bash
-git clone https://github.com/llamadash/llamadash
+git clone https://github.com/llamadash-rs/llamadash
 cd llamadash
 cargo install --path .
 ```
