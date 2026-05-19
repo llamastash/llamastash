@@ -23,22 +23,24 @@ here ships in the compiled binary.
 
 from __future__ import annotations
 
+import json
 import sys
 import time
 import traceback
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Dict
 
 import httpx
 
 # Support both package import (regen script) and direct script invocation
 # (smoke harness: ``python scripts/benchmark_sources/open_llm_leaderboard.py``).
 if __package__:
-    from . import whichllm  # noqa: F401 — re-exported metadata
+    from . import whichllm
+    from .whichllm import SourceResult
 else:  # pragma: no cover — only hit when run as a bare script
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from benchmark_sources import whichllm  # type: ignore[no-redef]
+    from benchmark_sources.whichllm import SourceResult  # type: ignore[no-redef]
 
 # --- Constants (verbatim from upstream where noted) ----------------------
 
@@ -70,24 +72,31 @@ _RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 _MAX_RETRIES = 3
 _RETRY_BACKOFF_SECS = 2.0
 
+# Per-page response body cap (bytes). The rows API serves ~100 rows per
+# page at ~5-15 KB each; a 5 MB cap absorbs metadata-fat pages with
+# room to spare. A multi-GB response (compromised upstream, accidental
+# binary blob, or attacker-controlled redirect target) is rejected
+# before httpx buffers it into memory.
+_MAX_RESPONSE_BYTES = 5 * 1024 * 1024
+
+# Whole-adapter wall-clock budget. With ~45 pages today plus retries,
+# a healthy run takes ~30s; this gives 20x headroom and still
+# fast-fails inside the CI workflow's 30-min job timeout, so the
+# documented ok=False path executes instead of GitHub silently killing
+# the job.
+_ADAPTER_BUDGET_SECS = 600.0
+
+# Page-count safety net independent of the wall clock. A faulty
+# ``num_rows_total`` that says "always more" would otherwise loop until
+# either the wall-clock guard fires or the API rate-limits us into
+# retries.
+_MAX_PAGES = 500
+
 # Required columns we extract from each row. Schema-drift guard.
 _REQUIRED_COLUMNS = ("fullname", "Average ⬆️")
 
 SOURCE_NAME = "open-llm-leaderboard"
 ROW_SOURCE_TAG = "openllm-leaderboard"
-
-
-# --- Local SourceResult shim --------------------------------------------
-# Mirrors `SourceResult` in scripts/regenerate-benchmark-snapshot.py:51.
-# Kept as a local redeclaration (5-line redundancy) because the regen
-# script is not a package; restructuring it for one shared dataclass is
-# more disruption than warranted. KEEP IN SYNC with that definition.
-@dataclass
-class SourceResult:
-    name: str
-    ok: bool
-    rows: List[Dict[str, Any]] = field(default_factory=list)
-    message: str = ""
 
 
 # --- Helpers (verbatim from upstream) -----------------------------------
@@ -99,28 +108,53 @@ def _normalize_leaderboard_avg(avg: float) -> float:
     return max(0.0, min(_OLLB_MAX_NORMALIZED, round(score, 1)))
 
 
-def _get_with_retry(
-    client: httpx.Client, url: str, params: Dict[str, str]
-) -> httpx.Response:
-    """GET with bounded retry on transient HTTP statuses and transport
-    errors. Returns the final response (caller still invokes
-    ``raise_for_status`` — this helper only converts transient flakes
-    into a brief wait-and-retry). Catches ``TransportError`` so
-    ConnectError / ReadError / RemoteProtocolError also benefit from
-    retry, not just timeouts."""
+def _fetch_page_with_retry(
+    client: httpx.Client, params: Dict[str, str]
+) -> bytes:
+    """Fetch one rows-API page with bounded retry + streaming size cap.
+
+    Streams the response and counts bytes so an oversized body raises
+    ``ExtractionFailed`` *before* httpx buffers it into memory. Retries
+    transient HTTP statuses (5xx / 429) and ``httpx.TransportError``
+    subclasses (ConnectError, ReadError, RemoteProtocolError) with
+    linear backoff. Raises on retry exhaustion.
+    """
     for attempt in range(_MAX_RETRIES):
         try:
-            resp = client.get(url, params=params)
+            with client.stream(
+                "GET", LEADERBOARD_ROWS_URL, params=params
+            ) as resp:
+                if (
+                    resp.status_code in _RETRY_STATUSES
+                    and attempt < _MAX_RETRIES - 1
+                ):
+                    time.sleep(_RETRY_BACKOFF_SECS * (attempt + 1))
+                    continue
+                resp.raise_for_status()
+                return _read_capped(resp)
         except httpx.TransportError:
             if attempt == _MAX_RETRIES - 1:
                 raise
             time.sleep(_RETRY_BACKOFF_SECS * (attempt + 1))
             continue
-        if resp.status_code in _RETRY_STATUSES and attempt < _MAX_RETRIES - 1:
-            time.sleep(_RETRY_BACKOFF_SECS * (attempt + 1))
-            continue
-        return resp
-    raise RuntimeError("unreachable: _get_with_retry loop exhausted")
+    raise RuntimeError("unreachable: _fetch_page_with_retry loop exhausted")
+
+
+def _read_capped(resp: httpx.Response) -> bytes:
+    """Read a streamed response, raising ``ExtractionFailed`` if the
+    body exceeds :data:`_MAX_RESPONSE_BYTES`. Stops reading at the cap
+    so a malicious / runaway upstream can't OOM the runner."""
+    chunks = []
+    total = 0
+    for chunk in resp.iter_bytes():
+        total += len(chunk)
+        if total > _MAX_RESPONSE_BYTES:
+            raise whichllm.ExtractionFailed(
+                f"response body exceeded {_MAX_RESPONSE_BYTES} bytes "
+                f"(read {total}); refusing to buffer"
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 # --- Fetch --------------------------------------------------------------
@@ -129,14 +163,29 @@ def _get_with_retry(
 def _fetch_rows(client: httpx.Client) -> Dict[str, float]:
     """Paginate the rows API. Returns a mapping ``hf_id -> normalized score``.
 
-    Raises on HTTP non-2xx (via ``raise_for_status``), JSON decode error,
-    or schema drift (missing required columns).
+    Raises on HTTP non-2xx, JSON decode error, schema drift (missing
+    required columns), oversized response body, or budget exhaustion
+    (wall clock or page count).
     """
     scores: Dict[str, float] = {}
     offset = 0
+    page_count = 0
     saw_required_columns = False
+    start = time.monotonic()
 
     while True:
+        elapsed = time.monotonic() - start
+        if elapsed > _ADAPTER_BUDGET_SECS:
+            raise whichllm.ExtractionFailed(
+                f"adapter exceeded {_ADAPTER_BUDGET_SECS}s budget "
+                f"({elapsed:.1f}s used, {page_count} pages)"
+            )
+        page_count += 1
+        if page_count > _MAX_PAGES:
+            raise whichllm.ExtractionFailed(
+                f"adapter exceeded {_MAX_PAGES}-page cap; "
+                f"upstream num_rows_total may be wrong"
+            )
         params = {
             "dataset": LEADERBOARD_DATASET,
             "config": "default",
@@ -144,9 +193,8 @@ def _fetch_rows(client: httpx.Client) -> Dict[str, float]:
             "offset": str(offset),
             "length": str(_PAGE_SIZE),
         }
-        resp = _get_with_retry(client, LEADERBOARD_ROWS_URL, params)
-        resp.raise_for_status()
-        data = resp.json()
+        body = _fetch_page_with_retry(client, params)
+        data = json.loads(body)
 
         # Schema-drift guard: validate column metadata on the first page
         # (the rows API echoes a ``features`` block listing column names).

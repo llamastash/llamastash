@@ -26,9 +26,8 @@ from __future__ import annotations
 import re
 import sys
 import traceback
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Dict, List, Tuple
 
 import httpx
 
@@ -36,9 +35,11 @@ import httpx
 # (smoke harness: ``python scripts/benchmark_sources/aider.py``).
 if __package__:
     from . import whichllm
+    from .whichllm import SourceResult
 else:  # pragma: no cover — only hit when run as a bare script
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from benchmark_sources import whichllm  # type: ignore[no-redef]
+    from benchmark_sources.whichllm import SourceResult  # type: ignore[no-redef]
 
 # --- Constants (verbatim from upstream where noted) ----------------------
 
@@ -56,10 +57,20 @@ _PG_MAX = 90.0
 # Per-request HTTP timeout (seconds). One GET, small file.
 _REQUEST_TIMEOUT_SECS = 30.0
 
+# Response body cap. polyglot_leaderboard.yml is ~few-KB to low-tens-of-KB
+# in practice; 2 MB absorbs growth with substantial headroom and refuses
+# anything that would OOM the runner.
+_MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+
 SOURCE_NAME = "aider"
 ROW_SOURCE_TAG = "aider-polyglot"
 
-# Verbatim from upstream — curated Aider-name → HuggingFace-id mapping.
+# Curated Aider-name → HuggingFace-id mapping. Vendored from upstream
+# whichllm with two local additions (qwen2.5-coder-7b/14b-instruct) so
+# every bundled snapshot row tagged ``"aider"`` has at least an entry
+# here — without that, upstream additions for those models would not
+# get picked up. Mapping is hardcoded by design: it's part of the
+# curation surface, not data, so corpus changes get explicit review.
 AIDER_NAME_TO_HF_IDS: dict[str, list[str]] = {
     "deepseek-r1": ["deepseek-ai/DeepSeek-R1"],
     "deepseek-r1-0528": ["deepseek-ai/DeepSeek-R1-0528"],
@@ -71,6 +82,8 @@ AIDER_NAME_TO_HF_IDS: dict[str, list[str]] = {
     "deepseek-v4-flash": ["deepseek-ai/DeepSeek-V4-Flash"],
     "qwen3-coder-30b-a3b-instruct": ["Qwen/Qwen3-Coder-30B-A3B-Instruct"],
     "qwen3-coder-next": ["Qwen/Qwen3-Coder-Next"],
+    "qwen2.5-coder-7b-instruct": ["Qwen/Qwen2.5-Coder-7B-Instruct"],
+    "qwen2.5-coder-14b-instruct": ["Qwen/Qwen2.5-Coder-14B-Instruct"],
     "qwen2.5-coder-32b-instruct": ["Qwen/Qwen2.5-Coder-32B-Instruct"],
     "qwen3-32b": ["Qwen/Qwen3-32B"],
     "qwen3.6-27b": ["Qwen/Qwen3.6-27B"],
@@ -90,19 +103,6 @@ AIDER_NAME_TO_HF_IDS: dict[str, list[str]] = {
     "phi-4": ["microsoft/phi-4"],
     "qwq-32b": ["Qwen/QwQ-32B"],
 }
-
-
-# --- Local SourceResult shim --------------------------------------------
-# Mirrors `SourceResult` in scripts/regenerate-benchmark-snapshot.py:51.
-# Kept as a local redeclaration (5-line redundancy) because the regen
-# script is not a package; restructuring it for one shared dataclass is
-# more disruption than warranted. KEEP IN SYNC with that definition.
-@dataclass
-class SourceResult:
-    name: str
-    ok: bool
-    rows: List[Dict[str, Any]] = field(default_factory=list)
-    message: str = ""
 
 
 # --- Helpers (verbatim from upstream) -----------------------------------
@@ -162,13 +162,27 @@ def _parse_yaml_lite(text: str) -> List[Tuple[str, float]]:
 def _fetch_scores(client: httpx.Client) -> Dict[str, float]:
     """Fetch and parse the polyglot leaderboard YAML.
 
-    Returns a mapping ``hf_id -> normalized score``. Raises on HTTP non-2xx
-    (via ``raise_for_status``) or when the parser returns 0 records
-    (``whichllm.ExtractionFailed``).
+    Streams the response with a body-size cap so a malicious / runaway
+    upstream can't OOM the runner. Returns a mapping
+    ``hf_id -> normalized score``. Raises on HTTP non-2xx
+    (``raise_for_status``), oversized body (``ExtractionFailed``), or
+    when the parser returns 0 records (``ExtractionFailed``).
     """
-    resp = client.get(AIDER_POLYGLOT_YML_URL)
-    resp.raise_for_status()
-    pairs = _parse_yaml_lite(resp.text)
+    chunks: list[bytes] = []
+    total = 0
+    with client.stream("GET", AIDER_POLYGLOT_YML_URL) as resp:
+        resp.raise_for_status()
+        for chunk in resp.iter_bytes():
+            total += len(chunk)
+            if total > _MAX_RESPONSE_BYTES:
+                raise whichllm.ExtractionFailed(
+                    f"polyglot_leaderboard.yml exceeded "
+                    f"{_MAX_RESPONSE_BYTES} bytes (read {total}); "
+                    f"refusing to buffer"
+                )
+            chunks.append(chunk)
+    text = b"".join(chunks).decode("utf-8", errors="replace")
+    pairs = _parse_yaml_lite(text)
     if not pairs:
         raise whichllm.ExtractionFailed(
             "polyglot_leaderboard.yml parsed to 0 records "
@@ -207,7 +221,13 @@ def fetch() -> SourceResult:
     ``ok=False`` channel.
     """
     try:
-        with httpx.Client(timeout=_REQUEST_TIMEOUT_SECS) as client:
+        # follow_redirects=True so a future GitHub repo rename of
+        # Aider-AI/aider doesn't silently fail the daily cron with an
+        # unhelpful 301; raw.githubusercontent.com remains the only
+        # hostname we'll ever land on by following.
+        with httpx.Client(
+            timeout=_REQUEST_TIMEOUT_SECS, follow_redirects=True
+        ) as client:
             scores = _fetch_scores(client)
     except httpx.TimeoutException as e:
         return SourceResult(

@@ -37,7 +37,6 @@ import os
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -54,6 +53,7 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 from benchmark_sources import aider as _aider_adapter  # noqa: E402
 from benchmark_sources import open_llm_leaderboard as _ollb_adapter  # noqa: E402
+from benchmark_sources.whichllm import SourceResult  # noqa: E402
 
 # Bundled GGUF rows are keyed by ``(repo, file)``; upstream adapters key
 # their scores by source HuggingFace model id (e.g. the un-quantized
@@ -84,16 +84,6 @@ _BUNDLED_SOURCE_TAG_TO_ADAPTER: Dict[str, str] = {
     "openllm-leaderboard": "open-llm-leaderboard",
     "aider": "aider",
 }
-
-
-@dataclass
-class SourceResult:
-    """One source's contribution. ``ok`` False blocks publication."""
-
-    name: str
-    ok: bool
-    rows: List[Dict[str, Any]]
-    message: str = ""
 
 
 def main() -> int:
@@ -161,23 +151,17 @@ def collect_sources() -> List[SourceResult]:
 
 
 def load_open_llm_leaderboard() -> SourceResult:
-    """Delegate to the vendored adapter under
-    ``scripts/benchmark_sources/open_llm_leaderboard.py``. Returns rows
-    keyed by source HuggingFace id (``hf_id``, ``score``, ``source``);
-    ``build_snapshot()`` owns the join into the bundled
-    ``(repo, file)`` rows via :data:`BUNDLED_ID_TO_SOURCE_HF_ID`.
-    """
-    src = _ollb_adapter.fetch()
-    return SourceResult(name=src.name, ok=src.ok, rows=src.rows, message=src.message)
+    """Open LLM Leaderboard rows for the general / reasoning lane.
+    Adapter lives in ``scripts/benchmark_sources/open_llm_leaderboard.py``;
+    ``build_snapshot()`` joins its rows into the bundled
+    ``(repo, file)`` rows via :data:`BUNDLED_ID_TO_SOURCE_HF_ID`."""
+    return _ollb_adapter.fetch()
 
 
 def load_aider_leaderboard() -> SourceResult:
-    """Delegate to the vendored adapter under
-    ``scripts/benchmark_sources/aider.py``. Same row shape as
-    :func:`load_open_llm_leaderboard`.
-    """
-    src = _aider_adapter.fetch()
-    return SourceResult(name=src.name, ok=src.ok, rows=src.rows, message=src.message)
+    """Aider polyglot rows for the code lane. Adapter lives in
+    ``scripts/benchmark_sources/aider.py``."""
+    return _aider_adapter.fetch()
 
 
 def build_snapshot(sources: List[SourceResult]) -> Dict[str, Any]:

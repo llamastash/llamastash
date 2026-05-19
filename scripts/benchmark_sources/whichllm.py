@@ -16,6 +16,9 @@ R45 single-binary invariant: none of this runs in the Rust artefact.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from typing import Any, Dict, List
+
 WHICHLLM_UPSTREAM_URL = "https://github.com/Andyyyy64/whichllm"
 WHICHLLM_VENDORED_COMMIT = "73cd92f9a35a1c3f02e01ec3bbf09fb135a1df26"
 WHICHLLM_VENDORED_DATE = "2026-05-19"
@@ -23,3 +26,15 @@ WHICHLLM_VENDORED_DATE = "2026-05-19"
 
 class ExtractionFailed(Exception):
     """Raised by adapters when upstream returned data we couldn't parse."""
+
+
+@dataclass
+class SourceResult:
+    """One source's contribution to the snapshot regen. ``ok=False``
+    blocks publication; see scripts/regenerate-benchmark-snapshot.py
+    docstring for the partial-failure contract."""
+
+    name: str
+    ok: bool
+    rows: List[Dict[str, Any]] = field(default_factory=list)
+    message: str = ""
