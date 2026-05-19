@@ -623,7 +623,7 @@ async fn stop_external_handler(
     tokio::task::spawn_blocking(move || {
       use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
       let refresh = ProcessRefreshKind::everything();
-      let mut sys = System::new_with_specifics(RefreshKind::new().with_processes(refresh));
+      let mut sys = System::new_with_specifics(RefreshKind::nothing().with_processes(refresh));
       sys.refresh_processes_specifics(
         sysinfo::ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
         true,

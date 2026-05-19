@@ -51,7 +51,7 @@ futures = { version = "0.3", default-features = false, features = ["std"] }
 ignore = "0.4"
 libc = "0.2"
 log = "0.4"
-notify-debouncer-mini = { version = "0.6", default-features = false }
+notify-debouncer-mini = { version = "0.7", default-features = false }
 ratatui = { version = "0.30", default-features = false, features = [
   "crossterm",
 ] }
@@ -71,12 +71,12 @@ serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
 simplelog = { version = "0.12", default-features = false }
-strum = { version = "0.27", features = ["derive"] }
+strum = { version = "0.28", features = ["derive"] }
 # Display-width measurement for terminal text (CJK paths, emoji, etc.).
 # ratatui already pulls this in transitively; declaring it explicitly so
 # the daemon-info pane's truncation logic can reason in cells, not chars.
 unicode-width = "0.2"
-sysinfo = { version = "0.32", default-features = false, features = [
+sysinfo = { version = "0.39", default-features = false, features = [
   "system",
   "component",
 ] }

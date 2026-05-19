@@ -87,8 +87,8 @@ impl<'a> SweepInputs<'a> {
 /// and one short HTTP probe per adoption candidate.
 pub async fn sweep(inputs: SweepInputs<'_>) -> SweepReport {
   let mut sys = System::new_with_specifics(
-    RefreshKind::new()
-      .with_processes(ProcessRefreshKind::new().with_cmd(sysinfo::UpdateKind::Always)),
+    RefreshKind::nothing()
+      .with_processes(ProcessRefreshKind::nothing().with_cmd(sysinfo::UpdateKind::Always)),
   );
   sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
 

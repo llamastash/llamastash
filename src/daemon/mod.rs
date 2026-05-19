@@ -328,7 +328,7 @@ fn lookup_start_time(pid: u32) -> Option<u64> {
   // sysinfo versions and platforms. The cost is one extra /proc read
   // per call, negligible at boot-sweep scale.
   let refresh = ProcessRefreshKind::everything();
-  let mut sys = System::new_with_specifics(RefreshKind::new().with_processes(refresh));
+  let mut sys = System::new_with_specifics(RefreshKind::nothing().with_processes(refresh));
   sys.refresh_processes_specifics(
     sysinfo::ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
     true,

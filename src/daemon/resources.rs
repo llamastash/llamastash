@@ -33,8 +33,8 @@ pub struct ResourceReading {
 /// One-shot snapshot for a single PID. Returns `None` when the
 /// process has already exited.
 pub fn sample(pid: u32) -> Option<ResourceReading> {
-  let refresh = ProcessRefreshKind::new().with_cpu().with_memory();
-  let mut sys = System::new_with_specifics(RefreshKind::new().with_processes(refresh));
+  let refresh = ProcessRefreshKind::nothing().with_cpu().with_memory();
+  let mut sys = System::new_with_specifics(RefreshKind::nothing().with_processes(refresh));
   sys.refresh_processes_specifics(
     sysinfo::ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
     true,
@@ -59,8 +59,8 @@ pub fn sample(pid: u32) -> Option<ResourceReading> {
 pub fn sample_loop(pid: u32, interval: Duration) -> tokio::sync::mpsc::Receiver<ResourceReading> {
   let (tx, rx) = tokio::sync::mpsc::channel(8);
   tokio::spawn(async move {
-    let refresh = ProcessRefreshKind::new().with_cpu().with_memory();
-    let mut sys = System::new_with_specifics(RefreshKind::new().with_processes(refresh));
+    let refresh = ProcessRefreshKind::nothing().with_cpu().with_memory();
+    let mut sys = System::new_with_specifics(RefreshKind::nothing().with_processes(refresh));
     // Prime the CPU delta calculation.
     sys.refresh_processes_specifics(
       sysinfo::ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),

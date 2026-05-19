@@ -117,9 +117,9 @@ impl GpuFlavor {
 pub async fn sample_priming(prime_delay: Duration) -> HostMetricsSnapshot {
   let mut sys = System::new_with_specifics(host_refresh_kind());
   // Prime the CPU delta.
-  sys.refresh_cpu_specifics(CpuRefreshKind::new().with_cpu_usage());
+  sys.refresh_cpu_specifics(CpuRefreshKind::nothing().with_cpu_usage());
   tokio::time::sleep(prime_delay).await;
-  sys.refresh_cpu_specifics(CpuRefreshKind::new().with_cpu_usage());
+  sys.refresh_cpu_specifics(CpuRefreshKind::nothing().with_cpu_usage());
   sys.refresh_memory();
   build_snapshot(&sys, probe_gpu().await)
 }
@@ -157,13 +157,13 @@ pub fn spawn(shutdown: ShutdownToken, interval: Duration) -> SamplerHandles {
   super::supervisor::spawn_supervised("host_metrics_sampler", async move {
     let mut sys = System::new_with_specifics(host_refresh_kind());
     // Prime sysinfo's CPU delta on first refresh.
-    sys.refresh_cpu_specifics(CpuRefreshKind::new().with_cpu_usage());
+    sys.refresh_cpu_specifics(CpuRefreshKind::nothing().with_cpu_usage());
     loop {
       tokio::select! {
         _ = shutdown.wait_until_triggered() => return,
         _ = tokio::time::sleep(interval) => {}
       }
-      sys.refresh_cpu_specifics(CpuRefreshKind::new().with_cpu_usage());
+      sys.refresh_cpu_specifics(CpuRefreshKind::nothing().with_cpu_usage());
       sys.refresh_memory();
       let info = probe_gpu().await;
       let next = build_snapshot(&sys, info.clone());
@@ -179,8 +179,8 @@ pub fn spawn(shutdown: ShutdownToken, interval: Duration) -> SamplerHandles {
 }
 
 fn host_refresh_kind() -> RefreshKind {
-  RefreshKind::new()
-    .with_cpu(CpuRefreshKind::new().with_cpu_usage())
+  RefreshKind::nothing()
+    .with_cpu(CpuRefreshKind::nothing().with_cpu_usage())
     .with_memory(MemoryRefreshKind::everything())
 }
 
@@ -220,7 +220,7 @@ fn build_snapshot(sys: &System, info: GpuInfo) -> HostMetricsSnapshot {
 /// label hints at CPU. `None` when no matching sensor exists.
 fn host_cpu_temp_c() -> Option<f32> {
   let mut components = Components::new_with_refreshed_list();
-  components.refresh();
+  components.refresh(true);
   let mut max: Option<f32> = None;
   for c in components.iter() {
     let label_lc = c.label().to_ascii_lowercase();
@@ -233,7 +233,9 @@ fn host_cpu_temp_c() -> Option<f32> {
     if !cpu_hint {
       continue;
     }
-    let t = c.temperature();
+    let Some(t) = c.temperature() else {
+      continue;
+    };
     if !t.is_finite() || t <= 0.0 {
       continue;
     }
