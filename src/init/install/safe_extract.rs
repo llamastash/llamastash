@@ -504,6 +504,83 @@ mod tests {
   }
 
   #[test]
+  fn refuses_fifo_entry() {
+    // Anything that isn't Regular / Directory / Symlink — including
+    // FIFOs, devices, sockets — must be refused. The `tar` crate
+    // doesn't construct these via the high-level API; we synthesise
+    // the header directly.
+    let archive = build_archive(|tar| {
+      write_file_entry(tar, "build/bin/llama-server", b"binary");
+      let mut header = Header::new_gnu();
+      header.set_size(0);
+      header.set_entry_type(EntryType::Fifo);
+      header.set_cksum();
+      tar
+        .append_data(&mut header, "build/bin/oddpipe", &[][..])
+        .unwrap();
+    });
+    let dest = temp_dir("fifo-entry");
+    let err = safe_extract_tar_gz(&archive, &dest, "b9999").unwrap_err();
+    assert!(
+      matches!(err, InstallError::UnsafeArchive { ref reason, .. } if reason.contains("unsupported entry type")),
+      "expected unsupported-entry-type refusal, got {err:?}"
+    );
+    std::fs::remove_dir_all(&dest).ok();
+  }
+
+  #[test]
+  fn refuses_symlink_with_no_target() {
+    // A symlink header whose `link_name` is empty/unset hits either
+    // (a) `entry.link_name()` returning `Ok(None)` → "symlink with no
+    // target", or (b) `Ok(Some(empty))` → "symlink target is empty"
+    // (the ADV-3 explicit-empty check). Both paths are correct
+    // refusals; the test accepts either reason.
+    let archive = build_archive(|tar| {
+      write_file_entry(tar, "build/bin/llama-server", b"binary");
+      let mut header = Header::new_gnu();
+      header.set_size(0);
+      header.set_entry_type(EntryType::Symlink);
+      // Deliberately do NOT call `header.set_link_name(...)`.
+      header.set_cksum();
+      tar
+        .append_data(&mut header, "no-target-link", &[][..])
+        .unwrap();
+    });
+    let dest = temp_dir("symlink-no-target");
+    let err = safe_extract_tar_gz(&archive, &dest, "b9999").unwrap_err();
+    assert!(
+      matches!(err, InstallError::UnsafeArchive { ref reason, .. } if reason.contains("no target") || reason.contains("empty")),
+      "expected no-target or empty-target refusal, got {err:?}"
+    );
+    std::fs::remove_dir_all(&dest).ok();
+  }
+
+  #[test]
+  fn refuses_self_loop_symlink() {
+    // Adversarial finding: a symlink with target "." resolves through
+    // the OS to its own parent dir. A later regular-file entry under
+    // the symlink's path would then be `File::create`-resolved up one
+    // level and could overwrite an earlier extracted file. Refuse
+    // self-loop targets at validation time.
+    let archive = build_archive(|tar| {
+      write_file_entry(tar, "build/bin/llama-server", b"binary");
+      let mut header = Header::new_gnu();
+      header.set_size(0);
+      header.set_entry_type(EntryType::Symlink);
+      header.set_link_name(".").unwrap();
+      header.set_cksum();
+      tar.append_data(&mut header, "loop", &[][..]).unwrap();
+    });
+    let dest = temp_dir("self-loop-symlink");
+    let err = safe_extract_tar_gz(&archive, &dest, "b9999").unwrap_err();
+    assert!(
+      matches!(err, InstallError::UnsafeArchive { ref reason, .. } if reason.contains("strict subpath") || reason.contains("empty")),
+      "expected self-loop refusal, got {err:?}"
+    );
+    std::fs::remove_dir_all(&dest).ok();
+  }
+
+  #[test]
   fn refuses_symlink_escaping_via_dotdot() {
     let archive = build_archive(|tar| {
       write_file_entry(tar, "build/bin/llama-server", b"binary");

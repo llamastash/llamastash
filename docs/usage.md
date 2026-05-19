@@ -147,6 +147,8 @@ Override semantics mirror kdash: the action's existing default binding(s) are re
 | `LLAMADASH_LLAMA_SERVER` | Path to `llama-server` |
 | `LLAMADASH_NO_SCAN` | Skip filesystem scanning |
 | `LLAMADASH_SOCKET` | Point a CLI at a non-default daemon socket |
+| `LLAMADASH_OFFLINE` | Refuse any outbound network from `init` / `pull` / `doctor` (equivalent to `--offline` on those subcommands) |
+| `NO_COLOR` | Any non-empty value disables ANSI styling on every human-readable output (per [no-color.org](https://no-color.org/)). An empty value (`NO_COLOR=`) does **not** disable. |
 
 ## Top-level flags
 
@@ -158,8 +160,11 @@ These work on every subcommand (clap marks them `global`):
 -p, --model-path <DIR>     Extra dir to scan. Repeatable.
 --no-scan                  Disable filesystem scanning.
 --no-spawn                 Fail fast if the daemon is not running.
+--no-colors                Disable ANSI styling on human-readable output.
 -v, --verbose              Debug logging.
 ```
+
+The colored-output policy OR-es three off-conditions: `--no-colors`, `NO_COLOR` env (non-empty), or non-TTY stdout. Any one silences colors. `--json` output is byte-stable regardless — pin agents against `--json`, not against the human form.
 
 ## Subcommands
 
@@ -241,6 +246,16 @@ llamadash favorites add <ref>
 llamadash favorites remove <ref>
 ```
 
+### `llamadash last-params [<ref>]`
+
+Surfaces the daemon's record of "what params did I last successfully start this model with" so an operator (or agent) can relaunch with the same shape via `start`. No `<ref>` lists every recorded model; with a ref, the output is filtered to that model.
+
+```
+llamadash last-params [<ref>] [--json]
+```
+
+`--json` wraps rows in `{"last_params": [...]}`. Exit `64` if `<ref>` resolves to a model with no recorded params yet — launch it once to populate.
+
 ### `llamadash daemon`
 
 ```
@@ -250,6 +265,82 @@ llamadash daemon status        # PID + uptime + connections + managed launches
 ```
 
 `start --detach` double-forks into the background; without it the daemon stays in the foreground.
+
+## Setup subcommands
+
+These three are first-run and admin surfaces. They're separated from the runtime CLI above because they touch durable state on disk (the `llama-server` binary, the snapshot file, the user's config) and have their own exit-code contract.
+
+### `llamadash init`
+
+Six-step first-run wizard: detect hardware → install `llama-server` → pick + download a starter GGUF → write `config.yaml` with `arch_defaults` → smoke launch → handoff. Interactive by default (built on `cliclack`); per-step pre-answer flags let agents drive every prompt non-interactively.
+
+```
+llamadash init [--recommended] [--yes] [--json] [--offline]
+               [--only <STEPS>] [--skip <STEPS>]
+               [--install <CHOICE>] [--model <CHOICE>]
+               [--config-step <CHOICE>]
+```
+
+| Flag | Effect |
+|---|---|
+| `--recommended` | Accept the hardware-aware default for every prompt; no prompts fire. Canonical form. |
+| `--yes` | Hidden permanent alias for `--recommended`. Preserved for backward compatibility with scripts and agents that already pass it. |
+| `--json` | Emit a structured summary (schema: `schema_version`, `steps_ran`, `steps_skipped`, `install`, `model`, `config`, `smoke`, `hardware`) and skip all human prose. |
+| `--offline` | Refuse outbound network. Useful for `--only config` / `--only server` reruns where the model and snapshot are already cached. `LLAMADASH_OFFLINE=1` is equivalent. |
+| `--only <STEPS>` | Comma-separated list of `server,models,config` (other names rejected). Only the listed steps run. |
+| `--skip <STEPS>` | Inverse of `--only`. Mutually exclusive with it (clap refuses both). |
+| `--install <CHOICE>` | Pre-answer the install-method prompt. Values: `brew`, `gh-releases`, `existing`, `custom:<PATH>`. Override beats `--recommended`. |
+| `--model <CHOICE>` | Pre-answer the model-pick prompt. Values: `recommended`, `none`, `<owner>/<repo>[:<filename>.gguf]`. |
+| `--config-step <CHOICE>` | Pre-answer the config-write confirm. Values: `write`, `skip`. (Named `--config-step` rather than `--config` because the top-level `--config <PATH>` is already global.) |
+
+The three per-step flags are **advisory, not authoritative**: supplying `--install brew` for a step that `--skip server` already excludes emits one stderr warning and proceeds. Conflicting axes don't abort.
+
+Non-interactive contract: when stdout isn't a terminal and `--recommended` is not set, the wizard emits one consolidated stderr warning, then the install + model steps use recommended defaults silently. The config-write step refuses to proceed without explicit consent — pass `--recommended`, `--config-step write`, or `--config-step skip`. Without that consent the wizard aborts with exit `72` after persisting whatever durable state earlier steps already wrote (so `doctor` sees the partial baseline).
+
+### `llamadash doctor`
+
+Read-only diagnostic. Re-runs hardware detection, diffs against `_init_snapshot.json`, and emits 0-6 findings with stable ids agents can branch on: `binary_missing`, `binary_digest_drift` (skipped on brew installs — routine `brew upgrade` legitimately rotates the digest), `hardware_drift`, `snapshot_stale`, `config_mode_drift`, `remote_snapshot_unreachable`.
+
+```
+llamadash doctor [--json]
+```
+
+`doctor` **always exits 0** — findings are informative, not a failure signal. Branch on a non-empty `findings` array (or filter for `severity == "error"`) to escalate, not on the exit code. This makes `doctor` safe to run unconditionally from health-check loops without `set -e` blowing up.
+
+Each `--json` finding carries `{id, severity, message, fix_hint, safe_to_log}`. `safe_to_log: true` on every v2 finding means the output is safe to paste into a public issue.
+
+### `llamadash pull <repo>`
+
+HuggingFace pull primitive. Built on the `hf-hub` crate. Accepts `<owner>/<repo>` (downloads every GGUF file in the repo) or `<owner>/<repo>:<filename>.gguf` (single file). Honors `HF_TOKEN` for gated repos.
+
+```
+llamadash pull <repo> [--json] [--offline]
+```
+
+`--json` emits `{"repo", "revision", "files": [...], "total_bytes"}`. Exit `69` on any failure (network, disk, integrity).
+
+`pull` performs a disk-space precheck by HEADing each file before download, so an out-of-space failure surfaces before any bytes hit disk. It refuses to write the HF token to disk in cache-file modes that would persist it insecurely.
+
+## Exit codes
+
+Source of truth: `src/cli/exit_codes.rs`. Codes are part of the public CLI contract; pin against them rather than parsing human error strings.
+
+| Code | Constant | Meaning |
+|---|---|---|
+| `0` | `SUCCESS` | Success |
+| `64` | `USAGE` | Bad CLI usage — missing required arg, invalid flag combination, or config-load error. Clap also emits this on its own. |
+| `65` | `DAEMON_UNREACHABLE` | Daemon socket missing, peer hung up, or call timed out |
+| `66` | `MODEL_NOT_FOUND` | Model reference matched zero or multiple catalog rows; stderr carries a disambiguation hint |
+| `67` | `LAUNCH_FAILED` | Daemon accepted `start_model` but the supervisor failed (probe timeout, port allocation, etc.) |
+| `68` | `STOP_FAILED` | `stop` couldn't reach the target (daemon error or process gone) |
+| `69` | `PULL_FAILED` | `pull` couldn't complete (network, integrity, disk space) |
+| `70` | `BINARY_NOT_FOUND` | `llama-server` not on PATH, no `--llama-server` flag, `LLAMADASH_LLAMA_SERVER` unset |
+| `71` | `UNKNOWN` | Catch-all for unexpected errors that don't map to a documented class |
+| `72` | `INIT_ABORTED` | `init` aborted before smoke — integrity check failed, archive defenses tripped, user declined confirm, or non-TTY config step without explicit consent |
+| `73` | `INIT_DOWNLOAD_FAILED` | `init`'s model-download step failed (distinct from `PULL_FAILED` so agents branch on cause) |
+| `74` | `INIT_SMOKE_FAILED` | `init`'s smoke phase failed (binary doesn't run cleanly under `--version`) |
+
+`doctor` always exits `0` — severity lives in the findings array.
 
 ## TUI keybindings
 

@@ -19,7 +19,6 @@
 use std::io::IsTerminal;
 
 use crate::cli::cli_args::{ConfigOverride, InitArgs, InstallOverride, ModelOverride};
-use crate::cli::colors;
 use crate::cli::exit_codes::{CliExit, INIT_ABORTED};
 use crate::init::benchmark::ModelEntry;
 use crate::init::detection::{BinaryPresence, HardwareSnapshot};
@@ -127,7 +126,8 @@ pub async fn pick_install_method(
     return Ok(default);
   }
   if !stdout_is_terminal() {
-    emit_stderr_warning("stdout is not a terminal; using recommended install default");
+    // Silent fallback — wizard::run emits the single consolidated
+    // non-TTY warning before the first picker runs.
     return Ok(default);
   }
   let (initial_idx, items) = build_install_items(&default, existing);
@@ -175,7 +175,8 @@ pub async fn pick_model(args: &InitArgs, recs: &[Recommendation]) -> Result<Mode
     return Ok(curated_or_skip());
   }
   if !stdout_is_terminal() {
-    emit_stderr_warning("stdout is not a terminal; using recommended model default");
+    // Silent fallback — wizard::run emits the single consolidated
+    // non-TTY warning before the first picker runs.
     return Ok(curated_or_skip());
   }
   // Filter OnDisk entries out of the interactive list — they
@@ -374,13 +375,6 @@ fn render_recommendation(r: &Recommendation) -> (String, String) {
   }
 }
 
-/// Emit a warning line to stderr using the shared color helpers.
-/// Pulled into a function so the runtime warning path and any future
-/// re-warning callers share the same prefix and color.
-fn emit_stderr_warning(msg: &str) {
-  eprintln!("{}", colors::warning(msg));
-}
-
 /// Single TTY check shared by every picker. Reads stdout (not stderr
 /// or `console::user_attended()`) so it matches the off-condition
 /// used by `cli::colors::init` — an agent piping stdout but leaving
@@ -535,22 +529,101 @@ mod tests {
     assert!(matches!(result, ModelChoice::Skip));
   }
 
-  #[test]
-  fn confirm_config_write_override_write_returns_true() {
-    // Synchronous resolution path: `confirm_config_write` resolves
-    // overrides before any await. Calling the picker on the futures
-    // runtime would require tokio; the override-only branch returns
-    // before reaching the cliclack path, so we exercise the logic
-    // directly via the helper-equivalent shape.
+  #[tokio::test]
+  async fn confirm_config_write_override_write_returns_true() {
+    // The override arm at the top of `confirm_config_write` resolves
+    // before any await/cliclack interaction, so this test works under
+    // cargo test's non-TTY default without touching a terminal.
     let mut args = empty_args();
     args.config_choice = Some(ConfigOverride::Write);
-    assert!(matches!(args.config_choice, Some(ConfigOverride::Write)));
+    let confirmed = confirm_config_write(&args, "")
+      .await
+      .expect("override should not fail");
+    assert!(confirmed, "ConfigOverride::Write must resolve to true");
   }
 
-  #[test]
-  fn confirm_config_write_override_skip_returns_false() {
+  #[tokio::test]
+  async fn confirm_config_write_override_skip_returns_false() {
     let mut args = empty_args();
     args.config_choice = Some(ConfigOverride::Skip);
-    assert!(matches!(args.config_choice, Some(ConfigOverride::Skip)));
+    let confirmed = confirm_config_write(&args, "")
+      .await
+      .expect("override should not fail");
+    assert!(!confirmed, "ConfigOverride::Skip must resolve to false");
+  }
+
+  #[tokio::test]
+  async fn confirm_config_write_recommended_returns_true() {
+    let mut args = empty_args();
+    args.recommended = true;
+    let confirmed = confirm_config_write(&args, "")
+      .await
+      .expect("recommended should not fail");
+    assert!(confirmed, "recommended mode must accept the write");
+  }
+
+  #[tokio::test]
+  async fn confirm_config_write_non_tty_without_consent_errors() {
+    // cargo test is always non-TTY; with neither `--recommended` nor
+    // `--config-step` set, the wizard must refuse rather than silently
+    // auto-write (closes the regression that ADV-1 caught).
+    let args = empty_args();
+    let result = confirm_config_write(&args, "").await;
+    match result {
+      Err(exit) => {
+        assert_eq!(exit.code, INIT_ABORTED, "must abort with INIT_ABORTED");
+        assert!(
+          exit.to_string().contains("explicit consent"),
+          "error must explain how to provide consent, got `{}`",
+          exit
+        );
+      }
+      Ok(_) => panic!("non-TTY without consent must not silently auto-accept"),
+    }
+  }
+
+  #[tokio::test]
+  async fn pick_install_method_install_override_beats_recommended() {
+    // W3 contract: an explicit `--install` overrides recommended-mode
+    // adoption. The picker's arm-1 (override) fires before the arm-2
+    // (recommended → default) check.
+    let mut args = empty_args();
+    args.recommended = true;
+    args.install = Some(InstallOverride::Brew);
+    let result = pick_install_method(&args, InstallChoice::GhReleases, &no_existing_binary())
+      .await
+      .expect("override should not fail");
+    assert!(
+      matches!(result, InstallChoice::Brew),
+      "got {result:?}, expected Brew"
+    );
+  }
+
+  #[tokio::test]
+  async fn pick_install_method_recommended_short_circuits_to_default() {
+    let mut args = empty_args();
+    args.recommended = true;
+    let result = pick_install_method(&args, InstallChoice::Brew, &no_existing_binary())
+      .await
+      .expect("recommended should not fail");
+    assert!(
+      matches!(result, InstallChoice::Brew),
+      "got {result:?}, expected the supplied default Brew"
+    );
+  }
+
+  #[tokio::test]
+  async fn pick_install_method_non_tty_falls_back_silently() {
+    // cargo test is always non-TTY. With neither override nor
+    // recommended set, the picker silently returns the default —
+    // the consolidated warning (#30) lives in wizard::run, not here.
+    let args = empty_args();
+    let result = pick_install_method(&args, InstallChoice::GhReleases, &no_existing_binary())
+      .await
+      .expect("non-TTY fallback should not fail");
+    assert!(
+      matches!(result, InstallChoice::GhReleases),
+      "got {result:?}, expected GhReleases default"
+    );
   }
 }

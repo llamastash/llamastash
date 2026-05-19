@@ -226,6 +226,27 @@ pub async fn run(args: InitArgs, cli: &Cli, config: &Config) -> CliResult {
   // a human affordance.
   if !args.json {
     warn_on_ignored_step_overrides(&args, &plan);
+    // Single consolidated non-TTY warning. Fires once at the top
+    // rather than per-picker so an agent piping stdout sees one
+    // clear message even when multiple steps fall back to defaults.
+    // Suppressed when every in-plan step already has an explicit
+    // override or `--recommended` is set.
+    let any_step_lacks_override = (plan.server && args.install.is_none())
+      || (plan.models && args.model.is_none())
+      || (plan.config && args.config_choice.is_none());
+    if !prompts::is_recommended(&args)
+      && any_step_lacks_override
+      && !std::io::IsTerminal::is_terminal(&std::io::stdout())
+    {
+      eprintln!(
+        "{}",
+        colors::warning(
+          "stdout is not a terminal. Install + model steps will use recommended defaults; \
+           the config step needs --config-step write|skip (or --recommended). \
+           Pre-answer specific steps with --install / --model / --config-step."
+        )
+      );
+    }
   }
 
   // Thread the same flag/env/config the daemon does (see

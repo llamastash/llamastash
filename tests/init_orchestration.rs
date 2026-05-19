@@ -273,6 +273,46 @@ async fn install_override_with_skipped_server_warns_and_continues() {
   cleanup_xdg(&root);
 }
 
+/// W3 contract: `--install` (per-step override) must beat
+/// `--recommended` (which would otherwise short-circuit through the
+/// existing-binary adoption shortcut in `run_install_step`). With a
+/// bad custom path supplied alongside `--recommended`, the wizard
+/// must hit the override path → `is_safe_to_adopt` failure →
+/// INIT_ABORTED, not silently fall back to recommended-mode
+/// adoption of a different binary on PATH.
+#[tokio::test]
+async fn install_override_wins_against_recommended_mode_shortcut() {
+  let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+  let root = isolated_xdg("install-override-vs-recommended");
+  let (cli, args) = parse_init(&[
+    "init",
+    "--recommended",
+    "--offline",
+    "--skip",
+    "models,config",
+    "--install",
+    "custom:/nonexistent/llama-server",
+    "--json",
+  ]);
+  let config = Config::default();
+  let result = wizard::run(args, &cli, &config).await;
+  match &result {
+    Err(e) => {
+      assert_eq!(
+        e.code, INIT_ABORTED,
+        "--install custom:<bad> under --recommended must abort with INIT_ABORTED, \
+         not silently fall back to recommended-mode adoption: {:?}",
+        e.message
+      );
+    }
+    Ok(()) => panic!(
+      "expected INIT_ABORTED — the existing-binary shortcut may have bypassed \
+       the --install override (W3 regression)"
+    ),
+  }
+  cleanup_xdg(&root);
+}
+
 // Silence unused-var lint on the env-loaded `OsString` paths.
 #[allow(dead_code)]
 fn _unused_osstring() -> OsString {
