@@ -26,6 +26,47 @@ TODO, strike it from both places in the same change. The goal is that
 `TODO.md` alone tells you everything still open without grep-walking the
 tree.
 
+## Docs stay in sync with code
+
+Docs and code ship together. After any change that alters user-visible
+behavior, the CLI / IPC surface, configuration shape, install paths, exit
+codes, dependencies, scope boundaries, or architecture, update the affected
+docs in the **same change** (same commit, same PR). Treat a PR that ships
+code without the matching doc update as incomplete.
+
+Files to review for drift on every change — skip the ones a change doesn't
+touch, but check before assuming:
+
+- `README.md` — install, quickstart, screenshots, feature list, exit-code
+  table when present.
+- `AGENTS.md` (this file) — scope boundaries, exit-code table, CLI agent
+  surface, `status` IPC fields, build/test/lint, common gotchas.
+- `CHANGELOG.md` — every user-visible change lands an entry under
+  `[Unreleased]` (or the active release section). Internal-only refactors
+  can be omitted.
+- `CONTRIBUTING.md` — workflow / contribution rules when they shift.
+- `SECURITY.md` — only when the threat model or hardening surface shifts.
+- `docs/architecture.md` — when modules, the IPC shape, lifecycle states,
+  or the data-flow diagram change.
+- `docs/usage.md` — CLI subcommands, flags, JSON output shapes,
+  configuration keys, keybindings.
+- `docs/troubleshooting.md` — new failure modes / error messages that an
+  end user might hit.
+- `docs/plans/*.md` — tick the corresponding unit checkbox `[ ]` → `[x]`
+  when the work lands; never invent retro-plans, but do keep checkboxes
+  accurate.
+- `config.example.yaml` — when a config key is added, removed, renamed,
+  or its default changes.
+- `Cargo.toml` — keywords / categories / description on any feature that
+  changes the binary's positioning.
+- `TODO.md` — per the section above.
+
+If a change makes an existing doc statement wrong, fix or remove the
+statement; don't leave the contradiction for the next reader. If you
+introduce a new user-facing concept that none of the above docs cover yet,
+pick the doc closest in scope and add a section there rather than spawning
+a new file.
+
 ## Scope boundaries
 
 The v1 contract — these are deliberate omissions, not gaps:
