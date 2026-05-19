@@ -14,6 +14,7 @@ pub mod download;
 pub mod fetch;
 pub mod fetch_policy;
 pub mod install;
+pub mod prompts;
 pub mod recommender;
 pub mod smoke;
 pub mod snapshot;

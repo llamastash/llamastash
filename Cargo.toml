@@ -83,13 +83,15 @@ serde_json = "1.0"
 serde_yaml = "0.9"
 simplelog = { version = "0.12", default-features = false }
 strum = { version = "0.28", features = ["derive"] }
-# v2 init wizard (Unit 10). Pinned exactly so `cargo update` doesn't
-# silently break the prompt UI; bumps go through a deliberate PR.
-dialoguer = { version = "0.11", default-features = false }
-# Terminal styling primitives for the CLI color policy (Unit 1 of
-# 2026-05-19 plan). Powers `cli::colors`; also already a transitive
-# dep via dialoguer/indicatif, declared explicitly so the color
-# module owns its dep.
+# v2 init wizard (Unit 10) + 2026-05-19 interactive wizard work.
+# `cliclack` replaces the unused `dialoguer` dep with a Clack-style
+# stepped wizard built on `console`. Pinned by minor version so
+# patches land without a deliberate PR but minor bumps don't.
+cliclack = "0.3"
+# Terminal styling primitives for the CLI color policy. Powers
+# `cli::colors` and the prompts wrapper. Declared explicitly so the
+# color/prompt modules own their dep rather than relying on the
+# `cliclack`/`indicatif` transitive chain.
 console = "0.15"
 # Display-width measurement for terminal text (CJK paths, emoji, etc.).
 # ratatui already pulls this in transitively; declaring it explicitly so

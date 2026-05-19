@@ -198,6 +198,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
+name = "cliclack"
+version = "0.3.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa510b739c618c679375ea9c5af44ce9f591289546e874ad5910e7ce7df79844"
+dependencies = [
+ "console 0.15.11",
+ "indicatif",
+ "once_cell",
+ "strsim",
+ "textwrap",
+ "zeroize",
+]
+
+[[package]]
 name = "clipboard-win"
 version = "5.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -428,17 +442,6 @@ dependencies = [
  "quote",
  "rustc_version",
  "syn",
-]
-
-[[package]]
-name = "dialoguer"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "658bce805d770f407bc62102fca7c2c64ceef2fbcb2b8bd19d2765ce093980de"
-dependencies = [
- "console 0.15.11",
- "shell-words",
- "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -879,7 +882,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "thiserror 2.0.18",
+ "thiserror",
  "tokio",
  "windows-sys 0.61.2",
 ]
@@ -1224,7 +1227,7 @@ checksum = "bde5057d6143cc94e861d90f591b9303d6716c6b9602309150bd068853c10899"
 dependencies = [
  "hashbrown 0.16.1",
  "portable-atomic",
- "thiserror 2.0.18",
+ "thiserror",
 ]
 
 [[package]]
@@ -1303,9 +1306,9 @@ dependencies = [
  "arboard",
  "blake3",
  "clap",
+ "cliclack",
  "console 0.15.11",
  "crossterm",
- "dialoguer",
  "directories",
  "fd-lock",
  "flate2",
@@ -1328,7 +1331,7 @@ dependencies = [
  "sysinfo",
  "tar",
  "tempfile",
- "thiserror 2.0.18",
+ "thiserror",
  "tokio",
  "unicode-width",
  "which",
@@ -1709,7 +1712,7 @@ dependencies = [
  "rustc-hash",
  "rustls",
  "socket2",
- "thiserror 2.0.18",
+ "thiserror",
  "tokio",
  "tracing",
  "web-time",
@@ -1730,7 +1733,7 @@ dependencies = [
  "rustls",
  "rustls-pki-types",
  "slab",
- "thiserror 2.0.18",
+ "thiserror",
  "tinyvec",
  "tracing",
  "web-time",
@@ -1826,7 +1829,7 @@ dependencies = [
  "kasuari",
  "lru",
  "strum 0.27.2",
- "thiserror 2.0.18",
+ "thiserror",
  "unicode-segmentation",
  "unicode-truncate",
  "unicode-width",
@@ -1880,7 +1883,7 @@ checksum = "a4e608c6638b9c18977b00b475ac1f28d14e84b27d8d42f70e0bf1e3dec127ac"
 dependencies = [
  "getrandom 0.2.17",
  "libredox",
- "thiserror 2.0.18",
+ "thiserror",
 ]
 
 [[package]]
@@ -2146,12 +2149,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "shell-words"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc6fe69c597f9c37bfeeeeeb33da3530379845f10be461a66d16d03eca2ded77"
-
-[[package]]
 name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2215,6 +2212,12 @@ name = "smallvec"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
+
+[[package]]
+name = "smawk"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7c388c1b5e93756d0c740965c41e8822f866621d41acbdf6336a6a168f8840c"
 
 [[package]]
 name = "socket2"
@@ -2383,12 +2386,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "thiserror"
-version = "1.0.69"
+name = "textwrap"
+version = "0.16.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52"
+checksum = "c13547615a44dc9c452a8a534638acdf07120d4b6847c8178705da06306a3057"
 dependencies = [
- "thiserror-impl 1.0.69",
+ "smawk",
+ "unicode-linebreak",
+ "unicode-width",
 ]
 
 [[package]]
@@ -2397,18 +2402,7 @@ version = "2.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4288b5bcbc7920c07a1149a35cf9590a2aa808e0bc1eafaade0b80947865fbc4"
 dependencies = [
- "thiserror-impl 2.0.18",
-]
-
-[[package]]
-name = "thiserror-impl"
-version = "1.0.69"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
+ "thiserror-impl",
 ]
 
 [[package]]
@@ -2622,6 +2616,12 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "unicode-linebreak"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b09c83c3c29d37506a3e260c08c03743a6bb66a9cd432c6934ab501a190571f"
 
 [[package]]
 name = "unicode-segmentation"
@@ -3368,7 +3368,7 @@ dependencies = [
  "log",
  "os_pipe",
  "rustix",
- "thiserror 2.0.18",
+ "thiserror",
  "tree_magic_mini",
  "wayland-backend",
  "wayland-client",
@@ -3478,6 +3478,20 @@ name = "zeroize"
 version = "1.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b97154e67e32c85465826e8bcc1c59429aaaf107c1e4a9e53c8d8ccd5eff88d0"
+dependencies = [
+ "zeroize_derive",
+]
+
+[[package]]
+name = "zeroize_derive"
+version = "1.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85a5b4158499876c763cb03bc4e49185d3cccbabb15b33c627f7884f43db852e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "zerotrie"
