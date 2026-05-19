@@ -8,6 +8,7 @@
 
 pub mod cli_args;
 pub mod client;
+pub(crate) mod colors;
 pub mod daemon;
 pub mod doctor;
 pub mod exit_codes;
@@ -35,6 +36,11 @@ pub use exit_codes::{CliExit, CliResult};
 /// the binary should propagate. `main.rs` calls
 /// `std::process::exit(code)` with the result.
 pub async fn dispatch(mut cli: Cli, config: LoadedConfig) -> Result<i32> {
+  // Lock in the color policy before any handler prints. The three
+  // OR-ed off-conditions (flag, NO_COLOR, non-TTY stdout) live in
+  // `colors::init`; downstream sites use `colors::*` helpers and
+  // never re-derive whether colors are enabled.
+  colors::init(cli.no_colors);
   if let Some(warning) = &config.warning {
     log::warn!("{warning}");
   }

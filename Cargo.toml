@@ -86,6 +86,11 @@ strum = { version = "0.28", features = ["derive"] }
 # v2 init wizard (Unit 10). Pinned exactly so `cargo update` doesn't
 # silently break the prompt UI; bumps go through a deliberate PR.
 dialoguer = { version = "0.11", default-features = false }
+# Terminal styling primitives for the CLI color policy (Unit 1 of
+# 2026-05-19 plan). Powers `cli::colors`; also already a transitive
+# dep via dialoguer/indicatif, declared explicitly so the color
+# module owns its dep.
+console = "0.15"
 # Display-width measurement for terminal text (CJK paths, emoji, etc.).
 # ratatui already pulls this in transitively; declaring it explicitly so
 # the daemon-info pane's truncation logic can reason in cells, not chars.

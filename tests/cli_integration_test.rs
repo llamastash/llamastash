@@ -229,6 +229,7 @@ fn build_cli(model_dir: &Path, command: Command) -> (Cli, LoadedConfig) {
     no_spawn: true,
     verbose: false,
     quiet: false,
+    no_colors: false,
     render: false,
     render_size: None,
     command: Some(command),

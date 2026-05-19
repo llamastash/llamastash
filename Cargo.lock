@@ -1303,6 +1303,7 @@ dependencies = [
  "arboard",
  "blake3",
  "clap",
+ "console 0.15.11",
  "crossterm",
  "dialoguer",
  "directories",

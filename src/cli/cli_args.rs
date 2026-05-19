@@ -52,6 +52,13 @@ pub struct Cli {
   #[arg(short = 'q', long, global = true, action = ArgAction::SetTrue)]
   pub quiet: bool,
 
+  /// Disable ANSI color output. Color is also disabled automatically
+  /// when `NO_COLOR` is set in the environment (any non-empty value;
+  /// see https://no-color.org) or when stdout is not a terminal
+  /// (piped / redirected). `--json` output is never colored.
+  #[arg(long, global = true, action = ArgAction::SetTrue)]
+  pub no_colors: bool,
+
   /// Render one frame of the TUI to stdout as plain text and exit
   /// instead of entering the interactive loop. Connects to (or auto-
   /// spawns) the daemon, primes `list_models` + `status`, draws one
