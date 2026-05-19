@@ -9,8 +9,8 @@
     "param_quality": 0.20,
     "recency": 0.10,
     "overhead_band_bytes": {
-      "cuda": 838860800,
-      "hip": 838860800,
+      "cuda": 536870912,
+      "hip": 536870912,
       "vulkan": 1073741824,
       "metal": 536870912,
       "cpu": 0

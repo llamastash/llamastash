@@ -12,8 +12,8 @@ todo: "Remeasure on real CUDA / HIP / Vulkan / Metal hardware before v2 GA."
 
 | Backend | Default overhead (MB) | Reasoning |
 |---|---|---|
-| CUDA | 800 | Driver, cuBLAS, ggml CUDA state, KV-cache page alignment |
-| HIP/ROCm | 800 | Same order as CUDA on modern ROCm |
+| CUDA | 512 | Driver, cuBLAS, ggml CUDA state, KV-cache page alignment. Tightened from 800 MB on 2026-05-19 after comparing to whichllm's 500 MB flat framework constant — corpus gate still passes |
+| HIP/ROCm | 512 | Same order as CUDA on modern ROCm. Tightened in lockstep with CUDA |
 | Vulkan | 1024 | Vulkan loader + ggml Vulkan backend's slab allocator overhead historically wider than CUDA |
 | Metal | 512 | Lower overhead on Apple Silicon's unified memory; mostly KV alignment |
 | CPU | n/a | RAM-bound; we use `0.5 × free_ram` instead of a fixed band |
