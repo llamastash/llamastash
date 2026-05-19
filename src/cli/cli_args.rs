@@ -343,14 +343,21 @@ pub struct PullArgs {
 
 #[derive(Args, Debug)]
 pub struct InitArgs {
-  /// Non-interactive mode: accept every hardware-aware default; fail
-  /// loud on integrity-check errors rather than prompting. Pair with
-  /// `--json` for agent consumption.
-  #[arg(long)]
+  /// Use hardware-aware defaults for every step; do not prompt. Pair
+  /// with `--json` for agent consumption. Integrity-check failures
+  /// still abort with the documented exit codes — they are never
+  /// silently downgraded.
+  #[arg(long, action = ArgAction::SetTrue)]
+  pub recommended: bool,
+  /// Backward-compat alias for `--recommended`. Hidden from `--help`
+  /// because new invocations should reach for `--recommended`, but
+  /// preserved indefinitely so existing scripts and agents keep
+  /// working without a deprecation warning at runtime.
+  #[arg(long, hide = true)]
   pub yes: bool,
   /// Emit a single structured summary at completion. Per-step progress
   /// goes to stderr (only in `--verbose`). Mutually compatible with
-  /// `--yes`.
+  /// `--recommended`.
   #[arg(long)]
   pub json: bool,
   /// Disable outbound network. Steps that require network are skipped
@@ -379,6 +386,111 @@ pub struct InitArgs {
     value_enum,
   )]
   pub skip: Vec<InitStep>,
+  /// Pre-answer the install-method prompt. Accepted values:
+  /// `brew`, `gh-releases`, `existing`, `custom:<PATH>` (relative
+  /// paths are accepted at parse time; runtime integrity checks
+  /// decide if they are usable). When supplied for a step that
+  /// `--skip` excludes, the wizard emits a stderr warning and
+  /// proceeds.
+  #[arg(long, value_name = "CHOICE", value_parser = parse_install_override)]
+  pub install: Option<InstallOverride>,
+  /// Pre-answer the model-pick prompt. Accepted values:
+  /// `recommended`, `none`, `<owner>/<repo>` (HuggingFace repo id).
+  #[arg(long, value_name = "CHOICE", value_parser = parse_model_override)]
+  pub model: Option<ModelOverride>,
+  /// Pre-answer the config-write confirm. Accepted values: `write`,
+  /// `skip`. Long flag is `--config-step` (not `--config`) because
+  /// the top-level `--config <PATH>` is `global = true` and clap's
+  /// debug assert refuses two args with the same long name even on
+  /// disjoint subcommand scopes.
+  #[arg(long = "config-step", value_name = "CHOICE", value_enum)]
+  pub config_choice: Option<ConfigOverride>,
+}
+
+/// Per-step override for `--install`. When set, the wizard's
+/// install-method prompt is suppressed and the override value is
+/// used directly. The `Custom` variant carries the user-supplied
+/// path; the wizard's existing `is_safe_to_adopt` integrity check
+/// runs at step time, not at parse time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InstallOverride {
+  Brew,
+  GhReleases,
+  Existing,
+  Custom(PathBuf),
+}
+
+/// Per-step override for `--model`. `Recommended` selects the
+/// top recommender pick; `None` skips the model-download step
+/// entirely; `Paste` carries an `<owner>/<repo>` HF id that is
+/// downloaded directly (bypassing the recommender).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ModelOverride {
+  Recommended,
+  None,
+  Paste(String),
+}
+
+/// Per-step override for `--config`. Maps to the wizard's
+/// config-write confirm: `Write` accepts, `Skip` declines.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "lower")]
+pub enum ConfigOverride {
+  Write,
+  Skip,
+}
+
+/// Parse the `--install` value into an [`InstallOverride`].
+///
+/// Shape-only validation: `custom:` paths are not stat'd here — the
+/// wizard's runtime integrity check (`is_safe_to_adopt`) is the
+/// authoritative gate. Relative paths are accepted so callers can
+/// pass them through.
+pub fn parse_install_override(raw: &str) -> Result<InstallOverride, String> {
+  match raw {
+    "brew" => Ok(InstallOverride::Brew),
+    "gh-releases" => Ok(InstallOverride::GhReleases),
+    "existing" => Ok(InstallOverride::Existing),
+    other => {
+      if let Some(path) = other.strip_prefix("custom:") {
+        if path.is_empty() {
+          return Err("`--install custom:<PATH>` requires a non-empty path after the colon".into());
+        }
+        Ok(InstallOverride::Custom(PathBuf::from(path)))
+      } else {
+        Err(format!(
+          "invalid value `{raw}` — possible values: brew, gh-releases, existing, custom:<PATH>"
+        ))
+      }
+    }
+  }
+}
+
+/// Parse the `--model` value into a [`ModelOverride`]. Strings
+/// other than `recommended` / `none` are validated as a HF repo
+/// id (`<owner>/<repo>`, both halves non-empty, no whitespace).
+pub fn parse_model_override(raw: &str) -> Result<ModelOverride, String> {
+  match raw {
+    "recommended" => Ok(ModelOverride::Recommended),
+    "none" => Ok(ModelOverride::None),
+    other => {
+      if other.chars().any(char::is_whitespace) {
+        return Err(format!(
+          "invalid value `{other}` — HF repo id must not contain whitespace"
+        ));
+      }
+      let mut parts = other.split('/');
+      let owner = parts.next().unwrap_or("");
+      let repo = parts.next().unwrap_or("");
+      let extra = parts.next();
+      if owner.is_empty() || repo.is_empty() || extra.is_some() {
+        return Err(format!(
+          "invalid value `{other}` — expected `recommended`, `none`, or `<owner>/<repo>`"
+        ));
+      }
+      Ok(ModelOverride::Paste(other.to_string()))
+    }
+  }
 }
 
 #[derive(Args, Debug)]
@@ -553,9 +665,238 @@ mod tests {
         assert!(args.yes);
         assert!(args.json);
         assert!(args.offline);
+        assert!(!args.recommended);
       }
       other => panic!("expected init, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn init_recommended_parses_independently_of_yes() {
+    let cli = parse(&["init", "--recommended"]);
+    match cli.command {
+      Some(Command::Init(args)) => {
+        assert!(args.recommended);
+        assert!(!args.yes);
+      }
+      other => panic!("expected init, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn init_recommended_and_yes_are_combinable() {
+    // Both flags coexist with no mutex; the wizard reads
+    // `args.recommended || args.yes` so either flag short-circuits.
+    let cli = parse(&["init", "--recommended", "--yes"]);
+    match cli.command {
+      Some(Command::Init(args)) => {
+        assert!(args.recommended);
+        assert!(args.yes);
+      }
+      other => panic!("expected init, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn init_yes_is_hidden_from_help_but_still_parses() {
+    let rendered = Cli::try_parse_from(["llamadash", "init", "--help"])
+      .unwrap_err()
+      .to_string();
+    assert!(
+      rendered.contains("--recommended"),
+      "help must list --recommended"
+    );
+    assert!(rendered.contains("--install"), "help must list --install");
+    assert!(rendered.contains("--model"), "help must list --model");
+    assert!(
+      rendered.contains("--config-step"),
+      "help must list --config-step"
+    );
+    assert!(!rendered.contains("--yes"), "help must hide --yes");
+    // Still parseable.
+    assert!(Cli::try_parse_from(["llamadash", "init", "--yes"]).is_ok());
+  }
+
+  #[test]
+  fn init_install_override_value_enum_variants() {
+    for (raw, expected) in [
+      ("brew", InstallOverride::Brew),
+      ("gh-releases", InstallOverride::GhReleases),
+      ("existing", InstallOverride::Existing),
+    ] {
+      let cli = parse(&["init", "--install", raw]);
+      match cli.command {
+        Some(Command::Init(args)) => assert_eq!(args.install, Some(expected)),
+        other => panic!("expected init, got {other:?}"),
+      }
+    }
+  }
+
+  #[test]
+  fn init_install_custom_absolute_path() {
+    let cli = parse(&["init", "--install", "custom:/usr/local/bin/llama-server"]);
+    match cli.command {
+      Some(Command::Init(args)) => assert_eq!(
+        args.install,
+        Some(InstallOverride::Custom(PathBuf::from(
+          "/usr/local/bin/llama-server"
+        )))
+      ),
+      other => panic!("expected init, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn init_install_custom_relative_path_is_accepted() {
+    // Relative paths are accepted at parse time; runtime
+    // `is_safe_to_adopt` decides if they are usable.
+    let cli = parse(&["init", "--install", "custom:relative/path/llama-server"]);
+    match cli.command {
+      Some(Command::Init(args)) => assert_eq!(
+        args.install,
+        Some(InstallOverride::Custom(PathBuf::from(
+          "relative/path/llama-server"
+        )))
+      ),
+      other => panic!("expected init, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn init_install_custom_empty_path_rejected_at_parse_time() {
+    let result = Cli::try_parse_from(["llamadash", "init", "--install", "custom:"]);
+    assert!(result.is_err());
+  }
+
+  #[test]
+  fn init_install_unknown_value_rejected() {
+    let result = Cli::try_parse_from(["llamadash", "init", "--install", "frobnicate"]);
+    let err = result.expect_err("frobnicate must be rejected");
+    let msg = err.to_string();
+    assert!(
+      msg.contains("brew") && msg.contains("gh-releases") && msg.contains("custom:<PATH>"),
+      "error must list valid choices, got: {msg}"
+    );
+  }
+
+  #[test]
+  fn init_model_override_enum_variants() {
+    for (raw, expected) in [
+      ("recommended", ModelOverride::Recommended),
+      ("none", ModelOverride::None),
+    ] {
+      let cli = parse(&["init", "--model", raw]);
+      match cli.command {
+        Some(Command::Init(args)) => assert_eq!(args.model, Some(expected)),
+        other => panic!("expected init, got {other:?}"),
+      }
+    }
+  }
+
+  #[test]
+  fn init_model_paste_owner_repo() {
+    let cli = parse(&["init", "--model", "bartowski/Llama-3.2-3B-GGUF"]);
+    match cli.command {
+      Some(Command::Init(args)) => assert_eq!(
+        args.model,
+        Some(ModelOverride::Paste(
+          "bartowski/Llama-3.2-3B-GGUF".to_string()
+        ))
+      ),
+      other => panic!("expected init, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn init_model_without_slash_is_rejected() {
+    let result = Cli::try_parse_from(["llamadash", "init", "--model", "invalid-no-slash"]);
+    assert!(result.is_err());
+  }
+
+  #[test]
+  fn init_model_with_whitespace_is_rejected() {
+    let result = Cli::try_parse_from(["llamadash", "init", "--model", "owner / repo"]);
+    assert!(result.is_err());
+  }
+
+  #[test]
+  fn init_config_step_write_and_skip() {
+    for (raw, expected) in [
+      ("write", ConfigOverride::Write),
+      ("skip", ConfigOverride::Skip),
+    ] {
+      let cli = parse(&["init", "--config-step", raw]);
+      match cli.command {
+        Some(Command::Init(args)) => assert_eq!(args.config_choice, Some(expected)),
+        other => panic!("expected init, got {other:?}"),
+      }
+    }
+  }
+
+  #[test]
+  fn init_all_new_flags_combinable_in_one_invocation() {
+    let cli = parse(&[
+      "init",
+      "--recommended",
+      "--install",
+      "brew",
+      "--model",
+      "bartowski/Llama-3.2-3B-GGUF",
+      "--config-step",
+      "write",
+    ]);
+    match cli.command {
+      Some(Command::Init(args)) => {
+        assert!(args.recommended);
+        assert_eq!(args.install, Some(InstallOverride::Brew));
+        assert_eq!(
+          args.model,
+          Some(ModelOverride::Paste(
+            "bartowski/Llama-3.2-3B-GGUF".to_string()
+          ))
+        );
+        assert_eq!(args.config_choice, Some(ConfigOverride::Write));
+      }
+      other => panic!("expected init, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn init_config_step_coexists_with_global_config() {
+    // `--config <PATH>` is the global YAML-config-file flag on `Cli`;
+    // `--config-step <CHOICE>` answers the wizard's config-write
+    // confirm. The long names differ to satisfy clap's per-command
+    // uniqueness assertion.
+    let cli = parse(&["--config", "/tmp/my.yaml", "init", "--config-step", "skip"]);
+    assert_eq!(cli.config, Some(PathBuf::from("/tmp/my.yaml")));
+    match cli.command {
+      Some(Command::Init(args)) => {
+        assert_eq!(args.config_choice, Some(ConfigOverride::Skip));
+      }
+      other => panic!("expected init, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn parse_install_override_round_trip() {
+    assert_eq!(
+      parse_install_override("brew").unwrap(),
+      InstallOverride::Brew
+    );
+    assert!(parse_install_override("custom:").is_err());
+    assert!(parse_install_override("garbage").is_err());
+  }
+
+  #[test]
+  fn parse_model_override_round_trip() {
+    assert_eq!(
+      parse_model_override("recommended").unwrap(),
+      ModelOverride::Recommended
+    );
+    assert_eq!(parse_model_override("none").unwrap(), ModelOverride::None);
+    assert!(parse_model_override("a/b/c").is_err());
+    assert!(parse_model_override("/repo").is_err());
+    assert!(parse_model_override("owner/").is_err());
   }
 
   #[test]
