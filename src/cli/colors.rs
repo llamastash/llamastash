@@ -23,11 +23,6 @@
 //! later fourth condition (e.g. `LLAMADASH_FORCE_COLOR`) would land
 //! here without revisiting every print site.
 
-// Render helpers are introduced here in Unit 1 and consumed across the
-// CLI in Unit 5 (color polish). Suppressing dead_code keeps the
-// intermediate commit clean without per-function annotations.
-#![allow(dead_code)]
-
 use std::io::IsTerminal;
 
 /// Initialise the process-wide color policy. Call exactly once from
@@ -78,12 +73,14 @@ pub(crate) fn dim(msg: &str) -> String {
   console::style(msg).dim().to_string()
 }
 
-pub(crate) fn header(msg: &str) -> String {
-  console::style(msg).bold().underlined().to_string()
+/// Bold without underline — for table column headers where underline
+/// would visually overlap row borders. Use `header` for section titles.
+pub(crate) fn bold(msg: &str) -> String {
+  console::style(msg).bold().to_string()
 }
 
-pub(crate) fn key_value(k: &str, v: &str) -> String {
-  format!("{}  {}", console::style(k).bold(), v)
+pub(crate) fn header(msg: &str) -> String {
+  console::style(msg).bold().underlined().to_string()
 }
 
 #[cfg(test)]
@@ -202,11 +199,22 @@ mod tests {
   }
 
   #[test]
-  fn dim_and_header_and_key_value_emit_content() {
+  fn dim_and_bold_and_header_emit_content() {
     let _g = EnvGuard::capture();
     console::set_colors_enabled(false);
     assert_eq!(dim("note"), "note");
+    assert_eq!(bold("Header"), "Header");
     assert_eq!(header("Title"), "Title");
-    assert_eq!(key_value("Key", "Value"), "Key  Value");
+  }
+
+  /// T-03 (testing review): exercise the OR composition in `init()`,
+  /// not just `no_color_env_disables` in isolation. With `NO_COLOR=1`
+  /// set, `init(false)` must still disable colors.
+  #[test]
+  fn init_false_with_no_color_env_disables() {
+    let _g = EnvGuard::capture();
+    std::env::set_var("NO_COLOR", "1");
+    init(false);
+    assert!(!console::colors_enabled());
   }
 }

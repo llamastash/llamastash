@@ -42,7 +42,10 @@ pub async fn handle(args: PresetsArgs, cli: &Cli, config: &Config) -> CliResult 
           crate::cli::colors::dim(&format!("(no presets for {})", row.name()))
         );
       } else {
-        println!("{}", console::style("NAME\tCTX\tREASONING\tEXTRA").bold());
+        println!(
+          "{}",
+          crate::cli::colors::bold("NAME\tCTX\tREASONING\tEXTRA")
+        );
         for preset in &arr {
           let name = preset.get("name").and_then(Value::as_str).unwrap_or("?");
           let p = preset.get("params");

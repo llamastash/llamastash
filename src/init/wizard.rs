@@ -219,7 +219,14 @@ pub async fn run(args: InitArgs, cli: &Cli, config: &Config) -> CliResult {
   // Per-step value flags pointed at a skipped step: emit a single
   // stderr warning and proceed. Keeps `--only`/`--skip` and the
   // override flags' axes independent (W4).
-  warn_on_ignored_step_overrides(&args, &plan);
+  //
+  // Gated on `!args.json` so the human-readable warning text doesn't
+  // mix into the structured stderr stream agents capture alongside
+  // stdout. The flag still functions as documented; the warning is
+  // a human affordance.
+  if !args.json {
+    warn_on_ignored_step_overrides(&args, &plan);
+  }
 
   // Thread the same flag/env/config the daemon does (see
   // `cli/daemon.rs::resolved_inputs`) so `--llama-server <path>` and
@@ -437,7 +444,11 @@ async fn run_install_step(
   // In recommended mode, if the user already has a safe-to-adopt binary
   // on PATH or at a common location, prefer adopting it over running a
   // fresh install. Matches the prior `--yes` behavior.
-  if prompts::is_recommended(args) {
+  //
+  // `args.install.is_none()` guards the shortcut so an explicit
+  // `--install <choice>` always wins over recommended-mode adoption
+  // (W3: per-step flags beat `--recommended`).
+  if prompts::is_recommended(args) && args.install.is_none() {
     if let Some(path) = binary.resolved_path.clone() {
       if crate::init::install::custom_path::is_safe_to_adopt(&path) {
         return crate::init::install::custom_path::install_from_custom_path(&path)
@@ -602,10 +613,17 @@ async fn run_config_step(
   // Interactive flow: render the diff before asking for confirmation
   // so the user sees what would be written. `--json` mode emits the
   // diff as part of the structured summary, so we skip the stderr
-  // preview there. `--recommended` / `--config-step skip` also skip
-  // the preview — `confirm_config_write` resolves their answer
-  // synchronously and no live prompt is rendered.
-  let preview_for_confirm = if args.json || prompts::is_recommended(args) {
+  // preview there. `--recommended` and `--config-step skip` also
+  // skip the preview — `confirm_config_write` resolves their answer
+  // synchronously and no live prompt is rendered, so the (possibly
+  // expensive) filesystem read for `dry_run_diff` would be wasted.
+  let skip_preview = args.json
+    || prompts::is_recommended(args)
+    || matches!(
+      args.config_choice,
+      Some(crate::cli::cli_args::ConfigOverride::Skip)
+    );
+  let preview_for_confirm = if skip_preview {
     String::new()
   } else {
     let dry = crate::init::config_writer::dry_run_diff(&path, additions_value.clone())
@@ -691,6 +709,9 @@ struct InitConfigAdditions {
 /// unsynchronised, which is no worse than v2's pre-fix behaviour.
 struct SnapshotWriteLock {
   // Held to keep the underlying fd alive — flock releases on close.
+  // Allowed because the field is never read directly: its presence
+  // is what extends the fd lifetime, and `Drop` on `File` is what
+  // releases the flock.
   #[cfg(unix)]
   #[allow(dead_code)]
   file: Option<std::fs::File>,
@@ -714,9 +735,16 @@ impl SnapshotWriteLock {
         Ok(file) => {
           use std::os::fd::AsRawFd;
           // SAFETY: `flock` is a stable POSIX syscall with no
-          // memory-safety implications. EINTR / EAGAIN / EWOULDBLOCK
-          // all map to "couldn't lock", which we treat as best-effort.
-          let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+          // memory-safety implications.
+          //
+          // `LOCK_NB` (non-blocking) is critical: this function is
+          // called from an async context. A blocking `LOCK_EX` would
+          // stall the Tokio worker thread if a concurrent `llamadash
+          // init` already holds the lock. EWOULDBLOCK / EAGAIN map
+          // to "couldn't lock now" which we treat as best-effort and
+          // proceed unsynchronised — matching the wider best-effort
+          // stance for snapshot writes documented above.
+          let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
           if rc == 0 {
             Self { file: Some(file) }
           } else {

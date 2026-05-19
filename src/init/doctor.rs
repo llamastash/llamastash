@@ -363,7 +363,9 @@ fn render_human(report: &DoctorReport) {
     let coloured = match f.severity {
       Severity::Error => colors::error(&line),
       Severity::Warning => colors::warning(&line),
-      Severity::Info => colors::dim(&line),
+      // Info findings need a leading glyph too so agents that classify
+      // severity by the first character of each line don't lose them.
+      Severity::Info => format!("{} {}", colors::dim("•"), colors::dim(&line)),
     };
     println!("\n  {coloured}");
     println!(

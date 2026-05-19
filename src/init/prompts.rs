@@ -16,6 +16,8 @@
 //! `args.recommended` / `args.yes` reads live in `is_recommended`
 //! only.
 
+use std::io::IsTerminal;
+
 use crate::cli::cli_args::{ConfigOverride, InitArgs, InstallOverride, ModelOverride};
 use crate::cli::colors;
 use crate::cli::exit_codes::{CliExit, INIT_ABORTED};
@@ -124,7 +126,7 @@ pub async fn pick_install_method(
   if is_recommended(args) {
     return Ok(default);
   }
-  if !console::user_attended() {
+  if !stdout_is_terminal() {
     emit_stderr_warning("stdout is not a terminal; using recommended install default");
     return Ok(default);
   }
@@ -172,39 +174,64 @@ pub async fn pick_model(args: &InitArgs, recs: &[Recommendation]) -> Result<Mode
   if is_recommended(args) {
     return Ok(curated_or_skip());
   }
-  if !console::user_attended() {
+  if !stdout_is_terminal() {
     emit_stderr_warning("stdout is not a terminal; using recommended model default");
     return Ok(curated_or_skip());
   }
-  let owned_recs: Vec<Recommendation> = recs.to_vec();
+  // Filter OnDisk entries out of the interactive list — they
+  // represent "you already have this" rather than a download action.
+  // Selecting one used to silently map to `Skip` (a confusing UX);
+  // the recommender's analysis output still shows them, but the
+  // wizard prompt only offers actionable choices.
+  let owned_recs: Vec<Recommendation> = recs
+    .iter()
+    .filter(|r| !matches!(r.kind, RecommendationKind::OnDisk { .. }))
+    .cloned()
+    .collect();
+  if owned_recs.is_empty() {
+    return Ok(curated_or_skip());
+  }
   let initial_idx: usize = owned_recs
     .iter()
     .position(|r| matches!(r.kind, RecommendationKind::Curated { .. }))
     .unwrap_or(0);
-  let chosen_idx = tokio::task::spawn_blocking(move || {
+  // Return the chosen Recommendation directly from the blocking task
+  // so the index never crosses the spawn_blocking boundary back to
+  // an unrelated slice. Removes the "two parallel slices must stay
+  // in sync" hazard the prior code had.
+  let chosen: Option<Recommendation> = tokio::task::spawn_blocking(move || {
     let mut select = cliclack::select("Pick a model").initial_value(initial_idx);
     for (i, r) in owned_recs.iter().enumerate() {
       let (label, hint) = render_recommendation(r);
       select = select.item(i, label, hint);
     }
-    select.interact()
+    let idx = select.interact()?;
+    Ok::<_, std::io::Error>(owned_recs.into_iter().nth(idx))
   })
   .await
   .map_err(|e| CliExit::new(INIT_ABORTED, format!("init: prompt join failed: {e}")))?
   .map_err(|e| CliExit::new(INIT_ABORTED, format!("init: model prompt: {e}")))?;
-  match recs.get(chosen_idx).map(|r| &r.kind) {
-    Some(RecommendationKind::Curated { entry }) => Ok(ModelChoice::Curated(entry.clone())),
-    Some(RecommendationKind::OnDisk { .. }) => Ok(ModelChoice::Skip),
+  match chosen.map(|r| r.kind) {
+    Some(RecommendationKind::Curated { entry }) => Ok(ModelChoice::Curated(entry)),
     Some(RecommendationKind::Escape) => {
       let repo: String = tokio::task::spawn_blocking(|| {
         cliclack::input("Paste an HF repo id")
           .placeholder("owner/repo")
           .validate(|s: &String| {
-            if s.contains('/') && !s.contains(char::is_whitespace) {
-              Ok(())
-            } else {
-              Err("expected `owner/repo`")
+            if !s.contains('/') {
+              return Err("expected `owner/repo`");
             }
+            if s.chars().any(char::is_whitespace) {
+              return Err("must not contain whitespace");
+            }
+            // Control characters (incl. null bytes) flow into
+            // filesystem paths + URLs downstream; reject at the
+            // validator boundary, not after they cause a confusing
+            // OS-level error.
+            if s.chars().any(char::is_control) {
+              return Err("must not contain control characters");
+            }
+            Ok(())
           })
           .interact()
       })
@@ -213,7 +240,9 @@ pub async fn pick_model(args: &InitArgs, recs: &[Recommendation]) -> Result<Mode
       .map_err(|e| CliExit::new(INIT_ABORTED, format!("init: paste prompt: {e}")))?;
       Ok(ModelChoice::Paste(repo))
     }
-    None => Ok(ModelChoice::Skip),
+    // OnDisk variants were filtered out above; treat any residual
+    // None (empty selection, or unexpected variant) as Skip.
+    _ => Ok(ModelChoice::Skip),
   }
 }
 
@@ -228,9 +257,17 @@ pub async fn confirm_config_write(args: &InitArgs, diff_render: &str) -> Result<
   if is_recommended(args) {
     return Ok(true);
   }
-  if !console::user_attended() {
-    emit_stderr_warning("stdout is not a terminal; writing config without confirmation");
-    return Ok(true);
+  if !stdout_is_terminal() {
+    // Refuse to silently write config in non-interactive mode without
+    // explicit consent. Agents piping stdout get a clear actionable
+    // error rather than an unexpected config write whose path was not
+    // chosen via flag.
+    return Err(CliExit::new(
+      INIT_ABORTED,
+      "init: config-write step needs explicit consent in non-interactive mode; \
+       pass `--recommended`, `--config-step write`, or `--config-step skip`"
+        .to_string(),
+    ));
   }
   let diff_owned = diff_render.to_string();
   let confirmed = tokio::task::spawn_blocking(move || {
@@ -342,6 +379,15 @@ fn render_recommendation(r: &Recommendation) -> (String, String) {
 /// re-warning callers share the same prefix and color.
 fn emit_stderr_warning(msg: &str) {
   eprintln!("{}", colors::warning(msg));
+}
+
+/// Single TTY check shared by every picker. Reads stdout (not stderr
+/// or `console::user_attended()`) so it matches the off-condition
+/// used by `cli::colors::init` — an agent piping stdout but leaving
+/// stderr attached gets the same answer from both the color policy
+/// and the prompt fallback path.
+fn stdout_is_terminal() -> bool {
+  std::io::stdout().is_terminal()
 }
 
 #[cfg(test)]

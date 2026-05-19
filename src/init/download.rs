@@ -388,7 +388,7 @@ pub async fn run(args: PullArgs, _cli: &Cli, _config: &Config) -> CliResult {
             .collect::<Vec<_>>(),
           "total_bytes": result.total_bytes,
         });
-        println!("{}", serde_json::to_string(&body).unwrap_or_default());
+        println!("{}", crate::cli::output::pretty_json(&body));
       } else {
         let mib = result.total_bytes as f64 / (1024.0 * 1024.0);
         println!(

@@ -100,6 +100,23 @@ fn run_brew_with_timeout(
 ) -> Result<std::process::Output, InstallError> {
   let mut cmd = Command::new("brew");
   cmd.args(args);
+  // Don't inherit the caller's full environment — preload-style vars
+  // (DYLD_INSERT_LIBRARIES, LD_PRELOAD) could survive into a brew
+  // child and be picked up by a downstream tool brew invokes.
+  // Re-supply only the minimum brew needs to find its own state.
+  cmd.env_clear();
+  for key in [
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "HOMEBREW_PREFIX",
+  ] {
+    if let Some(v) = std::env::var_os(key) {
+      cmd.env(key, v);
+    }
+  }
   run_with_drain_and_timeout(cmd, timeout).map_err(|e| match e {
     RunError::Spawn(e) => InstallError::Brew(format!("could not spawn brew: {e}")),
     RunError::Timeout { after } => InstallError::Brew(format!(

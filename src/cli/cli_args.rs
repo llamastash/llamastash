@@ -396,13 +396,18 @@ pub struct InitArgs {
   pub install: Option<InstallOverride>,
   /// Pre-answer the model-pick prompt. Accepted values:
   /// `recommended`, `none`, `<owner>/<repo>` (HuggingFace repo id).
+  /// When supplied for a step that `--skip` excludes, the wizard
+  /// emits a stderr warning and proceeds.
   #[arg(long, value_name = "CHOICE", value_parser = parse_model_override)]
   pub model: Option<ModelOverride>,
   /// Pre-answer the config-write confirm. Accepted values: `write`,
-  /// `skip`. Long flag is `--config-step` (not `--config`) because
-  /// the top-level `--config <PATH>` is `global = true` and clap's
-  /// debug assert refuses two args with the same long name even on
-  /// disjoint subcommand scopes.
+  /// `skip`. When supplied for a step that `--skip` excludes, the
+  /// wizard emits a stderr warning and proceeds.
+  ///
+  /// Long flag is `--config-step` (not `--config`) because the
+  /// top-level `--config <PATH>` is `global = true` and clap's debug
+  /// assert refuses two args with the same long name even on disjoint
+  /// subcommand scopes.
   #[arg(long = "config-step", value_name = "CHOICE", value_enum)]
   pub config_choice: Option<ConfigOverride>,
 }
@@ -477,6 +482,14 @@ pub fn parse_model_override(raw: &str) -> Result<ModelOverride, String> {
       if other.chars().any(char::is_whitespace) {
         return Err(format!(
           "invalid value `{other}` — HF repo id must not contain whitespace"
+        ));
+      }
+      // Control characters (incl. null bytes) flow downstream into
+      // filesystem paths and URLs; reject at parse time so a malformed
+      // value can't truncate a path on the FFI boundary.
+      if other.chars().any(char::is_control) {
+        return Err(format!(
+          "invalid value `{other:?}` — HF repo id must not contain control characters"
         ));
       }
       let mut parts = other.split('/');

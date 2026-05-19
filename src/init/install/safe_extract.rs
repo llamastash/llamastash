@@ -62,6 +62,22 @@ pub fn safe_extract_tar_gz(
   version_dir_name: &str,
 ) -> Result<ExtractedBinary, InstallError> {
   std::fs::create_dir_all(dest_root).map_err(|e| InstallError::Io(e.to_string()))?;
+
+  // Early-return: versioned dir already present from a prior install.
+  // Skip extraction entirely (saves a full archive walk + write on every
+  // re-run of `init --only server`).
+  let final_dir = dest_root.join(version_dir_name);
+  if final_dir.exists() {
+    // Locate the actual `llama-server` inside `final_dir` rather than
+    // computing a path from the archive's layout — the two may not
+    // match (partial prior install, different release tarball schema).
+    let existing = find_llama_server(&final_dir).ok_or_else(|| InstallError::UnsafeArchive {
+      path: final_dir.display().to_string(),
+      reason: "pre-existing versioned dir does not contain a `llama-server` binary".into(),
+    })?;
+    return Ok(ExtractedBinary { path: existing });
+  }
+
   let tmp = tempfile::Builder::new()
     .prefix(&format!("{version_dir_name}.tmp."))
     .tempdir_in(dest_root)
@@ -198,7 +214,10 @@ pub fn safe_extract_tar_gz(
       std::fs::create_dir_all(parent).map_err(|e| InstallError::Io(e.to_string()))?;
     }
     let mut out = std::fs::File::create(&target).map_err(|e| InstallError::Io(e.to_string()))?;
-    let mut limited = entry.by_ref().take(MAX_TOTAL_UNCOMPRESSED_BYTES);
+    // Per-entry cap on the actual byte stream, not just the declared
+    // header size — an attacker who passes the line 178 header check
+    // by declaring < MAX_PER_ENTRY can still attempt to stream more.
+    let mut limited = entry.by_ref().take(MAX_PER_ENTRY_UNCOMPRESSED_BYTES);
     std::io::copy(&mut limited, &mut out).map_err(|e| InstallError::Io(e.to_string()))?;
     drop(out);
     #[cfg(unix)]
@@ -224,28 +243,18 @@ pub fn safe_extract_tar_gz(
     reason: "archive did not contain a `llama-server` entry".into(),
   })?;
 
-  // Atomic rename to the final versioned directory.
-  let final_dir = dest_root.join(version_dir_name);
-  if final_dir.exists() {
-    // Versioned dir already present from a prior install — keep the
-    // existing copy (likely matches the same release) and discard the
-    // tmp extraction.
-    //
-    // Locate the actual `llama-server` inside `final_dir` rather than
-    // computing a path from the current tmp extraction's layout —
-    // the two archives may not match (e.g. partial prior install,
-    // different release tarball schema). If the existing copy is
-    // missing the binary, surface a structured error so the caller
-    // can retry rather than return a phantom path that fails at exec
-    // time.
-    let existing = find_llama_server(&final_dir).ok_or_else(|| InstallError::UnsafeArchive {
-      path: final_dir.display().to_string(),
-      reason: "pre-existing versioned dir does not contain a `llama-server` binary".into(),
-    })?;
-    return Ok(ExtractedBinary { path: existing });
-  }
+  // Atomic rename to the final versioned directory. `final_dir`
+  // already passed the does-not-exist check at the top of the
+  // function, so we go straight to the rename.
   let from = tmp.keep();
-  std::fs::rename(&from, &final_dir).map_err(|e| InstallError::Io(format!("rename: {e}")))?;
+  if let Err(e) = std::fs::rename(&from, &final_dir) {
+    // `tmp.keep()` opted out of Drop-based cleanup. If the rename
+    // fails (cross-device, permission, disk-full) we must clean the
+    // kept temp dir manually so failed installs don't accumulate
+    // orphan `<ver>.tmp.<pid>` dirs under dest_root.
+    let _ = std::fs::remove_dir_all(&from);
+    return Err(InstallError::Io(format!("rename: {e}")));
+  }
   let rel = binary
     .strip_prefix(&from)
     // Tempdir was renamed; recompute relative path against tmp's last name segment.

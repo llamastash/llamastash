@@ -26,12 +26,12 @@ pub fn row_path(v: &Value) -> Option<&str> {
 /// native_ctx (one line per model, header line first).
 pub fn list_human(rows: &[CatalogRow]) -> String {
   if rows.is_empty() {
-    return format!("{}\n", console::style("(no models discovered)").dim());
+    return format!("{}\n", crate::cli::colors::dim("(no models discovered)"));
   }
   let mut out = String::new();
   out.push_str(&format!(
     "{}\n",
-    console::style("NAME\tARCH\tQUANT\tCTX\tPATH").bold()
+    crate::cli::colors::bold("NAME\tARCH\tQUANT\tCTX\tPATH")
   ));
   for r in rows {
     let arch = r.arch.as_deref().unwrap_or("?");
@@ -324,15 +324,16 @@ mod tests {
   fn list_human_renders_header_and_rows() {
     let rows = vec![row("qwen", "qwen2", "Q4_K", 8192)];
     let s = list_human(&rows);
-    assert!(s.starts_with("NAME\tARCH"));
-    assert!(s.contains("qwen.gguf"));
-    assert!(s.contains("8192"));
+    let plain = console::strip_ansi_codes(&s);
+    assert!(plain.starts_with("NAME\tARCH"));
+    assert!(plain.contains("qwen.gguf"));
+    assert!(plain.contains("8192"));
   }
 
   #[test]
   fn list_human_handles_empty_catalog() {
     let s = list_human(&[]);
-    assert!(s.contains("no models"));
+    assert!(console::strip_ansi_codes(&s).contains("no models"));
   }
 
   #[test]

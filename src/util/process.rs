@@ -136,11 +136,19 @@ mod tests {
       // Linux fork+exec across cargo's parallel test threads can race
       // and produce ETXTBSY (errno 26): a sibling thread between fork()
       // and exec() briefly holds the just-written script open. Retry a
-      // handful of times — this is the documented workaround.
+      // bounded number of times — this is the documented workaround.
+      const MAX_ETXTBSY_RETRIES: usize = 20;
+      let mut attempts = 0;
       let out = loop {
         match run_with_drain_and_timeout(Command::new(&script), Duration::from_secs(2)) {
           Ok(out) => break out,
           Err(RunError::Spawn(e)) if e.raw_os_error() == Some(26) => {
+            attempts += 1;
+            assert!(
+              attempts < MAX_ETXTBSY_RETRIES,
+              "persistent ETXTBSY after {MAX_ETXTBSY_RETRIES} retries; \
+               cargo test parallelism is starving fork+exec on this host"
+            );
             std::thread::sleep(Duration::from_millis(50));
             continue;
           }

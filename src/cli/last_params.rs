@@ -55,10 +55,16 @@ pub async fn handle(args: LastParamsArgs, cli: &Cli, config: &Config) -> CliResu
   // Human form: one row per model. Columns chosen to match what an
   // operator typically needs to relaunch (ctx, reasoning, advanced).
   if rows.is_empty() {
-    println!("(no recorded last-params; launch a model to populate)");
+    println!(
+      "{}",
+      crate::cli::colors::dim("(no recorded last-params; launch a model to populate)")
+    );
     return Ok(());
   }
-  println!("MODEL\tCTX\tREASONING\tADVANCED");
+  println!(
+    "{}",
+    crate::cli::colors::bold("MODEL\tCTX\tREASONING\tADVANCED")
+  );
   for r in &rows {
     let path = crate::cli::output::row_path(r).unwrap_or("?");
     let params = r.get("params");

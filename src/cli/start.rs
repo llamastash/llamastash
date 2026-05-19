@@ -59,12 +59,19 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
 
   // Warning surfaces (kept best-effort; never block the launch):
   // ctx > native max should advise rather than refuse, per R12.
-  if let (Some(ctx), Some(native)) = (params.ctx, row.native_ctx) {
-    if (ctx as u64) > native {
-      eprintln!(
-        "warning: --ctx {ctx} exceeds native context length {native} for {}; the supervisor will still try",
-        row.name()
-      );
+  // Gated on `!args.json` so the warning text doesn't mix into the
+  // structured stderr stream agents read when capturing both streams.
+  if !args.json {
+    if let (Some(ctx), Some(native)) = (params.ctx, row.native_ctx) {
+      if (ctx as u64) > native {
+        eprintln!(
+          "{}",
+          crate::cli::colors::warning(&format!(
+            "--ctx {ctx} exceeds native context length {native} for {}; the supervisor will still try",
+            row.name()
+          ))
+        );
+      }
     }
   }
 
