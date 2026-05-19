@@ -133,7 +133,20 @@ mod tests {
       let script = dir.join("emit");
       std::fs::write(&script, "#!/bin/sh\necho hello\n").unwrap();
       std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-      let out = run_with_drain_and_timeout(Command::new(&script), Duration::from_secs(2)).unwrap();
+      // Linux fork+exec across cargo's parallel test threads can race
+      // and produce ETXTBSY (errno 26): a sibling thread between fork()
+      // and exec() briefly holds the just-written script open. Retry a
+      // handful of times — this is the documented workaround.
+      let out = loop {
+        match run_with_drain_and_timeout(Command::new(&script), Duration::from_secs(2)) {
+          Ok(out) => break out,
+          Err(RunError::Spawn(e)) if e.raw_os_error() == Some(26) => {
+            std::thread::sleep(Duration::from_millis(50));
+            continue;
+          }
+          Err(e) => panic!("unexpected spawn error: {e:?}"),
+        }
+      };
       assert!(out.status.success());
       assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hello");
       std::fs::remove_dir_all(&dir).ok();

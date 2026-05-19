@@ -13,6 +13,13 @@
 //! This file covers the substantive behaviour gaps that the v2
 //! review surfaced.
 
+// The ENV_LOCK guard is intentionally held across `wizard::run(...).await`
+// — its job is to serialize env-var mutation across the entire async
+// test, including the await. Tokio's `Mutex` would defeat the purpose
+// here because we want blocking serialization across parallel test
+// runners, not async fairness.
+#![allow(clippy::await_holding_lock)]
+
 use std::ffi::OsString;
 use std::sync::Mutex;
 
@@ -153,12 +160,12 @@ async fn llamadash_offline_true_env_triggers_offline_only_models_refusal() {
 fn step_plan_only_and_skip_resolve_to_same_set() {
   let only = wizard::StepPlan::resolve(&[InitStep::Server, InitStep::Models], &[]);
   let skip = wizard::StepPlan::resolve(&[], &[InitStep::Config]);
-  assert_eq!(only.server, true);
-  assert_eq!(only.models, true);
-  assert_eq!(only.config, false);
-  assert_eq!(skip.server, true);
-  assert_eq!(skip.models, true);
-  assert_eq!(skip.config, false);
+  assert!(only.server);
+  assert!(only.models);
+  assert!(!only.config);
+  assert!(skip.server);
+  assert!(skip.models);
+  assert!(!skip.config);
   assert_eq!(only, skip);
 }
 

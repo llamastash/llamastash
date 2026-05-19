@@ -64,10 +64,7 @@ regex = { version = "1.11", default-features = false, features = [
   "perf",
   "unicode-perl",
 ] }
-# Right-pane smoke-test client (Unit 7) + v2 fetch contract (Unit 4).
-# `hf-hub` 0.5.0 also resolves reqwest 0.12.x, so adopting it does
-# not collide with the v1 tokio::spawn'd Send-bound regression that
-# blocks 1.0.0-rc.1's reqwest 0.13.
+# Pinned to 0.12 as reqwest 0.13 has issues with Send
 reqwest = { version = "0.12", default-features = false, features = [
   "json",
   "stream",

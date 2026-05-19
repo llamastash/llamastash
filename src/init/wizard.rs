@@ -88,7 +88,7 @@ pub const INIT_JSON_SCHEMA_VERSION: u32 = 1;
 /// - `install.digest` (binary content hash)
 /// - `model.files[]` (filesystem paths to GGUFs in the HF cache)
 /// - `hardware.os` / `hardware.arch` are fine; `hardware.vram_bytes`
-///    is fine.
+///   is fine.
 ///
 /// `safe_to_log: false` at the top level signals to agent consumers
 /// that the JSON contains host-identifying data and must be
@@ -111,7 +111,7 @@ pub struct InitSummary {
   pub hardware: HardwareSummary,
   pub offline: bool,
   /// `Some(true)` when a remote benchmark snapshot fetch succeeded
-  /// + verified this run; `Some(false)` when it was attempted and
+  /// and verified this run; `Some(false)` when it was attempted and
   /// failed (counter +1); `None` when no attempt was made (offline
   /// mode, or models step skipped). Consumed only by
   /// `persist_init_snapshot` for the `remote_fetch_failures`

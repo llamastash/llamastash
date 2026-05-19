@@ -58,7 +58,7 @@ pub fn write_secure(
   }
   tmp
     .persist(final_path)
-    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.error))?;
+    .map_err(|e| io::Error::other(e.error))?;
   Ok(body.len() as u64)
 }
 
