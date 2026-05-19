@@ -293,7 +293,23 @@ pub async fn run(args: InitArgs, cli: &Cli, config: &Config) -> CliResult {
         summary.steps_ran.retain(|s| *s != "config");
         summary.steps_skipped.push("config");
       }
-      Err(e) => return Err(e),
+      Err(e) => {
+        // Config step failed (e.g. the non-TTY explicit-consent
+        // refusal in `confirm_config_write`). The install + model
+        // steps already wrote durable state to disk; persist the
+        // init snapshot here so `doctor` sees the partial baseline
+        // instead of reporting nothing. Without this the binary +
+        // downloaded model live on disk but are invisible to
+        // subsequent diagnostic runs.
+        summary.steps_ran.retain(|s| *s != "config");
+        summary.steps_skipped.push("config");
+        if let Err(persist_err) = persist_init_snapshot(&hardware, install.as_ref(), &summary) {
+          log::warn!(
+            "init: failed to persist init_snapshot.json after config-step error: {persist_err}"
+          );
+        }
+        return Err(e);
+      }
     }
   } else {
     summary.steps_skipped.push("config");
@@ -532,7 +548,16 @@ async fn run_models_step(
   let choice = prompts::pick_model(args, &recs).await?;
   let (repo, pinned_filename, estimated_bytes) = match choice {
     ModelChoice::Curated(entry) => (entry.repo, Some(entry.file), Some(entry.weights_bytes)),
-    ModelChoice::Paste(repo) => (repo, None, None),
+    ModelChoice::Paste(raw) => {
+      // Parse through `RepoSpec::parse` so the interactive paste
+      // accepts the same `owner/repo[:filename.gguf]` syntax as the
+      // `llamadash pull` CLI surface. Without this, a colon-suffix
+      // is silently treated as part of the repo name and the
+      // downstream hf-hub call fails with a confusing error.
+      let spec = crate::init::download::RepoSpec::parse(&raw)
+        .map_err(|e| CliExit::prefix(INIT_ABORTED, "init paste", e))?;
+      (spec.repo_id, spec.pinned_filename, None)
+    }
     ModelChoice::Skip => {
       // No model fits, user picked "skip", or `--model none` supplied.
       return Ok(ModelsStepResult {

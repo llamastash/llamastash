@@ -311,14 +311,21 @@ fn safe_symlink_target(entry_rel: &Path, link_target: &Path) -> Result<PathBuf, 
   if link_target.is_absolute() {
     return Err("symlink target is absolute".into());
   }
+  if link_target.as_os_str().is_empty() {
+    return Err("symlink target is empty".into());
+  }
   // Lexically join: parent-of-symlink + relative target, normalize
   // by collapsing `..` against the path stack. If at any point we'd
   // pop above the archive root, refuse.
   let mut stack: Vec<&std::ffi::OsStr> = Vec::new();
+  let mut parent_len: usize = 0;
   if let Some(parent) = entry_rel.parent() {
     for comp in parent.components() {
       match comp {
-        Component::Normal(s) => stack.push(s),
+        Component::Normal(s) => {
+          stack.push(s);
+          parent_len += 1;
+        }
         Component::CurDir => continue,
         // entry_rel was already validated; these can't occur.
         Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
@@ -340,6 +347,17 @@ fn safe_symlink_target(entry_rel: &Path, link_target: &Path) -> Result<PathBuf, 
         return Err("symlink target contains an absolute component".into());
       }
     }
+  }
+  // The resolved target must descend strictly past its parent dir.
+  // Anything that lands at or above the parent (`.`, `..`, or a
+  // chain that pops back to the parent) creates a self-loop or
+  // up-pointer: a later regular-file entry under the symlink's
+  // path would be OS-resolved through the symlink and could
+  // overwrite a previously-extracted file. Refuse outright — the
+  // llama.cpp release tarballs only use SONAME-style symlinks
+  // (sibling file in the same dir, or strictly deeper).
+  if stack.len() <= parent_len {
+    return Err("symlink target does not descend into a strict subpath".into());
   }
   Ok(link_target.to_path_buf())
 }
