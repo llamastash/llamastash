@@ -72,6 +72,117 @@ jobs:
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
+  release-readiness:
+    # Pre-tag guards that catch release-breaking PRs *before* a maintainer
+    # cuts a tag. Each check is cheap and fast; running them on every PR
+    # means the release workflow never fails for reasons a PR could have
+    # surfaced.
+    name: release readiness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo publish --dry-run
+        # Validates Cargo.toml manifest shape, license, README presence, and
+        # the published file set. Does NOT verify crate-name availability.
+        run: cargo publish --dry-run --locked
+
+      - name: crate-name availability
+        # Per R86: crates.io API check that `llamadash` is either unclaimed
+        # or owned by a member of the llamadash-rs org. Anything else fails
+        # the PR with a pointer to the R87 `llamadash-cli` rename path.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          crate="llamadash"
+          # Use curl's --write-out to get the HTTP code separately from the body
+          # without relying on jq + status code multiplexing.
+          tmp=$(mktemp)
+          http_code=$(curl --silent --show-error --location \
+            --user-agent "llamadash-ci-name-check" \
+            --output "$tmp" \
+            --write-out '%{http_code}' \
+            "https://crates.io/api/v1/crates/${crate}")
+          case "$http_code" in
+            404)
+              echo "crate name '${crate}' is unclaimed on crates.io; OK"
+              rm -f "$tmp"
+              exit 0
+              ;;
+            200) ;;
+            *)
+              echo "::error::crates.io returned HTTP $http_code"
+              cat "$tmp"
+              rm -f "$tmp"
+              exit 1
+              ;;
+          esac
+
+          # 200: inspect owners. The crate exists. Pass if at least one owner
+          # is a member of llamadash-rs.
+          owners=$(python3 -c '
+          import json, sys
+          d = json.load(open(sys.argv[1]))
+          for owner in d.get("crate", {}).get("owners", []) or []:
+              print(owner.get("login", ""))
+          ' "$tmp" 2>/dev/null || true)
+          rm -f "$tmp"
+
+          if [ -z "$owners" ]; then
+            # The /owners shape lives at a separate endpoint; fall back.
+            owners=$(curl --silent --location \
+              "https://crates.io/api/v1/crates/${crate}/owners" \
+              | python3 -c 'import json,sys; d=json.load(sys.stdin); [print(u["login"]) for u in d.get("users",[])]')
+          fi
+
+          echo "crates.io owners: $owners"
+          # gh api lists org members; matches any owner login present in the list.
+          members=$(gh api -H "Accept: application/vnd.github+json" \
+            "/orgs/llamadash-rs/members?per_page=100" --jq '.[].login' 2>/dev/null || echo "")
+          echo "llamadash-rs members: $members"
+
+          for owner in $owners; do
+            for member in $members; do
+              if [ "$owner" = "$member" ]; then
+                echo "owner '$owner' is a member of llamadash-rs; OK"
+                exit 0
+              fi
+            done
+          done
+
+          echo "::error::crate '${crate}' is owned by a non-member of llamadash-rs."
+          echo "::error::Fall back to the 'llamadash-cli' rename path per plan R87."
+          exit 1
+
+      - name: url-grep-guard
+        # Refuse PRs that re-introduce the pre-migration `github.com/llamadash/llamadash`
+        # URL in user-visible files. Plan + brainstorm docs are excluded because
+        # they preserve the historical record.
+        run: |
+          set -euo pipefail
+          if grep -rn 'github.com/llamadash/llamadash' \
+                Cargo.toml README.md AGENTS.md CONTRIBUTING.md CHANGELOG.md SECURITY.md NOTICE; then
+            echo "::error::Old-org URL (github.com/llamadash/llamadash) found in user-visible files."
+            echo "::error::Replace with github.com/llamadash-rs/llamadash."
+            exit 1
+          fi
+          echo "no stray old-org URLs; OK"
+
+      - name: changelog has unreleased or current-version heading
+        # On PRs we just want SOMETHING under [Unreleased]; on tag-builds the
+        # release workflow itself checks for the version heading. Here, fail
+        # if the [Unreleased] section is missing entirely.
+        run: |
+          set -euo pipefail
+          if ! grep -q '^## \[Unreleased\]' CHANGELOG.md; then
+            echo "::error::CHANGELOG.md is missing the [Unreleased] section header."
+            exit 1
+          fi
+          echo "[Unreleased] heading present; OK"
+
   install-sh-lint:
     # POSIX-strict lint of scripts/install.sh. The script targets Bash 3.2+
     # (macOS default) but POSIX is a stricter superset, so -s sh catches

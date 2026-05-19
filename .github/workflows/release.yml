@@ -1,10 +1,41 @@
 name: release
 
+# Triggered by a vX.Y.Z tag push. The chain follows kdash's cd.yml shape:
+#
+#   1. create-release       — extract version from tag, share as artifact.
+#   2. build                — matrix builds 4 target tarballs; each job uploads
+#                             its own tarball + .sha256 sidecar to the GH Release.
+#   3. publish-shasums      — aggregates per-target .sha256 into SHA256SUMS,
+#                             uploads SHA256SUMS + install.sh + install.sh.sha256
+#                             to the GH Release.
+#   4. publish-homebrew     — runs deployment/homebrew/packager.py against the
+#                             template + per-target SHA-256s, clones the tap
+#                             repo via GH_BUMP_TOKEN, replaces Formula/llamadash.rb,
+#                             commits, pushes.
+#   5. publish-site         — fetches install.sh + sidecar from the release,
+#                             re-verifies the SHA-256, clones the site repo via
+#                             GH_BUMP_TOKEN, writes public/install.sh (with a
+#                             provenance header) + public/install.sh.sha256 +
+#                             src/data/version.ts, commits, pushes.
+#   6. publish-cargo        — runs `cargo publish` to crates.io with
+#                             CRATES_IO_TOKEN. Pre-release tags (vX.Y.Z-<suffix>)
+#                             are skipped so test runs against feature branches
+#                             never publish.
+#
+# Steps 4/5/6 run in parallel; all gate on `publish-shasums`. The plan's
+# original two-phase ordering (tap+site first, then cargo) was relaxed to
+# match kdash's pattern after the maintainer asked for kdash-style direct
+# clone+push instead of repository_dispatch.
+
 on:
   push:
     tags:
-      - 'v*'
+      - 'v*.*.*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build against (e.g. v0.2.0)"
+        required: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -13,8 +44,52 @@ permissions:
   contents: write
 
 jobs:
+  create-release:
+    name: create-release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+      is_prerelease: ${{ steps.tag.outputs.is_prerelease }}
+    steps:
+      - name: get version from tag
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.tag }}" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${GITHUB_REF#refs/tags/}"
+          fi
+          if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$'; then
+            echo "::error::invalid tag: $tag (expected vX.Y.Z or vX.Y.Z-suffix)"
+            exit 1
+          fi
+          version="${tag#v}"
+          case "$version" in
+            *-*) prerelease=true ;;
+            *)   prerelease=false ;;
+          esac
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "is_prerelease=$prerelease" >>"$GITHUB_OUTPUT"
+          mkdir -p artifacts
+          printf '%s' "$tag"     >artifacts/release-tag
+          printf '%s' "$version" >artifacts/release-version
+          printf '%s' "$prerelease" >artifacts/release-is-prerelease
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-info
+          path: artifacts
+
   build:
     name: build ${{ matrix.target }}
+    needs: [create-release]
+    env:
+      RELEASE_VERSION: ${{ needs.create-release.outputs.version }}
+      RELEASE_TAG: ${{ needs.create-release.outputs.tag }}
+      IS_PRERELEASE: ${{ needs.create-release.outputs.is_prerelease }}
     strategy:
       fail-fast: false
       matrix:
@@ -38,44 +113,276 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-      - name: install cross linker (linux aarch64)
+
+      - name: install cross-linker (linux aarch64)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
-      - name: cargo build --release
+
+      - name: cargo build --release --locked
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-        run: cargo build --release --target ${{ matrix.target }} --bin llamadash
-      - name: package
+        run: cargo build --release --target ${{ matrix.target }} --bin llamadash --locked
+
+      - name: verify binary
+        shell: bash
+        run: file "target/${{ matrix.target }}/release/llamadash"
+
+      - name: strip binary
         shell: bash
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          stage="llamadash-${version}-${{ matrix.target }}"
+          case "${{ matrix.target }}" in
+            aarch64-unknown-linux-gnu) strip_cmd="aarch64-linux-gnu-strip" ;;
+            *)                         strip_cmd="strip" ;;
+          esac
+          "$strip_cmd" "target/${{ matrix.target }}/release/llamadash"
+
+      - name: package tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="llamadash-${RELEASE_VERSION}-${{ matrix.target }}"
           mkdir -p "dist/${stage}"
           cp "target/${{ matrix.target }}/release/llamadash" "dist/${stage}/"
-          cp LICENSE README.md "dist/${stage}/"
-          (cd dist && tar -czf "${stage}.tar.gz" "${stage}" && shasum -a 256 "${stage}.tar.gz" > "${stage}.tar.gz.sha256")
-      - uses: actions/upload-artifact@v4
-        with:
-          name: llamadash-${{ matrix.target }}
-          path: |
-            dist/*.tar.gz
-            dist/*.tar.gz.sha256
+          cp LICENSE README.md CHANGELOG.md "dist/${stage}/"
+          (cd dist && tar -czf "${stage}.tar.gz" "${stage}" \
+            && shasum -a 256 "${stage}.tar.gz" >"${stage}.tar.gz.sha256")
+          ls -la dist
 
-  release:
-    name: github release
-    needs: build
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-      - name: publish
+      - name: upload release assets
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TAG }}
+          prerelease: ${{ env.IS_PRERELEASE == 'true' }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
           files: |
             dist/*.tar.gz
             dist/*.tar.gz.sha256
-          generate_release_notes: true
+
+      - name: stash sha sidecar for downstream jobs
+        shell: bash
+        run: |
+          mkdir -p sha-stash
+          cp dist/*.tar.gz.sha256 sha-stash/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sha-${{ matrix.target }}
+          path: sha-stash
+
+  publish-shasums:
+    name: publish SHA256SUMS + install.sh
+    needs: [create-release, build]
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_VERSION: ${{ needs.create-release.outputs.version }}
+      RELEASE_TAG: ${{ needs.create-release.outputs.tag }}
+      IS_PRERELEASE: ${{ needs.create-release.outputs.is_prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sha-*
+          merge-multiple: true
+          path: sha-stash
+
+      - name: build aggregate SHA256SUMS + install.sh sidecar
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # Concatenate per-target .sha256 sidecars into a single SHA256SUMS.
+          # Each sidecar is one line: "<hex>  <tarball-name>".
+          cat sha-stash/*.tar.gz.sha256 >dist/SHA256SUMS
+          # Sanity-check format: hex(64) + whitespace + filename, no empty lines.
+          awk '
+            NF < 2 || $1 !~ /^[a-fA-F0-9]{64}$/ {
+              printf "::error::bad SHA256SUMS line: %s\n", $0 > "/dev/stderr"
+              exit 1
+            }
+          ' dist/SHA256SUMS
+
+          cp scripts/install.sh dist/install.sh
+          chmod +x dist/install.sh
+          (cd dist && shasum -a 256 install.sh >install.sh.sha256)
+          ls -la dist
+
+      - name: upload SHA256SUMS + install.sh + sidecar
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          prerelease: ${{ env.IS_PRERELEASE == 'true' }}
+          fail_on_unmatched_files: true
+          files: |
+            dist/SHA256SUMS
+            dist/install.sh
+            dist/install.sh.sha256
+
+  publish-homebrew:
+    name: publish homebrew formula
+    needs: [create-release, publish-shasums]
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_VERSION: ${{ needs.create-release.outputs.version }}
+      RELEASE_TAG: ${{ needs.create-release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sha-*
+          merge-multiple: true
+          path: sha-stash
+
+      - name: extract per-target sha256s
+        id: shas
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          extract() {
+            local triple="$1"
+            local f
+            for f in sha-stash/llamadash-${RELEASE_VERSION}-${triple}.tar.gz.sha256; do
+              awk '{print $1; exit}' "$f"
+              return 0
+            done
+            echo "::error::missing sha256 sidecar for ${triple}" >&2
+            exit 1
+          }
+
+          {
+            echo "sha_aarch64_darwin=$(extract aarch64-apple-darwin)"
+            echo "sha_x86_64_darwin=$(extract x86_64-apple-darwin)"
+            echo "sha_aarch64_linux=$(extract aarch64-unknown-linux-gnu)"
+            echo "sha_x86_64_linux=$(extract x86_64-unknown-linux-gnu)"
+          } >>"$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: render formula
+        run: |
+          python3 deployment/homebrew/packager.py \
+            "${{ env.RELEASE_VERSION }}" \
+            deployment/homebrew/llamadash.rb.template \
+            llamadash.rb \
+            "${{ steps.shas.outputs.sha_aarch64_darwin }}" \
+            "${{ steps.shas.outputs.sha_x86_64_darwin }}" \
+            "${{ steps.shas.outputs.sha_aarch64_linux }}" \
+            "${{ steps.shas.outputs.sha_x86_64_linux }}"
+
+      - name: clone + push tap repo
+        env:
+          GH_BUMP_TOKEN: ${{ secrets.GH_BUMP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_BUMP_TOKEN:-}" ]; then
+            echo "::error::GH_BUMP_TOKEN secret is unset; cannot push to tap repo"
+            exit 1
+          fi
+          git config --global user.email "release-bot@users.noreply.github.com"
+          git config --global user.name  "llamadash-release-bot"
+          git clone \
+            "https://x-access-token:${GH_BUMP_TOKEN}@github.com/llamadash-rs/homebrew-llamadash.git" \
+            --branch main brew
+          cp llamadash.rb brew/Formula/llamadash.rb
+          cd brew
+          git add Formula/llamadash.rb
+          if git diff-index --quiet HEAD; then
+            echo "tap already up to date for ${RELEASE_TAG}; nothing to commit"
+            exit 0
+          fi
+          git commit -m "chore(formula): bump llamadash to ${RELEASE_TAG}"
+          git push origin main
+
+  publish-site:
+    name: publish site install.sh mirror
+    needs: [create-release, publish-shasums]
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_VERSION: ${{ needs.create-release.outputs.version }}
+      RELEASE_TAG: ${{ needs.create-release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: download install.sh + sidecar from the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p stage
+          gh release download "${RELEASE_TAG}" \
+            --repo "${{ github.repository }}" \
+            --pattern install.sh \
+            --pattern install.sh.sha256 \
+            --dir stage
+          (cd stage && sha256sum -c install.sh.sha256)
+
+      - name: clone + push site repo
+        env:
+          GH_BUMP_TOKEN: ${{ secrets.GH_BUMP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_BUMP_TOKEN:-}" ]; then
+            echo "::error::GH_BUMP_TOKEN secret is unset; cannot push to site repo"
+            exit 1
+          fi
+          released_at=$(date -u +%Y-%m-%d)
+          git config --global user.email "release-bot@users.noreply.github.com"
+          git config --global user.name  "llamadash-release-bot"
+          git clone \
+            "https://x-access-token:${GH_BUMP_TOKEN}@github.com/llamadash-rs/llamadash-rs.github.io.git" \
+            --branch main site
+
+          # Prepend a provenance header so anyone reading the served file can
+          # see the source without consulting workflow logs.
+          {
+            printf '# Source: github.com/llamadash-rs/llamadash@%s/scripts/install.sh\n' "$RELEASE_TAG"
+            printf '# SHA-256 verified by .github/workflows/release.yml on %s.\n' "$released_at"
+            cat stage/install.sh
+          } >site/public/install.sh
+          cp stage/install.sh.sha256 site/public/install.sh.sha256
+
+          cat >site/src/data/version.ts <<EOF
+          // Bumped on every release by .github/workflows/release.yml in the main
+          // repo. Do not edit by hand.
+
+          export const VERSION = "${RELEASE_VERSION}";
+          export const TAG = "${RELEASE_TAG}";
+          export const RELEASED_AT = "${released_at}";
+          EOF
+
+          cd site
+          git add public/install.sh public/install.sh.sha256 src/data/version.ts
+          if git diff-index --quiet HEAD; then
+            echo "site already up to date for ${RELEASE_TAG}; nothing to commit"
+            exit 0
+          fi
+          git commit -m "chore(release): mirror install.sh for ${RELEASE_TAG}"
+          git push origin main
+
+  publish-cargo:
+    name: publish to crates.io
+    needs: [create-release, publish-shasums]
+    runs-on: ubuntu-latest
+    # Skip pre-release tags so `v0.0.0-rc1`-style dry runs against feature
+    # branches exercise the full build + tap + site chain without burning
+    # a real crates.io version.
+    if: needs.create-release.outputs.is_prerelease == 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo publish
+        env:
+          CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CRATES_IO_TOKEN:-}" ]; then
+            echo "::error::CRATES_IO_TOKEN secret is unset"
+            exit 1
+          fi
+          cargo publish --token "$CRATES_IO_TOKEN" --locked
