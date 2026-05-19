@@ -102,15 +102,16 @@ def _normalize_leaderboard_avg(avg: float) -> float:
 def _get_with_retry(
     client: httpx.Client, url: str, params: Dict[str, str]
 ) -> httpx.Response:
-    """GET with bounded retry on transient HTTP statuses. Returns the
-    final response (still calls ``raise_for_status`` upstream — this
-    helper only converts transient flakes into a brief wait-and-retry."""
-    last_exc: Exception | None = None
+    """GET with bounded retry on transient HTTP statuses and transport
+    errors. Returns the final response (caller still invokes
+    ``raise_for_status`` — this helper only converts transient flakes
+    into a brief wait-and-retry). Catches ``TransportError`` so
+    ConnectError / ReadError / RemoteProtocolError also benefit from
+    retry, not just timeouts."""
     for attempt in range(_MAX_RETRIES):
         try:
             resp = client.get(url, params=params)
-        except httpx.TimeoutException as exc:
-            last_exc = exc
+        except httpx.TransportError:
             if attempt == _MAX_RETRIES - 1:
                 raise
             time.sleep(_RETRY_BACKOFF_SECS * (attempt + 1))
@@ -119,9 +120,7 @@ def _get_with_retry(
             time.sleep(_RETRY_BACKOFF_SECS * (attempt + 1))
             continue
         return resp
-    # Loop exits only via return / raise; this is a defensive guard so
-    # the typechecker sees a definite return.
-    raise last_exc if last_exc else RuntimeError("_get_with_retry exhausted")
+    raise RuntimeError("unreachable: _get_with_retry loop exhausted")
 
 
 # --- Fetch --------------------------------------------------------------
@@ -172,8 +171,20 @@ def _fetch_rows(client: httpx.Client) -> Dict[str, float]:
             row = r.get("row", {})
             name = row.get("fullname")
             avg = row.get("Average ⬆️")
-            if name and avg and avg > 0:
-                scores[name] = _normalize_leaderboard_avg(avg)
+            # avg is not None separates missing values from a legitimate
+            # 0.0. isinstance excludes bool (which is an int subclass)
+            # and rejects unexpected types like a stringly-typed score
+            # without crashing the loop with TypeError.
+            if (
+                not isinstance(name, str)
+                or not name
+                or avg is None
+                or isinstance(avg, bool)
+                or not isinstance(avg, (int, float))
+                or avg <= 0
+            ):
+                continue
+            scores[name] = _normalize_leaderboard_avg(avg)
 
         offset += len(rows)
         total = data.get("num_rows_total", 0)

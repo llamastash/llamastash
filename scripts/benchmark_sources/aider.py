@@ -110,7 +110,9 @@ class SourceResult:
 
 def _normalize(pass_rate: float) -> float:
     """Normalize raw Aider pass_rate (0-90 practical range) to 0-100."""
-    if not isinstance(pass_rate, (int, float)):
+    # bool is a subclass of int; exclude it so True/False can't slip
+    # through as 1.0/0.0 numeric scores.
+    if isinstance(pass_rate, bool) or not isinstance(pass_rate, (int, float)):
         return 0.0
     span = _PG_MAX - _PG_MIN
     normalized = (pass_rate - _PG_MIN) / span * 100.0
@@ -137,7 +139,11 @@ def _parse_yaml_lite(text: str) -> List[Tuple[str, float]]:
         m_rate = re.search(r"pass_rate_2[:\s]+(\d+(?:\.\d+)?)", rec, re.IGNORECASE)
         if not m_model or not m_rate:
             continue
-        name = m_model.group(1).strip().strip("\"'")
+        # Strip any trailing inline YAML comment before normalising the name.
+        # Upstream doesn't use them today, but `foo # bar` would otherwise
+        # become the lookup key and silently miss the curated map.
+        raw_name = m_model.group(1).split("#", 1)[0]
+        name = raw_name.strip().strip("\"'")
         # Strip any provider prefix like "deepseek/" or "openrouter/"
         name = name.split("/", 1)[-1].strip().lower()
         try:

@@ -76,6 +76,15 @@ BUNDLED_ID_TO_SOURCE_HF_ID: Dict[str, str] = {
     "llama-3.3-70b-q4_k_m": "meta-llama/Llama-3.3-70B-Instruct",
 }
 
+# Bundled ``benchmark_score.source`` tag -> adapter ``name``. The bundled
+# JSON uses ``"openllm-leaderboard"`` and ``"aider"`` as provenance tags;
+# the corresponding adapter names are ``"open-llm-leaderboard"`` and
+# ``"aider"``. Extending this is part of adding a new source.
+_BUNDLED_SOURCE_TAG_TO_ADAPTER: Dict[str, str] = {
+    "openllm-leaderboard": "open-llm-leaderboard",
+    "aider": "aider",
+}
+
 
 @dataclass
 class SourceResult:
@@ -197,8 +206,19 @@ def build_snapshot(sources: List[SourceResult]) -> Dict[str, Any]:
     recommender_weights: Dict[str, Any] = {}
     remote_url: Optional[str] = None
     if SNAPSHOT_PATH.exists():
-        with SNAPSHOT_PATH.open() as f:
-            bundled = json.load(f)
+        try:
+            with SNAPSHOT_PATH.open() as f:
+                bundled = json.load(f)
+        except (OSError, ValueError) as e:
+            # A corrupt or unreadable bundled snapshot is fatal — the
+            # script's promise is "merge upstream into bundled", and we
+            # have no bundled to merge into. Surface via the exit-2
+            # path rather than crashing with a raw traceback.
+            print(
+                f"[FAIL] bundled snapshot at {SNAPSHOT_PATH} unreadable: {e}",
+                file=sys.stderr,
+            )
+            raise SystemExit(2) from e
         bundled_models = bundled.get("models", [])
         recommender_weights = bundled.get("recommender_weights", {})
         remote_url = bundled.get("remote_url")
@@ -217,17 +237,6 @@ def build_snapshot(sources: List[SourceResult]) -> Dict[str, Any]:
     return candidate
 
 
-# Bundled ``benchmark_score.source`` tag -> adapter ``name``. The bundled
-# JSON uses ``"openllm-leaderboard"`` and ``"aider"`` as provenance tags;
-# the corresponding adapter names are ``"open-llm-leaderboard"`` and
-# ``"aider"``. Keep this table small — adding a new source means
-# extending both ends.
-_BUNDLED_SOURCE_TAG_TO_ADAPTER: Dict[str, str] = {
-    "openllm-leaderboard": "open-llm-leaderboard",
-    "aider": "aider",
-}
-
-
 def _index_adapter_scores(
     sources: List[SourceResult],
 ) -> Dict[str, Dict[str, float]]:
@@ -240,7 +249,13 @@ def _index_adapter_scores(
         for row in src.rows:
             hf_id = row.get("hf_id")
             score = row.get("score")
-            if not isinstance(hf_id, str) or not isinstance(score, (int, float)):
+            # Exclude bool explicitly — it's a subclass of int and would
+            # otherwise sneak past the isinstance guard.
+            if (
+                not isinstance(hf_id, str)
+                or isinstance(score, bool)
+                or not isinstance(score, (int, float))
+            ):
                 continue
             scores[hf_id] = float(score)
         by_source[src.name] = scores
