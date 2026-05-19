@@ -118,7 +118,15 @@ if [[ ! -f "$MODEL_PATH" ]]; then
     fi
 fi
 
-HOST_SHORT="$(hostname -s 2>/dev/null || hostname)"
+HOST_SHORT="$(
+    if command -v hostname >/dev/null 2>&1; then
+        hostname -s 2>/dev/null || hostname
+    elif [[ -f /etc/hostname ]]; then
+        cut -d. -f1 /etc/hostname
+    else
+        uname -n | cut -d. -f1
+    fi
+)"
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
 TAG="${BACKEND:-auto}"
 OUT_JSON="$OUT_DIR/${HOST_SHORT}-${TAG}-${TS}.json"

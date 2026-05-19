@@ -310,6 +310,39 @@ def summarize(runs: list[dict], estimate: int) -> dict:
     }
 
 
+def _amd_label_from_lspci(gpu_id: int) -> Optional[str]:
+    """Map /sys/class/drm/cardN to a human GPU name via lspci.
+
+    ``product_name`` only exists on Instinct / some Pro cards, so for
+    consumer AMD (Strix Halo, RX, etc.) we fall back here.
+    """
+    uevent = Path(f"/sys/class/drm/card{gpu_id}/device/uevent")
+    if not uevent.exists() or not shutil.which("lspci"):
+        return None
+    slot = None
+    for line in uevent.read_text().splitlines():
+        if line.startswith("PCI_SLOT_NAME="):
+            slot = line.split("=", 1)[1].strip()
+            break
+    if not slot:
+        return None
+    try:
+        out = subprocess.check_output(
+            ["lspci", "-s", slot, "-nn"],
+            text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+    except subprocess.CalledProcessError:
+        return None
+    # "c4:00.0 Display controller [0380]: ... Strix Halo [...] [1002:1586] (rev c1)"
+    line = out.split("\n", 1)[0]
+    parts = line.split(": ", 1)
+    if len(parts) != 2:
+        return line
+    import re
+    rhs = re.sub(r"\s*\[[0-9a-fA-F]{4}:[0-9a-fA-F]{4}\].*$", "", parts[1])
+    return rhs.strip() or None
+
+
 def detect_gpu_label(backend: str, gpu_id: int) -> Optional[str]:
     try:
         if backend == "cuda" and shutil.which("nvidia-smi"):
@@ -319,12 +352,11 @@ def detect_gpu_label(backend: str, gpu_id: int) -> Optional[str]:
                 text=True, stderr=subprocess.DEVNULL,
             )
             return out.strip()
-        if backend in ("hip", "vulkan") and Path(
-            f"/sys/class/drm/card{gpu_id}/device/product_name"
-        ).exists():
-            return Path(
-                f"/sys/class/drm/card{gpu_id}/device/product_name"
-            ).read_text().strip()
+        if backend in ("hip", "vulkan"):
+            product = Path(f"/sys/class/drm/card{gpu_id}/device/product_name")
+            if product.exists():
+                return product.read_text().strip()
+            return _amd_label_from_lspci(gpu_id)
         if backend == "metal":
             out = subprocess.check_output(
                 ["system_profiler", "SPDisplaysDataType"],

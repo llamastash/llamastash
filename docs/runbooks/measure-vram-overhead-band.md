@@ -146,6 +146,36 @@ The harness emits a JSON with this shape:
 `recommended_band_bytes` is `mean(overhead) + 1·stddev`, rounded up to
 the nearest 32 MiB. That's the value to drop into the snapshot.
 
+### When `overhead_mean_bytes` is negative
+
+Means the AMDGPU / NVIDIA sysfs VRAM counter showed *less* allocation
+than the recommender's `estimate_peak_bytes` predicted. This is **not
+a script bug** — it usually indicates one of:
+
+- **UMA / APU host.** Unified-memory hardware (Apple Silicon, AMD APUs
+  like Strix Halo, Ryzen AI Max, etc.) doesn't have a discrete VRAM
+  pool — the AMDGPU/Metal counter only reflects allocations to a
+  driver-managed slab carved out of system RAM, while weights may live
+  in GTT / process RSS that the VRAM counter doesn't see. The
+  recommender's estimator is calibrated for discrete-VRAM commit
+  semantics and overestimates the counter on UMA.
+- **`-fit on` / auto memory fit** in newer llama.cpp builds adjusts
+  allocation strategy at load time and can route allocations around the
+  VRAM counter. Add `-fit off` (or set `LLAMA_ARG_NO_FIT=1`) to force
+  the older behavior if you want a direct comparison.
+- **MoE models** where only a subset of experts is resident.
+
+A negative residual is still a valid *data point* — record it,
+annotate the host class — but **don't merge it into
+`overhead_band_bytes` directly**. The canonical numbers are for
+discrete GPUs (RX 7900, Radeon Pro, MI300, RTX, Radeon dGPU). UMA
+hosts will eventually need an APU-aware branch in the recommender
+(tracked as a follow-up); until then, conservative defaults stay.
+
+The wrapper clamps `recommended_band_bytes` to 0 when the mean is
+negative — that's a "no usable overhead-band signal from this run"
+sentinel, not a real recommendation to zero out the snapshot.
+
 ## Manual fallback (no scripts)
 
 If the wrapper or harness can't run on the target host, the same data
