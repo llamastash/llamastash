@@ -1038,3 +1038,9 @@ Three planned items shipped reduced or were deferred. Recorded here so the gap b
 - **`src/cli/cli_args.rs`** — clap surface; `Command` enum extension.
 - **`src/cli/exit_codes.rs`** — exit-code table extension (72/73/74).
 - **External:** `hf-hub` (HuggingFace's official Rust client; MIT/Apache-2.0); `dialoguer` (terminal prompts); `ggml-org/llama.cpp` GitHub Releases (asset distribution); whichllm (MIT, algorithm + data reference, vendored under attribution).
+
+## Post-shipping addendum
+
+Unit 10 of this plan shipped without the interactive prompts the §R48–R51 contract called for: `dialoguer` was declared in `Cargo.toml` but never imported, and the wizard ran fully non-interactive on every invocation. The follow-up plan
+[docs/plans/2026-05-19-001-feat-interactive-init-wizard-and-cli-colors-plan.md](./2026-05-19-001-feat-interactive-init-wizard-and-cli-colors-plan.md)
+closes that gap and extends the surface: swap `dialoguer` for `cliclack` and wire it through `src/init/prompts.rs`; add canonical `--recommended` (with `--yes` preserved as a hidden alias) plus three per-step value flags (`--install`, `--model`, `--config-step`) that pre-answer individual prompts without skipping the rest of the wizard; add a global `--no-colors` flag and color-polish every existing CLI surface.

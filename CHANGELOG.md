@@ -4,6 +4,11 @@ All notable changes to llamadash will be documented in this file. The format fol
 
 ## [Unreleased]
 
+### Added (post-v2 — interactive wizard + colored CLI)
+
+- **Interactive `init` wizard.** `llamadash init` now opens a `cliclack`-powered stepped wizard by default: install-method pick, model pick, config-write confirm. Pass `--recommended` to accept every hardware-aware default without prompting (the legacy `--yes` is preserved as a hidden permanent alias). Three per-step flags pre-answer individual prompts without skipping the rest: `--install <brew|gh-releases|existing|custom:PATH>`, `--model <recommended|none|owner/repo>`, `--config-step <write|skip>`. Non-TTY stdout auto-falls-back to recommended defaults with a single stderr warning. The unused `dialoguer` dep is removed; `cliclack` replaces it.
+- **Colored CLI output.** Every human-readable surface now ships colored output by default — success-green, error-red, warning-yellow, dim-secondary. The new global `--no-colors` flag plus `NO_COLOR` env-var detection (per https://no-color.org) and non-TTY stdout detection are OR-ed together; any one silences ANSI. `--json` output is byte-stable regardless. Policy lives in `src/cli/colors.rs`, initialised once in `cli::dispatch`.
+
 ### Added (v2 — init wizard, doctor, pull)
 
 - **`llamadash init`** — first-run setup wizard (R48). Six-step flow: detect hardware + binary → install `llama-server` per OS×GPU class → recommend + download a starter GGUF → write `config.yaml` with `arch_defaults` → smoke launch → handoff to the TUI. `--yes` accepts hardware-aware defaults; `--json` emits a structured summary; `--offline` disables outbound network. `--only`/`--skip` scope per-step re-runs (e.g. `init --only server` to re-install after a GPU swap).
