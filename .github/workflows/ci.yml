@@ -71,3 +71,37 @@ jobs:
         run: cargo check --target aarch64-unknown-linux-gnu --release
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+
+  install-sh-lint:
+    # POSIX-strict lint of scripts/install.sh. The script targets Bash 3.2+
+    # (macOS default) but POSIX is a stricter superset, so -s sh catches
+    # portability issues the Bash 3 runtime would silently tolerate.
+    name: shellcheck install.sh
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: shellcheck -s sh
+        run: shellcheck -s sh scripts/install.sh
+
+  install-sh-test:
+    # Run the bats integration tests on both Linux and macOS so each platform's
+    # native install path (target detection + uname mapping + tarball fetch +
+    # checksum verify + extract) gets real-world coverage, not just simulation.
+    name: bats install.sh (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: install bats (linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y bats
+      - name: install bats (macos)
+        if: runner.os == 'macOS'
+        run: brew install bats-core
+      - name: bats scripts/install.test.bats
+        run: bats --tap scripts/install.test.bats
