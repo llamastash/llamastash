@@ -1,0 +1,36 @@
+llamadash — third-party attributions
+====================================
+
+llamadash itself is MIT-licensed (see `LICENSE`). This NOTICE file lists
+third-party sources whose code or curation feeds the benchmark snapshot
+regeneration flow (Unit 7 of the v2 plan). The Rust binary does not link
+or embed any of the sources below; they run only in the CI workflow
+that produces `data/benchmark-snapshot.json`.
+
+When a source is vendored (planned for v2-GA), the upstream commit
+hash and license must be recorded next to the corresponding adapter
+under `scripts/benchmark_sources/`.
+
+Planned vendored sources
+------------------------
+
+1. whichllm (https://github.com/cpacker/whichllm)
+   License: MIT
+   Usage: composite-score weighting algorithm, partial scoring code.
+   Vendored upstream commit: TODO(unit7-v2-ga) — record on first
+   vendoring PR.
+
+2. Open LLM Leaderboard (https://huggingface.co/spaces/open-llm-leaderboard/open_llm_leaderboard)
+   License: Apache-2.0 for the leaderboard code; CC-BY for the data.
+   Usage: general-purpose benchmark scores in the snapshot's
+   `benchmark_score` field.
+
+3. Aider polyglot benchmark (https://aider.chat/docs/leaderboards/)
+   License: Apache-2.0.
+   Usage: code-lane benchmark scores in the snapshot's `benchmark_score`
+   field when `task_hints` includes `"code"`.
+
+If you ship a binary build of llamadash, you do not need to redistribute
+this NOTICE — none of the above is in the compiled artefact. The file
+is part of the source release for transparency about where the snapshot
+data came from.

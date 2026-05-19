@@ -161,6 +161,11 @@ pub struct LaunchEnv {
   pub port_range: PortRange,
   pub log_dir: PathBuf,
   pub probe: ProbeOptions,
+  /// Per-architecture launch defaults sourced from
+  /// `Config.arch_defaults` (R68). Applied in `start_model_handler`
+  /// after caller-supplied flags so preset / last-params outrank
+  /// arch defaults per R69 precedence. Empty map = no merge.
+  pub arch_defaults: std::collections::BTreeMap<String, crate::config::ArchDefaults>,
 }
 
 impl MethodContext {
@@ -990,6 +995,18 @@ async fn start_model_handler(
   launch_params.reasoning = parsed.reasoning.unwrap_or(false);
   launch_params.advanced = parsed.advanced.into_iter().map(OsString::from).collect();
 
+  // Merge `arch_defaults[architecture]` into the advanced flag list
+  // for any flag the caller has not already supplied (R69 precedence:
+  // caller > arch_defaults). Architecture is read from the GGUF
+  // header we already parsed in `resolve_model_id`; if the header
+  // doesn't carry a recognisable `general.architecture`, the merge
+  // is a no-op.
+  if !env.arch_defaults.is_empty() {
+    if let Some(arch) = read_gguf_architecture(&parsed.model_path) {
+      crate::launch::params::apply_arch_defaults_for(&mut launch_params, &env.arch_defaults, &arch);
+    }
+  }
+
   // Reject loopback-breaking / auth-bypass advanced flags before
   // spawn. `compose` strips defensively too, but failing fast here
   // gives callers a clear error instead of a silently-different argv.
@@ -1140,6 +1157,16 @@ fn resolve_model_id(path: &std::path::Path) -> Result<ModelId, ErrorObject> {
     )
   })?;
   Ok(compute_model_id(path, &header.raw))
+}
+
+/// Best-effort GGUF architecture lookup for the arch_defaults merge.
+/// Returns `None` on any I/O / parse / missing-key failure — the merge
+/// then becomes a no-op, which is the right default behaviour: an
+/// architecture we can't read shouldn't drag in defaults that may not
+/// apply.
+fn read_gguf_architecture(path: &std::path::Path) -> Option<String> {
+  let read = read_gguf_header(path, HeaderReadOptions::default()).ok()?;
+  crate::gguf::metadata::summarise(&read.header).arch
 }
 
 fn build_log_path(log_dir: &std::path::Path, id: &ModelId) -> PathBuf {

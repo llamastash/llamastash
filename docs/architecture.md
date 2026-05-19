@@ -1,6 +1,27 @@
 # Architecture
 
-This is the v1 architecture as it ships. The authoritative source for design intent and tradeoffs is [`docs/plans/2026-05-13-001-feat-llamatui-v1-launcher-plan.md`](plans/2026-05-13-001-feat-llamatui-v1-launcher-plan.md); this document is a stable, user-readable summary of what's actually in the binary.
+This is the architecture as it ships through v2. Authoritative sources for design intent and tradeoffs: [v1 plan](plans/2026-05-13-001-feat-llamatui-v1-launcher-plan.md), [v2 plan](plans/2026-05-18-001-feat-init-wizard-doctor-pull-plan.md). This document is a stable, user-readable summary of what's actually in the binary.
+
+## v2 additions in one breath
+
+```
+llamadash init   ─┬─► detection (gpu::probe + RAM + binary locate)
+                  ├─► install (GH Releases | brew | custom_path)
+                  ├─► recommender (snapshot models × hardware fit × score)
+                  ├─► download (hf-hub → ~/.cache/huggingface/hub/...)
+                  ├─► config writer (atomic + 0600 + recursive merge + redaction)
+                  ├─► smoke (phase-1 dry-run + binary --version probe)
+                  └─► init_snapshot.json (sibling of state.json)
+
+llamadash doctor ─► detection + init_snapshot diff → typed findings
+llamadash pull   ─► hf-hub → HF cache layout
+```
+
+Three submodule groupings under `src/init/`:
+
+- **Fetch substrate** — `fetch.rs` + `fetch_policy.rs` enforce the v2 fetch contract (host allowlist, redirect cap, body cap, HTTPS-only) on snapshot fetch and GH Releases install. HF traffic is carved out: `download.rs` uses the `hf-hub` crate, which talks only to `huggingface.co` and its LFS CDN — already constrained host families. `FetchClient::is_offline()` is still consulted so `--offline` / `LLAMADASH_OFFLINE` short-circuits the HF path too.
+- **Snapshots** — `snapshot.rs` owns `init_snapshot.json` (per-machine wizard record); `benchmark.rs` owns the bundled+remote `BenchmarkSnapshot` (the curated model catalog + recommender weights).
+- **Wizard surface** — `detection.rs` (shared by init + doctor), `recommender.rs` (pure ranking), `install/*` (three install routes), `download.rs` (HF pull via `hf-hub`), `config_writer.rs` (atomic write + diff + redaction), `smoke.rs` (phase-1 + version probe), `wizard.rs` (6-step orchestrator), `doctor.rs` (read-only diagnostic).
 
 ## One binary, three roles
 

@@ -293,21 +293,11 @@ mod tests {
   use super::*;
 
   use std::fs;
-  use std::time::{SystemTime, UNIX_EPOCH};
 
   use crate::gguf::test_fixtures::build_minimal_gguf;
 
   fn temp_dir(label: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-      .duration_since(UNIX_EPOCH)
-      .expect("clock")
-      .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-      "llamadash-scanner-{label}-{}-{nanos}",
-      std::process::id()
-    ));
-    fs::create_dir_all(&dir).expect("temp dir");
-    dir
+    crate::util::test_temp::unique_temp_dir(&format!("scanner-{label}"))
   }
 
   #[test]

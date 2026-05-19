@@ -210,21 +210,10 @@ fn read_pid(path: &Path) -> Result<i32, LockfileError> {
 
 #[cfg(test)]
 mod tests {
-  use std::time::{SystemTime, UNIX_EPOCH};
-
   use super::*;
 
   fn temp_state_dir(name: &str) -> PathBuf {
-    let suffix = SystemTime::now()
-      .duration_since(UNIX_EPOCH)
-      .expect("clock should be after epoch")
-      .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-      "llamadash-lockfile-{name}-{}-{suffix}",
-      std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).expect("temp dir should be created");
-    dir
+    crate::util::test_temp::unique_temp_dir(&format!("lockfile-{name}"))
   }
 
   #[test]

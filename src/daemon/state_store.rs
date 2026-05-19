@@ -180,34 +180,13 @@ pub fn load(state_dir: &Path) -> Result<DaemonState, LoadError> {
 /// crate's mkstemp-style naming is unpredictable across processes,
 /// preserving the same-UID-symlink-DoS defence the manual code had.
 pub fn save(state_dir: &Path, state: &DaemonState) -> Result<(), SaveError> {
-  use std::io::Write as _;
-
-  std::fs::create_dir_all(state_dir).map_err(|e| SaveError::Io {
-    path: state_dir.to_path_buf(),
-    error: e.to_string(),
-  })?;
   let final_path = path(state_dir);
   let body = serde_json::to_vec_pretty(state).map_err(|e| SaveError::Serialise(e.to_string()))?;
-
-  let mut tmp = tempfile::Builder::new()
-    .prefix("state.json.tmp.")
-    .tempfile_in(state_dir)
+  crate::util::atomic_write::write_secure(state_dir, "state.json.tmp.", &final_path, &body, None)
     .map_err(|e| SaveError::Io {
-      path: state_dir.to_path_buf(),
+      path: final_path,
       error: e.to_string(),
     })?;
-  tmp.write_all(&body).map_err(|e| SaveError::Io {
-    path: tmp.path().to_path_buf(),
-    error: e.to_string(),
-  })?;
-  tmp.as_file().sync_all().map_err(|e| SaveError::Io {
-    path: tmp.path().to_path_buf(),
-    error: e.to_string(),
-  })?;
-  tmp.persist(&final_path).map_err(|e| SaveError::Io {
-    path: final_path,
-    error: e.error.to_string(),
-  })?;
   Ok(())
 }
 

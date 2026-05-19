@@ -126,6 +126,7 @@ pub(crate) fn build_options(
   };
   opts.port_range = config.port_range;
   opts.probe_timeout_secs = Some(config.probe_timeout_secs);
+  opts.arch_defaults = config.arch_defaults.clone();
   opts.propagated_cli_args = propagated_cli_args(cli);
   Ok(opts)
 }

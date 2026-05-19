@@ -270,9 +270,18 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
   // `LLAMA_ARG_HOST=0.0.0.0` overrides the `--host 127.0.0.1` we
   // pass in argv on some flag-parsing builds), so an inherited env
   // var would silently defeat the loopback-only contract that
-  // `FORBIDDEN_ADVANCED_PREFIXES` enforces for argv. Strip the
-  // specific bypass vectors rather than `env_clear()` so PATH /
-  // HOME / library-search-path env vars the child legitimately
+  // `FORBIDDEN_ADVANCED_PREFIXES` enforces for argv.
+  //
+  // `HF_TOKEN` / `HF_HOME` / `HUGGING_FACE_HUB_TOKEN` are stripped
+  // because llamadash itself reads them (init + pull surfaces) and
+  // there is no reason for `llama-server` — which does not pull from
+  // HuggingFace during a launch — to see them. Leaking them into a
+  // supervised child widens the credential blast radius (child log
+  // capture, child crash dumps, child env enumeration via /proc) for
+  // no functional benefit.
+  //
+  // Strip the specific bypass vectors rather than `env_clear()` so
+  // PATH / HOME / library-search-path env vars the child legitimately
   // needs (CUDA, Metal, ROCm, BLAS) survive.
   for var in [
     "LLAMA_ARG_HOST",
@@ -282,6 +291,10 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
     "LLAMA_ARG_API_KEY",
     "LLAMA_ARG_SSL_KEY_FILE",
     "LLAMA_ARG_SSL_CERT_FILE",
+    "HF_TOKEN",
+    "HUGGING_FACE_HUB_TOKEN",
+    "HF_HOME",
+    "HF_ENDPOINT",
   ] {
     cmd.env_remove(var);
   }

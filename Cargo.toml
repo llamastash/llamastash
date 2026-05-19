@@ -1,6 +1,6 @@
 [package]
 name = "llamadash"
-version = "0.1.0-dev"
+version = "0.2.0-dev"
 authors = ["Deepu K Sasidharan <d4udts@gmail.com>"]
 description = "A fast, keyboard-driven TUI for launching local llama.cpp models"
 documentation = "https://github.com/llamadash/llamadash"
@@ -36,11 +36,15 @@ arboard = { version = "3", default-features = false, features = [
   "wayland-data-control",
 ] }
 blake3 = { version = "1", default-features = false, features = ["std"] }
+# v2 benchmark snapshot's `min_version` field gates rollback-DoS attacks
+# (see Unit 1 spike). Minimal feature set keeps semver compact.
+semver = { version = "1", default-features = false, features = ["std"] }
 clap = { version = "4.6", default-features = false, features = [
   "help",
   "usage",
   "error-context",
   "derive",
+  "env",
   "std",
 ] }
 crossterm = "0.29"
@@ -60,11 +64,21 @@ regex = { version = "1.11", default-features = false, features = [
   "perf",
   "unicode-perl",
 ] }
-# Right-pane smoke-test client (Unit 7). `rustls-tls` keeps the
-# build hermetic for the loopback-only v1 surface.
+# Right-pane smoke-test client (Unit 7) + v2 fetch contract (Unit 4).
+# `hf-hub` 0.5.0 also resolves reqwest 0.12.x, so adopting it does
+# not collide with the v1 tokio::spawn'd Send-bound regression that
+# blocks 1.0.0-rc.1's reqwest 0.13.
 reqwest = { version = "0.12", default-features = false, features = [
   "json",
   "stream",
+  "rustls-tls",
+] }
+# v2 HuggingFace pull (Unit 9). 0.5.0 is the latest stable line and
+# transitively resolves the same reqwest 0.12 we pin above. Default
+# features include `native-tls` + `ureq`; we want only the async
+# `tokio` path on `rustls-tls`.
+hf-hub = { version = "0.5", default-features = false, features = [
+  "tokio",
   "rustls-tls",
 ] }
 serde = { version = "1.0", default-features = false, features = ["derive"] }
@@ -72,6 +86,9 @@ serde_json = "1.0"
 serde_yaml = "0.9"
 simplelog = { version = "0.12", default-features = false }
 strum = { version = "0.28", features = ["derive"] }
+# v2 init wizard (Unit 10). Pinned exactly so `cargo update` doesn't
+# silently break the prompt UI; bumps go through a deliberate PR.
+dialoguer = { version = "0.11", default-features = false }
 # Display-width measurement for terminal text (CJK paths, emoji, etc.).
 # ratatui already pulls this in transitively; declaring it explicitly so
 # the daemon-info pane's truncation logic can reason in cells, not chars.
@@ -102,6 +119,15 @@ fd-lock = "4"
 # (audit §2.1 #2). Already transitive via dev-deps; pulled to
 # the top level so production code can call `persist` directly.
 tempfile = "3"
+# tar + flate2 power the v2 install path's archive extraction
+# (Unit 8). The llama.cpp GitHub Releases assets we route to on
+# Linux + macOS ship as `.tar.gz`; Windows `.zip` is out of v2
+# scope (post-v2 follow-up per plan Scope Boundaries).
+tar = "0.4"
+flate2 = { version = "1", default-features = false, features = [
+  "rust_backend",
+] }
+sha2 = { version = "0.10", default-features = false, features = ["std"] }
 # Audit §2.1 #3 flagged grandchild SIGTERM leaks. The fix is a
 # single character — `libc::kill(-pid, sig)` instead of
 # `libc::kill(pid, sig)` — because `pre_exec` already ran

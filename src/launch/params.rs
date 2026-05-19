@@ -19,6 +19,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::ArchDefaults;
 use crate::launch::mode::LaunchMode;
 
 /// Flags refused in `LaunchParams.advanced` because they would break
@@ -82,6 +83,78 @@ impl LaunchParams {
       reasoning: false,
       advanced: Vec::new(),
     }
+  }
+}
+
+fn advanced_contains_flag(advanced: &[OsString], flag_aliases: &[&str]) -> bool {
+  advanced.iter().any(|s| {
+    let lossy = s.to_string_lossy();
+    let head = lossy.split('=').next().unwrap_or(&lossy);
+    flag_aliases.contains(&head)
+  })
+}
+
+/// Merge `defaults` into `params.advanced`, but only for flags the
+/// caller has not already supplied. Pure function — no I/O. Respects
+/// R69 precedence: caller-provided flags (originating from preset /
+/// last-params / explicit CLI) outrank arch defaults.
+///
+/// Boolean flags are appended without a value (e.g. `--flash-attn`)
+/// only when the default is `Some(true)`; `Some(false)` is treated as
+/// "explicitly opt out, do not emit". Skipping the flag entirely when
+/// the default is `None` keeps argv compact.
+pub fn apply_arch_defaults(params: &mut LaunchParams, defaults: &ArchDefaults) {
+  let mut push_kv = |aliases: &[&str], canonical: &str, value: String| {
+    if advanced_contains_flag(&params.advanced, aliases) {
+      return;
+    }
+    params.advanced.push(canonical.into());
+    params.advanced.push(value.into());
+  };
+  if let Some(v) = defaults.n_gpu_layers {
+    push_kv(&["--n-gpu-layers", "-ngl"], "--n-gpu-layers", v.to_string());
+  }
+  if let Some(v) = defaults.threads {
+    push_kv(&["--threads", "-t"], "--threads", v.to_string());
+  }
+  if let Some(ref v) = defaults.cache_type_k {
+    push_kv(&["--cache-type-k", "-ctk"], "--cache-type-k", v.clone());
+  }
+  if let Some(ref v) = defaults.cache_type_v {
+    push_kv(&["--cache-type-v", "-ctv"], "--cache-type-v", v.clone());
+  }
+  if let Some(v) = defaults.parallel {
+    push_kv(&["--parallel", "-np"], "--parallel", v.to_string());
+  }
+  // Boolean flags: emit only when `Some(true)` and not already present.
+  let mut push_bool = |alias: &str| {
+    if advanced_contains_flag(&params.advanced, &[alias]) {
+      return;
+    }
+    params.advanced.push(alias.into());
+  };
+  if defaults.flash_attn == Some(true) {
+    push_bool("--flash-attn");
+  }
+  if defaults.mlock == Some(true) {
+    push_bool("--mlock");
+  }
+  if defaults.no_mmap == Some(true) {
+    push_bool("--no-mmap");
+  }
+}
+
+/// Same as [`apply_arch_defaults`] but looks the architecture up in
+/// `Config.arch_defaults`. A no-op when the architecture has no
+/// entry. Exposed as a convenience for the IPC handler, which has
+/// the daemon's `Config` clone handy.
+pub fn apply_arch_defaults_for(
+  params: &mut LaunchParams,
+  arch_defaults: &std::collections::BTreeMap<String, ArchDefaults>,
+  architecture: &str,
+) {
+  if let Some(d) = arch_defaults.get(architecture) {
+    apply_arch_defaults(params, d);
   }
 }
 
@@ -279,6 +352,110 @@ mod tests {
     assert!(banned.iter().any(|s| s == "--api-key"));
     assert!(banned.iter().any(|s| s == "--ssl-key-file"));
     assert!(!banned.iter().any(|s| s == "--threads"));
+  }
+
+  #[test]
+  fn apply_arch_defaults_fills_missing_kv_and_bool_flags() {
+    let mut p = base_params();
+    let d = ArchDefaults {
+      n_gpu_layers: Some(99),
+      threads: Some(8),
+      cache_type_k: Some("q8_0".into()),
+      cache_type_v: Some("q8_0".into()),
+      flash_attn: Some(true),
+      mlock: Some(false),
+      no_mmap: Some(true),
+      parallel: Some(4),
+    };
+    apply_arch_defaults(&mut p, &d);
+    let adv = strs(&p.advanced);
+    let ngl = adv.iter().position(|a| a == "--n-gpu-layers").unwrap();
+    assert_eq!(adv[ngl + 1], "99");
+    let t = adv.iter().position(|a| a == "--threads").unwrap();
+    assert_eq!(adv[t + 1], "8");
+    let ctk = adv.iter().position(|a| a == "--cache-type-k").unwrap();
+    assert_eq!(adv[ctk + 1], "q8_0");
+    let ctv = adv.iter().position(|a| a == "--cache-type-v").unwrap();
+    assert_eq!(adv[ctv + 1], "q8_0");
+    let par = adv.iter().position(|a| a == "--parallel").unwrap();
+    assert_eq!(adv[par + 1], "4");
+    assert!(adv.iter().any(|a| a == "--flash-attn"));
+    assert!(adv.iter().any(|a| a == "--no-mmap"));
+    assert!(
+      !adv.iter().any(|a| a == "--mlock"),
+      "Some(false) must NOT emit the flag"
+    );
+  }
+
+  #[test]
+  fn apply_arch_defaults_respects_caller_supplied_flags() {
+    // Caller already specified --n-gpu-layers (e.g. via preset). The
+    // arch default must not override.
+    let mut p = base_params();
+    p.advanced = vec!["--n-gpu-layers".into(), "40".into()];
+    let d = ArchDefaults {
+      n_gpu_layers: Some(99),
+      ..ArchDefaults::default()
+    };
+    apply_arch_defaults(&mut p, &d);
+    let adv = strs(&p.advanced);
+    let positions: Vec<usize> = adv
+      .iter()
+      .enumerate()
+      .filter(|(_, a)| *a == "--n-gpu-layers")
+      .map(|(i, _)| i)
+      .collect();
+    assert_eq!(positions.len(), 1, "caller's flag must not be duplicated");
+    assert_eq!(adv[positions[0] + 1], "40", "caller's value survives");
+  }
+
+  #[test]
+  fn apply_arch_defaults_recognises_short_aliases() {
+    // Caller passed `-ngl 40`; arch default's `--n-gpu-layers` must
+    // not fire because the short alias is already present.
+    let mut p = base_params();
+    p.advanced = vec!["-ngl".into(), "40".into()];
+    let d = ArchDefaults {
+      n_gpu_layers: Some(99),
+      ..ArchDefaults::default()
+    };
+    apply_arch_defaults(&mut p, &d);
+    assert!(
+      !p.advanced.iter().any(|s| s == "--n-gpu-layers"),
+      "short alias should block the canonical flag"
+    );
+  }
+
+  #[test]
+  fn apply_arch_defaults_for_missing_arch_is_noop() {
+    use std::collections::BTreeMap;
+    let mut p = base_params();
+    let original = p.advanced.clone();
+    let map: BTreeMap<String, ArchDefaults> = BTreeMap::new();
+    apply_arch_defaults_for(&mut p, &map, "qwen2");
+    assert_eq!(p.advanced, original, "missing arch must be a no-op");
+  }
+
+  #[test]
+  fn apply_arch_defaults_recognises_equals_form() {
+    // Caller passed `--threads=8`; default's `--threads 16` must not fire.
+    let mut p = base_params();
+    p.advanced = vec!["--threads=8".into()];
+    let d = ArchDefaults {
+      threads: Some(16),
+      ..ArchDefaults::default()
+    };
+    apply_arch_defaults(&mut p, &d);
+    let t_count = p
+      .advanced
+      .iter()
+      .filter(|s| {
+        let lossy = s.to_string_lossy();
+        let head = lossy.split('=').next().unwrap_or(&lossy);
+        head == "--threads"
+      })
+      .count();
+    assert_eq!(t_count, 1, "equals-form should block the default");
   }
 
   #[test]

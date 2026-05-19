@@ -7,7 +7,10 @@ This file provides project-level guidance to coding agents (Claude Code, OpenCod
 The implementation plan is the canonical design document:
 
 - `docs/plans/2026-05-13-001-feat-llamatui-v1-launcher-plan.md` — v1 architecture, security contract, the nine Implementation Units (1: scaffold, 2: daemon/IPC, 3: GGUF, 4: discovery, 5: launch/supervisor, 6: TUI shell, 7: right-pane tabs, 8: non-interactive CLI, 9: release scaffolding), and what is explicitly out of v1.
-- `docs/brainstorms/llamatui-requirements.md` — origin requirements (R1–R46) that the plan traces to.
+- `docs/plans/2026-05-18-001-feat-init-wizard-doctor-pull-plan.md` — v2 plan covering R48–R80: init wizard, doctor diagnostic, `pull` MVP, recommender, fetch contract, snapshot bundling.
+- `docs/brainstorms/llamatui-requirements.md` — origin requirements (R1–R46) that the v1 plan traces to.
+- `docs/brainstorms/2026-05-18-init-wizard-requirements.md` — origin requirements (R48–R80) for v2.
+- `docs/spikes/2026-05-19-*.md` — pre-implementation spike findings that anchor v2's design (hf-hub injection, GH Releases asset contract, brew Linux bottle, VRAM overhead).
 - `docs/architecture.md` — stable user-facing summary of what's actually in the binary.
 
 Before any non-trivial change, identify which Implementation Unit it falls under. PR descriptions should cite the unit; commit subjects often use `feat(unit5):` / `fix(unit3):` style.
@@ -17,7 +20,9 @@ Before any non-trivial change, identify which Implementation Unit it falls under
 The v1 contract — these are deliberate omissions, not gaps:
 
 - **Loopback-only, same-UID.** The daemon binds a Unix domain socket (mode `0600`) with peercred auth. There is no network listener and no v1 path to one. `--host` / `--listen` / `--bind` / `--api-key` / `--ssl-*` are refused if passed via `advanced[]` to `start_model`, and `LLAMA_ARG_*` env vars are stripped before spawn.
-- **No HTTP or MCP surfaces in v1.** Deferred to v2 (R34). The CLI `pull` subcommand is hidden and exits unimplemented (R46).
+- **No HTTP or MCP surfaces.** Deferred from v1 (R34); v2 keeps the deferral. Re-evaluate post-v2.
+- **`llamadash pull`** graduated in v2 from the v1 `unimplemented!` shim. MVP shape: `llamadash pull <owner/repo[:filename.gguf]>` — downloads via the [`hf-hub`](https://crates.io/crates/hf-hub) crate (0.5 line, resolves the same `reqwest 0.12` we pin elsewhere) into the canonical HF cache layout that discovery already scans.
+- **`llamadash init` / `llamadash doctor`** are v2 surfaces. Init is the first-run wizard + maintenance tool; doctor is the read-only diagnostic. Both honor `--json` per the v2 plan §"init/doctor mode/flag decision matrix".
 - **Single binary, three roles.** The TUI, CLI, and daemon are all `llamadash`. Daemon spawns on demand when TUI/CLI attach and find the socket missing.
 - **Catppuccin Macchiato is the default theme.** Five themes ship total (Macchiato, Latte, Gruvbox Dark, Solarized Dark, Monochrome). Themes are hard-coded palettes; no dynamic loading.
 
@@ -69,9 +74,26 @@ TUI / CLI ──attach──► Unix-socket JSON-RPC server (peercred)
 - **Model identity.** `(canonical absolute path, BLAKE3 of header bytes)`. Renames survive; symlinks dedupe to target; split GGUFs collapse to shard 1.
 - **Persistence.** `$XDG_STATE_HOME/llamadash/state.json`, written via `state.json.tmp.<pid>.<rand>` + rename so concurrent writes can't clobber and a same-UID symlink plant can't redirect. Parse failure → `state.json.broken-<ts>` quarantine, boot with defaults.
 
-## CLI agent surface (Unit 8)
+## CLI agent surface (Units 8 + 10/13)
 
-Every read-and-mutation command supports `--json` and emits a wrapped object: `{"models":[…]}`, `{"favorites":[…]}`, `{"presets":[…]}`, `{"last_params":[…]}`, `{"stopped":[…],"count":N}`, etc. Stable shapes for agent consumption. Exit codes follow `<sysexits.h>` numerically but with project-specific meanings — pin against the table in `src/cli/exit_codes.rs`, not the libc constants. `stop --all` in a non-TTY context refuses without `--yes`. The IPC `capabilities` method enumerates supported methods so clients can feature-detect.
+Every read-and-mutation command supports `--json` and emits a wrapped object: `{"models":[…]}`, `{"favorites":[…]}`, `{"presets":[…]}`, `{"last_params":[…]}`, `{"stopped":[…],"count":N}`, `{"steps_ran":[…],"install":{…},"model":{…},"config":{…},"smoke":{…},"hardware":{…}}` for `init`, `{"schema_version":1,"findings":[{"id":…,"severity":…,"message":…,"fix_hint":…,"safe_to_log":true}],"baseline":{…}}` for `doctor`. Stable shapes for agent consumption. Exit codes follow `<sysexits.h>` numerically but with project-specific meanings — pin against the table in `src/cli/exit_codes.rs`, not the libc constants. `stop --all` in a non-TTY context refuses without `--yes`. The IPC `capabilities` method enumerates supported methods so clients can feature-detect.
+
+### Exit-code table
+
+| Code | Constant | Meaning |
+|---|---|---|
+| 0 | `SUCCESS` | Success |
+| 64 | `USAGE` | Bad CLI usage (clap rejection) |
+| 65 | `DAEMON_UNREACHABLE` | Daemon socket missing / timeout |
+| 66 | `MODEL_NOT_FOUND` | Model reference matched zero or multiple |
+| 67 | `LAUNCH_FAILED` | `start_model` accepted but supervisor failed |
+| 68 | `STOP_FAILED` | `stop_model` / `stop_all` returned an error |
+| 69 | `PULL_FAILED` | Standalone `llamadash pull` failed |
+| 70 | `BINARY_NOT_FOUND` | `llama-server` not on PATH / config |
+| 71 | `UNKNOWN` | Catch-all (anyhow bubble-up) |
+| 72 | `INIT_ABORTED` | Init pre-smoke abort (integrity / daemon stop) |
+| 73 | `INIT_DOWNLOAD_FAILED` | Init's model-download step failed |
+| 74 | `INIT_SMOKE_FAILED` | Init reached smoke but probe didn't pass |
 
 ### `status` IPC fields (kdash-style dashboard wiring)
 

@@ -2,7 +2,7 @@
 
 A fast, keyboard-driven TUI **and** CLI for launching local `llama-server` (llama.cpp) instances.
 
-> **Status: v1 work in progress.** Scope: [`docs/brainstorms/llamatui-requirements.md`](docs/brainstorms/llamatui-requirements.md). Implementation plan: [`docs/plans/2026-05-13-001-feat-llamatui-v1-launcher-plan.md`](docs/plans/2026-05-13-001-feat-llamatui-v1-launcher-plan.md).
+> **Status: v2 work in progress.** v1 scope: [`docs/brainstorms/llamatui-requirements.md`](docs/brainstorms/llamatui-requirements.md), [v1 plan](docs/plans/2026-05-13-001-feat-llamatui-v1-launcher-plan.md). v2 scope: [v2 brainstorm](docs/brainstorms/2026-05-18-init-wizard-requirements.md), [v2 plan](docs/plans/2026-05-18-001-feat-init-wizard-doctor-pull-plan.md) — init wizard, doctor diagnostic, `llamadash pull` MVP, recommender.
 
 ## Why
 
@@ -15,7 +15,24 @@ Heavy abstractions (Ollama, LM Studio) hide llama.cpp; raw `llama-server` use is
 - **Launches `llama-server`** through a keyboard-driven picker (context length, reasoning toggle, advanced flags); supports named per-model **presets** and **favorites**.
 - **Supervises multiple concurrent models** with a health-probed state machine. Running models survive TUI exit.
 - **Smoke-tests models** via a right-pane Chat / Embed / Rerank tab that hits the same OpenAI-compatible endpoints any external client would use.
-- **Exposes a complete non-interactive CLI** — `list`, `start`, `stop`, `status`, `logs`, `presets`, `favorites`, `daemon`. Every read command supports `--json`. Distinct exit codes per failure class.
+- **Exposes a complete non-interactive CLI** — `list`, `start`, `stop`, `status`, `logs`, `presets`, `favorites`, `daemon`, `init`, `doctor`, `pull`. Every read command supports `--json`. Distinct exit codes per failure class.
+
+## What's new in v2
+
+- **`llamadash init`** — first-run setup wizard: detects hardware, installs `llama-server` (brew on macOS, GH Releases prebuilt on Linux), picks a starter GGUF tuned to your VRAM via a built-in recommender (Open-LLM-Leaderboard + Aider benchmarks bundled, daily-CI-refreshed), downloads via the [`hf-hub`](https://crates.io/crates/hf-hub) crate, writes a tuned `config.yaml`. `--yes` / `--json` / `--offline` for agent use; `--only` / `--skip` for re-runs after GPU swaps.
+- **`llamadash doctor`** — read-only diagnostic. Compares current state against the recorded init snapshot, emits typed findings (`binary_missing`, `hardware_drift`, `snapshot_stale`, …) each with a `→ fix with: llamadash init --only X` hint.
+- **`llamadash pull <hf-repo>`** — graduated from the v1 stub. Downloads any GGUF repo into the canonical HF cache layout `llamadash list` already scans.
+- **GPU-aware `arch_defaults` config block** — per-architecture launch flags (`qwen2`, `llama`, …) merged into your launch only when you haven't already supplied the flag yourself.
+
+## Roadmap (post-v2)
+- Custom themes
+- HTTP and MCP surfaces (origin: R34).
+- Anthropic API compatibility
+- Maybe MLX and vLLM if it's easy to add
+- Docker Ready
+- **Per-PID VRAM attribution via NVML.** Today the right-pane block title surfaces per-model RAM + CPU%; per-model VRAM is reported only at the host level. Post-v2 unlocks per-launch VRAM via NVML's `nvmlDeviceGetComputeRunningProcesses` (Linux + Windows; AMD/Apple parity depends on upstream surface).
+- Smoke phase 2 (daemon-mediated `/health` + chat-completion probe) — v2 ships phase 1 + `--version`.
+- Range-resume on partial HF downloads (waits on a future `hf-hub` line that exposes a custom-`reqwest::Client` hook without a reqwest 0.13 transitive).
 
 ## Install
 
@@ -69,9 +86,12 @@ Every non-interactive subcommand returns a documented exit code so agent scripts
 | `66` | Model reference matched zero or multiple models (stderr lists candidates)                |
 | `67` | `start_model` failed at the supervisor (probe timeout, port allocation failure)          |
 | `68` | `stop_model` / `stop_all` failed                                                         |
-| `69` | Reserved for `pull` (lands with R46 in v2)                                               |
+| `69` | `pull` download failed (transport, checksum, or HF cache write)                          |
 | `70` | `llama-server` binary not found (`--llama-server`, `LLAMADASH_LLAMA_SERVER`, or `$PATH`) |
 | `71` | Unexpected error (catch-all)                                                             |
+| `72` | `init` aborted before substantive work — failed precondition, integrity check, or rate-limited GH API. Safe to re-run. |
+| `73` | `init` download failed mid-step — disk space, transport, or HF cache write. Partial state recorded; re-run picks up where it stopped. |
+| `74` | `init` smoke-launch failed — phase-1 dry-run exceeded VRAM ceiling, or `--version` probe returned non-zero. Binary is installed; re-run smoke with `init --only smoke` (v2.1) or use `llamadash doctor` to diagnose. |
 
 > **Note on sysexits.h**: the numbers above are deliberately reused from `<sysexits.h>` for familiarity, but LlamaDash's _meanings_ diverge from the standard ones. Scripts that import `EX_NOHOST` (68) expecting "host unreachable" will get our "stop failed"; `EX_DATAERR` (65) is reused for "daemon unreachable", not "data error". Branch on LlamaDash's table above, not the libc constants.
 
@@ -101,6 +121,9 @@ Environment variables:
 | `LLAMADASH_LLAMA_SERVER` | Path to `llama-server`                     |
 | `LLAMADASH_NO_SCAN`      | Skip filesystem scanning                   |
 | `LLAMADASH_SOCKET`       | Point a CLI at a non-default daemon socket |
+| `LLAMADASH_OFFLINE`      | Disable outbound network for `init`, `pull`, and `doctor` fetch paths. Accepts `true` / `false` when bound via clap's `--offline` flag; the runtime `fetch::offline_requested` check also accepts `1` / `yes` for compatibility with scripts that follow the `XDG`/`gh` convention. Equivalent to `--offline`. |
+| `HF_TOKEN`               | HuggingFace API token. Read by `init` and `pull` only; never propagated into spawned `llama-server` children. Cache-file (`~/.cache/huggingface/token`) source is refused if its mode is group/world-readable. |
+| `HF_ENDPOINT`            | Override the HuggingFace API endpoint host. Must be `https://` and on the HF-allowlist (`huggingface.co` and its LFS CDN); non-allowlisted values are refused. Default: `https://huggingface.co`. |
 
 ### Default scan paths
 

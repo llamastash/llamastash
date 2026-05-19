@@ -113,12 +113,18 @@ pub enum Command {
   Presets(PresetsArgs),
   /// Pull a GGUF from `HuggingFace`.
   ///
-  /// TODO(v2-R46): the in-app pull worker is deferred to v2 (see plan
-  /// `Scope Boundaries` / `v2 deferrals`). The subcommand surface is
-  /// kept compiled so callers see a stable shape, but it is hidden
-  /// from `--help` and the dispatcher exits with `unimplemented!`.
-  #[command(hide = true)]
+  /// MVP shape (v2-R65): `llamadash pull <hf-repo>` downloads every
+  /// GGUF in the repo (or a single shard set when the repo ships
+  /// multi-shard files) into the canonical HF cache layout
+  /// (`~/.cache/huggingface/hub/models--<owner>--<repo>/...`) so the
+  /// next `llamadash list` rescan finds it. `--json` emits the
+  /// summary; otherwise progress streams to stderr.
   Pull(PullArgs),
+  /// Run the first-time setup / maintenance wizard (v2-R48).
+  Init(InitArgs),
+  /// Read-only diagnostic — compares current detection against the
+  /// recorded `init_snapshot` baseline (v2-R74).
+  Doctor(DoctorArgs),
   /// Mark, unmark, and list favorite models.
   Favorites(FavoritesArgs),
   /// Inspect the last successful `start_model` params for one or
@@ -306,36 +312,96 @@ pub enum PresetsAction {
 
 #[derive(Args, Debug)]
 pub struct PullArgs {
-  #[command(subcommand)]
-  pub action: PullAction,
+  /// `HuggingFace` repo id (`owner/repo`), optionally with a
+  /// `:filename.gguf` suffix to pin one file (defaults to all `.gguf`
+  /// in the repo). Files land in the canonical HF cache layout that
+  /// discovery already scans.
+  pub repo: String,
+  /// Emit a structured JSON summary on success instead of a
+  /// human-readable stream. Shape:
+  /// `{repo, revision, files: [...absolute paths], total_bytes}`.
+  /// Per-shard progress JSON in `--verbose` mode is not yet
+  /// implemented — v2 emits a single summary line on success;
+  /// download progress goes to stderr unstructured. v2.1 backlog
+  /// tracks line-buffered progress events for long multi-shard
+  /// pulls.
+  #[arg(long)]
+  pub json: bool,
+  /// Disable outbound network. Equivalent to `LLAMADASH_OFFLINE=1`.
+  /// Pull always requires network so this exits with `PULL_FAILED`
+  /// (69) up-front; honored for parity with `init --offline`.
+  #[arg(long, env = "LLAMADASH_OFFLINE")]
+  pub offline: bool,
 }
 
-#[derive(Subcommand, Debug)]
-pub enum PullAction {
-  /// Start a new pull from `HuggingFace`.
-  Start {
-    /// `HuggingFace` repo id, optionally with `:filename.gguf` to pin a single file.
-    repo: String,
-    /// Fire-and-forget mode: return immediately. The pull job id is emitted to stdout
-    /// (JSON when `--json` is set) so the caller can poll `llamadash pull status <id>`.
-    #[arg(long)]
-    background: bool,
-    /// Emit structured JSON output (job id + progress) instead of a human-readable stream.
-    #[arg(long)]
-    json: bool,
-  },
-  /// Poll the status of a previously-started pull.
-  Status {
-    /// Pull job id returned by `pull start`.
-    job_id: String,
-    #[arg(long)]
-    json: bool,
-  },
-  /// Cancel a running pull. Partial files are cleaned up.
-  Cancel {
-    /// Pull job id.
-    job_id: String,
-  },
+#[derive(Args, Debug)]
+pub struct InitArgs {
+  /// Non-interactive mode: accept every hardware-aware default; fail
+  /// loud on integrity-check errors rather than prompting. Pair with
+  /// `--json` for agent consumption.
+  #[arg(long)]
+  pub yes: bool,
+  /// Emit a single structured summary at completion. Per-step progress
+  /// goes to stderr (only in `--verbose`). Mutually compatible with
+  /// `--yes`.
+  #[arg(long)]
+  pub json: bool,
+  /// Disable outbound network. Steps that require network are skipped
+  /// with actionable hints. Equivalent to `LLAMADASH_OFFLINE=1`.
+  #[arg(long, env = "LLAMADASH_OFFLINE")]
+  pub offline: bool,
+  /// Run only these step(s). Repeatable; values are comma-separable.
+  /// Mutually exclusive with `--skip`.
+  #[arg(
+    long,
+    value_name = "STEP",
+    value_delimiter = ',',
+    action = ArgAction::Append,
+    conflicts_with = "skip",
+    value_enum,
+  )]
+  pub only: Vec<InitStep>,
+  /// Skip these step(s). Repeatable; values are comma-separable.
+  /// Mutually exclusive with `--only`.
+  #[arg(
+    long,
+    value_name = "STEP",
+    value_delimiter = ',',
+    action = ArgAction::Append,
+    conflicts_with = "only",
+    value_enum,
+  )]
+  pub skip: Vec<InitStep>,
+}
+
+#[derive(Args, Debug)]
+pub struct DoctorArgs {
+  /// Emit structured JSON findings instead of the human-readable
+  /// list. Stable shape:
+  /// `{schema_version, findings: [{id, severity, message, fix_hint,
+  /// safe_to_log}], baseline: {snapshot_bundle_date, init_date}}`.
+  ///
+  /// `doctor` always exits `0` — findings are informative, not a
+  /// failure signal. Agents should branch on a non-empty `findings`
+  /// array (or filter for `severity == "error"`) to escalate, not on
+  /// the exit code. This makes `doctor` safe to run unconditionally
+  /// from health-check loops without `set -e` blowing up.
+  #[arg(long)]
+  pub json: bool,
+}
+
+/// One of the wizard's optional steps. Detection (step 1) and handoff
+/// (step 6) always run; the three middle steps are the units of
+/// `--only`/`--skip` scoping.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "lower")]
+pub enum InitStep {
+  /// Install `llama-server` (step 2).
+  Server,
+  /// Recommender pick + GGUF download (steps 3 + 5).
+  Models,
+  /// Write `config.yaml` (step 4).
+  Config,
 }
 
 #[derive(Args, Debug)]
@@ -390,6 +456,18 @@ pub enum LaunchMode {
 mod tests {
   use super::*;
 
+  /// Pretty-prints a `Vec<InitStep>` so assertions in `cli_init_parse.rs`
+  /// and the inline tests below share the same canonical form.
+  fn steps(v: &[InitStep]) -> Vec<&'static str> {
+    v.iter()
+      .map(|s| match s {
+        InitStep::Server => "server",
+        InitStep::Models => "models",
+        InitStep::Config => "config",
+      })
+      .collect()
+  }
+
   fn parse(args: &[&str]) -> Cli {
     Cli::try_parse_from(std::iter::once("llamadash").chain(args.iter().copied()))
       .expect("argv should parse")
@@ -424,6 +502,93 @@ mod tests {
     assert!(after.no_scan);
     assert!(matches!(before.command, Some(Command::List(_))));
     assert!(matches!(after.command, Some(Command::List(_))));
+  }
+
+  #[test]
+  fn init_parses_with_no_flags() {
+    let cli = parse(&["init"]);
+    match cli.command {
+      Some(Command::Init(args)) => {
+        assert!(!args.yes && !args.json && !args.offline);
+        assert!(args.only.is_empty());
+        assert!(args.skip.is_empty());
+      }
+      other => panic!("expected init, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn init_only_comma_separated_and_repeatable() {
+    let cli_comma = parse(&["init", "--only", "server,config"]);
+    let cli_repeat = parse(&["init", "--only", "server", "--only", "config"]);
+    for cli in [cli_comma, cli_repeat] {
+      match cli.command {
+        Some(Command::Init(args)) => {
+          assert_eq!(steps(&args.only), vec!["server", "config"]);
+          assert!(args.skip.is_empty());
+        }
+        other => panic!("expected init, got {other:?}"),
+      }
+    }
+  }
+
+  #[test]
+  fn init_only_and_skip_are_mutually_exclusive() {
+    let result = Cli::try_parse_from(["llamadash", "init", "--only", "server", "--skip", "config"]);
+    assert!(result.is_err(), "--only and --skip must conflict");
+  }
+
+  #[test]
+  fn init_yes_json_offline_flags_parse() {
+    let cli = parse(&["init", "--yes", "--json", "--offline"]);
+    match cli.command {
+      Some(Command::Init(args)) => {
+        assert!(args.yes);
+        assert!(args.json);
+        assert!(args.offline);
+      }
+      other => panic!("expected init, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn doctor_parses_with_and_without_json() {
+    let cli_plain = parse(&["doctor"]);
+    let cli_json = parse(&["doctor", "--json"]);
+    match cli_plain.command {
+      Some(Command::Doctor(args)) => assert!(!args.json),
+      other => panic!("expected doctor, got {other:?}"),
+    }
+    match cli_json.command {
+      Some(Command::Doctor(args)) => assert!(args.json),
+      other => panic!("expected doctor, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn pull_parses_positional_repo() {
+    let cli = parse(&["pull", "HuggingFaceH4/zephyr-7b-beta-gguf"]);
+    match cli.command {
+      Some(Command::Pull(args)) => {
+        assert_eq!(args.repo, "HuggingFaceH4/zephyr-7b-beta-gguf");
+        assert!(!args.json);
+      }
+      other => panic!("expected pull, got {other:?}"),
+    }
+    let cli_json = parse(&["pull", "owner/repo:weights.gguf", "--json"]);
+    match cli_json.command {
+      Some(Command::Pull(args)) => {
+        assert_eq!(args.repo, "owner/repo:weights.gguf");
+        assert!(args.json);
+      }
+      other => panic!("expected pull, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn pull_requires_repo() {
+    let result = Cli::try_parse_from(["llamadash", "pull"]);
+    assert!(result.is_err(), "pull requires the repo positional");
   }
 
   #[test]
@@ -646,56 +811,6 @@ mod tests {
   }
 
   #[test]
-  fn pull_start_parses() {
-    let cli = parse(&[
-      "pull",
-      "start",
-      "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
-      "--background",
-      "--json",
-    ]);
-    match cli.command {
-      Some(Command::Pull(args)) => match args.action {
-        PullAction::Start {
-          repo,
-          background,
-          json,
-        } => {
-          assert_eq!(repo, "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF");
-          assert!(background);
-          assert!(json);
-        }
-        other => panic!("expected PullAction::Start, got {other:?}"),
-      },
-      other => panic!("expected Pull, got {other:?}"),
-    }
-  }
-
-  #[test]
-  fn pull_status_and_cancel_parse() {
-    let status_cli = parse(&["pull", "status", "job-abc", "--json"]);
-    match status_cli.command {
-      Some(Command::Pull(args)) => match args.action {
-        PullAction::Status { job_id, json } => {
-          assert_eq!(job_id, "job-abc");
-          assert!(json);
-        }
-        other => panic!("expected PullAction::Status, got {other:?}"),
-      },
-      other => panic!("expected Pull, got {other:?}"),
-    }
-
-    let cancel_cli = parse(&["pull", "cancel", "job-abc"]);
-    match cancel_cli.command {
-      Some(Command::Pull(args)) => match args.action {
-        PullAction::Cancel { job_id } => assert_eq!(job_id, "job-abc"),
-        other => panic!("expected PullAction::Cancel, got {other:?}"),
-      },
-      other => panic!("expected Pull, got {other:?}"),
-    }
-  }
-
-  #[test]
   fn logs_follow_and_tail_lines() {
     let cli = parse(&["logs", "model-abc", "-f", "-n", "200"]);
     match cli.command {
@@ -848,10 +963,8 @@ mod tests {
     let err = result.unwrap_err();
     assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
     let rendered = err.to_string();
-    // `pull` is intentionally excluded: it's hidden via `#[command(hide
-    // = true)]` until R46 lands in v2. The subcommand still parses (see
-    // `pull_start_parses` and `pull_status_and_cancel_parse`) so the
-    // shape stays stable, but `--help` must not advertise it.
+    // `pull` is now a first-class subcommand (R65 graduated in v2).
+    // `init` and `doctor` ship in v2 alongside it.
     for sub in [
       "daemon",
       "list",
@@ -862,30 +975,14 @@ mod tests {
       "presets",
       "favorites",
       "last-params",
+      "pull",
+      "init",
+      "doctor",
     ] {
       assert!(
         rendered.contains(sub),
         "help output should list `{sub}` subcommand, got: {rendered}"
       );
     }
-  }
-
-  #[test]
-  fn pull_subcommand_is_hidden_from_help_pending_r46() {
-    let result = Cli::try_parse_from(["llamadash", "--help"]);
-    let err = result.unwrap_err();
-    let rendered = err.to_string();
-    // Top-level help omits hidden subcommands. Be precise about what we
-    // assert — the word "pull" can appear inside other text (e.g.
-    // `pull` showing up in long flag descriptions); we assert on the
-    // canonical clap subcommand-line shape `  pull   ...`.
-    let lines_with_pull_as_subcommand: Vec<&str> = rendered
-      .lines()
-      .filter(|l| l.trim_start().starts_with("pull "))
-      .collect();
-    assert!(
-      lines_with_pull_as_subcommand.is_empty(),
-      "pull must stay hidden from --help while R46 is deferred to v2: {lines_with_pull_as_subcommand:?}"
-    );
   }
 }

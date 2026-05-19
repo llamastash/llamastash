@@ -18,7 +18,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use llamadash::cli::cli_args::{
   Cli, Command, FavoritesAction, FavoritesArgs, LaunchMode as CliLaunchMode, ListArgs, LogsArgs,
-  PresetsAction, PresetsArgs, PullAction, PullArgs, ReasoningFlag, StartArgs, StatusArgs, StopArgs,
+  PresetsAction, PresetsArgs, PullArgs, ReasoningFlag, StartArgs, StatusArgs, StopArgs,
 };
 use llamadash::cli::{dispatch, exit_codes};
 use llamadash::config::loader::{LoadedConfig, PortRange};
@@ -875,15 +875,18 @@ async fn logs_follow_returns_daemon_unreachable_when_daemon_dies() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn pull_subcommand_exits_pull_failed_pending_v2() {
+async fn pull_subcommand_exits_pull_failed_until_unit_9_lands() {
+  // Unit 3 wires the CLI surface (positional + --json + exit code 69).
+  // Unit 9 implements the hf-hub download body. Until then the stub
+  // returns PULL_FAILED with an explanatory message.
   let model_dir = unique_temp("pull-models");
   let code = run_dispatch_at(
     None,
     &model_dir,
     Command::Pull(PullArgs {
-      action: PullAction::Cancel {
-        job_id: "job-abc".into(),
-      },
+      repo: "owner/repo".into(),
+      json: false,
+      offline: false,
     }),
   )
   .await;

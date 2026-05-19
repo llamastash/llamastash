@@ -49,6 +49,40 @@ pub struct Config {
   /// hit `health probe timeout (last status 503)` for legitimate
   /// loads.
   pub probe_timeout_secs: u64,
+  /// Per-architecture launch defaults (R68). Map keys are GGUF
+  /// `general.architecture` strings (`llama`, `qwen2`, `mistral`,
+  /// `gemma`, `phi`, `qwen3`, …). At launch time the daemon merges
+  /// these into `LaunchParams.advanced` only when the caller has not
+  /// already supplied the corresponding flag — preset and last-params
+  /// outrank these defaults per R69 precedence.
+  pub arch_defaults: BTreeMap<String, ArchDefaults>,
+}
+
+/// Per-architecture launch defaults the init wizard writes when it
+/// detects a hardware class that benefits from non-default flags
+/// (e.g. CUDA → `n_gpu_layers: 99`, Vulkan → `flash_attn: true`).
+/// Every field is optional so a partial entry only contributes the
+/// keys it supplies.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "snake_case")]
+pub struct ArchDefaults {
+  /// Layers offloaded to the GPU. Maps to `--n-gpu-layers`. Use 99
+  /// for "all" (llama-server caps internally).
+  pub n_gpu_layers: Option<u32>,
+  /// CPU threads. Maps to `--threads`.
+  pub threads: Option<u32>,
+  /// K-cache quantisation tag (e.g. `q8_0`). Maps to `--cache-type-k`.
+  pub cache_type_k: Option<String>,
+  /// V-cache quantisation tag. Maps to `--cache-type-v`.
+  pub cache_type_v: Option<String>,
+  /// Flash-attention. Maps to `--flash-attn` (boolean flag).
+  pub flash_attn: Option<bool>,
+  /// Lock model in RAM. Maps to `--mlock`.
+  pub mlock: Option<bool>,
+  /// Disable mmap (forces full load into RAM). Maps to `--no-mmap`.
+  pub no_mmap: Option<bool>,
+  /// Concurrent request slots. Maps to `--parallel`.
+  pub parallel: Option<u32>,
 }
 
 impl Default for Config {
@@ -63,6 +97,7 @@ impl Default for Config {
       keybindings: BTreeMap::new(),
       disable_scan: false,
       probe_timeout_secs: 120,
+      arch_defaults: BTreeMap::new(),
     }
   }
 }
@@ -522,6 +557,60 @@ keybindings:
       "warning should name the cap, got: {warning}"
     );
     fs::remove_dir_all(dir).expect("temp test dir should be removed");
+  }
+
+  #[test]
+  fn arch_defaults_round_trip_through_yaml() {
+    let dir = temp_test_dir("arch-defaults");
+    let path = dir.join("config.yaml");
+    fs::write(
+      &path,
+      r"
+theme: latte
+arch_defaults:
+  qwen2:
+    n_gpu_layers: 99
+    flash_attn: true
+    cache_type_k: q8_0
+    cache_type_v: q8_0
+  llama:
+    threads: 8
+    parallel: 4
+",
+    )
+    .expect("config fixture should be written");
+
+    let loaded = load_config_from_path(&path);
+
+    assert!(loaded.warning.is_none(), "valid config should not warn");
+    let qwen2 = loaded
+      .config
+      .arch_defaults
+      .get("qwen2")
+      .expect("qwen2 entry present");
+    assert_eq!(qwen2.n_gpu_layers, Some(99));
+    assert_eq!(qwen2.flash_attn, Some(true));
+    assert_eq!(qwen2.cache_type_k.as_deref(), Some("q8_0"));
+    assert_eq!(qwen2.cache_type_v.as_deref(), Some("q8_0"));
+    let llama = loaded
+      .config
+      .arch_defaults
+      .get("llama")
+      .expect("llama entry present");
+    assert_eq!(llama.threads, Some(8));
+    assert_eq!(llama.parallel, Some(4));
+    assert!(
+      llama.n_gpu_layers.is_none(),
+      "partial entry leaves rest None"
+    );
+
+    fs::remove_dir_all(dir).expect("temp test dir should be removed");
+  }
+
+  #[test]
+  fn arch_defaults_absent_defaults_to_empty_map() {
+    let cfg = Config::default();
+    assert!(cfg.arch_defaults.is_empty());
   }
 
   #[test]

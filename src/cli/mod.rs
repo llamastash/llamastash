@@ -9,8 +9,10 @@
 pub mod cli_args;
 pub mod client;
 pub mod daemon;
+pub mod doctor;
 pub mod exit_codes;
 pub mod favorites;
+pub mod init;
 pub mod last_params;
 pub mod list;
 pub mod logs;
@@ -51,9 +53,9 @@ pub async fn dispatch(mut cli: Cli, config: LoadedConfig) -> Result<i32> {
     Some(Command::Presets(args)) => presets::handle(args, &cli, resolved_config).await,
     Some(Command::Favorites(args)) => favorites::handle(args, &cli, resolved_config).await,
     Some(Command::LastParams(args)) => last_params::handle(args, &cli, resolved_config).await,
-    // `pull` stays scaffolded; handler returns PULL_FAILED + an
-    // explanatory message until R46 lands in v2.
-    Some(Command::Pull(args)) => pull::handle(args).await,
+    Some(Command::Pull(args)) => pull::handle(args, &cli, resolved_config).await,
+    Some(Command::Init(args)) => init::handle(args, &cli, resolved_config).await,
+    Some(Command::Doctor(args)) => doctor::handle(args, &cli, resolved_config).await,
   };
   Ok(report(outcome))
 }

@@ -1,0 +1,111 @@
+name: regenerate-benchmark-snapshot
+
+# Daily snapshot regen + corpus-gate workflow (Unit 7, R57).
+#
+# Triggers:
+# - Daily cron at 03:00 UTC — picks up upstream leaderboard refreshes.
+# - Manual `workflow_dispatch` for ad-hoc regeneration.
+# - PR `paths:` filter on `data/benchmark-snapshot.json` so a maintainer-
+#   authored snapshot bump runs the same corpus gate before merge.
+#
+# Successful runs upload the candidate to the rolling
+# `snapshot-latest` Release tag (the `remote_url` const the Rust
+# binary's `load_remote` reads). Per-day audit tags
+# (`snapshot-YYYY-MM-DD`) accumulate for forensic history.
+#
+# Failure modes (each non-zero exit blocks publication, keeping the
+# last-known-good Release asset live):
+# - Partial source failure → script exits 2; auto-files a recalibration
+#   issue labelled `snapshot-regression`.
+# - Corpus gate regression → `cargo test --test recommender_corpus`
+#   exits non-zero; same recalibration issue path.
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "data/benchmark-snapshot.json"
+      - "scripts/regenerate-benchmark-snapshot.py"
+      - "scripts/benchmark_sources/**"
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  regenerate:
+    name: Build candidate snapshot + corpus gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + git db + target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Python dependencies
+        run: |
+          if [ -f scripts/requirements.txt ]; then
+            python -m pip install --upgrade pip
+            python -m pip install -r scripts/requirements.txt
+          fi
+
+      - name: Run regen script (validates corpus gate too)
+        id: regen
+        run: python scripts/regenerate-benchmark-snapshot.py
+
+      - name: Upload candidate as workflow artefact (for review)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-snapshot
+          path: data/benchmark-snapshot.json
+          retention-days: 30
+
+      - name: Publish to snapshot-latest (cron / dispatch only)
+        if: success() && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euxo pipefail
+          DATE_TAG="snapshot-$(date -u +%F)"
+          # Rolling tag for the URL stability the bundled snapshot's
+          # REMOTE_URL relies on.
+          gh release upload snapshot-latest data/benchmark-snapshot.json --clobber || \
+            gh release create snapshot-latest data/benchmark-snapshot.json \
+              --title "Benchmark snapshot (rolling)" \
+              --notes "Daily auto-published artefact. See \`docs/spikes/2026-05-19-llama-cpp-releases-asset-contract.md\` for the contract."
+          # Per-day audit tag for forensic history.
+          gh release create "$DATE_TAG" data/benchmark-snapshot.json \
+            --title "Benchmark snapshot $DATE_TAG" \
+            --notes "Daily snapshot archived for audit history." \
+            --target "$GITHUB_SHA" || true
+
+      - name: File recalibration issue on failure
+        if: failure() && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create \
+            --title "Snapshot regen failed on $(date -u +%F)" \
+            --label snapshot-regression \
+            --body "Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+The benchmark snapshot regen workflow failed. The previous Release asset stays live so users on the bundled snapshot are unaffected; this issue tracks the recalibration work.
+
+Reproduce locally:
+
+\`\`\`
+python scripts/regenerate-benchmark-snapshot.py
+\`\`\`
+"

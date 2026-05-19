@@ -36,6 +36,21 @@ pub const BINARY_NOT_FOUND: i32 = 70;
 /// Catch-all for unexpected errors that don't map to a documented
 /// failure class. anyhow's bubble-up lands here.
 pub const UNKNOWN: i32 = 71;
+/// `llamadash init` aborted before reaching a smoke-launch — install
+/// integrity check failed, daemon stop/restart could not be coerced,
+/// archive-bomb defenses tripped, or the user declined a confirm
+/// prompt. Distinct from `INIT_DOWNLOAD_FAILED` and
+/// `INIT_SMOKE_FAILED` so agents can branch on the failure phase.
+pub const INIT_ABORTED: i32 = 72;
+/// `llamadash init`'s download step failed (disk-full precheck,
+/// HF API error, shard checksum mismatch). Distinct from
+/// `PULL_FAILED` (69) so a wizard-internal failure is separable
+/// from a standalone `llamadash pull <repo>` error.
+pub const INIT_DOWNLOAD_FAILED: i32 = 73;
+/// `llamadash init` reached the smoke-launch phase but the launch
+/// didn't reach a healthy `/v1/chat/completions` response (probe
+/// timeout, OOM at load, binary --version probe failed).
+pub const INIT_SMOKE_FAILED: i32 = 74;
 
 /// Result type for CLI handlers. `Ok(())` exits zero; `Err(CliExit)`
 /// prints the message to stderr and exits with the bound code.
@@ -65,6 +80,14 @@ impl CliExit {
       code,
       message: None,
     }
+  }
+
+  /// Shortcut for the very common shape
+  /// `CliExit::new(CODE, format!("PREFIX: {err}"))`. Saves a
+  /// `format!` at the call site and keeps the prefix-then-cause
+  /// formatting consistent across handlers.
+  pub fn prefix(code: i32, prefix: impl AsRef<str>, err: impl std::fmt::Display) -> Self {
+    Self::new(code, format!("{}: {err}", prefix.as_ref()))
   }
 
   /// Map an `ipc::ClientError` into the canonical exit code. Connect
@@ -108,6 +131,9 @@ mod tests {
       PULL_FAILED,
       BINARY_NOT_FOUND,
       UNKNOWN,
+      INIT_ABORTED,
+      INIT_DOWNLOAD_FAILED,
+      INIT_SMOKE_FAILED,
     ];
     let mut sorted = codes.to_vec();
     sorted.sort_unstable();

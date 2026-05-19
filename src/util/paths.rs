@@ -134,6 +134,13 @@ pub fn daemon_pidfile() -> Option<PathBuf> {
   state_dir().map(|d| d.join("daemon.pid"))
 }
 
+/// Convenience: init-wizard snapshot file path (R67). Sibling of
+/// `state.json` under the state dir; written and consumed only by the
+/// init wizard and `llamadash doctor` — the daemon ignores it.
+pub fn init_snapshot_file() -> Option<PathBuf> {
+  state_dir().map(|d| d.join("init_snapshot.json"))
+}
+
 #[cfg(test)]
 mod tests {
   use std::path::Path;
@@ -256,6 +263,12 @@ mod tests {
   fn daemon_pidfile_lives_under_state_dir() {
     let path = daemon_pidfile().unwrap();
     assert_eq!(path, state_dir().unwrap().join("daemon.pid"));
+  }
+
+  #[test]
+  fn init_snapshot_file_lives_under_state_dir() {
+    let path = init_snapshot_file().unwrap();
+    assert_eq!(path, state_dir().unwrap().join("init_snapshot.json"));
   }
 
   #[test]

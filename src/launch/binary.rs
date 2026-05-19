@@ -120,19 +120,9 @@ mod tests {
   use super::*;
 
   use std::fs;
-  use std::time::{SystemTime, UNIX_EPOCH};
 
   fn temp_dir(label: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-      .duration_since(UNIX_EPOCH)
-      .expect("clock")
-      .as_nanos();
-    let p = std::env::temp_dir().join(format!(
-      "llamadash-binary-locate-{label}-{}-{nanos}",
-      std::process::id()
-    ));
-    fs::create_dir_all(&p).expect("temp");
-    p
+    crate::util::test_temp::unique_temp_dir(&format!("binary-locate-{label}"))
   }
 
   /// Create an empty file at `path` with mode `0755` so [`locate`]
