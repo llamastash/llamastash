@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "tool": "measure-overhead-band.py",
+  "host": "flowz13-arch",
+  "os": "Linux 7.0.7-arch2-1",
+  "gpu": null,
+  "backend": "hip",
+  "gpu_id": 1,
+  "model_path": "lmstudio-models/lmstudio-community/gemma-4-E2B-it-GGUF/gemma-4-E2B-it-Q4_K_M.gguf",
+  "model_bytes": 3427877696,
+  "ctx": 4096,
+  "ngl": 99,
+  "no_mmap": true,
+  "estimate_peak_bytes": 4627634889,
+  "runs": [
+    {
+      "run": 1,
+      "baseline_bytes": 2469380096,
+      "peak_bytes": 4845080576,
+      "used_bytes": 2375700480
+    },
+    {
+      "run": 2,
+      "baseline_bytes": 2468028416,
+      "peak_bytes": 4845076480,
+      "used_bytes": 2377048064
+    },
+    {
+      "run": 3,
+      "baseline_bytes": 2468028416,
+      "peak_bytes": 4846432256,
+      "used_bytes": 2378403840
+    },
+    {
+      "run": 4,
+      "baseline_bytes": 2469380096,
+      "peak_bytes": 4846358528,
+      "used_bytes": 2376978432
+    },
+    {
+      "run": 5,
+      "baseline_bytes": 2468564992,
+      "peak_bytes": 4884799488,
+      "used_bytes": 2416234496
+    }
+  ],
+  "summary": {
+    "used_mean_bytes": 2384873062,
+    "used_stdev_bytes": 15704027,
+    "used_min_bytes": 2375700480,
+    "used_max_bytes": 2416234496,
+    "overhead_mean_bytes": -2242761826,
+    "overhead_stdev_bytes": 15704027,
+    "overhead_min_bytes": -2251934409,
+    "overhead_max_bytes": -2211400393,
+    "recommended_band_bytes": 0
+  }
+}
