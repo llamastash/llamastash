@@ -12,7 +12,7 @@ _None — the four vendoring items shipped 2026-05-19 via [`docs/plans/2026-05-1
 
 ## v2-GA blockers (must clear before v2 GA, not v2 launch)
 
-- [ ] Remeasure per-backend VRAM overhead band on real CUDA / HIP / Vulkan / Metal hardware — [`docs/spikes/2026-05-19-vram-overhead-band.md`](docs/spikes/2026-05-19-vram-overhead-band.md) `todo:` frontmatter
+- [ ] Remeasure per-backend VRAM overhead band on real CUDA / HIP / Vulkan / Metal hardware — [`docs/spikes/2026-05-19-vram-overhead-band.md`](docs/spikes/2026-05-19-vram-overhead-band.md) `todo:` frontmatter. Harness ready: [`scripts/measure-overhead-band.sh`](scripts/measure-overhead-band.sh) + runbook at [`docs/runbooks/measure-vram-overhead-band.md`](docs/runbooks/measure-vram-overhead-band.md)
 
 ## v1+ release blockers
 
