@@ -23,8 +23,11 @@ use std::collections::BTreeSet;
 /// - `api.github.com` for the llama.cpp Releases REST API.
 /// - `github.com` for browser-download asset URLs (302-redirected to
 ///   the next entry).
-/// - `objects.githubusercontent.com` is where GH Releases assets
-///   actually live after the redirect.
+/// - `objects.githubusercontent.com` is the legacy GH Releases asset
+///   CDN; some older releases still resolve there.
+/// - `release-assets.githubusercontent.com` is the current GH Releases
+///   asset CDN (GitHub migrated browser-download redirects to this
+///   host in 2024).
 /// - `huggingface.co` for the HF Hub metadata + non-LFS files.
 /// - `cdn-lfs.huggingface.co` is the LFS CDN HF redirects to.
 /// - `cas-bridge.xethub.hf.co` is the XET-hash CDN (large LFS files)
@@ -33,6 +36,7 @@ pub const DEFAULT_ALLOWED_HOSTS: &[&str] = &[
   "api.github.com",
   "github.com",
   "objects.githubusercontent.com",
+  "release-assets.githubusercontent.com",
   "huggingface.co",
   "cdn-lfs.huggingface.co",
   "cdn-lfs-us-1.huggingface.co",

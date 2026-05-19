@@ -8,6 +8,12 @@
 //! - per-entry compression ratio > 100×,
 //! - archives with > 10 000 entries.
 //!
+//! Symlinks are allowed *only* when the resolved target lives inside
+//! the extraction root. llama.cpp release tarballs rely on this for
+//! the SONAME chain (`libmtmd.so -> libmtmd.so.0 ->
+//! libmtmd.so.0.0.<build>`); without it the dynamic linker can't
+//! resolve the shared libs at runtime.
+//!
 //! Extracted binaries end up `chmod 0700` regardless of the archive
 //! entry mode (parent dir is also `0700` per the wizard's
 //! `mkdir-with-mode` rule).
@@ -101,15 +107,20 @@ pub fn safe_extract_tar_gz(
     let entry_path_str = entry_path.display().to_string();
     let entry_type = entry.header().entry_type();
 
-    // Refuse hardlinks + symlinks outright.
-    if matches!(entry_type, EntryType::Link | EntryType::Symlink) {
+    // Hardlinks remain refused — release tarballs don't use them and
+    // they're harder to bound safely (a hardlink to an already-extracted
+    // SUID binary would inherit its mode).
+    if entry_type == EntryType::Link {
       return Err(InstallError::UnsafeArchive {
         path: entry_path_str,
-        reason: "hardlink / symlink entries refused".into(),
+        reason: "hardlink entries refused".into(),
       });
     }
-    // Refuse anything that isn't a regular file or directory.
-    if !matches!(entry_type, EntryType::Regular | EntryType::Directory) {
+    // Refuse anything that isn't a regular file, directory, or symlink.
+    if !matches!(
+      entry_type,
+      EntryType::Regular | EntryType::Directory | EntryType::Symlink
+    ) {
       return Err(InstallError::UnsafeArchive {
         path: entry_path_str,
         reason: format!("unsupported entry type {entry_type:?}"),
@@ -124,6 +135,40 @@ pub fn safe_extract_tar_gz(
 
     if entry_type == EntryType::Directory {
       std::fs::create_dir_all(&target).map_err(|e| InstallError::Io(e.to_string()))?;
+      continue;
+    }
+
+    if entry_type == EntryType::Symlink {
+      let link_name = entry
+        .link_name()
+        .map_err(|e| InstallError::UnsafeArchive {
+          path: entry_path_str.clone(),
+          reason: format!("symlink target unreadable: {e}"),
+        })?
+        .ok_or_else(|| InstallError::UnsafeArchive {
+          path: entry_path_str.clone(),
+          reason: "symlink with no target".into(),
+        })?;
+      let safe_link =
+        safe_symlink_target(&safe_rel, &link_name).map_err(|reason| InstallError::UnsafeArchive {
+          path: entry_path_str.clone(),
+          reason,
+        })?;
+      if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| InstallError::Io(e.to_string()))?;
+      }
+      #[cfg(unix)]
+      {
+        std::os::unix::fs::symlink(&safe_link, &target)
+          .map_err(|e| InstallError::Io(format!("symlink {entry_path_str}: {e}")))?;
+      }
+      #[cfg(not(unix))]
+      {
+        // No symlink ergonomics on non-Unix; skip the entry rather
+        // than fail — Windows/macOS-arm releases don't ship SONAME
+        // chains.
+        let _ = safe_link;
+      }
       continue;
     }
 
@@ -240,6 +285,55 @@ fn find_llama_server(root: &Path) -> Option<PathBuf> {
     }
   }
   None
+}
+
+/// Validate a symlink target against the archive root. `entry_rel` is
+/// the symlink's own (already-validated) path inside the extract tree;
+/// `link_target` is the raw `link_name` from the tar header. Refuses
+/// absolute targets and any relative target that escapes the extract
+/// root once lexically joined to the symlink's parent directory.
+///
+/// Returns the link target verbatim on success — the caller writes it
+/// into the on-disk symlink, preserving POSIX relative-link semantics
+/// (the dynamic linker resolves it relative to the symlink's dir at
+/// runtime, which is exactly what SONAME chains expect).
+fn safe_symlink_target(entry_rel: &Path, link_target: &Path) -> Result<PathBuf, String> {
+  // Absolute targets would point outside the extract root by
+  // definition (the root is a unique tmp dir under `dest_root`).
+  if link_target.is_absolute() {
+    return Err("symlink target is absolute".into());
+  }
+  // Lexically join: parent-of-symlink + relative target, normalize
+  // by collapsing `..` against the path stack. If at any point we'd
+  // pop above the archive root, refuse.
+  let mut stack: Vec<&std::ffi::OsStr> = Vec::new();
+  if let Some(parent) = entry_rel.parent() {
+    for comp in parent.components() {
+      match comp {
+        Component::Normal(s) => stack.push(s),
+        Component::CurDir => continue,
+        // entry_rel was already validated; these can't occur.
+        Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+          return Err("symlink parent path is malformed".into());
+        }
+      }
+    }
+  }
+  for comp in link_target.components() {
+    match comp {
+      Component::Normal(s) => stack.push(s),
+      Component::CurDir => continue,
+      Component::ParentDir => {
+        if stack.pop().is_none() {
+          return Err("symlink target escapes the archive root via `..`".into());
+        }
+      }
+      Component::RootDir | Component::Prefix(_) => {
+        return Err("symlink target contains an absolute component".into());
+      }
+    }
+  }
+  Ok(link_target.to_path_buf())
 }
 
 /// Resolve an archive entry's path against a virtual root, refusing
@@ -362,8 +456,9 @@ mod tests {
   }
 
   #[test]
-  fn refuses_symlink_entry() {
+  fn refuses_absolute_symlink_target() {
     let archive = build_archive(|tar| {
+      write_file_entry(tar, "build/bin/llama-server", b"binary");
       let mut header = Header::new_gnu();
       header.set_size(0);
       header.set_entry_type(EntryType::Symlink);
@@ -373,11 +468,86 @@ mod tests {
         .append_data(&mut header, "passwd-link", &[][..])
         .unwrap();
     });
-    let dest = temp_dir("symlink");
+    let dest = temp_dir("symlink-abs");
     let err = safe_extract_tar_gz(&archive, &dest, "b9999").unwrap_err();
     assert!(
-      matches!(err, InstallError::UnsafeArchive { ref reason, .. } if reason.contains("hardlink") || reason.contains("symlink")),
-      "expected symlink refusal, got {err:?}"
+      matches!(err, InstallError::UnsafeArchive { ref reason, .. } if reason.contains("absolute")),
+      "expected absolute-target refusal, got {err:?}"
+    );
+    std::fs::remove_dir_all(&dest).ok();
+  }
+
+  #[test]
+  fn refuses_symlink_escaping_via_dotdot() {
+    let archive = build_archive(|tar| {
+      write_file_entry(tar, "build/bin/llama-server", b"binary");
+      let mut header = Header::new_gnu();
+      header.set_size(0);
+      header.set_entry_type(EntryType::Symlink);
+      header.set_link_name("../../../etc/passwd").unwrap();
+      header.set_cksum();
+      tar.append_data(&mut header, "evil-link", &[][..]).unwrap();
+    });
+    let dest = temp_dir("symlink-escape");
+    let err = safe_extract_tar_gz(&archive, &dest, "b9999").unwrap_err();
+    assert!(
+      matches!(err, InstallError::UnsafeArchive { ref reason, .. } if reason.contains("escapes")),
+      "expected dotdot-escape refusal, got {err:?}"
+    );
+    std::fs::remove_dir_all(&dest).ok();
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn accepts_in_archive_soname_symlink_chain() {
+    // Mirrors the llama.cpp release shape: a regular `.so.X.Y.Z`
+    // shared library with two symlinks forming the SONAME chain.
+    let archive = build_archive(|tar| {
+      write_file_entry(tar, "llama-b9999/llama-server", b"binary");
+      write_file_entry(tar, "llama-b9999/libllama.so.0.0.9999", b"so contents");
+      let mut h1 = Header::new_gnu();
+      h1.set_size(0);
+      h1.set_entry_type(EntryType::Symlink);
+      h1.set_link_name("libllama.so.0.0.9999").unwrap();
+      h1.set_cksum();
+      tar
+        .append_data(&mut h1, "llama-b9999/libllama.so.0", &[][..])
+        .unwrap();
+      let mut h2 = Header::new_gnu();
+      h2.set_size(0);
+      h2.set_entry_type(EntryType::Symlink);
+      h2.set_link_name("libllama.so.0").unwrap();
+      h2.set_cksum();
+      tar
+        .append_data(&mut h2, "llama-b9999/libllama.so", &[][..])
+        .unwrap();
+    });
+    let dest = temp_dir("soname-chain");
+    let out = safe_extract_tar_gz(&archive, &dest, "b9999").expect("extract");
+    let dir = out.path.parent().unwrap();
+    let unversioned = dir.join("libllama.so");
+    let soname = dir.join("libllama.so.0");
+    let real = dir.join("libllama.so.0.0.9999");
+    assert!(
+      std::fs::symlink_metadata(&unversioned)
+        .unwrap()
+        .file_type()
+        .is_symlink(),
+      "libllama.so should be a symlink"
+    );
+    assert!(
+      std::fs::symlink_metadata(&soname)
+        .unwrap()
+        .file_type()
+        .is_symlink()
+    );
+    // The chain must resolve to a real file (dynamic linker would
+    // follow it the same way at runtime).
+    assert!(std::fs::metadata(&unversioned).unwrap().is_file());
+    assert_eq!(
+      std::fs::read(&real).unwrap(),
+      b"so contents",
+      "real file body must be preserved"
     );
     std::fs::remove_dir_all(&dest).ok();
   }

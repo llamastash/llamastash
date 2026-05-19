@@ -235,28 +235,34 @@ impl FetchClient {
 }
 
 fn translate_send_error(e: reqwest::Error) -> FetchError {
-  let msg = e.to_string();
-  if msg.contains("redirect cap reached") {
+  // reqwest's redirect-policy errors `Display` to "error following
+  // redirect for url (…)" and hide the inner reason behind `.source()`.
+  // Walk the chain so an allowlist refusal or cap-hit at hop N surfaces
+  // as its semantic variant rather than an opaque transport error.
+  use std::error::Error as _;
+  let top = e.to_string();
+  let mut combined = top.clone();
+  let mut cur: Option<&dyn std::error::Error> = e.source();
+  while let Some(src) = cur {
+    combined.push_str(" :: ");
+    combined.push_str(&src.to_string());
+    cur = src.source();
+  }
+  if combined.contains("redirect cap reached") {
     FetchError::TooManyRedirects
-  } else if msg.contains("not on the allowlist") {
-    // Defensive: should never happen because the up-front check
-    // catches the request URL, but a redirect-time refusal carries
-    // the host string in its message.
-    if let Some(start) = msg.find("`") {
-      let rest = &msg[start + 1..];
-      if let Some(end) = rest.find("`") {
-        return FetchError::HostNotAllowed {
-          host: rest[..end].to_string(),
-        };
-      }
-    }
-    FetchError::HostNotAllowed {
-      host: String::new(),
-    }
+  } else if combined.contains("not on the allowlist") {
+    // The refusal string is `URL host \`X\` is not on the allowlist; …`
+    // Pull out X for a precise error.
+    let host = combined
+      .split_once("host `")
+      .and_then(|(_, rest)| rest.split_once('`'))
+      .map(|(h, _)| h.to_string())
+      .unwrap_or_default();
+    FetchError::HostNotAllowed { host }
   } else if e.is_timeout() {
-    FetchError::Transport(format!("timeout: {msg}"))
+    FetchError::Transport(format!("timeout: {top}"))
   } else {
-    FetchError::Transport(msg)
+    FetchError::Transport(top)
   }
 }
 
