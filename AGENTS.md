@@ -15,6 +15,17 @@ The implementation plan is the canonical design document:
 
 Before any non-trivial change, identify which Implementation Unit it falls under. PR descriptions should cite the unit; commit subjects often use `feat(unit5):` / `fix(unit3):` style.
 
+## TODO tracking
+
+`TODO.md` at the repo root is the single index of outstanding work. Any time
+you add a TODO somewhere — a `TODO(...)` / `FIXME` comment in code, an
+unchecked `- [ ]` in a plan or doc, a `todo:` frontmatter field on a spike,
+or a deferred follow-up surfaced during review — also add a one-line entry
+in `TODO.md` that links back to the source location. When you complete a
+TODO, strike it from both places in the same change. The goal is that
+`TODO.md` alone tells you everything still open without grep-walking the
+tree.
+
 ## Scope boundaries
 
 The v1 contract — these are deliberate omissions, not gaps:

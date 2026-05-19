@@ -277,7 +277,7 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 
 ## Implementation Units
 
-- [ ] **Unit 1: Pre-implementation spikes (research only, no production code)**
+- [x] **Unit 1: Pre-implementation spikes (research only, no production code)**
 
 **Goal:** Resolve the four research items the brainstorm folded into planning. Each spike outputs a small fixture or one-line fact that pins a downstream unit's design.
 
@@ -314,7 +314,7 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 
 ---
 
-- [ ] **Unit 2: Config schema extensions + state-store sibling**
+- [x] **Unit 2: Config schema extensions + state-store sibling**
 
 **Goal:** Extend `Config` with `_init_snapshot` (separate file under state dir) and `arch_defaults`, plus the secure-write helper init uses to merge keys into `config.yaml`.
 
@@ -365,7 +365,7 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 
 ---
 
-- [ ] **Unit 3: CLI subcommand surface + new exit codes + shared detection module**
+- [x] **Unit 3: CLI subcommand surface + new exit codes + shared detection module**
 
 **Goal:** Add `init`, `doctor`, and a working `pull` to the clap surface; reserve exit codes 72/73/74; create `src/init/detection.rs` as the shared module init and doctor consume.
 
@@ -415,7 +415,7 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 
 ---
 
-- [ ] **Unit 4: Network fetch contract + offline mode**
+- [x] **Unit 4: Network fetch contract + offline mode**
 
 **Goal:** Build the shared HTTPS-only allowlisted fetch client used by snapshot fetch, GH Releases install, and `hf-hub`. Honor `LLAMADASH_OFFLINE` / `--offline`.
 
@@ -460,7 +460,7 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 
 ---
 
-- [ ] **Unit 5: Benchmark snapshot — schema, bundling, remote fetch**
+- [x] **Unit 5: Benchmark snapshot — schema, bundling, remote fetch**
 
 **Goal:** Define the JSON schema, bundle a snapshot into the binary at compile time, and implement the short-timeout remote fetch with monotonic-timestamp + min-version verification.
 
@@ -501,7 +501,7 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 
 ---
 
-- [ ] **Unit 6: Recommender — VRAM-fit filter + composite ranker + justification**
+- [x] **Unit 6: Recommender — VRAM-fit filter + composite ranker + justification**
 
 **Goal:** The Path-A recommender. Pure Rust, candidate universe = bundled+remote snapshot ∪ R2-discovered on-disk GGUFs.
 
@@ -546,7 +546,7 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 
 ---
 
-- [ ] **Unit 7: CI benchmark snapshot regeneration script + release-blocking corpus gate**
+- [x] **Unit 7: CI benchmark snapshot regeneration script + release-blocking corpus gate**
 
 **Goal:** Python script under `scripts/` that fetches benchmark sources, builds the snapshot JSON, runs the 16/20 corpus check, and publishes to GitHub Releases on success.
 
@@ -586,7 +586,7 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 
 ---
 
-- [ ] **Unit 8: GitHub Releases install path — download, integrity, safe extract**
+- [x] **Unit 8: GitHub Releases install path — download, integrity, safe extract**
 
 **Goal:** When R52's hardware-aware default routes to GH Releases, download the right asset, verify SHA-256 (fetched via REST API, not HTML), and safely extract to a versioned directory.
 
@@ -638,7 +638,7 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 
 ---
 
-- [ ] **Unit 9: hf-hub download integration + `llamadash pull` MVP**
+- [x] **Unit 9: hf-hub download integration + `llamadash pull` MVP**
 
 **Goal:** Multi-shard GGUF download via `hf-hub` (custom client per fetch contract) with resume + disk-space precheck; ship the standalone `llamadash pull <hf-repo>` MVP CLI.
 
@@ -681,7 +681,7 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 
 ---
 
-- [ ] **Unit 10: Wizard orchestration — dialoguer prompts, step order, --only/--skip, --yes/--json/--offline**
+- [x] **Unit 10: Wizard orchestration — dialoguer prompts, step order, --only/--skip, --yes/--json/--offline**
 
 **Goal:** The `llamadash init` interactive flow. Owns the step ordering, prompts, summary lines, persistent hardware header, and non-interactive modes.
 
@@ -735,7 +735,7 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 
 ---
 
-- [ ] **Unit 11: Config merge writer — managed_keys-scoped recursive merge, diff preview, redaction**
+- [x] **Unit 11: Config merge writer — managed_keys-scoped recursive merge, diff preview, redaction**
 
 **Goal:** The actual `config.yaml` write half. Mirrors v1's `state.json` hardening: tmp+rename, 0600, parent-dir mode check, symlink refusal. Plus the diff preview and `--yes`/`--no-confirm` semantics, with secret-key redaction in the displayed diff.
 
@@ -780,7 +780,7 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 
 ---
 
-- [ ] **Unit 12: Smoke launch — phase 1 dry-run + phase 2 daemon-mediated probe + handoff**
+- [x] **Unit 12: Smoke launch — phase 1 dry-run + phase 2 daemon-mediated probe + handoff**
 
 **Goal:** The post-install verification half. Phase 1 estimates peak memory against the chosen model + ctx; phase 2 spawns a real launch via the daemon, waits for `/health`, sends a tiny chat completion, and shuts down. Plus the interactive TUI-exec handoff.
 
@@ -830,7 +830,7 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 
 ---
 
-- [ ] **Unit 13: `llamadash doctor` — read-only diagnostic + JSON output**
+- [x] **Unit 13: `llamadash doctor` — read-only diagnostic + JSON output**
 
 **Goal:** The doctor sibling subcommand. Re-runs detection, diffs against `_init_snapshot`, emits 3–5 findings + the silent-fallback freshness check. Each finding has a `→ fix with: llamadash init --only X` hint and a stable id agent consumers can branch on.
 

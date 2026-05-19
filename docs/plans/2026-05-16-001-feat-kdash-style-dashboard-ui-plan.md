@@ -256,7 +256,7 @@ help_bar::render(help_area, focus, toast, palette)  // same renderer
 
 ## Implementation Units
 
-- [ ] **Unit 1: Host-metrics sampler + IPC surface**
+- [x] **Unit 1: Host-metrics sampler + IPC surface**
 
 **Goal:** Capture host CPU%, RAM, GPU util/temp at 1 Hz and surface them via the existing `status` IPC response.
 
@@ -291,7 +291,7 @@ help_bar::render(help_area, focus, toast, palette)  // same renderer
 
 **Verification:** `cargo run -- daemon start` in one terminal + `cargo run -- status --json` in another should print a `"host": { ... }` block alongside the existing `gpu` block.
 
-- [ ] **Unit 2: Extend GPU probes with utilization + temperature**
+- [x] **Unit 2: Extend GPU probes with utilization + temperature**
 
 **Goal:** Add util% and temperature fields to NVIDIA + AMD probes, gracefully `None` on Metal / Vulkan / CpuOnly.
 
@@ -325,7 +325,7 @@ help_bar::render(help_area, focus, toast, palette)  // same renderer
 
 **Verification:** `cargo test --features test-fixtures gpu` passes; a hand-run of `cargo run -- status --json` on a CUDA box shows non-`null` util/temp.
 
-- [ ] **Unit 3: `host_stats_pane` component**
+- [x] **Unit 3: `host_stats_pane` component**
 
 **Goal:** Render the Host panel — 4 bar gauges (CPU / RAM / GPU util / VRAM) + GPU backend tag.
 
@@ -360,7 +360,7 @@ help_bar::render(help_area, focus, toast, palette)  // same renderer
 
 **Verification:** `cargo test --features test-fixtures host_stats_pane` passes; visual check via `cargo run`.
 
-- [ ] **Unit 4: `info_pane` component**
+- [x] **Unit 4: `info_pane` component**
 
 **Goal:** Render the Daemon panel — socket + uptime + build + `llama-server` info + counters + compact running list.
 
@@ -396,7 +396,7 @@ help_bar::render(help_area, focus, toast, palette)  // same renderer
 
 **Verification:** `cargo test --features test-fixtures info_pane` passes; visual check via `cargo run -- daemon start` + `cargo run`.
 
-- [ ] **Unit 5: `logo_pane` + compact ASCII banner**
+- [x] **Unit 5: `logo_pane` + compact ASCII banner**
 
 **Goal:** Render the third top-row panel — a compact ASCII LlamaDash glyph + version + theme name.
 
@@ -426,7 +426,7 @@ help_bar::render(help_area, focus, toast, palette)  // same renderer
 
 **Verification:** `cargo test --features test-fixtures logo_pane` passes; visual check across the 5 themes via the `t` hotkey.
 
-- [ ] **Unit 6: New top-level layout + accent title bar + hint relocation**
+- [x] **Unit 6: New top-level layout + accent title bar + hint relocation**
 
 **Goal:** Rewrite `render.rs` to draw the accent-bg title row + info row + body + filter. Relocate panel-specific hints into each panel's block title; the title row carries only global hints. Drop the bottom help bar.
 
@@ -480,7 +480,7 @@ help_bar::render(help_area, focus, toast, palette)  // same renderer
 
 **Verification:** `cargo test --features test-fixtures` full suite passes; `cargo run` shows the new layout; `q`/`/`/`t`/`Enter` still work end-to-end against a live daemon.
 
-- [ ] **Unit 7: Per-PID resource pipeline (RAM + CPU%) into the status response**
+- [x] **Unit 7: Per-PID resource pipeline (RAM + CPU%) into the status response**
 
 **Goal:** Wire the existing `src/daemon/resources::sample_loop` into the supervisor per launched model, surface the latest reading in the `status` response per-launch, and consume it in the TUI so the right-pane block title can show `4.2G RAM · 312% CPU` per model.
 
