@@ -379,7 +379,7 @@ mod tests {
     let bundled = bundled_test();
     let candidate = BenchmarkSnapshot {
       bundle_date: "2026-05-19".into(), // newer than bundled
-      min_version: "0.1.0".into(),      // ≤ any build
+      min_version: "0.0.1".into(),      // ≤ any build
       ..bundled_test()
     };
     assert!(verify_remote(&candidate, &bundled).is_ok());
@@ -413,15 +413,16 @@ mod tests {
 
   #[test]
   fn verify_remote_accepts_release_min_version_against_prerelease_build() {
-    // Build is currently 0.2.0-dev (Cargo.toml). A CI-refreshed
-    // snapshot with min_version="0.2.0" must NOT be rejected:
+    // A CI-refreshed snapshot whose min_version matches the build's
+    // major.minor.patch must NOT be rejected when the build itself
+    // carries a pre-release suffix (e.g. 0.0.1-dev vs 0.0.1):
     // pre-release suffixes are a build-bookkeeping detail, not a
     // capability signal. Without this carve-out, every dev build
     // would silently reject every remote snapshot forever.
     let bundled = bundled_test();
     let candidate = BenchmarkSnapshot {
       bundle_date: "2026-05-19".into(),
-      min_version: "0.2.0".into(),
+      min_version: "0.0.1".into(),
       ..bundled_test()
     };
     // Only meaningful if the build is itself pre-release; in a
