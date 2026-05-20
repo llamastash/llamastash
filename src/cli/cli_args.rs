@@ -139,6 +139,12 @@ pub enum Command {
   /// IPC so agents can answer "how did I launch this model last
   /// time" without going through the TUI.
   LastParams(LastParamsArgs),
+  /// Maintainer-only hardware UAT lifecycle. Hidden from --help on
+  /// every release binary; reachable only when the crate is built
+  /// with `--features uat`.
+  #[cfg(feature = "uat")]
+  #[command(hide = true)]
+  Uat(UatArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -410,6 +416,36 @@ pub struct InitArgs {
   /// subcommand scopes.
   #[arg(long = "config-step", value_name = "CHOICE", value_enum)]
   pub config_choice: Option<ConfigOverride>,
+  /// Pin the HuggingFace revision (commit SHA, branch, or tag) used
+  /// when downloading the model. Honored on the `--model owner/repo`
+  /// paste branch where the maintainer wants byte-stable input; the
+  /// recommender branch ignores it because curated picks are
+  /// branch-tracked. Empty values rejected at parse time.
+  #[arg(long, value_name = "SHA", value_parser = parse_revision)]
+  pub revision: Option<String>,
+}
+
+/// Reject empty `--revision` values up-front so a downstream hf-hub
+/// call doesn't silently collapse to the default branch. Non-empty
+/// strings are passed through verbatim; hf-hub validates them when
+/// resolving the repo (and surfaces a transport error for unknown
+/// SHAs / tags via the existing `INIT_DOWNLOAD_FAILED` exit code).
+pub fn parse_revision(raw: &str) -> Result<String, String> {
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return Err("`--revision <SHA>` requires a non-empty value".into());
+  }
+  if trimmed.chars().any(char::is_whitespace) {
+    return Err(format!(
+      "invalid value `{raw}` — revision must not contain whitespace"
+    ));
+  }
+  if trimmed.chars().any(char::is_control) {
+    return Err(format!(
+      "invalid value `{raw:?}` — revision must not contain control characters"
+    ));
+  }
+  Ok(trimmed.to_string())
 }
 
 /// Per-step override for `--install`. When set, the wizard's
@@ -582,6 +618,61 @@ pub enum LaunchMode {
   Chat,
   Embedding,
   Rerank,
+}
+
+/// `llamadash uat` arguments (Unit 3 / R4 / R5). Only compiled when
+/// the `uat` Cargo feature is enabled — the release binary on
+/// crates.io and Homebrew bottles never carries this subcommand.
+///
+/// Global `--quiet` is consumed from the top-level `Cli`; declaring
+/// a UAT-local `--quiet` would trip clap's debug-assert refusing
+/// duplicate long names across disjoint subcommand scopes (same
+/// rationale documented on `InitArgs::config_choice` for
+/// `--config-step`).
+#[cfg(feature = "uat")]
+#[derive(Args, Debug)]
+pub struct UatArgs {
+  /// GPU backend to exercise. Restricted to the canonical `GpuInfo`
+  /// discriminant spellings so a backend mismatch in the report's
+  /// `backend.expected` vs `backend.detected` block is unambiguous.
+  /// `metal` is not an accepted alias — use `apple_metal`.
+  #[arg(long, value_enum, value_name = "BACKEND")]
+  pub backend: UatBackend,
+  /// `warm` (default) skips the `llama-server` install path on the
+  /// assumption that the binary is already on PATH and the reference
+  /// GGUF is in the HF cache. `cold` exercises the full install +
+  /// pull path and is the per-minor-release coverage gate.
+  #[arg(long, value_enum, value_name = "MODE", default_value_t = UatMode::Warm)]
+  pub mode: UatMode,
+  /// Where to write the structured JSON report. `-` redirects to
+  /// stdout; mutually exclusive with the global `--quiet` (Unit 4
+  /// enforces at handle-time). When omitted, the report is emitted
+  /// to stdout in TTY-pretty form only.
+  #[arg(long, value_name = "PATH")]
+  pub report_out: Option<PathBuf>,
+}
+
+/// GPU backend the UAT exercises. Spellings mirror the `GpuInfo`
+/// tagged-union discriminants in `src/gpu/mod.rs` so the report's
+/// `backend.expected` / `backend.detected` comparison is direct.
+#[cfg(feature = "uat")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "snake_case")]
+pub enum UatBackend {
+  Nvidia,
+  Amd,
+  AppleMetal,
+  Vulkan,
+}
+
+/// UAT execution mode. `Warm` (default) is the fast per-backend gate;
+/// `Cold` exercises the full install + pull path.
+#[cfg(feature = "uat")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "lower")]
+pub enum UatMode {
+  Warm,
+  Cold,
 }
 
 #[cfg(test)]
@@ -1319,6 +1410,40 @@ mod tests {
   }
 
   #[test]
+  fn parse_revision_accepts_typical_sha() {
+    assert_eq!(
+      parse_revision("abc1234deadbeef").unwrap(),
+      "abc1234deadbeef"
+    );
+  }
+
+  #[test]
+  fn parse_revision_trims_surrounding_whitespace() {
+    // `clap` strips outer whitespace from argv but env-derived values
+    // or future scripted callers may not — trim defensively so a
+    // stray newline doesn't make hf-hub probe a non-existent ref.
+    assert_eq!(parse_revision("  abc1234  ").unwrap(), "abc1234");
+  }
+
+  #[test]
+  fn parse_revision_rejects_empty() {
+    assert!(parse_revision("").is_err());
+    assert!(parse_revision("   ").is_err());
+  }
+
+  #[test]
+  fn parse_revision_rejects_interior_whitespace() {
+    assert!(parse_revision("abc 123").is_err());
+    assert!(parse_revision("abc\t123").is_err());
+  }
+
+  #[test]
+  fn parse_revision_rejects_control_chars() {
+    assert!(parse_revision("abc\x00123").is_err());
+    assert!(parse_revision("abc\x1b[31m").is_err());
+  }
+
+  #[test]
   fn help_flag_lists_every_user_facing_subcommand() {
     let result = Cli::try_parse_from(["llamastash", "--help"]);
     let err = result.unwrap_err();
@@ -1345,5 +1470,88 @@ mod tests {
         "help output should list `{sub}` subcommand, got: {rendered}"
       );
     }
+  }
+
+  #[cfg(feature = "uat")]
+  #[test]
+  fn uat_default_parses() {
+    let cli = parse(&["uat", "--backend", "nvidia"]);
+    match cli.command {
+      Some(Command::Uat(args)) => {
+        assert_eq!(args.backend, UatBackend::Nvidia);
+        assert_eq!(args.mode, UatMode::Warm);
+        assert!(args.report_out.is_none());
+      }
+      other => panic!("expected Uat, got {other:?}"),
+    }
+  }
+
+  #[cfg(feature = "uat")]
+  #[test]
+  fn uat_quiet_is_the_global_flag() {
+    // No UAT-local `--quiet` is declared; the top-level global one
+    // applies. Refusing to duplicate the long name matches the same
+    // clap debug-assert rationale documented on `--config-step`.
+    let cli = parse(&[
+      "--quiet",
+      "uat",
+      "--backend",
+      "nvidia",
+      "--mode",
+      "cold",
+      "--report-out",
+      "/tmp/r.json",
+    ]);
+    assert!(cli.quiet);
+    match cli.command {
+      Some(Command::Uat(args)) => {
+        assert_eq!(args.backend, UatBackend::Nvidia);
+        assert_eq!(args.mode, UatMode::Cold);
+        assert_eq!(args.report_out, Some(PathBuf::from("/tmp/r.json")));
+      }
+      other => panic!("expected Uat, got {other:?}"),
+    }
+  }
+
+  #[cfg(feature = "uat")]
+  #[test]
+  fn uat_accepts_every_canonical_backend() {
+    for (raw, expected) in [
+      ("nvidia", UatBackend::Nvidia),
+      ("amd", UatBackend::Amd),
+      ("apple_metal", UatBackend::AppleMetal),
+      ("vulkan", UatBackend::Vulkan),
+    ] {
+      match parse(&["uat", "--backend", raw]).command {
+        Some(Command::Uat(args)) => assert_eq!(args.backend, expected),
+        other => panic!("expected Uat for backend={raw}, got {other:?}"),
+      }
+    }
+  }
+
+  #[cfg(feature = "uat")]
+  #[test]
+  fn uat_rejects_metal_alias() {
+    // `metal` is the user-friendly shorthand but it does not match the
+    // `GpuInfo::AppleMetal` discriminant — refusing it at parse time
+    // keeps the report's `backend.expected` vs `backend.detected`
+    // comparison unambiguous on Apple Silicon hosts.
+    let result = Cli::try_parse_from(["llamadash", "uat", "--backend", "metal"]);
+    assert!(
+      result.is_err(),
+      "`--backend metal` must be refused; use apple_metal"
+    );
+  }
+
+  #[cfg(not(feature = "uat"))]
+  #[test]
+  fn uat_subcommand_absent_without_feature() {
+    // Build invariant from Unit 3: no UAT entry point when the
+    // feature is off. clap rejects the subcommand at parse time.
+    let result = Cli::try_parse_from(["llamadash", "uat", "--backend", "nvidia"]);
+    assert!(
+      result.is_err(),
+      "`uat` must not parse without `--features uat`"
+    );
   }
 }

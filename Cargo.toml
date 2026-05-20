@@ -163,6 +163,14 @@ doc = false
 
 [features]
 test-fixtures = []
+# Maintainer-only "user acceptance test" subcommand. Gates the
+# `llamadash uat` entry point and the orchestrator that drives a real
+# GPU-backend lifecycle on local hardware (Unit 4). Never enabled on
+# shipped binaries — crates.io and Homebrew bottles build without the
+# feature so the subcommand is unreachable from a user install. The
+# release workflow audits its build invocation to confirm `--features
+# uat` is not passed.
+uat = []
 
 [profile.release]
 lto = "thin"

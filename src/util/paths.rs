@@ -6,6 +6,21 @@
 //! the `directories` crate only exposes a distinct state directory on Linux.
 //! The runtime socket falls back to `$TMPDIR/llamastash-$USER/daemon.sock`
 //! when no `runtime_dir` is available.
+//!
+//! Env-var overrides (consulted as resolution step #1, all empty values
+//! treated as unset):
+//!
+//! * `LLAMASTASH_STATE_DIR` — verbatim override for `state_dir()`.
+//! * `LLAMASTASH_CONFIG_DIR` — verbatim override for `config_dir()`;
+//!   `user_config_file()` inherits because it is
+//!   `config_dir().join("config.yaml")`.
+//! * `LLAMASTASH_CACHE_DIR` — verbatim override for `cache_dir()`; `log_dir()`
+//!   inherits because it is `cache_dir().join("logs")`.
+//! * `LLAMASTASH_SOCKET` — verbatim override for `runtime_socket_path()`.
+//! * `HF_HOME` — honored independently by `init::download::hf_cache_dir()`
+//!   per HuggingFace convention; not a `paths::*` concern, but worth
+//!   naming here because callers isolating a child process need to set
+//!   all five to fully sandbox state, config, cache/logs, socket, and HF cache.
 
 use std::{
   ffi::OsString,
@@ -44,6 +59,9 @@ pub fn home_dir() -> Option<PathBuf> {
 }
 
 pub fn state_dir() -> Option<PathBuf> {
+  if let Some(p) = env_path_override("LLAMASTASH_STATE_DIR") {
+    return Some(p);
+  }
   project_dirs().map(|d| {
     d.state_dir()
       .map_or_else(|| d.data_dir().to_path_buf(), PathBuf::from)
@@ -51,11 +69,30 @@ pub fn state_dir() -> Option<PathBuf> {
 }
 
 pub fn config_dir() -> Option<PathBuf> {
+  if let Some(p) = env_path_override("LLAMASTASH_CONFIG_DIR") {
+    return Some(p);
+  }
   project_dirs().map(|d| d.config_dir().to_path_buf())
 }
 
 pub fn cache_dir() -> Option<PathBuf> {
+  if let Some(p) = env_path_override("LLAMASTASH_CACHE_DIR") {
+    return Some(p);
+  }
   project_dirs().map(|d| d.cache_dir().to_path_buf())
+}
+
+/// Read an env var as a `PathBuf`, treating unset and empty values
+/// identically. Shared with `runtime_socket_path` so override semantics
+/// stay uniform across `state_dir`, `cache_dir`, and the socket.
+fn env_path_override(name: &str) -> Option<PathBuf> {
+  let raw = std::env::var_os(name)?;
+  let p = PathBuf::from(raw);
+  if p.as_os_str().is_empty() {
+    None
+  } else {
+    Some(p)
+  }
 }
 
 pub fn log_dir() -> Option<PathBuf> {
@@ -71,11 +108,8 @@ pub fn log_dir() -> Option<PathBuf> {
 /// 2. `XDG_RUNTIME_DIR/llamastash/daemon.sock` (Linux).
 /// 3. `$TMPDIR/llamastash-$USER/daemon.sock` (macOS / no runtime dir).
 pub fn runtime_socket_path() -> PathBuf {
-  if let Some(raw) = std::env::var_os("LLAMASTASH_SOCKET") {
-    let p = PathBuf::from(raw);
-    if !p.as_os_str().is_empty() {
-      return p;
-    }
+  if let Some(p) = env_path_override("LLAMASTASH_SOCKET") {
+    return p;
   }
   if let Some(dirs) = project_dirs() {
     if let Some(rt) = dirs.runtime_dir() {
@@ -143,9 +177,53 @@ pub fn init_snapshot_file() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-  use std::path::Path;
+  use std::{
+    path::Path,
+    sync::{Mutex, OnceLock},
+  };
 
   use super::*;
+
+  /// Serialize the tests that actually mutate process-global env vars
+  /// (a small handful covering the `LLAMASTASH_STATE_DIR` /
+  /// `LLAMASTASH_CACHE_DIR` resolution chain). Every other test in this
+  /// module reads paths without touching env state so they stay
+  /// parallel-safe.
+  fn env_mutex() -> &'static Mutex<()> {
+    static M: OnceLock<Mutex<()>> = OnceLock::new();
+    M.get_or_init(|| Mutex::new(()))
+  }
+
+  /// Save-and-restore guard for a single env var. Restores the previous
+  /// value (including "unset") on drop so a panicking test does not
+  /// leak state into siblings sharing the env mutex.
+  struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<OsString>,
+  }
+
+  impl EnvVarGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+      let previous = std::env::var_os(key);
+      std::env::set_var(key, value);
+      Self { key, previous }
+    }
+
+    fn unset(key: &'static str) -> Self {
+      let previous = std::env::var_os(key);
+      std::env::remove_var(key);
+      Self { key, previous }
+    }
+  }
+
+  impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+      match self.previous.take() {
+        Some(v) => std::env::set_var(self.key, v),
+        None => std::env::remove_var(self.key),
+      }
+    }
+  }
 
   /// Pure helper used in tests so callers can verify the path-joining logic
   /// without manipulating process-wide environment variables.
@@ -317,5 +395,155 @@ mod tests {
   fn sanitize_username_falls_back_when_all_chars_stripped() {
     assert_eq!(sanitize_username("///"), "default");
     assert_eq!(sanitize_username(""), "default");
+  }
+
+  #[test]
+  fn env_path_override_returns_pathbuf_when_set() {
+    let _guard = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+    let _e = EnvVarGuard::set("LLAMASTASH_TEST_PATH_OVERRIDE_A", "/tmp/uat-abc");
+    assert_eq!(
+      env_path_override("LLAMASTASH_TEST_PATH_OVERRIDE_A"),
+      Some(PathBuf::from("/tmp/uat-abc"))
+    );
+  }
+
+  #[test]
+  fn env_path_override_returns_none_when_unset() {
+    let _guard = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+    let _e = EnvVarGuard::unset("LLAMASTASH_TEST_PATH_OVERRIDE_B");
+    assert_eq!(env_path_override("LLAMASTASH_TEST_PATH_OVERRIDE_B"), None);
+  }
+
+  #[test]
+  fn env_path_override_treats_empty_string_as_unset() {
+    let _guard = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+    let _e = EnvVarGuard::set("LLAMASTASH_TEST_PATH_OVERRIDE_C", "");
+    assert_eq!(env_path_override("LLAMASTASH_TEST_PATH_OVERRIDE_C"), None);
+  }
+
+  #[test]
+  fn env_path_override_preserves_unicode_and_spaces_verbatim() {
+    let _guard = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+    let raw = "/tmp/uat 🦙 spaces";
+    let _e = EnvVarGuard::set("LLAMASTASH_TEST_PATH_OVERRIDE_D", raw);
+    assert_eq!(
+      env_path_override("LLAMASTASH_TEST_PATH_OVERRIDE_D"),
+      Some(PathBuf::from(raw))
+    );
+  }
+
+  #[test]
+  fn state_dir_honors_llamadash_state_dir_override() {
+    let _guard = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+    let _e = EnvVarGuard::set("LLAMASTASH_STATE_DIR", "/tmp/uat-state-override");
+    assert_eq!(state_dir(), Some(PathBuf::from("/tmp/uat-state-override")));
+  }
+
+  #[test]
+  fn cache_dir_honors_llamadash_cache_dir_override() {
+    let _guard = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+    let _e = EnvVarGuard::set("LLAMASTASH_CACHE_DIR", "/tmp/uat-cache-override");
+    assert_eq!(cache_dir(), Some(PathBuf::from("/tmp/uat-cache-override")));
+  }
+
+  #[test]
+  fn config_dir_honors_llamadash_config_dir_override() {
+    let _guard = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+    let _e = EnvVarGuard::set("LLAMASTASH_CONFIG_DIR", "/tmp/uat-config-override");
+    assert_eq!(
+      config_dir(),
+      Some(PathBuf::from("/tmp/uat-config-override"))
+    );
+  }
+
+  #[test]
+  fn user_config_file_inherits_config_dir_override() {
+    let _guard = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+    let _e = EnvVarGuard::set("LLAMASTASH_CONFIG_DIR", "/tmp/uat-config-override");
+    assert_eq!(
+      user_config_file(),
+      Some(PathBuf::from("/tmp/uat-config-override/config.yaml"))
+    );
+  }
+
+  #[test]
+  fn config_dir_empty_override_falls_through_to_project_dirs() {
+    let _guard = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+    let _e = EnvVarGuard::set("LLAMASTASH_CONFIG_DIR", "");
+    let p = config_dir().expect("config_dir() resolves on this platform");
+    assert!(
+      p.components()
+        .any(|c| c.as_os_str() == std::ffi::OsStr::new("llamastash")),
+      "{} should contain a `llamastash` segment when override is empty",
+      p.display()
+    );
+  }
+
+  #[test]
+  fn log_dir_inherits_cache_dir_override() {
+    let _guard = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+    let _e = EnvVarGuard::set("LLAMASTASH_CACHE_DIR", "/tmp/uat-cache-override");
+    // log_dir = cache_dir().join("logs"); confirms the chain.
+    assert_eq!(
+      log_dir(),
+      Some(PathBuf::from("/tmp/uat-cache-override/logs"))
+    );
+  }
+
+  #[test]
+  fn state_dir_empty_override_falls_through_to_project_dirs() {
+    let _guard = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+    let _e = EnvVarGuard::set("LLAMASTASH_STATE_DIR", "");
+    // Empty override is treated as unset; resolution returns the
+    // platform-default path which still carries the `llamastash` segment.
+    let p = state_dir().expect("state_dir() resolves on this platform");
+    assert!(
+      p.components()
+        .any(|c| c.as_os_str() == std::ffi::OsStr::new("llamastash")),
+      "{} should contain a `llamastash` segment when override is empty",
+      p.display()
+    );
+  }
+
+  #[test]
+  fn cache_dir_empty_override_falls_through_to_project_dirs() {
+    let _guard = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+    let _e = EnvVarGuard::set("LLAMASTASH_CACHE_DIR", "");
+    let p = cache_dir().expect("cache_dir() resolves on this platform");
+    assert!(
+      p.components()
+        .any(|c| c.as_os_str() == std::ffi::OsStr::new("llamastash")),
+      "{} should contain a `llamastash` segment when override is empty",
+      p.display()
+    );
+  }
+
+  #[test]
+  fn state_and_cache_overrides_are_independent() {
+    let _guard = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+    let _state = EnvVarGuard::set("LLAMASTASH_STATE_DIR", "/tmp/uat-state");
+    let _cache = EnvVarGuard::set("LLAMASTASH_CACHE_DIR", "/tmp/uat-cache");
+    assert_eq!(state_dir(), Some(PathBuf::from("/tmp/uat-state")));
+    assert_eq!(cache_dir(), Some(PathBuf::from("/tmp/uat-cache")));
+    // log_dir inherits cache, NOT state.
+    assert_eq!(log_dir(), Some(PathBuf::from("/tmp/uat-cache/logs")));
+  }
+
+  #[test]
+  fn state_file_and_pidfile_follow_state_dir_override() {
+    let _guard = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+    let _e = EnvVarGuard::set("LLAMASTASH_STATE_DIR", "/tmp/uat-state-x");
+    assert_eq!(
+      state_file(),
+      Some(PathBuf::from("/tmp/uat-state-x/state.json"))
+    );
+    assert_eq!(
+      daemon_pidfile(),
+      Some(PathBuf::from("/tmp/uat-state-x/daemon.pid"))
+    );
+    assert_eq!(
+      init_snapshot_file(),
+      Some(PathBuf::from("/tmp/uat-state-x/init_snapshot.json"))
+    );
   }
 }

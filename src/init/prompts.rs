@@ -599,6 +599,7 @@ mod tests {
       install: None,
       model: None,
       config_choice: None,
+      revision: None,
     }
   }
 

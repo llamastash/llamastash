@@ -192,6 +192,11 @@ jobs:
       - name: cargo build --release --locked
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        # The shipped binary must NEVER include `--features uat` — the
+        # maintainer-only UAT subcommand is gated behind that feature so
+        # it never reaches crates.io / Homebrew users. Audit per the
+        # plan §R10: `grep -F "features uat" .github/workflows/release.yml`
+        # should return only this comment line.
         run: cargo build --release --target ${{ matrix.target }} --bin llamastash --locked
 
       - name: verify binary is an executable for the target arch

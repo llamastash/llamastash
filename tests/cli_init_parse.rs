@@ -264,3 +264,62 @@ fn init_only_and_skip_mutex_still_holds_after_new_flags() {
     "--only and --skip mutex must survive after new flags land"
   );
 }
+
+#[test]
+fn init_revision_parses_to_some_when_set() {
+  match parse(&["init", "--recommended", "--revision", "abc1234"]).command {
+    Some(Command::Init(args)) => assert_eq!(args.revision.as_deref(), Some("abc1234")),
+    other => panic!("expected init, got {other:?}"),
+  }
+}
+
+#[test]
+fn init_revision_defaults_to_none() {
+  match parse(&["init", "--recommended"]).command {
+    Some(Command::Init(args)) => assert!(args.revision.is_none()),
+    other => panic!("expected init, got {other:?}"),
+  }
+}
+
+#[test]
+fn init_revision_with_paste_model_carries_both_fields() {
+  match parse(&[
+    "init",
+    "--model",
+    "qwen/qwen2.5-0.5b-instruct-GGUF",
+    "--revision",
+    "deadbeefcafe",
+  ])
+  .command
+  {
+    Some(Command::Init(args)) => {
+      assert_eq!(
+        args.model,
+        Some(ModelOverride::Paste(
+          "qwen/qwen2.5-0.5b-instruct-GGUF".to_string()
+        ))
+      );
+      assert_eq!(args.revision.as_deref(), Some("deadbeefcafe"));
+    }
+    other => panic!("expected init, got {other:?}"),
+  }
+}
+
+#[test]
+fn init_revision_empty_rejected_at_parse_time() {
+  let result = Cli::try_parse_from(["llamadash", "init", "--revision", ""]);
+  let err = result.expect_err("empty revision must be rejected");
+  assert!(
+    err.to_string().contains("non-empty"),
+    "error should explain the empty-value constraint: {err}"
+  );
+}
+
+#[test]
+fn init_revision_whitespace_rejected() {
+  let result = Cli::try_parse_from(["llamadash", "init", "--revision", "abc 123"]);
+  assert!(
+    result.is_err(),
+    "whitespace inside --revision must be rejected"
+  );
+}

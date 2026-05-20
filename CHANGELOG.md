@@ -47,9 +47,15 @@ The first publicly-installable llamastash release. Bundles every commit since th
 - **Exit codes 72/73/74** — `INIT_ABORTED` (integrity check failed, daemon stop/restart could not be coerced), `INIT_DOWNLOAD_FAILED` (wizard's download step), `INIT_SMOKE_FAILED` (probe phase). Distinct from `PULL_FAILED=69` so agents branch on cause.
 - **Smoke phase 1 + `--version` probe (`src/init/smoke.rs`)** — pre-launch VRAM ceiling check + binary executes-cleanly probe with `env_clear()` minimal env. Phase 2 (daemon-mediated `/health` + `/v1/chat/completions`) is deferred to v2.1.
 
+### Added (post-v2 — reproducibility + path-isolation env vars)
+
+- **`init --revision <SHA-or-branch>`** — pin the HuggingFace commit the model resolves at via hf-hub's `Repo::with_revision`. Visible on every release binary (the flag is **not** gated behind `--features uat`); empty values are rejected at parse time. See `docs/usage.md §Pinning a HuggingFace revision`.
+- **`LLAMASTASH_STATE_DIR` / `LLAMASTASH_CONFIG_DIR` / `LLAMASTASH_CACHE_DIR` env-var overrides** — direct overrides for `paths::state_dir()`, `paths::config_dir()`, and `paths::cache_dir()` mirroring the pre-existing `LLAMASTASH_SOCKET`. Empty values are treated as unset. Lets operators run side-by-side daemons without colliding on persisted state / config / cache paths. Documented in `docs/usage.md §Environment variables`.
+
 ### Internal
 
 - **Vendored benchmark scrapers** — `scripts/benchmark_sources/{whichllm,open_llm_leaderboard,aider}.py` now run live against the Open LLM Leaderboard rows API and Aider's polyglot YAML in the daily snapshot regen cron, replacing the `TODO(unit7-v2-ga)` placeholders. Partial vendoring of [`Andyyyy64/whichllm`](https://github.com/Andyyyy64/whichllm) (MIT) pinned at commit `73cd92f`; deps pinned in `scripts/requirements.txt`. CI-only — R45 single-binary invariant preserved, no Rust artefact change.
+- **Maintainer UAT command + nightly Metal CI lane** — new `--features uat` Cargo feature (off by default; release binaries never ship it) gates a hidden `llamastash uat --backend <X> --mode {warm|cold} --report-out <path>` subcommand that runs a 5-step lifecycle on real GPU hardware (doctor preflight → init → smoke chat → stop → doctor postrun) with cross-platform tempdir isolation (the new `LLAMASTASH_*_DIR` env vars + `HF_HOME`) and a structured JSON report. New `.github/workflows/uat-metal-nightly.yml` runs the UAT on Apple Silicon nightly with rolling-issue failure routing. Release-PR template (`.github/PULL_REQUEST_TEMPLATE/release.md`) carries the UAT backends-checked checklist + `uat-caught` label for outcome-metric tracking. See [`docs/testing/hardware-uat.md`](docs/testing/hardware-uat.md) and [`docs/plans/2026-05-19-002-feat-uat-e2e-hardware-strategy-plan.md`](docs/plans/2026-05-19-002-feat-uat-e2e-hardware-strategy-plan.md).
 
 ### Added (launcher + smoke-test + CLI)
 

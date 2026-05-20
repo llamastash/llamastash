@@ -143,12 +143,22 @@ Override semantics mirror kdash: the action's existing default binding(s) are re
 
 | Variable | Purpose |
 |---|---|
-| `LLAMASTASH_CONFIG` | Override config-file path |
+| `LLAMASTASH_CONFIG` | Override config-file path (single-file knob; the daemon writes here) |
+| `LLAMASTASH_CONFIG_DIR` | Override the directory `paths::config_dir()` resolves to; `user_config_file()` becomes `<dir>/config.yaml`. Empty value = unset |
+| `LLAMASTASH_STATE_DIR` | Override the directory `paths::state_dir()` resolves to (state.json, daemon.pid, init_snapshot.json). Empty value = unset |
+| `LLAMASTASH_CACHE_DIR` | Override the directory `paths::cache_dir()` resolves to; `log_dir()` inherits as `<dir>/logs`. Empty value = unset |
 | `LLAMASTASH_LLAMA_SERVER` | Path to `llama-server` |
 | `LLAMASTASH_NO_SCAN` | Skip filesystem scanning |
 | `LLAMASTASH_SOCKET` | Point a CLI at a non-default daemon socket |
 | `LLAMASTASH_OFFLINE` | Refuse any outbound network from `init` / `pull` / `doctor` (equivalent to `--offline` on those subcommands) |
+| `HF_HOME` | Honored by `init::download::hf_cache_dir()` per HuggingFace convention; controls where pulled GGUFs land |
 | `NO_COLOR` | Any non-empty value disables ANSI styling on every human-readable output (per [no-color.org](https://no-color.org/)). An empty value (`NO_COLOR=`) does **not** disable. |
+
+The four `LLAMASTASH_*_DIR` overrides make it possible to run side-by-side daemons (paired with `LLAMASTASH_SOCKET`) without colliding on state / cache / config paths.
+
+### Pinning a HuggingFace revision
+
+`llamastash init --recommended --model owner/repo --revision <SHA-or-branch>` threads the `--revision` value into hf-hub's `Repo::with_revision` so the byte-stream resolves at the supplied commit. Empty values are rejected at parse time. Use this when you need a reproducible model download — agents pinning environments should always pass a SHA rather than relying on the repo's default branch.
 
 ## Top-level flags
 

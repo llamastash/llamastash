@@ -24,6 +24,8 @@ pub mod resolve;
 pub mod start;
 pub mod status;
 pub mod stop;
+#[cfg(feature = "uat")]
+pub mod uat;
 
 use anyhow::Result;
 
@@ -62,6 +64,8 @@ pub async fn dispatch(mut cli: Cli, config: LoadedConfig) -> Result<i32> {
     Some(Command::Pull(args)) => pull::handle(args, &cli, resolved_config).await,
     Some(Command::Init(args)) => init::handle(args, &cli, resolved_config).await,
     Some(Command::Doctor(args)) => doctor::handle(args, &cli, resolved_config).await,
+    #[cfg(feature = "uat")]
+    Some(Command::Uat(args)) => uat::handle(args, &cli, resolved_config).await,
   };
   Ok(report(outcome))
 }

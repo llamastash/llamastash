@@ -1,0 +1,53 @@
+name: uat-metal-spike
+
+# Throwaway falsifying spike for the Tier 3 nightly Metal lane (Unit
+# 7 spike phase). Run once via `workflow_dispatch` to verify that
+# GH-hosted macos-14 actually exposes Metal to a headless process.
+#
+# Outcome captured in the PR description; this file is DELETED in the
+# same PR that lands `uat-metal-nightly.yml` (or replaces it with a
+# build-only fallback if the spike fails). If you're reading this on
+# main after that PR merged, something went wrong with the cleanup.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  spike:
+    name: Probe Metal availability on macos-14
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: brew install llama.cpp
+        run: |
+          brew list llama.cpp >/dev/null 2>&1 || brew install llama.cpp
+
+      - name: Build with --features uat
+        run: cargo build --release --features uat --bin llamastash
+
+      - name: Run UAT against Apple Silicon Metal
+        id: uat
+        run: |
+          set -euxo pipefail
+          ./target/release/llamastash uat \
+            --backend apple_metal \
+            --mode warm \
+            --report-out spike.json
+          # The UAT itself exits non-zero on any step failure; the
+          # workflow surfaces both the JSON artifact (always) and the
+          # exit code so the PR description can capture both.
+
+      - name: Upload spike report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: uat-metal-spike-report
+          path: spike.json
+          retention-days: 90

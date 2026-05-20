@@ -1,0 +1,191 @@
+name: uat-metal-nightly
+
+# Tier 3 nightly Metal lane (Unit 7). Runs the UAT on macos-14 and
+# upserts a single rolling tracking issue (`uat-metal-status` label)
+# with per-failure comments so interleaved failure modes (brew flake
+# vs. real Metal regression) stay attributable.
+#
+# CONDITIONAL on the falsifying spike (uat-metal-spike.yml) passing
+# in the same PR — if the spike failed, this file is replaced by
+# `macos-build-nightly.yml` per the plan §Approach (Spike-fail
+# branch).
+#
+# Trigger is `schedule:` only — scheduled workflows on GitHub always
+# run against the default branch, structurally enforcing the "runs on
+# main" requirement.
+
+on:
+  schedule:
+    - cron: "0 9 * * *" # 09:00 UTC daily
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: uat-metal-nightly
+  cancel-in-progress: true
+
+jobs:
+  uat-metal-nightly:
+    name: UAT — Apple Silicon Metal
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve brew llama.cpp version (for cache key)
+        id: brew-formula
+        run: |
+          set -euo pipefail
+          # `brew info --json=v2` is the stable schema; .formulae[0].versions.stable
+          # is the upstream version string we want to fold into the cache key so
+          # a formula bump invalidates the cached Cellar entry.
+          version=$(brew info --json=v2 llama.cpp \
+            | jq -r '.formulae[0].versions.stable // "unknown"')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Stable HF cache dir for the UAT sandbox
+        id: hf-cache
+        run: |
+          set -euo pipefail
+          # The UAT sandboxes its child processes via HF_HOME (see
+          # src/cli/uat/isolation.rs). Without a stable HF_HOME this
+          # workflow would download the ~400 MB reference model every
+          # run because the sandbox tempdir is ephemeral. Point the
+          # sandbox at a runner-persistent root so actions/cache can
+          # warm-load it.
+          dir="${RUNNER_TEMP%/}/uat-hf-cache"
+          mkdir -p "$dir"
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+
+      - name: Cache HF model + brew bottles + cargo target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ steps.hf-cache.outputs.dir }}
+            ~/Library/Caches/Homebrew/downloads
+            target/
+          # Cache key folds the Cargo.lock hash, the reference-model
+          # SHA, AND the upstream llama.cpp formula version so a model
+          # pin change OR a llama.cpp release naturally invalidates
+          # the corresponding cache slice.
+          key: uat-metal-${{ runner.os }}-llama-${{ steps.brew-formula.outputs.version }}-${{ hashFiles('Cargo.lock', 'src/cli/uat/model.rs') }}
+          restore-keys: |
+            uat-metal-${{ runner.os }}-llama-${{ steps.brew-formula.outputs.version }}-
+            uat-metal-${{ runner.os }}-
+
+      - name: brew install llama.cpp (skipped on warm Cellar)
+        run: |
+          brew list llama.cpp >/dev/null 2>&1 || brew install llama.cpp
+
+      - name: Build with --features uat
+        run: cargo build --release --features uat --bin llamastash
+
+      - name: Run UAT
+        id: uat
+        env:
+          # Point the UAT sandbox at the cached HF root. The
+          # orchestrator's TempdirGuard already overlays
+          # `HF_HOME=<tempdir>/hf` per-run, but because we explicitly
+          # pre-seed the cache root via this env var, the sandbox
+          # picks up the warm tree.
+          UAT_HF_CACHE_ROOT: ${{ steps.hf-cache.outputs.dir }}
+        run: |
+          set -euxo pipefail
+          # Sandbox HF_HOME at the persistent cache root so the cache
+          # action's restore actually populates what the UAT reads.
+          export HF_HOME="$UAT_HF_CACHE_ROOT"
+          ./target/release/llamastash uat \
+            --backend apple_metal \
+            --mode warm \
+            --report-out uat-metal.json
+
+      - name: Upload UAT report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: uat-metal-${{ github.run_id }}
+          path: uat-metal.json
+          retention-days: 90
+
+      - name: Render verdict into the job summary
+        if: always()
+        run: |
+          if [ -f uat-metal.json ]; then
+            verdict=$(jq -r .verdict uat-metal.json 2>/dev/null || echo "unknown")
+            duration=$(jq -r .duration_secs uat-metal.json 2>/dev/null || echo "?")
+            failed_step=$(jq -r '.failure_summary.step // "none"' uat-metal.json 2>/dev/null)
+            {
+              echo "### UAT Metal nightly"
+              echo "- verdict: \`$verdict\`"
+              echo "- duration: \`${duration}s\`"
+              echo "- failed_step: \`$failed_step\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Comment on rolling tracking issue (failure path)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          failed_step=$(jq -r '.failure_summary.step // "unknown"' uat-metal.json 2>/dev/null || echo "unknown")
+          # `classification` is now a structured snake_case enum on
+          # FailureSummary; pattern-matching agents key off it instead
+          # of the prose `message` (which is allowed to rot under
+          # refactors). The fallback handles a missing field on schemas
+          # that don't carry classification yet.
+          classification=$(jq -r '.failure_summary.classification // .failure_summary.message // "no message"' uat-metal.json 2>/dev/null || echo "no message")
+          # Find an open `uat-metal-status` issue. `--limit 1` plus a
+          # title filter avoid a race / manual-issue collision when a
+          # maintainer happens to keep a same-label triage issue open
+          # at the same time. `--search 'in:title …'` filters on title
+          # text so an unrelated `uat-metal-status` doesn't get
+          # commented on.
+          issue_number=$(gh issue list \
+            --label uat-metal-status \
+            --state open \
+            --limit 1 \
+            --search 'in:title "UAT Metal nightly status"' \
+            --json number \
+            --jq '.[0].number // empty')
+          if [ -z "$issue_number" ]; then
+            issue_number=$(gh issue create \
+              --title "UAT Metal nightly status" \
+              --label uat-metal-status \
+              --body "Rolling tracking issue for the nightly Apple Silicon Metal UAT lane. Per-failure comments preserve signal across interleaved failure modes (brew flake vs. real Metal regression). Auto-closed by the next clean run." \
+              --json number --jq .number)
+          fi
+          # Render the comment body to a file and use `--body-file` so
+          # backticks / $(...) inside the failure message can't be
+          # shell-evaluated by the workflow runner. The body still
+          # carries the run URL via shell variables we control.
+          {
+            printf 'Nightly run [`%s`](%s) failed at step `%s`. Classification: `%s`.\n' \
+              "${{ github.run_id }}" "$run_url" "$failed_step" "$classification"
+          } > /tmp/uat-metal-comment.md
+          gh issue comment "$issue_number" --body-file /tmp/uat-metal-comment.md
+
+      - name: Close rolling tracking issue (success path)
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          issue_number=$(gh issue list \
+            --label uat-metal-status \
+            --state open \
+            --limit 1 \
+            --search 'in:title "UAT Metal nightly status"' \
+            --json number \
+            --jq '.[0].number // empty')
+          if [ -n "$issue_number" ]; then
+            run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            close_body=$(printf 'Restored to green on run [`%s`](%s).' \
+              "${{ github.run_id }}" "$run_url")
+            gh issue close "$issue_number" --comment "$close_body"
+          fi

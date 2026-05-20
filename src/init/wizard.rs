@@ -712,6 +712,12 @@ async fn run_models_step(
   );
   let choice = prompts::pick_model(args, &recs).await?;
   log::debug!("init: model chosen: {choice:?}");
+  // `--revision` only carries through on the paste branch — curated
+  // picks are deliberately HEAD-tracked because the benchmark
+  // snapshot picks them by repo, not by SHA. Threading `--revision`
+  // into curated would silently override the recommender's
+  // assumption that "this repo's HEAD is good".
+  let is_paste = matches!(choice, ModelChoice::Paste(_));
   let (repo, pinned_filename, estimated_bytes) = match choice {
     ModelChoice::Curated(entry) => (entry.repo, Some(entry.file), Some(entry.weights_bytes)),
     ModelChoice::Paste(raw) => {
@@ -748,10 +754,16 @@ async fn run_models_step(
     } else {
       None
     };
+  let revision = if is_paste {
+    args.revision.clone()
+  } else {
+    None
+  };
   let options = crate::init::download::DownloadOptions {
     extension_filter: None,
     estimated_bytes,
     progress,
+    revision,
   };
   let result = crate::init::download::run_for_init(&spec, fetch, &options).await?;
   Ok(ModelsStepResult {

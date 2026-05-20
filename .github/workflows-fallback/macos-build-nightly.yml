@@ -1,0 +1,52 @@
+name: macos-build-nightly
+
+# Spike-fail branch for Unit 7. Lives in `.github/workflows-fallback/`
+# so GitHub does NOT auto-pick it up. If the falsifying spike
+# (`uat-metal-spike.yml`) proves Metal is NOT exposed to a headless
+# process on macos-14, the Unit 7 PR:
+#
+#   1. Deletes `.github/workflows/uat-metal-nightly.yml`.
+#   2. `git mv` this file into `.github/workflows/macos-build-nightly.yml`.
+#   3. Updates the PR description: "Tier 3 collapses to macOS build
+#      verification — Metal lane deferred. See spike artifact."
+#   4. Updates R3 in `docs/plans/2026-05-19-002-feat-uat-e2e-hardware-strategy-plan.md`
+#      from "nightly Metal lane" to "nightly macOS build lane".
+#
+# The build-only fallback still catches the install-path side of the
+# regression class (brew on macos-14, cross-compile aarch64-apple-darwin)
+# without claiming Metal coverage. Honest restatement of R3 instead
+# of pretending Tier 3 is the same shape.
+
+on:
+  schedule:
+    - cron: "0 9 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-build-nightly
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: macOS build verification
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo build --release --target aarch64-apple-darwin
+        run: cargo build --release --target aarch64-apple-darwin --bin llamastash
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: llamastash-aarch64-apple-darwin-${{ github.run_id }}
+          path: target/aarch64-apple-darwin/release/llamastash
+          retention-days: 7

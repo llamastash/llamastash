@@ -24,7 +24,10 @@
 
 use std::path::{Path, PathBuf};
 
-use hf_hub::api::tokio::{Api, ApiBuilder};
+use hf_hub::{
+  api::tokio::{Api, ApiBuilder},
+  Repo, RepoType,
+};
 
 use crate::cli::cli_args::{Cli, PullArgs};
 use crate::cli::exit_codes::{CliExit, CliResult, INIT_DOWNLOAD_FAILED, PULL_FAILED};
@@ -191,6 +194,12 @@ pub struct DownloadOptions {
   /// foo.gguf (425 MiB) → Downloaded foo.gguf" instead of one long
   /// silent await.
   pub progress: Option<std::sync::Arc<dyn DownloadProgress>>,
+  /// Pin the HuggingFace revision (commit SHA, branch, or tag) used
+  /// when resolving files. `None` resolves the default branch (`main`),
+  /// preserving the pre-`--revision` behavior byte-for-byte. Threaded
+  /// through to `hf_hub::Repo::with_revision` so the downloaded file
+  /// set matches the supplied identifier exactly.
+  pub revision: Option<String>,
 }
 
 impl std::fmt::Debug for DownloadOptions {
@@ -199,6 +208,7 @@ impl std::fmt::Debug for DownloadOptions {
       .field("extension_filter", &self.extension_filter)
       .field("estimated_bytes", &self.estimated_bytes)
       .field("progress", &self.progress.as_ref().map(|_| "<callback>"))
+      .field("revision", &self.revision)
       .finish()
   }
 }
@@ -387,7 +397,19 @@ pub async fn download_repo(
   }
   let cache_root = hf_cache_dir()?;
   let api = build_api(cache_root.clone())?;
-  let repo = api.model(spec.repo_id.clone());
+  // When `revision` is set, route through `Repo::with_revision` so
+  // hf-hub resolves and caches under the pinned ref instead of the
+  // default branch. Empty revision strings collapse to the default
+  // branch — the CLI parser already rejects empty `--revision`, this
+  // is defense in depth for direct library callers.
+  let repo = match options.revision.as_deref() {
+    Some(sha) if !sha.is_empty() => api.repo(Repo::with_revision(
+      spec.repo_id.clone(),
+      RepoType::Model,
+      sha.to_string(),
+    )),
+    _ => api.model(spec.repo_id.clone()),
+  };
 
   let info = repo.info().await?;
   let all_files: Vec<String> = info.siblings.into_iter().map(|s| s.rfilename).collect();
@@ -700,6 +722,32 @@ mod tests {
     let err = download_repo(&spec, &fetch, &DownloadOptions::default())
       .await
       .unwrap_err();
+    assert!(matches!(err, DownloadError::Offline));
+  }
+
+  #[test]
+  fn download_options_default_carries_no_revision() {
+    // Pre-`--revision` callers (the standalone `llamadash pull`
+    // handler, every existing wizard integration test) must keep
+    // resolving the default branch — verified by `Default` returning
+    // `revision: None`.
+    let opts = DownloadOptions::default();
+    assert!(opts.revision.is_none());
+  }
+
+  #[tokio::test]
+  async fn download_repo_propagates_offline_even_when_revision_set() {
+    // Offline mode must short-circuit *before* hf-hub touches the
+    // network, regardless of whether `--revision` was supplied. Without
+    // this guarantee a pinned-SHA UAT in offline mode would still try
+    // to resolve the repo against HF.
+    let fetch = FetchClient::offline();
+    let spec = RepoSpec::parse("owner/repo").unwrap();
+    let opts = DownloadOptions {
+      revision: Some("abc1234".to_string()),
+      ..DownloadOptions::default()
+    };
+    let err = download_repo(&spec, &fetch, &opts).await.unwrap_err();
     assert!(matches!(err, DownloadError::Offline));
   }
 }

@@ -96,6 +96,8 @@ cargo clippy --all-targets --features test-fixtures -- -D warnings
 - the `_test_sleep` IPC method used by drain-timeout tests (never exposed in release builds because the feature is opt-in and not in the default set).
 - `src/gguf/test_fixtures` (`FixtureBuilder`, `build_minimal_gguf`).
 
+`--features uat` enables the maintainer-only `llamastash uat` subcommand (hidden from `--help`; the release binary on crates.io and Homebrew bottles never ships it). The orchestrator drives a 5-step real-hardware lifecycle and emits a structured JSON report — see [`docs/testing/hardware-uat.md`](docs/testing/hardware-uat.md) for setup and run instructions. The release workflow audits that `--features uat` is never enabled in shipped binaries.
+
 Two-space indentation is enforced by `rustfmt.toml`. Clippy denies `shadow_unrelated` crate-wide; rename rather than reuse `let` bindings inside the same scope.
 
 ## Running the daemon locally
@@ -108,6 +110,8 @@ cargo run -- daemon stop
 ```
 
 Socket paths: `$XDG_RUNTIME_DIR/llamastash/daemon.sock` (Linux), `$TMPDIR/llamastash-$USER/daemon.sock` (macOS). Override with `LLAMASTASH_SOCKET=/path/daemon.sock` for side-by-side daemons. If wedged, deleting both `daemon.sock` and `daemon.pid` in the same dir is safe — next `daemon start` rebinds clean.
+
+For full path isolation (e.g. integration tests, the maintainer UAT command, side-by-side daemon experiments), pair `LLAMASTASH_SOCKET` with `LLAMASTASH_STATE_DIR`, `LLAMASTASH_CONFIG_DIR`, `LLAMASTASH_CACHE_DIR`, and `HF_HOME` so state, config, cache/logs, and the HF cache all redirect together. Each variable is a verbatim override; empty values are treated as unset. See `docs/usage.md §Environment variables`.
 
 ## Architecture in one breath
 
@@ -147,6 +151,12 @@ Every read-and-mutation command supports `--json` and emits a wrapped object: `{
 | 72 | `INIT_ABORTED` | Init pre-smoke abort (integrity / daemon stop) |
 | 73 | `INIT_DOWNLOAD_FAILED` | Init's model-download step failed |
 | 74 | `INIT_SMOKE_FAILED` | Init reached smoke but probe didn't pass |
+
+`llamastash uat` (maintainer-only, `--features uat`) emits a parallel
+set of synthetic codes inside its JSON report's
+`failure_summary.exit_code` — `10` (preflight backend mismatch), `11`
+/ `12` / `13` (smoke HTTP / parse / status), `124` (timeout), `130`
+(SIGINT). Full table in [`docs/testing/hardware-uat.md`](docs/testing/hardware-uat.md) §UAT synthetic exit codes.
 
 ### `status` IPC fields (kdash-style dashboard wiring)
 
