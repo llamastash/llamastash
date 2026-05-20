@@ -42,8 +42,30 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_VERSION = 1
-DEFAULT_MIN_VERSION = "0.2.0"
 SNAPSHOT_PATH = REPO_ROOT / "data" / "benchmark-snapshot.json"
+
+
+def _cargo_pkg_version() -> str:
+    """Read the workspace's Cargo.toml package.version verbatim.
+
+    ``min_version`` in the snapshot envelope must track Cargo.toml so
+    every release binary accepts its own freshly-published snapshot
+    asset. Hard-coding drifts the moment we cut a new release."""
+    cargo_toml = REPO_ROOT / "Cargo.toml"
+    in_package = False
+    for line in cargo_toml.read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_package = stripped == "[package]"
+            continue
+        if in_package and stripped.startswith("version"):
+            # version = "0.0.1"
+            _, _, value = stripped.partition("=")
+            return value.strip().strip("\"")
+    raise SystemExit("failed to parse [package].version from Cargo.toml")
+
+
+DEFAULT_MIN_VERSION = _cargo_pkg_version()
 SOURCES_DIR = REPO_ROOT / "scripts" / "benchmark_sources"
 
 # Make ``scripts/`` importable so the vendored adapters resolve under

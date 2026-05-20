@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "bundle_date": "2026-05-20",
-  "min_version": "0.2.0",
+  "min_version": "0.0.1",
   "remote_url": "https://github.com/llamastash/llamastash/releases/download/snapshot-latest/benchmark-snapshot.json",
   "recommender_weights": {
     "benchmark": 0.45,
@@ -18,32 +18,145 @@
   },
   "models": [
     {
-      "id": "qwen2.5-coder-1.5b-q4_k_m",
-      "repo": "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
-      "file": "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
-      "architecture": "qwen2",
+      "id": "qwen-qwen3-coder-next-q4_k_m",
+      "repo": "unsloth/Qwen3-Coder-Next-GGUF",
+      "file": "Qwen3-Coder-Next-Q4_K_M.gguf",
+      "architecture": "qwen3next",
       "quant": "Q4_K_M",
-      "params": 1540000000,
-      "weights_bytes": 998244352,
+      "params": 79674391296,
+      "weights_bytes": 44816845104,
       "task_hints": [
-        "code",
+        "code"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 0.2,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen3-Coder-Next",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "unsloth"
+    },
+    {
+      "id": "janhq-jan-v3-4b-base-instruct-q4_k_m",
+      "repo": "janhq/Jan-v3.5-4B-gguf",
+      "file": "Jan-v3.5-4B-Q4_K_M.gguf",
+      "architecture": "qwen3",
+      "quant": "Q4_K_M",
+      "params": 4411424256,
+      "weights_bytes": 2481426144,
+      "task_hints": [
         "general"
       ],
       "benchmark_score": {
-        "value": 38.0,
-        "source": "openllm-leaderboard"
+        "value": 40.0,
+        "source": "no-source"
       },
-      "tok_s_factor": 1.6,
-      "recency": 1.0
+      "tok_s_factor": 1.3,
+      "recency": 0.9,
+      "source_hf_id": "janhq/Jan-v3-4B-base-instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "janhq"
     },
     {
-      "id": "qwen2.5-3b-q4_k_m",
+      "id": "google-gemma-2-2b-it-q4_k_m",
+      "repo": "bartowski/gemma-2-2b-it-GGUF",
+      "file": "gemma-2-2b-it-Q4_K_M.gguf",
+      "architecture": "gemma2",
+      "quant": "Q4_K_M",
+      "params": 2614341888,
+      "weights_bytes": 1470567312,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 25.6,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 1.3,
+      "recency": 0.9,
+      "source_hf_id": "google/gemma-2-2b-it",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "bartowski"
+    },
+    {
+      "id": "meta-llama-llama-3.2-3b-instruct-q4_k_m",
+      "repo": "bartowski/Llama-3.2-3B-Instruct-GGUF",
+      "file": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+      "architecture": "llama",
+      "quant": "Q4_K_M",
+      "params": 3212749888,
+      "weights_bytes": 1807171812,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 36.3,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 1.3,
+      "recency": 0.9,
+      "source_hf_id": "meta-llama/Llama-3.2-3B-Instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "bartowski"
+    },
+    {
+      "id": "hesamation-qwen3.6-35b-a3b-claude-4.6-opus-reasoning-distilled-q4_k_m",
+      "repo": "hesamation/Qwen3.6-35B-A3B-Claude-4.6-Opus-Reasoning-Distilled-GGUF",
+      "file": "Qwen3.6-35B-A3B-Claude-4.6-Opus-Reasoning-Distilled.Q4_K_M.gguf",
+      "architecture": "qwen35moe",
+      "quant": "Q4_K_M",
+      "params": 34660610688,
+      "weights_bytes": 19496593512,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 0.4,
+      "recency": 0.9,
+      "source_hf_id": "hesamation/Qwen3.6-35B-A3B-Claude-4.6-Opus-Reasoning-Distilled",
+      "params_active": 3000000000,
+      "is_moe": true,
+      "gguf_publisher": "hesamation"
+    },
+    {
+      "id": "meta-llama-meta-llama-3.1-8b-instruct-q4_k_m",
+      "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
+      "file": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+      "architecture": "llama",
+      "quant": "Q4_K_M",
+      "params": 8030261312,
+      "weights_bytes": 4517021988,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.0,
+      "recency": 0.9,
+      "source_hf_id": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "bartowski"
+    },
+    {
+      "id": "qwen-qwen2.5-3b-instruct-q4_k_m",
       "repo": "Qwen/Qwen2.5-3B-Instruct-GGUF",
       "file": "qwen2.5-3b-instruct-q4_k_m.gguf",
       "architecture": "qwen2",
       "quant": "Q4_K_M",
-      "params": 3090000000,
-      "weights_bytes": 1992294400,
+      "params": 3397103616,
+      "weights_bytes": 1910870784,
       "task_hints": [
         "general",
         "reasoning"
@@ -53,109 +166,403 @@
         "source": "openllm-leaderboard"
       },
       "tok_s_factor": 1.3,
-      "recency": 1.0
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen2.5-3B-Instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "Qwen"
     },
     {
-      "id": "llama-3.2-3b-q4_k_m",
-      "repo": "bartowski/Llama-3.2-3B-Instruct-GGUF",
-      "file": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
-      "architecture": "llama",
+      "id": "qwen-qwen2.5-1.5b-instruct-q4_k_m",
+      "repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+      "file": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+      "architecture": "qwen2",
       "quant": "Q4_K_M",
-      "params": 3210000000,
-      "weights_bytes": 2087354368,
+      "params": 1777088000,
+      "weights_bytes": 999612000,
+      "task_hints": [
+        "general",
+        "reasoning"
+      ],
+      "benchmark_score": {
+        "value": 27.6,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 1.6,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen2.5-1.5B-Instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "Qwen"
+    },
+    {
+      "id": "openai-gpt-oss-20b-q4_k_m",
+      "repo": "unsloth/gpt-oss-20b-GGUF",
+      "file": "gpt-oss-20b-Q4_K_M.gguf",
+      "architecture": "gptoss",
+      "quant": "Q4_K_M",
+      "params": 20914757184,
+      "weights_bytes": 11764550916,
       "task_hints": [
         "general"
       ],
       "benchmark_score": {
-        "value": 36.3,
-        "source": "openllm-leaderboard"
+        "value": 40.0,
+        "source": "no-source"
       },
-      "tok_s_factor": 1.3,
-      "recency": 1.0
+      "tok_s_factor": 0.4,
+      "recency": 0.9,
+      "source_hf_id": "openai/gpt-oss-20b",
+      "params_active": 3600000000,
+      "is_moe": true,
+      "gguf_publisher": "unsloth"
     },
     {
-      "id": "qwen2.5-7b-q4_k_m",
-      "repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
-      "file": "qwen2.5-7b-instruct-q4_k_m.gguf",
-      "architecture": "qwen2",
+      "id": "qwen-qwen3-0.6b-q4_k_m",
+      "repo": "MaziyarPanahi/Qwen3-0.6B-GGUF",
+      "file": "Qwen3-0.6B.Q4_K_M.gguf",
+      "architecture": "mistral",
       "quant": "Q4_K_M",
-      "params": 7610000000,
-      "weights_bytes": 4683960320,
+      "params": 751632384,
+      "weights_bytes": 422793216,
       "task_hints": [
         "general",
-        "code",
         "reasoning"
       ],
       "benchmark_score": {
-        "value": 52.8,
-        "source": "openllm-leaderboard"
+        "value": 40.0,
+        "source": "no-source"
       },
-      "tok_s_factor": 1.0,
-      "recency": 1.0
+      "tok_s_factor": 1.6,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen3-0.6B",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
     },
     {
-      "id": "qwen2.5-coder-7b-q4_k_m",
-      "repo": "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
-      "file": "qwen2.5-coder-7b-instruct-q4_k_m.gguf",
-      "architecture": "qwen2",
+      "id": "meta-llama-llama-3.3-70b-instruct-q4_k_m",
+      "repo": "unsloth/Llama-3.3-70B-Instruct-GGUF",
+      "file": "Llama-3.3-70B-Instruct-Q4_K_M.gguf",
+      "architecture": "llama",
       "quant": "Q4_K_M",
-      "params": 7610000000,
-      "weights_bytes": 4683960320,
+      "params": 70553706560,
+      "weights_bytes": 39686459940,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 67.3,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 0.2,
+      "recency": 0.9,
+      "source_hf_id": "meta-llama/Llama-3.3-70B-Instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "unsloth"
+    },
+    {
+      "id": "qwen-qwen3-14b-q4_k_m",
+      "repo": "MaziyarPanahi/Qwen3-14B-GGUF",
+      "file": "Qwen3-14B.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 14768307200,
+      "weights_bytes": 8307172800,
+      "task_hints": [
+        "general",
+        "reasoning"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 0.6,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen3-14B",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "qwen-qwen3-1.7b-q4_k_m",
+      "repo": "MaziyarPanahi/Qwen3-1.7B-GGUF",
+      "file": "Qwen3-1.7B.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 2031739904,
+      "weights_bytes": 1142853696,
+      "task_hints": [
+        "general",
+        "reasoning"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.3,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen3-1.7B",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "qwen-qwen3-4b-q4_k_m",
+      "repo": "MaziyarPanahi/Qwen3-4B-GGUF",
+      "file": "Qwen3-4B.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 4022468096,
+      "weights_bytes": 2262638304,
+      "task_hints": [
+        "general",
+        "reasoning"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.3,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen3-4B",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "qwen-qwen3-8b-q4_k_m",
+      "repo": "MaziyarPanahi/Qwen3-8B-GGUF",
+      "file": "Qwen3-8B.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 8190735360,
+      "weights_bytes": 4607288640,
+      "task_hints": [
+        "general",
+        "reasoning"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.0,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen3-8B",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "openai-gpt-oss-120b-q4_k_m",
+      "repo": "unsloth/gpt-oss-120b-GGUF",
+      "file": "Q4_K_M/gpt-oss-120b-Q4_K_M-00002-of-00002.gguf",
+      "architecture": "gptoss",
+      "quant": "Q4_K_M",
+      "params": 116829156672,
+      "weights_bytes": 65716400628,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 0.2,
+      "recency": 0.9,
+      "source_hf_id": "openai/gpt-oss-120b",
+      "params_active": 5100000000,
+      "is_moe": true,
+      "gguf_publisher": "unsloth"
+    },
+    {
+      "id": "qwen-qwen3-30b-a3b-q4_k_m",
+      "repo": "MaziyarPanahi/Qwen3-30B-A3B-GGUF",
+      "file": "Qwen3-30B-A3B.Q4_K_M.gguf",
+      "architecture": "qwen3moe",
+      "quant": "Q4_K_M",
+      "params": 30532122624,
+      "weights_bytes": 17174318976,
+      "task_hints": [
+        "general",
+        "reasoning"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 0.4,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen3-30B-A3B",
+      "params_active": 3000000000,
+      "is_moe": true,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "qwen-qwen3-32b-q4_k_m",
+      "repo": "MaziyarPanahi/Qwen3-32B-GGUF",
+      "file": "Qwen3-32B.Q4_K_M.gguf",
+      "architecture": "qwen3",
+      "quant": "Q4_K_M",
+      "params": 32762123264,
+      "weights_bytes": 18428694336,
+      "task_hints": [
+        "general",
+        "reasoning"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 0.4,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen3-32B",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "microsoft-phi-3.5-mini-instruct-q4_k_m",
+      "repo": "MaziyarPanahi/Phi-3.5-mini-instruct-GGUF",
+      "file": "Phi-3.5-mini-instruct.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 3821079648,
+      "weights_bytes": 2149357302,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 42.3,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 1.3,
+      "recency": 0.9,
+      "source_hf_id": "microsoft/Phi-3.5-mini-instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "minimaxai-minimax-m2.7-q4_k_m",
+      "repo": "unsloth/MiniMax-M2.7-GGUF",
+      "file": "UD-Q4_K_M/MiniMax-M2.7-UD-Q4_K_M-00004-of-00004.gguf",
+      "architecture": "minimax-m2",
+      "quant": "Q4_K_M",
+      "params": 228689764864,
+      "weights_bytes": 128637992736,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 0.2,
+      "recency": 0.9,
+      "source_hf_id": "MiniMaxAI/MiniMax-M2.7",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "unsloth"
+    },
+    {
+      "id": "qwen-qwen3-4b-instruct-2507-q4_k_m",
+      "repo": "MaziyarPanahi/Qwen3-4B-Instruct-2507-GGUF",
+      "file": "Qwen3-4B-Instruct-2507.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 4022468096,
+      "weights_bytes": 2262638304,
+      "task_hints": [
+        "general",
+        "reasoning"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.3,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen3-4B-Instruct-2507",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "qwen-qwen3-coder-30b-a3b-instruct-q4_k_m",
+      "repo": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+      "file": "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+      "architecture": "qwen3moe",
+      "quant": "Q4_K_M",
+      "params": 30532122624,
+      "weights_bytes": 17174318976,
       "task_hints": [
         "code"
       ],
       "benchmark_score": {
-        "value": 58.0,
-        "source": "aider"
+        "value": 40.0,
+        "source": "no-source"
       },
-      "tok_s_factor": 1.0,
-      "recency": 1.0
+      "tok_s_factor": 0.4,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+      "params_active": 3000000000,
+      "is_moe": true,
+      "gguf_publisher": "unsloth"
     },
     {
-      "id": "llama-3.1-8b-q4_k_m",
-      "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
-      "file": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
-      "architecture": "llama",
+      "id": "mistralai-mistral-7b-instruct-v0.3-q4_k_m",
+      "repo": "MaziyarPanahi/Mistral-7B-Instruct-v0.3-GGUF",
+      "file": "Mistral-7B-Instruct-v0.3.Q4_K_M.gguf",
+      "architecture": "mistral",
       "quant": "Q4_K_M",
-      "params": 8030000000,
-      "weights_bytes": 4923537408,
+      "params": 7248023552,
+      "weights_bytes": 4077013248,
       "task_hints": [
         "general"
       ],
       "benchmark_score": {
-        "value": 53.0,
+        "value": 28.8,
         "source": "openllm-leaderboard"
       },
-      "tok_s_factor": 0.95,
-      "recency": 0.9
+      "tok_s_factor": 1.0,
+      "recency": 0.9,
+      "source_hf_id": "mistralai/Mistral-7B-Instruct-v0.3",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
     },
     {
-      "id": "mistral-nemo-12b-q4_k_m",
-      "repo": "bartowski/Mistral-Nemo-Instruct-2407-GGUF",
-      "file": "Mistral-Nemo-Instruct-2407-Q4_K_M.gguf",
-      "architecture": "llama",
-      "quant": "Q4_K_M",
-      "params": 12200000000,
-      "weights_bytes": 7475322880,
-      "task_hints": [
-        "general",
-        "reasoning"
-      ],
-      "benchmark_score": {
-        "value": 37.0,
-        "source": "openllm-leaderboard"
-      },
-      "tok_s_factor": 0.7,
-      "recency": 0.85
-    },
-    {
-      "id": "qwen2.5-14b-q4_k_m",
-      "repo": "Qwen/Qwen2.5-14B-Instruct-GGUF",
-      "file": "qwen2.5-14b-instruct-q4_k_m.gguf",
+      "id": "qwen-qwen2.5-coder-7b-instruct-q4_k_m",
+      "repo": "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+      "file": "qwen2.5-coder-7b-instruct-q4_k_m.gguf",
       "architecture": "qwen2",
       "quant": "Q4_K_M",
-      "params": 14770000000,
-      "weights_bytes": 9051963392,
+      "params": 7615616512,
+      "weights_bytes": 4283784288,
+      "task_hints": [
+        "code"
+      ],
+      "benchmark_score": {
+        "value": 33.8,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 1.0,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen2.5-Coder-7B-Instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "Qwen"
+    },
+    {
+      "id": "qwen-qwen2.5-14b-instruct-q4_k_m",
+      "repo": "Qwen/Qwen2.5-14B-Instruct-GGUF",
+      "file": "qwen2.5-14b-instruct-q4_k_m-00003-of-00003.gguf",
+      "architecture": "qwen2",
+      "quant": "Q4_K_M",
+      "params": 14770033664,
+      "weights_bytes": 8308143936,
       "task_hints": [
         "general",
         "reasoning"
@@ -165,53 +572,906 @@
         "source": "openllm-leaderboard"
       },
       "tok_s_factor": 0.6,
-      "recency": 1.0
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen2.5-14B-Instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "Qwen"
     },
     {
-      "id": "qwen2.5-coder-14b-q4_k_m",
-      "repo": "Qwen/Qwen2.5-Coder-14B-Instruct-GGUF",
-      "file": "qwen2.5-coder-14b-instruct-q4_k_m.gguf",
-      "architecture": "qwen2",
+      "id": "zai-org-glm-4.7-flash-q4_k_m",
+      "repo": "unsloth/GLM-4.7-Flash-GGUF",
+      "file": "GLM-4.7-Flash-Q4_K_M.gguf",
+      "architecture": "deepseek2",
       "quant": "Q4_K_M",
-      "params": 14770000000,
-      "weights_bytes": 9051963392,
+      "params": 29943393920,
+      "weights_bytes": 16843159080,
       "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 0.4,
+      "recency": 0.9,
+      "source_hf_id": "zai-org/GLM-4.7-Flash",
+      "params_active": 12000000000,
+      "is_moe": true,
+      "gguf_publisher": "unsloth"
+    },
+    {
+      "id": "meta-llama-meta-llama-3.1-8b-instruct-q4_k_m",
+      "repo": "lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF",
+      "file": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+      "architecture": "llama",
+      "quant": "Q4_K_M",
+      "params": 8030261312,
+      "weights_bytes": 4517021988,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.0,
+      "recency": 0.9,
+      "source_hf_id": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "lmstudio-community"
+    },
+    {
+      "id": "meta-llama-meta-llama-3.1-8b-instruct-q4_k_m",
+      "repo": "MaziyarPanahi/Meta-Llama-3.1-8B-Instruct-GGUF",
+      "file": "Meta-Llama-3.1-8B-Instruct.Q4_K_M.gguf",
+      "architecture": "llama",
+      "quant": "Q4_K_M",
+      "params": 8030261248,
+      "weights_bytes": 4517021952,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.0,
+      "recency": 0.9,
+      "source_hf_id": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "google-gemma-3-4b-it-q4_k_m",
+      "repo": "MaziyarPanahi/gemma-3-4b-it-GGUF",
+      "file": "gemma-3-4b-it.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 3880099328,
+      "weights_bytes": 2182555872,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.3,
+      "recency": 0.9,
+      "source_hf_id": "google/gemma-3-4b-it",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "meta-llama-meta-llama-3-8b-instruct-q4_k_m",
+      "repo": "MaziyarPanahi/Meta-Llama-3-8B-Instruct-GGUF",
+      "file": "Meta-Llama-3-8B-Instruct.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 8030261248,
+      "weights_bytes": 4517021952,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 30.9,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 1.0,
+      "recency": 0.9,
+      "source_hf_id": "meta-llama/Meta-Llama-3-8B-Instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "microsoft-phi-4-mini-instruct-q4_k_m",
+      "repo": "MaziyarPanahi/Phi-4-mini-instruct-GGUF",
+      "file": "Phi-4-mini-instruct.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 3836021856,
+      "weights_bytes": 2157762294,
+      "task_hints": [
+        "general",
         "code"
       ],
       "benchmark_score": {
-        "value": 64.0,
-        "source": "aider"
+        "value": 44.1,
+        "source": "openllm-leaderboard"
       },
-      "tok_s_factor": 0.6,
-      "recency": 1.0
+      "tok_s_factor": 1.3,
+      "recency": 0.9,
+      "source_hf_id": "microsoft/Phi-4-mini-instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
     },
     {
-      "id": "qwen2.5-32b-q4_k_m",
-      "repo": "Qwen/Qwen2.5-32B-Instruct-GGUF",
-      "file": "qwen2.5-32b-instruct-q4_k_m.gguf",
-      "architecture": "qwen2",
+      "id": "v2ray-mixtral-8x22b-v0.1-q4_k_m",
+      "repo": "MaziyarPanahi/Mixtral-8x22B-v0.1-GGUF",
+      "file": "Mixtral-8x22B-v0.1.Q4_K_M-00005-of-00005.gguf",
+      "architecture": "mixtral",
       "quant": "Q4_K_M",
-      "params": 32760000000,
-      "weights_bytes": 20133101568,
+      "params": 140620634112,
+      "weights_bytes": 79099106688,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 0.2,
+      "recency": 0.9,
+      "source_hf_id": "v2ray/Mixtral-8x22B-v0.1",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "01-ai-yi-coder-1.5b-chat-q4_k_m",
+      "repo": "MaziyarPanahi/Yi-Coder-1.5B-Chat-GGUF",
+      "file": "Yi-Coder-1.5B-Chat.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 1476495360,
+      "weights_bytes": 830528640,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.6,
+      "recency": 0.9,
+      "source_hf_id": "01-ai/Yi-Coder-1.5B-Chat",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "meta-llama-meta-llama-3.1-70b-instruct-q4_k_m",
+      "repo": "MaziyarPanahi/Meta-Llama-3.1-70B-Instruct-GGUF",
+      "file": "Meta-Llama-3.1-70B-Instruct.Q4_K_M.gguf",
+      "architecture": "llama",
+      "quant": "Q4_K_M",
+      "params": 70553706496,
+      "weights_bytes": 39686459904,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 0.2,
+      "recency": 0.9,
+      "source_hf_id": "meta-llama/Meta-Llama-3.1-70B-Instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "meta-llama-llama-3.3-70b-instruct-q4_k_m",
+      "repo": "MaziyarPanahi/Llama-3.3-70B-Instruct-GGUF",
+      "file": "Llama-3.3-70B-Instruct.Q4_K_M.gguf",
+      "architecture": "llama",
+      "quant": "Q4_K_M",
+      "params": 70553706560,
+      "weights_bytes": 39686459940,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 67.3,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 0.2,
+      "recency": 0.9,
+      "source_hf_id": "meta-llama/Llama-3.3-70B-Instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "maziyarpanahi-llama-3-8b-instruct-32k-v0.1-q4_k_m",
+      "repo": "MaziyarPanahi/Llama-3-8B-Instruct-32k-v0.1-GGUF",
+      "file": "Llama-3-8B-Instruct-32k-v0.1.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 8030261248,
+      "weights_bytes": 4517021952,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.0,
+      "recency": 0.9,
+      "source_hf_id": "MaziyarPanahi/Llama-3-8B-Instruct-32k-v0.1",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "mistralai-mistral-nemo-instruct-2407-q4_k_m",
+      "repo": "MaziyarPanahi/Mistral-Nemo-Instruct-2407-GGUF",
+      "file": "Mistral-Nemo-Instruct-2407.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 12247782400,
+      "weights_bytes": 6889377600,
       "task_hints": [
         "general",
         "reasoning"
       ],
       "benchmark_score": {
-        "value": 69.9,
+        "value": 37.0,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 0.6,
+      "recency": 0.9,
+      "source_hf_id": "mistralai/Mistral-Nemo-Instruct-2407",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "google-gemma-3-1b-it-q4_k_m",
+      "repo": "MaziyarPanahi/gemma-3-1b-it-GGUF",
+      "file": "gemma-3-1b-it.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 999885952,
+      "weights_bytes": 562435848,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.6,
+      "recency": 0.9,
+      "source_hf_id": "google/gemma-3-1b-it",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "01-ai-yi-1.5-6b-chat-q4_k_m",
+      "repo": "MaziyarPanahi/Yi-1.5-6B-Chat-GGUF",
+      "file": "Yi-1.5-6B-Chat.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 6061035520,
+      "weights_bytes": 3409332480,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 34.2,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 1.0,
+      "recency": 0.9,
+      "source_hf_id": "01-ai/Yi-1.5-6B-Chat",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "google-gemma-2-2b-it-q4_k_m",
+      "repo": "MaziyarPanahi/gemma-2-2b-it-GGUF",
+      "file": "gemma-2-2b-it.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 2614341888,
+      "weights_bytes": 1470567312,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 25.6,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 1.3,
+      "recency": 0.9,
+      "source_hf_id": "google/gemma-2-2b-it",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "mistralai-mistral-small-24b-instruct-2501-q4_k_m",
+      "repo": "MaziyarPanahi/Mistral-Small-24B-Instruct-2501-GGUF",
+      "file": "Mistral-Small-24B-Instruct-2501.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 23572403200,
+      "weights_bytes": 13259476800,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 0.4,
+      "recency": 0.9,
+      "source_hf_id": "mistralai/Mistral-Small-24B-Instruct-2501",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "qwen-qwen2.5-7b-instruct-q4_k_m",
+      "repo": "MaziyarPanahi/Qwen2.5-7B-Instruct-GGUF",
+      "file": "Qwen2.5-7B-Instruct.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 7615616512,
+      "weights_bytes": 4283784288,
+      "task_hints": [
+        "general",
+        "reasoning"
+      ],
+      "benchmark_score": {
+        "value": 52.8,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 1.0,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen2.5-7B-Instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "microsoft-wizardlm-2-7b-q4_k_m",
+      "repo": "MaziyarPanahi/WizardLM-2-7B-GGUF",
+      "file": "WizardLM-2-7B.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 7241732096,
+      "weights_bytes": 4073474304,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.0,
+      "recency": 0.9,
+      "source_hf_id": "microsoft/WizardLM-2-7B",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "01-ai-yi-coder-9b-chat-q4_k_m",
+      "repo": "MaziyarPanahi/Yi-Coder-9B-Chat-GGUF",
+      "file": "Yi-Coder-9B-Chat.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 8829407232,
+      "weights_bytes": 4966541568,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 25.5,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 1.0,
+      "recency": 0.9,
+      "source_hf_id": "01-ai/Yi-Coder-9B-Chat",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "qwen-qwen2.5-1.5b-instruct-q4_k_m",
+      "repo": "MaziyarPanahi/Qwen2.5-1.5B-Instruct-GGUF",
+      "file": "Qwen2.5-1.5B-Instruct.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 1543714304,
+      "weights_bytes": 868339296,
+      "task_hints": [
+        "general",
+        "reasoning"
+      ],
+      "benchmark_score": {
+        "value": 27.6,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 1.6,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen2.5-1.5B-Instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "meta-llama-llama-3.2-1b-instruct-q4_k_m",
+      "repo": "MaziyarPanahi/Llama-3.2-1B-Instruct-GGUF",
+      "file": "Llama-3.2-1B-Instruct.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 1235814432,
+      "weights_bytes": 695145618,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 21.7,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 1.6,
+      "recency": 0.9,
+      "source_hf_id": "meta-llama/Llama-3.2-1B-Instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "deepseek-ai-deepseek-r1-0528-qwen3-8b-q4_k_m",
+      "repo": "MaziyarPanahi/DeepSeek-R1-0528-Qwen3-8B-GGUF",
+      "file": "DeepSeek-R1-0528-Qwen3-8B.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 8190735360,
+      "weights_bytes": 4607288640,
+      "task_hints": [
+        "reasoning",
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.0,
+      "recency": 0.9,
+      "source_hf_id": "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "google-gemma-3-12b-it-q4_k_m",
+      "repo": "MaziyarPanahi/gemma-3-12b-it-GGUF",
+      "file": "gemma-3-12b-it.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 11765788416,
+      "weights_bytes": 6618255984,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 0.6,
+      "recency": 0.9,
+      "source_hf_id": "google/gemma-3-12b-it",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "meta-llama-llama-3.2-3b-instruct-q4_k_m",
+      "repo": "MaziyarPanahi/Llama-3.2-3B-Instruct-GGUF",
+      "file": "Llama-3.2-3B-Instruct.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 3212749888,
+      "weights_bytes": 1807171812,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 36.3,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 1.3,
+      "recency": 0.9,
+      "source_hf_id": "meta-llama/Llama-3.2-3B-Instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "mrfakename-mistral-small-3.1-24b-instruct-2503-hf-q4_k_m",
+      "repo": "MaziyarPanahi/mistral-small-3.1-24b-instruct-2503-hf-GGUF",
+      "file": "mistral-small-3.1-24b-instruct-2503-hf.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 23572403200,
+      "weights_bytes": 13259476800,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 0.4,
+      "recency": 0.9,
+      "source_hf_id": "mrfakename/mistral-small-3.1-24b-instruct-2503-hf",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "maziyarpanahi-llama-3-8b-instruct-64k-q4_k_m",
+      "repo": "MaziyarPanahi/Llama-3-8B-Instruct-64k-GGUF",
+      "file": "Llama-3-8B-Instruct-64k.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 8030261248,
+      "weights_bytes": 4517021952,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.0,
+      "recency": 0.9,
+      "source_hf_id": "MaziyarPanahi/Llama-3-8B-Instruct-64k",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "mistralai-ministral-3-3b-reasoning-2512-q4_k_m",
+      "repo": "MaziyarPanahi/Ministral-3-3B-Reasoning-2512-GGUF",
+      "file": "Ministral-3-3B-Reasoning-2512.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 3429006336,
+      "weights_bytes": 1928816064,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.3,
+      "recency": 0.9,
+      "source_hf_id": "mistralai/Ministral-3-3B-Reasoning-2512",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "google-gemma-3-27b-it-q4_k_m",
+      "repo": "MaziyarPanahi/gemma-3-27b-it-GGUF",
+      "file": "gemma-3-27b-it.Q4_K_M.gguf",
+      "architecture": "gemma3",
+      "quant": "Q4_K_M",
+      "params": 27009002240,
+      "weights_bytes": 15192563760,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 5.4,
+        "source": "aider"
+      },
+      "tok_s_factor": 0.4,
+      "recency": 0.9,
+      "source_hf_id": "google/gemma-3-27b-it",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "fireworks-ai-firefunction-v2-q4_k_m",
+      "repo": "MaziyarPanahi/firefunction-v2-GGUF",
+      "file": "firefunction-v2.Q4_K_M.gguf",
+      "architecture": "llama",
+      "quant": "Q4_K_M",
+      "params": 70553706496,
+      "weights_bytes": 39686459904,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 0.2,
+      "recency": 0.9,
+      "source_hf_id": "fireworks-ai/firefunction-v2",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "qwen-qwen2-7b-instruct-q4_k_m",
+      "repo": "MaziyarPanahi/Qwen2-7B-Instruct-GGUF",
+      "file": "Qwen2-7B-Instruct.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 7615616512,
+      "weights_bytes": 4283784288,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 41.9,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 1.0,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen2-7B-Instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "microsoft-phi-4-q4_k_m",
+      "repo": "MaziyarPanahi/phi-4-GGUF",
+      "file": "phi-4.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 14659507200,
+      "weights_bytes": 8245972800,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 45.5,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 0.6,
+      "recency": 0.9,
+      "source_hf_id": "microsoft/phi-4",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "mistralai-mathstral-7b-v0.1-q4_k_m",
+      "repo": "MaziyarPanahi/mathstral-7B-v0.1-GGUF",
+      "file": "mathstral-7B-v0.1.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 7248023552,
+      "weights_bytes": 4077013248,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.0,
+      "recency": 0.9,
+      "source_hf_id": "mistralai/mathstral-7B-v0.1",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "upstage-solar-pro-preview-instruct-q4_k_m",
+      "repo": "MaziyarPanahi/solar-pro-preview-instruct-GGUF",
+      "file": "solar-pro-preview-instruct.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 22140032000,
+      "weights_bytes": 12453768000,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 59.9,
         "source": "openllm-leaderboard"
       },
       "tok_s_factor": 0.4,
-      "recency": 1.0
+      "recency": 0.9,
+      "source_hf_id": "upstage/solar-pro-preview-instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
     },
     {
-      "id": "qwen2.5-coder-32b-q4_k_m",
+      "id": "mistralai-mistral-small-instruct-2409-q4_k_m",
+      "repo": "MaziyarPanahi/Mistral-Small-Instruct-2409-GGUF",
+      "file": "Mistral-Small-Instruct-2409.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 22247282688,
+      "weights_bytes": 12514096512,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 44.9,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 0.4,
+      "recency": 0.9,
+      "source_hf_id": "mistralai/Mistral-Small-Instruct-2409",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "qwen-qwen3-30b-a3b-instruct-2507-q4_k_m",
+      "repo": "MaziyarPanahi/Qwen3-30B-A3B-Instruct-2507-GGUF",
+      "file": "Qwen3-30B-A3B-Instruct-2507.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 30532122624,
+      "weights_bytes": 17174318976,
+      "task_hints": [
+        "general",
+        "reasoning"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 0.4,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+      "params_active": 3000000000,
+      "is_moe": true,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "qwen-qwq-32b-q4_k_m",
+      "repo": "MaziyarPanahi/QwQ-32B-GGUF",
+      "file": "QwQ-32B.Q4_K_M.gguf",
+      "architecture": "llama",
+      "quant": "Q4_K_M",
+      "params": 32763876352,
+      "weights_bytes": 18429680448,
+      "task_hints": [
+        "reasoning"
+      ],
+      "benchmark_score": {
+        "value": 18.3,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 0.4,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/QwQ-32B",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "mistralai-mistral-large-instruct-2411-q4_k_m",
+      "repo": "MaziyarPanahi/Mistral-Large-Instruct-2411-GGUF",
+      "file": "Mistral-Large-Instruct-2411.Q4_K_M.gguf-00007-of-00007.gguf",
+      "architecture": "llama",
+      "quant": "Q4_K_M",
+      "params": 122610069504,
+      "weights_bytes": 68968164096,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 69.8,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 0.2,
+      "recency": 0.9,
+      "source_hf_id": "mistralai/Mistral-Large-Instruct-2411",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "primeintellect-intellect-2-q4_k_m",
+      "repo": "MaziyarPanahi/INTELLECT-2-GGUF",
+      "file": "INTELLECT-2.Q4_K_M.gguf",
+      "architecture": "qwen2",
+      "quant": "Q4_K_M",
+      "params": 32763876352,
+      "weights_bytes": 18429680448,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 0.4,
+      "recency": 0.9,
+      "source_hf_id": "PrimeIntellect/INTELLECT-2",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "mistralai-mistral-7b-instruct-v0.2-q4_k_m",
+      "repo": "TheBloke/Mistral-7B-Instruct-v0.2-GGUF",
+      "file": "mistral-7b-instruct-v0.2.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 7241732096,
+      "weights_bytes": 4073474304,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 27.8,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 1.0,
+      "recency": 0.9,
+      "source_hf_id": "mistralai/Mistral-7B-Instruct-v0.2",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "TheBloke"
+    },
+    {
+      "id": "llmfan46-gemma-4-garnet-v2-31b-it-ultra-uncensored-heretic-q4_k_m",
+      "repo": "llmfan46/Gemma-4-Garnet-V2-31B-it-ultra-uncensored-heretic-GGUF",
+      "file": "Gemma-4-Garnet-V2-31B-it-ultra-uncensored-heretic-Q4_K_M.gguf",
+      "architecture": "gemma4",
+      "quant": "Q4_K_M",
+      "params": 30697345596,
+      "weights_bytes": 17267256897,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 0.4,
+      "recency": 0.9,
+      "source_hf_id": "llmfan46/Gemma-4-Garnet-V2-31B-it-ultra-uncensored-heretic",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "llmfan46"
+    },
+    {
+      "id": "qwen-qwen2.5-coder-32b-instruct-q4_k_m",
       "repo": "Qwen/Qwen2.5-Coder-32B-Instruct-GGUF",
       "file": "qwen2.5-coder-32b-instruct-q4_k_m.gguf",
       "architecture": "qwen2",
       "quant": "Q4_K_M",
-      "params": 32760000000,
-      "weights_bytes": 20133101568,
+      "params": 32763876352,
+      "weights_bytes": 18429680448,
       "task_hints": [
         "code"
       ],
@@ -220,26 +1480,771 @@
         "source": "aider"
       },
       "tok_s_factor": 0.4,
-      "recency": 1.0
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen2.5-Coder-32B-Instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "Qwen"
     },
     {
-      "id": "llama-3.3-70b-q4_k_m",
-      "repo": "bartowski/Llama-3.3-70B-Instruct-GGUF",
-      "file": "Llama-3.3-70B-Instruct-Q4_K_M.gguf",
-      "architecture": "llama",
+      "id": "qwen-qwen2.5-coder-1.5b-instruct-q4_k_m",
+      "repo": "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
+      "file": "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
+      "architecture": "qwen2",
       "quant": "Q4_K_M",
-      "params": 70550000000,
-      "weights_bytes": 43331452928,
+      "params": 1777088000,
+      "weights_bytes": 999612000,
+      "task_hints": [
+        "code"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.6,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "Qwen"
+    },
+    {
+      "id": "qwen-qwen2.5-0.5b-instruct-q4_k_m",
+      "repo": "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+      "file": "qwen2.5-0.5b-instruct-q4_k_m.gguf",
+      "architecture": "qwen2",
+      "quant": "Q4_K_M",
+      "params": 630167424,
+      "weights_bytes": 354469176,
       "task_hints": [
         "general",
         "reasoning"
       ],
       "benchmark_score": {
-        "value": 67.3,
+        "value": 15.2,
         "source": "openllm-leaderboard"
       },
+      "tok_s_factor": 1.6,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen2.5-0.5B-Instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "Qwen"
+    },
+    {
+      "id": "meta-llama-llama-3.2-1b-instruct-q4_k_m",
+      "repo": "bartowski/Llama-3.2-1B-Instruct-GGUF",
+      "file": "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+      "architecture": "llama",
+      "quant": "Q4_K_M",
+      "params": 1235814432,
+      "weights_bytes": 695145618,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 21.7,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 1.6,
+      "recency": 0.9,
+      "source_hf_id": "meta-llama/Llama-3.2-1B-Instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "bartowski"
+    },
+    {
+      "id": "zai-org-glm-4.7-q4_k_m",
+      "repo": "unsloth/GLM-4.7-GGUF",
+      "file": "Q4_K_M/GLM-4.7-Q4_K_M-00005-of-00005.gguf",
+      "architecture": "glm4moe",
+      "quant": "Q4_K_M",
+      "params": 358337791296,
+      "weights_bytes": 201565007604,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
       "tok_s_factor": 0.2,
-      "recency": 1.0
+      "recency": 0.9,
+      "source_hf_id": "zai-org/GLM-4.7",
+      "params_active": 32000000000,
+      "is_moe": true,
+      "gguf_publisher": "unsloth"
+    },
+    {
+      "id": "nvidia-nvidia-nemotron-3-nano-30b-a3b-bf16-q4_k_m",
+      "repo": "unsloth/Nemotron-3-Nano-30B-A3B-GGUF",
+      "file": "Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf",
+      "architecture": "nemotron_h_moe",
+      "quant": "Q4_K_M",
+      "params": 31577940288,
+      "weights_bytes": 17762591412,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 0.4,
+      "recency": 0.9,
+      "source_hf_id": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+      "params_active": 3000000000,
+      "is_moe": true,
+      "gguf_publisher": "unsloth"
+    },
+    {
+      "id": "jackrong-qwopus3.5-9b-v3.5-q4_k_m",
+      "repo": "Jackrong/Qwopus-GLM-18B-Merged-GGUF",
+      "file": "Qwopus-GLM-18B-Healed-Q4_K_M.gguf",
+      "architecture": "qwen35",
+      "quant": "Q4_K_M",
+      "params": 15873364992,
+      "weights_bytes": 8928767808,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 0.6,
+      "recency": 0.9,
+      "source_hf_id": "Jackrong/Qwopus3.5-9B-v3.5",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "Jackrong"
+    },
+    {
+      "id": "qwen-qwen2.5-coder-7b-instruct-q4_k_m",
+      "repo": "bartowski/Qwen2.5-Coder-7B-Instruct-GGUF",
+      "file": "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
+      "architecture": "qwen2",
+      "quant": "Q4_K_M",
+      "params": 7615616512,
+      "weights_bytes": 4283784288,
+      "task_hints": [
+        "code"
+      ],
+      "benchmark_score": {
+        "value": 33.8,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 1.0,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen2.5-Coder-7B-Instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "bartowski"
+    },
+    {
+      "id": "liquidai-lfm2.5-1.2b-instruct-q4_k_m",
+      "repo": "LiquidAI/LFM2.5-1.2B-Instruct-GGUF",
+      "file": "LFM2.5-1.2B-Instruct-Q4_K_M.gguf",
+      "architecture": "lfm2",
+      "quant": "Q4_K_M",
+      "params": 1170340608,
+      "weights_bytes": 658316592,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.6,
+      "recency": 0.9,
+      "source_hf_id": "LiquidAI/LFM2.5-1.2B-Instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "LiquidAI"
+    },
+    {
+      "id": "deepseek-ai-deepseek-r1-distill-qwen-1.5b-q4_k_m",
+      "repo": "unsloth/DeepSeek-R1-Distill-Qwen-1.5B-GGUF",
+      "file": "DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf",
+      "architecture": "qwen2",
+      "quant": "Q4_K_M",
+      "params": 1777088000,
+      "weights_bytes": 999612000,
+      "task_hints": [
+        "reasoning",
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 15.5,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 1.6,
+      "recency": 0.9,
+      "source_hf_id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "unsloth"
+    },
+    {
+      "id": "meta-llama-llama-3.2-3b-instruct-q4_k_m",
+      "repo": "unsloth/Llama-3.2-3B-Instruct-GGUF",
+      "file": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+      "architecture": "llama",
+      "quant": "Q4_K_M",
+      "params": 3212749888,
+      "weights_bytes": 1807171812,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 36.3,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 1.3,
+      "recency": 0.9,
+      "source_hf_id": "meta-llama/Llama-3.2-3B-Instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "unsloth"
+    },
+    {
+      "id": "nvidia-nemotron-3-nano-omni-30b-a3b-reasoning-bf16-q4_k_m",
+      "repo": "unsloth/NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-GGUF",
+      "file": "NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-Q4_K_M.gguf",
+      "architecture": "nemotron_h_moe",
+      "quant": "Q4_K_M",
+      "params": 31577940288,
+      "weights_bytes": 17762591412,
+      "task_hints": [
+        "general",
+        "reasoning"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 0.4,
+      "recency": 0.9,
+      "source_hf_id": "nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16",
+      "params_active": 3000000000,
+      "is_moe": true,
+      "gguf_publisher": "unsloth"
+    },
+    {
+      "id": "qwen-qwen2.5-coder-14b-instruct-q4_k_m",
+      "repo": "Qwen/Qwen2.5-Coder-14B-Instruct-GGUF",
+      "file": "qwen2.5-coder-14b-instruct-q4_k_m.gguf",
+      "architecture": "qwen2",
+      "quant": "Q4_K_M",
+      "params": 14770033664,
+      "weights_bytes": 8308143936,
+      "task_hints": [
+        "code"
+      ],
+      "benchmark_score": {
+        "value": 48.2,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 0.6,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen2.5-Coder-14B-Instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "Qwen"
+    },
+    {
+      "id": "google-gemma-3-270m-it-q4_k_m",
+      "repo": "unsloth/gemma-3-270m-it-GGUF",
+      "file": "gemma-3-270m-it-Q4_K_M.gguf",
+      "architecture": "gemma3",
+      "quant": "Q4_K_M",
+      "params": 268098176,
+      "weights_bytes": 150805224,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.6,
+      "recency": 0.9,
+      "source_hf_id": "google/gemma-3-270m-it",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "unsloth"
+    },
+    {
+      "id": "deepseek-ai-deepseek-r1-0528-qwen3-8b-q4_k_m",
+      "repo": "lmstudio-community/DeepSeek-R1-0528-Qwen3-8B-GGUF",
+      "file": "DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf",
+      "architecture": "qwen3",
+      "quant": "Q4_K_M",
+      "params": 8190735360,
+      "weights_bytes": 4607288640,
+      "task_hints": [
+        "reasoning",
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.0,
+      "recency": 0.9,
+      "source_hf_id": "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "lmstudio-community"
+    },
+    {
+      "id": "qwen-qwen3-4b-q4_k_m",
+      "repo": "unsloth/Qwen3-4B-GGUF",
+      "file": "Qwen3-4B-Q4_K_M.gguf",
+      "architecture": "qwen3",
+      "quant": "Q4_K_M",
+      "params": 4022468096,
+      "weights_bytes": 2262638304,
+      "task_hints": [
+        "general",
+        "reasoning"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.3,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen3-4B",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "unsloth"
+    },
+    {
+      "id": "qwen-qwen2.5-7b-instruct-q4_k_m",
+      "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF",
+      "file": "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+      "architecture": "qwen2",
+      "quant": "Q4_K_M",
+      "params": 7615616512,
+      "weights_bytes": 4283784288,
+      "task_hints": [
+        "general",
+        "reasoning"
+      ],
+      "benchmark_score": {
+        "value": 52.8,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 1.0,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen2.5-7B-Instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "bartowski"
+    },
+    {
+      "id": "bartowski-deepseek-coder-v2-lite-instruct-gguf-q4_k_m",
+      "repo": "bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF",
+      "file": "DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf",
+      "architecture": "deepseek2",
+      "quant": "Q4_K_M",
+      "params": 15706484224,
+      "weights_bytes": 8834897376,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 0.6,
+      "recency": 0.9,
+      "source_hf_id": "bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "bartowski"
+    },
+    {
+      "id": "qwen-qwen3-0.6b-q4_k_m",
+      "repo": "unsloth/Qwen3-0.6B-GGUF",
+      "file": "Qwen3-0.6B-Q4_K_M.gguf",
+      "architecture": "qwen3",
+      "quant": "Q4_K_M",
+      "params": 596049920,
+      "weights_bytes": 335278080,
+      "task_hints": [
+        "general",
+        "reasoning"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.6,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen3-0.6B",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "unsloth"
+    },
+    {
+      "id": "qwen-qwen3-4b-q4_k_m",
+      "repo": "Qwen/Qwen3-4B-GGUF",
+      "file": "Qwen3-4B-Q4_K_M.gguf",
+      "architecture": "qwen3",
+      "quant": "Q4_K_M",
+      "params": 4022468096,
+      "weights_bytes": 2262638304,
+      "task_hints": [
+        "general",
+        "reasoning"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.3,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen3-4B",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "Qwen"
+    },
+    {
+      "id": "huggingfacetb-smollm2-1.7b-instruct-q4_k_m",
+      "repo": "bartowski/SmolLM2-1.7B-Instruct-GGUF",
+      "file": "SmolLM2-1.7B-Instruct-Q4_K_M.gguf",
+      "architecture": "llama",
+      "quant": "Q4_K_M",
+      "params": 1711376384,
+      "weights_bytes": 962649216,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 22.5,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 1.6,
+      "recency": 0.9,
+      "source_hf_id": "HuggingFaceTB/SmolLM2-1.7B-Instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "bartowski"
+    },
+    {
+      "id": "quantfactory-meta-llama-3.1-8b-instruct-gguf-q4_k_m",
+      "repo": "QuantFactory/Meta-Llama-3.1-8B-Instruct-GGUF",
+      "file": "Meta-Llama-3.1-8B-Instruct.Q4_K_M.gguf",
+      "architecture": "llama",
+      "quant": "Q4_K_M",
+      "params": 8030261248,
+      "weights_bytes": 4517021952,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.0,
+      "recency": 0.9,
+      "source_hf_id": "QuantFactory/Meta-Llama-3.1-8B-Instruct-GGUF",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "QuantFactory"
+    },
+    {
+      "id": "deepseek-ai-deepseek-r1-q4_k_m",
+      "repo": "unsloth/DeepSeek-R1-GGUF",
+      "file": "DeepSeek-R1-Q4_K_M/DeepSeek-R1-Q4_K_M-00009-of-00009.gguf",
+      "architecture": "deepseek",
+      "quant": "Q4_K_M",
+      "params": 671026419200,
+      "weights_bytes": 377452360800,
+      "task_hints": [
+        "reasoning",
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 0.2,
+      "recency": 0.9,
+      "source_hf_id": "deepseek-ai/DeepSeek-R1",
+      "params_active": 37000000000,
+      "is_moe": true,
+      "gguf_publisher": "unsloth"
+    },
+    {
+      "id": "trevorjs-gemma-4-e4b-it-uncensored-q4_k_m",
+      "repo": "TrevorJS/gemma-4-E4B-it-uncensored-GGUF",
+      "file": "gemma-4-E4B-it-uncensored-Q4_K_M.gguf",
+      "architecture": "gemma4",
+      "quant": "Q4_K_M",
+      "params": 7518069290,
+      "weights_bytes": 4228913975,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.0,
+      "recency": 0.9,
+      "source_hf_id": "TrevorJS/gemma-4-E4B-it-uncensored",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "TrevorJS"
+    },
+    {
+      "id": "qwen-qwen2.5-7b-instruct-q4_k_m",
+      "repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
+      "file": "qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf",
+      "architecture": "qwen2",
+      "quant": "Q4_K_M",
+      "params": 7615616512,
+      "weights_bytes": 4283784288,
+      "task_hints": [
+        "general",
+        "reasoning"
+      ],
+      "benchmark_score": {
+        "value": 52.8,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 1.0,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen2.5-7B-Instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "Qwen"
+    },
+    {
+      "id": "qwen-qwen2.5-coder-3b-instruct-q4_k_m",
+      "repo": "Qwen/Qwen2.5-Coder-3B-Instruct-GGUF",
+      "file": "qwen2.5-coder-3b-instruct-q4_k_m.gguf",
+      "architecture": "qwen2",
+      "quant": "Q4_K_M",
+      "params": 3397103616,
+      "weights_bytes": 1910870784,
+      "task_hints": [
+        "code"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.3,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen2.5-Coder-3B-Instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "Qwen"
+    },
+    {
+      "id": "mistralai-mistral-7b-instruct-v0.1-q4_k_m",
+      "repo": "TheBloke/Mistral-7B-Instruct-v0.1-GGUF",
+      "file": "mistral-7b-instruct-v0.1.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 7241732096,
+      "weights_bytes": 4073474304,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 19.2,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 1.0,
+      "recency": 0.9,
+      "source_hf_id": "mistralai/Mistral-7B-Instruct-v0.1",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "TheBloke"
+    },
+    {
+      "id": "qwen-qwen2.5-coder-14b-instruct-q4_k_m",
+      "repo": "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF",
+      "file": "Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf",
+      "architecture": "qwen2",
+      "quant": "Q4_K_M",
+      "params": 14770033664,
+      "weights_bytes": 8308143936,
+      "task_hints": [
+        "code"
+      ],
+      "benchmark_score": {
+        "value": 48.2,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 0.6,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen2.5-Coder-14B-Instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "bartowski"
+    },
+    {
+      "id": "meta-llama-llama-2-7b-chat-hf-q4_k_m",
+      "repo": "TheBloke/Llama-2-7B-Chat-GGUF",
+      "file": "llama-2-7b-chat.Q4_K_M.gguf",
+      "architecture": "llama",
+      "quant": "Q4_K_M",
+      "params": 6738415616,
+      "weights_bytes": 3790358784,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 14.4,
+        "source": "openllm-leaderboard"
+      },
+      "tok_s_factor": 1.0,
+      "recency": 0.9,
+      "source_hf_id": "meta-llama/Llama-2-7b-chat-hf",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "TheBloke"
+    },
+    {
+      "id": "qwen-qwen3-coder-next-q4_k_m",
+      "repo": "MaziyarPanahi/Qwen3-Coder-Next-GGUF",
+      "file": "Qwen3-Coder-Next.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 79674391296,
+      "weights_bytes": 44816845104,
+      "task_hints": [
+        "code"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 0.2,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen3-Coder-Next",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "nvidia-nvidia-nemotron-nano-12b-v2-q4_k_m",
+      "repo": "MaziyarPanahi/NVIDIA-Nemotron-Nano-12B-v2-GGUF",
+      "file": "NVIDIA-Nemotron-Nano-12B-v2.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 12310001152,
+      "weights_bytes": 6924375648,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 0.6,
+      "recency": 0.9,
+      "source_hf_id": "nvidia/NVIDIA-Nemotron-Nano-12B-v2",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "mistralai-ministral-3-14b-reasoning-2512-q4_k_m",
+      "repo": "MaziyarPanahi/Ministral-3-14B-Reasoning-2512-GGUF",
+      "file": "Ministral-3-14B-Reasoning-2512.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 13506073600,
+      "weights_bytes": 7597166400,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 0.6,
+      "recency": 0.9,
+      "source_hf_id": "mistralai/Ministral-3-14B-Reasoning-2512",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "qwen-qwen3-4b-thinking-2507-q4_k_m",
+      "repo": "MaziyarPanahi/Qwen3-4B-Thinking-2507-GGUF",
+      "file": "Qwen3-4B-Thinking-2507.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 4022468096,
+      "weights_bytes": 2262638304,
+      "task_hints": [
+        "general",
+        "reasoning"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.3,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen3-4B-Thinking-2507",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "qwen-qwen3-8b-q4_k_m",
+      "repo": "unsloth/Qwen3-8B-GGUF",
+      "file": "Qwen3-8B-Q4_K_M.gguf",
+      "architecture": "qwen3",
+      "quant": "Q4_K_M",
+      "params": 8190735360,
+      "weights_bytes": 4607288640,
+      "task_hints": [
+        "general",
+        "reasoning"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.0,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen3-8B",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "unsloth"
+    },
+    {
+      "id": "arliai-gpt-oss-20b-derestricted-q4_k_m",
+      "repo": "MaziyarPanahi/gpt-oss-20b-Derestricted-GGUF",
+      "file": "gpt-oss-20b-Derestricted.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 20914757184,
+      "weights_bytes": 11764550916,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 40.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 0.4,
+      "recency": 0.9,
+      "source_hf_id": "ArliAI/gpt-oss-20b-Derestricted",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
     }
   ]
 }

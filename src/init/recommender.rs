@@ -305,11 +305,15 @@ pub fn composite_score(
     + w.tok_per_second * speed
     + w.param_quality * params_score
     + w.recency * recency;
-  // Task hint boost: matching task adds 0.05 — small but enough to
-  // re-rank a coder-Q4 vs a generalist-Q4 of the same family.
+  // Task hint boost: when caller asks for a specific task, every
+  // task-matched entry outranks every non-matched one (a +1.0 lift
+  // exceeds the entire 0.0–1.0 composite scale). Inside each tier the
+  // composite score still orders things normally. Without this an OLB
+  // general-bench winner outranks a coder-tagged peer with a lower
+  // OLB score, which contradicts what `task="code"` is asking for.
   if let Some(t) = options.task.as_deref() {
     if entry.task_hints.iter().any(|h| h == t) {
-      score += 0.05;
+      score += 1.0;
     }
   }
   score
@@ -544,29 +548,69 @@ mod tests {
     assert_eq!(escape_count, 1);
   }
 
+  /// Tiny in-memory snapshot exercising task-hint + on-disk ranking
+  /// without depending on whatever the live bundled catalog happens to
+  /// contain. Two entries that fit linux_nvidia(24): a general 14B
+  /// with a higher OLB-style score, and a coder 7B with a lower one
+  /// — exactly the shape the regen rotation produces.
+  fn task_hint_fixture() -> BenchmarkSnapshot {
+    let bundled = load_bundled();
+    BenchmarkSnapshot {
+      schema_version: 1,
+      bundle_date: "2026-05-20".into(),
+      min_version: "0.0.1".into(),
+      remote_url: None,
+      recommender_weights: bundled.recommender_weights.clone(),
+      models: vec![
+        ModelEntry {
+          task_hints: vec!["general".into(), "reasoning".into()],
+          benchmark_score: crate::init::benchmark::BenchmarkScore {
+            value: 62.0,
+            source: "test-general".into(),
+          },
+          ..dense_entry(7_700_000_000, 14_000_000_000) // 14B general
+        },
+        ModelEntry {
+          file: "qwen2.5-coder-7b-instruct-q4_k_m.gguf".into(),
+          task_hints: vec!["code".into()],
+          benchmark_score: crate::init::benchmark::BenchmarkScore {
+            value: 34.0,
+            source: "test-coder".into(),
+          },
+          ..dense_entry(4_283_784_288, 7_000_000_000) // 7B coder
+        },
+      ],
+    }
+  }
+
   #[test]
   fn recommend_task_hint_lifts_matching_models() {
-    let snap = load_bundled();
+    let snap = task_hint_fixture();
     let hw = linux_nvidia(24.0);
     let opts = RecommendOptions {
       task: Some("code".into()),
       ..RecommendOptions::default()
     };
     let recs = recommend(&snap, &hw, &[], &opts);
-    // Top pick should be a coder-tagged model.
-    if let RecommendationKind::Curated { entry } = &recs[0].kind {
-      assert!(
+    // Top pick must be the coder-tagged 7B even though the general
+    // 14B has a higher raw benchmark score.
+    match &recs[0].kind {
+      RecommendationKind::Curated { entry } => assert!(
         entry.task_hints.iter().any(|h| h == "code"),
         "task='code' must surface a coder-tagged model at top, got {}",
         entry.id
-      );
+      ),
+      other => panic!("expected Curated at position 0, got {other:?}"),
     }
   }
 
   #[test]
   fn recommend_on_disk_beats_remote_tie() {
-    let snap = load_bundled();
+    let snap = task_hint_fixture();
     let hw = linux_nvidia(24.0);
+    // Match the file:basename of the coder-7B catalog entry so
+    // on_disk_score clones its score; then the +ON_DISK_TIE_BREAK
+    // pushes the on-disk row above its remote twin.
     let on_disk = vec![OnDiskModel {
       path: std::path::PathBuf::from("/m/qwen2.5-coder-7b-instruct-q4_k_m.gguf"),
       architecture: Some("qwen2".into()),
@@ -577,16 +621,14 @@ mod tests {
       ..RecommendOptions::default()
     };
     let recs = recommend(&snap, &hw, &on_disk, &opts);
-    // On-disk match should rank at or above the equivalent catalog
-    // entry's position (the tie-break favours on-disk).
     let first_on_disk = recs
       .iter()
       .position(|r| matches!(r.kind, RecommendationKind::OnDisk { .. }));
     assert!(first_on_disk.is_some(), "on-disk model must appear");
-    assert!(
-      first_on_disk.unwrap() <= 2,
-      "on-disk match should rank near the top, got position {}",
-      first_on_disk.unwrap()
+    assert_eq!(
+      first_on_disk.unwrap(),
+      0,
+      "on-disk match must sort above its remote twin",
     );
   }
 

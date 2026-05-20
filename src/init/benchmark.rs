@@ -291,30 +291,37 @@ mod tests {
   }
 
   #[test]
-  fn bundled_models_default_new_fields_when_absent() {
-    // The current bundled JSON predates Unit 1's schema additions, so
-    // every row must parse with `source_hf_id=""`, `params_active=None`,
-    // `is_moe=false`, `gguf_publisher=""` — the serde defaults. This
-    // pins the "old snapshot still loads" half of Unit 1's contract.
-    let snap = load_bundled();
-    for m in &snap.models {
-      assert_eq!(
-        m.source_hf_id, "",
-        "{} carries empty default source_hf_id",
-        m.id
-      );
-      assert!(
-        m.params_active.is_none(),
-        "{} has no params_active by default",
-        m.id
-      );
-      assert!(!m.is_moe, "{} defaults to dense (is_moe=false)", m.id);
-      assert_eq!(
-        m.gguf_publisher, "",
-        "{} carries empty default gguf_publisher",
-        m.id
-      );
-    }
+  fn old_schema_snapshot_defaults_new_fields() {
+    // A pre-Unit-1 snapshot (no source_hf_id / params_active / is_moe
+    // / gguf_publisher) must still deserialise via the serde defaults.
+    // This keeps the "old asset still loads on a new binary" half of
+    // Unit 1's backward-compat contract — even after the bundled JSON
+    // gets regenerated with the new fields populated.
+    let body = serde_json::json!({
+      "schema_version": 1,
+      "bundle_date": "2026-05-19",
+      "min_version": "0.0.1",
+      "recommender_weights": load_bundled().recommender_weights,
+      "models": [{
+        "id": "legacy-7b-q4_k_m",
+        "repo": "test/legacy-7b-GGUF",
+        "file": "legacy-7b-q4_k_m.gguf",
+        "architecture": "llama",
+        "quant": "Q4_K_M",
+        "params": 7_000_000_000_u64,
+        "weights_bytes": 4_200_000_000_u64,
+        "task_hints": ["general"],
+        "benchmark_score": { "value": 50.0, "source": "test" },
+        "tok_s_factor": 1.0,
+        "recency": 1.0
+      }]
+    });
+    let snap: BenchmarkSnapshot = serde_json::from_value(body).expect("legacy shape parses");
+    let m = &snap.models[0];
+    assert_eq!(m.source_hf_id, "");
+    assert!(m.params_active.is_none());
+    assert!(!m.is_moe);
+    assert_eq!(m.gguf_publisher, "");
   }
 
   #[test]
