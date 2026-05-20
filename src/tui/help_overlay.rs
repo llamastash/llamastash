@@ -200,6 +200,34 @@ const LOGS: &[Row] = &[
   },
 ];
 
+/// HF pull dialog (R104). Surfaces the always-on keys from
+/// `HF_DIALOG_BINDINGS` plus a short explanation of the per-stage
+/// keys (`o` sort cycle, `n`/`p` paging, Backspace stage-back) that
+/// can't be expressed as `(Focus, Action)` pairs because they're
+/// shadowed by the per-stage router.
+const HF_DIALOG: &[Row] = &[
+  Row::Single {
+    focus: Focus::List,
+    action: Action::OpenHfDialog,
+  },
+  Row::Single {
+    focus: Focus::HfDialog,
+    action: Action::Submit,
+  },
+  Row::Single {
+    focus: Focus::HfDialog,
+    action: Action::Cancel,
+  },
+  Row::Single {
+    focus: Focus::HfDialog,
+    action: Action::MoveUp,
+  },
+  Row::Single {
+    focus: Focus::HfDialog,
+    action: Action::MoveDown,
+  },
+];
+
 /// The three submit actions across the right-pane inputs collapse
 /// into one row at the default `Enter` binding.
 const SUBMIT_TRIPLET: &[(Focus, Action)] = &[
@@ -349,6 +377,10 @@ const COLUMN_3: &[Group] = &[
   Group {
     title: "Settings",
     rows: SETTINGS,
+  },
+  Group {
+    title: "HF pull dialog",
+    rows: HF_DIALOG,
   },
 ];
 

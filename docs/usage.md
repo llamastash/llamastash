@@ -392,6 +392,21 @@ These are the defaults. Override any binding via the `keybindings:` block in `co
 | `t` | Cycle theme |
 | `Tab` / `Shift+Tab` | Move focus across panes (arrows / `h` / `l` do the same) |
 | `Shift+M` / `Shift+L` / `Shift+C` / `Shift+S` | Jump focus to Models / Logs / Chat / Settings respectively. `L` and `C` only fire when the focused model is running. |
+| `Ctrl+D` | Open the HuggingFace pull dialog (search + sort + paginate, download via the pinned status strip) |
+
+### HuggingFace pull dialog (`Focus::HfDialog`, `Ctrl+D`)
+
+Three-stage modal: **Search → File picker → Confirm**. Search runs live against the public `/api/models` endpoint (300 ms debounce); paste an `owner/repo[:filename]` slug + Enter to bypass search.
+
+| Key | Action |
+|---|---|
+| (alphanumerics / Backspace) | Edit the search query in the Search stage |
+| `↑` / `↓` | Move the row cursor |
+| `o` | Cycle sort (Downloads → Likes → Recently Updated → Trending). Resets to page 1. |
+| `n` / `p` | Next / previous page |
+| `Enter` | Search → drill into the focused repo's files; FilePicker → confirm the chosen file; Confirm → enqueue the pull on the download strip |
+| `Backspace` | Step back one stage (FilePicker → Search; Confirm → FilePicker) |
+| `Esc` | Close the dialog (in-flight downloads keep running) |
 
 ### Launch picker
 

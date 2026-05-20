@@ -1352,6 +1352,39 @@ mod tests {
   }
 
   #[test]
+  fn ctrl_d_in_list_focus_opens_hf_dialog() {
+    // R104: Ctrl+D opens the HF pull dialog from the model list.
+    assert_eq!(
+      action_for(Focus::List, KeyCode::Char('d'), KeyModifiers::CONTROL),
+      Some(Action::OpenHfDialog),
+    );
+  }
+
+  #[test]
+  fn ctrl_d_is_not_shadowed_in_any_sub_focus() {
+    // The dialog steals input via `Focus::HfDialog`; the binding
+    // must not also fire under another focus (e.g. RightPane or
+    // the input modes) where it would collide.
+    use crate::tui::keybindings::Focus::*;
+    for focus in [
+      Filter,
+      AdvancedPanel,
+      RightPane,
+      ChatInput,
+      EmbedInput,
+      RerankInput,
+      ConfirmPopup,
+      HfDialog,
+    ] {
+      let action = action_for(focus, KeyCode::Char('d'), KeyModifiers::CONTROL);
+      assert!(
+        action.is_none() || action == Some(Action::OpenHfDialog),
+        "Ctrl+D collision under {focus:?}: {action:?}"
+      );
+    }
+  }
+
+  #[test]
   fn list_bindings_include_navigation_filter_launch_yank_theme() {
     let bs = bindings_for(Focus::List);
     let labels: Vec<&str> = bs.iter().map(|b| b.label).collect();

@@ -1,7 +1,7 @@
 ---
 title: HuggingFace Pull TUI Dialog (Search / Sort / Pagination + Friendly Names)
 type: feat
-status: active
+status: completed
 date: 2026-05-20
 origin: docs/brainstorms/2026-05-20-hf-pull-tui-dialog-requirements.md
 ---
@@ -444,7 +444,7 @@ overlay order in `render::render`).
 
 ## Implementation Units
 
-- [ ] **Unit 1: Filename quant heuristic**
+- [x] **Unit 1: Filename quant heuristic**
 
   **Goal:** Provide a filename-based `Quant` parser so the new dialog's
   file picker and the friendly-name fallback can label remote /
@@ -490,7 +490,7 @@ overlay order in `render::render`).
   - All test scenarios pass under `cargo test --features test-fixtures`.
   - No clippy warnings.
 
-- [ ] **Unit 2: Friendly display-name helper + render-site refactor**
+- [x] **Unit 2: Friendly display-name helper + render-site refactor**
 
   **Goal:** Replace `model_display_name(&Path)` and
   `list_pane::display_name(&DiscoveredModel)` with a single source-aware
@@ -587,7 +587,7 @@ overlay order in `render::render`).
   - Manual smoke (against a populated HF cache): `cargo run` shows
     HF rows as `<repo> (<quant>)` and non-HF rows unchanged.
 
-- [ ] **Unit 3: HF Hub API client (search + per-repo metadata)**
+- [x] **Unit 3: HF Hub API client (search + per-repo metadata)**
 
   **Goal:** A typed client that issues `/api/models` searches and
   per-repo listings through `FetchClient`, with cursor-based
@@ -671,7 +671,7 @@ overlay order in `render::render`).
   - Unit tests pass under `cargo test --features test-fixtures`.
   - No network traffic in tests — every external response is a fixture.
 
-- [ ] **Unit 4: HF dialog state machine + render**
+- [x] **Unit 4: HF dialog state machine + render**
 
   **Goal:** A modal overlay that owns the Search → File picker →
   Confirm state machine and renders into a centred modal.
@@ -773,7 +773,7 @@ overlay order in `render::render`).
   - Manual smoke: Ctrl+D opens the dialog; typing fires a search;
     arrow keys move; Enter drills down.
 
-- [ ] **Unit 5: File picker — shard collapse + hardware-fit indicator**
+- [x] **Unit 5: File picker — shard collapse + hardware-fit indicator**
 
   **Goal:** Render the chosen repo's `.gguf` files with size,
   quant, and a ✓/⚠/✗/— fit indicator. Group shard sets.
@@ -844,7 +844,7 @@ overlay order in `render::render`).
   - `cargo test --features test-fixtures recommender::tests` and
     `hf_dialog::tests` pass.
 
-- [ ] **Unit 6: Pull orchestration + pinned download strip**
+- [x] **Unit 6: Pull orchestration + pinned download strip**
 
   **Goal:** Confirm dispatches a background download via the existing
   R65 primitive, and a pinned status strip renders progress between
@@ -939,7 +939,7 @@ overlay order in `render::render`).
     appears, progress increments, model lands in the list pane with
     its friendly name.
 
-- [ ] **Unit 7: Keybindings, help overlay, scope-boundary docs**
+- [x] **Unit 7: Keybindings, help overlay, scope-boundary docs**
 
   **Goal:** Surface `Ctrl+D` in the help overlay + AGENTS.md, finalise
   the per-Focus binding tables for the dialog, and sync the docs.
