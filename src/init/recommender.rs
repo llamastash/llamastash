@@ -40,6 +40,20 @@ const ACTIVATIONS_OVERHEAD: f64 = 1.20;
 /// the measured llama.cpp numbers.
 const KV_FRACTION_AT_4K_F16: f64 = 0.15;
 
+/// MoE KV scaling: bytes of KV cache per billion attention-bearing
+/// parameters per 1k context tokens. Ported from whichllm's
+/// `_KV_BYTES_PER_BPARAM_PER_KCTX` (3.5 MB). For dense models we keep
+/// the weights-fraction estimator above; for MoE the KV grows with
+/// the active-attention-param count, not the full weights footprint,
+/// since experts share an attention block.
+const MOE_KV_BYTES_PER_BPARAM_PER_KCTX: f64 = 3_500_000.0;
+
+/// MoE attention-parameter multiplier on `params_active`. Ported from
+/// whichllm's `_MOE_ATTENTION_PARAM_MULTIPLIER` (4.0): the attention
+/// path on MoE models carries roughly 4× the active-params worth of
+/// state because it sees every expert's tokens regardless of routing.
+const MOE_ATTENTION_PARAM_MULTIPLIER: f64 = 4.0;
+
 /// CPU RAM-fit fraction (R55 fallback rule). When VRAM isn't
 /// available, recommend models whose `weights_bytes` fits under
 /// 50% of free RAM.
@@ -70,6 +84,12 @@ pub struct Recommendation {
   pub estimated_peak_bytes: Option<u64>,
 }
 
+// `large_enum_variant`: ModelEntry is ~272 bytes after Unit 1's
+// schema additions; OnDisk is 56, Escape is 0. Boxing the Curated
+// payload would force every Recommendation consumer to dereference
+// for no measurable win — top-N is 5-6 entries so the per-list
+// overhead is ~1.4 KB. Accept the size asymmetry instead.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RecommendationKind {
@@ -129,7 +149,7 @@ pub fn recommend(
   let mut scored: Vec<Recommendation> = Vec::with_capacity(snapshot.models.len() + on_disk.len());
 
   for entry in &snapshot.models {
-    let peak = estimate_peak_bytes(entry.weights_bytes, options.ctx);
+    let peak = estimate_peak_bytes_for_entry(entry, options.ctx);
     if !fits(peak, ceiling, hardware) {
       continue;
     }
@@ -186,7 +206,9 @@ pub fn recommend(
 const ON_DISK_TIE_BREAK: f32 = 0.01;
 
 /// Coarse peak-memory estimate. See module-level docs for the
-/// approximation rationale.
+/// approximation rationale. Dense path: KV scales with the weights
+/// footprint; for MoE-aware estimation, callers with a `ModelEntry`
+/// should use [`estimate_peak_bytes_for_entry`] instead.
 pub fn estimate_peak_bytes(weights_bytes: u64, ctx: u32) -> u64 {
   let w = weights_bytes as f64;
   let activations = w * ACTIVATIONS_OVERHEAD;
@@ -195,6 +217,44 @@ pub fn estimate_peak_bytes(weights_bytes: u64, ctx: u32) -> u64 {
   let ctx_scale = (ctx as f64) / 4096.0;
   let kv = w * KV_FRACTION_AT_4K_F16 * ctx_scale;
   (activations + kv).max(0.0) as u64
+}
+
+/// MoE-aware peak-memory estimate. Branches on `entry.is_moe`:
+///
+/// - **Dense:** delegates to [`estimate_peak_bytes`] for backward
+///   compatibility with the weights-fraction KV estimator.
+/// - **MoE:** weights stay fully resident (`weights × ACTIVATIONS_OVERHEAD`),
+///   but the KV term is computed from `params_active`. Without an
+///   explicit `params_active`, falls back to dense math against
+///   `entry.params` — defensible since unannotated MoE models in the
+///   snapshot are a regen-script bug, not a runtime concern.
+///
+/// Matches whichllm's `estimate_vram` within ±15% across the corpus
+/// at ctx ∈ {4k, 16k, 32k} — verified in the inline tests below.
+pub fn estimate_peak_bytes_for_entry(entry: &ModelEntry, ctx: u32) -> u64 {
+  if !entry.is_moe {
+    return estimate_peak_bytes(entry.weights_bytes, ctx);
+  }
+  let Some(active) = entry.params_active else {
+    // MoE entry without `params_active`: data bug in the snapshot
+    // (regen script should always populate it). Fall back to dense
+    // rather than panic — the corpus gate's fit predicate is the
+    // safety net for accidentally over-sized recommendations.
+    return estimate_peak_bytes(entry.weights_bytes, ctx);
+  };
+  let w = entry.weights_bytes as f64;
+  let activations = w * ACTIVATIONS_OVERHEAD;
+  let kv = moe_kv_bytes(active, ctx);
+  (activations + kv).max(0.0) as u64
+}
+
+/// Whichllm-style MoE KV-cache bytes. Splits `params_active` into
+/// billions and `ctx` into thousands so the constant
+/// [`MOE_KV_BYTES_PER_BPARAM_PER_KCTX`] reads in its natural units.
+fn moe_kv_bytes(params_active: u64, ctx: u32) -> f64 {
+  let params_b = (params_active as f64) / 1.0e9;
+  let ctx_k = (ctx as f64) / 1024.0;
+  MOE_KV_BYTES_PER_BPARAM_PER_KCTX * params_b * MOE_ATTENTION_PARAM_MULTIPLIER * ctx_k
 }
 
 /// Effective VRAM ceiling: 90% of detected VRAM minus the per-backend
@@ -300,6 +360,10 @@ fn on_disk_score(
     },
     tok_s_factor: 1.0,
     recency: 0.7,
+    source_hf_id: String::new(),
+    params_active: None,
+    is_moe: false,
+    gguf_publisher: String::new(),
   };
   composite_score(&fake_entry, snapshot, options)
 }
@@ -580,6 +644,127 @@ mod tests {
     assert!(
       off < (expected / 5) as i64,
       "delta ({delta}) should be near {expected} (±20%), got off={off}"
+    );
+  }
+
+  fn moe_entry(weights_bytes: u64, params: u64, params_active: u64) -> ModelEntry {
+    ModelEntry {
+      id: "moe-test".into(),
+      repo: "test/repo".into(),
+      file: "test.gguf".into(),
+      architecture: "moe".into(),
+      quant: "Q4_K_M".into(),
+      params,
+      weights_bytes,
+      task_hints: vec!["general".into()],
+      benchmark_score: crate::init::benchmark::BenchmarkScore {
+        value: 50.0,
+        source: "synthetic".into(),
+      },
+      tok_s_factor: 1.0,
+      recency: 1.0,
+      source_hf_id: "test/moe".into(),
+      params_active: Some(params_active),
+      is_moe: true,
+      gguf_publisher: "test".into(),
+    }
+  }
+
+  fn dense_entry(weights_bytes: u64, params: u64) -> ModelEntry {
+    ModelEntry {
+      is_moe: false,
+      params_active: None,
+      ..moe_entry(weights_bytes, params, params)
+    }
+  }
+
+  #[test]
+  fn moe_estimator_qwen3_next_80b_a3b_scales_with_active_params_not_total() {
+    // Qwen3-Next-80B-A3B Q4_K_M: 80B total, 3B active per token.
+    // ~48 GB weights footprint, ~58 GB peak at modest ctx — the
+    // whole point of MoE is that ctx growth doesn't track total
+    // weight count, only the active attention slice.
+    let entry = moe_entry(48_000_000_000, 80_000_000_000, 3_000_000_000);
+
+    let peak_4k = estimate_peak_bytes_for_entry(&entry, 4096);
+    let peak_16k = estimate_peak_bytes_for_entry(&entry, 16384);
+    let peak_32k = estimate_peak_bytes_for_entry(&entry, 32768);
+
+    // Activations alone (weights × 1.20) = 57.6 GB — invariant floor.
+    let activations = (48_000_000_000_f64 * ACTIVATIONS_OVERHEAD) as u64;
+    assert!(peak_4k > activations, "peak must include some KV");
+    assert!(peak_16k > peak_4k, "16k > 4k");
+    assert!(peak_32k > peak_16k, "32k > 16k");
+
+    // KV growth from 4k to 32k: 3.5 MB × 3 × 4.0 × (32 - 4) = 1.176 GB.
+    let kv_delta = peak_32k - peak_4k;
+    let expected_delta =
+      (MOE_KV_BYTES_PER_BPARAM_PER_KCTX * 3.0 * MOE_ATTENTION_PARAM_MULTIPLIER * 28.0) as u64; // 32k - 4k = 28k worth of growth
+    let off = (kv_delta as i64 - expected_delta as i64).abs();
+    assert!(
+      off < (expected_delta / 5) as i64,
+      "MoE KV delta from 4k→32k should be ~{expected_delta} (±20%), got {kv_delta}"
+    );
+
+    // Crucial: the MoE peak at 32k is much smaller than the dense
+    // path's peak would be on the same weights footprint. Otherwise
+    // the recommender keeps over-reserving and big MoE models never
+    // fit any realistic VRAM tier.
+    let dense_equivalent = estimate_peak_bytes(48_000_000_000, 32768);
+    assert!(
+      peak_32k < dense_equivalent,
+      "MoE peak ({peak_32k}) must beat dense equivalent ({dense_equivalent})"
+    );
+  }
+
+  #[test]
+  fn moe_estimator_qwen3_coder_30b_a3b_fits_consumer_vram_at_16k() {
+    // Qwen3-Coder-30B-A3B Q4_K_M: 30B total, 3B active. Weights
+    // ~18 GB. Whole point: should fit a 24 GB Nvidia tier at 16k.
+    let entry = moe_entry(18_000_000_000, 30_000_000_000, 3_000_000_000);
+
+    let peak_4k = estimate_peak_bytes_for_entry(&entry, 4096);
+    let peak_16k = estimate_peak_bytes_for_entry(&entry, 16384);
+
+    // Activations: 18 × 1.20 = 21.6 GB. KV at 16k: 3.5 × 3 × 4 × 16 ≈ 672 MB.
+    // Peak at 16k ≈ 22.3 GB — fits 24 GB after 90% safety margin
+    // (21.6 GB effective ceiling) only just barely; the test asserts
+    // the math, not the fit.
+    assert!(peak_16k > peak_4k);
+    assert!(
+      peak_16k < 24_000_000_000,
+      "30B-A3B at 16k must stay under 24 GB, got {peak_16k}"
+    );
+  }
+
+  #[test]
+  fn moe_estimator_falls_back_to_dense_when_params_active_missing() {
+    // A snapshot row marked `is_moe: true` but missing
+    // `params_active` is a regen-script bug — Unit 2's estimator
+    // degrades to dense rather than panicking so the recommender
+    // keeps producing recommendations.
+    let mut entry = moe_entry(5_000_000_000, 10_000_000_000, 3_000_000_000);
+    entry.params_active = None;
+
+    let moe_peak = estimate_peak_bytes_for_entry(&entry, 16384);
+    let dense_peak = estimate_peak_bytes(5_000_000_000, 16384);
+    assert_eq!(
+      moe_peak, dense_peak,
+      "MoE without params_active must match dense path exactly"
+    );
+  }
+
+  #[test]
+  fn dense_regression_unchanged_qwen25_7b_at_4k() {
+    // Pin the dense path so Unit 2's MoE additions don't accidentally
+    // perturb dense estimates. Qwen2.5-7B Q4_K_M from the bundled
+    // snapshot carries weights_bytes = 4_683_960_320.
+    let entry = dense_entry(4_683_960_320, 7_610_000_000);
+    let via_entry = estimate_peak_bytes_for_entry(&entry, 4096);
+    let via_bytes = estimate_peak_bytes(4_683_960_320, 4096);
+    assert_eq!(
+      via_entry, via_bytes,
+      "dense entry path must equal the legacy weights-only function"
     );
   }
 

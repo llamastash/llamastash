@@ -22,6 +22,12 @@ from typing import Any, Dict, List
 WHICHLLM_UPSTREAM_URL = "https://github.com/Andyyyy64/whichllm"
 WHICHLLM_VENDORED_COMMIT = "73cd92f9a35a1c3f02e01ec3bbf09fb135a1df26"
 WHICHLLM_VENDORED_DATE = "2026-05-19"
+# Version of the upstream `whichllm` pip package this shim is meant to
+# track. Unit 7's CI lint asserts this matches the installed package's
+# `whichllm.__version__` before publishing the snapshot — drift means
+# either the pin in scripts/requirements.txt or this constant was
+# bumped without the other.
+WHICHLLM_PINNED_VERSION = "0.5.7"
 
 
 class ExtractionFailed(Exception):

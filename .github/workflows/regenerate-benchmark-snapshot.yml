@@ -60,8 +60,39 @@ jobs:
             python -m pip install -r scripts/requirements.txt
           fi
 
+      - name: Assert whichllm version lockstep
+        # Unit 7 of plan 2026-05-20-001: the pip-installed whichllm
+        # must match scripts/benchmark_sources/whichllm.py's
+        # WHICHLLM_PINNED_VERSION. Drift means either the pin in
+        # scripts/requirements.txt or the constant in the vendored
+        # shim was bumped without the other — refuse to publish until
+        # they're reconciled. whichllm itself doesn't expose
+        # __version__, so we go through importlib.metadata.
+        run: |
+          python -c "
+          import sys
+          from importlib.metadata import version
+          sys.path.insert(0, 'scripts')
+          from benchmark_sources.whichllm import WHICHLLM_PINNED_VERSION
+          installed = version('whichllm')
+          if installed != WHICHLLM_PINNED_VERSION:
+              print(f'whichllm version drift: pinned={WHICHLLM_PINNED_VERSION!r}, installed={installed!r}')
+              print('Bump WHICHLLM_PINNED_VERSION in scripts/benchmark_sources/whichllm.py and the pin in scripts/requirements.txt together.')
+              sys.exit(1)
+          print(f'whichllm lockstep ok: {installed}')
+          "
+
+      - name: Run hf_discovery unit tests
+        # Catches projection/selection regressions before the live HF
+        # query runs — cheap and offline.
+        run: python -m unittest scripts.benchmark_sources.hf_discovery_test -v
+
       - name: Run regen script (validates corpus gate too)
         id: regen
+        env:
+          # Required so whichllm's HF queries don't hit the anonymous
+          # rate limit on the 5-7 calls per regen run.
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python scripts/regenerate-benchmark-snapshot.py
 
       - name: Upload candidate as workflow artefact (for review)

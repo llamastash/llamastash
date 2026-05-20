@@ -38,7 +38,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_VERSION = 1
@@ -52,39 +52,15 @@ SOURCES_DIR = REPO_ROOT / "scripts" / "benchmark_sources"
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 from benchmark_sources import aider as _aider_adapter  # noqa: E402
+from benchmark_sources import hf_discovery as _hf_discovery  # noqa: E402
 from benchmark_sources import open_llm_leaderboard as _ollb_adapter  # noqa: E402
 from benchmark_sources.whichllm import SourceResult  # noqa: E402
 
-# Bundled GGUF rows are keyed by ``(repo, file)``; upstream adapters key
-# their scores by source HuggingFace model id (e.g. the un-quantized
-# instruct repo). This table is the join. Keep one entry per row in
-# ``data/benchmark-snapshot.json::models[]``. Missing entries are
-# tolerated — the bundled ``benchmark_score.value`` is preserved when
-# upstream has no match.
-BUNDLED_ID_TO_SOURCE_HF_ID: Dict[str, str] = {
-    "qwen2.5-coder-1.5b-q4_k_m": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
-    "qwen2.5-3b-q4_k_m": "Qwen/Qwen2.5-3B-Instruct",
-    "llama-3.2-3b-q4_k_m": "meta-llama/Llama-3.2-3B-Instruct",
-    "qwen2.5-7b-q4_k_m": "Qwen/Qwen2.5-7B-Instruct",
-    "qwen2.5-coder-7b-q4_k_m": "Qwen/Qwen2.5-Coder-7B-Instruct",
-    "llama-3.1-8b-q4_k_m": "meta-llama/Meta-Llama-3.1-8B-Instruct",
-    "mistral-nemo-12b-q4_k_m": "mistralai/Mistral-Nemo-Instruct-2407",
-    "qwen2.5-14b-q4_k_m": "Qwen/Qwen2.5-14B-Instruct",
-    "qwen2.5-coder-14b-q4_k_m": "Qwen/Qwen2.5-Coder-14B-Instruct",
-    "qwen2.5-32b-q4_k_m": "Qwen/Qwen2.5-32B-Instruct",
-    "qwen2.5-coder-32b-q4_k_m": "Qwen/Qwen2.5-Coder-32B-Instruct",
-    "llama-3.3-70b-q4_k_m": "meta-llama/Llama-3.3-70B-Instruct",
-}
-
-# Bundled ``benchmark_score.source`` tag -> adapter ``name``. The bundled
-# JSON uses ``"openllm-leaderboard"`` and ``"aider"`` as provenance tags;
-# the corresponding adapter names are ``"open-llm-leaderboard"`` and
-# ``"aider"``. Extending this is part of adding a new source.
-_BUNDLED_SOURCE_TAG_TO_ADAPTER: Dict[str, str] = {
-    "openllm-leaderboard": "open-llm-leaderboard",
-    "aider": "aider",
-}
-
+# Maximum rows the bundled snapshot ships. Aligned with Key Decision 3
+# of docs/plans/2026-05-20-001-feat-live-hf-snapshot-discovery-plan.md
+# (100 rows ≈ 330 KiB with the new schema fields, comfortably under
+# Unit 6's 2 MiB ceiling).
+SNAPSHOT_MODEL_LIMIT = 100
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -143,11 +119,19 @@ def collect_sources() -> List[SourceResult]:
     upstream failure surfaces clearly rather than masquerading as a
     silent recommender regression."""
     results: List[SourceResult] = []
+    results.append(load_hf_discovery())
     results.append(load_open_llm_leaderboard())
     results.append(load_aider_leaderboard())
     # Future sources land here; each must return a SourceResult so the
     # partial-failure policy applies uniformly.
     return results
+
+
+def load_hf_discovery() -> SourceResult:
+    """Live catalog discovery via whichllm. Owns the row set the
+    snapshot ships; adapters (open_llm_leaderboard, aider) layer scores
+    on top via ``source_hf_id`` joins."""
+    return _hf_discovery.discover(REPO_ROOT, limit=SNAPSHOT_MODEL_LIMIT)
 
 
 def load_open_llm_leaderboard() -> SourceResult:
@@ -165,60 +149,167 @@ def load_aider_leaderboard() -> SourceResult:
 
 
 def build_snapshot(sources: List[SourceResult]) -> Dict[str, Any]:
-    """Merge live source rows into the bundled snapshot's ``models[]``.
+    """Merge live discovery + adapter scores into a fresh ``models[]``.
 
-    The bundled JSON is the catalog and the source of identity / shape:
-    ``id``, ``repo``, ``file``, ``params``, ``weights_bytes``,
-    ``task_hints``, ``tok_s_factor``, ``recency``, and the bundled
-    ``benchmark_score.source`` tag. Live adapters supply a fresh
-    ``benchmark_score.value`` keyed by source HuggingFace id; we join
-    via :data:`BUNDLED_ID_TO_SOURCE_HF_ID`.
+    The HF-discovery source (Unit 3 of plan 2026-05-20-001) is the
+    catalog *owner*: it produces the row set, including
+    ``source_hf_id``, ``repo``, ``file``, ``params``, ``params_active``,
+    ``is_moe``, ``weights_bytes``, ``task_hints``, and
+    ``gguf_publisher``. Adapter sources (open_llm_leaderboard, aider)
+    supply ``benchmark_score.value`` keyed by ``source_hf_id``; we join
+    on that field rather than the legacy hand-curated
+    ``BUNDLED_ID_TO_SOURCE_HF_ID`` table.
 
     Policy:
 
-    * A bundled row whose HF id appears in the relevant adapter's rows
-      gets its ``benchmark_score.value`` replaced with the live score.
-    * A bundled row whose HF id is *absent* from upstream keeps the
-      bundled value (don't drop the catalog on transient delistings).
-    * New rows upstream introduces but the bundled snapshot does not
-      have are skipped — they'd need maintainer-curated ``task_hints``
-      and a slot in the corpus, which is out of CI scope.
+    * Catalog rows come from live HF discovery and are capped at
+      :data:`SNAPSHOT_MODEL_LIMIT`.
+    * For each row, attach the best adapter score available
+      (Aider for code-tagged rows, Open LLM Leaderboard otherwise).
+      Rows with no upstream score still ship — the recommender's
+      composite score falls back to params / recency / size cues.
     * ``recommender_weights`` (including ``overhead_band_bytes``) is
-      preserved verbatim — it's owned by a separate plan.
+      preserved verbatim from the previous bundled snapshot — it's
+      owned by a separate plan.
     """
-    bundled_models: List[Dict[str, Any]] = []
-    recommender_weights: Dict[str, Any] = {}
-    remote_url: Optional[str] = None
+    bundled_recommender_weights: Dict[str, Any] = {}
+    bundled_remote_url: Optional[str] = None
     if SNAPSHOT_PATH.exists():
         try:
             with SNAPSHOT_PATH.open() as f:
                 bundled = json.load(f)
         except (OSError, ValueError) as e:
             # A corrupt or unreadable bundled snapshot is fatal — the
-            # script's promise is "merge upstream into bundled", and we
-            # have no bundled to merge into. Surface via the exit-2
-            # path rather than crashing with a raw traceback.
+            # script's promise includes preserving recommender_weights,
+            # and we have no source to preserve from. Surface via the
+            # exit-2 path rather than crashing with a raw traceback.
             print(
                 f"[FAIL] bundled snapshot at {SNAPSHOT_PATH} unreadable: {e}",
                 file=sys.stderr,
             )
             raise SystemExit(2) from e
-        bundled_models = bundled.get("models", [])
-        recommender_weights = bundled.get("recommender_weights", {})
-        remote_url = bundled.get("remote_url")
+        bundled_recommender_weights = bundled.get("recommender_weights", {})
+        bundled_remote_url = bundled.get("remote_url")
 
-    scores_by_source = _index_adapter_scores(sources)
-    refreshed = _refresh_bundled_models(bundled_models, scores_by_source)
+    catalog_rows = _extract_catalog_rows(sources)
+    scores_by_adapter = _index_adapter_scores(sources)
+    models = [_compose_model_entry(row, scores_by_adapter) for row in catalog_rows]
 
     candidate: Dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "bundle_date": datetime.date.today().isoformat(),
         "min_version": DEFAULT_MIN_VERSION,
-        "remote_url": remote_url,
-        "recommender_weights": recommender_weights,
-        "models": refreshed,
+        "remote_url": bundled_remote_url,
+        "recommender_weights": bundled_recommender_weights,
+        "models": models,
     }
     return candidate
+
+
+def _extract_catalog_rows(sources: List[SourceResult]) -> List[Dict[str, Any]]:
+    """Pull the hf-discovery source's rows. Other sources are
+    score-only adapters and don't contribute catalog identity."""
+    for src in sources:
+        if src.name == "hf-discovery" and src.ok:
+            return list(src.rows)
+    return []
+
+
+def _compose_model_entry(
+    row: Dict[str, Any],
+    scores_by_adapter: Dict[str, Dict[str, float]],
+) -> Dict[str, Any]:
+    """Build one ``models[]`` entry. The hf-discovery source supplies
+    everything except ``benchmark_score``, ``tok_s_factor``, and
+    ``recency`` — those are derived here."""
+    source_hf_id = row.get("source_hf_id") or ""
+    quant = row.get("quant") or "Q4_K_M"
+    file_basename = row.get("file") or ""
+    slug = _slug(source_hf_id, quant)
+    score_value, score_source = _pick_benchmark_score(
+        source_hf_id, row.get("task_hints", []), scores_by_adapter
+    )
+    return {
+        "id": slug,
+        "repo": row.get("repo") or "",
+        "file": file_basename,
+        "architecture": row.get("architecture") or "unknown",
+        "quant": quant,
+        "params": int(row.get("params") or 0),
+        "weights_bytes": int(row.get("weights_bytes") or 0),
+        "task_hints": list(row.get("task_hints") or []),
+        "benchmark_score": {"value": score_value, "source": score_source},
+        "tok_s_factor": _tok_s_factor_for_params(int(row.get("params") or 0)),
+        "recency": _recency_for_last_modified(row.get("last_modified") or ""),
+        "source_hf_id": source_hf_id,
+        "params_active": row.get("params_active"),
+        "is_moe": bool(row.get("is_moe")),
+        "gguf_publisher": row.get("gguf_publisher") or "",
+    }
+
+
+def _slug(source_hf_id: str, quant: str) -> str:
+    """Stable, hyphen-delimited id derived from HF id + quant."""
+    base = source_hf_id.lower().replace("/", "-")
+    return f"{base}-{quant.lower()}"
+
+
+def _pick_benchmark_score(
+    source_hf_id: str,
+    task_hints: Sequence[str],
+    scores_by_adapter: Dict[str, Dict[str, float]],
+) -> Tuple[float, str]:
+    """Aider for code-tagged models when available; otherwise Open LLM
+    Leaderboard. Falls back to a conservative neutral score when neither
+    adapter has the model — the row still ships so the recommender can
+    rank by params / size / recency."""
+    aider_scores = scores_by_adapter.get("aider", {})
+    ollb_scores = scores_by_adapter.get("open-llm-leaderboard", {})
+    if "code" in task_hints and source_hf_id in aider_scores:
+        return aider_scores[source_hf_id], "aider"
+    if source_hf_id in ollb_scores:
+        return ollb_scores[source_hf_id], "openllm-leaderboard"
+    if source_hf_id in aider_scores:
+        return aider_scores[source_hf_id], "aider"
+    return 40.0, "no-source"
+
+
+def _tok_s_factor_for_params(params: int) -> float:
+    """Coarse tok/s proxy by parameter count. Mirrors the bundled
+    snapshot's per-row factor so the recommender's speed term stays
+    well-behaved without per-arch benchmarking inside CI."""
+    if params <= 0:
+        return 1.0
+    if params <= 2_000_000_000:
+        return 1.6
+    if params <= 5_000_000_000:
+        return 1.3
+    if params <= 9_000_000_000:
+        return 1.0
+    if params <= 16_000_000_000:
+        return 0.6
+    if params <= 40_000_000_000:
+        return 0.4
+    return 0.2
+
+
+def _recency_for_last_modified(last_modified: str) -> float:
+    """Decay multiplier based on HF ``last_modified``. Recent (≤180 d)
+    keeps full 1.0; older models decay to a 0.7 floor."""
+    if not last_modified:
+        return 0.9
+    try:
+        modified = datetime.date.fromisoformat(last_modified[:10])
+    except ValueError:
+        return 0.9
+    days = (datetime.date.today() - modified).days
+    if days <= 180:
+        return 1.0
+    if days <= 365:
+        return 0.9
+    if days <= 730:
+        return 0.8
+    return 0.7
 
 
 def _index_adapter_scores(
@@ -244,27 +335,6 @@ def _index_adapter_scores(
             scores[hf_id] = float(score)
         by_source[src.name] = scores
     return by_source
-
-
-def _refresh_bundled_models(
-    bundled_models: List[Dict[str, Any]],
-    scores_by_source: Dict[str, Dict[str, float]],
-) -> List[Dict[str, Any]]:
-    """Return a fresh ``models[]`` list with refreshed
-    ``benchmark_score.value`` fields where upstream had a match."""
-    out: List[Dict[str, Any]] = []
-    for model in bundled_models:
-        refreshed = dict(model)
-        bench = dict(model.get("benchmark_score", {}))
-        bundled_tag = bench.get("source")
-        adapter_name = _BUNDLED_SOURCE_TAG_TO_ADAPTER.get(bundled_tag or "")
-        scores = scores_by_source.get(adapter_name or "")
-        hf_id = BUNDLED_ID_TO_SOURCE_HF_ID.get(model.get("id", ""))
-        if scores and hf_id and hf_id in scores:
-            bench["value"] = scores[hf_id]
-        refreshed["benchmark_score"] = bench
-        out.append(refreshed)
-    return out
 
 
 def write_atomic(path: Path, body: Dict[str, Any]) -> None:

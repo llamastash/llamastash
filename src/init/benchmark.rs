@@ -30,13 +30,19 @@ use crate::init::fetch::{FetchClient, FetchError};
 pub const BUNDLED_PATH: &str = "../../data/benchmark-snapshot.json";
 
 /// Bundled snapshot bytes — fixed at build time by `include_str!`.
-/// 500 KiB build-time cap is enforced by [`bundled_size_budget`].
+/// 2 MiB build-time cap is enforced by [`bundled_size_budget`]. The
+/// ceiling was raised from the original 500 KiB in Unit 6 of plan
+/// 2026-05-20-001 to make room for the ~100-row live-discovery
+/// catalog (Qwen3.6 / Gemma 4 / DeepSeek V3.2 / GLM-5 / Llama 4 /
+/// Phi-4 / MoE flagships) without trimming task tiers.
 const BUNDLED_RAW: &str = include_str!("../../data/benchmark-snapshot.json");
 
 /// Build-time size budget for the bundled snapshot. A future regen
 /// that blows past this fails the build via the assertion in
 /// [`bundled_size_budget`] rather than silently bloating the binary.
-const BUNDLED_SIZE_BUDGET_BYTES: usize = 500 * 1024;
+/// 2 MiB ≈ 0.05% of the release binary — comfortable headroom for the
+/// 100-row catalog cap (`SNAPSHOT_MODEL_LIMIT` in the regen script).
+const BUNDLED_SIZE_BUDGET_BYTES: usize = 2 * 1024 * 1024;
 
 /// Compile-time-evaluable size check. Calling it from
 /// `load_bundled_or_panic` would surface a runtime panic; the
@@ -45,7 +51,7 @@ const BUNDLED_SIZE_BUDGET_BYTES: usize = 500 * 1024;
 const _BUNDLED_SIZE_CHECK: () = {
   if BUNDLED_RAW.len() > BUNDLED_SIZE_BUDGET_BYTES {
     panic!(
-      "bundled benchmark snapshot exceeds the 500 KiB build-time \
+      "bundled benchmark snapshot exceeds the 2 MiB build-time \
        budget — trim the corpus or raise BUNDLED_SIZE_BUDGET_BYTES \
        deliberately"
     );
@@ -128,6 +134,28 @@ pub struct ModelEntry {
   /// Recency multiplier (0.0–1.0). Newer models start at 1.0; older
   /// peers decay by the recommender's recency feature.
   pub recency: f32,
+  /// Base HuggingFace id (e.g. `Qwen/Qwen3-Coder-30B-A3B-Instruct`)
+  /// the GGUF in `repo` is a quantisation of. The benchmark-adapter
+  /// score map keys off this — the join replaces the legacy
+  /// `BUNDLED_ID_TO_SOURCE_HF_ID` table in the regen script.
+  #[serde(default)]
+  pub source_hf_id: String,
+  /// Active parameters per token, for MoE models (e.g. 3_000_000_000
+  /// for Qwen3-Next-80B-A3B). `None` on dense models. Read by the
+  /// MoE-aware estimator (Unit 2 of plan 2026-05-20-001).
+  #[serde(default)]
+  pub params_active: Option<u64>,
+  /// True for MoE architectures (Mixtral, DeepSeek V3, Qwen3-Next, …).
+  /// Branches `estimate_peak_bytes` onto whichllm's
+  /// `params_active × MoE multiplier` KV math instead of the dense
+  /// `weights × ctx_scale` term.
+  #[serde(default)]
+  pub is_moe: bool,
+  /// HF org publishing the GGUF in `repo` (e.g. `bartowski`,
+  /// `unsloth`, `Qwen`). Used by the regen script's publisher
+  /// allowlist gate.
+  #[serde(default)]
+  pub gguf_publisher: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,8 +184,10 @@ pub enum LoadRemoteError {
   SchemaTooNew { got: u32, max: u32 },
 }
 
-/// Max remote-snapshot body size. 500 KiB matches the bundle budget;
-/// a CI run that drifts past must raise both numbers deliberately.
+/// Max remote-snapshot body size. Tracks the bundle budget (2 MiB
+/// after Unit 6 of plan 2026-05-20-001) plus a 64 KiB tolerance for
+/// formatting drift; a CI run that drifts past must raise both
+/// numbers deliberately.
 pub const REMOTE_MAX_BYTES: u64 = (BUNDLED_SIZE_BUDGET_BYTES as u64) + 64 * 1024;
 
 /// Schema versions this build understands. Reading a snapshot whose
@@ -258,6 +288,80 @@ mod tests {
     let snap = load_bundled();
     assert!(!snap.models.is_empty(), "bundled snapshot must have models");
     assert_eq!(snap.schema_version, SUPPORTED_SCHEMA_VERSION);
+  }
+
+  #[test]
+  fn bundled_models_default_new_fields_when_absent() {
+    // The current bundled JSON predates Unit 1's schema additions, so
+    // every row must parse with `source_hf_id=""`, `params_active=None`,
+    // `is_moe=false`, `gguf_publisher=""` — the serde defaults. This
+    // pins the "old snapshot still loads" half of Unit 1's contract.
+    let snap = load_bundled();
+    for m in &snap.models {
+      assert_eq!(
+        m.source_hf_id, "",
+        "{} carries empty default source_hf_id",
+        m.id
+      );
+      assert!(
+        m.params_active.is_none(),
+        "{} has no params_active by default",
+        m.id
+      );
+      assert!(!m.is_moe, "{} defaults to dense (is_moe=false)", m.id);
+      assert_eq!(
+        m.gguf_publisher, "",
+        "{} carries empty default gguf_publisher",
+        m.id
+      );
+    }
+  }
+
+  #[test]
+  fn hand_rolled_snapshot_with_new_fields_round_trips() {
+    // The "new snapshot also loads" half: a snapshot the v2-style
+    // regenerator might emit must deserialise into the same shape it
+    // came from, including the four new fields.
+    let body = serde_json::json!({
+      "schema_version": 1,
+      "bundle_date": "2026-05-20",
+      "min_version": "0.2.0",
+      "recommender_weights": {
+        "benchmark": 0.45,
+        "tok_per_second": 0.25,
+        "param_quality": 0.2,
+        "recency": 0.1,
+        "overhead_band_bytes": { "cuda": 536870912_u64 }
+      },
+      "models": [{
+        "id": "qwen3-next-80b-a3b-q4_k_m",
+        "repo": "Qwen/Qwen3-Next-80B-A3B-Instruct-GGUF",
+        "file": "qwen3-next-80b-a3b-instruct-q4_k_m.gguf",
+        "architecture": "qwen3-next",
+        "quant": "Q4_K_M",
+        "params": 80_000_000_000_u64,
+        "weights_bytes": 49_000_000_000_u64,
+        "task_hints": ["general", "reasoning"],
+        "benchmark_score": { "value": 70.0, "source": "openllm-leaderboard" },
+        "tok_s_factor": 1.2,
+        "recency": 1.0,
+        "source_hf_id": "Qwen/Qwen3-Next-80B-A3B-Instruct",
+        "params_active": 3_000_000_000_u64,
+        "is_moe": true,
+        "gguf_publisher": "Qwen"
+      }]
+    });
+    let snap: BenchmarkSnapshot = serde_json::from_value(body).expect("parse");
+    let m = &snap.models[0];
+    assert_eq!(m.source_hf_id, "Qwen/Qwen3-Next-80B-A3B-Instruct");
+    assert_eq!(m.params_active, Some(3_000_000_000));
+    assert!(m.is_moe);
+    assert_eq!(m.gguf_publisher, "Qwen");
+    // Round-trip back through JSON: shape stable.
+    let s = serde_json::to_string(&snap).expect("serialize");
+    let again: BenchmarkSnapshot = serde_json::from_str(&s).expect("reparse");
+    assert!(again.models[0].is_moe);
+    assert_eq!(again.models[0].params_active, Some(3_000_000_000));
   }
 
   #[test]

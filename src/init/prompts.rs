@@ -181,6 +181,13 @@ pub fn render_diff_preview(diff: &[crate::init::config_writer::RedactedDiffEntry
 /// adds the `Skip` variant for `--model none`. `ModelEntry` does not
 /// implement `PartialEq` so this enum doesn't either — callers use
 /// pattern matching to branch.
+//
+// `large_enum_variant`: ModelEntry is ~272 bytes after Unit 1's
+// schema additions; the next-largest variant is 24 bytes. Boxing
+// would force every call site to dereference for no measurable win
+// (pick_model is invoked once per init wizard run). Allow the size
+// asymmetry instead.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum ModelChoice {
   /// Use this curated entry from the snapshot.

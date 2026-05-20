@@ -1,7 +1,7 @@
 ---
 title: "feat: Live HF Hub snapshot discovery (whichllm-style)"
 type: feat
-status: ready
+status: completed
 date: 2026-05-20
 origin: conversation 2026-05-19/20 (per-backend overhead band investigation → catalog refresh discussion)
 ---

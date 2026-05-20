@@ -1,0 +1,23 @@
+# HF orgs whose GGUF repos we trust. The model's own org is always
+# allowlisted implicitly by the regen script — listing the org here is
+# only needed when the GGUF lives under a different account (which is
+# the common case for community-quantised frontier models).
+#
+# Consumed by scripts/regenerate-benchmark-snapshot.py to filter
+# whichllm's candidate list. Rejecting unknown publishers prevents a
+# prompt-injected manifest from a typo-squatted org reaching users via
+# the rolling `snapshot-latest` GH Release asset.
+#
+# Add a new publisher only after verifying their GGUFs match the
+# upstream weights bit-for-bit (or as close as quantisation allows).
+
+allowlist:
+  - bartowski
+  - unsloth
+  - lmstudio-community
+  - QuantFactory
+  - mradermacher
+  - TheBloke           # legacy but still hosts good quants for older models
+  - second-state       # llama.cpp upstream's own GGUF mirror
+  - MaziyarPanahi      # bartowski-equivalent throughput on newer releases
+  - cognitivecomputations  # community fine-tune quants

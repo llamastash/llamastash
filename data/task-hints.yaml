@@ -1,0 +1,74 @@
+# Maps HF id prefix or family substring -> task_hints tag list.
+# Longest match wins. Unmatched models default to `defaults`.
+#
+# Consumed by scripts/regenerate-benchmark-snapshot.py during catalog
+# regen. Hand-curated per Key Decision 5 of
+# docs/plans/2026-05-20-001-feat-live-hf-snapshot-discovery-plan.md
+# ("task_hints stay maintainer-curated, in a side file") — name-based
+# inference is too brittle on edge cases like Mistral-Small-3.2 (which
+# the upstream calls general but ships coder-strong evals).
+#
+# Tag vocabulary mirrors the recommender's task filter:
+#   - code:      coder-tuned / code-evaluated models
+#   - reasoning: chain-of-thought / explicit-thinking models
+#   - general:   default; instruction-tuned chat without specialisation
+#
+# When the corpus gate fails for a (task, vram, ctx) cell, the fix is
+# usually to add a missing prefix here.
+
+prefixes:
+  # Qwen family
+  "Qwen/Qwen3-Coder": ["code"]
+  "Qwen/Qwen3.6-Coder": ["code"]
+  "Qwen/Qwen2.5-Coder": ["code"]
+  "Qwen/QwQ": ["reasoning"]
+  "Qwen/Qwen3-Next": ["general", "reasoning"]
+  "Qwen/Qwen3.6": ["general", "reasoning"]
+  "Qwen/Qwen3": ["general", "reasoning"]
+  "Qwen/Qwen2.5": ["general", "reasoning"]
+
+  # DeepSeek family
+  "deepseek-ai/DeepSeek-R1": ["reasoning", "general"]
+  "deepseek-ai/DeepSeek-V4": ["general", "reasoning"]
+  "deepseek-ai/DeepSeek-V3.2": ["general", "reasoning"]
+  "deepseek-ai/DeepSeek-V3": ["general", "reasoning"]
+  "deepseek-ai/DeepSeek-Coder": ["code"]
+
+  # Google
+  "google/gemma-4": ["general", "reasoning"]
+  "google/gemma-3": ["general"]
+  "google/codegemma": ["code"]
+
+  # Meta
+  "meta-llama/Llama-4": ["general", "reasoning"]
+  "meta-llama/Llama-3.3": ["general"]
+  "meta-llama/Llama-3.2": ["general"]
+  "meta-llama/Llama-3.1": ["general"]
+  "meta-llama/CodeLlama": ["code"]
+
+  # Mistral
+  "mistralai/Codestral": ["code"]
+  "mistralai/Devstral": ["code"]
+  "mistralai/Mistral-Nemo": ["general", "reasoning"]
+  "mistralai/Mistral-Small": ["general"]
+
+  # Microsoft
+  "microsoft/Phi-4-mini": ["general", "code"]
+  "microsoft/Phi-4": ["general", "reasoning"]
+  "microsoft/Phi-3.5": ["general"]
+
+  # Zhipu / GLM
+  "zai-org/GLM-5": ["general", "reasoning"]
+  "THUDM/glm-4": ["general"]
+
+  # Moonshot
+  "moonshotai/Kimi-K2": ["general", "reasoning"]
+
+  # IBM
+  "ibm-granite/granite-code": ["code"]
+  "ibm-granite/granite": ["general"]
+
+  # NVIDIA
+  "nvidia/Nemotron": ["general", "reasoning"]
+
+defaults: ["general"]
