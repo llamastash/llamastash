@@ -166,6 +166,10 @@ pub struct App {
   /// and kill-daemon so a fat-finger doesn't drop a running model
   /// or the whole supervisor.
   pub confirm_dialog: Option<ConfirmAction>,
+  /// HuggingFace pull dialog (R104). `Some(_)` whenever the modal
+  /// is open; the input pump routes through `Focus::HfDialog` to the
+  /// per-stage key handler.
+  pub hf_dialog: Option<crate::tui::hf_dialog::HfDialogState>,
   /// Per-frame memo of `rendered_rows()`. Primed at the top of
   /// `render::render` and cleared at the bottom — see audit §4.1
   /// #1 (the biggest single perf finding). The same `Vec<ListRow>`
@@ -241,9 +245,31 @@ impl App {
       should_exit: false,
       show_help: false,
       confirm_dialog: None,
+      hf_dialog: None,
       rows_cache: None,
       right_tabs_cache: None,
     }
+  }
+
+  /// Open the HuggingFace pull dialog. Initialises in the Search
+  /// stage and snaps focus into [`Focus::HfDialog`] so the per-stage
+  /// key router takes over. `offline` is forwarded so the dialog
+  /// renders the "search disabled" hint immediately when the
+  /// FetchClient is offline.
+  pub fn open_hf_dialog(&mut self, offline: bool) {
+    if self.hf_dialog.is_none() {
+      self.hf_dialog = Some(crate::tui::hf_dialog::HfDialogState::open(offline));
+    }
+    self.focus = Focus::HfDialog;
+  }
+
+  /// Close the HuggingFace pull dialog and snap focus back to the
+  /// Models list. Background download tasks the dialog spawned
+  /// (Unit 6) keep ticking under the pinned strip — closing the
+  /// dialog does not cancel them.
+  pub fn close_hf_dialog(&mut self) {
+    self.hf_dialog = None;
+    self.focus = Focus::List;
   }
 
   /// Memoize `rendered_rows()` and `available_right_tabs()` for the

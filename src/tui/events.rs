@@ -147,6 +147,7 @@ fn handle_key(app: &mut App, key: KeyEvent, writer: Option<&mpsc::Sender<WriterC
   match app.focus {
     Focus::Filter => handle_filter_input(app, key),
     Focus::AdvancedPanel => handle_advanced_input(app, key),
+    Focus::HfDialog => handle_hf_dialog_input(app, key, writer),
     Focus::ChatInput | Focus::EmbedInput | Focus::RerankInput if bound.is_none() => {
       handle_tab_input(app, key);
     }
@@ -241,6 +242,7 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
     Action::ToggleFavorite => apply_toggle_favorite(app, writer),
     Action::OpenLaunchPicker => app.open_launch_picker(),
     Action::OpenAdvancedPanel => app.open_advanced_panel(),
+    Action::OpenHfDialog => apply_open_hf_dialog(app),
     Action::Submit => match app.focus {
       Focus::AdvancedPanel => app.close_advanced_panel(),
       Focus::EmbedInput => apply_embed_submit(app),
@@ -1287,6 +1289,7 @@ pub async fn run(
     drain_chat_stream(&mut app);
     drain_embed_pending(&mut app);
     drain_rerank_pending(&mut app);
+    drain_hf_dialog(&mut app);
 
     if event::poll(POLL_INTERVAL)? {
       let evt = event::read()?;
@@ -1554,6 +1557,221 @@ pub fn drain_rerank_pending(app: &mut App) {
   }
 }
 
+/// Open the HuggingFace pull dialog (`Ctrl+D` in `Focus::List`).
+/// `LLAMASTASH_OFFLINE` flips the dialog into offline mode so the
+/// search bar renders the disabled-search hint immediately.
+fn apply_open_hf_dialog(app: &mut App) {
+  let offline = crate::init::fetch::offline_requested(false);
+  app.open_hf_dialog(offline);
+}
+
+/// Outcome of dispatching a key into the HF dialog. The router
+/// resolves the state-mutating action under a single `&mut
+/// state` borrow, then surfaces any side effect (toast, close) for
+/// the caller to apply against `&mut App` once the borrow ends.
+enum HfDialogOutcome {
+  None,
+  Toast(&'static str),
+  PullQueued { repo: String, filename: String },
+  Close,
+}
+
+/// Per-stage key router for `Focus::HfDialog`. Typing in Search
+/// extends the query buffer; arrows move the row cursor; Enter
+/// advances stages; Esc closes; Backspace steps back (or pops a
+/// character off the query when at the top of the Search stage).
+fn handle_hf_dialog_input(
+  app: &mut App,
+  key: KeyEvent,
+  _writer: Option<&mpsc::Sender<WriterCmd>>,
+) {
+  let outcome = {
+    use crate::tui::hf_dialog::HfStage;
+    let Some(state) = app.hf_dialog.as_mut() else {
+      return;
+    };
+    match (state.stage, key.code) {
+      (_, KeyCode::Esc) => HfDialogOutcome::Close,
+
+      (HfStage::Search, KeyCode::Up) => {
+        state.move_up();
+        HfDialogOutcome::None
+      }
+      (HfStage::Search, KeyCode::Down) => {
+        state.move_down();
+        HfDialogOutcome::None
+      }
+      (HfStage::Search, KeyCode::Char('o')) => {
+        state.cycle_sort();
+        HfDialogOutcome::None
+      }
+      (HfStage::Search, KeyCode::Char('n')) => {
+        if let Some(cursor) = state.advance_page() {
+          spawn_hf_search(state, cursor);
+        }
+        HfDialogOutcome::None
+      }
+      (HfStage::Search, KeyCode::Char('p')) => {
+        if let Some(cursor) = state.retreat_page() {
+          spawn_hf_search(state, cursor);
+        }
+        HfDialogOutcome::None
+      }
+      (HfStage::Search, KeyCode::Enter) => match state.submit_search() {
+        Some(repo_id) => {
+          spawn_hf_list_repo_files(state, repo_id);
+          HfDialogOutcome::None
+        }
+        None => HfDialogOutcome::Toast("type a query, paste a slug, or pick a row"),
+      },
+      (HfStage::Search, KeyCode::Backspace) => {
+        state.backspace_query();
+        HfDialogOutcome::None
+      }
+      (HfStage::Search, KeyCode::Char(ch)) => {
+        state.insert(ch);
+        HfDialogOutcome::None
+      }
+
+      (HfStage::FilePicker, KeyCode::Up) => {
+        state.move_up();
+        HfDialogOutcome::None
+      }
+      (HfStage::FilePicker, KeyCode::Down) => {
+        state.move_down();
+        HfDialogOutcome::None
+      }
+      (HfStage::FilePicker, KeyCode::Enter) => {
+        if !state.submit_picker() {
+          HfDialogOutcome::Toast("no file selected")
+        } else {
+          HfDialogOutcome::None
+        }
+      }
+      (HfStage::FilePicker, KeyCode::Backspace) => {
+        state.back_to_search();
+        HfDialogOutcome::None
+      }
+
+      (HfStage::Confirm, KeyCode::Enter) => {
+        // Unit 6 wires the actual pull dispatch here. For now,
+        // surface the intended action so users can validate the
+        // path end-to-end and the dialog closes cleanly.
+        if let Some((repo, file)) = state.take_confirm_target() {
+          HfDialogOutcome::PullQueued {
+            repo,
+            filename: file.filename,
+          }
+        } else {
+          HfDialogOutcome::Close
+        }
+      }
+      (HfStage::Confirm, KeyCode::Backspace) => {
+        state.back_to_picker();
+        HfDialogOutcome::None
+      }
+      _ => HfDialogOutcome::None,
+    }
+  };
+  match outcome {
+    HfDialogOutcome::None => {}
+    HfDialogOutcome::Toast(msg) => app.show_toast(msg),
+    HfDialogOutcome::PullQueued { repo, filename } => {
+      app.show_toast(format!("pull queued: {repo} :{filename}"));
+      app.close_hf_dialog();
+    }
+    HfDialogOutcome::Close => app.close_hf_dialog(),
+  }
+}
+
+/// Spawn a background `init::hf_api::search` task whose result is
+/// shipped back over the dialog's mpsc. Tagged with the dialog's
+/// current `query_seq` so the drain can discard stale responses.
+fn spawn_hf_search(state: &mut crate::tui::hf_dialog::HfDialogState, cursor: Option<String>) {
+  use crate::init::hf_api;
+  let tx = state.event_tx.clone();
+  let query = state.query.clone();
+  let sort = state.sort;
+  let seq = state.query_seq;
+  state.mark_dispatched();
+  tokio::spawn(async move {
+    let fetch_client = build_tui_fetch_client();
+    let evt = match hf_api::search(&fetch_client, &query, sort, cursor.as_deref()).await {
+      Ok(page) => crate::tui::hf_dialog::HfDialogEvent::SearchResults { seq, page },
+      Err(e) => crate::tui::hf_dialog::HfDialogEvent::SearchFailed { seq, error: e },
+    };
+    let _ = tx.send(evt);
+  });
+}
+
+/// Spawn a background `list_repo_files` task whose result is
+/// shipped back over the dialog's mpsc.
+fn spawn_hf_list_repo_files(
+  state: &mut crate::tui::hf_dialog::HfDialogState,
+  repo_id: String,
+) {
+  use crate::init::hf_api;
+  let tx = state.event_tx.clone();
+  tokio::spawn(async move {
+    let fetch_client = build_tui_fetch_client();
+    let evt = match hf_api::list_repo_files(&fetch_client, &repo_id).await {
+      Ok(files) => crate::tui::hf_dialog::HfDialogEvent::RepoFiles {
+        repo_id: repo_id.clone(),
+        files,
+      },
+      Err(error) => crate::tui::hf_dialog::HfDialogEvent::RepoFilesFailed {
+        repo_id: repo_id.clone(),
+        error,
+      },
+    };
+    let _ = tx.send(evt);
+  });
+}
+
+/// Build the dialog's FetchClient. Mirrors the wizard's resolution:
+/// honour `LLAMASTASH_OFFLINE`, fall back to a fresh client with the
+/// default config (host allowlist + redirect cap + body cap). On
+/// builder error we hand back an offline stub so the dialog's
+/// network calls fail with a clean typed error instead of panicking.
+fn build_tui_fetch_client() -> crate::init::fetch::FetchClient {
+  use crate::init::fetch::{build_with_offline_check, FetchClient, FetchClientConfig};
+  build_with_offline_check(false, FetchClientConfig::default()).unwrap_or_else(|_| FetchClient::offline())
+}
+
+/// Drain pending HF dialog events. Applies search / repo-listing
+/// results to the dialog state. Idempotent — safe to call every run-
+/// loop tick.
+pub fn drain_hf_dialog(app: &mut App) {
+  let Some(state) = app.hf_dialog.as_mut() else {
+    return;
+  };
+  use crate::tui::hf_dialog::HfDialogEvent;
+  loop {
+    match state.event_rx.try_recv() {
+      Ok(HfDialogEvent::SearchResults { seq, page }) => {
+        state.apply_search_results(seq, page);
+      }
+      Ok(HfDialogEvent::SearchFailed { seq, error }) => {
+        state.apply_search_failed(seq, error);
+      }
+      Ok(HfDialogEvent::RepoFiles { repo_id, files }) => {
+        state.apply_repo_files(&repo_id, files);
+      }
+      Ok(HfDialogEvent::RepoFilesFailed { repo_id, error }) => {
+        state.apply_repo_files_failed(&repo_id, &error);
+      }
+      Err(_) => break,
+    }
+  }
+  // Debounced live search (R107): fire a dispatch once the debounce
+  // window elapses since the last keystroke. Honours the `query_seq`
+  // monotonicity so a stale response can still be dropped.
+  if state.search_due(std::time::Instant::now()) {
+    let cursor = state.current_cursor.clone();
+    spawn_hf_search(state, cursor);
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -1561,6 +1779,47 @@ mod tests {
 
   fn key(code: KeyCode, mods: KeyModifiers) -> Event {
     Event::Key(KeyEvent::new(code, mods))
+  }
+
+  #[test]
+  fn ctrl_d_opens_hf_dialog_and_esc_closes_it() {
+    use crate::tui::hf_dialog::HfStage;
+    let mut app = App::new(Default::default());
+    assert!(app.hf_dialog.is_none());
+    pump_input(&mut app, key(KeyCode::Char('d'), KeyModifiers::CONTROL));
+    let dialog = app
+      .hf_dialog
+      .as_ref()
+      .expect("Ctrl+D must open the HF dialog");
+    assert_eq!(dialog.stage, HfStage::Search);
+    assert_eq!(app.focus, Focus::HfDialog);
+    // Type into the search buffer.
+    pump_input(&mut app, key(KeyCode::Char('q'), KeyModifiers::NONE));
+    pump_input(&mut app, key(KeyCode::Char('w'), KeyModifiers::NONE));
+    assert_eq!(
+      app.hf_dialog.as_ref().map(|d| d.query.as_str()),
+      Some("qw")
+    );
+    // Esc closes and snaps focus back.
+    pump_input(&mut app, key(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.hf_dialog.is_none());
+    assert_eq!(app.focus, Focus::List);
+  }
+
+  #[test]
+  fn hf_dialog_o_cycles_sort_key() {
+    use crate::init::hf_api::HfSortKey;
+    let mut app = App::new(Default::default());
+    pump_input(&mut app, key(KeyCode::Char('d'), KeyModifiers::CONTROL));
+    assert_eq!(
+      app.hf_dialog.as_ref().map(|d| d.sort),
+      Some(HfSortKey::Downloads)
+    );
+    pump_input(&mut app, key(KeyCode::Char('o'), KeyModifiers::NONE));
+    assert_eq!(
+      app.hf_dialog.as_ref().map(|d| d.sort),
+      Some(HfSortKey::Likes)
+    );
   }
 
   #[test]

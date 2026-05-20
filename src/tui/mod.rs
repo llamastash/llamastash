@@ -16,6 +16,7 @@ pub mod filter;
 pub mod fmt;
 pub mod help_bar;
 pub mod help_overlay;
+pub mod hf_dialog;
 pub mod host_stats_pane;
 pub mod info_pane;
 pub mod keybindings;

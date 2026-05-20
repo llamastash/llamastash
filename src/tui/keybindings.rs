@@ -45,6 +45,12 @@ pub enum Focus {
   /// resistant fallback so a stray keypress doesn't confirm a
   /// destructive action.
   ConfirmPopup,
+  /// HuggingFace pull dialog (R104). The per-stage key router lives
+  /// in `events.rs` because the dialog's `Search` / `FilePicker` /
+  /// `Confirm` stages each shadow a subset of the global keymap
+  /// (typing extends the query buffer; arrows move row cursors;
+  /// `o` cycles sort; `n`/`p` paginate).
+  HfDialog,
 }
 
 /// Symbolic action a binding triggers. Renderers / event handlers
@@ -53,6 +59,9 @@ pub enum Focus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
   Quit,
+  /// Open the HuggingFace pull dialog (R104). Bound to `Ctrl+D` in
+  /// [`Focus::List`]; the dialog itself handles its per-stage keys.
+  OpenHfDialog,
   MoveUp,
   MoveDown,
   PageUp,
@@ -178,6 +187,7 @@ pub const DEFAULT_BINDINGS: &[(Focus, &[Binding])] = &[
   (Focus::EmbedInput, EMBED_INPUT_BINDINGS),
   (Focus::RerankInput, RERANK_INPUT_BINDINGS),
   (Focus::ConfirmPopup, CONFIRM_POPUP_BINDINGS),
+  (Focus::HfDialog, HF_DIALOG_BINDINGS),
 ];
 
 const LIST_BINDINGS: &[Binding] = &[
@@ -445,6 +455,53 @@ const LIST_BINDINGS: &[Binding] = &[
     action: Action::FocusSettingsTab,
     label: "S",
     description: "settings",
+  },
+  // R104: Ctrl+D opens the HuggingFace pull dialog. The dialog
+  // takes over input via `Focus::HfDialog` once it's open.
+  Binding {
+    key: KeyCode::Char('d'),
+    mods: KeyModifiers::CONTROL,
+    action: Action::OpenHfDialog,
+    label: "Ctrl+D",
+    description: "pull from HF",
+  },
+];
+
+/// HF pull dialog (R104). The per-stage routing (Search / FilePicker
+/// / Confirm) lives in `events::handle_hf_dialog_input` because the
+/// dialog has stage-specific semantics that the static binding table
+/// can't capture (typing extends the query buffer; `n`/`p` paginate
+/// only in Search; Backspace toggles between sub-stages). What
+/// *does* belong here are the always-on keys the help bar needs to
+/// surface and the help-overlay needs to enumerate.
+const HF_DIALOG_BINDINGS: &[Binding] = &[
+  Binding {
+    key: KeyCode::Esc,
+    mods: KeyModifiers::NONE,
+    action: Action::Cancel,
+    label: "Esc",
+    description: "close",
+  },
+  Binding {
+    key: KeyCode::Up,
+    mods: KeyModifiers::NONE,
+    action: Action::MoveUp,
+    label: "↑",
+    description: "up",
+  },
+  Binding {
+    key: KeyCode::Down,
+    mods: KeyModifiers::NONE,
+    action: Action::MoveDown,
+    label: "↓",
+    description: "down",
+  },
+  Binding {
+    key: KeyCode::Enter,
+    mods: KeyModifiers::NONE,
+    action: Action::Submit,
+    label: "Enter",
+    description: "open / confirm",
   },
 ];
 
