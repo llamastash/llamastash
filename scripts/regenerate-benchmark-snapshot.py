@@ -73,9 +73,8 @@ SOURCES_DIR = REPO_ROOT / "scripts" / "benchmark_sources"
 # ``scripts/benchmark_sources/`` per R45 (CI-only, never in the binary).
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
-from benchmark_sources import aider as _aider_adapter  # noqa: E402
 from benchmark_sources import hf_discovery as _hf_discovery  # noqa: E402
-from benchmark_sources import open_llm_leaderboard as _ollb_adapter  # noqa: E402
+from benchmark_sources import whichllm_combined as _whichllm_scores  # noqa: E402
 from benchmark_sources.whichllm import SourceResult  # noqa: E402
 
 # Maximum rows the bundled snapshot ships. Aligned with Key Decision 3
@@ -137,13 +136,12 @@ def main() -> int:
 
 
 def collect_sources() -> List[SourceResult]:
-    """Fetch every vendored source. Each source is independent so one
-    upstream failure surfaces clearly rather than masquerading as a
-    silent recommender regression."""
+    """Fetch every source. Each is independent so one upstream failure
+    surfaces clearly rather than masquerading as a silent recommender
+    regression."""
     results: List[SourceResult] = []
     results.append(load_hf_discovery())
-    results.append(load_open_llm_leaderboard())
-    results.append(load_aider_leaderboard())
+    results.append(load_whichllm_combined_scores())
     # Future sources land here; each must return a SourceResult so the
     # partial-failure policy applies uniformly.
     return results
@@ -151,45 +149,47 @@ def collect_sources() -> List[SourceResult]:
 
 def load_hf_discovery() -> SourceResult:
     """Live catalog discovery via whichllm. Owns the row set the
-    snapshot ships; adapters (open_llm_leaderboard, aider) layer scores
-    on top via ``source_hf_id`` joins."""
+    snapshot ships; ``whichllm-combined`` layers scores on top via
+    ``source_hf_id`` joins."""
     return _hf_discovery.discover(REPO_ROOT, limit=SNAPSHOT_MODEL_LIMIT)
 
 
-def load_open_llm_leaderboard() -> SourceResult:
-    """Open LLM Leaderboard rows for the general / reasoning lane.
-    Adapter lives in ``scripts/benchmark_sources/open_llm_leaderboard.py``;
-    ``build_snapshot()`` joins its rows into the bundled
-    ``(repo, file)`` rows via :data:`BUNDLED_ID_TO_SOURCE_HF_ID`."""
-    return _ollb_adapter.fetch()
-
-
-def load_aider_leaderboard() -> SourceResult:
-    """Aider polyglot rows for the code lane. Adapter lives in
-    ``scripts/benchmark_sources/aider.py``."""
-    return _aider_adapter.fetch()
+def load_whichllm_combined_scores() -> SourceResult:
+    """Combined benchmark score lookup via
+    ``whichllm.models.benchmark.fetch_benchmark_scores()``. Single
+    adapter that wraps whichllm's six-source merge (Open LLM
+    Leaderboard, Chatbot Arena, LiveBench, Artificial Analysis Index,
+    Aider polyglot, Vision) plus the layered current-over-frozen
+    precedence and lineage recency demotion. Replaces the per-source
+    ``open_llm_leaderboard`` + ``aider`` adapters we used to vendor —
+    they covered only 2/6 sources and lost the demotion logic, which
+    is exactly why the wizard kept surfacing two-generation-old picks.
+    """
+    return _whichllm_scores.fetch()
 
 
 def build_snapshot(sources: List[SourceResult]) -> Dict[str, Any]:
-    """Merge live discovery + adapter scores into a fresh ``models[]``.
+    """Merge live discovery + combined benchmark scores into a fresh
+    ``models[]``.
 
     The HF-discovery source (Unit 3 of plan 2026-05-20-001) is the
     catalog *owner*: it produces the row set, including
     ``source_hf_id``, ``repo``, ``file``, ``params``, ``params_active``,
-    ``is_moe``, ``weights_bytes``, ``task_hints``, and
-    ``gguf_publisher``. Adapter sources (open_llm_leaderboard, aider)
-    supply ``benchmark_score.value`` keyed by ``source_hf_id``; we join
-    on that field rather than the legacy hand-curated
-    ``BUNDLED_ID_TO_SOURCE_HF_ID`` table.
+    ``is_moe``, ``weights_bytes``, ``task_hints``, and ``gguf_publisher``.
+    The ``whichllm-combined`` source supplies ``benchmark_score.value``
+    keyed by lowercased ``source_hf_id``; we join on that field.
 
     Policy:
 
     * Catalog rows come from live HF discovery and are capped at
       :data:`SNAPSHOT_MODEL_LIMIT`.
-    * For each row, attach the best adapter score available
-      (Aider for code-tagged rows, Open LLM Leaderboard otherwise).
-      Rows with no upstream score still ship — the recommender's
-      composite score falls back to params / recency / size cues.
+    * For each row, attach the combined score whichllm reports
+      (already merged across OLLB / Arena / LiveBench / AA Index /
+      Aider / Vision with current-over-frozen precedence and lineage
+      recency demotion). Rows whichllm doesn't cover ship with
+      ``score=0`` and source ``no-source`` so the recommender ranks
+      them by params / speed / recency rather than tying them with a
+      misleading constant floor.
     * ``recommender_weights`` (including ``overhead_band_bytes``) is
       preserved verbatim from the previous bundled snapshot — it's
       owned by a separate plan.
@@ -251,21 +251,34 @@ def _compose_model_entry(
     score_value, score_source = _pick_benchmark_score(
         source_hf_id, row.get("task_hints", []), scores_by_adapter
     )
+    params_total = int(row.get("params") or 0)
+    params_active = row.get("params_active")
+    is_moe = bool(row.get("is_moe"))
+    # Speed scales with the params actually used per token, not the
+    # full weights footprint. For MoE models with a declared active-
+    # param count, key the tok/s curve off that — otherwise a 30B-A3B
+    # gets the same speed factor as a dense 30B and the recommender
+    # never surfaces sparse models.
+    params_for_speed = (
+        int(params_active)
+        if is_moe and params_active
+        else params_total
+    )
     return {
         "id": slug,
         "repo": row.get("repo") or "",
         "file": file_basename,
         "architecture": row.get("architecture") or "unknown",
         "quant": quant,
-        "params": int(row.get("params") or 0),
+        "params": params_total,
         "weights_bytes": int(row.get("weights_bytes") or 0),
         "task_hints": list(row.get("task_hints") or []),
         "benchmark_score": {"value": score_value, "source": score_source},
-        "tok_s_factor": _tok_s_factor_for_params(int(row.get("params") or 0)),
+        "tok_s_factor": _tok_s_factor_for_params(params_for_speed),
         "recency": _recency_for_last_modified(row.get("last_modified") or ""),
         "source_hf_id": source_hf_id,
-        "params_active": row.get("params_active"),
-        "is_moe": bool(row.get("is_moe")),
+        "params_active": params_active,
+        "is_moe": is_moe,
         "gguf_publisher": row.get("gguf_publisher") or "",
     }
 
@@ -281,19 +294,21 @@ def _pick_benchmark_score(
     task_hints: Sequence[str],
     scores_by_adapter: Dict[str, Dict[str, float]],
 ) -> Tuple[float, str]:
-    """Aider for code-tagged models when available; otherwise Open LLM
-    Leaderboard. Falls back to a conservative neutral score when neither
-    adapter has the model — the row still ships so the recommender can
-    rank by params / size / recency."""
-    aider_scores = scores_by_adapter.get("aider", {})
-    ollb_scores = scores_by_adapter.get("open-llm-leaderboard", {})
-    if "code" in task_hints and source_hf_id in aider_scores:
-        return aider_scores[source_hf_id], "aider"
-    if source_hf_id in ollb_scores:
-        return ollb_scores[source_hf_id], "openllm-leaderboard"
-    if source_hf_id in aider_scores:
-        return aider_scores[source_hf_id], "aider"
-    return 40.0, "no-source"
+    """Look up the model's score in whichllm's combined index.
+
+    The combined index is already case-insensitive and merges all six
+    upstream sources (current overrides frozen) plus lineage recency
+    demotion. Rows that whichllm doesn't cover get a 0.0 score with
+    source ``no-source`` — they still ship so the recommender can
+    rank by params / speed / recency, but they don't get a misleading
+    constant floor that would let them tie with real scored models.
+    """
+    del task_hints  # task routing now lives inside whichllm's merge
+    combined = scores_by_adapter.get("whichllm-combined", {})
+    score = combined.get(source_hf_id.lower())
+    if score is not None:
+        return score, "whichllm"
+    return 0.0, "no-source"
 
 
 def _tok_s_factor_for_params(params: int) -> float:

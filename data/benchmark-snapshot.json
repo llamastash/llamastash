@@ -29,7 +29,7 @@
         "code"
       ],
       "benchmark_score": {
-        "value": 40.0,
+        "value": 0.0,
         "source": "no-source"
       },
       "tok_s_factor": 0.2,
@@ -51,7 +51,7 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
+        "value": 0.0,
         "source": "no-source"
       },
       "tok_s_factor": 1.3,
@@ -73,8 +73,8 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 25.6,
-        "source": "openllm-leaderboard"
+        "value": 20.1,
+        "source": "whichllm"
       },
       "tok_s_factor": 1.3,
       "recency": 0.9,
@@ -95,8 +95,8 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 36.3,
-        "source": "openllm-leaderboard"
+        "value": 27.6,
+        "source": "whichllm"
       },
       "tok_s_factor": 1.3,
       "recency": 0.9,
@@ -117,10 +117,10 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
+        "value": 0.0,
         "source": "no-source"
       },
-      "tok_s_factor": 0.4,
+      "tok_s_factor": 1.3,
       "recency": 0.9,
       "source_hf_id": "hesamation/Qwen3.6-35B-A3B-Claude-4.6-Opus-Reasoning-Distilled",
       "params_active": 3000000000,
@@ -139,8 +139,8 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
-        "source": "no-source"
+        "value": 25.1,
+        "source": "whichllm"
       },
       "tok_s_factor": 1.0,
       "recency": 0.9,
@@ -162,8 +162,8 @@
         "reasoning"
       ],
       "benchmark_score": {
-        "value": 40.7,
-        "source": "openllm-leaderboard"
+        "value": 22.4,
+        "source": "whichllm"
       },
       "tok_s_factor": 1.3,
       "recency": 0.9,
@@ -185,8 +185,8 @@
         "reasoning"
       ],
       "benchmark_score": {
-        "value": 27.6,
-        "source": "openllm-leaderboard"
+        "value": 15.2,
+        "source": "whichllm"
       },
       "tok_s_factor": 1.6,
       "recency": 0.9,
@@ -207,10 +207,10 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
-        "source": "no-source"
+        "value": 59.6,
+        "source": "whichllm"
       },
-      "tok_s_factor": 0.4,
+      "tok_s_factor": 1.3,
       "recency": 0.9,
       "source_hf_id": "openai/gpt-oss-20b",
       "params_active": 3600000000,
@@ -230,8 +230,8 @@
         "reasoning"
       ],
       "benchmark_score": {
-        "value": 40.0,
-        "source": "no-source"
+        "value": 8.0,
+        "source": "whichllm"
       },
       "tok_s_factor": 1.6,
       "recency": 0.9,
@@ -252,8 +252,8 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 67.3,
-        "source": "openllm-leaderboard"
+        "value": 52.6,
+        "source": "whichllm"
       },
       "tok_s_factor": 0.2,
       "recency": 0.9,
@@ -275,8 +275,8 @@
         "reasoning"
       ],
       "benchmark_score": {
-        "value": 40.0,
-        "source": "no-source"
+        "value": 66.7,
+        "source": "whichllm"
       },
       "tok_s_factor": 0.6,
       "recency": 0.9,
@@ -298,8 +298,8 @@
         "reasoning"
       ],
       "benchmark_score": {
-        "value": 40.0,
-        "source": "no-source"
+        "value": 17.2,
+        "source": "whichllm"
       },
       "tok_s_factor": 1.3,
       "recency": 0.9,
@@ -321,8 +321,8 @@
         "reasoning"
       ],
       "benchmark_score": {
-        "value": 40.0,
-        "source": "no-source"
+        "value": 42.1,
+        "source": "whichllm"
       },
       "tok_s_factor": 1.3,
       "recency": 0.9,
@@ -344,8 +344,8 @@
         "reasoning"
       ],
       "benchmark_score": {
-        "value": 40.0,
-        "source": "no-source"
+        "value": 56.1,
+        "source": "whichllm"
       },
       "tok_s_factor": 1.0,
       "recency": 0.9,
@@ -366,10 +366,10 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
-        "source": "no-source"
+        "value": 65.2,
+        "source": "whichllm"
       },
-      "tok_s_factor": 0.2,
+      "tok_s_factor": 1.0,
       "recency": 0.9,
       "source_hf_id": "openai/gpt-oss-120b",
       "params_active": 5100000000,
@@ -389,10 +389,10 @@
         "reasoning"
       ],
       "benchmark_score": {
-        "value": 40.0,
-        "source": "no-source"
+        "value": 70.2,
+        "source": "whichllm"
       },
-      "tok_s_factor": 0.4,
+      "tok_s_factor": 1.3,
       "recency": 0.9,
       "source_hf_id": "Qwen/Qwen3-30B-A3B",
       "params_active": 3000000000,
@@ -412,8 +412,8 @@
         "reasoning"
       ],
       "benchmark_score": {
-        "value": 40.0,
-        "source": "no-source"
+        "value": 56.1,
+        "source": "whichllm"
       },
       "tok_s_factor": 0.4,
       "recency": 0.9,
@@ -434,8 +434,8 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 42.3,
-        "source": "openllm-leaderboard"
+        "value": 32.1,
+        "source": "whichllm"
       },
       "tok_s_factor": 1.3,
       "recency": 0.9,
@@ -456,8 +456,8 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
-        "source": "no-source"
+        "value": 82.5,
+        "source": "whichllm"
       },
       "tok_s_factor": 0.2,
       "recency": 0.9,
@@ -479,8 +479,8 @@
         "reasoning"
       ],
       "benchmark_score": {
-        "value": 40.0,
-        "source": "no-source"
+        "value": 47.4,
+        "source": "whichllm"
       },
       "tok_s_factor": 1.3,
       "recency": 0.9,
@@ -501,10 +501,10 @@
         "code"
       ],
       "benchmark_score": {
-        "value": 40.0,
-        "source": "no-source"
+        "value": 70.2,
+        "source": "whichllm"
       },
-      "tok_s_factor": 0.4,
+      "tok_s_factor": 1.3,
       "recency": 0.9,
       "source_hf_id": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
       "params_active": 3000000000,
@@ -523,8 +523,8 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 28.8,
-        "source": "openllm-leaderboard"
+        "value": 17.2,
+        "source": "whichllm"
       },
       "tok_s_factor": 1.0,
       "recency": 0.9,
@@ -545,8 +545,8 @@
         "code"
       ],
       "benchmark_score": {
-        "value": 33.8,
-        "source": "openllm-leaderboard"
+        "value": 18.6,
+        "source": "whichllm"
       },
       "tok_s_factor": 1.0,
       "recency": 0.9,
@@ -568,8 +568,8 @@
         "reasoning"
       ],
       "benchmark_score": {
-        "value": 62.0,
-        "source": "openllm-leaderboard"
+        "value": 42.1,
+        "source": "whichllm"
       },
       "tok_s_factor": 0.6,
       "recency": 0.9,
@@ -590,59 +590,15 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
-        "source": "no-source"
+        "value": 67.5,
+        "source": "whichllm"
       },
-      "tok_s_factor": 0.4,
+      "tok_s_factor": 0.6,
       "recency": 0.9,
       "source_hf_id": "zai-org/GLM-4.7-Flash",
       "params_active": 12000000000,
       "is_moe": true,
       "gguf_publisher": "unsloth"
-    },
-    {
-      "id": "meta-llama-meta-llama-3.1-8b-instruct-q4_k_m",
-      "repo": "lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF",
-      "file": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
-      "architecture": "llama",
-      "quant": "Q4_K_M",
-      "params": 8030261312,
-      "weights_bytes": 4517021988,
-      "task_hints": [
-        "general"
-      ],
-      "benchmark_score": {
-        "value": 40.0,
-        "source": "no-source"
-      },
-      "tok_s_factor": 1.0,
-      "recency": 0.9,
-      "source_hf_id": "meta-llama/Meta-Llama-3.1-8B-Instruct",
-      "params_active": null,
-      "is_moe": false,
-      "gguf_publisher": "lmstudio-community"
-    },
-    {
-      "id": "meta-llama-meta-llama-3.1-8b-instruct-q4_k_m",
-      "repo": "MaziyarPanahi/Meta-Llama-3.1-8B-Instruct-GGUF",
-      "file": "Meta-Llama-3.1-8B-Instruct.Q4_K_M.gguf",
-      "architecture": "llama",
-      "quant": "Q4_K_M",
-      "params": 8030261248,
-      "weights_bytes": 4517021952,
-      "task_hints": [
-        "general"
-      ],
-      "benchmark_score": {
-        "value": 40.0,
-        "source": "no-source"
-      },
-      "tok_s_factor": 1.0,
-      "recency": 0.9,
-      "source_hf_id": "meta-llama/Meta-Llama-3.1-8B-Instruct",
-      "params_active": null,
-      "is_moe": false,
-      "gguf_publisher": "MaziyarPanahi"
     },
     {
       "id": "google-gemma-3-4b-it-q4_k_m",
@@ -656,8 +612,8 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
-        "source": "no-source"
+        "value": 47.1,
+        "source": "whichllm"
       },
       "tok_s_factor": 1.3,
       "recency": 0.9,
@@ -678,8 +634,8 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 30.9,
-        "source": "openllm-leaderboard"
+        "value": 17.2,
+        "source": "whichllm"
       },
       "tok_s_factor": 1.0,
       "recency": 0.9,
@@ -701,8 +657,8 @@
         "code"
       ],
       "benchmark_score": {
-        "value": 44.1,
-        "source": "openllm-leaderboard"
+        "value": 38.6,
+        "source": "whichllm"
       },
       "tok_s_factor": 1.3,
       "recency": 0.9,
@@ -723,7 +679,7 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
+        "value": 0.0,
         "source": "no-source"
       },
       "tok_s_factor": 0.2,
@@ -745,7 +701,7 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
+        "value": 0.0,
         "source": "no-source"
       },
       "tok_s_factor": 1.6,
@@ -767,34 +723,12 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
-        "source": "no-source"
+        "value": 36.3,
+        "source": "whichllm"
       },
       "tok_s_factor": 0.2,
       "recency": 0.9,
       "source_hf_id": "meta-llama/Meta-Llama-3.1-70B-Instruct",
-      "params_active": null,
-      "is_moe": false,
-      "gguf_publisher": "MaziyarPanahi"
-    },
-    {
-      "id": "meta-llama-llama-3.3-70b-instruct-q4_k_m",
-      "repo": "MaziyarPanahi/Llama-3.3-70B-Instruct-GGUF",
-      "file": "Llama-3.3-70B-Instruct.Q4_K_M.gguf",
-      "architecture": "llama",
-      "quant": "Q4_K_M",
-      "params": 70553706560,
-      "weights_bytes": 39686459940,
-      "task_hints": [
-        "general"
-      ],
-      "benchmark_score": {
-        "value": 67.3,
-        "source": "openllm-leaderboard"
-      },
-      "tok_s_factor": 0.2,
-      "recency": 0.9,
-      "source_hf_id": "meta-llama/Llama-3.3-70B-Instruct",
       "params_active": null,
       "is_moe": false,
       "gguf_publisher": "MaziyarPanahi"
@@ -811,7 +745,7 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
+        "value": 0.0,
         "source": "no-source"
       },
       "tok_s_factor": 1.0,
@@ -835,7 +769,7 @@
       ],
       "benchmark_score": {
         "value": 37.0,
-        "source": "openllm-leaderboard"
+        "source": "whichllm"
       },
       "tok_s_factor": 0.6,
       "recency": 0.9,
@@ -856,7 +790,7 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
+        "value": 0.0,
         "source": "no-source"
       },
       "tok_s_factor": 1.6,
@@ -878,34 +812,12 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 34.2,
-        "source": "openllm-leaderboard"
+        "value": 30.1,
+        "source": "whichllm"
       },
       "tok_s_factor": 1.0,
       "recency": 0.9,
       "source_hf_id": "01-ai/Yi-1.5-6B-Chat",
-      "params_active": null,
-      "is_moe": false,
-      "gguf_publisher": "MaziyarPanahi"
-    },
-    {
-      "id": "google-gemma-2-2b-it-q4_k_m",
-      "repo": "MaziyarPanahi/gemma-2-2b-it-GGUF",
-      "file": "gemma-2-2b-it.Q4_K_M.gguf",
-      "architecture": "mistral",
-      "quant": "Q4_K_M",
-      "params": 2614341888,
-      "weights_bytes": 1470567312,
-      "task_hints": [
-        "general"
-      ],
-      "benchmark_score": {
-        "value": 25.6,
-        "source": "openllm-leaderboard"
-      },
-      "tok_s_factor": 1.3,
-      "recency": 0.9,
-      "source_hf_id": "google/gemma-2-2b-it",
       "params_active": null,
       "is_moe": false,
       "gguf_publisher": "MaziyarPanahi"
@@ -922,8 +834,8 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
-        "source": "no-source"
+        "value": 26.6,
+        "source": "whichllm"
       },
       "tok_s_factor": 0.4,
       "recency": 0.9,
@@ -945,8 +857,8 @@
         "reasoning"
       ],
       "benchmark_score": {
-        "value": 52.8,
-        "source": "openllm-leaderboard"
+        "value": 35.1,
+        "source": "whichllm"
       },
       "tok_s_factor": 1.0,
       "recency": 0.9,
@@ -967,7 +879,7 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
+        "value": 0.0,
         "source": "no-source"
       },
       "tok_s_factor": 1.0,
@@ -990,34 +902,11 @@
       ],
       "benchmark_score": {
         "value": 25.5,
-        "source": "openllm-leaderboard"
+        "source": "whichllm"
       },
       "tok_s_factor": 1.0,
       "recency": 0.9,
       "source_hf_id": "01-ai/Yi-Coder-9B-Chat",
-      "params_active": null,
-      "is_moe": false,
-      "gguf_publisher": "MaziyarPanahi"
-    },
-    {
-      "id": "qwen-qwen2.5-1.5b-instruct-q4_k_m",
-      "repo": "MaziyarPanahi/Qwen2.5-1.5B-Instruct-GGUF",
-      "file": "Qwen2.5-1.5B-Instruct.Q4_K_M.gguf",
-      "architecture": "mistral",
-      "quant": "Q4_K_M",
-      "params": 1543714304,
-      "weights_bytes": 868339296,
-      "task_hints": [
-        "general",
-        "reasoning"
-      ],
-      "benchmark_score": {
-        "value": 27.6,
-        "source": "openllm-leaderboard"
-      },
-      "tok_s_factor": 1.6,
-      "recency": 0.9,
-      "source_hf_id": "Qwen/Qwen2.5-1.5B-Instruct",
       "params_active": null,
       "is_moe": false,
       "gguf_publisher": "MaziyarPanahi"
@@ -1034,8 +923,8 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 21.7,
-        "source": "openllm-leaderboard"
+        "value": 16.5,
+        "source": "whichllm"
       },
       "tok_s_factor": 1.6,
       "recency": 0.9,
@@ -1057,7 +946,7 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
+        "value": 0.0,
         "source": "no-source"
       },
       "tok_s_factor": 1.0,
@@ -1079,34 +968,12 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
-        "source": "no-source"
+        "value": 55.4,
+        "source": "whichllm"
       },
       "tok_s_factor": 0.6,
       "recency": 0.9,
       "source_hf_id": "google/gemma-3-12b-it",
-      "params_active": null,
-      "is_moe": false,
-      "gguf_publisher": "MaziyarPanahi"
-    },
-    {
-      "id": "meta-llama-llama-3.2-3b-instruct-q4_k_m",
-      "repo": "MaziyarPanahi/Llama-3.2-3B-Instruct-GGUF",
-      "file": "Llama-3.2-3B-Instruct.Q4_K_M.gguf",
-      "architecture": "mistral",
-      "quant": "Q4_K_M",
-      "params": 3212749888,
-      "weights_bytes": 1807171812,
-      "task_hints": [
-        "general"
-      ],
-      "benchmark_score": {
-        "value": 36.3,
-        "source": "openllm-leaderboard"
-      },
-      "tok_s_factor": 1.3,
-      "recency": 0.9,
-      "source_hf_id": "meta-llama/Llama-3.2-3B-Instruct",
       "params_active": null,
       "is_moe": false,
       "gguf_publisher": "MaziyarPanahi"
@@ -1123,7 +990,7 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
+        "value": 0.0,
         "source": "no-source"
       },
       "tok_s_factor": 0.4,
@@ -1145,7 +1012,7 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
+        "value": 0.0,
         "source": "no-source"
       },
       "tok_s_factor": 1.0,
@@ -1167,7 +1034,7 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
+        "value": 0.0,
         "source": "no-source"
       },
       "tok_s_factor": 1.3,
@@ -1189,8 +1056,8 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 5.4,
-        "source": "aider"
+        "value": 59.3,
+        "source": "whichllm"
       },
       "tok_s_factor": 0.4,
       "recency": 0.9,
@@ -1211,7 +1078,7 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
+        "value": 0.0,
         "source": "no-source"
       },
       "tok_s_factor": 0.2,
@@ -1233,8 +1100,8 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 41.9,
-        "source": "openllm-leaderboard"
+        "value": 23.0,
+        "source": "whichllm"
       },
       "tok_s_factor": 1.0,
       "recency": 0.9,
@@ -1255,8 +1122,8 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 45.5,
-        "source": "openllm-leaderboard"
+        "value": 61.4,
+        "source": "whichllm"
       },
       "tok_s_factor": 0.6,
       "recency": 0.9,
@@ -1277,7 +1144,7 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
+        "value": 0.0,
         "source": "no-source"
       },
       "tok_s_factor": 1.0,
@@ -1300,7 +1167,7 @@
       ],
       "benchmark_score": {
         "value": 59.9,
-        "source": "openllm-leaderboard"
+        "source": "whichllm"
       },
       "tok_s_factor": 0.4,
       "recency": 0.9,
@@ -1321,8 +1188,8 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 44.9,
-        "source": "openllm-leaderboard"
+        "value": 34.1,
+        "source": "whichllm"
       },
       "tok_s_factor": 0.4,
       "recency": 0.9,
@@ -1344,10 +1211,10 @@
         "reasoning"
       ],
       "benchmark_score": {
-        "value": 40.0,
+        "value": 0.0,
         "source": "no-source"
       },
-      "tok_s_factor": 0.4,
+      "tok_s_factor": 1.3,
       "recency": 0.9,
       "source_hf_id": "Qwen/Qwen3-30B-A3B-Instruct-2507",
       "params_active": 3000000000,
@@ -1366,8 +1233,8 @@
         "reasoning"
       ],
       "benchmark_score": {
-        "value": 18.3,
-        "source": "openllm-leaderboard"
+        "value": 68.4,
+        "source": "whichllm"
       },
       "tok_s_factor": 0.4,
       "recency": 0.9,
@@ -1388,8 +1255,8 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 69.8,
-        "source": "openllm-leaderboard"
+        "value": 70.2,
+        "source": "whichllm"
       },
       "tok_s_factor": 0.2,
       "recency": 0.9,
@@ -1410,7 +1277,7 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
+        "value": 0.0,
         "source": "no-source"
       },
       "tok_s_factor": 0.4,
@@ -1432,8 +1299,8 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 27.8,
-        "source": "openllm-leaderboard"
+        "value": 24.5,
+        "source": "whichllm"
       },
       "tok_s_factor": 1.0,
       "recency": 0.9,
@@ -1454,7 +1321,7 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
+        "value": 0.0,
         "source": "no-source"
       },
       "tok_s_factor": 0.4,
@@ -1476,8 +1343,8 @@
         "code"
       ],
       "benchmark_score": {
-        "value": 18.2,
-        "source": "aider"
+        "value": 15.469999999999999,
+        "source": "whichllm"
       },
       "tok_s_factor": 0.4,
       "recency": 0.9,
@@ -1498,7 +1365,7 @@
         "code"
       ],
       "benchmark_score": {
-        "value": 40.0,
+        "value": 0.0,
         "source": "no-source"
       },
       "tok_s_factor": 1.6,
@@ -1521,8 +1388,8 @@
         "reasoning"
       ],
       "benchmark_score": {
-        "value": 15.2,
-        "source": "openllm-leaderboard"
+        "value": 8.4,
+        "source": "whichllm"
       },
       "tok_s_factor": 1.6,
       "recency": 0.9,
@@ -1530,28 +1397,6 @@
       "params_active": null,
       "is_moe": false,
       "gguf_publisher": "Qwen"
-    },
-    {
-      "id": "meta-llama-llama-3.2-1b-instruct-q4_k_m",
-      "repo": "bartowski/Llama-3.2-1B-Instruct-GGUF",
-      "file": "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
-      "architecture": "llama",
-      "quant": "Q4_K_M",
-      "params": 1235814432,
-      "weights_bytes": 695145618,
-      "task_hints": [
-        "general"
-      ],
-      "benchmark_score": {
-        "value": 21.7,
-        "source": "openllm-leaderboard"
-      },
-      "tok_s_factor": 1.6,
-      "recency": 0.9,
-      "source_hf_id": "meta-llama/Llama-3.2-1B-Instruct",
-      "params_active": null,
-      "is_moe": false,
-      "gguf_publisher": "bartowski"
     },
     {
       "id": "zai-org-glm-4.7-q4_k_m",
@@ -1565,10 +1410,10 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
-        "source": "no-source"
+        "value": 68.9,
+        "source": "whichllm"
       },
-      "tok_s_factor": 0.2,
+      "tok_s_factor": 0.4,
       "recency": 0.9,
       "source_hf_id": "zai-org/GLM-4.7",
       "params_active": 32000000000,
@@ -1587,10 +1432,10 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
-        "source": "no-source"
+        "value": 46.9,
+        "source": "whichllm"
       },
-      "tok_s_factor": 0.4,
+      "tok_s_factor": 1.3,
       "recency": 0.9,
       "source_hf_id": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
       "params_active": 3000000000,
@@ -1609,7 +1454,7 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
+        "value": 0.0,
         "source": "no-source"
       },
       "tok_s_factor": 0.6,
@@ -1618,28 +1463,6 @@
       "params_active": null,
       "is_moe": false,
       "gguf_publisher": "Jackrong"
-    },
-    {
-      "id": "qwen-qwen2.5-coder-7b-instruct-q4_k_m",
-      "repo": "bartowski/Qwen2.5-Coder-7B-Instruct-GGUF",
-      "file": "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
-      "architecture": "qwen2",
-      "quant": "Q4_K_M",
-      "params": 7615616512,
-      "weights_bytes": 4283784288,
-      "task_hints": [
-        "code"
-      ],
-      "benchmark_score": {
-        "value": 33.8,
-        "source": "openllm-leaderboard"
-      },
-      "tok_s_factor": 1.0,
-      "recency": 0.9,
-      "source_hf_id": "Qwen/Qwen2.5-Coder-7B-Instruct",
-      "params_active": null,
-      "is_moe": false,
-      "gguf_publisher": "bartowski"
     },
     {
       "id": "liquidai-lfm2.5-1.2b-instruct-q4_k_m",
@@ -1653,7 +1476,7 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
+        "value": 0.0,
         "source": "no-source"
       },
       "tok_s_factor": 1.6,
@@ -1676,34 +1499,12 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 15.5,
-        "source": "openllm-leaderboard"
+        "value": 11.8,
+        "source": "whichllm"
       },
       "tok_s_factor": 1.6,
       "recency": 0.9,
       "source_hf_id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
-      "params_active": null,
-      "is_moe": false,
-      "gguf_publisher": "unsloth"
-    },
-    {
-      "id": "meta-llama-llama-3.2-3b-instruct-q4_k_m",
-      "repo": "unsloth/Llama-3.2-3B-Instruct-GGUF",
-      "file": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
-      "architecture": "llama",
-      "quant": "Q4_K_M",
-      "params": 3212749888,
-      "weights_bytes": 1807171812,
-      "task_hints": [
-        "general"
-      ],
-      "benchmark_score": {
-        "value": 36.3,
-        "source": "openllm-leaderboard"
-      },
-      "tok_s_factor": 1.3,
-      "recency": 0.9,
-      "source_hf_id": "meta-llama/Llama-3.2-3B-Instruct",
       "params_active": null,
       "is_moe": false,
       "gguf_publisher": "unsloth"
@@ -1721,10 +1522,10 @@
         "reasoning"
       ],
       "benchmark_score": {
-        "value": 40.0,
+        "value": 0.0,
         "source": "no-source"
       },
-      "tok_s_factor": 0.4,
+      "tok_s_factor": 1.3,
       "recency": 0.9,
       "source_hf_id": "nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16",
       "params_active": 3000000000,
@@ -1743,8 +1544,8 @@
         "code"
       ],
       "benchmark_score": {
-        "value": 48.2,
-        "source": "openllm-leaderboard"
+        "value": 26.5,
+        "source": "whichllm"
       },
       "tok_s_factor": 0.6,
       "recency": 0.9,
@@ -1765,7 +1566,7 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
+        "value": 0.0,
         "source": "no-source"
       },
       "tok_s_factor": 1.6,
@@ -1774,75 +1575,6 @@
       "params_active": null,
       "is_moe": false,
       "gguf_publisher": "unsloth"
-    },
-    {
-      "id": "deepseek-ai-deepseek-r1-0528-qwen3-8b-q4_k_m",
-      "repo": "lmstudio-community/DeepSeek-R1-0528-Qwen3-8B-GGUF",
-      "file": "DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf",
-      "architecture": "qwen3",
-      "quant": "Q4_K_M",
-      "params": 8190735360,
-      "weights_bytes": 4607288640,
-      "task_hints": [
-        "reasoning",
-        "general"
-      ],
-      "benchmark_score": {
-        "value": 40.0,
-        "source": "no-source"
-      },
-      "tok_s_factor": 1.0,
-      "recency": 0.9,
-      "source_hf_id": "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
-      "params_active": null,
-      "is_moe": false,
-      "gguf_publisher": "lmstudio-community"
-    },
-    {
-      "id": "qwen-qwen3-4b-q4_k_m",
-      "repo": "unsloth/Qwen3-4B-GGUF",
-      "file": "Qwen3-4B-Q4_K_M.gguf",
-      "architecture": "qwen3",
-      "quant": "Q4_K_M",
-      "params": 4022468096,
-      "weights_bytes": 2262638304,
-      "task_hints": [
-        "general",
-        "reasoning"
-      ],
-      "benchmark_score": {
-        "value": 40.0,
-        "source": "no-source"
-      },
-      "tok_s_factor": 1.3,
-      "recency": 0.9,
-      "source_hf_id": "Qwen/Qwen3-4B",
-      "params_active": null,
-      "is_moe": false,
-      "gguf_publisher": "unsloth"
-    },
-    {
-      "id": "qwen-qwen2.5-7b-instruct-q4_k_m",
-      "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF",
-      "file": "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
-      "architecture": "qwen2",
-      "quant": "Q4_K_M",
-      "params": 7615616512,
-      "weights_bytes": 4283784288,
-      "task_hints": [
-        "general",
-        "reasoning"
-      ],
-      "benchmark_score": {
-        "value": 52.8,
-        "source": "openllm-leaderboard"
-      },
-      "tok_s_factor": 1.0,
-      "recency": 0.9,
-      "source_hf_id": "Qwen/Qwen2.5-7B-Instruct",
-      "params_active": null,
-      "is_moe": false,
-      "gguf_publisher": "bartowski"
     },
     {
       "id": "bartowski-deepseek-coder-v2-lite-instruct-gguf-q4_k_m",
@@ -1856,7 +1588,7 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
+        "value": 0.0,
         "source": "no-source"
       },
       "tok_s_factor": 0.6,
@@ -1865,52 +1597,6 @@
       "params_active": null,
       "is_moe": false,
       "gguf_publisher": "bartowski"
-    },
-    {
-      "id": "qwen-qwen3-0.6b-q4_k_m",
-      "repo": "unsloth/Qwen3-0.6B-GGUF",
-      "file": "Qwen3-0.6B-Q4_K_M.gguf",
-      "architecture": "qwen3",
-      "quant": "Q4_K_M",
-      "params": 596049920,
-      "weights_bytes": 335278080,
-      "task_hints": [
-        "general",
-        "reasoning"
-      ],
-      "benchmark_score": {
-        "value": 40.0,
-        "source": "no-source"
-      },
-      "tok_s_factor": 1.6,
-      "recency": 0.9,
-      "source_hf_id": "Qwen/Qwen3-0.6B",
-      "params_active": null,
-      "is_moe": false,
-      "gguf_publisher": "unsloth"
-    },
-    {
-      "id": "qwen-qwen3-4b-q4_k_m",
-      "repo": "Qwen/Qwen3-4B-GGUF",
-      "file": "Qwen3-4B-Q4_K_M.gguf",
-      "architecture": "qwen3",
-      "quant": "Q4_K_M",
-      "params": 4022468096,
-      "weights_bytes": 2262638304,
-      "task_hints": [
-        "general",
-        "reasoning"
-      ],
-      "benchmark_score": {
-        "value": 40.0,
-        "source": "no-source"
-      },
-      "tok_s_factor": 1.3,
-      "recency": 0.9,
-      "source_hf_id": "Qwen/Qwen3-4B",
-      "params_active": null,
-      "is_moe": false,
-      "gguf_publisher": "Qwen"
     },
     {
       "id": "huggingfacetb-smollm2-1.7b-instruct-q4_k_m",
@@ -1925,7 +1611,7 @@
       ],
       "benchmark_score": {
         "value": 22.5,
-        "source": "openllm-leaderboard"
+        "source": "whichllm"
       },
       "tok_s_factor": 1.6,
       "recency": 0.9,
@@ -1946,7 +1632,7 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
+        "value": 0.0,
         "source": "no-source"
       },
       "tok_s_factor": 1.0,
@@ -1969,10 +1655,10 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
-        "source": "no-source"
+        "value": 82.5,
+        "source": "whichllm"
       },
-      "tok_s_factor": 0.2,
+      "tok_s_factor": 0.4,
       "recency": 0.9,
       "source_hf_id": "deepseek-ai/DeepSeek-R1",
       "params_active": 37000000000,
@@ -1991,7 +1677,7 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
+        "value": 0.0,
         "source": "no-source"
       },
       "tok_s_factor": 1.0,
@@ -2000,29 +1686,6 @@
       "params_active": null,
       "is_moe": false,
       "gguf_publisher": "TrevorJS"
-    },
-    {
-      "id": "qwen-qwen2.5-7b-instruct-q4_k_m",
-      "repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
-      "file": "qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf",
-      "architecture": "qwen2",
-      "quant": "Q4_K_M",
-      "params": 7615616512,
-      "weights_bytes": 4283784288,
-      "task_hints": [
-        "general",
-        "reasoning"
-      ],
-      "benchmark_score": {
-        "value": 52.8,
-        "source": "openllm-leaderboard"
-      },
-      "tok_s_factor": 1.0,
-      "recency": 0.9,
-      "source_hf_id": "Qwen/Qwen2.5-7B-Instruct",
-      "params_active": null,
-      "is_moe": false,
-      "gguf_publisher": "Qwen"
     },
     {
       "id": "qwen-qwen2.5-coder-3b-instruct-q4_k_m",
@@ -2036,7 +1699,7 @@
         "code"
       ],
       "benchmark_score": {
-        "value": 40.0,
+        "value": 0.0,
         "source": "no-source"
       },
       "tok_s_factor": 1.3,
@@ -2058,8 +1721,8 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 19.2,
-        "source": "openllm-leaderboard"
+        "value": 14.6,
+        "source": "whichllm"
       },
       "tok_s_factor": 1.0,
       "recency": 0.9,
@@ -2067,28 +1730,6 @@
       "params_active": null,
       "is_moe": false,
       "gguf_publisher": "TheBloke"
-    },
-    {
-      "id": "qwen-qwen2.5-coder-14b-instruct-q4_k_m",
-      "repo": "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF",
-      "file": "Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf",
-      "architecture": "qwen2",
-      "quant": "Q4_K_M",
-      "params": 14770033664,
-      "weights_bytes": 8308143936,
-      "task_hints": [
-        "code"
-      ],
-      "benchmark_score": {
-        "value": 48.2,
-        "source": "openllm-leaderboard"
-      },
-      "tok_s_factor": 0.6,
-      "recency": 0.9,
-      "source_hf_id": "Qwen/Qwen2.5-Coder-14B-Instruct",
-      "params_active": null,
-      "is_moe": false,
-      "gguf_publisher": "bartowski"
     },
     {
       "id": "meta-llama-llama-2-7b-chat-hf-q4_k_m",
@@ -2102,8 +1743,8 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 14.4,
-        "source": "openllm-leaderboard"
+        "value": 7.9,
+        "source": "whichllm"
       },
       "tok_s_factor": 1.0,
       "recency": 0.9,
@@ -2111,28 +1752,6 @@
       "params_active": null,
       "is_moe": false,
       "gguf_publisher": "TheBloke"
-    },
-    {
-      "id": "qwen-qwen3-coder-next-q4_k_m",
-      "repo": "MaziyarPanahi/Qwen3-Coder-Next-GGUF",
-      "file": "Qwen3-Coder-Next.Q4_K_M.gguf",
-      "architecture": "mistral",
-      "quant": "Q4_K_M",
-      "params": 79674391296,
-      "weights_bytes": 44816845104,
-      "task_hints": [
-        "code"
-      ],
-      "benchmark_score": {
-        "value": 40.0,
-        "source": "no-source"
-      },
-      "tok_s_factor": 0.2,
-      "recency": 0.9,
-      "source_hf_id": "Qwen/Qwen3-Coder-Next",
-      "params_active": null,
-      "is_moe": false,
-      "gguf_publisher": "MaziyarPanahi"
     },
     {
       "id": "nvidia-nvidia-nemotron-nano-12b-v2-q4_k_m",
@@ -2146,7 +1765,7 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
+        "value": 0.0,
         "source": "no-source"
       },
       "tok_s_factor": 0.6,
@@ -2168,7 +1787,7 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
+        "value": 0.0,
         "source": "no-source"
       },
       "tok_s_factor": 0.6,
@@ -2191,8 +1810,8 @@
         "reasoning"
       ],
       "benchmark_score": {
-        "value": 40.0,
-        "source": "no-source"
+        "value": 56.1,
+        "source": "whichllm"
       },
       "tok_s_factor": 1.3,
       "recency": 0.9,
@@ -2200,29 +1819,6 @@
       "params_active": null,
       "is_moe": false,
       "gguf_publisher": "MaziyarPanahi"
-    },
-    {
-      "id": "qwen-qwen3-8b-q4_k_m",
-      "repo": "unsloth/Qwen3-8B-GGUF",
-      "file": "Qwen3-8B-Q4_K_M.gguf",
-      "architecture": "qwen3",
-      "quant": "Q4_K_M",
-      "params": 8190735360,
-      "weights_bytes": 4607288640,
-      "task_hints": [
-        "general",
-        "reasoning"
-      ],
-      "benchmark_score": {
-        "value": 40.0,
-        "source": "no-source"
-      },
-      "tok_s_factor": 1.0,
-      "recency": 0.9,
-      "source_hf_id": "Qwen/Qwen3-8B",
-      "params_active": null,
-      "is_moe": false,
-      "gguf_publisher": "unsloth"
     },
     {
       "id": "arliai-gpt-oss-20b-derestricted-q4_k_m",
@@ -2236,7 +1832,7 @@
         "general"
       ],
       "benchmark_score": {
-        "value": 40.0,
+        "value": 0.0,
         "source": "no-source"
       },
       "tok_s_factor": 0.4,
@@ -2245,6 +1841,406 @@
       "params_active": null,
       "is_moe": false,
       "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "ilyagusev-gemma-2-2b-it-abliterated-q4_k_m",
+      "repo": "bartowski/gemma-2-2b-it-abliterated-GGUF",
+      "file": "gemma-2-2b-it-abliterated-Q4_K_M.gguf",
+      "architecture": "gemma2",
+      "quant": "Q4_K_M",
+      "params": 2614341888,
+      "weights_bytes": 1470567312,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 19.1,
+        "source": "whichllm"
+      },
+      "tok_s_factor": 1.3,
+      "recency": 0.9,
+      "source_hf_id": "IlyaGusev/gemma-2-2b-it-abliterated",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "bartowski"
+    },
+    {
+      "id": "zai-org-glm-4.6v-flash-q4_k_m",
+      "repo": "MaziyarPanahi/GLM-4.6V-Flash-GGUF",
+      "file": "GLM-4.6V-Flash.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 9400279040,
+      "weights_bytes": 5287656960,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 0.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 0.6,
+      "recency": 0.9,
+      "source_hf_id": "zai-org/GLM-4.6V-Flash",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "deepseek-ai-deepseek-r1-distill-llama-8b-q4_k_m",
+      "repo": "unsloth/DeepSeek-R1-Distill-Llama-8B-GGUF",
+      "file": "DeepSeek-R1-Distill-Llama-8B-Q4_K_M.gguf",
+      "architecture": "llama",
+      "quant": "Q4_K_M",
+      "params": 8030261312,
+      "weights_bytes": 4517021988,
+      "task_hints": [
+        "reasoning",
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 42.1,
+        "source": "whichllm"
+      },
+      "tok_s_factor": 1.0,
+      "recency": 0.9,
+      "source_hf_id": "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "unsloth"
+    },
+    {
+      "id": "nvidia-nemotron-orchestrator-8b-q4_k_m",
+      "repo": "MaziyarPanahi/Nemotron-Orchestrator-8B-GGUF",
+      "file": "Nemotron-Orchestrator-8B.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 8190735360,
+      "weights_bytes": 4607288640,
+      "task_hints": [
+        "general",
+        "reasoning"
+      ],
+      "benchmark_score": {
+        "value": 0.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.0,
+      "recency": 0.9,
+      "source_hf_id": "nvidia/Nemotron-Orchestrator-8B",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "arcee-ai-trinity-mini-q4_k_m",
+      "repo": "MaziyarPanahi/Trinity-Mini-GGUF",
+      "file": "Trinity-Mini.Q4_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q4_K_M",
+      "params": 26123974400,
+      "weights_bytes": 14694735600,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 0.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 0.4,
+      "recency": 0.9,
+      "source_hf_id": "arcee-ai/Trinity-Mini",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "MaziyarPanahi"
+    },
+    {
+      "id": "davidau-llama-3.2-8x3b-moe-dark-champion-instruct-uncensored-abliterated-18.4b-q4_k_m",
+      "repo": "DavidAU/Llama-3.2-8X3B-MOE-Dark-Champion-Instruct-uncensored-abliterated-18.4B-GGUF",
+      "file": "L3.2-8X3B-MOE-Dark-Champion-Inst-18.4B-uncen-ablit_D_AU-Q4_k_m.gguf",
+      "architecture": "llama",
+      "quant": "Q4_K_M",
+      "params": 18404944960,
+      "weights_bytes": 10352781540,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 0.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 0.4,
+      "recency": 0.9,
+      "source_hf_id": "DavidAU/Llama-3.2-8X3B-MOE-Dark-Champion-Instruct-uncensored-abliterated-18.4B",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "DavidAU"
+    },
+    {
+      "id": "trevorjs-gemma-4-26b-a4b-it-uncensored-q4_k_m",
+      "repo": "TrevorJS/gemma-4-26B-A4B-it-uncensored-GGUF",
+      "file": "gemma-4-26B-A4B-it-uncensored-Q4_K_M.gguf",
+      "architecture": "gemma4",
+      "quant": "Q4_K_M",
+      "params": 25233142046,
+      "weights_bytes": 14193642400,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 0.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.3,
+      "recency": 0.9,
+      "source_hf_id": "TrevorJS/gemma-4-26B-A4B-it-uncensored",
+      "params_active": 4000000000,
+      "is_moe": true,
+      "gguf_publisher": "TrevorJS"
+    },
+    {
+      "id": "thedrummer-cydonia-24b-v4.2.0-q4_k_m",
+      "repo": "bartowski/TheDrummer_Cydonia-24B-v4.2.0-GGUF",
+      "file": "TheDrummer_Cydonia-24B-v4.2.0-Q4_K_M.gguf",
+      "architecture": "llama",
+      "quant": "Q4_K_M",
+      "params": 23572403200,
+      "weights_bytes": 13259476800,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 0.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 0.4,
+      "recency": 0.9,
+      "source_hf_id": "TheDrummer/Cydonia-24B-v4.2.0",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "bartowski"
+    },
+    {
+      "id": "marinaraspaghetti-nemomix-unleashed-12b-q4_k_m",
+      "repo": "bartowski/NemoMix-Unleashed-12B-GGUF",
+      "file": "NemoMix-Unleashed-12B-Q4_K_M.gguf",
+      "architecture": "llama",
+      "quant": "Q4_K_M",
+      "params": 12247782400,
+      "weights_bytes": 6889377600,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 0.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 0.6,
+      "recency": 0.9,
+      "source_hf_id": "MarinaraSpaghetti/NemoMix-Unleashed-12B",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "bartowski"
+    },
+    {
+      "id": "ttimofeyka-mistralrp-noromaid-nsfw-mistral-7b-gguf-q5_k_m",
+      "repo": "Ttimofeyka/MistralRP-Noromaid-NSFW-Mistral-7B-GGUF",
+      "file": "MistralRP-Noromaid-NSFW-7B-Q5_K_M.gguf",
+      "architecture": "mistral",
+      "quant": "Q5_K_M",
+      "params": 7241732096,
+      "weights_bytes": 4978690816,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 0.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.0,
+      "recency": 0.9,
+      "source_hf_id": "Ttimofeyka/MistralRP-Noromaid-NSFW-Mistral-7B-GGUF",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "Ttimofeyka"
+    },
+    {
+      "id": "qwen-qwen2-0.5b-instruct-q4_k_m",
+      "repo": "Qwen/Qwen2-0.5B-Instruct-GGUF",
+      "file": "qwen2-0_5b-instruct-q4_k_m.gguf",
+      "architecture": "qwen2",
+      "quant": "Q4_K_M",
+      "params": 494032768,
+      "weights_bytes": 277893432,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 5.4,
+        "source": "whichllm"
+      },
+      "tok_s_factor": 1.6,
+      "recency": 0.9,
+      "source_hf_id": "Qwen/Qwen2-0.5B-Instruct",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "Qwen"
+    },
+    {
+      "id": "jackrong-qwen3.5-2b-claude-4.6-opus-reasoning-distilled-gguf-q4_k_m",
+      "repo": "Jackrong/Qwen3.5-2B-Claude-4.6-Opus-Reasoning-Distilled-GGUF",
+      "file": "Qwen3.5-2B.Q4_K_M.gguf",
+      "architecture": "qwen3_5",
+      "quant": "Q4_K_M",
+      "params": 1881825088,
+      "weights_bytes": 1058526612,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 0.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.6,
+      "recency": 0.9,
+      "source_hf_id": "Jackrong/Qwen3.5-2B-Claude-4.6-Opus-Reasoning-Distilled-GGUF",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "Jackrong"
+    },
+    {
+      "id": "cognitivecomputations-dolphin-2.9-llama3-8b-q4_k_m",
+      "repo": "bartowski/dolphin-2.9-llama3-8b-GGUF",
+      "file": "dolphin-2.9-llama3-8b-Q4_K_M.gguf",
+      "architecture": "llama",
+      "quant": "Q4_K_M",
+      "params": 8030277632,
+      "weights_bytes": 4517031168,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 27.6,
+        "source": "whichllm"
+      },
+      "tok_s_factor": 1.0,
+      "recency": 0.9,
+      "source_hf_id": "cognitivecomputations/dolphin-2.9-llama3-8b",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "bartowski"
+    },
+    {
+      "id": "deepseek-ai-deepseek-r1-distill-qwen-7b-q4_k_m",
+      "repo": "bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF",
+      "file": "DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf",
+      "architecture": "qwen2",
+      "quant": "Q4_K_M",
+      "params": 7615616512,
+      "weights_bytes": 4283784288,
+      "task_hints": [
+        "reasoning",
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 12.4,
+        "source": "whichllm"
+      },
+      "tok_s_factor": 1.0,
+      "recency": 0.9,
+      "source_hf_id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "bartowski"
+    },
+    {
+      "id": "liquidai-lfm2-24b-a2b-q4_k_m",
+      "repo": "LiquidAI/LFM2-24B-A2B-GGUF",
+      "file": "LFM2-24B-A2B-Q4_K_M.gguf",
+      "architecture": "lfm2moe",
+      "quant": "Q4_K_M",
+      "params": 23843661440,
+      "weights_bytes": 13412059560,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 0.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.6,
+      "recency": 0.9,
+      "source_hf_id": "LiquidAI/LFM2-24B-A2B",
+      "params_active": 2000000000,
+      "is_moe": true,
+      "gguf_publisher": "LiquidAI"
+    },
+    {
+      "id": "deepseek-ai-deepseek-r1-distill-qwen-14b-q4_k_m",
+      "repo": "bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF",
+      "file": "DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf",
+      "architecture": "qwen2",
+      "quant": "Q4_K_M",
+      "params": 14770033664,
+      "weights_bytes": 8308143936,
+      "task_hints": [
+        "reasoning",
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 56.1,
+        "source": "whichllm"
+      },
+      "tok_s_factor": 0.6,
+      "recency": 0.9,
+      "source_hf_id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "bartowski"
+    },
+    {
+      "id": "janhq-jan-code-4b-q4_k_m",
+      "repo": "janhq/Jan-code-4b-gguf",
+      "file": "Jan-code-4b-Q4_K_M.gguf",
+      "architecture": "qwen3",
+      "quant": "Q4_K_M",
+      "params": 4411424256,
+      "weights_bytes": 2481426144,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 0.0,
+        "source": "no-source"
+      },
+      "tok_s_factor": 1.3,
+      "recency": 0.9,
+      "source_hf_id": "janhq/Jan-code-4b",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "janhq"
+    },
+    {
+      "id": "google-gemma-2-9b-it-q4_k_m",
+      "repo": "bartowski/gemma-2-9b-it-GGUF",
+      "file": "gemma-2-9b-it-Q4_K_M-fp16.gguf",
+      "architecture": "gemma2",
+      "quant": "Q4_K_M",
+      "params": 9241705984,
+      "weights_bytes": 5198459616,
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 35.1,
+        "source": "whichllm"
+      },
+      "tok_s_factor": 0.6,
+      "recency": 0.9,
+      "source_hf_id": "google/gemma-2-9b-it",
+      "params_active": null,
+      "is_moe": false,
+      "gguf_publisher": "bartowski"
     }
   ]
 }

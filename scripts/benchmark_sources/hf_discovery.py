@@ -374,13 +374,29 @@ def _quant_matches_filename(name: str, quant: str) -> bool:
 
 
 def _rank_and_cap(rows: List[Dict[str, Any]], *, limit: int) -> List[Dict[str, Any]]:
-    """Rank by downloads × recency proxy, then cap to ``limit``.
+    """Rank by downloads × recency proxy, dedupe per
+    ``(source_hf_id, quant)`` keeping the highest-download GGUF
+    publisher, then cap to ``limit``.
 
-    The benchmark/recency lift happens later in the regen script when
-    we merge with adapter scores; this prefilter only handles "we have
-    more candidates than the snapshot budget".
+    Multiple GGUF publishers (bartowski, mradermacher, lmstudio,
+    unsloth, the source org's own GGUF release) often re-host the
+    same upstream model at the same quant. Without this dedup the
+    snapshot ends up with three identical rows for the same
+    ``(source_hf_id, quant)`` slug — the recommender then surfaces
+    them as separate picks and the wizard's recommendation list
+    repeats itself. Sort-then-keep-first by downloads picks the
+    most-trusted host (since publisher reputation correlates
+    strongly with download count) without needing a curated table.
     """
     rows.sort(
         key=lambda r: (r.get("downloads", 0), r.get("last_modified", "")), reverse=True
     )
-    return rows[:limit]
+    deduped: List[Dict[str, Any]] = []
+    seen: set[Tuple[str, str]] = set()
+    for row in rows:
+        key = (row.get("source_hf_id") or "", row.get("quant") or "")
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+    return deduped[:limit]

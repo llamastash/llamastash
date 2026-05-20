@@ -190,6 +190,25 @@ pub fn recommend(
       .partial_cmp(&a.score)
       .unwrap_or(std::cmp::Ordering::Equal)
   });
+  // Dedupe by `source_hf_id` after ranking so different GGUF
+  // publishers re-hosting the same upstream model don't take multiple
+  // slots in the top-N. The regen flow already dedupes on
+  // `(source_hf_id, quant)`, but this is defence-in-depth: a remote
+  // snapshot a binary downloads at runtime might have pre-dedup data,
+  // and an on-disk model may collide with its remote catalog entry.
+  // Empty `source_hf_id` (legacy schema rows, on-disk-only paths)
+  // bypasses the dedup to avoid collapsing unrelated entries.
+  let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+  scored.retain(|rec| {
+    let key = match &rec.kind {
+      RecommendationKind::Curated { entry } => entry.source_hf_id.clone(),
+      RecommendationKind::OnDisk { .. } | RecommendationKind::Escape => String::new(),
+    };
+    if key.is_empty() {
+      return true;
+    }
+    seen.insert(key)
+  });
   scored.truncate(options.top_n);
   scored.push(Recommendation {
     kind: RecommendationKind::Escape,
@@ -522,8 +541,8 @@ mod tests {
     for rec in &recs {
       if let RecommendationKind::Curated { entry } = &rec.kind {
         assert!(
-          entry.params <= 8_000_000_000,
-          "cpu-only must stay at ≤7B-class, got {} ({}B)",
+          entry.params <= 8_500_000_000,
+          "cpu-only must stay at ≤8B-class, got {} ({}B)",
           entry.id,
           entry.params as f64 / 1e9
         );

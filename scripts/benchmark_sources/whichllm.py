@@ -1,15 +1,16 @@
-"""Partial vendoring of Andyyyy64/whichllm (MIT).
+"""Attribution shim for Andyyyy64/whichllm (MIT).
 
-Per the v2-GA plan (docs/plans/2026-05-19-001-feat-vendor-benchmark-
-scrapers-plan.md) this module holds only the symbols the two CI-side
-adapters (open_llm_leaderboard.py, aider.py) genuinely share.
+Holds the symbols our regen adapters share: vendoring metadata and the
+``SourceResult`` dataclass used to communicate partial-failure state.
 
-Vendoring is intentionally minimal: each adapter re-implements its fetch
-inline with stdlib + httpx, so this module stays a thin attribution shim
-rather than a copy of whichllm's full benchmark-source layer. Re-syncs
-move on demand (R57); when the upstream surface drifts, refresh the
-adapters individually and bump the constants below in lockstep with
-NOTICE.
+The original v2-GA plan (docs/plans/2026-05-19-001-feat-vendor-benchmark-
+scrapers-plan.md) vendored two per-source adapters here (Open LLM
+Leaderboard + Aider). That covered only 2 of whichllm's 6 sources and
+dropped the layered current-over-frozen precedence plus the lineage
+recency demotion — exactly the gap that left the wizard surfacing
+two-generation-old picks. The follow-up collapses those adapters into
+``whichllm_combined.py``, which delegates the full pipeline to
+``whichllm.models.benchmark.fetch_benchmark_scores()``.
 
 R45 single-binary invariant: none of this runs in the Rust artefact.
 """
