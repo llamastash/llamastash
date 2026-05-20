@@ -332,7 +332,9 @@ mod tests {
       llama_server_version: Some("b9219".into()),
       install_method: Some(InstallMethod::GhReleases),
       init_date: Some("2026-05-19T00:00:00Z".into()),
-      llama_server_path: Some(PathBuf::from("/opt/llamastash/llama-cpp/b9219/llama-server")),
+      llama_server_path: Some(PathBuf::from(
+        "/opt/llamastash/llama-cpp/b9219/llama-server",
+      )),
       llama_server_digest: Some("a".repeat(64)),
       snapshot_bundle_date: Some("2026-05-18".into()),
       remote_fetch_failures: 0,

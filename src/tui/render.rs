@@ -38,9 +38,9 @@ const HOST_PANEL_WIDTH: u16 = 28;
 /// doesn't silently clip every panel (audit §5 #9).
 const MIN_RENDER_WIDTH: u16 = 40;
 const MIN_RENDER_HEIGHT: u16 = 10;
-// COMPACT_BANNER is 7 cells wide; +1 cell padding each side + 2
-// border cells = 11. Drop the panel entirely on narrower terminals.
-const LOGO_PANEL_WIDTH: u16 = 11;
+// COMPACT_BANNER is 8 cells wide; +1 cell padding each side + 2
+// border cells = 12. Drop the panel entirely on narrower terminals.
+const LOGO_PANEL_WIDTH: u16 = 12;
 const MIN_LOGO_INNER_WIDTH: u16 = 9;
 
 /// Paint `palette.bg` over `area` so subsequent foreground-only
@@ -210,9 +210,6 @@ fn render_title_left(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Pal
   let on_accent = palette.on_accent;
   let line = Line::from(vec![
     Span::raw(" "),
-    // Llama mascot glyph — picked from the BMP so it renders without
-    // an emoji-capable font dependency.
-    Span::styled("🦙 ", Style::default().fg(on_accent)),
     Span::styled(
       "LlamaStash",
       Style::default().fg(on_accent).add_modifier(Modifier::BOLD),
@@ -667,7 +664,7 @@ mod tests {
 
   #[test]
   fn narrow_width_hides_logo_panel() {
-    // 45-col terminal: 28 (host) + 11 (logo) leaves only ~6 cells
+    // 45-col terminal: 28 (host) + 12 (logo) leaves only ~5 cells
     // for the daemon middle, which is below the
     // `MIN_LOGO_INNER_WIDTH + 2` threshold the renderer enforces.
     // The Logo panel drops and Daemon flexes to fill the rest. We
@@ -690,7 +687,7 @@ mod tests {
     let app = App::new(AppOptions::default());
     let rows = render_into(100, 30, app);
     let body = rows.join("\n");
-    // At 100 cols, Host(28) + Daemon(min 1) + Logo(11) easily fit.
+    // At 100 cols, Host(28) + Daemon(min 1) + Logo(12) easily fit.
     // The logo panel emits the COMPACT_BANNER glyphs (`██`) — assert
     // those rather than the theme tag, which now lives on the
     // top-row hint strip and may get clipped at narrower widths.

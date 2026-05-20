@@ -117,8 +117,10 @@ mod tests {
       .duration_since(UNIX_EPOCH)
       .expect("clock should be after epoch")
       .as_nanos();
-    let dir =
-      std::env::temp_dir().join(format!("llamastash-logtest-{}-{suffix}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+      "llamastash-logtest-{}-{suffix}",
+      std::process::id()
+    ));
     fs::create_dir_all(&dir).expect("temp dir should be created");
     let path = dir.join("llamastash.log");
 
