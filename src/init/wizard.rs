@@ -33,7 +33,7 @@ use crate::init::install::{
   default_install_method, gh_releases, BinaryInstall, InstallChoice, InstallError,
 };
 use crate::init::prompts::{self, ModelChoice};
-use crate::init::recommender::{recommend, OnDiskModel, RecommendOptions};
+use crate::init::recommender::{recommend, OnDiskModel, Recommendation, RecommendOptions};
 use crate::init::snapshot::{self, InstallMethod, ManagedKey};
 
 /// Effective per-step run plan after `--only`/`--skip` resolve. Step 1
@@ -113,6 +113,13 @@ pub struct InitSummary {
   pub smoke: Option<SmokeSummary>,
   pub hardware: HardwareSummary,
   pub offline: bool,
+  /// Top-N model recommendations the models step computed against the
+  /// active benchmark snapshot. Populated whenever the models step
+  /// runs; empty otherwise. Lets `init --only models --json` act as a
+  /// "what would you suggest" listing without downloading anything —
+  /// makes the output directly comparable to `whichllm --json`.
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub recommendations: Vec<Recommendation>,
   /// `Some(true)` when a remote benchmark snapshot fetch succeeded
   /// and verified this run; `Some(false)` when it was attempted and
   /// failed (counter +1); `None` when no attempt was made (offline
@@ -137,6 +144,7 @@ impl Default for InitSummary {
       smoke: None,
       hardware: HardwareSummary::default(),
       offline: false,
+      recommendations: Vec::new(),
       remote_snapshot_attempt: None,
     }
   }
@@ -305,6 +313,7 @@ pub async fn run(args: InitArgs, cli: &Cli, config: &Config) -> CliResult {
     summary.steps_ran.push("models");
     let outcome = run_models_step(&args, &fetch, &hardware).await?;
     summary.remote_snapshot_attempt = outcome.remote_snapshot_attempt;
+    summary.recommendations = outcome.recommendations;
     Some(outcome.model)
   } else {
     summary.steps_skipped.push("models");
@@ -425,9 +434,7 @@ fn run_smoke_step(
     .to_string();
   let sp = prompts::StepProgress::start_if(
     emit_progress,
-    format!(
-      "Probing {binary_label}: dry-run memory check (phase-1) + `--version` exec"
-    ),
+    format!("Probing {binary_label}: dry-run memory check (phase-1) + `--version` exec"),
   );
   match crate::init::smoke::run_phase_one_and_version(
     &install.path,
@@ -658,6 +665,11 @@ fn install_err_to_exit(e: InstallError) -> CliExit {
 /// counter that backs doctor's `RemoteSnapshotUnreachable` finding.
 struct ModelsStepResult {
   model: ModelSummary,
+  /// The top-N recommendations the recommender produced this run.
+  /// Surfaced into [`InitSummary::recommendations`] so JSON consumers
+  /// can read the full ranked list even when a single model was
+  /// auto-selected or download was skipped.
+  recommendations: Vec<Recommendation>,
   remote_snapshot_attempt: Option<bool>,
 }
 
@@ -710,6 +722,22 @@ async fn run_models_step(
     recs.len(),
     snapshot.models.len()
   );
+  // JSON mode without an explicit `--model` override is treated as a
+  // listing request: emit the recommendations in the summary and skip
+  // the download. Lets `init --only models --json` work as a "what
+  // would you suggest" surface comparable to `whichllm --json`,
+  // without surprising the caller by pulling 10+ GB.
+  if args.json && args.model.is_none() && !prompts::is_recommended(args) {
+    return Ok(ModelsStepResult {
+      model: ModelSummary {
+        repo: String::new(),
+        files: Vec::new(),
+        total_bytes: 0,
+      },
+      recommendations: recs,
+      remote_snapshot_attempt,
+    });
+  }
   let choice = prompts::pick_model(args, &recs).await?;
   log::debug!("init: model chosen: {choice:?}");
   // `--revision` only carries through on the paste branch — curated
@@ -738,6 +766,7 @@ async fn run_models_step(
           files: Vec::new(),
           total_bytes: 0,
         },
+        recommendations: recs,
         remote_snapshot_attempt,
       });
     }
@@ -772,6 +801,7 @@ async fn run_models_step(
       files: result.paths,
       total_bytes: result.total_bytes,
     },
+    recommendations: recs,
     remote_snapshot_attempt,
   })
 }

@@ -59,9 +59,13 @@ const MOE_ATTENTION_PARAM_MULTIPLIER: f64 = 4.0;
 /// 50% of free RAM.
 const CPU_RAM_FRACTION: f64 = 0.50;
 
-/// Number of recommendations to surface. R59 anchors top-N at 3–5;
-/// 5 leaves enough variety without burying the curated picks.
-pub const DEFAULT_TOP_N: usize = 5;
+/// Number of recommendations to surface. R59's original budget was
+/// 3–5; we lifted it to 10 once `--only models --json` started being
+/// used as a comparison surface against `whichllm --json` (whose
+/// default top-N is also 10). Ten leaves enough variety to span
+/// quant / param / MoE tiers without burying the curated picks, and
+/// the interactive picker scrolls cleanly past a 10-entry list.
+pub const DEFAULT_TOP_N: usize = 10;
 
 /// Default context window the recommender evaluates against. Models
 /// that don't fit at 16k can ride the no-fit-fallback ladder (ctx
