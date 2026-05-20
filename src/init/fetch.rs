@@ -166,6 +166,18 @@ impl FetchClient {
   /// `Content-Length` larger than `max_bytes` is refused before any
   /// body is read; streaming reads enforce the cap mid-flight too.
   pub async fn get_bytes(&self, url: &str, max_bytes: u64) -> Result<Vec<u8>, FetchError> {
+    let (bytes, _) = self.get_bytes_with_headers(url, max_bytes).await?;
+    Ok(bytes)
+  }
+
+  /// Same contract as [`Self::get_bytes`] but also returns the response
+  /// headers. Used by `init::hf_api` to read the `Link` header for
+  /// cursor-based pagination.
+  pub async fn get_bytes_with_headers(
+    &self,
+    url: &str,
+    max_bytes: u64,
+  ) -> Result<(Vec<u8>, reqwest::header::HeaderMap), FetchError> {
     let (client, allowlist) = match &self.inner {
       Mode::Online { client, allowlist } => (client, allowlist),
       Mode::Offline => return Err(FetchError::Offline),
@@ -201,6 +213,7 @@ impl FetchClient {
         return Err(FetchError::BodyOverflow { cap: max_bytes });
       }
     }
+    let headers = response.headers().clone();
     let mut total = 0_u64;
     let mut buf: Vec<u8> = Vec::with_capacity(
       response
@@ -217,7 +230,7 @@ impl FetchClient {
       }
       buf.extend_from_slice(&chunk);
     }
-    Ok(buf)
+    Ok((buf, headers))
   }
 
   /// GET `url`, parse the body as JSON into `T`. Body capped at
@@ -231,6 +244,19 @@ impl FetchClient {
   ) -> Result<T, FetchError> {
     let bytes = self.get_bytes(url, max_bytes).await?;
     serde_json::from_slice(&bytes).map_err(|e| FetchError::JsonDecode(e.to_string()))
+  }
+
+  /// Same as [`Self::get_json`] but also returns the response headers
+  /// so callers can read `Link` (pagination), `ETag` (caching), etc.
+  pub async fn get_json_with_headers<T: DeserializeOwned>(
+    &self,
+    url: &str,
+    max_bytes: u64,
+  ) -> Result<(T, reqwest::header::HeaderMap), FetchError> {
+    let (bytes, headers) = self.get_bytes_with_headers(url, max_bytes).await?;
+    let parsed: T =
+      serde_json::from_slice(&bytes).map_err(|e| FetchError::JsonDecode(e.to_string()))?;
+    Ok((parsed, headers))
   }
 }
 

@@ -13,6 +13,7 @@ pub mod doctor;
 pub mod download;
 pub mod fetch;
 pub mod fetch_policy;
+pub mod hf_api;
 pub mod install;
 pub mod prompts;
 pub mod recommender;

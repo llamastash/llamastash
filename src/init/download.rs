@@ -314,7 +314,7 @@ pub fn file_url(endpoint: &str, repo_id: &str, path: &str) -> String {
   format!("{endpoint}/{repo_id}/resolve/main/{path}")
 }
 
-fn build_api(cache_dir: PathBuf) -> Result<Api, DownloadError> {
+pub fn build_api(cache_dir: PathBuf) -> Result<Api, DownloadError> {
   let token = resolve_hf_token()?;
   let endpoint = endpoint()?;
   ApiBuilder::new()
