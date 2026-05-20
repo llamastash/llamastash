@@ -77,11 +77,14 @@ from benchmark_sources import hf_discovery as _hf_discovery  # noqa: E402
 from benchmark_sources import whichllm_combined as _whichllm_scores  # noqa: E402
 from benchmark_sources.whichllm import SourceResult  # noqa: E402
 
-# Maximum rows the bundled snapshot ships. Aligned with Key Decision 3
-# of docs/plans/2026-05-20-001-feat-live-hf-snapshot-discovery-plan.md
-# (100 rows ≈ 330 KiB with the new schema fields, comfortably under
-# Unit 6's 2 MiB ceiling).
-SNAPSHOT_MODEL_LIMIT = 100
+# Maximum *unique source models* the bundled snapshot ships. Each
+# source contributes up to 6 quant rows (Q3_K_M through Q8_0), so the
+# row count is roughly 6× this. 250 was picked to land around ~1500
+# rows / ~900 KiB — comfortably under Unit 6's 2 MiB ceiling — while
+# being large enough that frontier releases with modest download
+# counts (e.g. Qwen3-Next-80B-A3B-Instruct at ~350K downloads, which
+# whichllm ranks #1) survive the budget pass.
+SNAPSHOT_MODEL_LIMIT = 250
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)

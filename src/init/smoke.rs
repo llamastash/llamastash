@@ -279,13 +279,17 @@ mod tests {
 
   #[test]
   fn phase_one_warns_when_within_10pct_of_ceiling() {
-    // 24 GiB → ceiling ~21.6 GiB. Pick weights that produce a peak
-    // within the 10% margin (peak ≥ ceiling - ceiling/10 ≈ 19.44 GiB).
-    // peak(w, 16384) = w × 1.2 + w × 0.15 × 4 = w × 1.8 → target
-    // w ≥ 19.44 / 1.8 GiB ≈ 10.8 GiB. Use 11.7 GiB so we're
-    // comfortably inside the warning band.
+    // 24 GiB → ceiling = 24 × 0.9 ≈ 23.2 × 10⁹ bytes (smoke uses
+    // SAFETY_MARGIN directly, no per-backend overhead band). The
+    // whichllm-aligned estimator computes
+    //   peak = weights + KV(3 MB/B/K × dense_params × ctx_k)
+    //        + activation(400 MB + 0.08 B/param + 150 MB/4K)
+    // The dense-params estimate is weights_bytes / 0.5625, so a
+    // 15.5 GiB weights file lands at ~29.6B dense params and
+    // ~21.7 GB peak at 16k context — comfortably inside the
+    // top-10% warning band (peak ≥ ~20.9 GB).
     let hw = nvidia(24.0);
-    let weights = (11.7 * 1024.0 * 1024.0 * 1024.0) as u64;
+    let weights = (15.5 * 1024.0 * 1024.0 * 1024.0) as u64;
     let result = phase_one(&hw, weights, 16384).unwrap();
     assert!(
       matches!(result, Some(SmokeWarning::VramTight { .. })),

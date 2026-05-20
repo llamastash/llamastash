@@ -76,37 +76,87 @@ _QUANT_GB_PER_BPARAM: Dict[str, float] = {
 }
 
 # Per-quant speed multiplier on the params-based tok/s baseline.
-# Smaller quants move fewer bytes per token, so they're faster on
-# memory-bandwidth-bound LLM inference. Kept gentle (±15%) so the
-# speed term doesn't drown out the quality discount below — without
-# this restraint Q3_K_M would always outrank Q4_K_M of the same
-# model since the composite score's `tok_per_second` weight (0.25)
-# is large enough that a 30% raw speed gain wipes out a 4% quality
-# drop. Real-world bandwidth ratios are larger, but for ranking the
-# recommender values "good fit + good quality" over raw throughput.
+# Approximates real bandwidth ratios on memory-bound LLM inference
+# (Q4_K_M = 1.0 anchor; Q8_0 is ~35% slower because it shovels ~2×
+# the bytes per token). Paired with the snapshot's tok_per_second
+# weight of 0.05 and a quality spread of 8%, this leaves Q6_K /
+# Q5_K_M as the sweet-spot picks for frontier models — matching
+# whichllm's top-N when both fit. Q4_K_M stays competitive on
+# tighter-VRAM hosts where speed matters more.
 _QUANT_SPEED_MULT: Dict[str, float] = {
-    "Q3_K_M": 1.05,
-    "Q4_K_S": 1.00,
-    "Q4_K_M": 1.00,
-    "Q5_K_M": 0.96,
-    "Q6_K": 0.93,
-    "Q8_0": 0.87,
+    "Q3_K_M": 1.25,
+    "Q4_K_S": 1.10,
+    "Q4_K_M": 1.10,
+    "Q5_K_M": 0.95,
+    "Q6_K": 0.85,
+    "Q8_0": 0.65,
 }
 
 # Per-quant quality discount applied to the family's benchmark score.
-# Q8 is essentially loss-free; Q4_K_M loses a few points on hard
-# evals; Q3_K_M loses ~5-7%. Combined with the gentle speed mults
-# above, this leaves Q4_K_M as the default winner within a family
-# (best quality/speed/size tradeoff) and Q8_0 surfacing only when
-# Q4_K_M doesn't fit — matching the de facto consumer default.
+# Mirrors whichllm's `QUANT_QUALITY_PENALTY` table (engine/quantization
+# .py) as ``1 - penalty`` so Q6_K / Q5_K_M of a frontier model outrank
+# Q4_K_M of the same family when both fit. Q3_K_M's 8% drop lines up
+# with empirical eval data on GGUF quants.
 _QUANT_QUALITY_MULT: Dict[str, float] = {
-    "Q3_K_M": 0.94,
-    "Q4_K_S": 0.97,
-    "Q4_K_M": 0.98,
-    "Q5_K_M": 0.99,
-    "Q6_K": 0.995,
-    "Q8_0": 1.0,
+    "Q3_K_M": 0.92,
+    "Q4_K_S": 0.945,
+    "Q4_K_M": 0.95,
+    "Q5_K_M": 0.97,
+    "Q6_K": 0.98,
+    "Q8_0": 0.99,
 }
+
+# Bytes per weight per quant, used to synthesize file_size_bytes when
+# the official safetensors-only repo doesn't ship GGUFs of its own.
+# Ported from whichllm's QUANT_BYTES_PER_WEIGHT — see
+# ``_synthesize_variants_for_official_repo`` in this file.
+_BYTES_PER_WEIGHT: Dict[str, float] = {
+    "Q3_K_M": 0.4375,
+    "Q4_K_S": 0.5625,
+    "Q4_K_M": 0.5625,
+    "Q5_K_M": 0.6875,
+    "Q6_K": 0.8125,
+    "Q8_0": 1.0625,
+}
+
+# Orgs whose official safetensors-only repos warrant synthetic GGUF
+# variants — community converters (bartowski / lmstudio-community /
+# unsloth) publish quantized GGUFs of these within days of release,
+# so the recommender can surface them confidently even when no
+# GGUF row exists in HuggingFace's index yet. Mirrors whichllm's
+# `_OFFICIAL_ORGS` set; resync when their list changes.
+_OFFICIAL_ORGS: frozenset[str] = frozenset(
+    {
+        "Qwen",
+        "meta-llama",
+        "google",
+        "mistralai",
+        "deepseek-ai",
+        "microsoft",
+        "nvidia",
+        "01-ai",
+        "tiiuae",
+        "apple",
+        "CohereForAI",
+        "bigcode",
+        "openai",
+        "zai-org",
+        "moonshotai",
+        "MiniMaxAI",
+        "XiaomiMiMo",
+        "allenai",
+        "ibm-granite",
+        "stepfun-ai",
+    }
+)
+
+# Skip synthesis for repos that already advertise a non-GGUF quant in
+# their name — they ship AWQ / GPTQ / FP8 / NVFP4 weights, not
+# safetensors, and synthesizing a Q4_K_M alternative would mislead.
+_PREQUANTIZED_REPO_RE = re.compile(
+    r"-(awq|gptq|bnb|fp8|fp16|bf16|nvfp4|int4|int8|4bit|8bit|gguf)$",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -257,12 +307,12 @@ def _project_candidate(
     """
     repo = _attr(candidate, "id")
     if not repo or "/" not in repo:
-        return None
+        return []
     publisher = repo.split("/", 1)[0]
 
     params = _attr(candidate, "parameter_count") or _attr(candidate, "params")
     if not params:
-        return None
+        return []
     params = int(params)
 
     params_active_raw = _attr(candidate, "parameter_count_active") or _attr(
@@ -272,18 +322,51 @@ def _project_candidate(
     is_moe = bool(_attr(candidate, "is_moe"))
 
     base_model = _attr(candidate, "base_model")
-    source_hf_id = base_model if isinstance(base_model, str) and base_model else repo
+    # When the candidate IS an official-org repo that ships the *source*
+    # weights (not a GGUF / AWQ / FP8 re-host), treat its own id as
+    # canonical — don't follow base_model. Example: google/gemma-4-31B-it
+    # carries base_model=google/gemma-4-31B (the pre-instruction base);
+    # rolling it up to the base would lose the "-it" identity that
+    # whichllm treats as the canonical user-facing pick.
+    #
+    # For first-party GGUF / quantized re-hosts (e.g.
+    # Qwen/Qwen3-Next-80B-A3B-Instruct-GGUF), the canonical model lives
+    # under the non-suffixed id — follow base_model so the snapshot
+    # joins the two rows under the same source_hf_id.
+    #
+    # For non-official publishers (community GGUFs, fine-tunes,
+    # distills), the base_model link is still the right
+    # canonicalization key.
+    is_first_party_source = (
+        publisher in _OFFICIAL_ORGS and not _PREQUANTIZED_REPO_RE.search(repo)
+    )
+    if is_first_party_source:
+        source_hf_id = repo
+    else:
+        source_hf_id = base_model if isinstance(base_model, str) and base_model else repo
 
     variants = _attr(candidate, "gguf_variants") or _attr(candidate, "ggufs") or []
     if not variants:
-        return []
-
-    if not _publisher_trusted(publisher, source_hf_id, allowlist):
-        return []
-
-    chosen = _collect_variants(variants)
-    if not chosen:
-        return []
+        # No first-party GGUFs — but if the candidate is an official-org
+        # safetensors-only repo (e.g. Qwen/Qwen3.6-27B,
+        # google/gemma-4-31B-it), community converters reliably publish
+        # GGUFs within days. Synthesize variants so the recommender can
+        # rank these frontier releases instead of waiting for the HF
+        # index to refresh — mirrors whichllm's behavior so our top-N
+        # tracks theirs on official-org frontier releases. Mark each
+        # synthetic row with `gguf_publisher = "synthetic"` so downstream
+        # download logic can fall back to searching trusted converters.
+        synthetic = _synthesize_variants_for_official_repo(repo, params)
+        if not synthetic:
+            return []
+        chosen = synthetic
+        publisher = "synthetic"
+    else:
+        if not _publisher_trusted(publisher, source_hf_id, allowlist):
+            return []
+        chosen = _collect_variants(variants)
+        if not chosen:
+            return []
 
     architecture = (
         _attr(candidate, "architecture")
@@ -336,6 +419,48 @@ def _publisher_trusted(
         if publisher == source_org:
             return True
     return False
+
+
+def _synthesize_variants_for_official_repo(
+    repo_id: str, params: int
+) -> List[Tuple[str, str, int]]:
+    """Synthesize ``(quant, filename, file_size_bytes)`` rows for an
+    official-org repo that ships only safetensors. Mirrors whichllm's
+    ``_synthesize_variants_for_official_repo`` so frontier models like
+    ``Qwen/Qwen3.6-27B`` and ``google/gemma-4-31B-it`` surface in the
+    top-N immediately on release, before the HF index reflects the
+    community GGUF conversion that's invariably published within days.
+
+    Returns ``[]`` when the org isn't in :data:`_OFFICIAL_ORGS`, the
+    repo name already advertises a non-GGUF quant (AWQ / FP8 / NVFP4),
+    or `params` is unknown. File sizes are estimated from
+    ``params × bytes_per_weight`` for each preferred quant.
+
+    The synthetic file basename mimics what bartowski / unsloth
+    conventionally publish so callers can string-match the eventual
+    real GGUF when it lands. The download flow needs to be aware that
+    the *repo* on these rows is the source repo, not a GGUF
+    publisher — fallback search through trusted converters is a
+    follow-up.
+    """
+    if "/" not in repo_id:
+        return []
+    org, _, name = repo_id.partition("/")
+    if org not in _OFFICIAL_ORGS:
+        return []
+    if _PREQUANTIZED_REPO_RE.search(repo_id):
+        return []
+    if params <= 0:
+        return []
+    out: List[Tuple[str, str, int]] = []
+    for quant in PREFERRED_QUANTS:
+        bpw = _BYTES_PER_WEIGHT.get(quant)
+        if bpw is None:
+            continue
+        size = int(params * bpw)
+        filename = f"{name}.{quant}.gguf"
+        out.append((quant, filename, size))
+    return out
 
 
 def _collect_variants(variants: Iterable[Any]) -> List[Tuple[str, str, int]]:
