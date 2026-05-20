@@ -578,10 +578,10 @@ fn apply_stop_model(app: &mut App) {
       return;
     }
   };
-  app.confirm_dialog = Some(ConfirmAction::StopModel {
-    launch_id: managed.launch_id.clone(),
-    name: crate::util::paths::model_display_name(&managed.path),
-  });
+  let launch_id = managed.launch_id.clone();
+  let path = managed.path.clone();
+  let name = crate::util::paths::model_display_name(&path, app.metadata_for(&path));
+  app.confirm_dialog = Some(ConfirmAction::StopModel { launch_id, name });
 }
 
 /// Apply a confirmed [`ConfirmAction`] — dispatches the writer
@@ -752,7 +752,8 @@ fn apply_send_chat(app: &mut App) {
     return;
   }
   let prompt = app.chat.prompt.clone();
-  let model_name = crate::util::paths::model_display_name(&managed.path);
+  let model_name =
+    crate::util::paths::model_display_name(&managed.path, app.metadata_for(&managed.path));
   app.chat.reset_for_send();
   let rx = spawn_chat_stream(managed.port, model_name, prompt);
   app.chat.stream_rx = Some(rx);
@@ -770,7 +771,8 @@ fn apply_embed_submit(app: &mut App) {
     return;
   }
   let input = app.embed.input.clone();
-  let model_name = crate::util::paths::model_display_name(&managed.path);
+  let model_name =
+    crate::util::paths::model_display_name(&managed.path, app.metadata_for(&managed.path));
   let (tx, rx) = mpsc::unbounded_channel::<TabEvent>();
   app.embed.busy = true;
   app.embed.pending = Some(rx);
@@ -826,7 +828,8 @@ fn apply_rerank_submit(app: &mut App) {
   }
   let query = app.rerank.query.clone();
   let candidates = app.rerank.candidates.clone();
-  let model_name = crate::util::paths::model_display_name(&managed.path);
+  let model_name =
+    crate::util::paths::model_display_name(&managed.path, app.metadata_for(&managed.path));
   let (tx, rx) = mpsc::unbounded_channel::<TabEvent>();
   app.rerank.busy = true;
   app.rerank.pending = Some(rx);
@@ -951,8 +954,9 @@ fn apply_launch_submit(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) 
   // but a fat-finger shouldn't silently triple-launch a 14B model.
   let active_instances = app.managed.iter().filter(|m| m.path == path).count();
   if active_instances > 0 {
+    let name = crate::util::paths::model_display_name(&path, app.metadata_for(&path));
     app.confirm_dialog = Some(ConfirmAction::LaunchDuplicate {
-      name: crate::util::paths::model_display_name(&path),
+      name,
       active_instances,
       model_path: path,
       ctx: picker.ctx,
@@ -1008,9 +1012,10 @@ fn build_yank_text(app: &App, action: Action) -> Option<String> {
     Action::YankCurl => {
       let m = app.focused_managed()?;
       let url = format!("http://127.0.0.1:{}/v1", m.port);
+      let model_name = crate::util::paths::model_display_name(&m.path, app.metadata_for(&m.path));
       Some(format!(
         "curl -s -H 'Content-Type: application/json' -d '{{\"model\":\"{}\",\"messages\":[{{\"role\":\"user\",\"content\":\"hello\"}}]}}' {}/chat/completions",
-        crate::util::paths::model_display_name(&m.path),
+        model_name,
         url
       ))
     }

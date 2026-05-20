@@ -315,9 +315,15 @@ fn render_header_name(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Pa
   use crate::util::paths::model_display_name;
   let name_style = palette.title_style();
   let name_line = match app.right_pane_focus() {
-    Some(m) => Line::from(Span::styled(model_display_name(&m.path), name_style)),
+    Some(m) => Line::from(Span::styled(
+      model_display_name(&m.path, app.metadata_for(&m.path)),
+      name_style,
+    )),
     None => match app.focused_path() {
-      Some(p) => Line::from(Span::styled(model_display_name(&p), name_style)),
+      Some(p) => Line::from(Span::styled(
+        model_display_name(&p, app.metadata_for(&p)),
+        name_style,
+      )),
       None => Line::from(Span::styled("—", palette.muted_style())),
     },
   };
@@ -397,14 +403,17 @@ fn right_pane_title(app: &App) -> String {
   match app.focused_managed() {
     Some(m) => format!(
       "{} :{} {} {} {}",
-      model_display_name(&m.path),
+      model_display_name(&m.path, app.metadata_for(&m.path)),
       m.port,
       glyph_for(m.state),
       label_for(m.state).to_ascii_lowercase(),
       format_per_model_stats(m),
     ),
     None => match app.focused_path() {
-      Some(p) => format!("{} not launched", model_display_name(&p)),
+      Some(p) => format!(
+        "{} not launched",
+        model_display_name(&p, app.metadata_for(&p))
+      ),
       None => "—".into(),
     },
   }

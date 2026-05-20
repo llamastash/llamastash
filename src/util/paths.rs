@@ -29,6 +29,8 @@ use std::{
 
 use directories::{BaseDirs, ProjectDirs};
 
+use crate::gguf::metadata::{ModelMetadata, Quant};
+
 const QUALIFIER: &str = "";
 const ORGANIZATION: &str = "";
 const APPLICATION: &str = "llamastash";
@@ -37,16 +39,62 @@ pub fn project_dirs() -> Option<ProjectDirs> {
   ProjectDirs::from(QUALIFIER, ORGANIZATION, APPLICATION)
 }
 
-/// Human-friendly short label derived from a GGUF file path. Falls
-/// back to `"model"` when the path has no readable `file_stem`. Used
-/// by every TUI surface that needs a short tag for the focused model
-/// (chat-tab `model` field, right-pane title, launch picker, logs).
-pub fn model_display_name(path: &Path) -> String {
+/// Human-friendly short label derived from a GGUF file path. Used by
+/// every TUI surface that needs a short tag for the focused model
+/// (chat-tab `model` field, right-pane title, launch picker, list).
+///
+/// HF-cache paths render as `<repo> (<quant>)`: the helper walks
+/// parents for the canonical `models--<owner>--<repo>` segment and
+/// pairs it with parsed metadata's `Quant` if present, otherwise a
+/// filename heuristic via `Quant::from_filename`, otherwise `(?)`
+/// when nothing recognisable shows up.
+///
+/// Non-HF paths fall back to `path.file_stem()` so Ollama, LM Studio,
+/// and user-supplied paths keep their existing surface (R119).
+/// Returns `"model"` when even the stem is unreadable.
+pub fn model_display_name(path: &Path, metadata: Option<&ModelMetadata>) -> String {
+  if let Some(repo) = hf_repo_from_path(path) {
+    let quant = metadata
+      .map(|m| m.quant)
+      .filter(|q| !matches!(q, Quant::Unknown(_)))
+      .map(|q| q.label().to_string())
+      .or_else(|| {
+        path
+          .file_name()
+          .and_then(|n| n.to_str())
+          .and_then(Quant::from_filename)
+          .map(|q| q.label().to_string())
+      })
+      .unwrap_or_else(|| "?".to_string());
+    return format!("{repo} ({quant})");
+  }
   path
     .file_stem()
     .and_then(|s| s.to_str())
     .unwrap_or("model")
     .to_string()
+}
+
+/// Detect the HF cache layout by walking parents for the canonical
+/// `models--<owner>--<repo>` segment and returning just `<repo>`.
+/// Mirrors the inverse of `init::download::repo_folder_name` —
+/// strips `models--<owner>--` and keeps the trailing `<repo>` so
+/// every owner-collision still distinguishes via the path-grouping
+/// the list pane already does.
+fn hf_repo_from_path(path: &Path) -> Option<String> {
+  for ancestor in path.ancestors() {
+    let Some(segment) = ancestor.file_name().and_then(|n| n.to_str()) else {
+      continue;
+    };
+    if let Some(rest) = segment.strip_prefix("models--") {
+      if let Some((_owner, repo)) = rest.split_once("--") {
+        if !repo.is_empty() {
+          return Some(repo.to_string());
+        }
+      }
+    }
+  }
+  None
 }
 
 /// Best-effort home directory resolution. Returns `None` only when the
@@ -234,6 +282,115 @@ mod tests {
     fallback_tmp
       .join(format!("llamastash-{user}"))
       .join("daemon.sock")
+  }
+
+  fn fixture_metadata(quant: Quant) -> ModelMetadata {
+    use crate::gguf::metadata::ModeHint;
+    ModelMetadata {
+      arch: Some("llama".into()),
+      total_parameters: None,
+      parameter_label: None,
+      quant,
+      native_ctx: None,
+      chat_template: None,
+      tokenizer_kind: None,
+      reasoning_hint: false,
+      mode_hint: ModeHint::Chat,
+      weights_bytes: None,
+    }
+  }
+
+  #[test]
+  fn model_display_name_uses_repo_and_metadata_quant_for_hf_cache() {
+    let path = PathBuf::from(
+      "/home/u/.cache/huggingface/hub/\
+       models--Qwen--Qwen2.5-7B-Instruct-GGUF/snapshots/abc123/qwen.gguf",
+    );
+    let md = fixture_metadata(Quant::Q4_K);
+    assert_eq!(
+      model_display_name(&path, Some(&md)),
+      "Qwen2.5-7B-Instruct-GGUF (Q4_K)"
+    );
+  }
+
+  #[test]
+  fn model_display_name_falls_back_to_filename_quant_for_hf_cache() {
+    let path = PathBuf::from(
+      "/cache/hf/models--bartowski--Llama-3.2-3B-Instruct-GGUF/\
+       snapshots/rev/Llama-3.2-3B-Instruct-Q5_K_M.gguf",
+    );
+    assert_eq!(
+      model_display_name(&path, None),
+      "Llama-3.2-3B-Instruct-GGUF (Q5_K)"
+    );
+  }
+
+  #[test]
+  fn model_display_name_renders_question_mark_for_unknown_quant() {
+    let path = PathBuf::from(
+      "/cache/hf/models--owner--mystery/snapshots/rev/model.gguf",
+    );
+    assert_eq!(model_display_name(&path, None), "mystery (?)");
+  }
+
+  #[test]
+  fn model_display_name_falls_back_to_file_stem_for_non_hf_path() {
+    let path = PathBuf::from("/models/local/Llama-3.gguf");
+    assert_eq!(model_display_name(&path, None), "Llama-3");
+  }
+
+  #[test]
+  fn model_display_name_falls_back_for_ollama_path() {
+    let path = PathBuf::from(
+      "/home/u/.ollama/models/manifests/registry.ollama.ai/library/llama3/latest",
+    );
+    assert_eq!(model_display_name(&path, None), "latest");
+  }
+
+  #[test]
+  fn model_display_name_walks_deeply_nested_hf_snapshot() {
+    let path = PathBuf::from(
+      "/cache/hf/models--owner--repo/snapshots/rev/sub/dir/file.gguf",
+    );
+    let md = fixture_metadata(Quant::Q6_K);
+    assert_eq!(model_display_name(&path, Some(&md)), "repo (Q6_K)");
+  }
+
+  #[test]
+  fn model_display_name_handles_flat_models_segment_without_snapshots() {
+    // A user copying HF blobs flat (still preserving the
+    // `models--owner--repo` parent) should still get the friendly
+    // name — the helper depends on the segment, not the snapshot
+    // intermediate.
+    let path = PathBuf::from(
+      "/somewhere/models--owner--CompactRepo/CompactRepo-Q4_K_M.gguf",
+    );
+    assert_eq!(
+      model_display_name(&path, None),
+      "CompactRepo (Q4_K)"
+    );
+  }
+
+  #[test]
+  fn model_display_name_metadata_overrides_filename_for_hf_cache() {
+    // Metadata.quant is canonical; even if the filename suggests a
+    // different quant, parsed GGUF metadata wins.
+    let path = PathBuf::from(
+      "/cache/hf/models--owner--repo/snapshots/rev/legacy-Q4_K_M.gguf",
+    );
+    let md = fixture_metadata(Quant::Q8_0);
+    assert_eq!(model_display_name(&path, Some(&md)), "repo (Q8_0)");
+  }
+
+  #[test]
+  fn model_display_name_ignores_unknown_metadata_quant() {
+    // Unknown(_) metadata quant must not render as "Unknown"; the
+    // helper falls back to the filename heuristic instead.
+    let path = PathBuf::from(
+      "/cache/hf/models--owner--repo/snapshots/rev/file-Q4_0.gguf",
+    );
+    let md = fixture_metadata(Quant::Unknown(99));
+    assert_eq!(model_display_name(&path, Some(&md)), "repo (Q4_0)");
   }
 
   #[test]
