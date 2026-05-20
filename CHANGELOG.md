@@ -4,6 +4,15 @@ All notable changes to llamadash will be documented in this file. The format fol
 
 ## [Unreleased]
 
+### Changed
+
+- **`llamadash init` shows live progress for long steps.** Every long-running phase the wizard runs (Homebrew install, GitHub Releases query + download + extract, HuggingFace per-file download, benchmark-snapshot fetch, smoke probe) now drives a `cliclack` spinner with a present-tense narration message that flips to a `✓` success line (or `✗` failure line) on completion. Replaces the previous "blinking cursor for several minutes" UX. Non-TTY runs fall back to static themed `cliclack::log` lines; `--json` mode emits no progress at all so the structured-stdout contract stays byte-stable.
+- **Config-diff confirmation gets light syntax coloring.** The dry-run preview the wizard shows before writing `config.yaml` now colors the `+` / `~` markers, bold-cyans the dotted key path, and dims the "(no changes)" line. Honors the existing `--no-colors` / `NO_COLOR` / non-TTY downgrade rules.
+
+## [0.2.0] — 2026-05-19
+
+The first publicly-installable llamadash release. Distribution lands across three channels (Cargo, Homebrew tap, GitHub-hosted install script) with end-to-end automated release-on-tag; a marketing site at [llamadash.cli.rs](https://llamadash.cli.rs) ships alongside.
+
 ### Added (post-v2 — interactive wizard + colored CLI)
 
 - **Interactive `init` wizard.** `llamadash init` now opens a `cliclack`-powered stepped wizard by default: install-method pick, model pick, config-write confirm. Pass `--recommended` to accept every hardware-aware default without prompting (the legacy `--yes` is preserved as a hidden permanent alias). Three per-step flags pre-answer individual prompts without skipping the rest: `--install <brew|gh-releases|existing|custom:PATH>`, `--model <recommended|none|owner/repo>`, `--config-step <write|skip>`. Non-TTY stdout auto-falls-back to recommended defaults with a single stderr warning. The unused `dialoguer` dep is removed; `cliclack` replaces it.
@@ -58,4 +67,4 @@ All notable changes to llamadash will be documented in this file. The format fol
 
 ## How to read this file
 
-Future releases will land under their own version heading once the project tags `v0.1.0` and beyond. Until then, every meaningful change appears under **Unreleased** so the file stays useful for in-progress users and reviewers.
+Tagged releases land under their version heading; in-flight work accumulates under **Unreleased** until the next tag promotes it. The pre-0.2.0 history (v1 launcher, v2 init/doctor/pull) is preserved verbatim under the [0.2.0] heading rather than rewritten — that's where llamadash first became installable from a package registry, so the ledger starts there.

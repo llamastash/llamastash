@@ -37,19 +37,32 @@ Heavy abstractions (Ollama, LM Studio) hide llama.cpp; raw `llama-server` use is
 
 ## Install
 
-> Pre-1.0 binaries are not yet published. Build from source for now.
+Pick whichever channel you prefer. All three install the same binary.
+
+```bash
+# macOS + Linux, one-shot
+curl -fsSL https://llamadash.cli.rs/install.sh | sh
+
+# Homebrew (macOS + Linuxbrew)
+brew install llamadash-rs/llamadash/llamadash
+
+# From crates.io (any platform with a Rust toolchain)
+cargo install llamadash
+```
+
+The marketing site at [llamadash.cli.rs](https://llamadash.cli.rs) is a content-verified mirror of the install script published with each GitHub Release; for the most paranoid path, run the equivalent `curl ... github.com/llamadash-rs/llamadash/releases/latest/download/install.sh` directly.
+
+You also need `llama-server` on your `PATH` (or pointed at via `--llama-server <path>` / `LLAMADASH_LLAMA_SERVER`). `llamadash init` will offer to install it for you on first run.
+
+> **macOS release tarballs are not codesigned for 0.2.0.** The `curl | sh`, `brew`, and `cargo install` paths all avoid Gatekeeper quarantine. The only path that hits the quarantine flag is hand-unzipping a tarball from the GitHub Releases page; `xattr -d com.apple.quarantine ./llamadash` clears it once if you do.
+
+### Build from source
 
 ```bash
 git clone https://github.com/llamadash-rs/llamadash
 cd llamadash
 cargo install --path .
 ```
-
-`cargo install llamadash`, a Homebrew tap, and pre-built release binaries land alongside the first tagged release.
-
-You also need `llama-server` on your `PATH` (or pointed at via `--llama-server <path>` / `LLAMADASH_LLAMA_SERVER`).
-
-> **macOS pre-1.0 release tarballs are not yet codesigned.** Until the signing step lands in the release workflow, Gatekeeper will quarantine the unzipped binary. Run `xattr -d com.apple.quarantine ./llamadash` once after download to clear the flag.
 
 ## Quickstart
 
