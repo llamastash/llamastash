@@ -45,6 +45,7 @@ _None — the four vendoring items shipped 2026-05-19 via [`docs/plans/2026-05-1
 
 ## v2+ roadmap
 
+- [ ] **Need brainstorm/plan**: Plan to prevent llama.cpp version drift/incompatibility issues. Should we bundle/fix version.
 - [ ] **Need brainstorm/plan**: Windows support.
 - [ ] **Need brainstorm/plan**: HTTP and MCP surfaces (origin: R34).
 - [ ] **Need brainstorm/plan**: Anthropic API compatibility.
