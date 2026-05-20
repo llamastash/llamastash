@@ -137,9 +137,27 @@ pub fn version_probe(binary: &Path, timeout: Duration) -> Result<String, SmokeFa
 }
 
 fn extract_version(output: &str) -> String {
-  // Prefer a `bNNNN` token (llama-server's standard short hash format)
-  // anywhere in the output; fall back to the first whitespace-delim
-  // token in the first line so we always return *something*.
+  // llama-server --version output format (as of llama.cpp b5037+) is
+  //   version: 5037 (b00d09c)
+  //   built with cc (...) for x86_64-pc-linux-gnu
+  //
+  // Older bottle builds and some forks emit a `bNNNN` token directly
+  // without the `version:` prefix. Try, in order:
+  //   1. The token after `version:` plus a parenthesised hash if present
+  //      ("5037 (b00d09c)" → "build 5037 (b00d09c)")
+  //   2. A standalone `bNNNN` token (legacy format)
+  //   3. The first non-empty line, verbatim
+  // Step 3 guarantees we always return something useful instead of an
+  // empty string or just `version:`.
+  for line in output.lines() {
+    let trimmed = line.trim();
+    if let Some(rest) = trimmed.strip_prefix("version:") {
+      let rest = rest.trim();
+      if !rest.is_empty() {
+        return format!("build {rest}");
+      }
+    }
+  }
   for line in output.lines() {
     for tok in line.split_whitespace() {
       let t = tok.trim_matches(|c: char| !c.is_ascii_alphanumeric());
@@ -150,12 +168,9 @@ fn extract_version(output: &str) -> String {
   }
   output
     .lines()
-    .next()
-    .unwrap_or("")
-    .split_whitespace()
-    .next()
-    .unwrap_or("unknown")
-    .to_string()
+    .find(|l| !l.trim().is_empty())
+    .map(|l| l.trim().to_string())
+    .unwrap_or_else(|| "unknown".to_string())
 }
 
 /// Default version-probe timeout. Modest — `--version` should return
@@ -172,16 +187,32 @@ pub fn run_phase_one_and_version(
   weights_bytes: u64,
   ctx: u32,
 ) -> Result<SmokeReport, SmokeFailure> {
+  log::debug!(
+    "smoke: phase-1 inputs: binary={}, weights_bytes={}, ctx={}, vram_bytes={:?}",
+    binary.display(),
+    weights_bytes,
+    ctx,
+    hardware.vram_bytes
+  );
   let warning = phase_one(hardware, weights_bytes, ctx)?;
+  log::debug!("smoke: phase-1 result: warning={warning:?}");
+  log::debug!(
+    "smoke: --version probe: spawning `{} --version` (timeout {:?})",
+    binary.display(),
+    DEFAULT_VERSION_PROBE_TIMEOUT
+  );
   let version = version_probe(binary, DEFAULT_VERSION_PROBE_TIMEOUT)?;
+  log::debug!("smoke: --version probe returned: {version:?}");
   let ceiling = hardware
     .vram_bytes
     .map(|v| (v as f64 * crate::init::recommender::SAFETY_MARGIN) as u64);
+  let peak = estimate_peak_bytes(weights_bytes, ctx);
+  log::debug!("smoke: peak_estimate={peak}, effective_ceiling={ceiling:?}");
   Ok(SmokeReport {
     ok: true,
     warning,
     binary_version: Some(version),
-    peak_estimate_bytes: estimate_peak_bytes(weights_bytes, ctx),
+    peak_estimate_bytes: peak,
     effective_ceiling_bytes: ceiling,
   })
 }
@@ -270,15 +301,32 @@ mod tests {
   }
 
   #[test]
-  fn extract_version_finds_bnnnn_token() {
-    let out = "version: b9219 build_type=cpu\n";
+  fn extract_version_parses_llama_cpp_modern_format() {
+    // Current `llama-server --version` output as of llama.cpp b5037+.
+    let out = "version: 5037 (b00d09c)\nbuilt with cc (Debian 12.2.0-14) 12.2.0 for x86_64-pc-linux-gnu\n";
+    assert_eq!(extract_version(out), "build 5037 (b00d09c)");
+  }
+
+  #[test]
+  fn extract_version_finds_bnnnn_token_legacy_format() {
+    // Older bottle builds and forks may not emit `version:` prefix.
+    let out = "llama.cpp b9219 build_type=cpu\n";
     assert_eq!(extract_version(out), "b9219");
   }
 
   #[test]
-  fn extract_version_falls_back_to_first_token_when_no_bnnnn() {
-    let out = "llama-server build 1.2.3\n";
-    assert_eq!(extract_version(out), "llama-server");
+  fn extract_version_falls_back_to_first_non_empty_line() {
+    // Fallback returns the whole first non-empty line rather than the
+    // first whitespace-delim token — gives the user something
+    // recognisable instead of a fragment.
+    let out = "\nllama-server build 1.2.3\nbuilt with ...\n";
+    assert_eq!(extract_version(out), "llama-server build 1.2.3");
+  }
+
+  #[test]
+  fn extract_version_returns_unknown_when_output_is_empty() {
+    assert_eq!(extract_version(""), "unknown");
+    assert_eq!(extract_version("\n\n  \n"), "unknown");
   }
 
   #[test]
@@ -335,7 +383,7 @@ mod tests {
       std::fs::write(&script, "#!/bin/sh\necho 'version: b9999 cpu'\n").unwrap();
       std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
       let version = version_probe(&script, Duration::from_secs(2)).expect("probe");
-      assert_eq!(version, "b9999");
+      assert_eq!(version, "build b9999 cpu");
       std::fs::remove_dir_all(&dir).ok();
     }
   }
@@ -377,9 +425,16 @@ mod tests {
       std::env::remove_var("HF_TOKEN");
       std::env::remove_var("LLAMA_ARG_HOST");
       let version = result.expect("probe");
-      assert_eq!(
-        version, "b1",
-        "env_clear allowlist must strip HF_TOKEN / LLAMA_ARG_*"
+      // Exact-string check is brittle; the contract is "no leak", so
+      // assert positively (script's clean-env output appears) and
+      // negatively (the leaked sentinel never does).
+      assert!(
+        version.contains("clean"),
+        "env_clear allowlist must strip HF_TOKEN / LLAMA_ARG_*; got {version:?}"
+      );
+      assert!(
+        !version.contains("leaked"),
+        "expected no env leakage; got {version:?}"
       );
       std::fs::remove_dir_all(&dir).ok();
     }

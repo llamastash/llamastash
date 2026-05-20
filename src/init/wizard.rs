@@ -411,9 +411,23 @@ fn run_smoke_step(
     .and_then(|p| std::fs::metadata(p).ok())
     .map(|m| m.len())
     .unwrap_or(model.total_bytes);
+  log::debug!(
+    "init: smoke step inputs: binary={}, weights_bytes={}, ctx={}",
+    install.path.display(),
+    weights_bytes,
+    crate::init::recommender::DEFAULT_CTX
+  );
+  let binary_label = install
+    .path
+    .file_name()
+    .and_then(|s| s.to_str())
+    .unwrap_or("llama-server")
+    .to_string();
   let sp = prompts::StepProgress::start_if(
     emit_progress,
-    "Running smoke probe (llama-server --version + phase-1 launch)",
+    format!(
+      "Probing {binary_label}: dry-run memory check (phase-1) + `--version` exec"
+    ),
   );
   match crate::init::smoke::run_phase_one_and_version(
     &install.path,
@@ -422,28 +436,38 @@ fn run_smoke_step(
     crate::init::recommender::DEFAULT_CTX,
   ) {
     Ok(report) => {
+      let version_str = report
+        .binary_version
+        .clone()
+        .unwrap_or_else(|| "unknown".into());
+      let peak_gib = report.peak_estimate_bytes as f64 / 1_073_741_824.0;
+      let ceiling_str = report
+        .effective_ceiling_bytes
+        .map(|c| format!("{:.1} GiB", c as f64 / 1_073_741_824.0))
+        .unwrap_or_else(|| "CPU-only".into());
       let note = match report.warning {
         Some(crate::init::smoke::SmokeWarning::VramTight {
           peak_bytes,
           ceiling_bytes,
         }) => format!(
-          "phase-1 tight fit: peak ~{} GB vs ceiling ~{} GB",
-          peak_bytes / (1024 * 1024 * 1024),
-          ceiling_bytes / (1024 * 1024 * 1024)
+          "tight fit: peak ~{:.1} GiB vs ceiling ~{:.1} GiB (<10% headroom); {binary_label} reports {version_str}",
+          peak_bytes as f64 / 1_073_741_824.0,
+          ceiling_bytes as f64 / 1_073_741_824.0,
         ),
-        Some(crate::init::smoke::SmokeWarning::CpuOnly) => {
-          "phase-1: CPU-only run; expect lower tok/s than VRAM-resident".into()
-        }
+        Some(crate::init::smoke::SmokeWarning::CpuOnly) => format!(
+          "CPU-only host (no VRAM detected); peak estimate ~{peak_gib:.1} GiB, expect lower tok/s than a VRAM-resident run; {binary_label} reports {version_str}"
+        ),
         None => format!(
-          "phase-1 + --version OK (binary {})",
-          report.binary_version.unwrap_or_else(|| "unknown".into())
+          "phase-1 fits (peak ~{peak_gib:.1} GiB vs ceiling {ceiling_str}); {binary_label} reports {version_str}"
         ),
       };
-      sp.success(format!("Smoke probe OK ({note})"));
+      log::debug!("init: smoke step succeeded: {note}");
+      sp.success(format!("Smoke probe OK — {note}"));
       SmokeSummary { ok: true, note }
     }
     Err(failure) => {
       let note = format!("{failure}");
+      log::debug!("init: smoke step failed: {note}");
       sp.fail(format!("Smoke probe failed: {note}"));
       SmokeSummary { ok: false, note }
     }
