@@ -191,6 +191,15 @@ pub struct HardwareSummary {
 /// exit code; the dispatcher prints any failure message to stderr.
 pub async fn run(args: InitArgs, cli: &Cli, config: &Config) -> CliResult {
   let plan = StepPlan::resolve(&args.only, &args.skip);
+  log::debug!(
+    "init: plan resolved (server={}, models={}, config={}); flags: recommended={}, offline={}, json={}",
+    plan.server,
+    plan.models,
+    plan.config,
+    prompts::is_recommended(&args),
+    args.offline,
+    args.json,
+  );
 
   // Refuse up-front when `--offline` cannot satisfy `--only models`:
   // step 3 (models) has no offline fallback, and a mid-step abort with
@@ -519,7 +528,13 @@ async fn run_install_step(
     }
   }
   let default = default_install_method(hardware);
+  log::debug!(
+    "init: install step (default={:?}, detected_binary={:?})",
+    default,
+    binary.resolved_path
+  );
   let choice = prompts::pick_install_method(args, default, binary).await?;
+  log::debug!("init: install method chosen: {choice:?}");
   match choice {
     InstallChoice::Brew => {
       let sp = prompts::StepProgress::start_if(
@@ -666,7 +681,13 @@ async fn run_models_step(
   };
   let on_disk: Vec<OnDiskModel> = Vec::new();
   let recs = recommend(&snapshot, hardware, &on_disk, &RecommendOptions::default());
+  log::debug!(
+    "init: models step recommended {} candidate(s) from snapshot of {} entries",
+    recs.len(),
+    snapshot.models.len()
+  );
   let choice = prompts::pick_model(args, &recs).await?;
+  log::debug!("init: model chosen: {choice:?}");
   let (repo, pinned_filename, estimated_bytes) = match choice {
     ModelChoice::Curated(entry) => (entry.repo, Some(entry.file), Some(entry.weights_bytes)),
     ModelChoice::Paste(raw) => {

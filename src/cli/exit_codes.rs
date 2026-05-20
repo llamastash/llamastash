@@ -83,11 +83,22 @@ impl CliExit {
   }
 
   /// Shortcut for the very common shape
-  /// `CliExit::new(CODE, format!("PREFIX: {err}"))`. Saves a
-  /// `format!` at the call site and keeps the prefix-then-cause
-  /// formatting consistent across handlers.
-  pub fn prefix(code: i32, prefix: impl AsRef<str>, err: impl std::fmt::Display) -> Self {
-    Self::new(code, format!("{}: {err}", prefix.as_ref()))
+  /// `CliExit::new(CODE, format!("PREFIX: {err}"))`. Walks `err`'s
+  /// `std::error::Error::source()` chain and appends every layer's
+  /// `Display` so users see the underlying cause (e.g. `hf-hub:
+  /// request error: ...: io error: connection reset`) instead of
+  /// just the top-level wrapper. Saves a `format!` at the call site
+  /// and keeps the prefix-then-cause formatting consistent across
+  /// handlers.
+  pub fn prefix<E: std::error::Error>(code: i32, prefix: impl AsRef<str>, err: E) -> Self {
+    use std::fmt::Write;
+    let mut buf = format!("{}: {err}", prefix.as_ref());
+    let mut cur = err.source();
+    while let Some(s) = cur {
+      let _ = write!(buf, ": {s}");
+      cur = s.source();
+    }
+    Self::new(code, buf)
   }
 
   /// Map an `ipc::ClientError` into the canonical exit code. Connect
@@ -118,6 +129,24 @@ impl std::error::Error for CliExit {}
 mod tests {
   use super::*;
   use std::time::Duration;
+
+  #[test]
+  fn prefix_walks_source_chain_into_message() {
+    #[derive(Debug, thiserror::Error)]
+    #[error("outer wrapper")]
+    struct Outer(#[source] Middle);
+    #[derive(Debug, thiserror::Error)]
+    #[error("middle layer")]
+    struct Middle(#[source] std::io::Error);
+
+    let err = Outer(Middle(std::io::Error::other("inner io")));
+    let exit = CliExit::prefix(INIT_DOWNLOAD_FAILED, "init download", err);
+    let msg = exit.message.expect("prefix always sets a message");
+    assert!(msg.contains("init download:"), "got: {msg}");
+    assert!(msg.contains("outer wrapper"), "got: {msg}");
+    assert!(msg.contains("middle layer"), "got: {msg}");
+    assert!(msg.contains("inner io"), "got: {msg}");
+  }
 
   #[test]
   fn distinct_codes_per_failure_class() {

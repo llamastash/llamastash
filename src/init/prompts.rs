@@ -278,7 +278,7 @@ pub async fn pick_install_method(
   let items_for_thread = items.clone();
   let chosen_idx = tokio::task::spawn_blocking(move || {
     let mut select = cliclack::select::<usize>("Install method").initial_value(initial_idx);
-    for (i, (_choice, label, hint)) in items_for_thread.iter().enumerate() {
+    for (i, (_pick, label, hint)) in items_for_thread.iter().enumerate() {
       select = select.item(i, label.clone(), hint.clone());
     }
     select.interact()
@@ -286,11 +286,52 @@ pub async fn pick_install_method(
   .await
   .map_err(|e| CliExit::new(INIT_ABORTED, format!("init: prompt join failed: {e}")))?
   .map_err(|e| CliExit::new(INIT_ABORTED, format!("init: install prompt: {e}")))?;
-  let (choice, _, _) = items
+  let (pick, _, _) = items
     .into_iter()
     .nth(chosen_idx)
     .ok_or_else(|| CliExit::new(INIT_ABORTED, "init: install pick index out of range"))?;
-  Ok(choice)
+  match pick {
+    InstallPick::Resolved(choice) => Ok(choice),
+    InstallPick::PromptCustomPath => prompt_custom_path().await,
+  }
+}
+
+/// Cliclack input that collects an absolute path to a user-built or
+/// otherwise-installed `llama-server` binary. Validation only checks the
+/// shape (non-empty, absolute) so the dedicated `install_from_custom_path`
+/// step still owns existence / digest / runnability checks — the same
+/// errors surface either way.
+async fn prompt_custom_path() -> Result<InstallChoice, CliExit> {
+  let entered: String = tokio::task::spawn_blocking(|| {
+    cliclack::input("Path to existing llama-server binary")
+      .placeholder("/absolute/path/to/llama-server")
+      .validate(|s: &String| {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+          return Err("path is required");
+        }
+        if !std::path::Path::new(trimmed).is_absolute() {
+          return Err("path must be absolute");
+        }
+        Ok(())
+      })
+      .interact()
+  })
+  .await
+  .map_err(|e| CliExit::new(INIT_ABORTED, format!("init: prompt join failed: {e}")))?
+  .map_err(|e| CliExit::new(INIT_ABORTED, format!("init: custom path prompt: {e}")))?;
+  Ok(InstallChoice::CustomPath(std::path::PathBuf::from(
+    entered.trim(),
+  )))
+}
+
+/// Picker outcome that distinguishes "I have a resolved `InstallChoice`"
+/// from "user picked the Custom path… sentinel and we need to prompt
+/// for a path next." Kept private — callers see only `InstallChoice`.
+#[derive(Debug, Clone)]
+enum InstallPick {
+  Resolved(InstallChoice),
+  PromptCustomPath,
 }
 
 /// Resolve the model-pick choice. Override / recommended / non-TTY
@@ -451,34 +492,45 @@ fn install_override_to_choice(
 /// Build the cliclack-select items list for the install prompt and
 /// pick which index should be the initial cursor position. Returns
 /// `(initial_index, items)` where each item is
-/// `(choice, label, hint)`. The cliclack `Select` is keyed by
-/// `usize` index because `InstallChoice` does not implement `Eq`.
+/// `(pick, label, hint)`. The cliclack `Select` is keyed by `usize`
+/// index because `InstallPick` does not implement `Eq`. The trailing
+/// "Custom path…" sentinel lets users adopt a self-built or otherwise-
+/// installed `llama-server` interactively (mirrors the `--install
+/// custom:PATH` CLI override).
 fn build_install_items(
   default: &InstallChoice,
   existing: &BinaryPresence,
-) -> (usize, Vec<(InstallChoice, String, String)>) {
-  let mut items: Vec<(InstallChoice, String, String)> = vec![
+) -> (usize, Vec<(InstallPick, String, String)>) {
+  let mut items: Vec<(InstallPick, String, String)> = vec![
     (
-      InstallChoice::GhReleases,
+      InstallPick::Resolved(InstallChoice::GhReleases),
       "GitHub Releases".into(),
       "verified asset for this host".into(),
     ),
     (
-      InstallChoice::Brew,
+      InstallPick::Resolved(InstallChoice::Brew),
       "Homebrew".into(),
       "brew install --quiet llama.cpp".into(),
     ),
   ];
   if let Some(path) = &existing.resolved_path {
     items.push((
-      InstallChoice::CustomPath(path.clone()),
+      InstallPick::Resolved(InstallChoice::CustomPath(path.clone())),
       format!("Use existing binary at {}", path.display()),
       format!("detected via {:?}", existing.source),
     ));
   }
+  items.push((
+    InstallPick::PromptCustomPath,
+    "Custom path…".into(),
+    "point at a self-built or pre-installed llama-server".into(),
+  ));
   let initial = items
     .iter()
-    .position(|(c, _, _)| install_choice_matches_default(c, default))
+    .position(|(pick, _, _)| match pick {
+      InstallPick::Resolved(c) => install_choice_matches_default(c, default),
+      InstallPick::PromptCustomPath => false,
+    })
     .unwrap_or(0);
   (initial, items)
 }
@@ -783,6 +835,36 @@ mod tests {
       matches!(result, InstallChoice::Brew),
       "got {result:?}, expected the supplied default Brew"
     );
+  }
+
+  #[test]
+  fn build_install_items_always_includes_custom_path_sentinel() {
+    let (_, items) = build_install_items(&InstallChoice::GhReleases, &no_existing_binary());
+    let last = items.last().expect("items must not be empty");
+    assert!(
+      matches!(last.0, InstallPick::PromptCustomPath),
+      "Custom path sentinel must be last item, got {:?}",
+      last.0
+    );
+    assert_eq!(last.1, "Custom path…");
+  }
+
+  #[test]
+  fn build_install_items_with_existing_binary_still_appends_custom_path_sentinel() {
+    let (_, items) = build_install_items(
+      &InstallChoice::GhReleases,
+      &existing_binary("/opt/llama-server"),
+    );
+    let last = items.last().expect("items must not be empty");
+    assert!(
+      matches!(last.0, InstallPick::PromptCustomPath),
+      "Custom path sentinel must be last item even when an existing binary is detected"
+    );
+    // Detected-binary item still present as one of the resolved picks.
+    let has_existing = items.iter().any(|(p, _, _)| {
+      matches!(p, InstallPick::Resolved(InstallChoice::CustomPath(path)) if path == &PathBuf::from("/opt/llama-server"))
+    });
+    assert!(has_existing, "detected-binary pick must still be offered");
   }
 
   #[tokio::test]

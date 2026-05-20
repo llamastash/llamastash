@@ -8,12 +8,15 @@ use std::{fs, fs::File, path::PathBuf, str::FromStr};
 
 use anyhow::{Context, Result};
 use log::LevelFilter;
-use simplelog::{Config, WriteLogger};
+use simplelog::{CombinedLogger, Config, ConfigBuilder, SharedLogger, WriteLogger};
 
 use super::paths::log_dir;
 
 /// Initialise the global logger. Returns the path of the log file that was
-/// opened so the caller can surface it in error output.
+/// opened so the caller can surface it in error output. In `--verbose`
+/// mode the file logger is teed to stderr at the same level, filtered to
+/// `llamadash`-emitted records so dependency noise (hyper, reqwest, etc.)
+/// doesn't drown out our own logs.
 pub fn init(verbose: bool) -> Result<PathBuf> {
   let level = resolve_level(verbose, std::env::var("LLAMADASH_LOG").ok().as_deref());
   let dir = log_dir().context("could not resolve a log directory for this platform")?;
@@ -22,7 +25,15 @@ pub fn init(verbose: bool) -> Result<PathBuf> {
   let path = dir.join("llamadash.log");
   let file = open_log_file(&path)
     .with_context(|| format!("failed to open log file at {}", path.display()))?;
-  WriteLogger::init(level, Config::default(), file).context("logger already initialised")?;
+  let mut loggers: Vec<Box<dyn SharedLogger>> =
+    vec![WriteLogger::new(level, Config::default(), file)];
+  if verbose {
+    let stderr_config = ConfigBuilder::new()
+      .add_filter_allow("llamadash".to_string())
+      .build();
+    loggers.push(WriteLogger::new(level, stderr_config, std::io::stderr()));
+  }
+  CombinedLogger::init(loggers).context("logger already initialised")?;
   Ok(path)
 }
 

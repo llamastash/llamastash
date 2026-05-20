@@ -4,6 +4,15 @@ All notable changes to llamadash will be documented in this file. The format fol
 
 ## [Unreleased]
 
+### Added
+
+- **Interactive `init` install picker offers a "Custom path…" option.** Selecting it prompts for an absolute path to an existing `llama-server` binary and routes it through the same `install_from_custom_path` adoption pipeline as `--install custom:PATH`. Closes the gap where users with self-built binaries had no way to point at them from the interactive wizard (the CLI flag worked but the menu didn't list it).
+
+### Changed
+
+- **`--verbose` now tees debug logs to stderr in addition to the log file.** The file logger remains the source of truth (full module surface at Debug level); the new stderr tee filters to `llamadash::*` records so dependency noise from hyper/reqwest/tokio doesn't drown out wizard-internal logs. Added `log::debug!` step boundaries in the init wizard so `--verbose` produces actually-useful output for a happy-path run.
+- **CLI errors walk the full `std::error::Error::source()` chain.** `CliExit::prefix` (used by every wizard / pull / config error path) now appends every layer of the source chain into the message, so a wrapped hf-hub→reqwest→io error shows as `init download: hf-hub: request error: ... : connection reset by peer` instead of just the top-level wrapper. `DownloadError::Hub` now stores the `hf_hub::ApiError` directly (was a stringified `String`) so the chain isn't severed at the conversion boundary.
+
 ### Fixed
 
 - **`llamadash init` model step no longer fails with "returned zero matching files" on sharded GGUF repos.** Three benchmark-snapshot entries (`Qwen/Qwen2.5-{7B,14B,32B}-Instruct-GGUF`) point at a single unsharded filename, but those repos only host the `q4_k_m` weights split across 2/3/5 shards. The download filter now falls back to the canonical `<stem>-NNNNN-of-NNNNN.<ext>` shard pattern when the exact pinned filename has no match, and pulls every shard. llama.cpp loads the shard set natively from the first shard, so the smoke probe and config write keep working unchanged.

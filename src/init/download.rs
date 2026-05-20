@@ -80,7 +80,7 @@ pub enum DownloadError {
   #[error("HF file `{file}` exceeds per-file cap of {cap} bytes (size {size})")]
   FileTooLarge { file: String, size: u64, cap: u64 },
   #[error("hf-hub: {0}")]
-  Hub(String),
+  Hub(#[from] hf_hub::api::tokio::ApiError),
   #[error("fetch contract: {0}")]
   Fetch(#[from] FetchError),
   #[error("I/O: {0}")]
@@ -96,12 +96,6 @@ pub enum DownloadError {
     allowlist: String,
     default: &'static str,
   },
-}
-
-impl From<hf_hub::api::tokio::ApiError> for DownloadError {
-  fn from(e: hf_hub::api::tokio::ApiError) -> Self {
-    DownloadError::Hub(e.to_string())
-  }
 }
 
 /// Outcome of a successful download.
