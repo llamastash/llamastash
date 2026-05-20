@@ -22,7 +22,7 @@ jobs:
       - run: cargo fmt --all -- --check
 
   clippy:
-    name: clippy
+    name: clippy (${{ matrix.os }}, ${{ matrix.features }})
     strategy:
       fail-fast: false
       matrix:
@@ -31,6 +31,15 @@ jobs:
         # pbcopy clipboard) get lint-checked pre-merge instead of
         # waiting for the release tarball to surface a regression.
         os: [ubuntu-latest, macos-latest]
+        # Run with and without `uat` so neither side rots:
+        # - `test-fixtures` alone is the shape the release binary ships.
+        # - `test-fixtures,uat` compiles `src/cli/uat/*` (gated behind
+        #   `#[cfg(feature = "uat")]`) and lint-checks the maintainer-only
+        #   surface. Cheap insurance — UAT module sits behind one cfg
+        #   gate, and a future change that accidentally couples non-UAT
+        #   code to a UAT-only item gets caught here, not when a release
+        #   binary refuses to build.
+        features: ["test-fixtures", "test-fixtures,uat"]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -38,21 +47,28 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all-targets --features test-fixtures -- -D warnings
+      - run: cargo clippy --all-targets --features ${{ matrix.features }} -- -D warnings
 
   test:
-    name: test
+    name: test (${{ matrix.os }}, ${{ matrix.features }})
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        # See `clippy` for the feature-matrix rationale. The `uat`
+        # feature adds ~52 hermetic tests (unit + `tests/uat_lifecycle_test.rs`
+        # backend-mismatch path); none of them require a GPU because
+        # pre-flight fails before any subprocess spawns. The full
+        # GPU-touching lifecycle lives on the nightly Metal lane plus
+        # maintainer-run per-release UAT — never on PR CI.
+        features: ["test-fixtures", "test-fixtures,uat"]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: cargo test
-        run: cargo test --features test-fixtures --workspace
+        run: cargo test --features ${{ matrix.features }} --workspace
         env:
           RUST_BACKTRACE: 1
 
@@ -250,6 +266,80 @@ jobs:
         # Catches template / argv regressions in the homebrew packager before
         # the release workflow tries to use it.
         run: python3 deployment/homebrew/packager_test.py
+
+      - name: uat — R4 audit (release binary never carries --features uat)
+        # The shipped binary on crates.io / Homebrew must not carry the
+        # maintainer-only `uat` Cargo feature. Plan §R4 + `release.yml`'s
+        # build-step comment both document this. A non-comment match
+        # means somebody added `--features uat` to the release build.
+        run: |
+          set -euo pipefail
+          if grep -nE '^[^#]*--features[[:space:]]+uat' .github/workflows/release.yml; then
+            echo "::error::release.yml carries '--features uat' in a non-comment line — that ships the maintainer-only UAT subcommand to end users."
+            exit 1
+          fi
+          echo "R4: release.yml does not pass --features uat to the build step; OK"
+
+      - name: uat — synthetic exit codes documented
+        # Agents parsing `failure_summary.exit_code` rely on the synthetic
+        # code table in docs/testing/hardware-uat.md. Each crate-private
+        # constant in src/cli/uat/lifecycle.rs must appear in the doc so
+        # downstream tooling never sees an undocumented magic number.
+        run: |
+          set -euo pipefail
+          doc=docs/testing/hardware-uat.md
+          for sym in PREFLIGHT_MISMATCH_CODE SMOKE_HTTP_ERROR_CODE \
+                     SMOKE_PARSE_ERROR_CODE SMOKE_STATUS_ERROR_CODE \
+                     TIMEOUT_CODE SIGINT_CODE; do
+            if ! grep -qF "$sym" "$doc"; then
+              echo "::error::synthetic exit-code constant $sym is missing from $doc"
+              exit 1
+            fi
+          done
+          echo "all synthetic UAT exit-code constants are documented in $doc; OK"
+
+      - name: uat — nightly workflow carries ce-review fix lock-ins
+        # Three ce-review fixes that have textual signatures in the
+        # nightly workflow. Reverting any of them silently would
+        # re-introduce a flagged regression class — guard accordingly.
+        #
+        # M-P2-12: gh issue body via --body-file (shell-escape safe).
+        # M-P3-05: gh issue list with --limit 1 + title filter.
+        # M-P3-07: brew formula version folded into the cache key.
+        # M-P2-07: HF cache path is the stable runner root, not the
+        #          ephemeral sandbox HF_HOME under /tmp.
+        run: |
+          set -euo pipefail
+          nightly=.github/workflows/uat-metal-nightly.yml
+          if [ ! -f "$nightly" ]; then
+            echo "::notice::$nightly absent — skipping UAT nightly shape audit (spike-fail collapse path)"
+            exit 0
+          fi
+          fail=0
+          if ! grep -qF -- "--body-file" "$nightly"; then
+            echo "::error::$nightly: gh issue comment must use --body-file (ce-review M-P2-12)"
+            fail=1
+          fi
+          if ! grep -qF -- "--limit 1" "$nightly"; then
+            echo "::error::$nightly: gh issue list must use --limit 1 (ce-review M-P3-05)"
+            fail=1
+          fi
+          if ! grep -qF "brew info" "$nightly"; then
+            echo "::error::$nightly: brew formula version must be folded into the cache key (ce-review M-P3-07)"
+            fail=1
+          fi
+          # The HF cache path on `actions/cache@v4` must NOT be the
+          # default `~/.cache/huggingface/hub` — the UAT sandbox redirects
+          # HF_HOME, so caching the default path is a permanent miss
+          # (M-P2-07).
+          if grep -qE 'path:.*~/\.cache/huggingface/hub' "$nightly"; then
+            echo "::error::$nightly: cache must target the stable HF root (steps.hf-cache.outputs.dir), not ~/.cache/huggingface/hub (ce-review M-P2-07)"
+            fail=1
+          fi
+          if [ "$fail" -ne 0 ]; then
+            exit 1
+          fi
+          echo "uat-metal-nightly.yml carries every ce-review fix signature; OK"
 
   install-sh-lint:
     # POSIX-strict lint of scripts/install.sh. The script targets Bash 3.2+

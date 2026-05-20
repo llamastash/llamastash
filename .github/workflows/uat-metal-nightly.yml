@@ -10,13 +10,28 @@ name: uat-metal-nightly
 # `macos-build-nightly.yml` per the plan §Approach (Spike-fail
 # branch).
 #
-# Trigger is `schedule:` only — scheduled workflows on GitHub always
-# run against the default branch, structurally enforcing the "runs on
-# main" requirement.
+# Triggers (each runs in its own concurrency-grouped slot per the
+# `concurrency` key below — a release that lands at 09:00 UTC won't
+# race the nightly cron):
+#
+# * `schedule:` — daily 09:00 UTC against the default branch.
+# * `push.tags: ['v*']` — fires alongside `release.yml` whenever a
+#   release tag lands, so every release ships with a Metal-UAT result
+#   attributed to the release SHA in the Actions tab. Not a hard gate
+#   on the release pipeline (the release artefact assembly is decoupled
+#   in `release.yml`); maintainers triage Metal-UAT failures the same
+#   way they triage a red nightly.
+# * `workflow_dispatch:` — manual trigger for the post-spike "is Metal
+#   working today?" sanity check and for re-runs after a flaky brew or
+#   HF outage.
 
 on:
   schedule:
     - cron: "0 9 * * *" # 09:00 UTC daily
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: read
