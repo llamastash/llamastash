@@ -11,6 +11,7 @@
 pub mod advanced_panel;
 pub mod app;
 pub mod confirm_overlay;
+pub mod download_strip;
 pub mod events;
 pub mod filter;
 pub mod fmt;

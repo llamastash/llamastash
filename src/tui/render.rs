@@ -87,13 +87,17 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
 
   let show_info_row = area.height >= MIN_HEIGHT_FOR_INFO_ROW;
 
-  // Vertical layout: title, [info,] body. The filter input renders
-  // inline in the Models block title now, so the body owns the
-  // bottom edge — no dedicated filter row.
-  let mut constraints: Vec<Constraint> = Vec::with_capacity(3);
+  // Vertical layout: title, [info,] [download strip,] body. The
+  // download strip is reserved only when active so the body keeps
+  // every available row when no pull is in flight.
+  let show_strip = app.download_strip_active();
+  let mut constraints: Vec<Constraint> = Vec::with_capacity(4);
   constraints.push(Constraint::Length(1));
   if show_info_row {
     constraints.push(Constraint::Length(INFO_ROW_HEIGHT));
+  }
+  if show_strip {
+    constraints.push(Constraint::Length(1));
   }
   constraints.push(Constraint::Min(1));
   let chunks = Layout::default()
@@ -106,6 +110,10 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
   idx += 1;
   if show_info_row {
     render_info_row(frame, chunks[idx], app, &palette);
+    idx += 1;
+  }
+  if show_strip {
+    super::download_strip::render(frame, chunks[idx], &app.download_strip, &palette);
     idx += 1;
   }
   render_body(frame, chunks[idx], app, &palette);

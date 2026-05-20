@@ -1290,6 +1290,7 @@ pub async fn run(
     drain_embed_pending(&mut app);
     drain_rerank_pending(&mut app);
     drain_hf_dialog(&mut app);
+    drain_download_strip(&mut app);
 
     if event::poll(POLL_INTERVAL)? {
       let evt = event::read()?;
@@ -1572,7 +1573,10 @@ fn apply_open_hf_dialog(app: &mut App) {
 enum HfDialogOutcome {
   None,
   Toast(&'static str),
-  PullQueued { repo: String, filename: String },
+  EnqueuePull {
+    repo: String,
+    row: crate::tui::hf_dialog::PickerRow,
+  },
   Close,
 }
 
@@ -1654,14 +1658,8 @@ fn handle_hf_dialog_input(
       }
 
       (HfStage::Confirm, KeyCode::Enter) => {
-        // Unit 6 wires the actual pull dispatch here. For now,
-        // surface the intended action so users can validate the
-        // path end-to-end and the dialog closes cleanly.
         if let Some((repo, row)) = state.take_confirm_target() {
-          HfDialogOutcome::PullQueued {
-            repo,
-            filename: row.label().to_string(),
-          }
+          HfDialogOutcome::EnqueuePull { repo, row }
         } else {
           HfDialogOutcome::Close
         }
@@ -1676,11 +1674,182 @@ fn handle_hf_dialog_input(
   match outcome {
     HfDialogOutcome::None => {}
     HfDialogOutcome::Toast(msg) => app.show_toast(msg),
-    HfDialogOutcome::PullQueued { repo, filename } => {
-      app.show_toast(format!("pull queued: {repo} :{filename}"));
+    HfDialogOutcome::EnqueuePull { repo, row } => {
+      enqueue_hf_pull(app, repo, row);
       app.close_hf_dialog();
     }
     HfDialogOutcome::Close => app.close_hf_dialog(),
+  }
+}
+
+/// Push a pull onto the download-strip queue and — when no pull is
+/// currently active — promote it and spawn the background download
+/// task that ships progress back over the strip's mpsc.
+fn enqueue_hf_pull(
+  app: &mut App,
+  repo: String,
+  row: crate::tui::hf_dialog::PickerRow,
+) {
+  use crate::tui::download_strip::QueuedPull;
+  let filename = row.download_filename().to_string();
+  let friendly_name = friendly_pull_name(&repo, &filename);
+  let pull = QueuedPull {
+    repo_id: repo.clone(),
+    friendly_name,
+    row,
+  };
+  let queue_pos = app.download_strip.enqueue(pull);
+  app.show_toast(format!("pull queued: {repo} :{filename} (#{queue_pos})"));
+  // Promote immediately when nothing's active so the user sees the
+  // strip light up on the next render.
+  if app.download_strip.active.is_none() {
+    if let Some(promoted) = app.download_strip.promote_next() {
+      app.download_strip.install_active(&promoted);
+      spawn_download_task(promoted, app.download_strip.event_tx.clone());
+    }
+  }
+}
+
+/// Build a friendly mid-flight label for the strip: HF cache layout
+/// uses `<repo> (<quant>)` via `model_display_name`. The path is
+/// reconstructed from the repo id + filename so the helper picks the
+/// HF branch even before the file lands on disk.
+fn friendly_pull_name(repo: &str, filename: &str) -> String {
+  let path = std::path::PathBuf::from("hf-cache")
+    .join(crate::init::download::repo_folder_name(repo))
+    .join("snapshots/pending")
+    .join(filename);
+  crate::util::paths::model_display_name(&path, None)
+}
+
+/// Spawn a tokio task that calls `init::download::download_repo`
+/// with a `DownloadProgress` shim relaying every callback to the
+/// strip's mpsc. The shim also short-circuits to `AlreadyCached`
+/// when a file finishes within an unreasonably short window —
+/// hf-hub returns the cached path instantly when the blob already
+/// exists, so a sub-200ms finish on a non-trivial file is a cache
+/// hit (R116).
+fn spawn_download_task(
+  pull: crate::tui::download_strip::QueuedPull,
+  tx: tokio::sync::mpsc::UnboundedSender<crate::tui::download_strip::DownloadEvent>,
+) {
+  use crate::init::download::{DownloadOptions, RepoSpec};
+  use crate::init::fetch;
+  tokio::spawn(async move {
+    let spec = match RepoSpec::parse(&format!("{}:{}", pull.repo_id, pull.row.download_filename())) {
+      Ok(s) => s,
+      Err(e) => {
+        let _ = tx.send(crate::tui::download_strip::DownloadEvent::Error {
+          repo_id: pull.repo_id.clone(),
+          message: e.to_string(),
+        });
+        return;
+      }
+    };
+    let fetch_client = fetch::build_with_offline_check(
+      false,
+      fetch::FetchClientConfig::default(),
+    )
+    .unwrap_or_else(|_| fetch::FetchClient::offline());
+    let progress = std::sync::Arc::new(StripProgress {
+      tx: tx.clone(),
+      repo_id: pull.repo_id.clone(),
+      inner: std::sync::Mutex::new(StripProgressInner::default()),
+      started_at: std::time::Instant::now(),
+    });
+    let options = DownloadOptions {
+      extension_filter: Some(".gguf".into()),
+      estimated_bytes: pull.row.size_bytes(),
+      progress: Some(progress.clone() as std::sync::Arc<dyn crate::init::download::DownloadProgress>),
+      revision: None,
+    };
+    match crate::init::download::download_repo(&spec, &fetch_client, &options).await {
+      Ok(result) => {
+        // R116 cache-hit detection: if the whole download finished
+        // implausibly fast for a non-trivial size, surface as
+        // AlreadyCached so the dialog toasts + the strip skips a
+        // 100%-immediately flash. Otherwise emit a normal Finished.
+        let elapsed = progress.started_at.elapsed();
+        let total_bytes = progress.inner.lock().map(|i| i.bytes_total).unwrap_or(0);
+        if elapsed < std::time::Duration::from_millis(200) && total_bytes > 64 * 1024 * 1024 {
+          let cached_path = result
+            .paths
+            .first()
+            .cloned()
+            .unwrap_or_else(|| std::path::PathBuf::from(pull.row.download_filename()));
+          let _ = tx.send(crate::tui::download_strip::DownloadEvent::AlreadyCached {
+            repo_id: pull.repo_id.clone(),
+            cached_path,
+          });
+        } else {
+          let _ = tx.send(crate::tui::download_strip::DownloadEvent::Finished {
+            repo_id: pull.repo_id.clone(),
+          });
+        }
+      }
+      Err(e) => {
+        let _ = tx.send(crate::tui::download_strip::DownloadEvent::Error {
+          repo_id: pull.repo_id.clone(),
+          message: e.to_string(),
+        });
+      }
+    }
+  });
+}
+
+/// DownloadProgress shim that forwards hf-hub callbacks into the
+/// download strip's mpsc. Tracks per-file sizes resolved at the
+/// listing pass so per-file finish callbacks aggregate cleanly
+/// across multi-shard pulls. hf-hub doesn't expose byte-level
+/// callbacks today — the strip's "% done" steps per shard boundary.
+struct StripProgress {
+  tx: tokio::sync::mpsc::UnboundedSender<crate::tui::download_strip::DownloadEvent>,
+  repo_id: String,
+  inner: std::sync::Mutex<StripProgressInner>,
+  started_at: std::time::Instant,
+}
+
+#[derive(Default)]
+struct StripProgressInner {
+  /// `filename → size_bytes` snapshot captured at
+  /// `on_files_resolved` time.
+  file_sizes: std::collections::HashMap<String, u64>,
+  bytes_total: u64,
+  bytes_done: u64,
+}
+
+impl crate::init::download::DownloadProgress for StripProgress {
+  fn on_files_resolved(&self, files: &[(String, u64)]) {
+    let mut inner = self.inner.lock().unwrap();
+    inner.file_sizes = files.iter().cloned().collect();
+    inner.bytes_total = files.iter().map(|(_, n)| *n).sum();
+    inner.bytes_done = 0;
+    let _ = self
+      .tx
+      .send(crate::tui::download_strip::DownloadEvent::Started {
+        repo_id: self.repo_id.clone(),
+        bytes_total: inner.bytes_total,
+      });
+  }
+
+  fn on_file_started(&self, _filename: &str, _size: u64, _index: usize, _total: usize) {
+    // No byte-level callback from hf-hub; aggregate on file finish.
+  }
+
+  fn on_file_finished(&self, filename: &str, _index: usize, _total: usize) {
+    let mut inner = self.inner.lock().unwrap();
+    let size = inner.file_sizes.get(filename).copied().unwrap_or(0);
+    inner.bytes_done = inner.bytes_total.min(inner.bytes_done.saturating_add(size));
+    let bytes_done = inner.bytes_done;
+    let bytes_total = inner.bytes_total;
+    drop(inner);
+    let _ = self
+      .tx
+      .send(crate::tui::download_strip::DownloadEvent::Progress {
+        repo_id: self.repo_id.clone(),
+        bytes_done,
+        bytes_total,
+      });
   }
 }
 
@@ -1736,6 +1905,85 @@ fn spawn_hf_list_repo_files(
 fn build_tui_fetch_client() -> crate::init::fetch::FetchClient {
   use crate::init::fetch::{build_with_offline_check, FetchClient, FetchClientConfig};
   build_with_offline_check(false, FetchClientConfig::default()).unwrap_or_else(|_| FetchClient::offline())
+}
+
+/// Drain pending DownloadEvents into the strip. Promotes the next
+/// queued pull when the active one finishes / errors / hits the
+/// cache; surfaces a toast when a cache-hit short-circuit lands.
+pub fn drain_download_strip(app: &mut App) {
+  use crate::tui::download_strip::DownloadEvent;
+  loop {
+    let evt = app.download_strip.event_rx.try_recv();
+    let evt = match evt {
+      Ok(e) => e,
+      Err(_) => break,
+    };
+    let next_pull = match evt {
+      DownloadEvent::Started {
+        repo_id,
+        bytes_total,
+      } => {
+        app.download_strip.apply_started(&repo_id, bytes_total);
+        None
+      }
+      DownloadEvent::Progress {
+        repo_id,
+        bytes_done,
+        bytes_total,
+      } => {
+        app
+          .download_strip
+          .apply_progress(&repo_id, bytes_done, bytes_total);
+        None
+      }
+      DownloadEvent::Finished { repo_id } => {
+        let label = app
+          .download_strip
+          .active
+          .as_ref()
+          .map(|a| a.friendly_name.clone());
+        let next = app.download_strip.apply_finished(&repo_id);
+        if let Some(name) = label {
+          app.show_toast(format!("pulled: {name}"));
+        }
+        next
+      }
+      DownloadEvent::Error { repo_id, message } => app.download_strip.apply_error(&repo_id, message),
+      DownloadEvent::AlreadyCached {
+        repo_id,
+        cached_path,
+      } => {
+        let next = app
+          .download_strip
+          .apply_already_cached(&repo_id, cached_path);
+        if let Some(path) = app.download_strip.pending_cache_hit.take() {
+          app.show_toast(format!(
+            "already downloaded — {}",
+            path.file_name().and_then(|n| n.to_str()).unwrap_or("file")
+          ));
+          // Select the matching catalog row (path equality) so the
+          // user lands on it. Best-effort — `models` may not yet
+          // reflect the just-cached file until the next refresh.
+          if let Some(idx) = app.models.iter().position(|m| m.path == path) {
+            // Find the row index in rendered_rows that matches this
+            // model path so the cursor visibly snaps.
+            let target = app.models[idx].path.clone();
+            let rows = app.rendered_rows();
+            if let Some(row_idx) = rows.iter().position(|r| {
+              r.path().map(|p| p == target).unwrap_or(false)
+            }) {
+              app.list_cursor = row_idx;
+            }
+          }
+        }
+        next
+      }
+    };
+    if let Some(pull) = next_pull {
+      app.download_strip.install_active(&pull);
+      spawn_download_task(pull, app.download_strip.event_tx.clone());
+    }
+  }
 }
 
 /// Drain pending HF dialog events. Applies search / repo-listing

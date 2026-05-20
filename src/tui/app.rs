@@ -190,6 +190,10 @@ pub struct App {
   /// is open; the input pump routes through `Focus::HfDialog` to the
   /// per-stage key handler.
   pub hf_dialog: Option<crate::tui::hf_dialog::HfDialogState>,
+  /// Pinned download status strip (R115). Always present; the
+  /// renderer reserves a 1-line slot above the body only when
+  /// `download_strip.is_active()` is true.
+  pub download_strip: crate::tui::download_strip::DownloadStripState,
   /// Per-frame memo of `rendered_rows()`. Primed at the top of
   /// `render::render` and cleared at the bottom — see audit §4.1
   /// #1 (the biggest single perf finding). The same `Vec<ListRow>`
@@ -266,9 +270,17 @@ impl App {
       show_help: false,
       confirm_dialog: None,
       hf_dialog: None,
+      download_strip: crate::tui::download_strip::DownloadStripState::default(),
       rows_cache: None,
       right_tabs_cache: None,
     }
+  }
+
+  /// `true` when the download strip should be rendered. Delegates
+  /// to [`DownloadStripState::is_active`] so the renderer's layout
+  /// decision and the strip's render contract stay aligned.
+  pub fn download_strip_active(&self) -> bool {
+    self.download_strip.is_active()
   }
 
   /// Open the HuggingFace pull dialog. Initialises in the Search
