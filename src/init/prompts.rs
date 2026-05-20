@@ -325,11 +325,7 @@ fn format_system_segment(hw: &HardwareSnapshot) -> String {
   if hw.disk_free_bytes > 0 {
     parts.push(format!("{} disk free", format_gib(hw.disk_free_bytes)));
   }
-  parts.push(format!(
-    "{}/{}",
-    os_short(hw.os),
-    arch_short(hw.cpu_arch)
-  ));
+  parts.push(format!("{}/{}", os_short(hw.os), arch_short(hw.cpu_arch)));
   parts.join(" · ")
 }
 

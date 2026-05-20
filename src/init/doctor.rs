@@ -340,37 +340,49 @@ pub async fn run(args: DoctorArgs, _cli: &Cli, _config: &Config) -> CliResult {
 }
 
 fn render_human(report: &DoctorReport) {
-  use crate::cli::colors;
+  use crate::cli::{colors, format};
   if report.findings.is_empty() {
-    println!(
+    // Empty-clean state reads as the same shape as a populated one:
+    // bold section header, count suffix, then a single success line.
+    print!(
       "{}",
-      colors::success("llamastash doctor: 0 findings — everything looks healthy.")
+      format::section_header("llamastash doctor", Some((0, "findings")))
     );
+    println!("{}", colors::success("everything looks healthy"));
     if let Some(date) = &report.baseline.init_date {
       println!("  {}", colors::dim(&format!("last init: {date}")));
     }
     return;
   }
-  println!(
+  print!(
     "{}",
-    colors::header(&format!(
-      "llamastash doctor: {} finding(s).",
-      report.findings.len()
-    ))
+    format::section_header(
+      "llamastash doctor",
+      Some((report.findings.len(), "findings"))
+    )
   );
   for f in &report.findings {
-    let line = format!("[{}] {}", f.id, f.message);
-    let coloured = match f.severity {
-      Severity::Error => colors::error(&line),
-      Severity::Warning => colors::warning(&line),
-      // Info findings need a leading glyph too so agents that classify
-      // severity by the first character of each line don't lose them.
-      Severity::Info => format!("{} {}", colors::dim("•"), colors::dim(&line)),
+    // Per-finding block:
+    //   • severity glyph (sentinel for byte-classifying parsers),
+    //   • bold `[finding_id]` (stable scannable token),
+    //   • severity-tinted message,
+    //   • indented `→ fix with: <bold hint>` second line.
+    let id_styled = console::style(format!("[{}]", f.id)).bold().to_string();
+    let glyph = match f.severity {
+      Severity::Error => console::style("✗").red().bold().to_string(),
+      Severity::Warning => console::style("!").yellow().to_string(),
+      Severity::Info => colors::dim("•"),
     };
-    println!("\n  {coloured}");
+    let message_styled = match f.severity {
+      Severity::Error => console::style(&f.message).red().to_string(),
+      Severity::Warning => console::style(&f.message).yellow().to_string(),
+      Severity::Info => colors::dim(&f.message),
+    };
+    println!("\n  {glyph} {id_styled} {message_styled}");
     println!(
-      "    {}",
-      colors::dim(&format!("→ fix with: {}", f.fix_hint))
+      "    {} {}",
+      colors::dim("→ fix with:"),
+      console::style(f.fix_hint).bold(),
     );
   }
 }

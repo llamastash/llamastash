@@ -33,9 +33,19 @@ pub async fn handle(args: FavoritesArgs, cli: &Cli, config: &Config) -> CliResul
       } else if arr.is_empty() {
         println!("{}", colors::dim("(no favorites)"));
       } else {
+        let tty = console::colors_enabled();
         for fav in &arr {
           let path = crate::cli::output::row_path(fav).unwrap_or("?");
-          println!("{path}");
+          if tty {
+            // Home-prefix collapse for human scannability; piped
+            // (non-TTY) consumers still get verbatim absolute paths.
+            println!("{}", colors::path(path));
+          } else {
+            println!("{path}");
+          }
+        }
+        if tty {
+          println!("{}", colors::count(arr.len(), "favorites"));
         }
       }
       Ok(())

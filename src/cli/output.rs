@@ -10,7 +10,7 @@
 
 use serde_json::Value;
 
-use crate::cli::resolve::{CatalogRow, RunningRow, StatusSnapshot};
+use crate::cli::resolve::{CatalogRow, StatusSnapshot};
 
 /// Decode the canonical model path out of a daemon row's nested
 /// `id.path` shape. Centralised so the five CLI subcommands that
@@ -22,29 +22,43 @@ pub fn row_path(v: &Value) -> Option<&str> {
     .and_then(Value::as_str)
 }
 
-/// Render `list_models` rows as TSV. Columns: id, path, arch, quant,
-/// native_ctx (one line per model, header line first).
+/// Render `list_models` rows as a padded table on TTY, or
+/// tab-separated rows when colors are disabled (piped / `--no-colors` /
+/// `NO_COLOR`). Columns: NAME, ARCH, QUANT, CTX, PATH.
+///
+/// Footer line `(N models)` is appended on TTY only — the piped form
+/// stays byte-identical to today's TSV so existing `awk -F\t` /
+/// `column -t` pipelines keep working.
 pub fn list_human(rows: &[CatalogRow]) -> String {
+  use crate::cli::{colors, format};
   if rows.is_empty() {
-    return format!("{}\n", crate::cli::colors::dim("(no models discovered)"));
+    return format!("{}\n", colors::dim("(no models discovered)"));
   }
-  let mut out = String::new();
-  out.push_str(&format!(
-    "{}\n",
-    crate::cli::colors::bold("NAME\tARCH\tQUANT\tCTX\tPATH")
-  ));
-  for r in rows {
-    let arch = r.arch.as_deref().unwrap_or("?");
-    let quant = r.quant.as_deref().unwrap_or("?");
-    let ctx = r
-      .native_ctx
-      .map(|n| n.to_string())
-      .unwrap_or_else(|| "?".to_string());
-    out.push_str(&format!(
-      "{name}\t{arch}\t{quant}\t{ctx}\t{path}\n",
-      name = r.name(),
-      path = r.path,
-    ));
+  let header = ["NAME", "ARCH", "QUANT", "CTX", "PATH"];
+  let body: Vec<Vec<String>> = rows
+    .iter()
+    .map(|r| {
+      let arch = r.arch.as_deref().unwrap_or("?");
+      let quant = r.quant.as_deref().unwrap_or("?");
+      let ctx = r
+        .native_ctx
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "?".to_string());
+      vec![
+        r.name(),
+        arch.to_string(),
+        quant.to_string(),
+        ctx,
+        // Path styling is deliberately a no-op when colors are off,
+        // so the TSV branch stays byte-stable for piped consumers.
+        colors::path(&r.path),
+      ]
+    })
+    .collect();
+  let mut out = format::table(&header, &body);
+  if console::colors_enabled() {
+    out.push_str(&colors::count(rows.len(), "models"));
+    out.push('\n');
   }
   out
 }
@@ -132,49 +146,137 @@ pub fn filter_rows(rows: &[CatalogRow], pattern: &str) -> Vec<CatalogRow> {
 }
 
 /// Human rendering of `status`.
+///
+/// Two surfaces share one source:
+/// - On TTY (`colors_enabled()`): section header for the daemon, a
+///   `kv_block` for its fields, a padded launches table, and a dim
+///   GPU footer line.
+/// - On non-TTY / `--no-colors`: today's single-line daemon preamble
+///   plus byte-stable TSV rows — preserves `awk -F\t` / `column -t`
+///   pipelines.
+///
+/// Columns are stable across modes (LAUNCH_ID, STATE, MODE, PORT, PID,
+/// PATH). RSS/CPU% are intentionally not surfaced here even when the
+/// per-PID sampler has primed them — they belong in a future
+/// `--detail` view rather than always-on columns that would push
+/// path truncation onto narrow terminals.
 pub fn status_human(snap: &StatusSnapshot) -> String {
+  use crate::cli::{colors, format};
+
+  let tty = console::colors_enabled();
   let mut out = String::new();
+
+  // Daemon preamble.
   if let Some(d) = &snap.daemon {
-    out.push_str(&format!(
-      "daemon: pid={} uptime={}s connections={}\n",
-      d.pid, d.uptime_seconds, d.active_connections,
-    ));
-  }
-  if snap.models.is_empty() && snap.external.is_empty() {
-    out.push_str("(no managed launches)\n");
-  } else {
-    out.push_str("LAUNCH_ID\tSTATE\tMODE\tPORT\tPID\tPATH\n");
-    for r in &snap.models {
-      out.push_str(&row_string(r));
-    }
-    for r in &snap.external {
+    if tty {
+      out.push_str(&format::section_header("daemon", None));
+      let pid_styled = console::style(d.pid.to_string()).bold().to_string();
+      let uptime = format_uptime_secs(d.uptime_seconds);
+      out.push_str(&format::kv_block(&[
+        ("pid", pid_styled),
+        ("uptime", uptime),
+        ("connections", d.active_connections.to_string()),
+      ]));
+      out.push('\n');
+    } else {
       out.push_str(&format!(
-        "external\texternal\t-\t-\t{}\t{}\n",
-        r.pid,
-        r.model_path.as_deref().unwrap_or(&r.cmdline),
+        "daemon: pid={} uptime={}s connections={}\n",
+        d.pid, d.uptime_seconds, d.active_connections,
       ));
     }
   }
+
+  // Launches table.
+  if snap.models.is_empty() && snap.external.is_empty() {
+    out.push_str(&colors::dim("(no managed launches)"));
+    out.push('\n');
+  } else {
+    let header = ["LAUNCH_ID", "STATE", "MODE", "PORT", "PID", "PATH"];
+    let mut rows: Vec<Vec<String>> = Vec::with_capacity(snap.models.len() + snap.external.len());
+    for r in &snap.models {
+      let pid = r
+        .pid
+        .map(|p| p.to_string())
+        .unwrap_or_else(|| "-".to_string());
+      rows.push(vec![
+        if tty {
+          colors::launch_id(&r.launch_id)
+        } else {
+          r.launch_id.clone()
+        },
+        if tty {
+          colors::state(&r.state)
+        } else {
+          r.state.clone()
+        },
+        r.mode.clone(),
+        if tty {
+          colors::port(r.port)
+        } else {
+          r.port.to_string()
+        },
+        pid,
+        if tty {
+          colors::path(&r.model_path)
+        } else {
+          r.model_path.clone()
+        },
+      ]);
+    }
+    for r in &snap.external {
+      let path = r.model_path.as_deref().unwrap_or(&r.cmdline);
+      // External rows are styled dim end-to-end so they read as
+      // observer-only entries vs the bright managed ones.
+      let dim_or_plain = |s: &str| if tty { colors::dim(s) } else { s.to_string() };
+      rows.push(vec![
+        dim_or_plain("external"),
+        dim_or_plain("external"),
+        dim_or_plain("-"),
+        dim_or_plain("-"),
+        dim_or_plain(&r.pid.to_string()),
+        if tty {
+          colors::dim(&colors::path(path))
+        } else {
+          path.to_string()
+        },
+      ]);
+    }
+    out.push_str(&format::table(&header, &rows));
+  }
+
+  // GPU footer.
   if let Some(label) = gpu_label(&snap.gpu) {
-    out.push_str(&format!("\nGPU: {label}\n"));
+    out.push('\n');
+    if tty {
+      out.push_str(&colors::dim(&format!("GPU: {label}")));
+      out.push('\n');
+    } else {
+      out.push_str(&format!("GPU: {label}\n"));
+    }
   }
   out
 }
 
-fn row_string(r: &RunningRow) -> String {
-  let pid = r
-    .pid
-    .map(|p| p.to_string())
-    .unwrap_or_else(|| "-".to_string());
-  format!(
-    "{lid}\t{state}\t{mode}\t{port}\t{pid}\t{path}\n",
-    lid = r.launch_id,
-    state = r.state,
-    mode = r.mode,
-    port = r.port,
-    pid = pid,
-    path = r.model_path,
-  )
+/// Same uptime renderer as the daemon-status branch. Kept inline (not
+/// re-exported from cli::daemon) so this module owns its rendering
+/// without a cross-handler dep.
+fn format_uptime_secs(seconds: u64) -> String {
+  let days = seconds / 86_400;
+  let hours = (seconds % 86_400) / 3_600;
+  let mins = (seconds % 3_600) / 60;
+  let secs = seconds % 60;
+  let mut parts: Vec<String> = Vec::with_capacity(4);
+  if days > 0 {
+    parts.push(format!("{days}d"));
+  }
+  if hours > 0 || !parts.is_empty() {
+    parts.push(format!("{hours}h"));
+  }
+  if mins > 0 || !parts.is_empty() {
+    parts.push(format!("{mins}m"));
+  }
+  parts.push(format!("{secs}s"));
+  parts.join(" ")
 }
 
 fn gpu_label(gpu: &Value) -> Option<String> {
@@ -303,7 +405,31 @@ pub fn pretty_json(v: &Value) -> String {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::cli::resolve::ExternalRow;
+  use crate::cli::resolve::{ExternalRow, RunningRow};
+  use crate::cli::test_lock::serialize;
+  use std::sync::MutexGuard;
+
+  struct ColorGuard {
+    _lock: MutexGuard<'static, ()>,
+    prior: bool,
+  }
+
+  impl ColorGuard {
+    fn set(enabled: bool) -> Self {
+      let g = Self {
+        _lock: serialize(),
+        prior: console::colors_enabled(),
+      };
+      console::set_colors_enabled(enabled);
+      g
+    }
+  }
+
+  impl Drop for ColorGuard {
+    fn drop(&mut self) {
+      console::set_colors_enabled(self.prior);
+    }
+  }
 
   fn row(name: &str, arch: &str, quant: &str, ctx: u64) -> CatalogRow {
     CatalogRow {
@@ -321,19 +447,46 @@ mod tests {
   }
 
   #[test]
-  fn list_human_renders_header_and_rows() {
+  fn list_human_tsv_branch_emits_byte_exact_today_shape() {
+    // Regression guard: piped consumers see exactly today's TSV bytes.
+    // Snapshot string is the exact format the pre-padded-table code
+    // produced so awk/cut/column pipelines don't drift.
+    let _g = ColorGuard::set(false);
     let rows = vec![row("qwen", "qwen2", "Q4_K", 8192)];
     let s = list_human(&rows);
+    assert_eq!(
+      s,
+      "NAME\tARCH\tQUANT\tCTX\tPATH\nqwen.gguf\tqwen2\tQ4_K\t8192\t/m/qwen.gguf\n"
+    );
+  }
+
+  #[test]
+  fn list_human_tty_branch_pads_columns_and_appends_count_footer() {
+    let _g = ColorGuard::set(true);
+    let rows = vec![
+      row("qwen", "qwen2", "Q4_K", 8192),
+      row("phi", "phi3", "Q5_K", 4096),
+    ];
+    let s = list_human(&rows);
     let plain = console::strip_ansi_codes(&s);
-    assert!(plain.starts_with("NAME\tARCH"));
+    assert!(plain.starts_with("NAME"), "header missing: {plain:?}");
+    assert!(
+      !plain.contains("NAME\t"),
+      "padded output must not contain tabs in header: {plain:?}"
+    );
     assert!(plain.contains("qwen.gguf"));
-    assert!(plain.contains("8192"));
+    assert!(plain.contains("(2 models)"), "footer missing: {plain:?}");
   }
 
   #[test]
   fn list_human_handles_empty_catalog() {
-    let s = list_human(&[]);
-    assert!(console::strip_ansi_codes(&s).contains("no models"));
+    // Same dim line in both modes — empty-state message is plain
+    // bytes either way.
+    for enabled in [true, false] {
+      let _g = ColorGuard::set(enabled);
+      let s = list_human(&[]);
+      assert!(console::strip_ansi_codes(&s).contains("no models"));
+    }
   }
 
   #[test]
@@ -400,15 +553,19 @@ mod tests {
 
   #[test]
   fn status_human_handles_empty_snapshot() {
-    let snap = StatusSnapshot {
-      models: vec![],
-      external: vec![],
-      gpu: Value::Null,
-      host: Value::Null,
-      daemon: None,
-    };
-    let s = status_human(&snap);
-    assert!(s.contains("no managed"));
+    // Both modes produce the same "no managed launches" dim line.
+    for enabled in [true, false] {
+      let _g = ColorGuard::set(enabled);
+      let snap = StatusSnapshot {
+        models: vec![],
+        external: vec![],
+        gpu: Value::Null,
+        host: Value::Null,
+        daemon: None,
+      };
+      let s = status_human(&snap);
+      assert!(console::strip_ansi_codes(&s).contains("no managed"));
+    }
   }
 
   #[test]
@@ -416,16 +573,21 @@ mod tests {
     // The live wire shape is `{"backend": "cpu_only"}` (snake_case
     // tagged enum); the test feeds the same shape the daemon emits,
     // not the legacy PascalCase variant key the function used to
-    // match against.
-    let snap = StatusSnapshot {
-      models: vec![],
-      external: vec![],
-      gpu: serde_json::json!({"backend": "cpu_only"}),
-      host: Value::Null,
-      daemon: None,
-    };
-    let s = status_human(&snap);
-    assert!(s.contains("CPU only"), "got: {s}");
+    // match against. The label content is the same in both modes;
+    // only the surrounding color styling differs.
+    for enabled in [true, false] {
+      let _g = ColorGuard::set(enabled);
+      let snap = StatusSnapshot {
+        models: vec![],
+        external: vec![],
+        gpu: serde_json::json!({"backend": "cpu_only"}),
+        host: Value::Null,
+        daemon: None,
+      };
+      let s = status_human(&snap);
+      let plain = console::strip_ansi_codes(&s);
+      assert!(plain.contains("CPU only"), "got: {plain}");
+    }
   }
 
   #[test]
@@ -468,7 +630,10 @@ mod tests {
   }
 
   #[test]
-  fn status_human_emits_daemon_preamble_when_present() {
+  fn status_human_tsv_branch_emits_legacy_daemon_preamble_byte_shape() {
+    // Piped consumers parsing today's `pid=N` / `connections=N` form
+    // stay supported byte-for-byte.
+    let _g = ColorGuard::set(false);
     use crate::cli::resolve::DaemonHealth;
     let snap = StatusSnapshot {
       models: vec![],
@@ -485,9 +650,38 @@ mod tests {
       }),
     };
     let s = status_human(&snap);
-    assert!(s.contains("daemon"), "preamble missing: {s}");
-    assert!(s.contains("pid=4242"), "pid missing: {s}");
-    assert!(s.contains("connections=3"), "conn count missing: {s}");
+    assert!(s.starts_with("daemon: pid=4242"), "preamble shape: {s:?}");
+    assert!(s.contains("uptime=90s"));
+    assert!(s.contains("connections=3"));
+  }
+
+  #[test]
+  fn status_human_tty_branch_renders_daemon_section_header_and_kv_block() {
+    let _g = ColorGuard::set(true);
+    use crate::cli::resolve::DaemonHealth;
+    let snap = StatusSnapshot {
+      models: vec![],
+      external: vec![],
+      gpu: Value::Null,
+      host: Value::Null,
+      daemon: Some(DaemonHealth {
+        pid: 4242,
+        uptime_seconds: 90,
+        active_connections: 3,
+        build: None,
+        server_path: None,
+        socket_path: None,
+      }),
+    };
+    let s = status_human(&snap);
+    let plain = console::strip_ansi_codes(&s);
+    assert!(plain.starts_with("daemon\n"), "section header: {plain:?}");
+    assert!(plain.contains("pid  4242"), "kv pid: {plain:?}");
+    assert!(plain.contains("uptime  1m 30s"), "kv uptime: {plain:?}");
+    assert!(
+      plain.contains("connections  3"),
+      "kv connections: {plain:?}"
+    );
   }
 
   #[test]
@@ -584,5 +778,68 @@ mod tests {
     assert_eq!(v["host"]["gpu_backend"], serde_json::json!("amd"));
     assert_eq!(v["host"]["cpu_pct"], serde_json::json!(12.5));
     assert_eq!(v["host"]["gpu_device_count"], serde_json::json!(1));
+  }
+
+  fn running(launch_id: &str, state: &str, port: u16, path: &str) -> RunningRow {
+    RunningRow {
+      launch_id: launch_id.into(),
+      model_path: path.into(),
+      id: None,
+      port,
+      state: state.into(),
+      pid: Some(123),
+      mode: "chat".into(),
+      ready_at: None,
+      params: None,
+      latest_rss_bytes: None,
+      latest_cpu_pct: None,
+    }
+  }
+
+  #[test]
+  fn status_human_tsv_branch_emits_byte_stable_launches_table() {
+    let _g = ColorGuard::set(false);
+    let snap = StatusSnapshot {
+      models: vec![running("L1", "ready", 41100, "/m/qwen.gguf")],
+      external: vec![ExternalRow {
+        pid: 9999,
+        cmdline: "llama-server".into(),
+        model_path: Some("/m/ext.gguf".into()),
+      }],
+      gpu: Value::Null,
+      host: Value::Null,
+      daemon: None,
+    };
+    let s = status_human(&snap);
+    // Regression guard: managed + external rows are exact tabs, no
+    // padding, no color, no truncation.
+    assert!(
+      s.contains("LAUNCH_ID\tSTATE\tMODE\tPORT\tPID\tPATH\n"),
+      "header drifted: {s:?}"
+    );
+    assert!(s.contains("L1\tready\tchat\t41100\t123\t/m/qwen.gguf\n"));
+    assert!(s.contains("external\texternal\t-\t-\t9999\t/m/ext.gguf\n"));
+  }
+
+  #[test]
+  fn status_human_tty_branch_pads_launches_table_and_colors_state() {
+    let _g = ColorGuard::set(true);
+    let snap = StatusSnapshot {
+      models: vec![running("L1", "ready", 41100, "/m/qwen.gguf")],
+      external: vec![],
+      gpu: Value::Null,
+      host: Value::Null,
+      daemon: None,
+    };
+    let s = status_human(&snap);
+    let plain = console::strip_ansi_codes(&s);
+    assert!(plain.contains("LAUNCH_ID"), "header missing: {plain:?}");
+    assert!(
+      !plain.contains("LAUNCH_ID\t"),
+      "padded layout must not contain tabs: {plain:?}"
+    );
+    assert!(plain.contains("L1"));
+    assert!(plain.contains("ready"));
+    assert!(plain.contains("41100"));
   }
 }

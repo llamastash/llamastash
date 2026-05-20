@@ -105,9 +105,14 @@ pub async fn handle(args: StopArgs, cli: &Cli, config: &Config) -> CliResult {
       });
       println!("{}", pretty_json(&body));
     } else if !cli.quiet {
+      // Count gets bold so the operator can scan "how many" at a
+      // glance; the rest of the line stays in success-green.
+      use crate::cli::colors;
+      let bold_count = console::style(stopped_count.to_string()).bold().to_string();
       println!(
-        "{}",
-        crate::cli::colors::success(&format!("stop --all: stopped {stopped_count} launch(es)"))
+        "{} {bold_count} {}",
+        colors::success("stop --all: stopped"),
+        colors::dim("launch(es)"),
       );
     }
     return Ok(());
@@ -139,13 +144,21 @@ pub async fn handle(args: StopArgs, cli: &Cli, config: &Config) -> CliResult {
       });
       println!("{}", pretty_json(&body));
     } else if !cli.quiet {
+      use crate::cli::colors;
+      let pid_token = console::style(ext.pid.to_string()).bold().to_string();
+      let signal = if killed { "SIGKILL" } else { "SIGTERM" };
+      // SIGKILL escalation is the alarming case (process didn't honor
+      // SIGTERM in the grace window); color it red so it's distinct
+      // from the normal SIGTERM path.
+      let signal_styled = if killed {
+        console::style(signal).red().bold().to_string()
+      } else {
+        colors::dim(signal)
+      };
       println!(
-        "{}",
-        crate::cli::colors::success(&format!(
-          "stopped external pid {} → {}",
-          ext.pid,
-          if killed { "SIGKILL" } else { "SIGTERM" },
-        ))
+        "{} {pid_token} {} {signal_styled}",
+        colors::success("stopped external pid"),
+        colors::dim("→"),
       );
     }
     return Ok(());
@@ -171,9 +184,13 @@ pub async fn handle(args: StopArgs, cli: &Cli, config: &Config) -> CliResult {
     });
     println!("{}", pretty_json(&body));
   } else if !cli.quiet {
+    use crate::cli::colors;
     println!(
-      "{}",
-      crate::cli::colors::success(&format!("stopped {} → {state}", row.launch_id))
+      "{} {} {} {}",
+      colors::success("stopped"),
+      colors::launch_id(&row.launch_id),
+      colors::dim("→"),
+      colors::state(state),
     );
   }
   Ok(())

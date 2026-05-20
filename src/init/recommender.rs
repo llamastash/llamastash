@@ -230,7 +230,10 @@ fn profile_admits(entry: &ModelEntry, options: &RecommendOptions) -> bool {
   // No task specified → general profile. Drop specialization-tagged
   // entries the same way whichllm does for `task_profile="general"`.
   let id_lower = entry.source_hf_id.to_ascii_lowercase();
-  let name = id_lower.rsplit_once('/').map(|(_, n)| n).unwrap_or(&id_lower);
+  let name = id_lower
+    .rsplit_once('/')
+    .map(|(_, n)| n)
+    .unwrap_or(&id_lower);
   const SPECIALIZATION_MARKERS: &[&str] =
     &["coder", "codegen", "starcoder", "program", "coding", "math"];
   for marker in SPECIALIZATION_MARKERS {
@@ -840,8 +843,14 @@ mod tests {
     let peak_16k = estimate_peak_bytes_for_entry(&entry, 16384);
     let peak_32k = estimate_peak_bytes_for_entry(&entry, 32768);
 
-    assert!(peak_4k > 48_000_000_000, "peak must include weights + some overhead");
-    assert!(peak_4k < 51_000_000_000, "peak shouldn't add multiple GB at 4k for 3B-active MoE");
+    assert!(
+      peak_4k > 48_000_000_000,
+      "peak must include weights + some overhead"
+    );
+    assert!(
+      peak_4k < 51_000_000_000,
+      "peak shouldn't add multiple GB at 4k for 3B-active MoE"
+    );
     assert!(peak_16k > peak_4k);
     assert!(peak_32k > peak_16k);
 

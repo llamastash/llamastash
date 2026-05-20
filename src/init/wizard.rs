@@ -33,7 +33,7 @@ use crate::init::install::{
   default_install_method, gh_releases, BinaryInstall, InstallChoice, InstallError,
 };
 use crate::init::prompts::{self, ModelChoice};
-use crate::init::recommender::{recommend, OnDiskModel, Recommendation, RecommendOptions};
+use crate::init::recommender::{recommend, OnDiskModel, RecommendOptions, Recommendation};
 use crate::init::snapshot::{self, InstallMethod, ManagedKey};
 
 /// Effective per-step run plan after `--only`/`--skip` resolve. Step 1

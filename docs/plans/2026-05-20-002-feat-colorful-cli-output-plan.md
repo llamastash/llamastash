@@ -1,7 +1,7 @@
 ---
 title: "feat: consistent colorful CLI output across non-wizard commands"
 type: feat
-status: active
+status: completed
 date: 2026-05-20
 ---
 
@@ -412,7 +412,7 @@ GPU: NVIDIA RTX 4090 · 24 GiB
 
 ## Implementation Units
 
-- [ ] **Unit 1: Add `src/cli/format.rs` with padded-table + kv-block helpers**
+- [x] **Unit 1: Add `src/cli/format.rs` with padded-table + kv-block helpers**
 
 **Goal:** Centralise the layout logic so each command's render branch is a
 one-line call. The module owns: (1) `table(header, rows)`, (2)
@@ -494,7 +494,7 @@ the TTY/colors-enabled detection that decides padded-vs-TSV.
 
 ---
 
-- [ ] **Unit 2: Extend `src/cli/colors.rs` with semantic value helpers**
+- [x] **Unit 2: Extend `src/cli/colors.rs` with semantic value helpers**
 
 **Goal:** Provide one place for "this kind of value gets this color." Every
 value-color decision in the rest of the plan resolves to one of these
@@ -558,7 +558,7 @@ embed `console::style(...)` directly.
 
 ---
 
-- [ ] **Unit 3: Reformat action-style daemon and start/stop output**
+- [x] **Unit 3: Reformat action-style daemon and start/stop output**
 
 **Goal:** Apply value-color polish to single-line success/error/dim
 messages in the action-style commands, and rewrite `daemon status`
@@ -646,7 +646,7 @@ raw pretty-JSON.
 
 ---
 
-- [ ] **Unit 4: Rewrite `list` human output through `format::table`**
+- [x] **Unit 4: Rewrite `list` human output through `format::table`**
 
 **Goal:** Padded + colored table on a TTY; today's TSV when piped.
 
@@ -700,7 +700,7 @@ raw pretty-JSON.
 
 ---
 
-- [ ] **Unit 5: Rewrite `status` human output (daemon kv + launches table)**
+- [x] **Unit 5: Rewrite `status` human output (daemon kv + launches table)**
 
 **Goal:** Daemon health rendered as `kv_block`, launches as a padded
 table with `LAUNCH_ID`/`STATE`/`MODE`/`PORT`/`PID`/`PATH` (and
@@ -763,7 +763,7 @@ optional `RSS`/`CPU%`), GPU summary as a one-line dim footer.
 
 ---
 
-- [ ] **Unit 6: Reformat `presets list`, `favorites list`, `last-params`**
+- [x] **Unit 6: Reformat `presets list`, `favorites list`, `last-params`**
 
 **Goal:** Padded + colored tables for the three remaining report
 commands; preserve TSV in non-TTY; preserve `--json`.
@@ -818,7 +818,7 @@ commands; preserve TSV in non-TTY; preserve `--json`.
 
 ---
 
-- [ ] **Unit 7: Polish `doctor` rendering**
+- [x] **Unit 7: Polish `doctor` rendering**
 
 **Goal:** Bring `doctor`'s output in line with the rest of the surface
 — section header line, count summary, bold finding-id, dim fix-hint
@@ -870,7 +870,7 @@ arrow — without redesigning the severity-grouped output.
 
 ---
 
-- [ ] **Unit 8: Doc + changelog updates**
+- [x] **Unit 8: Doc + changelog updates**
 
 **Goal:** Keep docs in lock-step with the new behavior so AGENTS.md,
 README, usage.md, and the CHANGELOG reflect what shipped.

@@ -42,35 +42,54 @@ pub async fn handle(args: PresetsArgs, cli: &Cli, config: &Config) -> CliResult 
           crate::cli::colors::dim(&format!("(no presets for {})", row.name()))
         );
       } else {
-        println!(
-          "{}",
-          crate::cli::colors::bold("NAME\tCTX\tREASONING\tEXTRA")
-        );
-        for preset in &arr {
-          let name = preset.get("name").and_then(Value::as_str).unwrap_or("?");
-          let p = preset.get("params");
-          let ctx = p
-            .and_then(|p| p.get("ctx"))
-            .and_then(Value::as_u64)
-            .map(|n| n.to_string())
-            .unwrap_or_else(|| "-".into());
-          let reasoning = p
-            .and_then(|p| p.get("reasoning"))
-            .and_then(Value::as_bool)
-            .map(|b| if b { "on" } else { "off" }.to_string())
-            .unwrap_or_else(|| "-".into());
-          let extra = p
-            .and_then(|p| p.get("advanced"))
-            .and_then(Value::as_array)
-            .map(|a| {
-              a.iter()
-                .filter_map(|v| v.as_str().map(str::to_string))
-                .collect::<Vec<_>>()
-                .join(" ")
-            })
-            .unwrap_or_default();
-          println!("{name}\t{ctx}\t{reasoning}\t{extra}");
+        use crate::cli::{colors, format};
+        let tty = console::colors_enabled();
+        let header = ["NAME", "CTX", "REASONING", "EXTRA"];
+        let table_rows: Vec<Vec<String>> = arr
+          .iter()
+          .map(|preset| {
+            let name = preset.get("name").and_then(Value::as_str).unwrap_or("?");
+            let p = preset.get("params");
+            let ctx = p
+              .and_then(|p| p.get("ctx"))
+              .and_then(Value::as_u64)
+              .map(|n| n.to_string())
+              .unwrap_or_else(|| "-".into());
+            let reasoning_raw = p
+              .and_then(|p| p.get("reasoning"))
+              .and_then(Value::as_bool)
+              .map(|b| if b { "on" } else { "off" }.to_string())
+              .unwrap_or_else(|| "-".into());
+            // `on` reads as the affirmative state → green; `off`/`-`
+            // recede via dim so the operator's eye lands on `on` rows.
+            let reasoning = if tty {
+              match reasoning_raw.as_str() {
+                "on" => console::style("on").green().bold().to_string(),
+                "off" | "-" => colors::dim(&reasoning_raw),
+                _ => reasoning_raw.clone(),
+              }
+            } else {
+              reasoning_raw
+            };
+            let extra = p
+              .and_then(|p| p.get("advanced"))
+              .and_then(Value::as_array)
+              .map(|a| {
+                a.iter()
+                  .filter_map(|v| v.as_str().map(str::to_string))
+                  .collect::<Vec<_>>()
+                  .join(" ")
+              })
+              .unwrap_or_default();
+            vec![name.to_string(), ctx, reasoning, extra]
+          })
+          .collect();
+        let mut out = format::table(&header, &table_rows);
+        if tty {
+          out.push_str(&colors::count(arr.len(), "presets"));
+          out.push('\n');
         }
+        print!("{out}");
       }
       Ok(())
     }

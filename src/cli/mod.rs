@@ -13,6 +13,7 @@ pub mod daemon;
 pub mod doctor;
 pub mod exit_codes;
 pub mod favorites;
+pub(crate) mod format;
 pub mod init;
 pub mod last_params;
 pub mod list;
@@ -236,4 +237,24 @@ async fn render_snapshot(
   }
   print!("{out}");
   Ok(())
+}
+
+/// Cross-module test serialisation for tests that toggle the global
+/// `console::set_colors_enabled` flag or the `NO_COLOR` env var. A
+/// single static mutex shared by `cli::colors::tests`,
+/// `cli::format::tests`, and `cli::output::tests` so the modules don't
+/// race each other on global state.
+#[cfg(test)]
+pub(crate) mod test_lock {
+  use std::sync::{Mutex, MutexGuard, OnceLock};
+
+  /// Acquire the cross-module color/env mutex. Poisoned guards are
+  /// unwrapped so a panic in one test never silently disables the next.
+  pub(crate) fn serialize() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK
+      .get_or_init(|| Mutex::new(()))
+      .lock()
+      .unwrap_or_else(|poison| poison.into_inner())
+  }
 }

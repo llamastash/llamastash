@@ -61,34 +61,60 @@ pub async fn handle(args: LastParamsArgs, cli: &Cli, config: &Config) -> CliResu
     );
     return Ok(());
   }
-  println!(
-    "{}",
-    crate::cli::colors::bold("MODEL\tCTX\tREASONING\tADVANCED")
-  );
-  for r in &rows {
-    let path = crate::cli::output::row_path(r).unwrap_or("?");
-    let params = r.get("params");
-    let ctx = params
-      .and_then(|p| p.get("ctx"))
-      .and_then(Value::as_u64)
-      .map(|n| n.to_string())
-      .unwrap_or_else(|| "-".into());
-    let reasoning = params
-      .and_then(|p| p.get("reasoning"))
-      .and_then(Value::as_bool)
-      .map(|b| if b { "on" } else { "off" }.to_string())
-      .unwrap_or_else(|| "-".into());
-    let advanced = params
-      .and_then(|p| p.get("advanced"))
-      .and_then(Value::as_array)
-      .map(|a| {
-        a.iter()
-          .filter_map(|v| v.as_str().map(str::to_string))
-          .collect::<Vec<_>>()
-          .join(" ")
-      })
-      .unwrap_or_default();
-    println!("{path}\t{ctx}\t{reasoning}\t{advanced}");
+  use crate::cli::{colors, format};
+  let tty = console::colors_enabled();
+  let header = ["MODEL", "CTX", "REASONING", "ADVANCED"];
+  let table_rows: Vec<Vec<String>> = rows
+    .iter()
+    .map(|r| {
+      let path = crate::cli::output::row_path(r).unwrap_or("?");
+      let params = r.get("params");
+      let ctx = params
+        .and_then(|p| p.get("ctx"))
+        .and_then(Value::as_u64)
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "-".into());
+      let reasoning_raw = params
+        .and_then(|p| p.get("reasoning"))
+        .and_then(Value::as_bool)
+        .map(|b| if b { "on" } else { "off" }.to_string())
+        .unwrap_or_else(|| "-".into());
+      let reasoning = if tty {
+        match reasoning_raw.as_str() {
+          "on" => console::style("on").green().bold().to_string(),
+          "off" | "-" => colors::dim(&reasoning_raw),
+          _ => reasoning_raw.clone(),
+        }
+      } else {
+        reasoning_raw
+      };
+      let advanced = params
+        .and_then(|p| p.get("advanced"))
+        .and_then(Value::as_array)
+        .map(|a| {
+          a.iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect::<Vec<_>>()
+            .join(" ")
+        })
+        .unwrap_or_default();
+      vec![
+        if tty {
+          colors::path(path)
+        } else {
+          path.to_string()
+        },
+        ctx,
+        reasoning,
+        advanced,
+      ]
+    })
+    .collect();
+  let mut out = format::table(&header, &table_rows);
+  if tty {
+    out.push_str(&colors::count(rows.len(), "models"));
+    out.push('\n');
   }
+  print!("{out}");
   Ok(())
 }

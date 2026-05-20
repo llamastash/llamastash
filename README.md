@@ -71,7 +71,8 @@ cargo install --path .
 # Open the TUI. Scans default caches; daemon auto-spawns on demand.
 llamastash
 
-# List discovered models (TSV by default, JSON for agents).
+# List discovered models. TTY → padded + colored table; piped or
+# `--no-colors` → TSV bytes. `--json` is the agent contract.
 llamastash list
 llamastash list --json | jq
 

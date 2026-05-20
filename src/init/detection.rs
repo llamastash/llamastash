@@ -139,7 +139,11 @@ pub fn detect_hardware() -> HardwareSnapshot {
   let cpu_cores = System::physical_core_count()
     .or_else(|| {
       let n = sys.cpus().len();
-      if n == 0 { None } else { Some(n) }
+      if n == 0 {
+        None
+      } else {
+        Some(n)
+      }
     })
     .unwrap_or(0) as u32;
   let cpu_features = detect_cpu_features();
