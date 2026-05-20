@@ -4,40 +4,40 @@
 # Documentation: https://docs.brew.sh/Formula-Cookbook
 #                https://rubydoc.brew.sh/Formula
 #
-# Generated from deployment/homebrew/llamadash.rb.template by
+# Generated from deployment/homebrew/llamastash.rb.template by
 # deployment/homebrew/packager.py during .github/workflows/release.yml.
-# Do not edit Formula/llamadash.rb in the tap repo by hand — it is
+# Do not edit Formula/llamastash.rb in the tap repo by hand — it is
 # overwritten on every tag.
-class Llamadash < Formula
+class Llamastash < Formula
   desc "Fast, keyboard-driven TUI for launching local llama.cpp models"
-  homepage "https://github.com/llamadash-rs/llamadash"
+  homepage "https://github.com/llamastash-rs/llamastash"
   version "$version"
   license "MIT"
 
   on_macos do
     on_arm do
-      url "https://github.com/llamadash-rs/llamadash/releases/download/v#{version}/llamadash-#{version}-aarch64-apple-darwin.tar.gz"
+      url "https://github.com/llamastash-rs/llamastash/releases/download/v#{version}/llamastash-#{version}-aarch64-apple-darwin.tar.gz"
       sha256 "$sha_aarch64_darwin"
     end
     on_intel do
-      url "https://github.com/llamadash-rs/llamadash/releases/download/v#{version}/llamadash-#{version}-x86_64-apple-darwin.tar.gz"
+      url "https://github.com/llamastash-rs/llamastash/releases/download/v#{version}/llamastash-#{version}-x86_64-apple-darwin.tar.gz"
       sha256 "$sha_x86_64_darwin"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/llamadash-rs/llamadash/releases/download/v#{version}/llamadash-#{version}-aarch64-unknown-linux-gnu.tar.gz"
+      url "https://github.com/llamastash-rs/llamastash/releases/download/v#{version}/llamastash-#{version}-aarch64-unknown-linux-gnu.tar.gz"
       sha256 "$sha_aarch64_linux"
     end
     on_intel do
-      url "https://github.com/llamadash-rs/llamadash/releases/download/v#{version}/llamadash-#{version}-x86_64-unknown-linux-gnu.tar.gz"
+      url "https://github.com/llamastash-rs/llamastash/releases/download/v#{version}/llamastash-#{version}-x86_64-unknown-linux-gnu.tar.gz"
       sha256 "$sha_x86_64_linux"
     end
   end
 
   head do
-    url "https://github.com/llamadash-rs/llamadash.git", branch: "main"
+    url "https://github.com/llamastash-rs/llamastash.git", branch: "main"
     depends_on "rust" => :build
   end
 
@@ -45,15 +45,15 @@ class Llamadash < Formula
     if build.head?
       system "cargo", "install", *std_cargo_args
     else
-      bin.install "llamadash"
+      bin.install "llamastash"
       doc.install "README.md"
       pkgshare.install "LICENSE"
-      ohai "You're done! Run with: llamadash"
-      ohai "For runtime flags, see: llamadash --help"
+      ohai "You're done! Run with: llamastash"
+      ohai "For runtime flags, see: llamastash --help"
     end
   end
 
   test do
-    assert_match version.to_s, shell_output("#{bin}/llamadash --version")
+    assert_match version.to_s, shell_output("#{bin}/llamastash --version")
   end
 end
