@@ -1,4 +1,4 @@
- LlamaStash v0.0.1 · ● daemon · ◐ macchiato?:help · Tab/⇧+Tab:panes · Ctrl+R:restart · Q:kill daemon · t:theme · q:quit
+ LlamaStash v0.0.1 · ● daemon · ◐ macchiato?:help · Tab/⇧+Tab:panes · D:pull · Ctrl+R:restart · Q:kill daemon · t:theme · q:quit
 ┌ Host ────────────────────┐┌ Daemon ──────────────────────────────────────────────────────────────────────┐┌──────────┐
 │CPU  █████░░░░░ 48%  54°C ││socket  /run/user/1000/llamastash/daemon.sock  pid 4242                       ││  ▉    ▉  │
 │RAM  ███░░░░░░░ 11G/32G   ││uptime  3h12m   build  v0.1.0                                                 ││  █▃██▃█  │

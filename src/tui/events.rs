@@ -1558,7 +1558,7 @@ pub fn drain_rerank_pending(app: &mut App) {
   }
 }
 
-/// Open the HuggingFace pull dialog (`Ctrl+D` in `Focus::List`).
+/// Open the HuggingFace pull dialog (`Shift+D` in `Focus::List`).
 /// `LLAMASTASH_OFFLINE` flips the dialog into offline mode so the
 /// search bar renders the disabled-search hint immediately.
 fn apply_open_hf_dialog(app: &mut App) {
@@ -2026,15 +2026,15 @@ mod tests {
   }
 
   #[test]
-  fn ctrl_d_opens_hf_dialog_and_esc_closes_it() {
+  fn shift_d_opens_hf_dialog_and_esc_closes_it() {
     use crate::tui::hf_dialog::HfStage;
     let mut app = App::new(Default::default());
     assert!(app.hf_dialog.is_none());
-    pump_input(&mut app, key(KeyCode::Char('d'), KeyModifiers::CONTROL));
+    pump_input(&mut app, key(KeyCode::Char('D'), KeyModifiers::SHIFT));
     let dialog = app
       .hf_dialog
       .as_ref()
-      .expect("Ctrl+D must open the HF dialog");
+      .expect("Shift+D must open the HF dialog");
     assert_eq!(dialog.stage, HfStage::Search);
     assert_eq!(app.focus, Focus::HfDialog);
     // Type into the search buffer.
@@ -2051,7 +2051,7 @@ mod tests {
   fn hf_dialog_o_cycles_sort_key() {
     use crate::init::hf_api::HfSortKey;
     let mut app = App::new(Default::default());
-    pump_input(&mut app, key(KeyCode::Char('d'), KeyModifiers::CONTROL));
+    pump_input(&mut app, key(KeyCode::Char('D'), KeyModifiers::SHIFT));
     assert_eq!(
       app.hf_dialog.as_ref().map(|d| d.sort),
       Some(HfSortKey::Downloads)

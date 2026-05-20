@@ -59,8 +59,10 @@ pub enum Focus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
   Quit,
-  /// Open the HuggingFace pull dialog (R104). Bound to `Ctrl+D` in
-  /// [`Focus::List`]; the dialog itself handles its per-stage keys.
+  /// Open the HuggingFace pull dialog (R104). Bound to `Shift+D` in
+  /// [`Focus::List`] — mirrors the other Shift-letter quick-jumps
+  /// (`M / L / C / R / E / S`). The dialog itself handles its
+  /// per-stage keys.
   OpenHfDialog,
   MoveUp,
   MoveDown,
@@ -456,13 +458,17 @@ const LIST_BINDINGS: &[Binding] = &[
     label: "S",
     description: "settings",
   },
-  // R104: Ctrl+D opens the HuggingFace pull dialog. The dialog
-  // takes over input via `Focus::HfDialog` once it's open.
+  // R104: Shift+D opens the HuggingFace pull dialog. The dialog
+  // takes over input via `Focus::HfDialog` once it's open. We use
+  // Shift+D (single keystroke) rather than Ctrl+D so the binding
+  // lines up with the rest of the Shift-letter quick-jumps in this
+  // table and stays terminal-portable (some terminals swallow Ctrl+D
+  // as EOF).
   Binding {
-    key: KeyCode::Char('d'),
-    mods: KeyModifiers::CONTROL,
+    key: KeyCode::Char('D'),
+    mods: KeyModifiers::SHIFT,
     action: Action::OpenHfDialog,
-    label: "Ctrl+D",
+    label: "D",
     description: "pull from HF",
   },
 ];
@@ -1352,19 +1358,21 @@ mod tests {
   }
 
   #[test]
-  fn ctrl_d_in_list_focus_opens_hf_dialog() {
-    // R104: Ctrl+D opens the HF pull dialog from the model list.
+  fn shift_d_in_list_focus_opens_hf_dialog() {
+    // R104: Shift+D opens the HF pull dialog from the model list.
+    // Crossterm surfaces Shift+letter as `Char('D')` + SHIFT mod.
     assert_eq!(
-      action_for(Focus::List, KeyCode::Char('d'), KeyModifiers::CONTROL),
+      action_for(Focus::List, KeyCode::Char('D'), KeyModifiers::SHIFT),
       Some(Action::OpenHfDialog),
     );
   }
 
   #[test]
-  fn ctrl_d_is_not_shadowed_in_any_sub_focus() {
+  fn shift_d_is_not_shadowed_in_any_sub_focus() {
     // The dialog steals input via `Focus::HfDialog`; the binding
     // must not also fire under another focus (e.g. RightPane or
-    // the input modes) where it would collide.
+    // the input modes) where it would collide with an unrelated
+    // action.
     use crate::tui::keybindings::Focus::*;
     for focus in [
       Filter,
@@ -1376,12 +1384,24 @@ mod tests {
       ConfirmPopup,
       HfDialog,
     ] {
-      let action = action_for(focus, KeyCode::Char('d'), KeyModifiers::CONTROL);
+      let action = action_for(focus, KeyCode::Char('D'), KeyModifiers::SHIFT);
       assert!(
         action.is_none() || action == Some(Action::OpenHfDialog),
-        "Ctrl+D collision under {focus:?}: {action:?}"
+        "Shift+D collision under {focus:?}: {action:?}"
       );
     }
+  }
+
+  #[test]
+  fn legacy_ctrl_d_no_longer_opens_hf_dialog() {
+    // Round-12 retired Ctrl+D in favour of Shift+D (matches the
+    // Shift-letter quick-jump family and survives terminals that
+    // swallow Ctrl+D as EOF). Pin the removal so a future refactor
+    // doesn't accidentally re-add the chord.
+    assert_eq!(
+      action_for(Focus::List, KeyCode::Char('d'), KeyModifiers::CONTROL),
+      None,
+    );
   }
 
   #[test]

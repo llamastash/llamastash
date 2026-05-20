@@ -53,6 +53,15 @@ const GLOBAL_CHIPS: &[GlobalChip] = &[
     focus: Focus::List,
     actions: &[Action::NextFocus, Action::PrevFocus],
   },
+  // R104: surface the HF pull dialog opener right after `panes` so
+  // first-time users see the affordance without having to open the
+  // help overlay. List focus only — the binding only fires from the
+  // model list (the dialog overlays once open).
+  GlobalChip {
+    description: "pull",
+    focus: Focus::List,
+    actions: &[Action::OpenHfDialog],
+  },
   // RestartDaemon (Ctrl+R) and KillDaemon (Ctrl+Q) intentionally
   // do NOT appear in the global hint strip. Both are confirmation-
   // gated destructive actions; surfacing them in the always-on chip
@@ -278,6 +287,16 @@ mod tests {
     );
     assert!(text.contains("t:theme"), "got: {text}");
     assert!(text.contains("q:quit"), "got: {text}");
+    // R104: the HF pull dialog chip sits immediately after `panes`
+    // so the affordance is discoverable from the top row.
+    assert!(text.contains("D:pull"), "got: {text}");
+    let panes_pos = text.find(":panes").expect("panes chip present");
+    let pull_pos = text.find(":pull").expect("pull chip present");
+    let theme_pos = text.find(":theme").expect("theme chip present");
+    assert!(
+      panes_pos < pull_pos && pull_pos < theme_pos,
+      "expected order: panes → pull → theme, got: {text}"
+    );
     // `/:filter` is panel-scoped now (lives in the Models block
     // title) — it should not appear in the global strip.
     assert!(
@@ -310,13 +329,12 @@ mod tests {
 
   #[test]
   fn global_hint_text_fits_typical_terminal_widths() {
-    // The strip must stay scannable on a normal terminal. The
-    // default keymap produces ~78 cells with the restart-daemon
-    // chip in place; keep the budget under 90 so any future label
-    // additions still fit a typical 80-column dev terminal with
-    // the title taking the leftmost slot.
+    // The strip must stay scannable on a normal terminal. Restart /
+    // kill chips are out, the HF `D:pull` chip (R104) is in; the
+    // default keymap now produces ~50 cells. Keep the budget under
+    // 70 so a small label tweak still catches accidental blowups.
     let app = default_app();
-    assert!(global_hint_text(&app).chars().count() < 90);
+    assert!(global_hint_text(&app).chars().count() < 70);
   }
 
   #[test]
