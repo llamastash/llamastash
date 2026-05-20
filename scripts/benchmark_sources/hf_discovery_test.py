@@ -81,37 +81,37 @@ class AttachTaskHintsTest(unittest.TestCase):
         self.assertEqual(result, ["general"])
 
 
-class PickVariantTest(unittest.TestCase):
-    def test_picks_first_preferred_quant(self) -> None:
+class CollectVariantsTest(unittest.TestCase):
+    def test_emits_one_row_per_preferred_quant_in_preferred_order(self) -> None:
         variants = [
             _variant("foo-Q5_K_M.gguf", "Q5_K_M", 6_500_000_000),
             _variant("foo-Q4_K_M.gguf", "Q4_K_M", 5_400_000_000),
             _variant("foo-Q8_0.gguf", "Q8_0", 8_000_000_000),
         ]
-        result = hf_discovery._pick_variant(variants)
-        self.assertIsNotNone(result)
-        quant, filename, size = result  # type: ignore[misc]
-        self.assertEqual(quant, "Q4_K_M")
-        self.assertEqual(filename, "foo-Q4_K_M.gguf")
-        self.assertEqual(size, 5_400_000_000)
+        result = hf_discovery._collect_variants(variants)
+        quants = [q for q, _, _ in result]
+        # Preferred order is (Q3_K_M, Q4_K_S, Q4_K_M, Q5_K_M, Q6_K, Q8_0);
+        # input has Q4_K_M / Q5_K_M / Q8_0.
+        self.assertEqual(quants, ["Q4_K_M", "Q5_K_M", "Q8_0"])
+        self.assertEqual(result[0], ("Q4_K_M", "foo-Q4_K_M.gguf", 5_400_000_000))
 
-    def test_falls_back_through_preferred_list(self) -> None:
-        variants = [_variant("bar-Q5_K_M.gguf", "Q5_K_M", 6_500_000_000)]
-        result = hf_discovery._pick_variant(variants)
-        self.assertIsNotNone(result)
-        quant, _filename, _size = result  # type: ignore[misc]
-        self.assertEqual(quant, "Q5_K_M")
+    def test_skips_non_preferred_quants(self) -> None:
+        variants = [
+            _variant("bar-IQ2_M.gguf", "IQ2_M", 3_000_000_000),
+            _variant("bar-Q5_K_M.gguf", "Q5_K_M", 6_500_000_000),
+        ]
+        result = hf_discovery._collect_variants(variants)
+        self.assertEqual([q for q, _, _ in result], ["Q5_K_M"])
 
-    def test_returns_none_when_no_preferred_quant(self) -> None:
-        variants = [_variant("baz-Q8_0.gguf", "Q8_0", 8_000_000_000)]
-        self.assertIsNone(hf_discovery._pick_variant(variants))
+    def test_returns_empty_when_no_preferred_quant(self) -> None:
+        variants = [_variant("baz-IQ2_M.gguf", "IQ2_M", 3_000_000_000)]
+        self.assertEqual(hf_discovery._collect_variants(variants), [])
 
     def test_quant_lookup_is_case_insensitive(self) -> None:
         variants = [_variant("baz-q4_k_m.gguf", "q4_k_m", 5_000_000_000)]
-        result = hf_discovery._pick_variant(variants)
-        self.assertIsNotNone(result)
-        quant, _filename, _size = result  # type: ignore[misc]
-        self.assertEqual(quant, "Q4_K_M")
+        result = hf_discovery._collect_variants(variants)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0][0], "Q4_K_M")
 
 
 class PublisherTrustedTest(unittest.TestCase):
@@ -159,17 +159,44 @@ class ProjectCandidateTest(unittest.TestCase):
         )
         prefixes = {"Qwen/Qwen3-Next": ["general", "reasoning"]}
         defaults = ["general"]
-        result = hf_discovery._project_candidate(cand, ["bartowski"], prefixes, defaults)
-        self.assertIsNotNone(result)
-        assert result is not None
-        self.assertTrue(result.is_moe)
-        self.assertEqual(result.params_active, 3_000_000_000)
-        self.assertEqual(result.params, 80_000_000_000)
-        self.assertEqual(result.gguf_publisher, "Qwen")
-        self.assertEqual(result.source_hf_id, "Qwen/Qwen3-Next-80B-A3B-Instruct")
-        self.assertEqual(result.quant, "Q4_K_M")
-        self.assertEqual(result.weights_bytes, 48_000_000_000)
-        self.assertEqual(result.task_hints, ["general", "reasoning"])
+        rows = hf_discovery._project_candidate(cand, ["bartowski"], prefixes, defaults)
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertTrue(row.is_moe)
+        self.assertEqual(row.params_active, 3_000_000_000)
+        self.assertEqual(row.params, 80_000_000_000)
+        self.assertEqual(row.gguf_publisher, "Qwen")
+        self.assertEqual(row.source_hf_id, "Qwen/Qwen3-Next-80B-A3B-Instruct")
+        self.assertEqual(row.quant, "Q4_K_M")
+        self.assertEqual(row.weights_bytes, 48_000_000_000)
+        self.assertEqual(row.task_hints, ["general", "reasoning"])
+
+    def test_emits_one_row_per_available_preferred_quant(self) -> None:
+        cand = _fake_candidate(
+            repo_id="MaziyarPanahi/Qwen3-30B-A3B-GGUF",
+            base_model="Qwen/Qwen3-30B-A3B",
+            parameter_count=30_000_000_000,
+            parameter_count_active=3_000_000_000,
+            is_moe=True,
+            gguf_variants=[
+                _variant("qwen3-30b-Q4_K_M.gguf", "Q4_K_M", 18_000_000_000),
+                _variant("qwen3-30b-Q6_K.gguf", "Q6_K", 24_000_000_000),
+                _variant("qwen3-30b-Q8_0.gguf", "Q8_0", 31_000_000_000),
+            ],
+        )
+        rows = hf_discovery._project_candidate(
+            cand, ["MaziyarPanahi"], {}, ["general"]
+        )
+        quants = sorted(r.quant for r in rows)
+        self.assertEqual(quants, ["Q4_K_M", "Q6_K", "Q8_0"])
+        # Every row carries the same source_hf_id / params / repo,
+        # differentiated only by quant + weights_bytes + file.
+        ids = {r.source_hf_id for r in rows}
+        self.assertEqual(ids, {"Qwen/Qwen3-30B-A3B"})
+        weights = {r.quant: r.weights_bytes for r in rows}
+        self.assertEqual(weights["Q4_K_M"], 18_000_000_000)
+        self.assertEqual(weights["Q6_K"], 24_000_000_000)
+        self.assertEqual(weights["Q8_0"], 31_000_000_000)
 
     def test_bartowski_quant_of_external_source_passes(self) -> None:
         cand = _fake_candidate(
@@ -182,12 +209,12 @@ class ProjectCandidateTest(unittest.TestCase):
         )
         prefixes = {"meta-llama/Llama-4": ["general", "reasoning"]}
         defaults = ["general"]
-        result = hf_discovery._project_candidate(cand, ["bartowski"], prefixes, defaults)
-        self.assertIsNotNone(result)
-        assert result is not None
-        self.assertEqual(result.gguf_publisher, "bartowski")
-        self.assertEqual(result.source_hf_id, "meta-llama/Llama-4-9B-Instruct")
-        self.assertEqual(result.task_hints, ["general", "reasoning"])
+        rows = hf_discovery._project_candidate(cand, ["bartowski"], prefixes, defaults)
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row.gguf_publisher, "bartowski")
+        self.assertEqual(row.source_hf_id, "meta-llama/Llama-4-9B-Instruct")
+        self.assertEqual(row.task_hints, ["general", "reasoning"])
 
     def test_untrusted_publisher_dropped(self) -> None:
         cand = _fake_candidate(
@@ -198,8 +225,8 @@ class ProjectCandidateTest(unittest.TestCase):
                 _variant("llama-4-9b-Q4_K_M.gguf", "Q4_K_M", 5_400_000_000)
             ],
         )
-        result = hf_discovery._project_candidate(cand, ["bartowski"], {}, ["general"])
-        self.assertIsNone(result)
+        rows = hf_discovery._project_candidate(cand, ["bartowski"], {}, ["general"])
+        self.assertEqual(rows, [])
 
     def test_candidate_without_gguf_variants_dropped(self) -> None:
         cand = _fake_candidate(
@@ -207,8 +234,8 @@ class ProjectCandidateTest(unittest.TestCase):
             parameter_count=7_000_000_000,
             gguf_variants=[],
         )
-        result = hf_discovery._project_candidate(cand, ["bartowski"], {}, ["general"])
-        self.assertIsNone(result)
+        rows = hf_discovery._project_candidate(cand, ["bartowski"], {}, ["general"])
+        self.assertEqual(rows, [])
 
     def test_falls_back_to_repo_id_when_base_model_missing(self) -> None:
         # GGUF-only publishers (no base_model link) must still produce
@@ -219,10 +246,9 @@ class ProjectCandidateTest(unittest.TestCase):
             parameter_count=9_000_000_000,
             gguf_variants=[_variant("foo-9b-Q4_K_M.gguf", "Q4_K_M", 5_400_000_000)],
         )
-        result = hf_discovery._project_candidate(cand, ["bartowski"], {}, ["general"])
-        self.assertIsNotNone(result)
-        assert result is not None
-        self.assertEqual(result.source_hf_id, "bartowski/foo-9B-GGUF")
+        rows = hf_discovery._project_candidate(cand, ["bartowski"], {}, ["general"])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].source_hf_id, "bartowski/foo-9B-GGUF")
 
     def test_size_falls_back_to_quant_density_estimate(self) -> None:
         # whichllm sometimes returns file_size_bytes=0; the estimator
@@ -233,11 +259,11 @@ class ProjectCandidateTest(unittest.TestCase):
             parameter_count=9_000_000_000,
             gguf_variants=[_variant("foo-9b-Q4_K_M.gguf", "Q4_K_M", 0)],
         )
-        result = hf_discovery._project_candidate(cand, ["bartowski"], {}, ["general"])
-        assert result is not None
+        rows = hf_discovery._project_candidate(cand, ["bartowski"], {}, ["general"])
+        self.assertEqual(len(rows), 1)
         # Q4_K_M density is 0.60 GB/Bparam → ~5.4 GB for a 9B model.
-        self.assertGreater(result.weights_bytes, 4_000_000_000)
-        self.assertLess(result.weights_bytes, 7_000_000_000)
+        self.assertGreater(rows[0].weights_bytes, 4_000_000_000)
+        self.assertLess(rows[0].weights_bytes, 7_000_000_000)
 
 
 class QuantFilenameMatchTest(unittest.TestCase):

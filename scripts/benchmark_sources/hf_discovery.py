@@ -48,18 +48,64 @@ except ImportError:  # pragma: no cover — PyYAML is a regen-time CI dep
 
 from benchmark_sources.whichllm import SourceResult
 
-# Preferred quants in priority order. The first available wins per
-# candidate. Matches the recommender's assumption that Q4_K_M is the
-# default footprint for un-downloaded models.
-PREFERRED_QUANTS: Tuple[str, ...] = ("Q4_K_M", "Q4_K_S", "Q5_K_M")
+# Preferred quants the snapshot ships, ordered loosely from "smallest
+# / fastest" to "largest / most faithful". Every quant in this list
+# that a trusted GGUF publisher ships becomes a separate snapshot row,
+# so the recommender can pick across the quant axis (e.g. Q8_0 on a
+# 64 GB box, Q3_K_M on a 12 GB box). Spans the same range as
+# `whichllm --json --top 10` for direct comparison.
+PREFERRED_QUANTS: Tuple[str, ...] = (
+    "Q3_K_M",
+    "Q4_K_S",
+    "Q4_K_M",
+    "Q5_K_M",
+    "Q6_K",
+    "Q8_0",
+)
 
 # Per-quant rough density (GB per billion params) for sanity checks
 # when HF doesn't expose the GGUF file size in metadata. Aligned with
 # bartowski's published numbers as of 2026-05.
 _QUANT_GB_PER_BPARAM: Dict[str, float] = {
-    "Q4_K_M": 0.60,
+    "Q3_K_M": 0.46,
     "Q4_K_S": 0.56,
+    "Q4_K_M": 0.60,
     "Q5_K_M": 0.71,
+    "Q6_K": 0.82,
+    "Q8_0": 1.06,
+}
+
+# Per-quant speed multiplier on the params-based tok/s baseline.
+# Smaller quants move fewer bytes per token, so they're faster on
+# memory-bandwidth-bound LLM inference. Kept gentle (±15%) so the
+# speed term doesn't drown out the quality discount below — without
+# this restraint Q3_K_M would always outrank Q4_K_M of the same
+# model since the composite score's `tok_per_second` weight (0.25)
+# is large enough that a 30% raw speed gain wipes out a 4% quality
+# drop. Real-world bandwidth ratios are larger, but for ranking the
+# recommender values "good fit + good quality" over raw throughput.
+_QUANT_SPEED_MULT: Dict[str, float] = {
+    "Q3_K_M": 1.05,
+    "Q4_K_S": 1.00,
+    "Q4_K_M": 1.00,
+    "Q5_K_M": 0.96,
+    "Q6_K": 0.93,
+    "Q8_0": 0.87,
+}
+
+# Per-quant quality discount applied to the family's benchmark score.
+# Q8 is essentially loss-free; Q4_K_M loses a few points on hard
+# evals; Q3_K_M loses ~5-7%. Combined with the gentle speed mults
+# above, this leaves Q4_K_M as the default winner within a family
+# (best quality/speed/size tradeoff) and Q8_0 surfacing only when
+# Q4_K_M doesn't fit — matching the de facto consumer default.
+_QUANT_QUALITY_MULT: Dict[str, float] = {
+    "Q3_K_M": 0.94,
+    "Q4_K_S": 0.97,
+    "Q4_K_M": 0.98,
+    "Q5_K_M": 0.99,
+    "Q6_K": 0.995,
+    "Q8_0": 1.0,
 }
 
 
@@ -159,10 +205,8 @@ def discover(
         prefixes, defaults = load_task_hints(repo_root)
         allowlist = load_publisher_allowlist(repo_root)
         for candidate in candidates:
-            row = _project_candidate(candidate, allowlist, prefixes, defaults)
-            if row is None:
-                continue
-            rows.append(_serialise(row))
+            for row in _project_candidate(candidate, allowlist, prefixes, defaults):
+                rows.append(_serialise(row))
         rows = _rank_and_cap(rows, limit=limit)
     except Exception as exc:  # noqa: BLE001 — surface every failure mode
         return SourceResult(
@@ -195,7 +239,7 @@ def _project_candidate(
     allowlist: Sequence[str],
     prefixes: Dict[str, List[str]],
     defaults: Sequence[str],
-) -> Optional[DiscoveredModel]:
+) -> List[DiscoveredModel]:
     """Map a whichllm ModelInfo to a DiscoveredModel, returning None
     when no acceptable GGUF exists from a trusted publisher.
 
@@ -232,43 +276,48 @@ def _project_candidate(
 
     variants = _attr(candidate, "gguf_variants") or _attr(candidate, "ggufs") or []
     if not variants:
-        return None
+        return []
 
     if not _publisher_trusted(publisher, source_hf_id, allowlist):
-        return None
+        return []
 
-    chosen = _pick_variant(variants)
-    if chosen is None:
-        return None
-    quant, file, weights_bytes = chosen
+    chosen = _collect_variants(variants)
+    if not chosen:
+        return []
 
     architecture = (
         _attr(candidate, "architecture")
         or _attr(candidate, "model_type")
         or "unknown"
     )
-    if weights_bytes <= 0:
-        weights_bytes = _estimate_weights_bytes(params, quant)
-
     task_hints = list(attach_task_hints(source_hf_id, prefixes, list(defaults)))
-
-    return DiscoveredModel(
-        source_hf_id=source_hf_id,
-        repo=repo,
-        file=file,
-        architecture=architecture,
-        quant=quant,
-        params=params,
-        weights_bytes=weights_bytes,
-        is_moe=is_moe,
-        params_active=params_active,
-        gguf_publisher=publisher,
-        downloads=int(_attr(candidate, "downloads") or 0),
-        last_modified=str(
-            _attr(candidate, "published_at") or _attr(candidate, "last_modified") or ""
-        ),
-        task_hints=task_hints,
+    downloads = int(_attr(candidate, "downloads") or 0)
+    last_modified = str(
+        _attr(candidate, "published_at") or _attr(candidate, "last_modified") or ""
     )
+
+    rows: List[DiscoveredModel] = []
+    for quant, file, weights_bytes in chosen:
+        if weights_bytes <= 0:
+            weights_bytes = _estimate_weights_bytes(params, quant)
+        rows.append(
+            DiscoveredModel(
+                source_hf_id=source_hf_id,
+                repo=repo,
+                file=file,
+                architecture=architecture,
+                quant=quant,
+                params=params,
+                weights_bytes=weights_bytes,
+                is_moe=is_moe,
+                params_active=params_active,
+                gguf_publisher=publisher,
+                downloads=downloads,
+                last_modified=last_modified,
+                task_hints=list(task_hints),
+            )
+        )
+    return rows
 
 
 def _publisher_trusted(
@@ -289,21 +338,29 @@ def _publisher_trusted(
     return False
 
 
-def _pick_variant(variants: Iterable[Any]) -> Optional[Tuple[str, str, int]]:
-    """Pick the first variant matching ``PREFERRED_QUANTS`` (in order).
-    Returns ``(quant, filename, file_size_bytes)`` or None.
+def _collect_variants(variants: Iterable[Any]) -> List[Tuple[str, str, int]]:
+    """Return one ``(quant, filename, file_size_bytes)`` tuple per
+    preferred quant the publisher ships. Order matches
+    :data:`PREFERRED_QUANTS`.
 
     Sharded models surface as multiple variants with the same quant
     but different files (e.g., ``...-00001-of-00003.gguf``); take the
-    first such filename — the regen script doesn't need to know about
-    the rest because the recommender's weights_bytes estimate is the
-    summed footprint anyway.
+    first such filename per quant — the regen script doesn't need to
+    know about the rest because the recommender's weights_bytes
+    estimate is the summed footprint anyway.
+
+    Multi-quant emission lets the recommender pick across the quant
+    axis (Q8_0 on a fat box, Q3_K_M when VRAM is tight). The Rust-side
+    dedup keeps one row per ``source_hf_id`` in the user-facing top-N
+    so the picker still shows a variety of models, not five quants of
+    the same one.
     """
     by_quant: Dict[str, List[Any]] = {}
     for v in variants:
         q = (_attr(v, "quant_type") or _attr(v, "quant") or "").upper()
         if q in PREFERRED_QUANTS:
             by_quant.setdefault(q, []).append(v)
+    out: List[Tuple[str, str, int]] = []
     for quant in PREFERRED_QUANTS:
         bucket = by_quant.get(quant)
         if not bucket:
@@ -317,8 +374,8 @@ def _pick_variant(variants: Iterable[Any]) -> Optional[Tuple[str, str, int]]:
             or 0
         )
         if filename:
-            return quant, filename, size
-    return None
+            out.append((quant, filename, size))
+    return out
 
 
 def _estimate_weights_bytes(params: int, quant: str) -> int:
@@ -376,27 +433,43 @@ def _quant_matches_filename(name: str, quant: str) -> bool:
 def _rank_and_cap(rows: List[Dict[str, Any]], *, limit: int) -> List[Dict[str, Any]]:
     """Rank by downloads × recency proxy, dedupe per
     ``(source_hf_id, quant)`` keeping the highest-download GGUF
-    publisher, then cap to ``limit``.
+    publisher, then cap so we keep all preferred quants of the top
+    ``limit`` *unique* source models.
 
     Multiple GGUF publishers (bartowski, mradermacher, lmstudio,
     unsloth, the source org's own GGUF release) often re-host the
-    same upstream model at the same quant. Without this dedup the
+    same upstream model at the same quant. Without dedup the
     snapshot ends up with three identical rows for the same
     ``(source_hf_id, quant)`` slug — the recommender then surfaces
     them as separate picks and the wizard's recommendation list
     repeats itself. Sort-then-keep-first by downloads picks the
     most-trusted host (since publisher reputation correlates
     strongly with download count) without needing a curated table.
+
+    Capping on *unique source models* (not row count) is important
+    once multi-quant emission is in play: a flat ``[:limit]`` would
+    truncate mid-quant-set for the last few models, producing
+    asymmetric coverage. Counting source ids keeps the budget
+    interpretable as "how many distinct models the snapshot ships".
     """
     rows.sort(
         key=lambda r: (r.get("downloads", 0), r.get("last_modified", "")), reverse=True
     )
     deduped: List[Dict[str, Any]] = []
-    seen: set[Tuple[str, str]] = set()
+    seen_pair: set[Tuple[str, str]] = set()
+    seen_source: set[str] = set()
     for row in rows:
-        key = (row.get("source_hf_id") or "", row.get("quant") or "")
-        if key in seen:
+        source = row.get("source_hf_id") or ""
+        quant = row.get("quant") or ""
+        pair = (source, quant)
+        if pair in seen_pair:
             continue
-        seen.add(key)
+        if source not in seen_source and len(seen_source) >= limit:
+            # Past the unique-model budget; drop everything from new
+            # source ids but keep emitting more quants of sources
+            # already counted in.
+            continue
+        seen_pair.add(pair)
+        seen_source.add(source)
         deduped.append(row)
-    return deduped[:limit]
+    return deduped

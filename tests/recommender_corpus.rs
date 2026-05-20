@@ -26,9 +26,16 @@ use llamastash::init::recommender::{
 /// At least one top-3 entry must satisfy *both* clauses:
 ///
 /// 1. `task_hints` contains [`task`]; and
-/// 2. either the entry's `params ≤ max_params_b * 1e9` (dense fit),
-///    OR — when [`prefer_moe`] is true — the entry is MoE and its
-///    `params_active ≤ max_params_b * 1e9` (MoE active-params fit).
+/// 2. the entry fits the size budget:
+///    - **Dense** rows: `params ≤ max_params_b * 1e9`.
+///    - **MoE** rows: `params_active ≤ max_params_b * 1e9`. A
+///      30B-A3B MoE with 3B active is functionally a 3B-class
+///      pick for this corpus's "max N billion" rubric — its VRAM
+///      and tok/s land near a 3B dense, even though the catalog
+///      entry's `params` field reports 30B.
+///    - When [`prefer_moe`] is true, only the MoE branch counts —
+///      i.e. dense rows can never satisfy a prefer-MoE cell, even
+///      if they're small enough to fit.
 ///
 /// `task` is `None` when the cell doesn't care about a specific tag
 /// (no current rows use that, but the option exists for future
@@ -47,10 +54,11 @@ impl ExpectedFit {
       }
     }
     let cap = (self.max_params_b as f64 * 1.0e9) as u64;
+    let moe_fits = entry.is_moe && entry.params_active.map(|p| p <= cap).unwrap_or(false);
     if self.prefer_moe {
-      entry.is_moe && entry.params_active.map(|p| p <= cap).unwrap_or(false)
+      moe_fits
     } else {
-      entry.params <= cap
+      entry.params <= cap || moe_fits
     }
   }
 }

@@ -248,9 +248,14 @@ def _compose_model_entry(
     quant = row.get("quant") or "Q4_K_M"
     file_basename = row.get("file") or ""
     slug = _slug(source_hf_id, quant)
-    score_value, score_source = _pick_benchmark_score(
+    family_score, score_source = _pick_benchmark_score(
         source_hf_id, row.get("task_hints", []), scores_by_adapter
     )
+    # Apply per-quant quality discount so Q8_0 outranks Q4_K_M of the
+    # same model when both fit — matches inference reality where Q3
+    # is ~5% off the family score and Q8 is essentially lossless.
+    quality_mult = _hf_discovery._QUANT_QUALITY_MULT.get(quant.upper(), 1.0)
+    score_value = round(family_score * quality_mult, 2)
     params_total = int(row.get("params") or 0)
     params_active = row.get("params_active")
     is_moe = bool(row.get("is_moe"))
@@ -264,6 +269,12 @@ def _compose_model_entry(
         if is_moe and params_active
         else params_total
     )
+    # Within a family, smaller quants are faster (less memory
+    # bandwidth per token). Scale the params-based baseline by the
+    # quant multiplier so the recommender sees Q3 > Q4 > Q5 > Q8 in
+    # tok_s ordering, mirroring whichllm's bandwidth-derived speed.
+    speed_mult = _hf_discovery._QUANT_SPEED_MULT.get(quant.upper(), 1.0)
+    tok_s_factor = round(_tok_s_factor_for_params(params_for_speed) * speed_mult, 3)
     return {
         "id": slug,
         "repo": row.get("repo") or "",
@@ -274,7 +285,7 @@ def _compose_model_entry(
         "weights_bytes": int(row.get("weights_bytes") or 0),
         "task_hints": list(row.get("task_hints") or []),
         "benchmark_score": {"value": score_value, "source": score_source},
-        "tok_s_factor": _tok_s_factor_for_params(params_for_speed),
+        "tok_s_factor": tok_s_factor,
         "recency": _recency_for_last_modified(row.get("last_modified") or ""),
         "source_hf_id": source_hf_id,
         "params_active": params_active,

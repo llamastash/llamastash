@@ -41,18 +41,30 @@ whichllm's own ranking.
    list).
 2. Each candidate is filtered by GGUF availability + publisher
    allowlist (`data/gguf-publisher-allowlist.yaml`), then projected to
-   a row carrying `source_hf_id`, `params`, `params_active`, `is_moe`,
-   `weights_bytes`, `gguf_publisher`, `downloads`, `last_modified`.
+   **one row per preferred quant the publisher ships** — see
+   `PREFERRED_QUANTS` in `hf_discovery.py` (Q3_K_M, Q4_K_S, Q4_K_M,
+   Q5_K_M, Q6_K, Q8_0). Each row carries `source_hf_id`, `params`,
+   `params_active`, `is_moe`, `weights_bytes` (per-quant),
+   `gguf_publisher`, `downloads`, `last_modified`.
 3. Task hints come from `data/task-hints.yaml` via longest-prefix
    match; unmatched models default to `["general"]`.
-4. Rows are deduped on `(source_hf_id, quant)` (highest downloads
-   wins), then ranked by downloads × last_modified and capped at
-   `SNAPSHOT_MODEL_LIMIT` (100 — Key Decision 3 of plan 2026-05-20-001).
+4. Rows are deduped on `(source_hf_id, quant)` (highest-download GGUF
+   publisher wins per pair), then capped at `SNAPSHOT_MODEL_LIMIT`
+   unique *source models* — every preferred quant of the top 100 model
+   ids ships. A snapshot therefore typically holds 300–600 rows.
 5. `whichllm_combined.fetch()` returns one merged score per `hf_id`.
    The regen joins it onto the catalog rows on lowercased
-   `source_hf_id`. Rows whichllm doesn't cover ship with `score=0` and
-   source `no-source`; the recommender still ranks them by params /
-   speed / recency so they remain reachable when the user paginates.
+   `source_hf_id`. Each row gets a small per-quant quality discount
+   (Q8_0 ≈ family score, Q3_K_M ≈ 0.94×) and a per-quant speed mult
+   so the composite ranker can distinguish quants within a family.
+   Rows whichllm doesn't cover ship with `score=0` and source
+   `no-source`; the recommender still ranks them by params / speed /
+   recency so they remain reachable when the user paginates.
+6. The Rust recommender's output dedup keeps one row per
+   `source_hf_id` (the best-scoring quant that fits), so the user-facing
+   top-N looks like a list of distinct models, not five quants of the
+   same model. The full snapshot stays multi-quant so `--quant` filters
+   and JSON consumers can inspect every variant.
 
 Keeping the binary pure-Rust (R45) — these modules run only in CI to
 produce the JSON artefact the Rust binary loads via `include_str!`.
