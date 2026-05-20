@@ -188,7 +188,7 @@ Do not flag these for deletion or `.gitignore` during reviews — they are part 
 
 ## Release & distribution
 
-- Steady-state contract: `git tag vX.Y.Z && git push --tags` triggers `.github/workflows/release.yml`, which builds 4 target tarballs, uploads release assets, pushes the new Homebrew formula to `llamastash-rs/homebrew-llamastash`, pushes the verified `install.sh` mirror to `llamastash-rs/llamastash-rs.github.io`, and publishes to crates.io. The full pipeline takes ~10-15 minutes on cold caches.
+- Steady-state contract: `git tag vX.Y.Z && git push --tags` triggers `.github/workflows/release.yml`, which builds 4 target tarballs, uploads release assets, pushes the new Homebrew formula to `llamastash/homebrew-llamastash`, pushes the verified `install.sh` mirror to `llamastash/llamastash.github.io`, and publishes to crates.io. The full pipeline takes ~10-15 minutes on cold caches.
 - First-time setup (creating org repos, minting tokens, configuring Pages) lives in [`docs/runbooks/release-0.0.1-bootstrap.md`](docs/runbooks/release-0.0.1-bootstrap.md) — every step has a `gh` CLI primitive.
 - Pre-tag CI guards in `release-readiness` (ci.yml) catch most release-breaking PRs before tag time: `cargo publish --dry-run --locked`, crates.io name-availability against a publisher allowlist, old-org URL grep, CHANGELOG `[Unreleased]` header presence, Cargo.toml ↔ CHANGELOG version alignment, packager.py unit tests.
 - Action SHA-pinning policy: trust-critical actions in release.yml (those alongside secrets) are pinned to commit SHAs; first-party `actions/*` are tag-pinned. Updates flow through Dependabot PRs (`.github/dependabot.yml`).

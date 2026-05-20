@@ -31,23 +31,23 @@ pub const STOP_FAILED: i32 = 68;
 #[allow(dead_code)]
 pub const PULL_FAILED: i32 = 69;
 /// `llama-server` binary not on `$PATH`, no `--llama-server` flag,
-/// and `LLAMADASH_LLAMA_SERVER` unset.
+/// and `LLAMASTASH_LLAMA_SERVER` unset.
 pub const BINARY_NOT_FOUND: i32 = 70;
 /// Catch-all for unexpected errors that don't map to a documented
 /// failure class. anyhow's bubble-up lands here.
 pub const UNKNOWN: i32 = 71;
-/// `llamadash init` aborted before reaching a smoke-launch — install
+/// `llamastash init` aborted before reaching a smoke-launch — install
 /// integrity check failed, daemon stop/restart could not be coerced,
 /// archive-bomb defenses tripped, or the user declined a confirm
 /// prompt. Distinct from `INIT_DOWNLOAD_FAILED` and
 /// `INIT_SMOKE_FAILED` so agents can branch on the failure phase.
 pub const INIT_ABORTED: i32 = 72;
-/// `llamadash init`'s download step failed (disk-full precheck,
+/// `llamastash init`'s download step failed (disk-full precheck,
 /// HF API error, shard checksum mismatch). Distinct from
 /// `PULL_FAILED` (69) so a wizard-internal failure is separable
-/// from a standalone `llamadash pull <repo>` error.
+/// from a standalone `llamastash pull <repo>` error.
 pub const INIT_DOWNLOAD_FAILED: i32 = 73;
-/// `llamadash init` reached the smoke-launch phase but the launch
+/// `llamastash init` reached the smoke-launch phase but the launch
 /// didn't reach a healthy `/v1/chat/completions` response (probe
 /// timeout, OOM at load, binary --version probe failed).
 pub const INIT_SMOKE_FAILED: i32 = 74;

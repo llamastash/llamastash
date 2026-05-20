@@ -14,9 +14,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 MODEL_REPO="${MODEL_REPO:-Qwen/Qwen2.5-7B-Instruct-GGUF}"
 MODEL_FILE="${MODEL_FILE:-qwen2.5-7b-instruct-q4_k_m.gguf}"
-MODEL_PATH="${LLAMADASH_MODEL_PATH:-$REPO_ROOT/.cache/$MODEL_FILE}"
+MODEL_PATH="${LLAMASTASH_MODEL_PATH:-$REPO_ROOT/.cache/$MODEL_FILE}"
 
-OUT_DIR="${LLAMADASH_MEASURE_OUT:-$REPO_ROOT/data/overhead-band-measurements}"
+OUT_DIR="${LLAMASTASH_MEASURE_OUT:-$REPO_ROOT/data/overhead-band-measurements}"
 
 LLAMA_SERVER="${LLAMA_SERVER:-}"
 BACKEND="${BACKEND:-}"
@@ -46,7 +46,7 @@ Options (also overridable via env var of the same uppercased name):
   --skip-download        do not fetch the model if missing
   -h, --help             show this message
 
-Hardware coverage matrix (run once per backend; llamadash targets
+Hardware coverage matrix (run once per backend; llamastash targets
 Linux + macOS only, so Windows hosts are out of scope):
   CUDA    — NVIDIA on Linux with CUDA-built llama-server
   HIP     — AMD on Linux with ROCm-built llama-server

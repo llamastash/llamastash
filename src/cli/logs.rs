@@ -1,4 +1,4 @@
-//! `llamadash logs <target> [--follow] [-n N]`.
+//! `llamastash logs <target> [--follow] [-n N]`.
 //!
 //! Polling-based follower: the daemon's `logs_tail` returns a tail
 //! snapshot, so `--follow` polls every 250 ms and prints any line that

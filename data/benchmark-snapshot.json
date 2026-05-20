@@ -2,7 +2,7 @@
   "schema_version": 1,
   "bundle_date": "2026-05-20",
   "min_version": "0.2.0",
-  "remote_url": "https://github.com/llamadash/llamadash/releases/download/snapshot-latest/benchmark-snapshot.json",
+  "remote_url": "https://github.com/llamastash/llamastash/releases/download/snapshot-latest/benchmark-snapshot.json",
   "recommender_weights": {
     "benchmark": 0.45,
     "tok_per_second": 0.25,

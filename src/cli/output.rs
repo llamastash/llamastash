@@ -543,7 +543,7 @@ mod tests {
         active_connections: 1,
         build: Some("0.1.0".into()),
         server_path: Some("/usr/bin/llama-server".into()),
-        socket_path: Some("/run/user/1000/llamadash/daemon.sock".into()),
+        socket_path: Some("/run/user/1000/llamastash/daemon.sock".into()),
       }),
     };
     let v = status_json(&snap);

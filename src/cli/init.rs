@@ -1,4 +1,4 @@
-//! `llamadash init` CLI handler. Thin shim into `init::wizard::run`
+//! `llamastash init` CLI handler. Thin shim into `init::wizard::run`
 //! so the wizard's body can land in Unit 10 without touching the
 //! dispatcher again.
 

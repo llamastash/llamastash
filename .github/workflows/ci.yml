@@ -130,7 +130,7 @@ jobs:
           set -euo pipefail
           crate="llamastash"
           # Publisher allowlist — bump if the publishing account changes.
-          # GitHub login of every llamastash-rs member who could hold the
+          # GitHub login of every llamastash member who could hold the
           # CRATES_IO_TOKEN. Crates.io owner logins are case-insensitive.
           publisher_allowlist=(
             "deepu105"
@@ -190,15 +190,17 @@ jobs:
           exit 1
 
       - name: url-grep-guard
-        # Refuse PRs that re-introduce the pre-migration `github.com/llamastash/llamastash`
-        # URL in user-visible files. Excludes docs/brainstorms + docs/plans
-        # which preserve the historical record. Discover the file set
-        # dynamically via `git ls-files` so adding or removing a top-level
-        # doc doesn't silently bypass the check or abort on missing files.
+        # Refuse PRs that re-introduce any pre-rename GitHub URL. This project
+        # went through two renames before v1.0:
+        #   1. github.com/llamadash/llamadash     → github.com/llamadash-rs/llamadash
+        #   2. github.com/llamadash-rs/llamadash  → github.com/llamastash/llamastash (current)
+        # Both legacy patterns are blocked from creeping back into user-visible
+        # files. Excludes docs/brainstorms + docs/plans + docs/solutions, which
+        # preserve the historical record. Discover the file set dynamically via
+        # `git ls-files` so adding or removing a top-level doc doesn't silently
+        # bypass the check or abort on missing files.
         run: |
           set -euo pipefail
-          # All tracked Markdown + Cargo.toml at the repo root, minus the
-          # historical-record subtrees.
           mapfile -t candidates < <(git ls-files \
             'Cargo.toml' '*.md' \
             ':!:docs/brainstorms/**' \
@@ -208,12 +210,12 @@ jobs:
             echo "::error::URL guard found no files to scan; the glob must have lost coverage."
             exit 1
           fi
-          if grep -Hn 'github.com/llamastash/llamastash' "${candidates[@]}"; then
-            echo "::error::Old-org URL (github.com/llamastash/llamastash) found in user-visible files."
-            echo "::error::Replace with github.com/llamastash-rs/llamastash."
+          if grep -HnE 'github\.com/(llamadash|llamadash-rs)/llamadash' "${candidates[@]}"; then
+            echo "::error::Pre-rename URL found in user-visible files."
+            echo "::error::Use github.com/llamastash/llamastash."
             exit 1
           fi
-          printf 'scanned %d file(s); no stray old-org URLs; OK\n' "${#candidates[@]}"
+          printf 'scanned %d file(s); no stray pre-rename URLs; OK\n' "${#candidates[@]}"
 
       - name: changelog has unreleased or current-version heading
         # On PRs we just want SOMETHING under [Unreleased]; on tag-builds the

@@ -1,5 +1,5 @@
 VERSION  := latest
-IMG_NAME := deepu105/llamadash
+IMG_NAME := deepu105/llamastash
 IMAGE    := ${IMG_NAME}:${VERSION}
 
 default: run

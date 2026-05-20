@@ -4,7 +4,9 @@ All notable changes to llamastash will be documented in this file. The format fo
 
 ## [Unreleased]
 
-_Nothing yet — open a PR to put something here._
+### Changed
+
+- **Renamed from LlamaDash to LlamaStash before the first public release.** Project, binary, crate, GH org (`llamastash`), brew tap (`llamastash/llamastash`), marketing site (`llamastash.cli.rs`), env-var prefix (`LLAMADASH_*` → `LLAMASTASH_*`), and on-disk paths (`$XDG_CONFIG_HOME/llamadash/` → `$XDG_CONFIG_HOME/llamastash/`, runtime socket dir, log dir, share dir) all updated in one sweep. No backwards-compatibility shims — pre-publish rename. Local dev installs need a one-shot `mv` of the old XDG directories; see `CONTRIBUTING.md`.
 
 ## [0.0.1] — 2026-05-20
 

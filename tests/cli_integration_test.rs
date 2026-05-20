@@ -16,20 +16,20 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use llamadash::cli::cli_args::{
+use llamastash::cli::cli_args::{
   Cli, Command, FavoritesAction, FavoritesArgs, LaunchMode as CliLaunchMode, ListArgs, LogsArgs,
   PresetsAction, PresetsArgs, PullArgs, ReasoningFlag, StartArgs, StatusArgs, StopArgs,
 };
-use llamadash::cli::{dispatch, exit_codes};
-use llamadash::config::loader::{LoadedConfig, PortRange};
-use llamadash::config::Config;
-use llamadash::daemon::discovery_task::DiscoveryOptions;
-use llamadash::daemon::state_store;
-use llamadash::daemon::{run_foreground, DaemonOptions};
-use llamadash::discovery::scanner::ScanRoot;
-use llamadash::discovery::ModelSource;
-use llamadash::gguf::test_fixtures::build_minimal_gguf;
-use llamadash::ipc::Client;
+use llamastash::cli::{dispatch, exit_codes};
+use llamastash::config::loader::{LoadedConfig, PortRange};
+use llamastash::config::Config;
+use llamastash::daemon::discovery_task::DiscoveryOptions;
+use llamastash::daemon::state_store;
+use llamastash::daemon::{run_foreground, DaemonOptions};
+use llamastash::discovery::scanner::ScanRoot;
+use llamastash::discovery::ModelSource;
+use llamastash::gguf::test_fixtures::build_minimal_gguf;
+use llamastash::ipc::Client;
 use tokio::task::JoinHandle;
 
 fn fake_binary() -> PathBuf {
@@ -42,7 +42,7 @@ fn unique_temp(label: &str) -> PathBuf {
     .expect("clock")
     .as_nanos();
   let p = std::env::temp_dir().join(format!(
-    "llamadash-cli-{label}-{}-{nanos}",
+    "llamastash-cli-{label}-{}-{nanos}",
     std::process::id()
   ));
   std::fs::create_dir_all(&p).expect("temp");
@@ -95,7 +95,7 @@ struct DaemonHandle {
   /// preventing the `Drop` impl from running on the rest of the
   /// struct. `Drop` checks `is_some` as "explicit shutdown was not
   /// reached" — typically because a test panicked partway through.
-  join: Option<JoinHandle<anyhow::Result<llamadash::daemon::StartOutcome>>>,
+  join: Option<JoinHandle<anyhow::Result<llamastash::daemon::StartOutcome>>>,
   socket: PathBuf,
   state: PathBuf,
   model_dir: PathBuf,
@@ -244,7 +244,7 @@ fn build_cli(model_dir: &Path, command: Command) -> (Cli, LoadedConfig) {
   (cli, config)
 }
 
-/// Serialises `LLAMADASH_SOCKET` env-var swap so two parallel tests
+/// Serialises `LLAMASTASH_SOCKET` env-var swap so two parallel tests
 /// don't read each other's daemon. Held across an `.await` so we use
 /// tokio's async-aware `Mutex` (the std `Mutex` would block worker
 /// threads while a dispatch is in flight).
@@ -253,15 +253,15 @@ static SOCKET_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new((
 async fn run_dispatch_at(socket: Option<&Path>, model_dir: &Path, command: Command) -> i32 {
   let (cli, cfg) = build_cli(model_dir, command);
   let _guard = SOCKET_ENV_LOCK.lock().await;
-  let prev = std::env::var_os("LLAMADASH_SOCKET");
+  let prev = std::env::var_os("LLAMASTASH_SOCKET");
   match socket {
-    Some(s) => std::env::set_var("LLAMADASH_SOCKET", s),
-    None => std::env::remove_var("LLAMADASH_SOCKET"),
+    Some(s) => std::env::set_var("LLAMASTASH_SOCKET", s),
+    None => std::env::remove_var("LLAMASTASH_SOCKET"),
   }
   let code = dispatch(cli, cfg).await.expect("dispatch");
   match prev {
-    Some(v) => std::env::set_var("LLAMADASH_SOCKET", v),
-    None => std::env::remove_var("LLAMADASH_SOCKET"),
+    Some(v) => std::env::set_var("LLAMASTASH_SOCKET", v),
+    None => std::env::remove_var("LLAMASTASH_SOCKET"),
   }
   code
 }

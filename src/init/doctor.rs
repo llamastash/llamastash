@@ -1,9 +1,9 @@
-//! `llamadash doctor` read-only diagnostic (R74 / R75).
+//! `llamastash doctor` read-only diagnostic (R74 / R75).
 //!
 //! Re-runs hardware + binary detection, loads `_init_snapshot.json`,
 //! compares the two, emits 0-N findings. Every finding carries a
 //! stable `id` agent consumers can branch on plus a
-//! `fix_hint = "llamadash init --only X"` that maps to the wizard
+//! `fix_hint = "llamastash init --only X"` that maps to the wizard
 //! step that resolves it.
 //!
 //! Output is always safe to paste into a public issue — see the
@@ -64,12 +64,12 @@ impl FindingId {
   pub fn fix_hint(self) -> &'static str {
     match self {
       Self::BinaryMissing | Self::BinaryDigestDrift | Self::HardwareDrift => {
-        "llamadash init --only server"
+        "llamastash init --only server"
       }
       Self::SnapshotStale | Self::RemoteSnapshotUnreachable => {
-        "(no action — daily CI refresh will heal automatically; re-run `llamadash doctor` later)"
+        "(no action — daily CI refresh will heal automatically; re-run `llamastash doctor` later)"
       }
-      Self::ConfigModeDrift => "llamadash init --only config",
+      Self::ConfigModeDrift => "llamastash init --only config",
     }
   }
 }
@@ -344,7 +344,7 @@ fn render_human(report: &DoctorReport) {
   if report.findings.is_empty() {
     println!(
       "{}",
-      colors::success("llamadash doctor: 0 findings — everything looks healthy.")
+      colors::success("llamastash doctor: 0 findings — everything looks healthy.")
     );
     if let Some(date) = &report.baseline.init_date {
       println!("  {}", colors::dim(&format!("last init: {date}")));
@@ -354,7 +354,7 @@ fn render_human(report: &DoctorReport) {
   println!(
     "{}",
     colors::header(&format!(
-      "llamadash doctor: {} finding(s).",
+      "llamastash doctor: {} finding(s).",
       report.findings.len()
     ))
   );
@@ -439,7 +439,7 @@ mod tests {
       drift.is_some(),
       "hardware_drift should fire when vendor changed"
     );
-    assert_eq!(drift.unwrap().fix_hint, "llamadash init --only server");
+    assert_eq!(drift.unwrap().fix_hint, "llamastash init --only server");
   }
 
   #[test]

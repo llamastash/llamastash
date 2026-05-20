@@ -13,7 +13,7 @@ revision: 2 (refined after document-review: addressed 3 P1s + cheap P2s, collaps
 
 Introduces a tiered test strategy that layers real-hardware UAT coverage on top of the existing fixture-based test suite, addressing the gap that no test in `cargo test --features test-fixtures` ever runs against an actual GPU. Three concrete deliverables:
 
-1. A maintainer-invoked `llamadash uat` subcommand (hidden, feature-gated) that runs a 5-step lifecycle on real silicon and emits a structured JSON report.
+1. A maintainer-invoked `llamastash uat` subcommand (hidden, feature-gated) that runs a 5-step lifecycle on real silicon and emits a structured JSON report.
 2. A nightly GitHub Actions Metal lane on `macos-14` that runs the same UAT command on Apple Silicon, gated behind a falsifying spike (run as a pre-merge step in the same PR that lands the nightly workflow).
 3. Three prerequisite changes (path-isolation env vars, `init --revision <sha>` flag, release-PR template) that make the UAT command possible without touching the user-facing CLI surface.
 
@@ -30,7 +30,7 @@ There is also no contract for what a maintainer should verify before tagging a r
 ## Requirements Trace
 
 - **R1.** Preserve the existing fixture-based per-PR suite unchanged (origin §Goal·1). *No implementation work — preserved by absence of changes to the per-PR test suite. Verified at Unit 7's final cross-cut check.*
-- **R2.** Ship a `llamadash uat` command the maintainer runs on each local backend pre-release, emitting both TTY-pretty stdout output AND a JSON report (origin §Goal·2, §Tier 2).
+- **R2.** Ship a `llamastash uat` command the maintainer runs on each local backend pre-release, emitting both TTY-pretty stdout output AND a JSON report (origin §Goal·2, §Tier 2).
 - **R3.** Add a nightly Metal lane via GH Actions `macos-14`, conditional on a falsifying spike proving Metal is reachable (origin §Goal·3, §Tier 3).
 - **R4.** UAT does not appear in the default release binary's `--help` — feature-gated behind `--features uat` (origin §Invocation surface).
 - **R5.** UAT uses cross-platform tempdir isolation, including state, runtime socket, cache/logs, and the HuggingFace cache (origin §UAT lifecycle, §Planning prerequisites·1 — scope expanded after plan-review found `cache_dir()` / `log_dir()` / `hf_cache_dir()` bypass `state_dir()`).
@@ -51,18 +51,18 @@ Non-goals (carried verbatim from origin §Out of scope):
 - An `xtask` workspace member (feature-flag pattern chosen instead).
 - A `Hardware UAT report` GitHub issue template — explicitly deferred until a contributor actually wants to file one (origin §Acceptance checklist `TODO.md` line).
 - Mirror of the reference GGUF to a GitHub Release asset, BLAKE3 cache verification, license-redistribution audit — all dropped in favor of commit-SHA pin + fallback (origin §Supply-chain posture).
-- A `pull --revision <sha>` user-facing flag. The UAT consumes init only; adding `--revision` to `llamadash pull` would be speculative API surface with no real consumer today. Revisit if a real `pull` user requests it.
+- A `pull --revision <sha>` user-facing flag. The UAT consumes init only; adding `--revision` to `llamastash pull` would be speculative API surface with no real consumer today. Revisit if a real `pull` user requests it.
 
 ## Context & Research
 
 ### Relevant Code and Patterns
 
 - **Feature gating** — `Cargo.toml` already has `[features] test-fixtures = []`; the `fake_llama_server` `[[bin]]` uses `required-features = ["test-fixtures"]`. Mirror this exact pattern for `uat`.
-- **Env-var override for path resolution** — `src/util/paths.rs::runtime_socket_path()` honors `LLAMADASH_SOCKET` as override #1 before falling through to `XDG_RUNTIME_DIR` / `$TMPDIR`. The new env vars (`LLAMADASH_STATE_DIR`, `LLAMADASH_CACHE_DIR`) follow the same shape inside `state_dir()` and `cache_dir()`.
+- **Env-var override for path resolution** — `src/util/paths.rs::runtime_socket_path()` honors `LLAMASTASH_SOCKET` as override #1 before falling through to `XDG_RUNTIME_DIR` / `$TMPDIR`. The new env vars (`LLAMASTASH_STATE_DIR`, `LLAMASTASH_CACHE_DIR`) follow the same shape inside `state_dir()` and `cache_dir()`.
 - **Hidden CLI subcommands** — `daemon start` accepts a hidden `--state-dir` flag for internal re-exec hand-off (per AGENTS.md); pattern is `#[arg(hide = true)]` on individual args. For an entire hidden subcommand variant: `#[command(hide = true)]` plus `#[cfg(feature = "uat")]` on the variant.
 - **Pull internals already track revision** — `src/init/download.rs:112` has `pub revision: String` on its result struct and line 366 captures the SHA into the result. However, `DownloadOptions` (line 188) does NOT carry a revision *input* field, and `download_repo` (line 313) calls `api.model(spec.repo_id.clone())` which short-circuits to `Repo::new(..., "main")`. The revision-threading work surfaces a new input through `DownloadOptions` and the call site, not just the CLI.
 - **Init wizard's model-pick branches** — `src/init/wizard.rs::pick_model` has multiple branches; UAT uses the `ModelOverride::Paste` branch (`init --model owner/repo`) to bypass the recommender, ensuring the pinned model is what actually gets pulled regardless of detected hardware.
-- **Existing CI shape** — `.github/workflows/ci.yml` runs on `ubuntu-latest` + `macos-latest` matrix; `release.yml` builds with `cargo build --release ... --bin llamadash` (no `--features` flag, so audit criterion is structurally satisfied — just needs an explicit comment per R10).
+- **Existing CI shape** — `.github/workflows/ci.yml` runs on `ubuntu-latest` + `macos-latest` matrix; `release.yml` builds with `cargo build --release ... --bin llamastash` (no `--features` flag, so audit criterion is structurally satisfied — just needs an explicit comment per R10).
 - **Test fixture pattern** — Integration tests like `tests/cli_init_parse.rs`, `tests/init_orchestration.rs`, `tests/daemon_lifecycle_test.rs` show the per-test `unique_temp_dir(label)` isolation pattern; UAT tests follow the same convention.
 
 ### Institutional Learnings
@@ -75,7 +75,7 @@ External research deliberately skipped. The codebase has strong local patterns f
 
 ## Key Technical Decisions
 
-- **Env-var isolation over CLI flag plumbing.** UAT sets four env vars (`LLAMADASH_STATE_DIR`, `LLAMADASH_CACHE_DIR`, `LLAMADASH_SOCKET`, `HF_HOME`) — plus Linux's `XDG_*` equivalents redundantly — to isolate state, runtime socket, cache/logs, and the HF cache. Adding `--state-dir` flags across `init`/`doctor`/`start`/`status` would have been the alternative; the four env vars + two new `paths::*` overrides win on surface-area. **Note:** the initial brainstorm proposed only `LLAMADASH_STATE_DIR` + `LLAMADASH_SOCKET`; plan-review caught that `cache_dir()` (logs) and `hf_cache_dir()` (GGUF downloads) bypass `state_dir()` entirely, so the isolation contract was incomplete. The expanded set is the honest minimum.
+- **Env-var isolation over CLI flag plumbing.** UAT sets four env vars (`LLAMASTASH_STATE_DIR`, `LLAMASTASH_CACHE_DIR`, `LLAMASTASH_SOCKET`, `HF_HOME`) — plus Linux's `XDG_*` equivalents redundantly — to isolate state, runtime socket, cache/logs, and the HF cache. Adding `--state-dir` flags across `init`/`doctor`/`start`/`status` would have been the alternative; the four env vars + two new `paths::*` overrides win on surface-area. **Note:** the initial brainstorm proposed only `LLAMASTASH_STATE_DIR` + `LLAMASTASH_SOCKET`; plan-review caught that `cache_dir()` (logs) and `hf_cache_dir()` (GGUF downloads) bypass `state_dir()` entirely, so the isolation contract was incomplete. The expanded set is the honest minimum.
 - **Feature flag over xtask.** `#[cfg(feature = "uat")]` on a `Command` variant achieves the same "not in release binary" guarantee as `cargo xtask` without converting the single-crate manifest to a workspace. (Origin §Invocation surface.)
 - **2 exit codes (0/1) instead of 7.** The JSON `failure_summary.{step, exit_code}` carries phase information; granular CLI exit codes are YAGNI for a maintainer-invoked tool. The `failure_summary.exit_code` carries the failing *child wrapper's* exit code as-is (e.g., `72` for an `init`-step failure — init's `INIT_*` codes), not the deeper failure-class code. (Origin §Exit codes.)
 - **Tagged-union JSON for `backend.detected`.** Mirrors `GpuInfo`'s serde shape verbatim (`tag = "backend"`) rather than a lossy scalar projection. (Origin §Report contract.)
@@ -110,9 +110,9 @@ External research deliberately skipped. The codebase has strong local patterns f
 
 ### Phase 1 — Prerequisite plumbing (3 units, parallel)
 
-- [ ] **Unit 1: Add `LLAMADASH_STATE_DIR` + `LLAMADASH_CACHE_DIR` env vars to `paths::state_dir()` + `paths::cache_dir()`**
+- [ ] **Unit 1: Add `LLAMASTASH_STATE_DIR` + `LLAMASTASH_CACHE_DIR` env vars to `paths::state_dir()` + `paths::cache_dir()`**
 
-**Goal:** Make `state_dir()` and `cache_dir()` honor env-var overrides as override #1 before falling through to the existing `ProjectDirs` resolution. Required for cross-platform UAT isolation; without it, the UAT writes daemon logs into the maintainer's real `~/Library/Caches/llamadash/logs` (since `log_dir()` derives from `cache_dir()`) AND pollutes the real HF cache (mitigated separately via the UAT-set `HF_HOME` in Unit 4).
+**Goal:** Make `state_dir()` and `cache_dir()` honor env-var overrides as override #1 before falling through to the existing `ProjectDirs` resolution. Required for cross-platform UAT isolation; without it, the UAT writes daemon logs into the maintainer's real `~/Library/Caches/llamastash/logs` (since `log_dir()` derives from `cache_dir()`) AND pollutes the real HF cache (mitigated separately via the UAT-set `HF_HOME` in Unit 4).
 
 **Requirements:** R5.
 
@@ -123,18 +123,18 @@ External research deliberately skipped. The codebase has strong local patterns f
 - Test: `src/util/paths.rs` inline `#[cfg(test)] mod tests` — matches the project's convention from AGENTS.md.
 
 **Approach:**
-- Mirror `runtime_socket_path()`'s `LLAMADASH_SOCKET` override pattern (`src/util/paths.rs:73-79`): check the env var first, return the `PathBuf` verbatim if set and non-empty.
+- Mirror `runtime_socket_path()`'s `LLAMASTASH_SOCKET` override pattern (`src/util/paths.rs:73-79`): check the env var first, return the `PathBuf` verbatim if set and non-empty.
 - Apply the same empty-string defensive check (treat empty env value as unset).
-- Update the module-level docs at `src/util/paths.rs:1-8` to enumerate all four overrides (`LLAMADASH_STATE_DIR`, `LLAMADASH_CACHE_DIR`, `LLAMADASH_SOCKET`, plus `HF_HOME` which already works via `hf-hub`).
+- Update the module-level docs at `src/util/paths.rs:1-8` to enumerate all four overrides (`LLAMASTASH_STATE_DIR`, `LLAMASTASH_CACHE_DIR`, `LLAMASTASH_SOCKET`, plus `HF_HOME` which already works via `hf-hub`).
 
 **Patterns to follow:**
 - `src/util/paths.rs::runtime_socket_path()` for the env-var-first override pattern.
 - Existing module-level docs at `src/util/paths.rs:1-8`.
 
 **Test scenarios:**
-- Happy path: with `LLAMADASH_STATE_DIR=/tmp/uat-abc`, `state_dir()` returns `Some(PathBuf::from("/tmp/uat-abc"))`; similarly for `LLAMADASH_CACHE_DIR` → `cache_dir()`.
-- Happy path: `log_dir()` returns `<cache-override>/logs` when `LLAMADASH_CACHE_DIR` is set, confirming the chain.
-- Edge case: empty env var (`LLAMADASH_STATE_DIR=""`) treated as unset; falls through.
+- Happy path: with `LLAMASTASH_STATE_DIR=/tmp/uat-abc`, `state_dir()` returns `Some(PathBuf::from("/tmp/uat-abc"))`; similarly for `LLAMASTASH_CACHE_DIR` → `cache_dir()`.
+- Happy path: `log_dir()` returns `<cache-override>/logs` when `LLAMASTASH_CACHE_DIR` is set, confirming the chain.
+- Edge case: empty env var (`LLAMASTASH_STATE_DIR=""`) treated as unset; falls through.
 - Edge case: unset env vars → behavior matches today byte-for-byte (Linux returns XDG paths, macOS returns `~/Library/...`).
 - Edge case: paths with spaces and unicode returned verbatim without mangling.
 - Audit (manual, recorded in PR description): grep `src/` for any other call sites that compute state-dir / cache-dir / log-dir-like paths independently of `paths::*` — should be none for state, none for log. `hf_cache_dir` (`src/init/download.rs:239`) intentionally bypasses `paths::cache_dir()` because it honors `HF_HOME` per HF convention; this is by design, not a regression, and the UAT sets `HF_HOME` separately in Unit 4.
@@ -144,7 +144,7 @@ External research deliberately skipped. The codebase has strong local patterns f
 - `cargo clippy --all-targets --features test-fixtures -- -D warnings` clean.
 - `cargo test --features test-fixtures` (full suite) passes with zero new failures vs. pre-plan baseline.
 
-- [ ] **Unit 2: Add `--revision <sha>` flag to `llamadash init`, threaded through to `DownloadOptions`**
+- [ ] **Unit 2: Add `--revision <sha>` flag to `llamastash init`, threaded through to `DownloadOptions`**
 
 **Goal:** Expose HuggingFace commit-SHA pinning on the `init` surface (UAT's actual consumer) and plumb it through `init::download` to `hf-hub`'s `Repo::with_revision`. **No** `pull --revision` flag — that was originally planned but plan-review flagged it as speculative API surface with no real user; cut from scope.
 
@@ -172,8 +172,8 @@ External research deliberately skipped. The codebase has strong local patterns f
 - `tests/cli_integration_test.rs` for a real-pull integration test pattern (uses HTTP fixtures, not live HF).
 
 **Test scenarios:**
-- Happy path (parse): `llamadash init --recommended --revision abc1234` parses with `revision == Some("abc1234")`.
-- Happy path (parse): `llamadash init --model qwen/qwen2.5-0.5b-instruct-GGUF --revision abc1234` parses with both fields set.
+- Happy path (parse): `llamastash init --recommended --revision abc1234` parses with `revision == Some("abc1234")`.
+- Happy path (parse): `llamastash init --model qwen/qwen2.5-0.5b-instruct-GGUF --revision abc1234` parses with both fields set.
 - Happy path (behavior): with `--revision` set on the Paste branch, `download_repo` constructs `ApiRepo` with the supplied revision; without it, falls back to default-branch HEAD.
 - Edge case: `--revision ""` (empty) rejected at parse time via clap's value parser.
 - Edge case: invalid SHA (`--revision not-a-real-sha`) surfaces a transport error from `hf-hub` with a clean error message and the existing `INIT_DOWNLOAD_FAILED` (73) exit code (already in `cli::exit_codes`).
@@ -182,10 +182,10 @@ External research deliberately skipped. The codebase has strong local patterns f
 **Verification:**
 - `cargo test --features test-fixtures init_revision` passes.
 - `cargo test --features test-fixtures init` continues to pass (no regression on the wizard's existing tests).
-- `llamadash init --help` shows the new flag.
+- `llamastash init --help` shows the new flag.
 - `docs/usage.md` is NOT updated in this unit (UAT is the primary consumer; the flag is borderline-user-visible). If a future doc-sync review surfaces it as user-relevant, add then.
 
-- [ ] **Unit 3: Cargo `uat` feature + hidden `llamadash uat` subcommand scaffold**
+- [ ] **Unit 3: Cargo `uat` feature + hidden `llamastash uat` subcommand scaffold**
 
 **Goal:** Add the `uat` Cargo feature, register the hidden subcommand variant, and wire a stub handler. Lets Unit 4 land without re-doing the dispatcher wiring.
 
@@ -210,8 +210,8 @@ External research deliberately skipped. The codebase has strong local patterns f
 - `cli_args.rs` value-enum patterns: `ConfigOverride` (`src/cli/cli_args.rs:441-446`, `#[derive(...ValueEnum)] #[clap(rename_all = "lower")]`). **Not** `InstallOverride`, which is a plain enum with a custom `parse_install_override` function.
 
 **Test scenarios:**
-- Parse (`#[cfg(feature = "uat")]`): `llamadash uat --backend nvidia` parses with defaults (`mode == Warm`, `report_out == None`).
-- Parse: `llamadash --quiet uat --mode cold --report-out /tmp/r.json` parses; `--quiet` is the global flag.
+- Parse (`#[cfg(feature = "uat")]`): `llamastash uat --backend nvidia` parses with defaults (`mode == Warm`, `report_out == None`).
+- Parse: `llamastash --quiet uat --mode cold --report-out /tmp/r.json` parses; `--quiet` is the global flag.
 - Parse: `--backend metal` rejected at parse time (clap value-enum).
 - Build invariant: `cargo build` (no features) compiles without including the UAT module.
 
@@ -229,10 +229,10 @@ External research deliberately skipped. The codebase has strong local patterns f
 
 **Requirements:** R2, R5, R6.
 
-**Dependencies:** Unit 1 (uses `LLAMADASH_STATE_DIR` / `LLAMADASH_CACHE_DIR`), Unit 2 (uses `init --revision`), Unit 3 (uses the subcommand scaffold).
+**Dependencies:** Unit 1 (uses `LLAMASTASH_STATE_DIR` / `LLAMASTASH_CACHE_DIR`), Unit 2 (uses `init --revision`), Unit 3 (uses the subcommand scaffold).
 
 **Files:**
-- Create: `src/cli/uat/isolation.rs` (the `TempdirGuard` Drop-guard + env-var configuration for child processes — Linux sets `XDG_STATE_HOME` + `XDG_CACHE_HOME` + `XDG_RUNTIME_DIR`; macOS additionally sets `LLAMADASH_STATE_DIR` + `LLAMADASH_CACHE_DIR` + `LLAMADASH_SOCKET`. **All platforms** set `HF_HOME=<tempdir>/hf` to isolate the GGUF cache.)
+- Create: `src/cli/uat/isolation.rs` (the `TempdirGuard` Drop-guard + env-var configuration for child processes — Linux sets `XDG_STATE_HOME` + `XDG_CACHE_HOME` + `XDG_RUNTIME_DIR`; macOS additionally sets `LLAMASTASH_STATE_DIR` + `LLAMASTASH_CACHE_DIR` + `LLAMASTASH_SOCKET`. **All platforms** set `HF_HOME=<tempdir>/hf` to isolate the GGUF cache.)
 - Create: `src/cli/uat/lifecycle.rs` (the 5-step orchestrator + per-step `Verdict` capture + signal-handling integration via `tokio::signal::ctrl_c`)
 - Create: `src/cli/uat/report.rs` (JSON shape mirroring `GpuInfo`'s serde tagged-union; `host` block carries `model_used: String` and `warnings: Vec<String>` for non-fatal anomalies like fallback-substitution and preserved-tempdir path)
 - Create: `src/cli/uat/model.rs` (constants for primary + fallback model identity — repo, filename, commit SHA, expected size)
@@ -254,7 +254,7 @@ External research deliberately skipped. The codebase has strong local patterns f
 - **Cold vs warm mode:** in warm mode, the UAT passes `--skip install` to `init`; in cold mode, the UAT omits `--skip install` so init exercises the full brew/GH-Releases install path.
 
 **Patterns to follow:**
-- `tests/init_orchestration.rs` and `tests/cli_integration_test.rs` for the spawn-llamadash-as-subprocess + assert-on-JSON pattern.
+- `tests/init_orchestration.rs` and `tests/cli_integration_test.rs` for the spawn-llamastash-as-subprocess + assert-on-JSON pattern.
 - `src/daemon/supervisor.rs` for the `Command::env()` spawning pattern (UAT does NOT use `setsid` — children are explicitly killed by `TempdirGuard::Drop`).
 - `serde_json::to_value()` + `serde_json::Value` manipulation as used in `src/cli/output.rs::status_json`.
 - `tokio::select!` with `tokio::signal::ctrl_c` — search the codebase for prior usage; if absent, this becomes the first reference.
@@ -266,7 +266,7 @@ External research deliberately skipped. The codebase has strong local patterns f
 - Edge case: global `--quiet` suppresses TTY output; combined with `--report-out -` is rejected at parse time as mutually exclusive.
 - Edge case: isolation tempdir created, populated, removed on success.
 - Edge case: isolation tempdir preserved on failure (for debugging); `host.warnings` includes "preserved tempdir at <path>".
-- Edge case (macOS, gated on `cfg(target_os = "macos")`): isolation sets `LLAMADASH_STATE_DIR`, `LLAMADASH_CACHE_DIR`, `LLAMADASH_SOCKET`, `HF_HOME`. Child processes see them.
+- Edge case (macOS, gated on `cfg(target_os = "macos")`): isolation sets `LLAMASTASH_STATE_DIR`, `LLAMASTASH_CACHE_DIR`, `LLAMASTASH_SOCKET`, `HF_HOME`. Child processes see them.
 - Edge case (Linux): isolation sets `XDG_STATE_HOME` + `XDG_CACHE_HOME` + `XDG_RUNTIME_DIR` + `HF_HOME`.
 - Error path: `init` step fails (failure-injection env var that `fake_llama_server` recognizes). Subsequent steps marked `skipped`; `failure_summary.step == "init"`; `failure_summary.exit_code == 72` or `73` (init's own exit codes); top-level UAT exit code `1`; tempdir preserved.
 - Error path: smoke chat returns HTTP 500. `stop` and `doctor_postrun` still run (cleanup); verdict `fail`; tempdir preserved.
@@ -425,8 +425,8 @@ Content sections:
 
 ## System-Wide Impact
 
-- **Interaction graph:** The UAT command spawns child `llamadash` processes (init, start, stop, doctor) and a separate `llama-server` process. Unit 1's two new env vars (`LLAMADASH_STATE_DIR`, `LLAMADASH_CACHE_DIR`) affect every code path that calls `paths::state_dir()` or `paths::cache_dir()` — verify via grep during U1 execution that no other code computes these paths independently (the audit step in U1's Test scenarios).
-- **Path-isolation surface area (honest accounting):** UAT must set FOUR env vars (`LLAMADASH_STATE_DIR`, `LLAMADASH_CACHE_DIR`, `LLAMADASH_SOCKET`, `HF_HOME`) plus Linux XDG equivalents. The brainstorm's "one new env var" framing was incomplete; plan-review surfaced the gap. `hf_cache_dir` (`src/init/download.rs:239`) intentionally honors `HF_HOME` independent of `paths::cache_dir()` — that's by HF convention, not a bug, and UAT sets `HF_HOME` separately.
+- **Interaction graph:** The UAT command spawns child `llamastash` processes (init, start, stop, doctor) and a separate `llama-server` process. Unit 1's two new env vars (`LLAMASTASH_STATE_DIR`, `LLAMASTASH_CACHE_DIR`) affect every code path that calls `paths::state_dir()` or `paths::cache_dir()` — verify via grep during U1 execution that no other code computes these paths independently (the audit step in U1's Test scenarios).
+- **Path-isolation surface area (honest accounting):** UAT must set FOUR env vars (`LLAMASTASH_STATE_DIR`, `LLAMASTASH_CACHE_DIR`, `LLAMASTASH_SOCKET`, `HF_HOME`) plus Linux XDG equivalents. The brainstorm's "one new env var" framing was incomplete; plan-review surfaced the gap. `hf_cache_dir` (`src/init/download.rs:239`) intentionally honors `HF_HOME` independent of `paths::cache_dir()` — that's by HF convention, not a bug, and UAT sets `HF_HOME` separately.
 - **Error propagation:** UAT child-process failures surface their exit codes via `failure_summary.exit_code`, not remapped to UAT's own 0/1. The 0/1 contract is for the UAT process; the report carries the richer signal.
 - **State lifecycle risks:** The `TempdirGuard` Drop pattern is load-bearing: tempdir preserved on any non-success path (failure, panic, SIGINT); child `llama-server` killed before tempdir teardown; preserved tempdir path emitted to stderr so the maintainer knows where to look. Without the guard, a panic mid-lifecycle would either leak the tempdir or destroy diagnostic state.
 - **API surface parity:** `--revision` flag added to `init` only. Not added to `pull` (speculative surface, no consumer). If a future use case justifies it, add then.
@@ -466,7 +466,7 @@ Content sections:
   - `src/daemon/supervisor.rs` (Command::env() spawning model)
   - `Cargo.toml` (`[features] test-fixtures = []` as the mirror pattern)
 - **Existing test patterns:**
-  - `tests/init_orchestration.rs` (spawn-llamadash-subprocess test pattern)
+  - `tests/init_orchestration.rs` (spawn-llamastash-subprocess test pattern)
   - `tests/cli_init_parse.rs` (clap arg-parse-only tests)
   - `tests/fixtures/fake_llama_server.rs` (HTTP fixture for OpenAI-compatible endpoints)
 - **Existing CI workflows:**

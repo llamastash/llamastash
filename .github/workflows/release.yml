@@ -410,7 +410,7 @@ jobs:
           git config --global user.name  "llamastash-release-bot"
           git config --global credential.helper ""
 
-          git clone "https://x-access-token@github.com/llamastash-rs/homebrew-llamastash.git" --branch main brew
+          git clone "https://x-access-token@github.com/llamastash/homebrew-llamastash.git" --branch main brew
           cp llamastash.rb brew/Formula/llamastash.rb
           cd brew
           git add Formula/llamastash.rb
@@ -493,7 +493,7 @@ jobs:
           git config --global user.name  "llamastash-release-bot"
           git config --global credential.helper ""
 
-          git clone "https://x-access-token@github.com/llamastash-rs/llamastash-rs.github.io.git" --branch main site
+          git clone "https://x-access-token@github.com/llamastash/llamastash.github.io.git" --branch main site
 
           # Prepend a provenance header to install.sh, then RECOMPUTE the
           # sidecar so `curl .../install.sh.sha256 | sha256sum -c` against the
@@ -501,7 +501,7 @@ jobs:
           # sidecar, which was computed before the header — a real verification
           # break for users.
           {
-            printf '# Source: github.com/llamastash-rs/llamastash@%s/scripts/install.sh\n' "$RELEASE_TAG"
+            printf '# Source: github.com/llamastash/llamastash@%s/scripts/install.sh\n' "$RELEASE_TAG"
             printf '# SHA-256 verified by .github/workflows/release.yml on %s.\n' "$released_at"
             cat stage/install.sh
           } >site/public/install.sh

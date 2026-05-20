@@ -207,7 +207,7 @@ mod tests {
   #[test]
   fn which_on_path_finds_cat_but_not_a_made_up_name() {
     assert!(which_on_path("cat").is_some());
-    assert!(which_on_path("nonexistent-tool-9f3a-llamadash").is_none());
+    assert!(which_on_path("nonexistent-tool-9f3a-llamastash").is_none());
   }
 
   #[test]

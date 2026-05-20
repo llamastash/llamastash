@@ -1,5 +1,5 @@
 ---
-title: "feat: KDash-style dashboard UI for LlamaDash"
+title: "feat: KDash-style dashboard UI for LlamaStash"
 type: feat
 status: active
 date: 2026-05-16
@@ -7,13 +7,13 @@ deepened: 2026-05-16
 origin: docs/brainstorms/llamatui-requirements.md
 ---
 
-# feat: KDash-style dashboard UI for LlamaDash
+# feat: KDash-style dashboard UI for LlamaStash
 
 ## Overview
 
 Replace the current one-line banner + 50/50 horizontal split with a KDash-style dashboard:
 
-- **Row 1 (1 line)** — accent-bg title bar. Left: `LlamaDash v0.1.0 · ● daemon`. Right: a fixed set of **global** key hints (`?:help  t:theme  /:filter  q:quit`). Panel-specific hints relocate **into each panel's own header**, not into this title row.
+- **Row 1 (1 line)** — accent-bg title bar. Left: `LlamaStash v0.1.0 · ● daemon`. Right: a fixed set of **global** key hints (`?:help  t:theme  /:filter  q:quit`). Panel-specific hints relocate **into each panel's own header**, not into this title row.
 - **Row 2 (7 lines)** — three side-by-side panels:
   - **Host** (32 cols × 5 inner rows) — bar gauges for CPU / RAM / GPU util / VRAM with inline temperature readings + a backend tag line.
   - **Daemon** (flex middle) — socket+pid, uptime+build, server path+flavor, discovery counters, one-line running summary.
@@ -32,7 +32,7 @@ The list pane, right pane, modal overlays (launch picker, advanced panel), and a
 
 ## Problem Frame
 
-LlamaDash today renders a thin one-line top banner and the two body panes. The visual density doesn't read as a "dashboard" the way KDash does for Kubernetes — the user's two prior Rust TUIs (`kdash`, `jwt-ui`) lean on a richer top region that surfaces system health, daemon health, and product branding at a glance. The current layout also keeps host RAM/CPU/GPU readouts entirely off-screen even though they're the single most useful signal when deciding whether to launch another model on the same machine.
+LlamaStash today renders a thin one-line top banner and the two body panes. The visual density doesn't read as a "dashboard" the way KDash does for Kubernetes — the user's two prior Rust TUIs (`kdash`, `jwt-ui`) lean on a richer top region that surfaces system health, daemon health, and product branding at a glance. The current layout also keeps host RAM/CPU/GPU readouts entirely off-screen even though they're the single most useful signal when deciding whether to launch another model on the same machine.
 
 The mock at `dash.png` and the KDash reference at `screenshot_2026-05-16_20-45-55.jpg` describe the target shape directly: top info row + main body row + minimal chrome.
 
@@ -160,7 +160,7 @@ Not consulted. Internal greenfield project, no upstream Slack/GitHub discussion 
 
 ```
 █████████████████████████████████████████████████████████████████████████████████████████████████████
-█ LlamaDash v0.1.0 · ● daemon                                  ?:help  t:theme  /:filter  q:quit  █
+█ LlamaStash v0.1.0 · ● daemon                                  ?:help  t:theme  /:filter  q:quit  █
 █████████████████████████████████████████████████████████████████████████████████████████████████████
 ┌─ Host ───────────────────────┐┌─ Daemon ───────────────────────────────┐┌─ macchiato · t:theme ─┐
 │ CPU  ███████░░░░  58%  71°C  ││ socket  …/daemon.sock  pid 1234        ││  ╔╗                   │
@@ -398,7 +398,7 @@ help_bar::render(help_area, focus, toast, palette)  // same renderer
 
 - [x] **Unit 5: `logo_pane` + compact ASCII banner**
 
-**Goal:** Render the third top-row panel — a compact ASCII LlamaDash glyph + version + theme name.
+**Goal:** Render the third top-row panel — a compact ASCII LlamaStash glyph + version + theme name.
 
 **Requirements:** R26 (theme awareness).
 
@@ -412,9 +412,9 @@ help_bar::render(help_area, focus, toast, palette)  // same renderer
 
 **Approach:**
 - Component signature: `pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette)`.
-- Outer block: `borders(Borders::ALL).title(" LlamaDash ").border_style(palette.accent)`.
+- Outer block: `borders(Borders::ALL).title(" LlamaStash ").border_style(palette.accent)`.
 - Inside the block, draw `COMPACT_BANNER` styled in `palette.accent`, plus one line below with `v{version} · {theme}`.
-- When the inner area is too narrow (e.g., < 18 cols at unusual terminal sizes), fall back to a single line `LlamaDash v0.1.0`. No panic.
+- When the inner area is too narrow (e.g., < 18 cols at unusual terminal sizes), fall back to a single line `LlamaStash v0.1.0`. No panic.
 
 **Patterns to follow:**
 - `src/tui/render.rs::render_banner` again for `Span` composition.
@@ -453,7 +453,7 @@ help_bar::render(help_area, focus, toast, palette)  // same renderer
   ```
   horizontal = [Length(visible_title_width), Min(0), Length(global_hint_width)]
   ```
-  Left slot renders `LlamaDash v0.1.0 · ● daemon` (dot color from `palette.success / warning / danger` based on `daemon_connected` and the daemon-state probe). Right slot renders the static global hint string.
+  Left slot renders `LlamaStash v0.1.0 · ● daemon` (dot color from `palette.success / warning / danger` based on `daemon_connected` and the daemon-state probe). Right slot renders the static global hint string.
 - Info row internal split:
   ```
   horizontal = [Length(32), Min(0), Length(25)*]

@@ -14,11 +14,11 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use llamadash::config::loader::PortRange;
-use llamadash::daemon::state_store;
-use llamadash::daemon::{run_foreground, DaemonOptions};
-use llamadash::gguf::test_fixtures::build_minimal_gguf;
-use llamadash::ipc::Client;
+use llamastash::config::loader::PortRange;
+use llamastash::daemon::state_store;
+use llamastash::daemon::{run_foreground, DaemonOptions};
+use llamastash::gguf::test_fixtures::build_minimal_gguf;
+use llamastash::ipc::Client;
 use serde_json::json;
 use tokio::time::timeout;
 
@@ -32,7 +32,7 @@ fn unique_temp(label: &str) -> PathBuf {
     .expect("clock")
     .as_nanos();
   let p = std::env::temp_dir().join(format!(
-    "llamadash-startipc-{label}-{}-{nanos}",
+    "llamastash-startipc-{label}-{}-{nanos}",
     std::process::id()
   ));
   std::fs::create_dir_all(&p).expect("temp");

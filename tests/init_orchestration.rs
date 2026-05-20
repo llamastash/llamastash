@@ -24,18 +24,18 @@ use std::ffi::OsString;
 use std::sync::Mutex;
 
 use clap::Parser;
-use llamadash::cli::cli_args::{Cli, Command, InitStep};
-use llamadash::cli::exit_codes::{INIT_ABORTED, UNKNOWN};
-use llamadash::config::Config;
-use llamadash::init::wizard;
+use llamastash::cli::cli_args::{Cli, Command, InitStep};
+use llamastash::cli::exit_codes::{INIT_ABORTED, UNKNOWN};
+use llamastash::config::Config;
+use llamastash::init::wizard;
 
 /// Process-wide env mutex. Cargo runs tests in parallel by default;
-/// the tests below mutate `LLAMADASH_OFFLINE`, `HOME`, `XDG_*`, and
+/// the tests below mutate `LLAMASTASH_OFFLINE`, `HOME`, `XDG_*`, and
 /// must not race each other.
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-fn parse_init(argv: &[&str]) -> (Cli, llamadash::cli::cli_args::InitArgs) {
-  let mut cli = Cli::try_parse_from(std::iter::once("llamadash").chain(argv.iter().copied()))
+fn parse_init(argv: &[&str]) -> (Cli, llamastash::cli::cli_args::InitArgs) {
+  let mut cli = Cli::try_parse_from(std::iter::once("llamastash").chain(argv.iter().copied()))
     .expect("argv should parse");
   let args = match cli.command.take() {
     Some(Command::Init(args)) => args,
@@ -53,7 +53,7 @@ fn isolated_xdg(label: &str) -> std::path::PathBuf {
     .unwrap()
     .as_nanos();
   let root = std::env::temp_dir().join(format!(
-    "llamadash-init-orch-{label}-{}-{nanos}",
+    "llamastash-init-orch-{label}-{}-{nanos}",
     std::process::id()
   ));
   std::fs::create_dir_all(root.join("config")).unwrap();
@@ -117,7 +117,7 @@ async fn offline_only_config_completes_without_network() {
   if let Err(e) = &result {
     assert_ne!(
       e.code,
-      llamadash::cli::exit_codes::INIT_DOWNLOAD_FAILED,
+      llamastash::cli::exit_codes::INIT_DOWNLOAD_FAILED,
       "config-only run must not surface INIT_DOWNLOAD_FAILED: {:?}",
       e.message
     );
@@ -125,30 +125,30 @@ async fn offline_only_config_completes_without_network() {
   cleanup_xdg(&root);
 }
 
-/// `LLAMADASH_OFFLINE=true` is the env-var equivalent of `--offline`.
+/// `LLAMASTASH_OFFLINE=true` is the env-var equivalent of `--offline`.
 /// Note clap's `env = ...` binding for `ArgAction::SetTrue` (the
 /// underlying action for a `bool` field) parses the env value as a
 /// boolean — only `true` and `false` are accepted; the truthy-set
 /// handling for `1`/`yes` is done by [`fetch::offline_requested`] at
 /// runtime, which `build_with_offline_check` consults orthogonally.
 #[tokio::test]
-async fn llamadash_offline_true_env_triggers_offline_only_models_refusal() {
+async fn llamastash_offline_true_env_triggers_offline_only_models_refusal() {
   let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
   let root = isolated_xdg("env-offline");
-  let old = std::env::var_os("LLAMADASH_OFFLINE");
-  std::env::set_var("LLAMADASH_OFFLINE", "true");
+  let old = std::env::var_os("LLAMASTASH_OFFLINE");
+  std::env::set_var("LLAMASTASH_OFFLINE", "true");
   let (cli, args) = parse_init(&["init", "--only", "models", "--yes", "--json"]);
   assert!(
     args.offline,
-    "LLAMADASH_OFFLINE=true should populate args.offline via clap env()"
+    "LLAMASTASH_OFFLINE=true should populate args.offline via clap env()"
   );
   let config = Config::default();
   let result = wizard::run(args, &cli, &config).await;
   let err = result.expect_err("expected INIT_ABORTED");
   assert_eq!(err.code, INIT_ABORTED);
   match old {
-    Some(v) => std::env::set_var("LLAMADASH_OFFLINE", v),
-    None => std::env::remove_var("LLAMADASH_OFFLINE"),
+    Some(v) => std::env::set_var("LLAMASTASH_OFFLINE", v),
+    None => std::env::remove_var("LLAMASTASH_OFFLINE"),
   }
   cleanup_xdg(&root);
 }
@@ -174,7 +174,7 @@ fn step_plan_only_and_skip_resolve_to_same_set() {
 /// time, never reaches the wizard.
 #[test]
 fn only_and_skip_together_refused_by_clap() {
-  let result = Cli::try_parse_from(["llamadash", "init", "--only", "server", "--skip", "config"]);
+  let result = Cli::try_parse_from(["llamastash", "init", "--only", "server", "--skip", "config"]);
   assert!(
     result.is_err(),
     "clap should reject mutually-exclusive --only + --skip"
@@ -202,7 +202,7 @@ async fn recommended_alias_runs_offline_only_config_like_yes_did() {
   if let Err(e) = &result {
     assert_ne!(
       e.code,
-      llamadash::cli::exit_codes::INIT_DOWNLOAD_FAILED,
+      llamastash::cli::exit_codes::INIT_DOWNLOAD_FAILED,
       "config-only run must not surface INIT_DOWNLOAD_FAILED: {:?}",
       e.message
     );
@@ -230,8 +230,8 @@ async fn config_step_skip_records_step_as_skipped() {
   let config = Config::default();
   let _ = wizard::run(args, &cli, &config).await;
   // We assert that the config.yaml was NOT created (skip path never
-  // writes). Path: ${XDG_CONFIG_HOME}/llamadash/config.yaml.
-  let config_path = root.join("config").join("llamadash").join("config.yaml");
+  // writes). Path: ${XDG_CONFIG_HOME}/llamastash/config.yaml.
+  let config_path = root.join("config").join("llamastash").join("config.yaml");
   assert!(
     !config_path.exists(),
     "--config-step skip must not write {}",

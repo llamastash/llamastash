@@ -22,7 +22,7 @@ Source: `https://github.com/huggingface/hf-hub/tree/v1.0.0-rc.1/hf-hub/src/`.
 - `hf-hub/src/client.rs:185-194` — when no injection is supplied, hf-hub builds its own internal `reqwest::Client` with default headers; injection overrides this path entirely.
 - `hf-hub/src/repository/download.rs:84-145` — download builders accept `range: Option<std::ops::Range<u64>>`, translated to a `Range: bytes={start}-{end - 1}` header on the underlying GET. HEAD-first probe captures `Content-Length` and `X-Linked-Size`, so partial downloads can resume from a recorded offset without a separate wrapper.
 - `hf-hub/src/repository/download.rs:23-44` — `Progress` trait + `DownloadEvent::{Start, Progress, Complete}` enum. Wired into both stream and tempfile download paths, so the wizard's progress UI doesn't need a polling loop.
-- `hf-hub/Cargo.toml:34-43` — pulls `reqwest = "0.12.2"` with `default-features = false, features = ["json", "stream"]`. Compatible with llamadash's existing `reqwest = "0.12"` pin (`Cargo.toml:62-68`). Feature flag `rustls-tls` enables our preferred TLS stack.
+- `hf-hub/Cargo.toml:34-43` — pulls `reqwest = "0.12.2"` with `default-features = false, features = ["json", "stream"]`. Compatible with llamastash's existing `reqwest = "0.12"` pin (`Cargo.toml:62-68`). Feature flag `rustls-tls` enables our preferred TLS stack.
 
 ## Version selection
 
@@ -32,12 +32,12 @@ Source: `https://github.com/huggingface/hf-hub/tree/v1.0.0-rc.1/hf-hub/src/`.
 | 0.5.0 (2026-02-19) | ✗ | partial (download_file uses chunks but no exposed `Range` builder) | stable |
 | 0.4.x | ✗ | ✗ | stable |
 
-The 0.5.0 stable path would require a carve-out wrapping hf-hub's downloads behind llamadash's `FetchClient` (~150 LOC of glue + reimplemented cache-layout writes). 1.0.0-rc.1 lets us pin the rc and use the official API directly — much smaller surface to maintain. Risk is contained: `Cargo.lock` pins the resolved version; an rc bump goes through a deliberate PR.
+The 0.5.0 stable path would require a carve-out wrapping hf-hub's downloads behind llamastash's `FetchClient` (~150 LOC of glue + reimplemented cache-layout writes). 1.0.0-rc.1 lets us pin the rc and use the official API directly — much smaller surface to maintain. Risk is contained: `Cargo.lock` pins the resolved version; an rc bump goes through a deliberate PR.
 
 ## Implications for Units 4 / 9
 
 - **Unit 4** (`FetchClient`) builds the shared `reqwest::Client` configured per the v2 fetch contract (allowlisted hosts, redirect cap, IP-class filter, body-size cap, TLS-only, no `GITHUB_TOKEN`).
-- **Unit 9** does **not** depend on `hf-hub` in v2 — the rc.1 transitive `reqwest = "0.13"` clashes with llamadash v1's pinned `reqwest 0.12`, surfacing a Send-bound auto-trait regression in v1's CLI integration tests. Bumping reqwest crate-wide is the right v2.1 work item; for v2 launch we ship a minimal in-crate HF client (~350 LOC) on top of [`crate::init::fetch::FetchClient`] that hits the same `/api/models/{repo}/tree/main` and `/{repo}/resolve/main/{file}` endpoints. Strictly *more* fetch-contract enforcement than the hf-hub-injection path because every HF request rides the v2 allowlist + redirect cap + body cap directly.
+- **Unit 9** does **not** depend on `hf-hub` in v2 — the rc.1 transitive `reqwest = "0.13"` clashes with llamastash v1's pinned `reqwest 0.12`, surfacing a Send-bound auto-trait regression in v1's CLI integration tests. Bumping reqwest crate-wide is the right v2.1 work item; for v2 launch we ship a minimal in-crate HF client (~350 LOC) on top of [`crate::init::fetch::FetchClient`] that hits the same `/api/models/{repo}/tree/main` and `/{repo}/resolve/main/{file}` endpoints. Strictly *more* fetch-contract enforcement than the hf-hub-injection path because every HF request rides the v2 allowlist + redirect cap + body cap directly.
 - Range resume / native progress reporting: Out of v2 MVP scope. Re-implement on top of the in-crate client (or land the hf-hub bump) in v2.1.
 - v2.1 bump checklist: (a) update `Cargo.toml` reqwest to 0.13, (b) replace the in-crate HF client with `hf-hub` 1.0.0 (stable by then), (c) address the Send-bound test regression (likely via boxing the dispatch future, but more cleanly with a Tokio version of `tokio::task::spawn` that handles HRTB Send better — track upstream).
 

@@ -5,9 +5,9 @@
 use std::fs;
 use std::path::PathBuf;
 
-use llamadash::discovery::scanner::{scan, ScanOptions, ScanRoot};
-use llamadash::discovery::ModelSource;
-use llamadash::gguf::test_fixtures::build_minimal_gguf;
+use llamastash::discovery::scanner::{scan, ScanOptions, ScanRoot};
+use llamastash::discovery::ModelSource;
+use llamastash::gguf::test_fixtures::build_minimal_gguf;
 
 fn unique_temp_dir(label: &str) -> PathBuf {
   let nanos = std::time::SystemTime::now()
@@ -15,7 +15,7 @@ fn unique_temp_dir(label: &str) -> PathBuf {
     .expect("clock")
     .as_nanos();
   let dir = std::env::temp_dir().join(format!(
-    "llamadash-disc-{label}-{}-{nanos}",
+    "llamastash-disc-{label}-{}-{nanos}",
     std::process::id()
   ));
   fs::create_dir_all(&dir).expect("temp dir");
@@ -90,7 +90,7 @@ async fn scan_ignores_part_files_and_non_gguf() {
 async fn scan_continues_when_one_root_is_missing() {
   let alive = unique_temp_dir("alive");
   fs::write(alive.join("ok.gguf"), build_minimal_gguf("llama")).unwrap();
-  let dead = PathBuf::from("/nonexistent/llamadash/scan/root");
+  let dead = PathBuf::from("/nonexistent/llamastash/scan/root");
 
   let mut rx = scan(
     vec![

@@ -26,7 +26,7 @@ assignees: ''
 
 ## Environment
 
-- `llamadash --version`:
+- `llamastash --version`:
 - OS + version:
 - `llama-server --version` (if relevant):
 - GPU / backend (if relevant):
@@ -34,7 +34,7 @@ assignees: ''
 ## Daemon logs (if applicable)
 
 <details>
-<summary>Last ~100 lines of <code>$XDG_CACHE_HOME/llamadash/logs/llamadash.log</code></summary>
+<summary>Last ~100 lines of <code>$XDG_CACHE_HOME/llamastash/logs/llamastash.log</code></summary>
 
 ```
 paste here

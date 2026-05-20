@@ -5,7 +5,7 @@ This is the architecture as it ships through v2. Authoritative sources for desig
 ## v2 additions in one breath
 
 ```
-llamadash init   ─┬─► detection (gpu::probe + RAM + binary locate)
+llamastash init   ─┬─► detection (gpu::probe + RAM + binary locate)
                   ├─► install (GH Releases | brew | custom_path)
                   ├─► recommender (snapshot models × hardware fit × score)
                   ├─► download (hf-hub → ~/.cache/huggingface/hub/...)
@@ -13,13 +13,13 @@ llamadash init   ─┬─► detection (gpu::probe + RAM + binary locate)
                   ├─► smoke (phase-1 dry-run + binary --version probe)
                   └─► init_snapshot.json (sibling of state.json)
 
-llamadash doctor ─► detection + init_snapshot diff → typed findings
-llamadash pull   ─► hf-hub → HF cache layout
+llamastash doctor ─► detection + init_snapshot diff → typed findings
+llamastash pull   ─► hf-hub → HF cache layout
 ```
 
 Three submodule groupings under `src/init/`:
 
-- **Fetch substrate** — `fetch.rs` + `fetch_policy.rs` enforce the v2 fetch contract (host allowlist, redirect cap, body cap, HTTPS-only) on snapshot fetch and GH Releases install. HF traffic is carved out: `download.rs` uses the `hf-hub` crate, which talks only to `huggingface.co` and its LFS CDN — already constrained host families. `FetchClient::is_offline()` is still consulted so `--offline` / `LLAMADASH_OFFLINE` short-circuits the HF path too.
+- **Fetch substrate** — `fetch.rs` + `fetch_policy.rs` enforce the v2 fetch contract (host allowlist, redirect cap, body cap, HTTPS-only) on snapshot fetch and GH Releases install. HF traffic is carved out: `download.rs` uses the `hf-hub` crate, which talks only to `huggingface.co` and its LFS CDN — already constrained host families. `FetchClient::is_offline()` is still consulted so `--offline` / `LLAMASTASH_OFFLINE` short-circuits the HF path too.
 - **Snapshots** — `snapshot.rs` owns `init_snapshot.json` (per-machine wizard record); `benchmark.rs` owns the bundled+remote `BenchmarkSnapshot` (the curated model catalog + recommender weights).
 - **Wizard surface** — `detection.rs` (shared by init + doctor), `recommender.rs` (pure ranking), `install/*` (three install routes), `download.rs` (HF pull via `hf-hub`), `config_writer.rs` (atomic write + diff + redaction), `smoke.rs` (phase-1 + version probe), `wizard.rs` (6-step orchestrator), `doctor.rs` (read-only diagnostic).
 
@@ -28,11 +28,11 @@ Three submodule groupings under `src/init/`:
 ```mermaid
 flowchart LR
     subgraph user[User-facing entrypoints]
-        TUI[llamadash<br/>TUI]
-        CLI[llamadash list / start / stop / ...<br/>CLI subcommands]
+        TUI[llamastash<br/>TUI]
+        CLI[llamastash list / start / stop / ...<br/>CLI subcommands]
     end
 
-    subgraph daemon[llamadash daemon]
+    subgraph daemon[llamastash daemon]
         IPC[Unix-socket JSON-RPC server<br/>peercred auth]
         SCAN[Discovery<br/>scan + watch + caches]
         GGUF[GGUF parser<br/>metadata + identity]
@@ -59,9 +59,9 @@ flowchart LR
     SUP --> RES
 ```
 
-- **Daemon-on-demand.** The TUI and CLI both try to attach to the daemon socket first. If absent or stale, they fork/exec `llamadash daemon start --detach` and retry with exponential backoff.
+- **Daemon-on-demand.** The TUI and CLI both try to attach to the daemon socket first. If absent or stale, they fork/exec `llamastash daemon start --detach` and retry with exponential backoff.
 - **Socket.** Unix domain socket, mode `0600`, with peer-credential auth (`SO_PEERCRED` on Linux, `getpeereid` on macOS). Wire protocol: length-prefixed JSON-RPC 2.0 envelopes.
-- **State separation.** XDG-aware. `$XDG_STATE_HOME/llamadash/state.json` for favorites / presets / last-params / running snapshot. `$XDG_CONFIG_HOME/llamadash/config.yaml` for user-authored config. `$XDG_CACHE_HOME/llamadash/logs/<id>-<ts>.log` for per-launch logs.
+- **State separation.** XDG-aware. `$XDG_STATE_HOME/llamastash/state.json` for favorites / presets / last-params / running snapshot. `$XDG_CONFIG_HOME/llamastash/config.yaml` for user-authored config. `$XDG_CACHE_HOME/llamastash/logs/<id>-<ts>.log` for per-launch logs.
 
 ## Model lifecycle
 
@@ -108,7 +108,7 @@ The discovery scanner emits one entry per canonical path — symlinks dedupe to 
 | Ready | embedding | Logs, Embed |
 | Ready | rerank | Logs, Rerank |
 
-The Chat / Embed / Rerank tabs hit the same OpenAI-compatible endpoints any external client would use (`/v1/chat/completions`, `/v1/embeddings`, `/v1/rerank`). This is deliberate: it proves the model is consumable by anything, not just LlamaDash's own smoke test.
+The Chat / Embed / Rerank tabs hit the same OpenAI-compatible endpoints any external client would use (`/v1/chat/completions`, `/v1/embeddings`, `/v1/rerank`). This is deliberate: it proves the model is consumable by anything, not just LlamaStash's own smoke test.
 
 ## IPC surface
 

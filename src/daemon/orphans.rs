@@ -45,7 +45,7 @@ pub struct ExternalProcess {
   pub cmdline: String,
   /// Detected `-m <path>` from the process's command line, if any.
   /// Helps the user identify which model is running outside
-  /// llamadash's control.
+  /// llamastash's control.
   pub model_path: Option<PathBuf>,
   /// Boot-time snapshot of the process's start_time (seconds since
   /// kernel boot or epoch, depending on platform). Used by
@@ -363,7 +363,7 @@ mod tests {
     let recorded = vec![fake_snapshot(dead, 41123, "/m/a.gguf", 1)];
     let report = sweep(SweepInputs {
       recorded_running: &recorded,
-      external_marker: "llamadash-sweep-marker-that-matches-nothing-9f3a",
+      external_marker: "llamastash-sweep-marker-that-matches-nothing-9f3a",
       probe_timeout: Duration::from_millis(100),
     })
     .await;
@@ -381,7 +381,7 @@ mod tests {
     let recorded = vec![fake_snapshot(live, port, "/m/a.gguf", 1)];
     let report = sweep(SweepInputs {
       recorded_running: &recorded,
-      external_marker: "llamadash-sweep-marker-that-matches-nothing-9f3a",
+      external_marker: "llamastash-sweep-marker-that-matches-nothing-9f3a",
       probe_timeout: Duration::from_millis(100),
     })
     .await;
@@ -403,7 +403,7 @@ mod tests {
     let recorded = vec![fake_snapshot(live, port, "/m/match.gguf", 1)];
     let report = sweep(SweepInputs {
       recorded_running: &recorded,
-      external_marker: "llamadash-sweep-marker-that-matches-nothing-9f3a",
+      external_marker: "llamastash-sweep-marker-that-matches-nothing-9f3a",
       probe_timeout: Duration::from_secs(1),
     })
     .await;
@@ -429,7 +429,7 @@ mod tests {
     let recorded = vec![fake_snapshot(live, port, "/m/expected.gguf", 1)];
     let report = sweep(SweepInputs {
       recorded_running: &recorded,
-      external_marker: "llamadash-sweep-marker-that-matches-nothing-9f3a",
+      external_marker: "llamastash-sweep-marker-that-matches-nothing-9f3a",
       probe_timeout: Duration::from_secs(1),
     })
     .await;

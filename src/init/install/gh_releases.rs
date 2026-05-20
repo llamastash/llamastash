@@ -212,7 +212,7 @@ pub async fn install_picked(
 fn translate_fetch(e: FetchError) -> InstallError {
   match e {
     FetchError::RateLimited { status } => InstallError::RateLimited { status },
-    FetchError::Offline => InstallError::Fetch("offline mode (LLAMADASH_OFFLINE)".into()),
+    FetchError::Offline => InstallError::Fetch("offline mode (LLAMASTASH_OFFLINE)".into()),
     other => InstallError::Fetch(other.to_string()),
   }
 }

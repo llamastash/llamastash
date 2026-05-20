@@ -1,6 +1,6 @@
 //! HuggingFace pull (Unit 9, R65).
 //!
-//! Backs `llamadash pull <repo>` standalone and the init wizard's
+//! Backs `llamastash pull <repo>` standalone and the init wizard's
 //! model step. v2 uses the [`hf-hub`] crate (0.5 line) for the HF
 //! listing + download path. hf-hub resolves the same `reqwest 0.12`
 //! we pin elsewhere, so adopting it does not introduce a duplicate
@@ -19,7 +19,7 @@
 //! `~/.cache/huggingface/hub/models--<owner>--<repo>/snapshots/<rev>/<file>`,
 //! with blobs stored under `blobs/<etag>` and snapshot paths as
 //! symlinks. hf-hub writes exactly that layout, so subsequent
-//! `llamadash list` rescans dedupe via the existing discovery path
+//! `llamastash list` rescans dedupe via the existing discovery path
 //! (R62).
 
 use std::path::{Path, PathBuf};
@@ -65,7 +65,7 @@ pub enum DownloadError {
   BadRepoSpec(String),
   #[error("HF_TOKEN file `{}` is mode {mode:o}; refuse to use (run `chmod 600 {}`)", path.display(), path.display())]
   TokenFileTooOpen { path: PathBuf, mode: u32 },
-  #[error("offline mode (LLAMADASH_OFFLINE / --offline); cannot pull from HuggingFace")]
+  #[error("offline mode (LLAMASTASH_OFFLINE / --offline); cannot pull from HuggingFace")]
   Offline,
   #[error(
     "free disk space {available_bytes} bytes < estimated {needed_bytes} \
@@ -311,7 +311,7 @@ fn build_api(cache_dir: PathBuf) -> Result<Api, DownloadError> {
     .with_endpoint(endpoint)
     .with_cache_dir(cache_dir)
     .with_token(token)
-    .with_user_agent("llamadash", env!("CARGO_PKG_VERSION"))
+    .with_user_agent("llamastash", env!("CARGO_PKG_VERSION"))
     .with_progress(false)
     .build()
     .map_err(DownloadError::from)
@@ -449,7 +449,7 @@ pub async fn download_repo(
   })
 }
 
-/// `llamadash pull <repo>` handler entry-point. Unit 3 wires this in.
+/// `llamastash pull <repo>` handler entry-point. Unit 3 wires this in.
 pub async fn run(args: PullArgs, _cli: &Cli, _config: &Config) -> CliResult {
   let spec = RepoSpec::parse(&args.repo).map_err(|e| CliExit::prefix(PULL_FAILED, "pull", e))?;
   let fetch = crate::init::fetch::build_with_offline_check(

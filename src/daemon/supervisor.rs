@@ -273,7 +273,7 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
   // `FORBIDDEN_ADVANCED_PREFIXES` enforces for argv.
   //
   // `HF_TOKEN` / `HF_HOME` / `HUGGING_FACE_HUB_TOKEN` are stripped
-  // because llamadash itself reads them (init + pull surfaces) and
+  // because llamastash itself reads them (init + pull surfaces) and
   // there is no reason for `llama-server` — which does not pull from
   // HuggingFace during a launch — to see them. Leaking them into a
   // supervised child widens the credential blast radius (child log
@@ -844,7 +844,7 @@ mod tests {
       port: 41100,
       mode: LaunchMode::Chat,
       params,
-      log_path: PathBuf::from("/tmp/llamadash-test.log"),
+      log_path: PathBuf::from("/tmp/llamastash-test.log"),
       ready_at: RwLock::new(None),
       state: RwLock::new(initial),
       pid: RwLock::new(None),

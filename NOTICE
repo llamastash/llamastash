@@ -1,7 +1,7 @@
-llamadash — third-party attributions
+llamastash — third-party attributions
 ====================================
 
-llamadash itself is MIT-licensed (see `LICENSE`). This NOTICE file lists
+llamastash itself is MIT-licensed (see `LICENSE`). This NOTICE file lists
 third-party sources whose code or curation feeds the benchmark snapshot
 regeneration flow (Unit 7 of the v2 plan). The Rust binary does not link
 or embed any of the sources below; they run only in the CI workflow
@@ -37,7 +37,7 @@ Vendored sources
    the polyglot_leaderboard.yml in Aider's GitHub repo by
    scripts/benchmark_sources/aider.py.
 
-If you ship a binary build of llamadash, you do not need to redistribute
+If you ship a binary build of llamastash, you do not need to redistribute
 this NOTICE — none of the above is in the compiled artefact. The file
 is part of the source release for transparency about where the snapshot
 data came from.

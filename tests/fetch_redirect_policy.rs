@@ -29,7 +29,7 @@
 // the targeted unit tests land in v2.1 when the rustls test-mock
 // dep cost is paid by another consumer.
 
-use llamadash::init::fetch::{FetchClient, FetchClientConfig, FetchError};
+use llamastash::init::fetch::{FetchClient, FetchClientConfig, FetchError};
 
 #[tokio::test]
 async fn http_scheme_refused_before_any_dns() {

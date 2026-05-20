@@ -229,7 +229,7 @@ mod tests {
       .expect("clock")
       .as_nanos();
     let p = std::env::temp_dir().join(format!(
-      "llamadash-ollama-{label}-{}-{nanos}",
+      "llamastash-ollama-{label}-{}-{nanos}",
       std::process::id()
     ));
     fs::create_dir_all(&p).expect("temp dir");

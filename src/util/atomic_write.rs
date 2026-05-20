@@ -1,4 +1,4 @@
-//! Atomic-write helper used by every llamadash component that
+//! Atomic-write helper used by every llamastash component that
 //! persists JSON / YAML state under `$XDG_STATE_HOME` or
 //! `$XDG_CONFIG_HOME`.
 //!
@@ -73,7 +73,7 @@ mod tests {
       .unwrap()
       .as_nanos();
     let p = std::env::temp_dir().join(format!(
-      "llamadash-atomic-write-{label}-{}-{nanos}",
+      "llamastash-atomic-write-{label}-{}-{nanos}",
       std::process::id()
     ));
     std::fs::create_dir_all(&p).unwrap();

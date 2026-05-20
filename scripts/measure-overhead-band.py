@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure the per-backend VRAM overhead band for llamadash's recommender.
+"""Measure the per-backend VRAM overhead band for llamastash's recommender.
 
 Runs ``llama-server`` against a 7B Q4_K_M GGUF, samples peak GPU memory
 once the ``/health`` endpoint reports ready, repeats ``--runs`` times,

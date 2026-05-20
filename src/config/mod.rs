@@ -2,7 +2,7 @@
 //!
 //! Configuration sources resolve in priority order:
 //! 1. CLI flags
-//! 2. Environment variables (`LLAMADASH_*`)
+//! 2. Environment variables (`LLAMASTASH_*`)
 //! 3. YAML config file (`config.yaml` under the OS config dir)
 //! 4. Built-in defaults
 //!

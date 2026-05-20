@@ -9,8 +9,8 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
-use llamadash::gguf::test_fixtures::{build_minimal_gguf, FixtureBuilder};
-use llamadash::gguf::{
+use llamastash::gguf::test_fixtures::{build_minimal_gguf, FixtureBuilder};
+use llamastash::gguf::{
   compute_identity, estimate_memory, read_path, summarise_metadata, EstimateOptions, GgufError,
   GgufValue, HeaderReadOptions, ModeHint, Quant,
 };
@@ -346,7 +346,7 @@ impl TmpDir {
       .unwrap()
       .as_nanos();
     let path = std::env::temp_dir().join(format!(
-      "llamadash-gguf-{label}-{}-{nanos}",
+      "llamastash-gguf-{label}-{}-{nanos}",
       std::process::id()
     ));
     fs::create_dir_all(&path).unwrap();

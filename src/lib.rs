@@ -1,4 +1,4 @@
-//! llamadash library — TUI + CLI + daemon for managing local llama.cpp
+//! llamastash library — TUI + CLI + daemon for managing local llama.cpp
 //! servers. The binary at `src/main.rs` is a thin wrapper around the
 //! modules exposed here so integration tests (in `tests/`) can drive the
 //! same code paths the binary uses.

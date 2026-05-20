@@ -73,7 +73,7 @@ pub struct BenchmarkSnapshot {
   /// Minimum binary version that may consume this snapshot. The
   /// rollback-DoS gate: an attacker publishing a fresher
   /// `bundle_date` cannot weaponise the silent-fallback against a
-  /// downgraded llamadash build by raising `min_version`.
+  /// downgraded llamastash build by raising `min_version`.
   pub min_version: String,
   /// Where the daily CI run publishes the next snapshot. Captured in
   /// the snapshot itself rather than hard-coded so the URL can be
@@ -247,7 +247,7 @@ mod tests {
       schema_version: 1,
       bundle_date: "2026-05-01".into(),
       min_version: "0.2.0".into(),
-      remote_url: Some("https://github.com/llamadash/llamadash/releases/download/snapshot-latest/benchmark-snapshot.json".into()),
+      remote_url: Some("https://github.com/llamastash/llamastash/releases/download/snapshot-latest/benchmark-snapshot.json".into()),
       recommender_weights: load_bundled().recommender_weights.clone(),
       models: load_bundled().models.clone(),
     }

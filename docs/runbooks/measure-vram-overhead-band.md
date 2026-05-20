@@ -67,8 +67,8 @@ Common overrides:
 ```
 
 Env-var equivalents exist for every flag (`LLAMA_SERVER`, `BACKEND`,
-`RUNS`, `CTX`, `NGL`, `PORT`, `GPU_ID`, `LLAMADASH_MODEL_PATH`,
-`LLAMADASH_MEASURE_OUT`).
+`RUNS`, `CTX`, `NGL`, `PORT`, `GPU_ID`, `LLAMASTASH_MODEL_PATH`,
+`LLAMASTASH_MEASURE_OUT`).
 
 ## Per-backend gotchas
 
@@ -115,7 +115,7 @@ Env-var equivalents exist for every flag (`LLAMA_SERVER`, `BACKEND`,
 - Quit memory-heavy apps (browsers, Slack, Xcode) before the run so
   the RSS reading is dominated by llama-server.
 - Disable Spotlight indexing on the model directory if you're running
-  on a fresh box (`mdutil -i off ~/.cache/llamadash`).
+  on a fresh box (`mdutil -i off ~/.cache/llamastash`).
 
 ## Reading the output
 

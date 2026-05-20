@@ -1,4 +1,4 @@
-//! Inter-process communication between llamadash frontends (TUI, CLI) and
+//! Inter-process communication between llamastash frontends (TUI, CLI) and
 //! the daemon. JSON-RPC 2.0 over a 4-byte length-prefixed framing layer
 //! on a Unix-domain socket.
 //!

@@ -4,7 +4,7 @@ use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumIter, EnumString};
 
-/// Named themes shipped with llamadash v1.
+/// Named themes shipped with llamastash v1.
 ///
 /// String forms accept both the short name and the conventional long name
 /// where one exists (e.g. `macchiato` and `catppuccin-macchiato`).

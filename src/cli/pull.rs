@@ -1,4 +1,4 @@
-//! `llamadash pull <hf-repo>` — graduated MVP for the v2-R65 HF pull
+//! `llamastash pull <hf-repo>` — graduated MVP for the v2-R65 HF pull
 //! primitive. Thin shim into `init::download::run`; Unit 9 fills in
 //! the multi-shard download body.
 

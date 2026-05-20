@@ -96,7 +96,7 @@ fn report(result: CliResult) -> i32 {
   }
 }
 
-/// Entry point for the TUI (`llamadash` with no subcommand). Returns a
+/// Entry point for the TUI (`llamastash` with no subcommand). Returns a
 /// `CliResult` so the dispatcher's exit-code surface stays uniform;
 /// any anyhow failure from the TUI runtime maps to `UNKNOWN`.
 ///
@@ -104,7 +104,7 @@ fn report(result: CliResult) -> i32 {
 /// the daemon socket isn't connectable, `connect_or_spawn` starts a
 /// detached daemon configured with `cli.model_paths` / `--no-scan` /
 /// `--llama-server` so discovery and host-metrics populate as soon
-/// as the TUI's event loop attaches. Without this, `llamadash -p
+/// as the TUI's event loop attaches. Without this, `llamastash -p
 /// /path` ran with the daemon down displayed an empty Models pane
 /// and "daemon connecting…" indefinitely.
 async fn handle_tui(cli: &Cli, config: &crate::config::Config) -> CliResult {

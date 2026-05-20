@@ -1,4 +1,4 @@
-//! `llamadash doctor` CLI handler. Thin shim into `init::doctor::run`.
+//! `llamastash doctor` CLI handler. Thin shim into `init::doctor::run`.
 
 use crate::cli::cli_args::{Cli, DoctorArgs};
 use crate::cli::exit_codes::CliResult;

@@ -2,7 +2,7 @@
 //!
 //! Priority order, per the plan:
 //! 1. CLI flag `--llama-server <path>`
-//! 2. `LLAMADASH_LLAMA_SERVER` environment variable
+//! 2. `LLAMASTASH_LLAMA_SERVER` environment variable
 //! 3. `$PATH` lookup via the `which` crate
 //!
 //! When `$PATH` has multiple matching candidates (e.g.,
@@ -27,7 +27,7 @@ pub struct LocateInputs {
 pub enum LocateError {
   /// None of the supplied sources pointed at a real, executable file
   /// and `which` found nothing on `$PATH`.
-  #[error("could not find `llama-server` — set `--llama-server <path>` or `LLAMADASH_LLAMA_SERVER`, or add it to your $PATH")]
+  #[error("could not find `llama-server` — set `--llama-server <path>` or `LLAMASTASH_LLAMA_SERVER`, or add it to your $PATH")]
   NotFound,
   /// A specific path was supplied (flag/env/config) but it doesn't
   /// exist or isn't a regular file. Distinct from `NotFound` so the
@@ -38,7 +38,7 @@ pub enum LocateError {
   /// it is not executable by the current user. Caught here so the
   /// supervisor doesn't need to translate a generic spawn failure into
   /// a user-actionable message later.
-  #[error("configured `llama-server` path is not executable: {p} — run `chmod +x {p}` or point `--llama-server` / `LLAMADASH_LLAMA_SERVER` at the real binary", p = .0.display())]
+  #[error("configured `llama-server` path is not executable: {p} — run `chmod +x {p}` or point `--llama-server` / `LLAMASTASH_LLAMA_SERVER` at the real binary", p = .0.display())]
   ExplicitPathNotExecutable(PathBuf),
 }
 

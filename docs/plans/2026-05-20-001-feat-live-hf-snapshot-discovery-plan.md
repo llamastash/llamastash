@@ -33,7 +33,7 @@ extending that vendoring to *model discovery* is the consistent move.
   as the catalog source.
 - Filter whichllm's output to "has a Q4_K_M (or equivalent) GGUF on HF
   from an allowlisted publisher" before adding to the snapshot — the
-  bundled catalog only ships models llamadash can actually launch.
+  bundled catalog only ships models llamastash can actually launch.
 - Add `source_hf_id`, `params_active`, `is_moe`, `gguf_publisher` to the
   snapshot schema and the Rust `ModelEntry` struct.
 - Port whichllm's MoE-aware KV / activation math into
@@ -134,7 +134,7 @@ from the snapshot. Catches "the catalog rotated and nothing fits the
 6 GB Nvidia cell anymore" as a corpus failure rather than a silent
 recommender regression.
 
-**Schema stays at `schema_version: 1`.** llamadash hasn't shipped a
+**Schema stays at `schema_version: 1`.** llamastash hasn't shipped a
 stable release with the snapshot format yet — there are no v1 binaries
 "in the wild" to be compatible with. New fields land directly in the
 existing schema. Serde `#[serde(default)]` is still used on the new
@@ -346,7 +346,7 @@ arrives post-release.
   but may need re-evaluation once we see actual JSON size from a
   full regen run. The build-time `const_assert` catches an
   overrun and we bump deliberately.
-- **Recency / churn UX.** A user who runs `llamadash init` today and
+- **Recency / churn UX.** A user who runs `llamastash init` today and
   again after a CI refresh may see different top-3 picks. The
   on-disk tiebreak (R60) keeps already-downloaded models pinned, so
   churn affects fresh installs more than maintenance runs.

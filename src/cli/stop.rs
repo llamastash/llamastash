@@ -1,4 +1,4 @@
-//! `llamadash stop <target>` / `llamadash stop --all`.
+//! `llamastash stop <target>` / `llamastash stop --all`.
 //!
 //! `<target>` is a launch id (`L3`) or a port; `--all` stops every
 //! managed launch after a y/n prompt (skipped with `--yes`).

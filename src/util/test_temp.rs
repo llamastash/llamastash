@@ -24,7 +24,7 @@ pub fn unique_temp_dir(label: &str) -> PathBuf {
     .duration_since(std::time::UNIX_EPOCH)
     .expect("clock")
     .as_nanos();
-  let p = std::env::temp_dir().join(format!("llamadash-{label}-{}-{nanos}", std::process::id()));
+  let p = std::env::temp_dir().join(format!("llamastash-{label}-{}-{nanos}", std::process::id()));
   std::fs::create_dir_all(&p).expect("create unique temp dir");
   #[cfg(unix)]
   {

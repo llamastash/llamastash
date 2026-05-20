@@ -222,7 +222,7 @@ pub fn run_phase_one_and_version(
 /// handled in Unit 10's `print_handoff`); non-interactive runs just
 /// print it as the last line.
 pub fn render_handoff_line() -> String {
-  "Run `llamadash` to enter the TUI, or `llamadash list` to see discovered models.".to_string()
+  "Run `llamastash` to enter the TUI, or `llamastash list` to see discovered models.".to_string()
 }
 
 #[cfg(test)]
@@ -375,7 +375,7 @@ mod tests {
         .unwrap()
         .as_nanos();
       let dir = std::env::temp_dir().join(format!(
-        "llamadash-version-probe-{}-{nanos}",
+        "llamastash-version-probe-{}-{nanos}",
         std::process::id()
       ));
       std::fs::create_dir_all(&dir).unwrap();
@@ -402,7 +402,7 @@ mod tests {
         .unwrap()
         .as_nanos();
       let dir = std::env::temp_dir().join(format!(
-        "llamadash-env-probe-{}-{nanos}",
+        "llamastash-env-probe-{}-{nanos}",
         std::process::id()
       ));
       std::fs::create_dir_all(&dir).unwrap();
@@ -443,7 +443,7 @@ mod tests {
   #[test]
   fn render_handoff_line_mentions_tui_and_list() {
     let s = render_handoff_line();
-    assert!(s.contains("llamadash"));
+    assert!(s.contains("llamastash"));
     assert!(s.contains("TUI") || s.contains("list"));
   }
 }

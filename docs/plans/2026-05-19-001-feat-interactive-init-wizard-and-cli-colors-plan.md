@@ -16,9 +16,9 @@ The work is bounded: one new dependency (`cliclack`), one new module (`src/cli/c
 
 ## Problem Frame
 
-The R48–R80 plan committed to an interactive wizard (origin §R48–R51, §"`init` step lifecycle", §"`init`/`doctor` mode/flag decision matrix" — the no-flag row says "prompt" for steps 2, 3, 4) but Unit 10 shipped without the `dialoguer` calls. Today `llamadash init` is functionally equivalent to `llamadash init --yes`: it derives defaults from hardware detection and executes them without ever asking the user, which (a) violates the documented contract in the origin plan, (b) gives users no way to override the install method when the auto-pick is wrong (e.g. a Linux box where GH Releases is preferable but brew is available), and (c) provides no progressive disclosure for the recommender's per-pick justification (R58).
+The R48–R80 plan committed to an interactive wizard (origin §R48–R51, §"`init` step lifecycle", §"`init`/`doctor` mode/flag decision matrix" — the no-flag row says "prompt" for steps 2, 3, 4) but Unit 10 shipped without the `dialoguer` calls. Today `llamastash init` is functionally equivalent to `llamastash init --yes`: it derives defaults from hardware detection and executes them without ever asking the user, which (a) violates the documented contract in the origin plan, (b) gives users no way to override the install method when the auto-pick is wrong (e.g. a Linux box where GH Releases is preferable but brew is available), and (c) provides no progressive disclosure for the recommender's per-pick justification (R58).
 
-Separately, no part of llamadash currently uses colors in its human outputs. Modern CLIs are expected to ship colored output by default with the standard `NO_COLOR` escape hatch, and the user has called this out as a baseline expectation. Bringing in colors for the wizard alone would be jarring against the plain-text rest of the CLI, so the global policy lands together.
+Separately, no part of llamastash currently uses colors in its human outputs. Modern CLIs are expected to ship colored output by default with the standard `NO_COLOR` escape hatch, and the user has called this out as a baseline expectation. Bringing in colors for the wizard alone would be jarring against the plain-text rest of the CLI, so the global policy lands together.
 
 ## Requirements Trace
 
@@ -27,7 +27,7 @@ Separately, no part of llamadash currently uses colors in its human outputs. Mod
 - **W3.** Per-step value flags MUST allow callers to pre-answer individual prompts without skipping the rest of the wizard: `--install <choice>`, `--model <choice>`, `--config <choice>`. When supplied, the matching step's prompt is suppressed and the value is used directly.
 - **W4.** When `--install` / `--model` / `--config` is supplied for a step that `--skip` already excludes, the wizard MUST emit a one-line stderr warning and proceed; conflicting flags don't abort.
 - **W5.** Integrity-check failures under any non-interactive mode (`--recommended`, `--yes`, per-step flags) MUST still abort with the documented exit codes — no silent downgrade. (Carried from origin Key Decision "`--yes` is `--no-confirm` semantics".)
-- **W6.** A global `--no-colors` flag MUST disable ANSI styling for every llamadash subcommand. Color output MUST also be auto-disabled when (a) `NO_COLOR` is set in the environment (per https://no-color.org), or (b) stdout is not a terminal. The three conditions are OR-ed; any one of them silences color.
+- **W6.** A global `--no-colors` flag MUST disable ANSI styling for every llamastash subcommand. Color output MUST also be auto-disabled when (a) `NO_COLOR` is set in the environment (per https://no-color.org), or (b) stdout is not a terminal. The three conditions are OR-ed; any one of them silences color.
 - **W7.** Human-readable outputs of every existing CLI command (`list`, `status`, `start`, `stop`, `logs`, `presets`, `favorites`, `last_params`, `pull`, `init`, `doctor`) SHOULD use colors by default: success-green, error-red, header-bold, dim secondary text. Status indicators (`✓`/`✗`/`›`) replace plain dashes where they aid scanning. `--json` outputs are byte-for-byte unchanged.
 - **W8.** Color policy MUST be initialised exactly once at process start (in `cli::dispatch` before any output). Modules consuming the policy MUST NOT each re-derive it.
 
@@ -68,11 +68,11 @@ No `docs/solutions/` entries directly cover prompt or color work. The closest ad
 - **`--yes` is preserved as a hidden alias for `--recommended`** (User Choice §2). The wizard reads a single canonical `is_recommended()` predicate that returns `args.recommended || args.yes`. `--yes` is `#[arg(long, hide = true)]` so it doesn't appear in `--help` for new users but stays parseable for existing scripts. No deprecation warning at runtime — the alias is permanent; the docstring on the `yes` field documents the equivalence.
 - **Per-step value flags use small typed enums, not free-form strings** (User Choice §3). `--install <brew|gh-releases|custom:<PATH>|existing>` parses into a new `InstallOverride` enum next to `InstallChoice`. `--model <hf-repo|recommended|none>` parses into `ModelOverride`. `--config <write|skip>` is a two-state enum. clap's `ValueEnum` derive handles the simple variants; `custom:<PATH>` uses a value-parser that splits on the first `:` and validates the suffix exists. Rationale: invalid values are caught at clap parse time, not deep inside the wizard, and `--help` lists every valid choice.
 - **`--install` / `--model` / `--config` are advisory, not authoritative**. They suppress the prompt for that step only. They do not implicitly add the step to `--only` or remove it from `--skip`. If `--skip server --install brew` is supplied, the wizard emits one stderr line `warning: --install ignored because the server step is skipped` and proceeds. This matches W4 and keeps the four flags' axes independent: `--only`/`--skip` control *which steps run*; `--install`/`--model`/`--config` control *how each running step decides*.
-- **Color policy lives in `src/cli/colors.rs`, initialised once in `cli::dispatch`** (W8). The module exports: `init(no_colors_flag: bool)` (sets `console::set_colors_enabled`), plus small render helpers `success(msg)`, `error(msg)`, `warning(msg)`, `dim(msg)`, `header(msg)`, `key_value(k, v)` returning `console::StyledObject<...>` or pre-rendered `String` as the call site prefers. Callers never re-derive whether colors are enabled. Rationale: a single source of truth for the policy means a future fourth condition (e.g., a `LLAMADASH_COLOR=never` env var) lands in one place rather than every output site.
-- **Wizard prompts wrap cliclack via `src/init/prompts.rs`**. The wrapper handles three things the bare cliclack calls don't: (1) honoring the recommended/yes flag without each step re-checking; (2) honoring per-step value flags (when `--install brew` is set, the install-method prompt is bypassed and the value is returned directly); (3) honoring `LLAMADASH_INIT_NONINTERACTIVE=1` (auto-set by the TTY detector when stdout isn't a terminal — so piped invocations still pick defaults rather than hang on `interact()`). Rationale: each wizard step calls a single helper (`prompts::pick_install_method(args, hardware, default)`), keeping the step function bodies focused on what they do, not on which interaction mode they're in.
+- **Color policy lives in `src/cli/colors.rs`, initialised once in `cli::dispatch`** (W8). The module exports: `init(no_colors_flag: bool)` (sets `console::set_colors_enabled`), plus small render helpers `success(msg)`, `error(msg)`, `warning(msg)`, `dim(msg)`, `header(msg)`, `key_value(k, v)` returning `console::StyledObject<...>` or pre-rendered `String` as the call site prefers. Callers never re-derive whether colors are enabled. Rationale: a single source of truth for the policy means a future fourth condition (e.g., a `LLAMASTASH_COLOR=never` env var) lands in one place rather than every output site.
+- **Wizard prompts wrap cliclack via `src/init/prompts.rs`**. The wrapper handles three things the bare cliclack calls don't: (1) honoring the recommended/yes flag without each step re-checking; (2) honoring per-step value flags (when `--install brew` is set, the install-method prompt is bypassed and the value is returned directly); (3) honoring `LLAMASTASH_INIT_NONINTERACTIVE=1` (auto-set by the TTY detector when stdout isn't a terminal — so piped invocations still pick defaults rather than hang on `interact()`). Rationale: each wizard step calls a single helper (`prompts::pick_install_method(args, hardware, default)`), keeping the step function bodies focused on what they do, not on which interaction mode they're in.
 - **`InitArgs::recommended` is the canonical flag; `yes` is read-only fallback**. Inside the wizard, all decisions branch on a single computed `is_recommended` boolean, not on the raw flags. Rationale: a future flag like `--all-defaults` could be added by extending the predicate without revisiting every step.
 - **Color polish on existing CLI commands uses helpers, not direct ANSI escapes**. Each touched site (list / status / start / stop / etc.) calls `colors::success("started ...")` rather than embedding `\x1b[32m`. Rationale: the helpers are tested for the `--no-colors` path once; the call sites stay clean.
-- **The colored persistent header (line 399's `eprintln!("llamadash init — detected ... ")`) becomes a cliclack `intro` block**. Rationale: cliclack already renders an intro panel with the wizard's identity colour; we shouldn't double-print a custom header above it. The hardware information moves into the intro block's body.
+- **The colored persistent header (line 399's `eprintln!("llamastash init — detected ... ")`) becomes a cliclack `intro` block**. Rationale: cliclack already renders an intro panel with the wizard's identity colour; we shouldn't double-print a custom header above it. The hardware information moves into the intro block's body.
 
 ## Open Questions
 
@@ -115,7 +115,7 @@ For each step, three independent axes decide the runtime behaviour. The interact
 ### Wizard flow shape (cliclack rendering)
 
 ```text
-intro:  ◆ llamadash init
+intro:  ◆ llamastash init
         │
         │  detected: NVIDIA RTX 4090 · 64 GB RAM · 24 GB VRAM · Linux/x86_64
         │
@@ -133,14 +133,14 @@ step 3: ▲ Pick a model
         │
 step 4: ▲ Write config?
         │  diff preview:
-        │  + llama_server_path: /opt/llamadash/llama-cpp/b9222/llama-server
+        │  + llama_server_path: /opt/llamastash/llama-cpp/b9222/llama-server
         │  + arch_defaults.qwen2.n_gpu_layers: 99
         │  + arch_defaults.qwen2.flash_attn: true
         │  ● Yes
         │  ○ Skip
         │
 step 5: spinner → "smoke launching…" → ✓ ok (240 ms)
-outro:  ◆ ready — `llamadash` to launch the TUI
+outro:  ◆ ready — `llamastash` to launch the TUI
 ```
 
 ### `cli::colors` module shape (pseudo)
@@ -271,7 +271,7 @@ When colors are disabled, every helper short-circuits to the plain glyph + messa
 - Test: extend `tests/cli_init_parse.rs` for every new flag's parsing matrix, including `--install custom:/usr/local/bin/llama-server` and `--model bartowski/Llama-3.2-3B-GGUF`.
 
 **Approach:**
-- The existing `--config` is on the *top-level* `Cli` struct (for the YAML config file path). The new `--config` lives on `InitArgs` and only resolves under `llamadash init`. clap routes per-subcommand args independently; both can coexist as long as the field names don't collide on the same struct. The plan's `config_choice` field name keeps Rust-level distinct identifiers.
+- The existing `--config` is on the *top-level* `Cli` struct (for the YAML config file path). The new `--config` lives on `InitArgs` and only resolves under `llamastash init`. clap routes per-subcommand args independently; both can coexist as long as the field names don't collide on the same struct. The plan's `config_choice` field name keeps Rust-level distinct identifiers.
 - The `Custom(PathBuf)` variant's value parser: accept `custom:<PATH>`, error on missing colon, error on empty path, do **not** stat the path at parse time (the wizard's existing `is_safe_to_adopt` runs the integrity check at step execution time, which is the documented contract). Parse-time validation is shape-only.
 - The `Paste(String)` value parser: accept any string of the form `<owner>/<repo>` where both parts are non-empty and contain no whitespace. Further repo-existence verification happens at HF download time (already covered by the existing fetch path).
 - The full conflict matrix between `--only` / `--skip` and `--install` / `--model` / `--config` is **not** enforced at parse time. The wizard emits the warning at runtime per W4 because clap's `conflicts_with` doesn't model "warn but allow" semantics.
@@ -281,20 +281,20 @@ When colors are disabled, every helper short-circuits to the plain glyph + messa
 - `src/cli/cli_args.rs::parse_render_size` for the custom value-parser pattern.
 
 **Test scenarios:**
-- *Happy path*: `llamadash init --recommended` parses; `args.recommended` is `true`, `args.yes` is `false`.
-- *Happy path*: `llamadash init --yes` parses (hidden alias); `args.recommended` is `false`, `args.yes` is `true`.
-- *Happy path*: `llamadash init --recommended --yes` parses with both flags `true` (no mutual exclusion).
-- *Happy path*: `llamadash init --install brew` parses; `args.install` is `Some(InstallOverride::Brew)`.
-- *Happy path*: `llamadash init --install custom:/usr/local/bin/llama-server` parses; `args.install` is `Some(InstallOverride::Custom("/usr/local/bin/llama-server".into()))`.
-- *Error path*: `llamadash init --install custom:` fails clap parse with an actionable error (empty path).
-- *Error path*: `llamadash init --install custom:relative/path` either parses (relative paths permitted; stat happens at exec time) or errors — pick one in implementation; the test pins the chosen behavior.
-- *Error path*: `llamadash init --install unknown` fails clap parse with "possible values: brew, gh-releases, existing, custom:<PATH>".
-- *Happy path*: `llamadash init --model bartowski/Llama-3.2-3B-GGUF` parses; `args.model` is `Some(ModelOverride::Paste("bartowski/Llama-3.2-3B-GGUF".into()))`.
-- *Happy path*: `llamadash init --model recommended` parses; `args.model` is `Some(ModelOverride::Recommended)`.
-- *Happy path*: `llamadash init --model none` parses; `args.model` is `Some(ModelOverride::None)`.
-- *Error path*: `llamadash init --model invalid-no-slash` fails clap parse.
-- *Happy path*: `llamadash init --config skip` parses; `args.config_choice` is `Some(ConfigOverride::Skip)`.
-- *Edge case*: `llamadash init --recommended --install brew --model bartowski/Llama-3.2-3B-GGUF --config write` parses cleanly (all flags coexist).
+- *Happy path*: `llamastash init --recommended` parses; `args.recommended` is `true`, `args.yes` is `false`.
+- *Happy path*: `llamastash init --yes` parses (hidden alias); `args.recommended` is `false`, `args.yes` is `true`.
+- *Happy path*: `llamastash init --recommended --yes` parses with both flags `true` (no mutual exclusion).
+- *Happy path*: `llamastash init --install brew` parses; `args.install` is `Some(InstallOverride::Brew)`.
+- *Happy path*: `llamastash init --install custom:/usr/local/bin/llama-server` parses; `args.install` is `Some(InstallOverride::Custom("/usr/local/bin/llama-server".into()))`.
+- *Error path*: `llamastash init --install custom:` fails clap parse with an actionable error (empty path).
+- *Error path*: `llamastash init --install custom:relative/path` either parses (relative paths permitted; stat happens at exec time) or errors — pick one in implementation; the test pins the chosen behavior.
+- *Error path*: `llamastash init --install unknown` fails clap parse with "possible values: brew, gh-releases, existing, custom:<PATH>".
+- *Happy path*: `llamastash init --model bartowski/Llama-3.2-3B-GGUF` parses; `args.model` is `Some(ModelOverride::Paste("bartowski/Llama-3.2-3B-GGUF".into()))`.
+- *Happy path*: `llamastash init --model recommended` parses; `args.model` is `Some(ModelOverride::Recommended)`.
+- *Happy path*: `llamastash init --model none` parses; `args.model` is `Some(ModelOverride::None)`.
+- *Error path*: `llamastash init --model invalid-no-slash` fails clap parse.
+- *Happy path*: `llamastash init --config skip` parses; `args.config_choice` is `Some(ConfigOverride::Skip)`.
+- *Edge case*: `llamastash init --recommended --install brew --model bartowski/Llama-3.2-3B-GGUF --config write` parses cleanly (all flags coexist).
 - *Edge case*: existing `--only`/`--skip` mutual exclusion still holds (no regression).
 
 **Verification:**
@@ -400,7 +400,7 @@ When colors are disabled, every helper short-circuits to the plain glyph + messa
 
 **Verification:**
 - `cargo test --features test-fixtures cli` passes after the ANSI-strip helper lands.
-- Visual diff: running `llamadash list`, `llamadash status`, `llamadash start <m>`, `llamadash doctor` in a real terminal shows colored output; running with `--no-colors`, `NO_COLOR=1`, or piping to `cat` shows plain text.
+- Visual diff: running `llamastash list`, `llamastash status`, `llamastash start <m>`, `llamastash doctor` in a real terminal shows colored output; running with `--no-colors`, `NO_COLOR=1`, or piping to `cat` shows plain text.
 
 ---
 
@@ -457,7 +457,7 @@ When colors are disabled, every helper short-circuits to the plain glyph + messa
 | Users with `--yes` in scripts see no functional change but the doc says "deprecated alias" | `--yes` is hidden in `--help` but still parsed (Unit 3). No runtime warning. The doc note (Unit 6) explains the alias is permanent — not actually deprecated, just superseded as the recommended invocation. |
 | The cliclack `confirm` returns `false` and the wizard rolls back — but the install + model steps already completed | The rollback for `--config skip` is just "don't write the file"; the install + downloaded model on disk are preserved (matches today's `--skip config` semantics). The summary line tells the user what landed and what was declined. |
 | `console::set_colors_enabled(false)` is process-global; tests that run in parallel could race on it | `colors::init` is called once at process start. Tests that need a specific color state use `console::set_colors_enabled` directly within a test-local scope and restore the previous value on drop (RAII pattern). |
-| Non-TTY auto-disable hits unexpected environments (e.g. an interactive subshell where stdout is captured by a wrapper) | Document `LLAMADASH_FORCE_COLOR=1` as an opt-back-in env var. **Deferred to Unit 1** if the simpler three-condition policy proves insufficient in early testing — the OR-condition layout makes adding a fourth (positive) condition straightforward. |
+| Non-TTY auto-disable hits unexpected environments (e.g. an interactive subshell where stdout is captured by a wrapper) | Document `LLAMASTASH_FORCE_COLOR=1` as an opt-back-in env var. **Deferred to Unit 1** if the simpler three-condition policy proves insufficient in early testing — the OR-condition layout makes adding a fourth (positive) condition straightforward. |
 
 ## Documentation / Operational Notes
 

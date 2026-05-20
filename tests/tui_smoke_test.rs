@@ -8,13 +8,13 @@
 use std::path::PathBuf;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-use llamadash::discovery::{DiscoveredModel, ModelSource};
-use llamadash::gguf::metadata::{ModeHint, ModelMetadata, Quant};
-use llamadash::theme::ThemeName;
-use llamadash::tui::app::{App, AppOptions};
-use llamadash::tui::events::pump_input;
-use llamadash::tui::keybindings::KeyMap;
-use llamadash::tui::render::render;
+use llamastash::discovery::{DiscoveredModel, ModelSource};
+use llamastash::gguf::metadata::{ModeHint, ModelMetadata, Quant};
+use llamastash::theme::ThemeName;
+use llamastash::tui::app::{App, AppOptions};
+use llamastash::tui::events::pump_input;
+use llamastash::tui::keybindings::KeyMap;
+use llamastash::tui::render::render;
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 
@@ -67,7 +67,7 @@ fn empty_app_renders_title_info_and_empty_state() {
   // ~120 cells to coexist with the connecting-daemon label.
   let frame = render_to_string(&mut app, 130, 20);
   assert!(
-    frame.contains("LlamaDash"),
+    frame.contains("LlamaStash"),
     "title row missing brand: {frame}"
   );
   assert!(
@@ -158,8 +158,8 @@ fn enter_on_model_opens_inline_launch_picker_in_settings_tab() {
   // surrounding right pane (with the picker form) shares one frame
   // with the Models list, so assertions check the inline form
   // fields rather than a `Launch · qwen` modal title.
-  use llamadash::tui::keybindings::Focus;
-  use llamadash::tui::RightTab;
+  use llamastash::tui::keybindings::Focus;
+  use llamastash::tui::RightTab;
   let mut app = App::new(AppOptions::default());
   app.models = vec![fake_model("/m/qwen.gguf", "/m")];
   app.go_top();
@@ -183,10 +183,10 @@ fn arrows_in_settings_tab_cycle_fields_and_values() {
   // Round-7 navigation model: ↑/↓ in the Settings tab cycle the
   // form's fields (ctx → reasoning → advanced), and ←/→ cycle
   // the focused field's value. Tab cycles panes universally.
-  use llamadash::tui::keybindings::Focus;
-  use llamadash::tui::launch_picker::PickerField;
-  use llamadash::tui::launch_picker::CTX_PRESETS;
-  use llamadash::tui::RightTab;
+  use llamastash::tui::keybindings::Focus;
+  use llamastash::tui::launch_picker::PickerField;
+  use llamastash::tui::launch_picker::CTX_PRESETS;
+  use llamastash::tui::RightTab;
   let mut app = App::new(AppOptions::default());
   app.models = vec![fake_model("/m/qwen.gguf", "/m")];
   app.go_top();
@@ -213,7 +213,7 @@ fn arrows_in_settings_tab_cycle_fields_and_values() {
   );
   // → walks the reasoning tri-state forward (ModelDefault → On).
   pump_input(&mut app, key(KeyCode::Right, KeyModifiers::NONE));
-  use llamadash::tui::launch_picker::ReasoningSetting;
+  use llamastash::tui::launch_picker::ReasoningSetting;
   assert_eq!(
     app.launch_picker.as_ref().unwrap().reasoning,
     ReasoningSetting::On
@@ -226,8 +226,8 @@ fn arrow_on_settings_auto_stages_picker_when_none() {
   // but any field-cycle or value-cycle keystroke immediately
   // should — lets the user start editing without first reaching
   // for Enter.
-  use llamadash::tui::keybindings::Focus;
-  use llamadash::tui::RightTab;
+  use llamastash::tui::keybindings::Focus;
+  use llamastash::tui::RightTab;
   let mut app = App::new(AppOptions::default());
   app.models = vec![fake_model("/m/qwen.gguf", "/m")];
   app.go_top();
@@ -305,7 +305,7 @@ fn theme_cycle_swaps_palette_without_restart() {
   assert_ne!(app.options.theme, ThemeName::Macchiato);
   // Render still produces a coherent frame with the new theme.
   let frame = render_to_string(&mut app, 80, 12);
-  assert!(frame.contains("LlamaDash"));
+  assert!(frame.contains("LlamaStash"));
 }
 
 #[test]
@@ -314,7 +314,7 @@ fn right_pane_shows_settings_only_for_unlaunched_model() {
   // model — Logs / Chat / Embed / Rerank all need a running
   // supervisor. The tab set collapses to just Settings so the user
   // can configure and dispatch the launch from the same pane.
-  use llamadash::tui::RightTab;
+  use llamastash::tui::RightTab;
   let mut app = App::new(AppOptions::default());
   app.models = vec![fake_model("/m/qwen.gguf", "/m")];
   app.go_top();
@@ -338,9 +338,9 @@ fn right_pane_shows_settings_only_for_unlaunched_model() {
 
 #[test]
 fn ready_chat_model_exposes_chat_tab_via_cycle() {
-  use llamadash::tui::app::ManagedRow;
-  use llamadash::tui::status_icons::SurfaceState;
-  use llamadash::tui::RightTab;
+  use llamastash::tui::app::ManagedRow;
+  use llamastash::tui::status_icons::SurfaceState;
+  use llamastash::tui::RightTab;
   let mut app = App::new(AppOptions::default());
   app.models = vec![fake_model("/m/qwen.gguf", "/m")];
   app.managed = vec![ManagedRow {
@@ -368,7 +368,7 @@ fn ready_chat_model_exposes_chat_tab_via_cycle() {
 
 #[test]
 fn external_row_surfaces_via_ingest_status_external_array() {
-  use llamadash::tui::status_icons::SurfaceState;
+  use llamastash::tui::status_icons::SurfaceState;
   use serde_json::json;
   let mut app = App::new(AppOptions::default());
   app.ingest_status(&json!({
@@ -409,7 +409,7 @@ fn launch_picker_seeds_from_persisted_last_params() {
   assert_eq!(picker.ctx, Some(8192));
   // Round-8: persisted `reasoning: true` lands on the explicit
   // `On` tri-state, not on the `ModelDefault` neutral slot.
-  use llamadash::tui::launch_picker::ReasoningSetting;
+  use llamastash::tui::launch_picker::ReasoningSetting;
   assert_eq!(
     picker.reasoning,
     ReasoningSetting::On,
@@ -435,8 +435,8 @@ fn picker_warns_when_focused_model_already_has_active_instance() {
   // user isn't surprised. Running paths drop out of Favorites /
   // folder groups, so the only row for this model is the Running
   // entry itself — that's where the cursor lands.
-  use llamadash::tui::app::ManagedRow;
-  use llamadash::tui::status_icons::SurfaceState;
+  use llamastash::tui::app::ManagedRow;
+  use llamastash::tui::status_icons::SurfaceState;
   let mut app = App::new(AppOptions::default());
   app.models = vec![fake_model("/m/qwen.gguf", "/m")];
   app.managed = vec![ManagedRow {
@@ -482,10 +482,10 @@ fn typing_into_chat_input_extends_prompt_buffer() {
   // (see `kdash-style polish round 5`), so this test drives the
   // pane chain with → / e instead: → moves Models → RightPane on
   // the Chat tab, then `e` enters edit mode → ChatInput.
-  use llamadash::tui::app::ManagedRow;
-  use llamadash::tui::keybindings::Focus;
-  use llamadash::tui::status_icons::SurfaceState;
-  use llamadash::tui::RightTab;
+  use llamastash::tui::app::ManagedRow;
+  use llamastash::tui::keybindings::Focus;
+  use llamastash::tui::status_icons::SurfaceState;
+  use llamastash::tui::RightTab;
   let mut app = App::new(AppOptions::default());
   app.models = vec![fake_model("/m/qwen.gguf", "/m")];
   app.managed = vec![ManagedRow {
@@ -522,7 +522,7 @@ fn typing_into_chat_input_extends_prompt_buffer() {
 
 #[test]
 fn ctrl_r_in_chat_input_toggles_think_collapse() {
-  use llamadash::tui::keybindings::Focus;
+  use llamastash::tui::keybindings::Focus;
   let mut app = App::new(AppOptions::default());
   app.focus = Focus::ChatInput;
   assert!(!app.chat.collapse_thinks);
@@ -534,8 +534,8 @@ fn ctrl_r_in_chat_input_toggles_think_collapse() {
 
 #[test]
 fn s_in_right_pane_toggles_logs_auto_scroll() {
-  use llamadash::tui::keybindings::Focus;
-  use llamadash::tui::RightTab;
+  use llamastash::tui::keybindings::Focus;
+  use llamastash::tui::RightTab;
   let mut app = App::new(AppOptions::default());
   app.focus = Focus::RightPane;
   // Default right tab is Settings now — flip to Logs so `s`
@@ -552,8 +552,8 @@ fn rerank_enter_in_candidate_field_stages_buffer() {
   // in the candidate field now stages the typed candidate onto
   // the list — no extra chord required. Enter in the query field
   // still dispatches `/v1/rerank`.
-  use llamadash::tui::keybindings::Focus;
-  use llamadash::tui::tabs::rerank::RerankField;
+  use llamastash::tui::keybindings::Focus;
+  use llamastash::tui::tabs::rerank::RerankField;
   let mut app = App::new(AppOptions::default());
   app.focus = Focus::RerankInput;
   // Type a query then ↓ to the candidate field.
@@ -579,8 +579,8 @@ fn rerank_enter_in_candidate_field_stages_buffer() {
 fn rerank_enter_in_candidate_field_with_empty_buffer_toasts() {
   // Empty candidate buffer → no add, just a hint toast so the
   // user understands why nothing changed.
-  use llamadash::tui::keybindings::Focus;
-  use llamadash::tui::tabs::rerank::RerankField;
+  use llamastash::tui::keybindings::Focus;
+  use llamastash::tui::tabs::rerank::RerankField;
   let mut app = App::new(AppOptions::default());
   app.focus = Focus::RerankInput;
   app.rerank.field = RerankField::Candidate;
@@ -596,7 +596,7 @@ fn narrow_terminal_does_not_crash_render() {
   let mut app = App::new(AppOptions::default());
   app.models = vec![fake_model("/m/very-long-model-name-2.5b-Q4_K_M.gguf", "/m")];
   let frame = render_to_string(&mut app, 60, 12);
-  assert!(frame.contains("LlamaDash"));
+  assert!(frame.contains("LlamaStash"));
 }
 
 #[test]

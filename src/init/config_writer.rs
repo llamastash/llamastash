@@ -263,7 +263,7 @@ mod tests {
       .unwrap()
       .as_nanos();
     let dir = std::env::temp_dir().join(format!(
-      "llamadash-config-writer-it-{}-{nanos}",
+      "llamastash-config-writer-it-{}-{nanos}",
       std::process::id()
     ));
     fs::create_dir_all(&dir).unwrap();

@@ -14,18 +14,18 @@ use crate::banner::BANNER;
 
 #[derive(Parser, Debug)]
 #[command(
-  name = "llamadash",
+  name = "llamastash",
   version,
   about = "Fast keyboard-driven TUI + CLI for local llama.cpp models",
   long_about = None,
   before_help = BANNER,
 )]
 pub struct Cli {
-  /// Path to a YAML config file (overrides `LLAMADASH_CONFIG`).
+  /// Path to a YAML config file (overrides `LLAMASTASH_CONFIG`).
   #[arg(long, value_name = "PATH", global = true)]
   pub config: Option<PathBuf>,
 
-  /// Path to the `llama-server` binary (overrides `LLAMADASH_LLAMA_SERVER`).
+  /// Path to the `llama-server` binary (overrides `LLAMASTASH_LLAMA_SERVER`).
   #[arg(long, value_name = "PATH", global = true)]
   pub llama_server: Option<PathBuf>,
 
@@ -120,11 +120,11 @@ pub enum Command {
   Presets(PresetsArgs),
   /// Pull a GGUF from `HuggingFace`.
   ///
-  /// MVP shape (v2-R65): `llamadash pull <hf-repo>` downloads every
+  /// MVP shape (v2-R65): `llamastash pull <hf-repo>` downloads every
   /// GGUF in the repo (or a single shard set when the repo ships
   /// multi-shard files) into the canonical HF cache layout
   /// (`~/.cache/huggingface/hub/models--<owner>--<repo>/...`) so the
-  /// next `llamadash list` rescan finds it. `--json` emits the
+  /// next `llamastash list` rescan finds it. `--json` emits the
   /// summary; otherwise progress streams to stderr.
   Pull(PullArgs),
   /// Run the first-time setup / maintenance wizard (v2-R48).
@@ -334,10 +334,10 @@ pub struct PullArgs {
   /// pulls.
   #[arg(long)]
   pub json: bool,
-  /// Disable outbound network. Equivalent to `LLAMADASH_OFFLINE=1`.
+  /// Disable outbound network. Equivalent to `LLAMASTASH_OFFLINE=1`.
   /// Pull always requires network so this exits with `PULL_FAILED`
   /// (69) up-front; honored for parity with `init --offline`.
-  #[arg(long, env = "LLAMADASH_OFFLINE")]
+  #[arg(long, env = "LLAMASTASH_OFFLINE")]
   pub offline: bool,
 }
 
@@ -361,8 +361,8 @@ pub struct InitArgs {
   #[arg(long)]
   pub json: bool,
   /// Disable outbound network. Steps that require network are skipped
-  /// with actionable hints. Equivalent to `LLAMADASH_OFFLINE=1`.
-  #[arg(long, env = "LLAMADASH_OFFLINE")]
+  /// with actionable hints. Equivalent to `LLAMASTASH_OFFLINE=1`.
+  #[arg(long, env = "LLAMASTASH_OFFLINE")]
   pub offline: bool,
   /// Run only these step(s). Repeatable; values are comma-separable.
   /// Mutually exclusive with `--skip`.
@@ -601,7 +601,7 @@ mod tests {
   }
 
   fn parse(args: &[&str]) -> Cli {
-    Cli::try_parse_from(std::iter::once("llamadash").chain(args.iter().copied()))
+    Cli::try_parse_from(std::iter::once("llamastash").chain(args.iter().copied()))
       .expect("argv should parse")
   }
 
@@ -666,7 +666,7 @@ mod tests {
 
   #[test]
   fn init_only_and_skip_are_mutually_exclusive() {
-    let result = Cli::try_parse_from(["llamadash", "init", "--only", "server", "--skip", "config"]);
+    let result = Cli::try_parse_from(["llamastash", "init", "--only", "server", "--skip", "config"]);
     assert!(result.is_err(), "--only and --skip must conflict");
   }
 
@@ -712,7 +712,7 @@ mod tests {
 
   #[test]
   fn init_yes_is_hidden_from_help_but_still_parses() {
-    let rendered = Cli::try_parse_from(["llamadash", "init", "--help"])
+    let rendered = Cli::try_parse_from(["llamastash", "init", "--help"])
       .unwrap_err()
       .to_string();
     assert!(
@@ -727,7 +727,7 @@ mod tests {
     );
     assert!(!rendered.contains("--yes"), "help must hide --yes");
     // Still parseable.
-    assert!(Cli::try_parse_from(["llamadash", "init", "--yes"]).is_ok());
+    assert!(Cli::try_parse_from(["llamastash", "init", "--yes"]).is_ok());
   }
 
   #[test]
@@ -777,13 +777,13 @@ mod tests {
 
   #[test]
   fn init_install_custom_empty_path_rejected_at_parse_time() {
-    let result = Cli::try_parse_from(["llamadash", "init", "--install", "custom:"]);
+    let result = Cli::try_parse_from(["llamastash", "init", "--install", "custom:"]);
     assert!(result.is_err());
   }
 
   #[test]
   fn init_install_unknown_value_rejected() {
-    let result = Cli::try_parse_from(["llamadash", "init", "--install", "frobnicate"]);
+    let result = Cli::try_parse_from(["llamastash", "init", "--install", "frobnicate"]);
     let err = result.expect_err("frobnicate must be rejected");
     let msg = err.to_string();
     assert!(
@@ -822,13 +822,13 @@ mod tests {
 
   #[test]
   fn init_model_without_slash_is_rejected() {
-    let result = Cli::try_parse_from(["llamadash", "init", "--model", "invalid-no-slash"]);
+    let result = Cli::try_parse_from(["llamastash", "init", "--model", "invalid-no-slash"]);
     assert!(result.is_err());
   }
 
   #[test]
   fn init_model_with_whitespace_is_rejected() {
-    let result = Cli::try_parse_from(["llamadash", "init", "--model", "owner / repo"]);
+    let result = Cli::try_parse_from(["llamastash", "init", "--model", "owner / repo"]);
     assert!(result.is_err());
   }
 
@@ -948,7 +948,7 @@ mod tests {
 
   #[test]
   fn pull_requires_repo() {
-    let result = Cli::try_parse_from(["llamadash", "pull"]);
+    let result = Cli::try_parse_from(["llamastash", "pull"]);
     assert!(result.is_err(), "pull requires the repo positional");
   }
 
@@ -972,9 +972,9 @@ mod tests {
       "daemon",
       "start",
       "--state-dir",
-      "/tmp/llamadash-test-state",
+      "/tmp/llamastash-test-state",
       "--socket-path",
-      "/tmp/llamadash-test-state/daemon.sock",
+      "/tmp/llamastash-test-state/daemon.sock",
     ]);
     match cli_with_paths.command {
       Some(Command::Daemon(DaemonAction::Start {
@@ -983,10 +983,10 @@ mod tests {
         socket_path,
       })) => {
         assert!(!detach);
-        assert_eq!(state_dir, Some(PathBuf::from("/tmp/llamadash-test-state")));
+        assert_eq!(state_dir, Some(PathBuf::from("/tmp/llamastash-test-state")));
         assert_eq!(
           socket_path,
-          Some(PathBuf::from("/tmp/llamadash-test-state/daemon.sock"))
+          Some(PathBuf::from("/tmp/llamastash-test-state/daemon.sock"))
         );
       }
       other => panic!("expected daemon start with paths, got {other:?}"),
@@ -1007,7 +1007,7 @@ mod tests {
 
   #[test]
   fn daemon_without_action_is_an_error() {
-    let result = Cli::try_parse_from(["llamadash", "daemon"]);
+    let result = Cli::try_parse_from(["llamastash", "daemon"]);
     assert!(result.is_err(), "daemon subcommand requires an action");
   }
 
@@ -1049,27 +1049,27 @@ mod tests {
 
   #[test]
   fn stop_all_conflicts_with_target() {
-    let result = Cli::try_parse_from(["llamadash", "stop", "42", "--all"]);
+    let result = Cli::try_parse_from(["llamastash", "stop", "42", "--all"]);
     assert!(result.is_err());
   }
 
   #[test]
   fn stop_requires_target_or_all() {
-    // `llamadash stop` with neither a positional target nor --all must error
+    // `llamastash stop` with neither a positional target nor --all must error
     // at parse time. Without the ArgGroup, clap would accept this silently
     // and the handler would have no idea what to stop.
-    let no_args = Cli::try_parse_from(["llamadash", "stop"]);
+    let no_args = Cli::try_parse_from(["llamastash", "stop"]);
     assert!(no_args.is_err(), "stop without target or --all must error");
 
-    let just_yes = Cli::try_parse_from(["llamadash", "stop", "--yes"]);
+    let just_yes = Cli::try_parse_from(["llamastash", "stop", "--yes"]);
     assert!(
       just_yes.is_err(),
       "stop --yes without target or --all must error"
     );
 
     // Either of the valid forms succeeds.
-    assert!(Cli::try_parse_from(["llamadash", "stop", "42"]).is_ok());
-    assert!(Cli::try_parse_from(["llamadash", "stop", "--all"]).is_ok());
+    assert!(Cli::try_parse_from(["llamastash", "stop", "42"]).is_ok());
+    assert!(Cli::try_parse_from(["llamastash", "stop", "--all"]).is_ok());
   }
 
   #[test]
@@ -1304,13 +1304,13 @@ mod tests {
 
   #[test]
   fn unknown_reasoning_value_errors() {
-    let result = Cli::try_parse_from(["llamadash", "start", "x", "--reasoning", "maybe"]);
+    let result = Cli::try_parse_from(["llamastash", "start", "x", "--reasoning", "maybe"]);
     assert!(result.is_err());
   }
 
   #[test]
   fn version_flag_works() {
-    let result = Cli::try_parse_from(["llamadash", "--version"]);
+    let result = Cli::try_parse_from(["llamastash", "--version"]);
     // clap returns an "error" with exit kind DisplayVersion for --version.
     let err = result.unwrap_err();
     assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
@@ -1320,7 +1320,7 @@ mod tests {
 
   #[test]
   fn help_flag_lists_every_user_facing_subcommand() {
-    let result = Cli::try_parse_from(["llamadash", "--help"]);
+    let result = Cli::try_parse_from(["llamastash", "--help"]);
     let err = result.unwrap_err();
     assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
     let rendered = err.to_string();

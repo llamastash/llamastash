@@ -384,7 +384,7 @@ fn quarantine_broken_state(state_dir: &Path) {
 /// touching the runtime.
 ///
 /// Mechanism:
-/// 1. Spawn `llamadash daemon start` (foreground mode) with `stdin`/
+/// 1. Spawn `llamastash daemon start` (foreground mode) with `stdin`/
 ///    `stdout`/`stderr` redirected to `/dev/null` and `setsid` applied
 ///    between `fork` and `exec`.
 /// 2. Poll the configured socket path for up to ~3s, attempting a
@@ -540,7 +540,7 @@ fn ensure_parent_dir(path: &Path) -> Result<()> {
 }
 
 /// `create_dir_all` with mode 0o700 on Unix so freshly-created
-/// per-user runtime directories (e.g. macOS's `$TMPDIR/llamadash-$USER`
+/// per-user runtime directories (e.g. macOS's `$TMPDIR/llamastash-$USER`
 /// fallback) are not world-readable. Linux's `$XDG_RUNTIME_DIR` is
 /// already 0700 by the systemd contract, but the fallback path needs
 /// this to keep parity. We don't downgrade pre-existing directories

@@ -1,4 +1,4 @@
-//! `llamadash presets <model-ref> {list|save|delete|show}`.
+//! `llamastash presets <model-ref> {list|save|delete|show}`.
 //!
 //! Wraps the daemon's `presets_*` IPC surface. Resolves the model
 //! reference once and threads the canonical path to every method;

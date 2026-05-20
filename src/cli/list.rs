@@ -1,4 +1,4 @@
-//! `llamadash list` — enumerate discovered models.
+//! `llamastash list` — enumerate discovered models.
 //!
 //! TSV-by-default output keeps it pipe-friendly; `--json` emits the
 //! stable agent-facing array. `--filter` is a substring matched

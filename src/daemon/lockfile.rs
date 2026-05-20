@@ -113,7 +113,7 @@ pub fn acquire(state_dir: &Path) -> Result<AcquireOutcome, LockfileError> {
     opts.mode(0o600);
     // `O_NOFOLLOW` refuses to open a symlink (returns ELOOP). Without
     // this, a local attacker on macOS could plant
-    // `/tmp/llamadash-$USER/daemon.pid → /victim/critical/file` and the
+    // `/tmp/llamastash-$USER/daemon.pid → /victim/critical/file` and the
     // subsequent `set_len(0)` would truncate the victim file. Linux's
     // XDG_RUNTIME_DIR is 0700 so the attack is macOS-fallback-only, but
     // the flag is cheap and we want defence in depth.

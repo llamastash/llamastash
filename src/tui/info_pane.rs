@@ -101,7 +101,7 @@ fn uptime_build_row<'a>(app: &'a App, palette: &'a Palette) -> Line<'a> {
 fn server_row<'a>(app: &'a App, budget: usize, palette: &'a Palette) -> Line<'a> {
   // When the daemon hasn't resolved a `llama-server` binary, point
   // the user at the override knobs instead of a bare `—` — they
-  // can install llama.cpp or set LLAMADASH_LLAMA_SERVER / pass
+  // can install llama.cpp or set LLAMASTASH_LLAMA_SERVER / pass
   // --llama-server to fix it without first guessing where the
   // binary was supposed to live.
   let server_path = app.daemon_info.server_path.as_deref();
@@ -120,7 +120,7 @@ fn server_row<'a>(app: &'a App, budget: usize, palette: &'a Palette) -> Line<'a>
       ])
     }
     None => {
-      let hint = "Not found in usual paths. Set LLAMADASH_LLAMA_SERVER or pass --llama-server";
+      let hint = "Not found. Set LLAMASTASH_LLAMA_SERVER or pass --llama-server";
       let trimmed = right_ellipsise(hint, budget);
       Line::from(vec![
         Span::styled(LABEL_SERVER, palette.label_style()),
@@ -586,7 +586,7 @@ mod tests {
     let mut app = App::new(AppOptions::default());
     app.daemon_info = DaemonInfo {
       pid: Some(4242),
-      socket_path: Some("/run/user/1000/llamadash/daemon.sock".into()),
+      socket_path: Some("/run/user/1000/llamastash/daemon.sock".into()),
       ..Default::default()
     };
     let rows = render_lines(&app);
@@ -618,16 +618,17 @@ mod tests {
     };
     let rows = render_lines(&app);
     let server_row = rows.iter().find(|r| r.contains("server")).unwrap();
-    // The narrow 50-cell test backend truncates the hint, but the
-    // leading "Not found" tag and `LLAMADASH` env-var prefix
-    // survive the right-truncation.
+    // The narrow 50-cell test backend truncates the trailing
+    // `--llama-server` suggestion, but the leading "Not found"
+    // tag and the full `LLAMASTASH_LLAMA_SERVER` env-var name
+    // survive — both are actionable on their own.
     assert!(
       server_row.contains("Not found"),
       "expected `Not found` hint, got: {server_row:?}"
     );
     assert!(
-      server_row.contains("LLAMADASH"),
-      "expected LLAMADASH env-var hint, got: {server_row:?}"
+      server_row.contains("LLAMASTASH"),
+      "expected LLAMASTASH env-var hint, got: {server_row:?}"
     );
     assert!(
       !server_row.contains('('),

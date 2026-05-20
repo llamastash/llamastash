@@ -5,7 +5,7 @@
 //! - redirect cap (3),
 //! - HTTPS-only,
 //! - per-call body-size cap with streaming + `Content-Length` pre-check,
-//! - minimal `User-Agent` = `llamadash/<CARGO_PKG_VERSION>`,
+//! - minimal `User-Agent` = `llamastash/<CARGO_PKG_VERSION>`,
 //! - no opportunistic `Authorization` header. `GITHUB_TOKEN` /
 //!   `GH_TOKEN` env vars are never read; callers add bearer auth
 //!   explicitly (e.g. Unit 9 for `HF_TOKEN`).
@@ -26,7 +26,7 @@ use crate::init::fetch_policy::{check_url, HostAllowlist, UrlRefusal, MAX_REDIRE
 /// branch on the variant.
 #[derive(Debug, thiserror::Error)]
 pub enum FetchError {
-  #[error("network egress is disabled (LLAMADASH_OFFLINE / --offline)")]
+  #[error("network egress is disabled (LLAMASTASH_OFFLINE / --offline)")]
   Offline,
   #[error("URL host `{host}` is not on the allowlist; refused before connecting")]
   HostNotAllowed { host: String },
@@ -72,7 +72,7 @@ pub struct FetchClientConfig {
   /// Long enough for a few-hundred-megabyte download; Unit 9 sets a
   /// per-call cap when it knows the expected shard size.
   pub request_timeout: Duration,
-  /// User-Agent header value. Defaults to `llamadash/<version>`;
+  /// User-Agent header value. Defaults to `llamastash/<version>`;
   /// Unit 9 may attach a discriminator suffix.
   pub user_agent: String,
 }
@@ -83,7 +83,7 @@ impl Default for FetchClientConfig {
       allowlist: HostAllowlist::default_v2(),
       connect_timeout: Duration::from_secs(10),
       request_timeout: Duration::from_secs(120),
-      user_agent: format!("llamadash/{}", env!("CARGO_PKG_VERSION")),
+      user_agent: format!("llamastash/{}", env!("CARGO_PKG_VERSION")),
     }
   }
 }
@@ -266,14 +266,14 @@ fn translate_send_error(e: reqwest::Error) -> FetchError {
   }
 }
 
-/// Honour `LLAMADASH_OFFLINE=1` / `--offline` by returning an offline
+/// Honour `LLAMASTASH_OFFLINE=1` / `--offline` by returning an offline
 /// stub. Resolution rule: explicit `cli_offline == true` wins; otherwise
 /// the env var is consulted (`"1"`, `"true"`, `"yes"` are truthy).
 pub fn offline_requested(cli_offline: bool) -> bool {
   if cli_offline {
     return true;
   }
-  match std::env::var("LLAMADASH_OFFLINE") {
+  match std::env::var("LLAMASTASH_OFFLINE") {
     Ok(v) => {
       let v = v.to_ascii_lowercase();
       v == "1" || v == "true" || v == "yes"
@@ -282,7 +282,7 @@ pub fn offline_requested(cli_offline: bool) -> bool {
   }
 }
 
-/// Resolve a `FetchClient` honouring `--offline` / `LLAMADASH_OFFLINE`.
+/// Resolve a `FetchClient` honouring `--offline` / `LLAMASTASH_OFFLINE`.
 /// On error the caller surfaces `INIT_ABORTED` — a `reqwest::Client`
 /// builder failure is fatal because we can't ship a half-configured
 /// client that bypasses the contract.
@@ -338,22 +338,22 @@ mod tests {
     // same `cargo test` invocation don't race on the env var.
     static LOCK: Mutex<()> = Mutex::new(());
     let _g = LOCK.lock().unwrap();
-    let saved = std::env::var_os("LLAMADASH_OFFLINE");
+    let saved = std::env::var_os("LLAMASTASH_OFFLINE");
     for v in ["1", "true", "TRUE", "yes", "Yes"] {
-      std::env::set_var("LLAMADASH_OFFLINE", v);
+      std::env::set_var("LLAMASTASH_OFFLINE", v);
       assert!(offline_requested(false), "value `{v}` should be truthy");
     }
     for v in ["0", "false", "no", ""] {
-      std::env::set_var("LLAMADASH_OFFLINE", v);
+      std::env::set_var("LLAMASTASH_OFFLINE", v);
       assert!(!offline_requested(false), "value `{v}` should be falsy");
     }
     // cli_offline=true always wins regardless of env.
-    std::env::set_var("LLAMADASH_OFFLINE", "0");
+    std::env::set_var("LLAMASTASH_OFFLINE", "0");
     assert!(offline_requested(true));
     // Restore.
     match saved {
-      Some(s) => std::env::set_var("LLAMADASH_OFFLINE", s),
-      None => std::env::remove_var("LLAMADASH_OFFLINE"),
+      Some(s) => std::env::set_var("LLAMASTASH_OFFLINE", s),
+      None => std::env::remove_var("LLAMASTASH_OFFLINE"),
     }
   }
 

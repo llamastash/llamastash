@@ -1,6 +1,6 @@
- 🦙  LlamaDash v0.2.0-dev · ● daemon · ◐ macchiato           ?:help · Tab/⇧+Tab:panes · Q:kill daemon · t:theme · q:quit
+ 🦙  LlamaStash v0.2.0-dev · ● daemon · ◐ macchiato           ?:help · Tab/⇧+Tab:panes · Q:kill daemon · t:theme · q:quit
 ┌ Host ────────────────────┐┌ Daemon ───────────────────────────────────────────────────────────────────────┐┌─────────┐
-│CPU  █████░░░░░ 48%  54°C ││socket  /run/user/1000/llamadash/daemon.sock  pid 4242                         ││ ██      │
+│CPU  █████░░░░░ 48%  54°C ││socket  /run/user/1000/llamastash/daemon.sock  pid 4242                         ││ ██      │
 │RAM  ███░░░░░░░ 11G/32G   ││uptime  3h12m   build  v0.1.0                                                  ││ ██  🦙   │
 │GPU  ████████░░ 84%  68°C ││server  /usr/local/bin/llama-server (cuda)                                     ││ ██  ███ │
 │VRAM ██████░░░░ 14G/24G   ││models  3 found · 1 ready · 2 ★                                                ││ ██      │

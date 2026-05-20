@@ -2,7 +2,7 @@
 //!
 //! v1 reads from `logs_tail` on the same refresher tick as the
 //! status snapshots; pause/resume hotkeys land alongside Unit 8's
-//! `llamadash logs --follow` work. The renderer pulls `lines` off
+//! `llamastash logs --follow` work. The renderer pulls `lines` off
 //! the App so the tab is purely a presentation concern.
 
 use ratatui::layout::Rect;

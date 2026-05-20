@@ -1,7 +1,7 @@
 //! Single-frame renderer (kdash-style dashboard layout).
 //!
 //! Vertical:
-//! 1. **Title row** (1 line) — `LlamaDash v0.1.0 · ● daemon` left,
+//! 1. **Title row** (1 line) — `LlamaStash v0.1.0 · ● daemon` left,
 //!    global hint strip (`?:help  t:theme  /:filter  q:quit`) right.
 //!    Both styled with `palette.accent` background and `palette.bg`
 //!    foreground.
@@ -214,7 +214,7 @@ fn render_title_left(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Pal
     // an emoji-capable font dependency.
     Span::styled("🦙 ", Style::default().fg(on_accent)),
     Span::styled(
-      "LlamaDash",
+      "LlamaStash",
       Style::default().fg(on_accent).add_modifier(Modifier::BOLD),
     ),
     Span::styled(format!(" v{version} · "), Style::default().fg(on_accent)),
@@ -448,7 +448,7 @@ fn render_empty_state(
   let lines = vec![
     Line::from(Span::styled("No GGUFs surfaced yet.", palette.text_style())),
     Line::from(Span::styled(
-      "Drop a `.gguf` into a watched directory or run `llamadash --model-path <DIR>`.",
+      "Drop a `.gguf` into a watched directory or run `llamastash --model-path <DIR>`.",
       palette.muted_style(),
     )),
   ];
@@ -497,7 +497,7 @@ mod tests {
     );
     // No panels should have been drawn.
     assert!(
-      !body.contains("LlamaDash"),
+      !body.contains("LlamaStash"),
       "panels must not render: {body}"
     );
   }
@@ -508,7 +508,7 @@ mod tests {
     let rows = render_into(100, 30, app);
     let body = rows.join("\n");
     assert!(
-      body.contains("LlamaDash"),
+      body.contains("LlamaStash"),
       "title row missing brand: {body}"
     );
     assert!(body.contains("?:help"), "title row missing global hints");
@@ -651,7 +651,7 @@ mod tests {
     let app = App::new(AppOptions::default());
     let rows = render_into(80, 16, app);
     let body = rows.join("\n");
-    assert!(body.contains("LlamaDash"), "title still renders");
+    assert!(body.contains("LlamaStash"), "title still renders");
     assert!(body.contains("Models"), "body still renders");
     // The Host pane block title is rendered as discrete cells, so the
     // joined frame won't contain a contiguous "─ Host ─" token even

@@ -4,7 +4,7 @@
 #
 # Strategy: generate fixture tarballs at setup time, serve them via a local
 # Python HTTP server on a random port, and point install.sh at that server
-# via LLAMADASH_BASE_URL + LLAMADASH_LATEST_URL. Each test owns a fresh
+# via LLAMASTASH_BASE_URL + LLAMASTASH_LATEST_URL. Each test owns a fresh
 # install dir under a per-test temp directory.
 #
 # Run: bats scripts/install.test.bats
@@ -39,40 +39,40 @@ _native_target() {
 }
 
 # Build the fixture tree under $TEST_TMP/fixtures:
-#   fixtures/releases/v0.2.0/llamadash-0.2.0-${TARGET}.tar.gz
+#   fixtures/releases/v0.2.0/llamastash-0.2.0-${TARGET}.tar.gz
 #   fixtures/releases/v0.2.0/SHA256SUMS
 #   fixtures/api/latest.json
-# The fake binary in the tarball is a shell script that echoes "llamadash 0.2.0".
+# The fake binary in the tarball is a shell script that echoes "llamastash 0.2.0".
 _build_fixtures() {
   version_bare="0.2.0"
   tag="v${version_bare}"
 
-  build_dir="$TEST_TMP/build/llamadash-${version_bare}-${TARGET}"
+  build_dir="$TEST_TMP/build/llamastash-${version_bare}-${TARGET}"
   mkdir -p "$build_dir"
-  cat >"$build_dir/llamadash" <<EOF
+  cat >"$build_dir/llamastash" <<EOF
 #!/bin/sh
-echo "llamadash ${version_bare}"
+echo "llamastash ${version_bare}"
 EOF
-  chmod +x "$build_dir/llamadash"
+  chmod +x "$build_dir/llamastash"
   : >"$build_dir/LICENSE"
   : >"$build_dir/README.md"
 
   rel_dir="$TEST_TMP/fixtures/releases/${tag}"
   mkdir -p "$rel_dir"
-  tar -czf "$rel_dir/llamadash-${version_bare}-${TARGET}.tar.gz" \
-    -C "$TEST_TMP/build" "llamadash-${version_bare}-${TARGET}"
+  tar -czf "$rel_dir/llamastash-${version_bare}-${TARGET}.tar.gz" \
+    -C "$TEST_TMP/build" "llamastash-${version_bare}-${TARGET}"
 
-  sha=$(_sha256 "$rel_dir/llamadash-${version_bare}-${TARGET}.tar.gz")
-  printf '%s  %s\n' "$sha" "llamadash-${version_bare}-${TARGET}.tar.gz" \
+  sha=$(_sha256 "$rel_dir/llamastash-${version_bare}-${TARGET}.tar.gz")
+  printf '%s  %s\n' "$sha" "llamastash-${version_bare}-${TARGET}.tar.gz" \
     > "$rel_dir/SHA256SUMS"
 
   mkdir -p "$TEST_TMP/fixtures/api"
-  printf '{"tag_name": "%s", "name": "llamadash %s"}\n' "$tag" "$version_bare" \
+  printf '{"tag_name": "%s", "name": "llamastash %s"}\n' "$tag" "$version_bare" \
     > "$TEST_TMP/fixtures/api/latest.json"
 }
 
 # Start a Python HTTP server in $TEST_TMP/fixtures on a free port; export PORT,
-# SERVER_PID, LLAMADASH_BASE_URL, LLAMADASH_LATEST_URL.
+# SERVER_PID, LLAMASTASH_BASE_URL, LLAMASTASH_LATEST_URL.
 #
 # Lifecycle note: the subshell uses `exec` so it becomes the python process,
 # making $! the python PID directly. Without `exec`, killing $SERVER_PID would
@@ -99,8 +99,8 @@ _start_server() {
   fi
 
   export PORT SERVER_PID
-  export LLAMADASH_BASE_URL="http://127.0.0.1:$PORT/releases"
-  export LLAMADASH_LATEST_URL="http://127.0.0.1:$PORT/api/latest.json"
+  export LLAMASTASH_BASE_URL="http://127.0.0.1:$PORT/releases"
+  export LLAMASTASH_LATEST_URL="http://127.0.0.1:$PORT/api/latest.json"
 }
 
 # ---- bats lifecycle ---------------------------------------------------------
@@ -114,8 +114,8 @@ setup() {
 
   TEST_TMP=$(mktemp -d)
   export TEST_TMP
-  export LLAMADASH_INSTALL_DIR="$TEST_TMP/bin"
-  export LLAMADASH_QUIET=1
+  export LLAMASTASH_INSTALL_DIR="$TEST_TMP/bin"
+  export LLAMASTASH_QUIET=1
 
   _build_fixtures
   _start_server
@@ -145,36 +145,36 @@ teardown() {
 @test "happy path: install latest on native target" {
   run "$INSTALL_SH"
   [ "$status" -eq 0 ]
-  [ -x "$LLAMADASH_INSTALL_DIR/llamadash" ]
-  run "$LLAMADASH_INSTALL_DIR/llamadash" --version
+  [ -x "$LLAMASTASH_INSTALL_DIR/llamastash" ]
+  run "$LLAMASTASH_INSTALL_DIR/llamastash" --version
   [ "$status" -eq 0 ]
-  [ "$output" = "llamadash 0.2.0" ]
+  [ "$output" = "llamastash 0.2.0" ]
 }
 
 @test "happy path: --version flag pins to a specific tag" {
   run "$INSTALL_SH" --version "v0.2.0"
   [ "$status" -eq 0 ]
-  [ -x "$LLAMADASH_INSTALL_DIR/llamadash" ]
+  [ -x "$LLAMASTASH_INSTALL_DIR/llamastash" ]
 }
 
-@test "happy path: LLAMADASH_VERSION env pins to a specific tag" {
-  LLAMADASH_VERSION="v0.2.0" run "$INSTALL_SH"
+@test "happy path: LLAMASTASH_VERSION env pins to a specific tag" {
+  LLAMASTASH_VERSION="v0.2.0" run "$INSTALL_SH"
   [ "$status" -eq 0 ]
-  [ -x "$LLAMADASH_INSTALL_DIR/llamadash" ]
+  [ -x "$LLAMASTASH_INSTALL_DIR/llamastash" ]
 }
 
 @test "happy path: bare version (no leading v) is accepted" {
   run "$INSTALL_SH" --version "0.2.0"
   [ "$status" -eq 0 ]
-  [ -x "$LLAMADASH_INSTALL_DIR/llamadash" ]
+  [ -x "$LLAMASTASH_INSTALL_DIR/llamastash" ]
 }
 
 @test "happy path: --prefix overrides install directory" {
   alt_dir="$TEST_TMP/alt-bin"
   # --prefix must override the env-var default.
-  LLAMADASH_INSTALL_DIR= run "$INSTALL_SH" --prefix "$alt_dir"
+  LLAMASTASH_INSTALL_DIR= run "$INSTALL_SH" --prefix "$alt_dir"
   [ "$status" -eq 0 ]
-  [ -x "$alt_dir/llamadash" ]
+  [ -x "$alt_dir/llamastash" ]
 }
 
 # ---- idempotence ------------------------------------------------------------
@@ -183,12 +183,12 @@ teardown() {
   run "$INSTALL_SH"
   [ "$status" -eq 0 ]
 
-  first_inode=$(ls -i "$LLAMADASH_INSTALL_DIR/llamadash" | awk '{print $1}')
+  first_inode=$(ls -i "$LLAMASTASH_INSTALL_DIR/llamastash" | awk '{print $1}')
 
   run "$INSTALL_SH"
   [ "$status" -eq 0 ]
 
-  second_inode=$(ls -i "$LLAMADASH_INSTALL_DIR/llamadash" | awk '{print $1}')
+  second_inode=$(ls -i "$LLAMASTASH_INSTALL_DIR/llamastash" | awk '{print $1}')
 
   # Same inode = file wasn't replaced. The script's idempotence branch
   # short-circuits before touching the destination.
@@ -199,13 +199,13 @@ teardown() {
 
 @test "PATH hint: warning shown when install dir is not on PATH" {
   # Override QUIET locally so output is visible to the assertion.
-  PATH="/usr/bin:/bin" LLAMADASH_QUIET= run "$INSTALL_SH"
+  PATH="/usr/bin:/bin" LLAMASTASH_QUIET= run "$INSTALL_SH"
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "not on your"
 }
 
 @test "PATH hint: warning omitted when install dir is on PATH" {
-  PATH="$LLAMADASH_INSTALL_DIR:/usr/bin:/bin" LLAMADASH_QUIET= run "$INSTALL_SH"
+  PATH="$LLAMASTASH_INSTALL_DIR:/usr/bin:/bin" LLAMASTASH_QUIET= run "$INSTALL_SH"
   [ "$status" -eq 0 ]
   ! echo "$output" | grep -q "not on your"
 }
@@ -215,13 +215,13 @@ teardown() {
 @test "checksum mismatch: refuses install with exit 2" {
   # Sabotage SHA256SUMS so the verifier rejects the tarball.
   rel_dir="$TEST_TMP/fixtures/releases/v0.2.0"
-  tarball_name="llamadash-0.2.0-${TARGET}.tar.gz"
+  tarball_name="llamastash-0.2.0-${TARGET}.tar.gz"
   printf '%s  %s\n' "0000000000000000000000000000000000000000000000000000000000000000" "$tarball_name" \
     > "$rel_dir/SHA256SUMS"
 
   run "$INSTALL_SH"
   [ "$status" -eq 2 ]
-  [ ! -e "$LLAMADASH_INSTALL_DIR/llamadash" ]
+  [ ! -e "$LLAMASTASH_INSTALL_DIR/llamastash" ]
 }
 
 @test "missing asset: SHA256SUMS without our tarball line exits 1" {
@@ -236,7 +236,7 @@ teardown() {
 @test "nonexistent version exits 1" {
   run "$INSTALL_SH" --version "v9.9.9"
   [ "$status" -eq 1 ]
-  [ ! -e "$LLAMADASH_INSTALL_DIR/llamadash" ]
+  [ ! -e "$LLAMASTASH_INSTALL_DIR/llamastash" ]
 }
 
 @test "unknown flag exits 64" {
@@ -255,9 +255,9 @@ teardown() {
 }
 
 @test "--help exits 0 and prints usage" {
-  LLAMADASH_QUIET= run "$INSTALL_SH" --help
+  LLAMASTASH_QUIET= run "$INSTALL_SH" --help
   [ "$status" -eq 0 ]
-  echo "$output" | grep -q "install.sh — install llamadash"
+  echo "$output" | grep -q "install.sh — install llamastash"
 }
 
 # ---- platform refusal via uname stub ----------------------------------------
@@ -285,28 +285,28 @@ EOF
 
 @test "Windows host is refused with exit 64 and a clear message" {
   stub_dir=$(_install_uname_stub "MINGW64_NT-10.0" "x86_64")
-  PATH="$stub_dir:$PATH" LLAMADASH_QUIET= run "$INSTALL_SH"
+  PATH="$stub_dir:$PATH" LLAMASTASH_QUIET= run "$INSTALL_SH"
   [ "$status" -eq 64 ]
   echo "$output" | grep -q "Windows"
 }
 
 @test "unsupported Linux arch is refused with exit 64" {
   stub_dir=$(_install_uname_stub "Linux" "riscv64")
-  PATH="$stub_dir:$PATH" LLAMADASH_QUIET= run "$INSTALL_SH"
+  PATH="$stub_dir:$PATH" LLAMASTASH_QUIET= run "$INSTALL_SH"
   [ "$status" -eq 64 ]
   echo "$output" | grep -q "unsupported Linux arch"
 }
 
 @test "unsupported macOS arch is refused with exit 64" {
   stub_dir=$(_install_uname_stub "Darwin" "powerpc")
-  PATH="$stub_dir:$PATH" LLAMADASH_QUIET= run "$INSTALL_SH"
+  PATH="$stub_dir:$PATH" LLAMASTASH_QUIET= run "$INSTALL_SH"
   [ "$status" -eq 64 ]
   echo "$output" | grep -q "unsupported macOS arch"
 }
 
 @test "exotic OS is refused with exit 64" {
   stub_dir=$(_install_uname_stub "Plan9" "x86_64")
-  PATH="$stub_dir:$PATH" LLAMADASH_QUIET= run "$INSTALL_SH"
+  PATH="$stub_dir:$PATH" LLAMASTASH_QUIET= run "$INSTALL_SH"
   [ "$status" -eq 64 ]
   echo "$output" | grep -q "unsupported OS"
 }

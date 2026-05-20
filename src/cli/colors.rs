@@ -20,7 +20,7 @@
 //! # Why this lives in one place
 //!
 //! The policy has to be initialised before any output happens, and a
-//! later fourth condition (e.g. `LLAMADASH_FORCE_COLOR`) would land
+//! later fourth condition (e.g. `LLAMASTASH_FORCE_COLOR`) would land
 //! here without revisiting every print site.
 
 use std::io::IsTerminal;

@@ -1,11 +1,11 @@
-# LlamaDash sample configuration.
+# LlamaStash sample configuration.
 #
 # Copy this file to one of the resolved locations and edit:
 #
-#   Linux   ~/.config/llamadash/config.yaml
-#   macOS   ~/Library/Application Support/llamadash/config.yaml
-#   Both    LLAMADASH_CONFIG=/path/to/config.yaml
-#           llamadash --config /path/to/config.yaml ...
+#   Linux   ~/.config/llamastash/config.yaml
+#   macOS   ~/Library/Application Support/llamastash/config.yaml
+#   Both    LLAMASTASH_CONFIG=/path/to/config.yaml
+#           llamastash --config /path/to/config.yaml ...
 #
 # Every field is optional — missing keys fall back to the defaults
 # documented inline. Unknown top-level keys are silently ignored so
@@ -19,7 +19,7 @@
 # catppuccin-latte, gruvbox, solarized, monochrome.
 #
 # Set to `custom` to activate the `custom_theme:` block below; if
-# you set `custom` without supplying `custom_theme:`, LlamaDash logs
+# you set `custom` without supplying `custom_theme:`, LlamaStash logs
 # a warning and falls back to macchiato.
 theme: macchiato
 
@@ -65,7 +65,7 @@ theme: macchiato
 #
 # Extra directories to scan for .gguf files (recursive). Also
 # accepted via `-p / --model-path` on the CLI (repeatable) and the
-# `LLAMADASH_MODEL_PATHS` env var (colon-separated). Paths from all
+# `LLAMASTASH_MODEL_PATHS` env var (colon-separated). Paths from all
 # three sources are merged.
 model_paths: []
 # - /opt/llms
@@ -74,10 +74,10 @@ model_paths: []
 # ─── Default cache scanning ───────────────────────────────────────
 #
 # When `model_paths` is empty (and `--model-path` / env vars don't
-# add any), LlamaDash walks the well-known caches below. Flip a
+# add any), LlamaStash walks the well-known caches below. Flip a
 # bucket to `true` to disable scanning that cache without disabling
 # the others. Set `disable_scan: true` or pass `--no-scan` /
-# `LLAMADASH_NO_SCAN=1` to drop the whole sweep.
+# `LLAMASTASH_NO_SCAN=1` to drop the whole sweep.
 #
 # Cache locations:
 #   HuggingFace  ~/.cache/huggingface/hub
@@ -93,7 +93,7 @@ disable_default_cache_paths:
 # Disable filesystem scanning entirely. Useful when you've supplied
 # `model_paths` and don't want the daemon walking caches in
 # parallel. Errors at startup if no `model_paths` and no `-p` flag
-# either — LlamaDash refuses to start with nothing to list.
+# either — LlamaStash refuses to start with nothing to list.
 disable_scan: false
 
 # ─── Daemon ───────────────────────────────────────────────────────
@@ -106,7 +106,7 @@ port_range:
   end: 41300
 
 # Path to the `llama-server` binary. CLI flag `--llama-server` and
-# the `LLAMADASH_LLAMA_SERVER` env var take precedence over this.
+# the `LLAMASTASH_LLAMA_SERVER` env var take precedence over this.
 # Leave commented out to fall back to `$PATH`.
 # llama_server_path: /usr/local/bin/llama-server
 

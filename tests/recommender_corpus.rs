@@ -7,10 +7,10 @@
 //! mis-classified rows so the snapshot regen flow (Unit 7) can
 //! recalibrate weights or trim entries.
 
-use llamadash::gpu::{GpuDevice, GpuInfo};
-use llamadash::init::benchmark::load_bundled;
-use llamadash::init::detection::{CpuArch, HardwareSnapshot, OsFamily};
-use llamadash::init::recommender::{
+use llamastash::gpu::{GpuDevice, GpuInfo};
+use llamastash::init::benchmark::load_bundled;
+use llamastash::init::detection::{CpuArch, HardwareSnapshot, OsFamily};
+use llamastash::init::recommender::{
   recommend, RecommendOptions, Recommendation, RecommendationKind,
 };
 

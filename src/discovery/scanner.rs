@@ -354,7 +354,7 @@ mod tests {
 
   #[test]
   fn nonexistent_root_returns_empty_without_panic() {
-    let bogus = PathBuf::from("/nonexistent/scan-root-llamadash");
+    let bogus = PathBuf::from("/nonexistent/scan-root-llamastash");
     assert!(collect_gguf_paths(&bogus, &[]).is_empty());
   }
 

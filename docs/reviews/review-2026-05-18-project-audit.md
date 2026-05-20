@@ -1,4 +1,4 @@
-# LlamaDash project review — 2026-05-18
+# LlamaStash project review — 2026-05-18
 
 **Scope:** entire codebase at `HEAD` (commit `96b26dd`). ~33 kLOC Rust across `src/{cli,daemon,discovery,gguf,gpu,ipc,launch,theme,tui,util}/`.
 **Intent:** standing project audit across six angles — DRY/YAGNI, library substitutions, consistency, performance, UI/UX, and other improvements. Not a PR-diff review.
@@ -141,7 +141,7 @@ Concrete `cargo flamegraph` runs to confirm Tier-1 wins:
 
 ```bash
 # 1. Idle TUI cost (Tier 1 #1 + #2)
-cargo flamegraph --bin llamadash -- tui
+cargo flamegraph --bin llamastash -- tui
 # Leave on Models pane 60s, no input. Expect rendered_rows / build_rows
 # / BTreeMap::insert to dominate. Post-fix: mostly mio::poll.
 
@@ -154,7 +154,7 @@ cargo flamegraph --bin llamadash -- tui
 # to_list_response / serde_json::Value::clone weight.
 
 # 4. Cold-start discovery (Tier 2 scanner + Tier 3 rayon + BLAKE3)
-cargo flamegraph --bin llamadash -- list --json
+cargo flamegraph --bin llamastash -- list --json
 # Against a synthetic tree of 2000 minimal GGUFs (hfcache layout).
 ```
 
@@ -171,7 +171,7 @@ Based on the golden snapshot at `tests/golden/dashboard-overview.txt`, the `tui/
 - **Dual-encoded status** (colour + glyph) in the legend strip — works in mono terminals and for colour-blind users.
 - **Inline filter chip** inside the Models block title rather than a dedicated bottom row.
 - **Live keybinding resolution** in every chip — `keybindings:` config overrides flow through automatically without code changes.
-- **Empty-state copy is actionable** (`render.rs:376-386`): "Drop a `.gguf` into a watched directory or run `llamadash --model-path <DIR>`."
+- **Empty-state copy is actionable** (`render.rs:376-386`): "Drop a `.gguf` into a watched directory or run `llamastash --model-path <DIR>`."
 - **Width-adaptive layout** — logo panel drops, info row drops, hint strip clips chips by importance order. Good defensive work.
 
 ### Friction & gaps

@@ -1,26 +1,26 @@
 ---
-title: "feat: llamadash v2 — init wizard, doctor, and pull (R48–R80)"
+title: "feat: llamastash v2 — init wizard, doctor, and pull (R48–R80)"
 type: feat
 status: active
 date: 2026-05-18
 origin: docs/brainstorms/2026-05-18-init-wizard-requirements.md
 ---
 
-# feat: llamadash v2 — init wizard, doctor, and pull (R48–R80)
+# feat: llamastash v2 — init wizard, doctor, and pull (R48–R80)
 
 ## Overview
 
 v2 lands three coordinated CLI surfaces that share one detection + fetch substrate:
 
-- **`llamadash init`** — terminal-prompts wizard (no ratatui) that detects hardware, installs `llama-server` per OS×GPU class, downloads a recommender-picked starter GGUF into the HF cache layout R2 already scans, writes a tuned `config.yaml` (new `_init_snapshot` + `arch_defaults` blocks), and runs an end-to-end smoke launch.
-- **`llamadash doctor`** — read-only diagnostic that reuses init's detection module and compares against the `_init_snapshot` baseline.
-- **`llamadash pull <hf-repo>`** — graduated R46 primitive (was v1 `unimplemented!`), the same `hf-hub`-based downloader init's model step uses.
+- **`llamastash init`** — terminal-prompts wizard (no ratatui) that detects hardware, installs `llama-server` per OS×GPU class, downloads a recommender-picked starter GGUF into the HF cache layout R2 already scans, writes a tuned `config.yaml` (new `_init_snapshot` + `arch_defaults` blocks), and runs an end-to-end smoke launch.
+- **`llamastash doctor`** — read-only diagnostic that reuses init's detection module and compares against the `_init_snapshot` baseline.
+- **`llamastash pull <hf-repo>`** — graduated R46 primitive (was v1 `unimplemented!`), the same `hf-hub`-based downloader init's model step uses.
 
-The release ships a Rust-native recommender (whichllm-derived algorithm, slim Path A) and a daily CI-refreshed benchmark snapshot bundled into the binary as fallback. Init is fully idempotent (`--only` / `--skip` for component re-runs), agent-driveable (`--yes` / `--json`), and offline-capable (`--offline` / `LLAMADASH_OFFLINE`). The v1 security contract is preserved unchanged; init's three new surfaces — binary install + execve, network egress, HF token reads — each carry a documented control.
+The release ships a Rust-native recommender (whichllm-derived algorithm, slim Path A) and a daily CI-refreshed benchmark snapshot bundled into the binary as fallback. Init is fully idempotent (`--only` / `--skip` for component re-runs), agent-driveable (`--yes` / `--json`), and offline-capable (`--offline` / `LLAMASTASH_OFFLINE`). The v1 security contract is preserved unchanged; init's three new surfaces — binary install + execve, network egress, HF token reads — each carry a documented control.
 
 ## Problem Frame
 
-Origin: `docs/brainstorms/2026-05-18-init-wizard-requirements.md` (Problem Frame). A fresh-machine user installing llamadash today must locate or build `llama-server` and find a GGUF before they ever see the TUI — v1's "healthy endpoint in 10 seconds without reading docs" silently assumes both. v2's deliberate audience expansion to the developer-without-llama.cpp adjacent user requires closing that wall transparently, and committing to curated model picks (R55–R60) as the identity bet. Init must also work as ongoing maintenance for GPU swaps and llama.cpp upgrades — not a one-shot bootstrap.
+Origin: `docs/brainstorms/2026-05-18-init-wizard-requirements.md` (Problem Frame). A fresh-machine user installing llamastash today must locate or build `llama-server` and find a GGUF before they ever see the TUI — v1's "healthy endpoint in 10 seconds without reading docs" silently assumes both. v2's deliberate audience expansion to the developer-without-llama.cpp adjacent user requires closing that wall transparently, and committing to curated model picks (R55–R60) as the identity bet. Init must also work as ongoing maintenance for GPU swaps and llama.cpp upgrades — not a one-shot bootstrap.
 
 ## Requirements Trace
 
@@ -47,9 +47,9 @@ R46 (HF pull primitive) is **pulled forward** and owned by Unit 9. R34 (HTTP/MCP
 
 Carried from the origin document's Scope Boundaries:
 
-- **Out of scope:** llamadash auto-update; HF token *creation* (read-only); shell rc-file modification; distro package managers (apt/dnf/pacman/AUR); Windows; telemetry; non-GGUF formats (AWQ/GPTQ/raw HF); a Path B-equivalent richer benchmark layer.
-- **Explicit non-features:** the wizard maintains no llamadash-specific model registry (HF cache is source of truth); it never edits user-set config keys (managed_keys-scoped writes only); it never writes to `PATH` or shell completions.
-- **Deferred TUI surface:** the TUI HF-pull hotkey is *schedule-flexible* (origin: R65) — may stage independently if Unit 9's budget is tight. The `llamadash pull` CLI MVP is a committed deliverable this release.
+- **Out of scope:** llamastash auto-update; HF token *creation* (read-only); shell rc-file modification; distro package managers (apt/dnf/pacman/AUR); Windows; telemetry; non-GGUF formats (AWQ/GPTQ/raw HF); a Path B-equivalent richer benchmark layer.
+- **Explicit non-features:** the wizard maintains no llamastash-specific model registry (HF cache is source of truth); it never edits user-set config keys (managed_keys-scoped writes only); it never writes to `PATH` or shell completions.
+- **Deferred TUI surface:** the TUI HF-pull hotkey is *schedule-flexible* (origin: R65) — may stage independently if Unit 9's budget is tight. The `llamastash pull` CLI MVP is a committed deliverable this release.
 
 ## Context & Research
 
@@ -80,19 +80,19 @@ Verification of external contracts is **explicitly part of Unit 1's pre-implemen
 
 - **Stop + restart the daemon when init installs a fresh `llama-server`.** Chosen over the new IPC `reload_launch_env` and the in-process supervisor exception. Rationale: smallest surface change, reuses tested orphan-readopt (v1's three-factor confirmation), keeps the "no new non-IPC supervisor entry" invariant intact. The brief unsupervised window during restart is acceptable for an install-time event; v1's orphan-readopt was designed for exactly this case.
 - **Path A — dynamic Rust-native recommender (R55) over the static-table alternative.** Confirmed user choice. ~600–700 LOC for VRAM-fit hard filter + composite ranker; the static (GPU class, VRAM, task) corpus check (16/20) acts as a release-blocking regression gate against the ranker, not as the recommender itself. Identity bet: transparent live ranking with per-pick justification (R58).
-- **Move `_init_snapshot` out of `config.yaml` and into `$XDG_STATE_HOME/llamadash/init_snapshot.json`.** Rationale: keeps `config.yaml` user-authored and audit-friendly; gives the snapshot the same state-store hardening (`tmp.<pid>.<rand>` + atomic rename + `0600` + quarantine on parse fail) as `state.json` rather than tying integrity to YAML parsing; the snapshot becomes a daemon-/init-/doctor-only artifact the user has no reason to hand-edit. `managed_keys` still records dotted paths the wizard *wrote* into `config.yaml`. The config-side write contract (R66) is preserved unchanged.
+- **Move `_init_snapshot` out of `config.yaml` and into `$XDG_STATE_HOME/llamastash/init_snapshot.json`.** Rationale: keeps `config.yaml` user-authored and audit-friendly; gives the snapshot the same state-store hardening (`tmp.<pid>.<rand>` + atomic rename + `0600` + quarantine on parse fail) as `state.json` rather than tying integrity to YAML parsing; the snapshot becomes a daemon-/init-/doctor-only artifact the user has no reason to hand-edit. `managed_keys` still records dotted paths the wizard *wrote* into `config.yaml`. The config-side write contract (R66) is preserved unchanged.
 - **Snapshot integrity uses monotonic-timestamp + minimum-version, not embedded signature.** Rationale: no key-management story to invent; v2 ships a CI-built artifact in our own GitHub Releases (allowlisted host per the fetch contract) and TLS+host-allowlist already gates origin trust. Signature can layer in post-launch if a real threat model demands it. Bundled snapshot's `min_version` field is the rollback gate; doctor's "remote unreachable since" finding (R74) is the detection path for the rollback-DoS attack the brainstorm's threat model calls out.
 - **Init and doctor share a `src/init/detection.rs` module** with `detect_hardware()` (calls `gpu::probe` + RAM/disk inspection), `detect_binary()` (wraps `launch::binary::locate` + R54 common-location probes), and `verify_binary_integrity()` (sha256 + symlink/UID + parent-dir-mode checks). doctor consumes the same module read-only.
 - **Custom `reqwest::Client` injected into `hf-hub`.** `hf-hub` accepts a user-supplied transport; init builds one reqwest client configured per the v2 fetch contract (allowlisted hosts, redirect cap, IP-class filter, body-size cap) and hands it to `hf-hub` so HF downloads honor the same policy as snapshot + GH Releases fetches. No fetch-contract carve-out.
 - **`arch_defaults` resolved at launch time, daemon-side, between R20 last-params and built-in defaults.** Merge happens in the start-model handler that builds `LaunchParams`, **before** `launch::params::compose` runs. Per-model preset > per-model last-params > `arch_defaults[architecture]` > built-in defaults (R69 precedence). Daemon reads `arch_defaults` from `Config`; `_init_snapshot` is daemon-ignored (init + doctor only). The merge code lives in `src/launch/params.rs` next to `compose` and is wired into `src/ipc/methods.rs::start_model` — Unit 2 owns both the schema and this merge function; Unit 12's smoke launch consumes it via the existing IPC contract.
 - **`managed_keys` entries record a value digest, not just the dotted path.** Schema is `Vec<ManagedKey>` where `ManagedKey = {path: String, value_digest: [u8; 32], wrote_at: ISO-8601}`. The digest is `blake3(canonical_yaml_serialization(value))`. On re-run, the wizard compares the on-disk value's digest against the recorded one: match → wizard still owns the key, may regenerate; mismatch → user edited it, preserve. Without value digests, the brainstorm's R72 contract ("never touches keys the user has edited or added by hand") cannot be enforced from paths alone.
 - **GH Releases API calls are explicitly unauthenticated** — the reqwest client init builds for the GH Releases path uses no `Authorization` header and never reads `GITHUB_TOKEN`/`GH_TOKEN`/`gh auth`. R71's backoff+fallback handles the 60/hr unauthenticated rate-limit.
-- **Init writes mode-`0700` directories explicitly** (`mkdir-with-mode`, not whatever umask permits) for `$XDG_DATA_HOME/llamadash/llama-cpp/<version>/`, `~/.config/llamadash/`, `$XDG_STATE_HOME/llamadash/`. doctor finding #5 extends to flag parent-directory mode drift.
+- **Init writes mode-`0700` directories explicitly** (`mkdir-with-mode`, not whatever umask permits) for `$XDG_DATA_HOME/llamastash/llama-cpp/<version>/`, `~/.config/llamastash/`, `$XDG_STATE_HOME/llamastash/`. doctor finding #5 extends to flag parent-directory mode drift.
 - **`--yes` is `--no-confirm` semantics, not "answer Y to everything".** A failing integrity check (parent-dir writable, cross-UID symlink, archive bomb, checksum mismatch) aborts with exit 72/73/74 rather than silently downgrading. Reasoning: `--yes` is the agent's path; agents must see deterministic failure.
 - **No `_init_snapshot` GGUF digest in v2.** v2 records the `llama-server` binary digest (R53) and verifies it via doctor (R74-finding-2), but does *not* record per-GGUF digests. Rationale: GGUFs are user-owned files in the HF cache shared with Python tooling; digesting them on every init introduces I/O and surprises users. Re-evaluate if a real tampering trace lands post-launch.
 - **No launch-time binary digest re-verification (detection-only via doctor).** The daemon's `start_model` does not re-check `_init_snapshot.llama_server_digest` against the on-disk binary on every spawn — that's doctor's job. Rationale: launch-time re-verify trains users to dismiss findings after every `brew upgrade` / GH Releases bump (same dynamic that excludes brew binaries from doctor finding #2); active enforcement is post-launch work if a CVE class warrants it.
 - **`init --json` output redaction allowlist.** `installed.server.path`, `downloaded[].sha`, `config.diff` are classified not-safe-for-public-log; `config.diff` redacts any key matching the secret-key allowlist (HF token, future auth tokens) before emission. The `--json` summary documents which fields are which class so agent consumers know how to handle them.
-- **Disk-headroom default and "no-candidate-fits" UX.** R64: refuse when `free < download_size + 1 GiB` (matches origin spec). R59: zero-candidate-fits suggests a smaller ctx (next preset down), then a smaller quant, then "skip model step and use `llamadash pull` later".
+- **Disk-headroom default and "no-candidate-fits" UX.** R64: refuse when `free < download_size + 1 GiB` (matches origin spec). R59: zero-candidate-fits suggests a smaller ctx (next preset down), then a smaller quant, then "skip model step and use `llamastash pull` later".
 
 ## Open Questions
 
@@ -103,7 +103,7 @@ Verification of external contracts is **explicitly part of Unit 1's pre-implemen
 - **`_init_snapshot` storage location** → separate file under state dir (see Key Decisions).
 - **Snapshot integrity verification** → monotonic-timestamp + min-version (see Key Decisions).
 - **`arch_defaults` merge point** → daemon-side, in start-model handler, before `compose` (see Key Decisions).
-- **hf-hub HTTP-client injection** → llamadash-supplied `reqwest::Client` per the fetch contract (see Key Decisions).
+- **hf-hub HTTP-client injection** → llamastash-supplied `reqwest::Client` per the fetch contract (see Key Decisions).
 - **GitHub Releases auth posture** → explicitly unauthenticated (see Key Decisions).
 - **Wizard-created directory modes** → explicit `0700`, mode flagged by doctor finding #5 (see Key Decisions).
 - **`--yes` semantics on integrity failure** → abort with structured exit code, no silent downgrade (see Key Decisions).
@@ -118,7 +118,7 @@ Verification of external contracts is **explicitly part of Unit 1's pre-implemen
 - **Phase-2 fallback against R20 model that no longer exists** → walk the R20 list and skip missing paths; if every entry is missing, stop at `--version` and report "no model to smoke-probe" (see Unit 12).
 - **`detect_binary` common-location list** → includes `/home/linuxbrew/.linuxbrew/bin` on Linux for users with linuxbrew (see Unit 3).
 - **Bundled snapshot size budget** → 500 KiB, enforced at build time (see Unit 5).
-- **`FetchClient` User-Agent** → minimal `llamadash/<version>` only; no hostname/user (see Unit 4).
+- **`FetchClient` User-Agent** → minimal `llamastash/<version>` only; no hostname/user (see Unit 4).
 - **Snapshot JSON schema shape** → forward-compatible envelope: `{schema_version: u32, bundle_date: ISO-8601, min_version: semver, models: [{repo, file, architecture, quant, params, weights_bytes, benchmark_score: {value, source}, tok_s_factor, recency}]}`. Recommender ignores unknown fields; older binaries refuse a snapshot whose `min_version` exceeds their own build.
 - **CI partial-source-failure handling** → last-known-good fallback: the refresh script writes a candidate snapshot but only promotes it to the daily Release asset if (a) every source returned data and (b) the 16/20 corpus passes the failure threshold. Otherwise it auto-files a recalibration issue; the previous Release stays live. doctor's "remote unreachable since" finding (R74) catches the prolonged-degraded case.
 - **`vram_gb` aggregation rule** → `min(device.total_memory_bytes)` for Nvidia/Amd (single-GPU placement is the limiting case); `total_memory_bytes × 0.75` for AppleMetal; `null` for CpuOnly + Unknown. Pin in `detection.rs`.
@@ -132,7 +132,7 @@ Verification of external contracts is **explicitly part of Unit 1's pre-implemen
 - Final reqwest `User-Agent` string and timeout per endpoint class (GH API vs snapshot host vs HF) — settled in Unit 4 once we know rate-limit headroom.
 - Whether the daily snapshot Release tag is `snapshot-YYYY-MM-DD` or rolling `snapshot-latest` (CI-script choice; settled in Unit 7).
 - Whether the maintenance-tool TUI nudge (origin: open question) ships in this release or a follow-up — flagged as Future Considerations.
-- Whether `init` writes a per-step wall-clock trace to `$XDG_STATE_HOME/llamadash/init-trace.json` (origin: "Attended-time-to-decision" reframing) — left to implementation in Unit 10; cost is small, and the file is opt-in to share.
+- Whether `init` writes a per-step wall-clock trace to `$XDG_STATE_HOME/llamastash/init-trace.json` (origin: "Attended-time-to-decision" reframing) — left to implementation in Unit 10; cost is small, and the file is opt-in to share.
 - Final progressive-disclosure shape of R58's justification block (one-line vs `?`-expand) — UX call settled in Unit 6 once we have real picks to render.
 
 ## High-Level Technical Design
@@ -209,7 +209,7 @@ sequenceDiagram
     participant S as Smoke (src/init/smoke.rs)
     participant DA as Daemon IPC
 
-    U->>W: llamadash init [--yes --json --offline --only X --skip Y]
+    U->>W: llamastash init [--yes --json --offline --only X --skip Y]
     W->>D: detect_hardware() + detect_binary()
     D-->>W: HardwareSnapshot, BinaryPresence
     Note over W: persistent header shows hw context for the rest of the run
@@ -294,7 +294,7 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 
 **Approach:**
 - hf-hub resume: build a one-off binary that calls `Api::get()` against a small multi-shard HF GGUF, kill the download mid-shard, restart, and verify whether the second request uses HTTP Range or restarts the shard. If no native Range, scope the range-resume wrapper concretely.
-- hf-hub client injection: write a tiny binary that builds a `reqwest::Client` rejecting all non-allowlisted hosts, hands it to `hf-hub::ApiBuilder::with_client`, and confirms a download to a non-allowlisted mirror is refused at the transport layer. If `with_client` doesn't exist on the pinned version or applies only to metadata, the spike outputs which fetch contract controls must be implemented in a llamadash-side wrapper around `hf-hub`'s downloads instead.
+- hf-hub client injection: write a tiny binary that builds a `reqwest::Client` rejecting all non-allowlisted hosts, hands it to `hf-hub::ApiBuilder::with_client`, and confirms a download to a non-allowlisted mirror is refused at the transport layer. If `with_client` doesn't exist on the pinned version or applies only to metadata, the spike outputs which fetch contract controls must be implemented in a llamastash-side wrapper around `hf-hub`'s downloads instead.
 - GH Releases contract: hit `https://api.github.com/repos/ggml-org/llama.cpp/releases` for the most recent N releases and document (a) asset-name regex that survives across releases, (b) whether SHA-256 digests are discrete assets or only in the rendered release body, (c) confirmed variant set per platform.
 - Brew Linux bottle: `brew info --json=v2 llama.cpp` on a Linux test box → record bottle SHA + which build options the formula ships.
 - VRAM overhead: spawn `llama-server` against a 7B Q4 model on one machine per available backend, sample peak resident memory at load, compute stddev across N=5 runs. Record default band per backend.
@@ -374,14 +374,14 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 **Dependencies:** Unit 1 is a soft dependency for `detect_binary`'s common-location list (informed by spike output but the module can ship a sensible default first).
 
 **Files:**
-- Modify: `src/cli/cli_args.rs` — add `Init(InitArgs)`, `Doctor(DoctorArgs)` to `Command`. Rewrite `PullArgs` to add a top-level positional `repo: String` for the MVP form (`llamadash pull <hf-repo>`). Add `InitArgs`: `yes: bool`, `json: bool`, `offline: bool`, `only: Vec<InitStep>`, `skip: Vec<InitStep>`, with `value_delimiter = ','` and `ArgAction::Append`. Add `InitStep` enum (`Server`, `Config`, `Models`).
+- Modify: `src/cli/cli_args.rs` — add `Init(InitArgs)`, `Doctor(DoctorArgs)` to `Command`. Rewrite `PullArgs` to add a top-level positional `repo: String` for the MVP form (`llamastash pull <hf-repo>`). Add `InitArgs`: `yes: bool`, `json: bool`, `offline: bool`, `only: Vec<InitStep>`, `skip: Vec<InitStep>`, with `value_delimiter = ','` and `ArgAction::Append`. Add `InitStep` enum (`Server`, `Config`, `Models`).
 - Modify: `src/cli/exit_codes.rs` — add `INIT_ABORTED = 72`, `INIT_DOWNLOAD_FAILED = 73`, `INIT_SMOKE_FAILED = 74`. Extend `distinct_codes_per_failure_class` test.
 - Modify: `src/cli/mod.rs` — wire `Command::Init`/`Command::Doctor` to new handler modules; replace `pull::handle` deferred stub.
 - Create: `src/cli/init.rs` — handler stub that calls into `src/init/wizard.rs` (Unit 10).
 - Create: `src/cli/doctor.rs` — handler stub that calls into `src/init/doctor.rs` (Unit 13).
 - Rewrite: `src/cli/pull.rs` — handler that calls into `src/init/download.rs` (Unit 9).
 - Create: `src/init/mod.rs` — declares submodules: `detection`, `wizard`, `recommender`, `snapshot`, `install`, `download`, `config_writer`, `smoke`, `fetch`, `doctor`.
-- Create: `src/init/detection.rs` — `detect_hardware()` returns `HardwareSnapshot` (calls `gpu::probe` + RAM/disk inspection + `vram_gb` aggregation rule from Key Decisions); `detect_binary()` returns `BinaryPresence` (wraps `launch::binary::locate` + probes prior llamadash-managed install dir, `/opt/homebrew/bin`, `/usr/local/bin`, `/home/linuxbrew/.linuxbrew/bin` (Linux only), `LLAMADASH_LLAMA_SERVER`). Pure logic; no I/O beyond probe + filesystem stat.
+- Create: `src/init/detection.rs` — `detect_hardware()` returns `HardwareSnapshot` (calls `gpu::probe` + RAM/disk inspection + `vram_gb` aggregation rule from Key Decisions); `detect_binary()` returns `BinaryPresence` (wraps `launch::binary::locate` + probes prior llamastash-managed install dir, `/opt/homebrew/bin`, `/usr/local/bin`, `/home/linuxbrew/.linuxbrew/bin` (Linux only), `LLAMASTASH_LLAMA_SERVER`). Pure logic; no I/O beyond probe + filesystem stat.
 - Modify: `src/lib.rs` — `pub mod init;`.
 - Test: inline `#[cfg(test)] mod tests` per file; `tests/cli_init_parse.rs` for `--only`/`--skip` parsing matrix; `tests/cli_doctor_basic.rs` for the read-only smoke.
 
@@ -390,7 +390,7 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 - `--only` and `--skip` get `clap`-level `conflicts_with = "skip"` / `conflicts_with = "only"`.
 - `detect_binary` returns `BinaryPresence { resolved_path: Option<PathBuf>, source: BinarySource, version: Option<String>, digest: Option<[u8; 32]> }`. `BinarySource` enum tags PATH / env / config / common-location / known-managed-dir.
 - The shared module is `pub` at `crate::init::detection`; doctor calls it read-only; init calls it once at step 1 and stashes the snapshot for the rest of the run.
-- New exit codes: `INIT_ABORTED = 72`, `INIT_DOWNLOAD_FAILED = 73`, `INIT_SMOKE_FAILED = 74`. `PULL_FAILED = 69` remains the contract for `llamadash pull` (an existing-binary HF download), distinct from 73 (init's download step).
+- New exit codes: `INIT_ABORTED = 72`, `INIT_DOWNLOAD_FAILED = 73`, `INIT_SMOKE_FAILED = 74`. `PULL_FAILED = 69` remains the contract for `llamastash pull` (an existing-binary HF download), distinct from 73 (init's download step).
 
 **Patterns to follow:**
 - `src/cli/start.rs` and `src/cli/stop.rs` for handler-module structure.
@@ -398,11 +398,11 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 - `src/launch/binary.rs::locate` for the existing detection path.
 
 **Test scenarios:**
-- *Happy path*: `llamadash init --only server,config` parses to `InitStep::Server + InitStep::Config`.
-- *Happy path*: `llamadash init --only server --only models` parses to `InitStep::Server + InitStep::Models` (repeatable).
-- *Error path*: `llamadash init --only server --skip config` fails clap parse with mutual-exclusion error.
-- *Happy path*: `llamadash doctor --json` is accepted and dispatched; `llamadash doctor` (no flags) is accepted and dispatched.
-- *Happy path*: `llamadash pull HuggingFaceH4/zephyr-7b-beta-gguf` parses to `PullArgs { repo: "HuggingFaceH4/zephyr-7b-beta-gguf" }`.
+- *Happy path*: `llamastash init --only server,config` parses to `InitStep::Server + InitStep::Config`.
+- *Happy path*: `llamastash init --only server --only models` parses to `InitStep::Server + InitStep::Models` (repeatable).
+- *Error path*: `llamastash init --only server --skip config` fails clap parse with mutual-exclusion error.
+- *Happy path*: `llamastash doctor --json` is accepted and dispatched; `llamastash doctor` (no flags) is accepted and dispatched.
+- *Happy path*: `llamastash pull HuggingFaceH4/zephyr-7b-beta-gguf` parses to `PullArgs { repo: "HuggingFaceH4/zephyr-7b-beta-gguf" }`.
 - *Happy path*: `detect_hardware()` on the test machine returns a non-panicking snapshot with `vram_gb` honoring the aggregation rule (CpuOnly → None, AppleMetal → 0.75 × total, etc.).
 - *Happy path*: `detect_binary()` finds a touched `llama-server` placed in a temp dir on `$PATH`.
 - *Edge case*: `detect_binary()` returns `BinarySource::Common` when nothing is on `$PATH` but a binary lives at `/opt/homebrew/bin/llama-server` (mock via override hook for testability).
@@ -417,7 +417,7 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 
 - [x] **Unit 4: Network fetch contract + offline mode**
 
-**Goal:** Build the shared HTTPS-only allowlisted fetch client used by snapshot fetch, GH Releases install, and `hf-hub`. Honor `LLAMADASH_OFFLINE` / `--offline`.
+**Goal:** Build the shared HTTPS-only allowlisted fetch client used by snapshot fetch, GH Releases install, and `hf-hub`. Honor `LLAMASTASH_OFFLINE` / `--offline`.
 
 **Requirements:** Security Contract (network egress), R53 verification half, R56 fetch half, R61 hf-hub client injection.
 
@@ -433,9 +433,9 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 **Approach:**
 - Custom `redirect::Policy`: count + per-hop check that resolved IP is not private/loopback/link-local/metadata-service.
 - Body size enforced by reading into a `Vec<u8>` with `take(max_bytes)`-equivalent; refuses if `Content-Length > max_bytes` up-front.
-- User-Agent is minimal — `llamadash/<CARGO_PKG_VERSION>` only. No hostname, no `$USER`, no OS detail beyond what `reqwest` includes by default in its TLS handshake. Servers that need OS info can read the TLS fingerprint; the User-Agent itself is not a fingerprinting surface.
+- User-Agent is minimal — `llamastash/<CARGO_PKG_VERSION>` only. No hostname, no `$USER`, no OS detail beyond what `reqwest` includes by default in its TLS handshake. Servers that need OS info can read the TLS fingerprint; the User-Agent itself is not a fingerprinting surface.
 - `FetchClient::offline()` returns a stub variant whose calls return `FetchError::Offline`; the wizard checks the result class to print actionable hints rather than crashing.
-- `LLAMADASH_OFFLINE=1` env or `--offline` flag → `FetchClient::offline()`. `--offline` overrides env in the same direction the v1 CLI overrides work.
+- `LLAMASTASH_OFFLINE=1` env or `--offline` flag → `FetchClient::offline()`. `--offline` overrides env in the same direction the v1 CLI overrides work.
 - `hf-hub` accepts `ApiBuilder::with_client(reqwest::Client)`. Init passes its own client; the same policy applies to HF traffic.
 
 **Patterns to follow:**
@@ -450,7 +450,7 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 - *Error path*: response with `Content-Length` over `max_bytes` is refused before body read.
 - *Error path*: streaming response that exceeds `max_bytes` mid-read is truncated and returns `FetchError::BodyOverflow`.
 - *Edge case*: HTTP (plaintext) URL is refused even on an allowlisted host (HTTPS-only invariant).
-- *Edge case*: `LLAMADASH_OFFLINE=1` makes every method return `FetchError::Offline` without dialing.
+- *Edge case*: `LLAMASTASH_OFFLINE=1` makes every method return `FetchError::Offline` without dialing.
 - *Integration*: 60/hr rate-limit response from a stubbed GH Releases endpoint is caught and surfaced as `FetchError::RateLimited` so R71's backoff path triggers.
 - *Edge case*: no `Authorization` header is sent against `api.github.com` even when `GITHUB_TOKEN` is exported.
 
@@ -481,7 +481,7 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 - `min_version` is the rollback gate. Local binary's `CARGO_PKG_VERSION` is the comparator.
 - Remote fetch failure (including verification mismatch) is **silent** — we log at `info!`, not `warn!`, and the recommender uses the bundled snapshot. doctor's "remote unreachable since" finding (R74-finding-silent-fallback) records consecutive failures so users learn about prolonged outages.
 - The bundled snapshot is included via `include_str!("../../data/benchmark-snapshot.json")` so it travels with the binary (R45 single-binary invariant). **Size budget: 500 KiB committed source artifact.** Enforced by a build-time check (`build.rs` or a `const_assert` on the included bytes) so a future snapshot regen that blows past the budget fails the build rather than silently bloating the binary. The CI script (Unit 7) keeps the snapshot under budget by capping vendored fields per model entry; if 500 KiB becomes binding, the budget is raised deliberately rather than drifted.
-- The remote URL is `https://github.com/llamadash/llamadash/releases/download/snapshot-latest/benchmark-snapshot.json` (or whichever tag Unit 7's CI publishes; pinned in `src/init/snapshot.rs` as a const).
+- The remote URL is `https://github.com/llamastash/llamastash/releases/download/snapshot-latest/benchmark-snapshot.json` (or whichever tag Unit 7's CI publishes; pinned in `src/init/snapshot.rs` as a const).
 
 **Patterns to follow:**
 - `src/banner.rs::BANNER` for `include_str!`-bundled data.
@@ -605,7 +605,7 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 **Approach:**
 - Asset selection: GH Releases REST API → JSON → pick first asset whose name matches the (platform, variant) regex the spike pinned. Variant table per Key Decisions / R52.
 - Checksum: prefer discrete `.sha256` asset; fallback to parsing the rendered release body for the canonical `sha256:` line if the spike confirms that's the only path. Verification happens **before** extraction.
-- Extraction safety: refuse `..` / absolute / device / FIFO / out-of-tree symlinks / hardlinks; cap entry count at 10 000; cap total uncompressed size at 2 GiB; cap per-entry compression ratio at 100×. Extract into `<dir>.tmp.<pid>` then atomic rename to `<XDG_DATA_HOME>/llamadash/llama-cpp/<version>/` (mode 0700).
+- Extraction safety: refuse `..` / absolute / device / FIFO / out-of-tree symlinks / hardlinks; cap entry count at 10 000; cap total uncompressed size at 2 GiB; cap per-entry compression ratio at 100×. Extract into `<dir>.tmp.<pid>` then atomic rename to `<XDG_DATA_HOME>/llamastash/llama-cpp/<version>/` (mode 0700).
 - Final binary is `chmod 0700`. Recorded digest persists into `_init_snapshot.llama_server_digest`.
 - "Point at existing binary" path: the install module also owns the integrity check (parent-dir + target mode, no cross-UID symlinks, digest record). `--yes` mode auto-pre-selects an existing binary only if integrity passes; failure aborts with exit 72.
 - Rate-limit handling (R71): retry once with exponential backoff, then fall back to offering the "point at existing binary" path.
@@ -638,9 +638,9 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 
 ---
 
-- [x] **Unit 9: hf-hub download integration + `llamadash pull` MVP**
+- [x] **Unit 9: hf-hub download integration + `llamastash pull` MVP**
 
-**Goal:** Multi-shard GGUF download via `hf-hub` (custom client per fetch contract) with resume + disk-space precheck; ship the standalone `llamadash pull <hf-repo>` MVP CLI.
+**Goal:** Multi-shard GGUF download via `hf-hub` (custom client per fetch contract) with resume + disk-space precheck; ship the standalone `llamastash pull <hf-repo>` MVP CLI.
 
 **Requirements:** R61, R62, R63, R64, R65.
 
@@ -657,8 +657,8 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 - Cache layout: writes land in `~/.cache/huggingface/hub/models--<owner>--<repo>/snapshots/<rev>/`. The existing `discovery::known_caches::default_huggingface_paths` finds them on the next scan.
 - Multi-shard: use `discovery::split_gguf` over the listing to enumerate shards; download sequentially with the resume wrapper. If the spike confirmed `hf-hub` ≥ 0.4 supports native Range resume, use it; otherwise the wrapper performs a HEAD → partial-file size check → `Range: bytes=offset-` GET.
 - Disk-space precheck (R64): sum shard byte sizes from the HF listing; compare against `available_bytes(target_filesystem)`; refuse if `free < sum + 1 GiB headroom`. Override via explicit confirm prompt (not bypassable in `--yes`).
-- `llamadash pull` CLI (R65): MVP scope is "download + progress + checksum verify". Not yet supporting `--background`, `--cancel`, or job-id semantics from the v1 placeholder — those graduate post-launch when a real consumer asks.
-- Init's model step calls `download::download_repo` with `OnExisting::ReuseIfSameSha`; `llamadash pull` calls with `OnExisting::ReuseIfSameSha` too (idempotent re-pulls).
+- `llamastash pull` CLI (R65): MVP scope is "download + progress + checksum verify". Not yet supporting `--background`, `--cancel`, or job-id semantics from the v1 placeholder — those graduate post-launch when a real consumer asks.
+- Init's model step calls `download::download_repo` with `OnExisting::ReuseIfSameSha`; `llamastash pull` calls with `OnExisting::ReuseIfSameSha` too (idempotent re-pulls).
 
 **Patterns to follow:**
 - `src/discovery/known_caches.rs` for cache path resolution.
@@ -672,18 +672,18 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 - *Edge case*: `HF_TOKEN` env present → bearer auth attached; token value never logged.
 - *Edge case*: `~/.cache/huggingface/token` is mode 0644 → refuse to use it; surface "chmod 600" hint.
 - *Edge case*: `HF_TOKEN` is not propagated to the spawn env of any later `llama-server` child (cross-unit assertion via Unit 12 smoke test).
-- *Edge case*: `llamadash pull <repo>` is idempotent — second invocation against the same repo is a fast no-op when shas match.
+- *Edge case*: `llamastash pull <repo>` is idempotent — second invocation against the same repo is a fast no-op when shas match.
 - *Integration*: `--json` mode emits a single summary line on success; intermediate progress is line-buffered JSON.
-- *Edge case*: PULL_FAILED (69) on download failure for `llamadash pull`; INIT_DOWNLOAD_FAILED (73) on download failure inside `llamadash init`.
+- *Edge case*: PULL_FAILED (69) on download failure for `llamastash pull`; INIT_DOWNLOAD_FAILED (73) on download failure inside `llamastash init`.
 
 **Verification:**
-- `llamadash pull` against a known small public GGUF places it where `llamadash list` (post-rescan) finds it.
+- `llamastash pull` against a known small public GGUF places it where `llamastash list` (post-rescan) finds it.
 
 ---
 
 - [x] **Unit 10: Wizard orchestration — dialoguer prompts, step order, --only/--skip, --yes/--json/--offline**
 
-**Goal:** The `llamadash init` interactive flow. Owns the step ordering, prompts, summary lines, persistent hardware header, and non-interactive modes.
+**Goal:** The `llamastash init` interactive flow. Owns the step ordering, prompts, summary lines, persistent hardware header, and non-interactive modes.
 
 **Requirements:** R48, R49, R50, R51, R54 (existing-install pre-select), R72, R73, R76, R77, R80.
 
@@ -705,7 +705,7 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 - `--json` (combinable with `--yes`) emits a single structured summary at completion per R77. Per-step progress is written to stderr at `--verbose`, never to stdout.
 - `--offline` (Unit 4) disables outbound calls; steps that need network downgrade to "skipped, see hint". `doctor` and `init --only config` work fully offline.
 - Idempotent re-run (R72): step 1 always runs; each later step's first action is "detect current state and present skip-or-redo". Config regen is scoped to `_init_snapshot.managed_keys` (Unit 11 owns the recursive merge).
-- Init-trace.json (origin: open question) is written if `LLAMADASH_INIT_TRACE=1` is set; default off. Captures per-step wall-clock for users who want to paste it into issue reports. No telemetry; user-owned file.
+- Init-trace.json (origin: open question) is written if `LLAMASTASH_INIT_TRACE=1` is set; default off. Captures per-step wall-clock for users who want to paste it into issue reports. No telemetry; user-owned file.
 
 **Patterns to follow:**
 - v1 CLI handler style (`src/cli/start.rs`) for the dispatch shape.
@@ -725,7 +725,7 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 - *Error path*: install integrity check fails under `--yes` → init aborts with exit 72, no silent downgrade.
 - *Error path*: download fails under `--yes` → init exits 73; partial state recorded so re-run is safe.
 - *Integration*: re-run of `init` after a successful run pre-selects "keep" for each step (server/config/models all show "✓ already configured").
-- *Integration*: `LLAMADASH_INIT_TRACE=1 init --yes` writes a per-step wall-clock file under `$XDG_STATE_HOME/llamadash/init-trace.json`.
+- *Integration*: `LLAMASTASH_INIT_TRACE=1 init --yes` writes a per-step wall-clock file under `$XDG_STATE_HOME/llamastash/init-trace.json`.
 - *Edge case*: `--offline` disables network; step 3 emits "skipped, see hint"; final exit is 0 if no network-dependent step was `--only`-required.
 - *Edge case*: `--offline --only models` → init refuses up-front (cannot satisfy `--only models` offline).
 
@@ -826,13 +826,13 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 - *Edge case*: `--version` probe spawns with `env_clear()`; `HF_TOKEN` and `LLAMA_ARG_*` are absent in the child's environ (verified via fake-llama-server's introspection).
 
 **Verification:**
-- A fresh Linux Nvidia run ends with a healthy `/v1/chat/completions` response and a 0 exit; `llamadash list` shows the new model post-handoff.
+- A fresh Linux Nvidia run ends with a healthy `/v1/chat/completions` response and a 0 exit; `llamastash list` shows the new model post-handoff.
 
 ---
 
-- [x] **Unit 13: `llamadash doctor` — read-only diagnostic + JSON output**
+- [x] **Unit 13: `llamastash doctor` — read-only diagnostic + JSON output**
 
-**Goal:** The doctor sibling subcommand. Re-runs detection, diffs against `_init_snapshot`, emits 3–5 findings + the silent-fallback freshness check. Each finding has a `→ fix with: llamadash init --only X` hint and a stable id agent consumers can branch on.
+**Goal:** The doctor sibling subcommand. Re-runs detection, diffs against `_init_snapshot`, emits 3–5 findings + the silent-fallback freshness check. Each finding has a `→ fix with: llamastash init --only X` hint and a stable id agent consumers can branch on.
 
 **Requirements:** R74, R75, Security Contract (doctor output redaction, doctor as detection path for rollback-DoS).
 
@@ -852,7 +852,7 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
   4. Benchmark snapshot age (relative to `bundle_date`) exceeds 14 days.
   5. Config file or parent directory has unexpected mode (post-R66 hardening drift) — flags parent-dir mode in addition to file mode.
   6. **Silent-fallback freshness** — if N consecutive remote-snapshot fetches failed verification, surface "remote benchmark snapshot has been unreachable since <date>". This is the rollback-DoS detection path. The failure counter lives in `_init_snapshot.remote_fetch_failures` (resets to 0 on a successful verified fetch).
-- Each finding includes `→ fix with: llamadash init --only X` where X is the appropriate step name.
+- Each finding includes `→ fix with: llamastash init --only X` where X is the appropriate step name.
 - JSON output (R75): `{schema_version, findings: [{id, severity, message, fix_hint, safe_to_log}], baseline: {snapshot_bundle_date, init_date}}`. `id` is a stable string (`"binary_digest_drift"` etc.); agent consumers can branch on it.
 - doctor is read-only — no writes to `_init_snapshot`, `config.yaml`, or anywhere else.
 - Token values are never included in any finding regardless of channel. This is enforced by the finding-id enumeration (the rule from Security Contract addendum: "If a future finding genuinely needs differentiated redaction guidance, a `safe_to_log: bool` per-finding tag is introduced *then*").
@@ -863,10 +863,10 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 
 **Test scenarios:**
 - *Happy path*: no drift → empty findings array; human output prints "everything looks healthy" + last-init date.
-- *Edge case*: binary file deleted → `BinaryMissing` finding with `fix_hint: "llamadash init --only server"`.
+- *Edge case*: binary file deleted → `BinaryMissing` finding with `fix_hint: "llamastash init --only server"`.
 - *Edge case*: GH-Releases-installed binary, on-disk digest differs from `_init_snapshot` → `BinaryDigestDrift` finding.
 - *Edge case*: brew-installed binary, on-disk digest differs → **no** finding (carve-out).
-- *Edge case*: GPU vendor changed from `nvidia` to `amd` since init → `HardwareDrift` finding with `fix_hint: "llamadash init --only server"` (recommends re-running the install variant decision).
+- *Edge case*: GPU vendor changed from `nvidia` to `amd` since init → `HardwareDrift` finding with `fix_hint: "llamastash init --only server"` (recommends re-running the install variant decision).
 - *Edge case*: snapshot bundle-date > 14 days old (vs today's wall-clock) → `SnapshotStale` finding.
 - *Edge case*: `config.yaml` mode is 0644 (post-write drift) → `ConfigModeDrift` finding.
 - *Edge case*: parent dir is 0755 instead of 0700 → `ConfigModeDrift` finding flags the parent-dir half.
@@ -882,8 +882,8 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 
 - **Interaction graph:** init touches the daemon's start/stop lifecycle (stop+restart on install), the IPC `start_model` surface (smoke phase 2), the `Config` parser (new fields), the state-store directory (new sibling file `init_snapshot.json`), and the HF cache directory (downloads land where R2 discovery already scans). The shared detection module is read by both `init` and `doctor`; the recommender consumes both the snapshot and the discovery catalog.
 - **Error propagation:** new exit codes 72/73/74 must travel cleanly from handler → `CliExit` → process exit. `--json` callers branch on these. Errors during smoke-phase-2 do not leave the daemon in a stuck state — every `start_model` issued by smoke is paired with a `stop_model` finalizer (success or error).
-- **State lifecycle risks:** the daemon stop+restart for binary reload (Key Decision) relies on orphan-readopt; if init aborts between stop and restart, the user is left without a running daemon — but `cargo run` / `llamadash list` auto-spawns on attach, so the user-visible degradation is "next attach starts the daemon", not "data lost". Init writes `init_snapshot.json` *after* `config.yaml`; a crash between the two leaves the user with a stale snapshot — recovered by `doctor` flagging it and `init --only config` rebuilding it.
-- **API surface parity:** `init --json` and `doctor --json` follow the v1 `--json` convention (wrapped object, stable shape). `llamadash pull` emits JSON when `--json` is passed. The IPC method dispatch is unchanged in this release (Key Decision: no new IPC for daemon binary reload). The daemon's `start_model` handler gains an in-process call to `launch::params::apply_arch_defaults` (Unit 2) — public IPC shape is unchanged; the merge is internal to handler logic.
+- **State lifecycle risks:** the daemon stop+restart for binary reload (Key Decision) relies on orphan-readopt; if init aborts between stop and restart, the user is left without a running daemon — but `cargo run` / `llamastash list` auto-spawns on attach, so the user-visible degradation is "next attach starts the daemon", not "data lost". Init writes `init_snapshot.json` *after* `config.yaml`; a crash between the two leaves the user with a stale snapshot — recovered by `doctor` flagging it and `init --only config` rebuilding it.
+- **API surface parity:** `init --json` and `doctor --json` follow the v1 `--json` convention (wrapped object, stable shape). `llamastash pull` emits JSON when `--json` is passed. The IPC method dispatch is unchanged in this release (Key Decision: no new IPC for daemon binary reload). The daemon's `start_model` handler gains an in-process call to `launch::params::apply_arch_defaults` (Unit 2) — public IPC shape is unchanged; the merge is internal to handler logic.
 - **Integration coverage:** the smoke launch covers the install → download → config write → start_model → /health → chat-completion → shutdown chain. The orphan-readopt path is exercised by stopping the daemon during smoke with a previously-supervised model still running.
 - **Unchanged invariants:** v1's loopback-only Unix socket (`0600` mode, peercred auth), `FORBIDDEN_ADVANCED_PREFIXES` deny-list, `LLAMA_ARG_*` env strip on supervisor spawn, single-binary distribution (R45), no network listener. The `Pull(PullArgs)` clap surface is reused; init pulls it forward from `unimplemented!` to functional. `state.json`'s schema is unchanged.
 
@@ -933,7 +933,7 @@ Unit 7 can land slightly after Units 5–6 if the CI workflow needs more iterati
 - **Unit 8** (GH Releases install path)
 - **Unit 9** (hf-hub + `pull` MVP)
 
-The `llamadash pull` MVP CLI graduates here. The TUI HF-pull hotkey is schedule-flexible (origin: R65) and may slip to a post-Unit-13 follow-up.
+The `llamastash pull` MVP CLI graduates here. The TUI HF-pull hotkey is schedule-flexible (origin: R65) and may slip to a post-Unit-13 follow-up.
 
 ### Phase 4 — Wizard Flow (3 units)
 
@@ -984,23 +984,23 @@ Three planned items shipped reduced or were deferred. Recorded here so the gap b
 - **Plan:** measure per-backend (CUDA, HIP, Vulkan, Metal) overhead empirically by spawning `llama-server` against a 7B Q4_K_M with `--ctx 4096 --n-gpu-layers 99`, sampling peak resident GPU memory at the `/health` Ready transition, 5× per backend, deriving the residual after subtracting our `gguf::memory::estimate`.
 - **What shipped:** anecdotal defaults in `data/benchmark-snapshot.json::recommender_weights.overhead_band_bytes` — CUDA 800 MB, HIP 800 MB, Vulkan 1024 MB, Metal 512 MB, CPU 0. Sourced from llama.cpp issue-tracker discussions and Vulkan backend docs; not measured on real hardware during this release.
 - **Why skipped:** required physical access to representative CUDA / AMD-ROCm / Vulkan / Apple Silicon machines; explicitly skipped at session start per user choice.
-- **Why ship-safe:** values bias conservative (overestimating overhead under-recommends rather than OOMs). The 16/20 corpus ranking check still passes 20/20 with these numbers. Because the band lives in the JSON snapshot, **CI can republish corrected values via the daily snapshot workflow without cutting a binary release** — every installed `llamadash` picks them up on next fetch.
+- **Why ship-safe:** values bias conservative (overestimating overhead under-recommends rather than OOMs). The 16/20 corpus ranking check still passes 20/20 with these numbers. Because the band lives in the JSON snapshot, **CI can republish corrected values via the daily snapshot workflow without cutting a binary release** — every installed `llamastash` picks them up on next fetch.
 - **Where this could bite:** ROCm specifically (we assumed CUDA parity, but ROCm versions vary more than CUDA versions in practice); 12 GB Vulkan cards near quant boundaries; AMD HIP if its real overhead is materially above 800 MB.
 - **Post-launch signal:** doctor's `hardware_drift` finding flags "recommended X, but X OOMs" — that's the cue to remeasure for that backend.
 - **v2-GA gate (not v2-launch gate):** spike `docs/spikes/2026-05-19-vram-overhead-band.md` documents the remeasurement procedure. The `todo:` frontmatter field carries the GA blocker.
 
 ## Success Metrics
 
-- A fresh Linux Nvidia run from `cargo install llamadash` to healthy `/v1/chat/completions` response: attended-time-to-decision < 90 s (design target, not telemetry-measured), wall-clock < 15 minutes on 100 Mbps for default 7B-class pick. Zero docs read.
-- An agent running `llamadash init --yes --json` parses the structured summary deterministically: knows what was installed, what was downloaded, what was written.
-- A user who swaps GPUs runs `llamadash doctor`, sees `HardwareDrift`, runs `llamadash init --only server` or `--only config`, and is back in shape — without losing favorites, presets, or model catalog.
+- A fresh Linux Nvidia run from `cargo install llamastash` to healthy `/v1/chat/completions` response: attended-time-to-decision < 90 s (design target, not telemetry-measured), wall-clock < 15 minutes on 100 Mbps for default 7B-class pick. Zero docs read.
+- An agent running `llamastash init --yes --json` parses the structured summary deterministically: knows what was installed, what was downloaded, what was written.
+- A user who swaps GPUs runs `llamastash doctor`, sees `HardwareDrift`, runs `llamastash init --only server` or `--only config`, and is back in shape — without losing favorites, presets, or model catalog.
 - On a Linux + Nvidia box, `init` defaults to the CUDA prebuilt; never silently installs a CPU-only binary.
 - The recommender's 24 GB Nvidia pick is ≥ 7B-class quantized at ≥ 16k context with a tok/s estimate within a sensible band. CPU-only pick is 1–3B Q4.
 - 16/20 corpus check passes pre-release and on every snapshot regeneration.
 
 ## Documentation Plan
 
-- `README.md` — add a "Getting started" subsection that points new users at `llamadash init`. Add `init`, `doctor`, `pull` to the subcommand list.
+- `README.md` — add a "Getting started" subsection that points new users at `llamastash init`. Add `init`, `doctor`, `pull` to the subcommand list.
 - `docs/architecture.md` — extend "Architecture in one breath" with the init / doctor / fetch substrate.
 - `docs/usage.md` — new `init` walkthrough section; new `doctor` reference; new `pull` reference.
 - `AGENTS.md` — add the new plan path to "Source of truth"; add `init` / `doctor` / `pull` to the "CLI agent surface" section; extend exit-code table.
@@ -1013,7 +1013,7 @@ Three planned items shipped reduced or were deferred. Recorded here so the gap b
 - Bundled snapshot in `data/benchmark-snapshot.json` is part of the source tree; CI workflow's daily refresh updates the Release asset but does not auto-PR a new bundled snapshot. Maintainer-triggered PR refreshes the bundled snapshot when prudent.
 - `llama-cpp/<version>/` extract dirs accumulate across upgrades. v2 does not garbage-collect them automatically; doctor finding for "old extracted versions" is a v2-follow-up if users hit disk pressure.
 - The maintenance-tool TUI nudge (origin: open question) is **deferred** to a follow-up. Without it, the TUI offers no in-app surface for doctor findings — users must run `doctor` explicitly. Worth revisiting once the install base has data on whether users do.
-- `llamadash pull` MVP scope is "download + progress + checksum verify". Background, cancel, and job-id semantics graduate from v1's hidden scaffold to MVP shape in this release; full surface (background jobs, status polling) waits for real consumer demand.
+- `llamastash pull` MVP scope is "download + progress + checksum verify". Background, cancel, and job-id semantics graduate from v1's hidden scaffold to MVP shape in this release; full surface (background jobs, status polling) waits for real consumer demand.
 
 ## Future Considerations
 

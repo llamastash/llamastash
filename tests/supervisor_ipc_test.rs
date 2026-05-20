@@ -9,14 +9,14 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use llamadash::daemon::probe::ProbeOptions;
-use llamadash::daemon::registry::SupervisorRegistry;
-use llamadash::daemon::supervisor::{spawn, ManagedSpawn, ManagedState};
-use llamadash::daemon::DaemonOptions;
-use llamadash::gguf::identity::ModelId;
-use llamadash::ipc::Client;
-use llamadash::launch::mode::LaunchMode;
-use llamadash::launch::params::LaunchParams;
+use llamastash::daemon::probe::ProbeOptions;
+use llamastash::daemon::registry::SupervisorRegistry;
+use llamastash::daemon::supervisor::{spawn, ManagedSpawn, ManagedState};
+use llamastash::daemon::DaemonOptions;
+use llamastash::gguf::identity::ModelId;
+use llamastash::ipc::Client;
+use llamastash::launch::mode::LaunchMode;
+use llamastash::launch::params::LaunchParams;
 use serde_json::json;
 use tokio::time::timeout;
 
@@ -30,7 +30,7 @@ fn unique_temp(label: &str) -> PathBuf {
     .expect("clock")
     .as_nanos();
   let p = std::env::temp_dir().join(format!(
-    "llamadash-supipc-{label}-{}-{nanos}",
+    "llamastash-supipc-{label}-{}-{nanos}",
     std::process::id()
   ));
   std::fs::create_dir_all(&p).expect("temp");
@@ -228,21 +228,21 @@ async fn stop_model_returns_error_for_unknown_launch_id() {
 async fn run_foreground_with_supervisors(
   mut opts: DaemonOptions,
   supervisors: SupervisorRegistry,
-) -> anyhow::Result<llamadash::daemon::StartOutcome> {
+) -> anyhow::Result<llamastash::daemon::StartOutcome> {
   // The test's run_foreground call needs to use the same registry
   // we constructed up-top. We currently lack a public seam, so the
   // test exposes one via a small wrapper that mirrors the
   // run_foreground steps but injects the supervisors+gpu on
   // `MethodContext`.
-  use llamadash::daemon::{lockfile::acquire, lockfile::AcquireOutcome};
-  use llamadash::ipc::methods::MethodContext;
+  use llamastash::daemon::{lockfile::acquire, lockfile::AcquireOutcome};
+  use llamastash::ipc::methods::MethodContext;
   use std::fs;
 
   // 1. PID lockfile.
   let lock = match acquire(&opts.state_dir)? {
     AcquireOutcome::Acquired(l) => l,
     AcquireOutcome::AlreadyRunning { pid, .. } => {
-      return Ok(llamadash::daemon::StartOutcome::AlreadyRunning(pid));
+      return Ok(llamastash::daemon::StartOutcome::AlreadyRunning(pid));
     }
   };
   if opts.socket_path.exists() {
@@ -257,20 +257,20 @@ async fn run_foreground_with_supervisors(
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(&opts.socket_path, fs::Permissions::from_mode(0o600))?;
   }
-  let token = llamadash::daemon::shutdown::ShutdownToken::new();
-  let _signal = llamadash::daemon::shutdown::install_signal_handlers(token.clone());
-  let catalog = llamadash::discovery::ModelCatalog::new();
+  let token = llamastash::daemon::shutdown::ShutdownToken::new();
+  let _signal = llamastash::daemon::shutdown::install_signal_handlers(token.clone());
+  let catalog = llamastash::discovery::ModelCatalog::new();
   let _discovery =
-    llamadash::daemon::discovery_task::spawn(catalog.clone(), opts.discovery.clone());
-  let sampler = llamadash::daemon::host_metrics::spawn(token.clone(), Duration::from_secs(1));
+    llamastash::daemon::discovery_task::spawn(catalog.clone(), opts.discovery.clone());
+  let sampler = llamastash::daemon::host_metrics::spawn(token.clone(), Duration::from_secs(1));
   let ctx = MethodContext::with_catalog(token, catalog)
     .with_supervisors(supervisors)
-    .with_gpu(llamadash::gpu::GpuInfo::CpuOnly)
+    .with_gpu(llamastash::gpu::GpuInfo::CpuOnly)
     .with_sampler(sampler);
   // Suppress unused-mut warning when opts isn't mutated further.
   let _ = &mut opts;
-  let result = llamadash::daemon::server::serve(listener, ctx).await;
+  let result = llamastash::daemon::server::serve(listener, ctx).await;
   let _ = fs::remove_file(&opts.socket_path);
   drop(lock);
-  result.map(|()| llamadash::daemon::StartOutcome::RanToCompletion)
+  result.map(|()| llamastash::daemon::StartOutcome::RanToCompletion)
 }

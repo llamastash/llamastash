@@ -14,14 +14,14 @@
 
 use std::path::PathBuf;
 
-use llamadash::daemon::host_metrics::HostMetricsSnapshot;
-use llamadash::discovery::{DiscoveredModel, ModelSource};
-use llamadash::gguf::metadata::{ModeHint, ModelMetadata, Quant};
-use llamadash::theme::ThemeName;
-use llamadash::tui::app::{App, AppOptions, DaemonInfo, ManagedRow};
-use llamadash::tui::keybindings::KeyMap;
-use llamadash::tui::render::render;
-use llamadash::tui::status_icons::SurfaceState;
+use llamastash::daemon::host_metrics::HostMetricsSnapshot;
+use llamastash::discovery::{DiscoveredModel, ModelSource};
+use llamastash::gguf::metadata::{ModeHint, ModelMetadata, Quant};
+use llamastash::theme::ThemeName;
+use llamastash::tui::app::{App, AppOptions, DaemonInfo, ManagedRow};
+use llamastash::tui::keybindings::KeyMap;
+use llamastash::tui::render::render;
+use llamastash::tui::status_icons::SurfaceState;
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 
@@ -64,7 +64,7 @@ fn seeded_dashboard_app() -> App {
     uptime_seconds: Some(3 * 3600 + 12 * 60 + 45),
     build: Some("0.1.0".into()),
     server_path: Some("/usr/local/bin/llama-server".into()),
-    socket_path: Some("/run/user/1000/llamadash/daemon.sock".into()),
+    socket_path: Some("/run/user/1000/llamastash/daemon.sock".into()),
   };
   app.host_metrics = HostMetricsSnapshot {
     cpu_pct: 47.5,
@@ -188,7 +188,7 @@ fn dashboard_render_carries_key_landmarks() {
   let frame = lines.join("\n");
 
   // Title row: brand + version + connected daemon dot.
-  assert!(frame.contains("LlamaDash"), "brand missing: {frame}");
+  assert!(frame.contains("LlamaStash"), "brand missing: {frame}");
   assert!(
     frame.contains("daemon") && !frame.contains("daemon connecting"),
     "connected daemon label expected: {frame}"

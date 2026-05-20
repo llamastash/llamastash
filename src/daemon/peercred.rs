@@ -30,7 +30,7 @@ pub fn read_peer_credentials(stream: &UnixStream) -> io::Result<PeerCred> {
 
 /// Returns true iff `peer` matches the current process's real UID. The
 /// daemon process is owned by exactly one user; any peer whose UID
-/// doesn't match cannot have legitimate llamadash credentials.
+/// doesn't match cannot have legitimate llamastash credentials.
 pub fn is_authorized_peer(peer: PeerCred) -> bool {
   // SAFETY: `getuid(2)` is documented as "always successful" and reads no
   // memory.

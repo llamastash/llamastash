@@ -5,15 +5,15 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use llamadash::cli::cli_args::{
+use llamastash::cli::cli_args::{
   Cli, Command, ConfigOverride, InitStep, InstallOverride, ModelOverride,
 };
-use llamadash::cli::exit_codes::{
+use llamastash::cli::exit_codes::{
   INIT_ABORTED, INIT_DOWNLOAD_FAILED, INIT_SMOKE_FAILED, PULL_FAILED, UNKNOWN,
 };
 
 fn parse(argv: &[&str]) -> Cli {
-  Cli::try_parse_from(std::iter::once("llamadash").chain(argv.iter().copied()))
+  Cli::try_parse_from(std::iter::once("llamastash").chain(argv.iter().copied()))
     .expect("argv should parse")
 }
 
@@ -58,7 +58,7 @@ fn init_skip_repeatable_and_comma_separated() {
 
 #[test]
 fn init_only_and_skip_conflict() {
-  let result = Cli::try_parse_from(["llamadash", "init", "--only", "server", "--skip", "config"]);
+  let result = Cli::try_parse_from(["llamastash", "init", "--only", "server", "--skip", "config"]);
   assert!(result.is_err(), "--only and --skip must conflict");
 }
 
@@ -86,7 +86,7 @@ fn new_exit_codes_are_in_the_post_v1_range() {
 #[test]
 fn pull_failed_remains_69_for_standalone_pull() {
   // Distinct from INIT_DOWNLOAD_FAILED so scripts can branch on
-  // "wizard's download step" vs "standalone llamadash pull".
+  // "wizard's download step" vs "standalone llamastash pull".
   assert_eq!(PULL_FAILED, 69);
   assert_ne!(PULL_FAILED, INIT_DOWNLOAD_FAILED);
   assert_ne!(INIT_ABORTED, UNKNOWN);
@@ -154,7 +154,7 @@ fn init_install_custom_path_parses_to_pathbuf() {
 
 #[test]
 fn init_install_custom_empty_path_errors() {
-  let result = Cli::try_parse_from(["llamadash", "init", "--install", "custom:"]);
+  let result = Cli::try_parse_from(["llamastash", "init", "--install", "custom:"]);
   assert!(
     result.is_err(),
     "empty custom path must error at parse time"
@@ -163,7 +163,7 @@ fn init_install_custom_empty_path_errors() {
 
 #[test]
 fn init_install_unknown_value_errors_with_valid_choices_listed() {
-  let result = Cli::try_parse_from(["llamadash", "init", "--install", "frobnicate"]);
+  let result = Cli::try_parse_from(["llamastash", "init", "--install", "frobnicate"]);
   let err = result.expect_err("frobnicate must be rejected");
   let msg = err.to_string();
   for token in ["brew", "gh-releases", "existing", "custom:<PATH>"] {
@@ -202,7 +202,7 @@ fn init_model_owner_repo_parses_to_paste() {
 
 #[test]
 fn init_model_invalid_no_slash_errors() {
-  let result = Cli::try_parse_from(["llamadash", "init", "--model", "no-slash-here"]);
+  let result = Cli::try_parse_from(["llamastash", "init", "--model", "no-slash-here"]);
   assert!(result.is_err());
 }
 
@@ -251,7 +251,7 @@ fn init_all_new_flags_combined() {
 #[test]
 fn init_only_and_skip_mutex_still_holds_after_new_flags() {
   let result = Cli::try_parse_from([
-    "llamadash",
+    "llamastash",
     "init",
     "--recommended",
     "--only",

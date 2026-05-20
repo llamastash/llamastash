@@ -103,7 +103,7 @@ The reference rocm-smi output observed on this box:
 ## Test matrix
 
 All commands run from `/mnt/work/Workspace/oss-libs/llamatui` with the
-daemon auto-spawned. Output captured to `/tmp/llamadash-render-*.txt`.
+daemon auto-spawned. Output captured to `/tmp/llamastash-render-*.txt`.
 
 | ID | Geometry | Scan root | Purpose |
 |----|----------|-----------|---------|
@@ -118,7 +118,7 @@ daemon auto-spawned. Output captured to `/tmp/llamadash-render-*.txt`.
 
 For each render frame:
 
-1. Title row contains `LlamaDash v` and the global hint set
+1. Title row contains `LlamaStash v` and the global hint set
    (`?:help`, `t:theme`, `/:filter`, `q:quit`).
 2. Host panel border title reads `Host`; bars labelled `CPU`, `RAM`,
    `GPU`, `VRAM` (or the unified-memory collapse for AMD APU).
@@ -126,7 +126,7 @@ For each render frame:
    `unsampled` / `unknown`.
 4. Daemon panel shows non-empty `socket`, `uptime`, `build`, `server`,
    `counts`, `running` rows.
-5. Logo panel renders the `LlamaDash` block title with theme name (or
+5. Logo panel renders the `LlamaStash` block title with theme name (or
    is hidden in T4/T5 per width threshold).
 6. Models block title is `Models [N]` with `N >= 8`.
 7. Body shows source headers (`lm-studio` / `user`) followed by model

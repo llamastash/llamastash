@@ -1,10 +1,10 @@
 #!/bin/sh
 #
-# install.sh — install llamadash from GitHub Releases.
+# install.sh — install llamastash from GitHub Releases.
 #
 # Usage:
-#   curl -fsSL https://github.com/llamadash-rs/llamadash/releases/latest/download/install.sh | sh
-#   curl -fsSL https://llamadash.cli.rs/install.sh | sh
+#   curl -fsSL https://github.com/llamastash/llamastash/releases/latest/download/install.sh | sh
+#   curl -fsSL https://llamastash.cli.rs/install.sh | sh
 #
 # Flags:
 #   --version <vX.Y.Z>   Install a specific tag instead of the latest release.
@@ -13,13 +13,13 @@
 #   -h, --help           Print this help and exit.
 #
 # Environment variables (equivalents to the flags above):
-#   LLAMADASH_VERSION       Same as --version.
-#   LLAMADASH_INSTALL_DIR   Same as --prefix.
-#   LLAMADASH_QUIET=1       Same as --quiet.
+#   LLAMASTASH_VERSION       Same as --version.
+#   LLAMASTASH_INSTALL_DIR   Same as --prefix.
+#   LLAMASTASH_QUIET=1       Same as --quiet.
 #
 # Test-only overrides (do not set unless running the bats suite):
-#   LLAMADASH_BASE_URL      Override the GH Releases download base URL.
-#   LLAMADASH_LATEST_URL    Override the GH API latest-release endpoint.
+#   LLAMASTASH_BASE_URL      Override the GH Releases download base URL.
+#   LLAMASTASH_LATEST_URL    Override the GH API latest-release endpoint.
 #
 # Exit codes:
 #   0   success
@@ -38,17 +38,17 @@
 
 set -eu
 
-REPO_DEFAULT="llamadash-rs/llamadash"
-BIN_NAME="llamadash"
+REPO_DEFAULT="llamastash/llamastash"
+BIN_NAME="llamastash"
 
 # Test-only overrides; in production these resolve to GitHub's real endpoints.
-BASE_URL="${LLAMADASH_BASE_URL:-https://github.com/${REPO_DEFAULT}/releases/download}"
-LATEST_URL="${LLAMADASH_LATEST_URL:-https://api.github.com/repos/${REPO_DEFAULT}/releases/latest}"
+BASE_URL="${LLAMASTASH_BASE_URL:-https://github.com/${REPO_DEFAULT}/releases/download}"
+LATEST_URL="${LLAMASTASH_LATEST_URL:-https://api.github.com/repos/${REPO_DEFAULT}/releases/latest}"
 
 # State populated from args / env later.
-REQUESTED_VERSION="${LLAMADASH_VERSION:-}"
-INSTALL_DIR="${LLAMADASH_INSTALL_DIR:-$HOME/.local/bin}"
-QUIET="${LLAMADASH_QUIET:-}"
+REQUESTED_VERSION="${LLAMASTASH_VERSION:-}"
+INSTALL_DIR="${LLAMASTASH_INSTALL_DIR:-$HOME/.local/bin}"
+QUIET="${LLAMASTASH_QUIET:-}"
 
 log() {
   if [ -z "$QUIET" ]; then
@@ -138,7 +138,7 @@ detect_target() {
       esac
       ;;
     MINGW*|MSYS*|CYGWIN*|Windows_NT)
-      err "Windows is not supported — install with 'cargo install llamadash' instead"
+      err "Windows is not supported — install with 'cargo install llamastash' instead"
       exit 64
       ;;
     *)
@@ -242,11 +242,11 @@ version=$(resolve_version)
 
 # Strip leading 'v' for the tarball stem (asset filenames are bare-version).
 version_bare="${version#v}"
-tarball="llamadash-${version_bare}-${target}.tar.gz"
+tarball="llamastash-${version_bare}-${target}.tar.gz"
 tarball_url="${BASE_URL}/${version}/${tarball}"
 sums_url="${BASE_URL}/${version}/SHA256SUMS"
 
-log "Installing llamadash ${version} for ${target}"
+log "Installing llamastash ${version} for ${target}"
 log "  source: ${tarball_url}"
 log "  prefix: ${INSTALL_DIR}"
 
@@ -285,7 +285,7 @@ fi
 if [ -x "$existing" ]; then
   current_version=$("$existing" --version 2>/dev/null | head -1 | awk '{print $NF}' || true)
   if [ -n "$current_version" ] && [ "v${current_version}" = "$version" ]; then
-    log "llamadash ${version} already installed at ${existing} — nothing to do"
+    log "llamastash ${version} already installed at ${existing} — nothing to do"
     log "Run \`${existing} --help\` to get started."
     exit 0
   fi
@@ -312,7 +312,7 @@ log "Verifying checksum..."
 }
 
 log "Extracting..."
-# The tarball ships a single directory `llamadash-<version>-<target>/` whose
+# The tarball ships a single directory `llamastash-<version>-<target>/` whose
 # contents include the binary. Extract into the work dir, then copy the binary
 # out atomically.
 (cd "$work_dir" && tar -xzf "$tarball") || {
@@ -320,7 +320,7 @@ log "Extracting..."
   exit 1
 }
 
-extracted_bin="$work_dir/llamadash-${version_bare}-${target}/$BIN_NAME"
+extracted_bin="$work_dir/llamastash-${version_bare}-${target}/$BIN_NAME"
 if [ ! -x "$extracted_bin" ]; then
   err "extracted tarball does not contain an executable at $BIN_NAME"
   exit 1
@@ -333,7 +333,7 @@ chmod 0755 "$install_tmp"
 mv "$install_tmp" "$existing"
 
 log ""
-log "Installed llamadash ${version} -> ${existing}"
+log "Installed llamastash ${version} -> ${existing}"
 
 # PATH hint (no mutation). Detect colon-separated $PATH membership in a way
 # that works under POSIX sh; ksh/bash glob matching against ":$PATH:".

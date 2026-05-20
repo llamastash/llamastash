@@ -16,8 +16,8 @@ _None — the four vendoring items shipped 2026-05-19 via [`docs/plans/2026-05-1
 
 ## v1+ release blockers
 
-- [ ] **In progress**: init should show progress and text descriptions of what its doing (like installing llama.cpp via brew, Installed llama.cpp, downloading models, download complete, etc.) instead of just a blinking line.
-- [ ] **In progress**: Init install method doesnt offer custom path as option.
+- [x] **In progress**: init should show progress and text descriptions of what its doing (like installing llama.cpp via brew, Installed llama.cpp, downloading models, download complete, etc.) instead of just a blinking line.
+- [x] **In progress**: Init install method doesnt offer custom path as option.
 - [ ] Models downloaded from HF has cryptic names; we should rename them to something human friendly and show that in the UI instead of the HF ID.
 - [ ] if `--llama-server` is passed, add it as fallback in config file and use it when llama-server is not on path.
 - [ ] Better/colorful/formatted CLI output for commands.

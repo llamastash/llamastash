@@ -15,14 +15,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use llamadash::config::CachePathsConfig;
-use llamadash::daemon::discovery_task::DiscoveryOptions;
-use llamadash::daemon::{run_foreground, DaemonOptions};
-use llamadash::discovery::known_caches::{default_set, RootResolution};
-use llamadash::discovery::scanner::ScanOptions;
-use llamadash::discovery::watcher::WatcherOptions;
-use llamadash::gguf::test_fixtures::build_minimal_gguf;
-use llamadash::ipc::Client;
+use llamastash::config::CachePathsConfig;
+use llamastash::daemon::discovery_task::DiscoveryOptions;
+use llamastash::daemon::{run_foreground, DaemonOptions};
+use llamastash::discovery::known_caches::{default_set, RootResolution};
+use llamastash::discovery::scanner::ScanOptions;
+use llamastash::discovery::watcher::WatcherOptions;
+use llamastash::gguf::test_fixtures::build_minimal_gguf;
+use llamastash::ipc::Client;
 use serde_json::Value;
 use tokio::time::timeout;
 
@@ -32,7 +32,7 @@ fn unique_temp(label: &str) -> PathBuf {
     .expect("clock")
     .as_nanos();
   let dir = std::env::temp_dir().join(format!(
-    "llamadash-cfg-int-{label}-{}-{suffix}",
+    "llamastash-cfg-int-{label}-{}-{suffix}",
     std::process::id()
   ));
   fs::create_dir_all(&dir).expect("temp dir");
@@ -179,7 +179,7 @@ async fn ollama_default_cache_surfaces_through_list_models() {
   assert!(
     roots
       .iter()
-      .any(|r| r.path == ollama_root && r.source == llamadash::discovery::ModelSource::Ollama),
+      .any(|r| r.path == ollama_root && r.source == llamastash::discovery::ModelSource::Ollama),
     "default_set must surface the synthetic Ollama root, got {roots:?}"
   );
 

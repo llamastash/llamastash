@@ -1,4 +1,4 @@
-//! `llamadash last-params [<ref>] [--json]`.
+//! `llamastash last-params [<ref>] [--json]`.
 //!
 //! Surfaces the daemon's `last_params_list` IPC method on the CLI so
 //! an agent can answer "what params did I last successfully start

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use llamadash::{
+use llamastash::{
   cli::{self, Cli},
   config::loader,
   util::logging,

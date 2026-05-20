@@ -2,7 +2,7 @@
 //!
 //! Three guards travel together:
 //! - **Host allowlist** — only hosts on the curated list are reachable.
-//!   Blocks SSRF-via-redirect and stops `LLAMADASH_*` env confusion
+//!   Blocks SSRF-via-redirect and stops `LLAMASTASH_*` env confusion
 //!   from quietly redirecting traffic to an attacker-controlled host.
 //! - **HTTPS only** — `http://` is refused before any DNS lookup. The
 //!   redirect chain inherits this constraint per hop.
@@ -191,8 +191,8 @@ mod tests {
   #[test]
   fn user_supplied_allowlist_extension_is_honoured() {
     let url =
-      reqwest::Url::parse("https://snapshot.llamadash.dev/benchmark-snapshot.json").unwrap();
-    let allowlist = allow(&["snapshot.llamadash.dev"]);
+      reqwest::Url::parse("https://snapshot.llamastash.dev/benchmark-snapshot.json").unwrap();
+    let allowlist = allow(&["snapshot.llamastash.dev"]);
     assert!(check_url(&url, &allowlist).is_ok());
   }
 

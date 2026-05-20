@@ -1,11 +1,11 @@
-//! Read-only smoke for `llamadash doctor` (Unit 3 stub).
+//! Read-only smoke for `llamastash doctor` (Unit 3 stub).
 //! Run binary as a subprocess and assert clap accepts the surface,
 //! plus the stub emits a parseable JSON envelope under `--json`.
 
 use std::process::Command;
 
 fn bin() -> Command {
-  Command::new(env!("CARGO_BIN_EXE_llamadash"))
+  Command::new(env!("CARGO_BIN_EXE_llamastash"))
 }
 
 #[test]

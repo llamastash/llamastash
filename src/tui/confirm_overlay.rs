@@ -92,7 +92,7 @@ fn describe(action: &ConfirmAction) -> (&'static str, String) {
     ),
     ConfirmAction::KillDaemon => (
       "Kill daemon",
-      "Shut down the llamadash daemon? All managed launches will be stopped.".to_string(),
+      "Shut down the llamastash daemon? All managed launches will be stopped.".to_string(),
     ),
     ConfirmAction::LaunchDuplicate {
       name,

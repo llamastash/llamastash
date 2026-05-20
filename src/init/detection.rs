@@ -5,10 +5,10 @@
 //!   into a [`HardwareSnapshot`] the wizard renders in its persistent
 //!   header (R50) and stamps into `_init_snapshot` (R67).
 //! - [`detect_binary`] wraps `launch::binary::locate` with the
-//!   common-location probes from R54: prior llamadash-managed install
+//!   common-location probes from R54: prior llamastash-managed install
 //!   dir, `/opt/homebrew/bin`, `/usr/local/bin`, the linuxbrew prefix
 //!   (`/home/linuxbrew/.linuxbrew/bin`), `~/.local/bin`, plus the
-//!   `LLAMADASH_LLAMA_SERVER` env hint.
+//!   `LLAMASTASH_LLAMA_SERVER` env hint.
 //!
 //! `doctor` calls both read-only; init calls them at step 1 and
 //! stashes the result for the rest of the run.
@@ -127,14 +127,14 @@ pub fn detect_hardware() -> HardwareSnapshot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BinarySource {
-  /// Resolved via the `--llama-server` flag, `LLAMADASH_LLAMA_SERVER`
+  /// Resolved via the `--llama-server` flag, `LLAMASTASH_LLAMA_SERVER`
   /// env, or the `llama_server_path` config key — the same priority
   /// order [`crate::launch::binary::locate`] uses.
   Configured,
   /// Found on `$PATH`.
   Path,
   /// Found at a common install location (brew / linuxbrew / a prior
-  /// llamadash-managed dir / `~/.local/bin`).
+  /// llamastash-managed dir / `~/.local/bin`).
   CommonLocation,
   /// Nothing on disk — the wizard should run the install step.
   None,
@@ -174,20 +174,20 @@ pub struct DetectBinaryInputs {
 /// Common locations probed in order. The list is platform-aware:
 /// linuxbrew on Linux, `/opt/homebrew/bin` on macOS arm64,
 /// `/usr/local/bin` on both, plus the user-scoped `~/.local/bin` and
-/// the prior llamadash-managed install dir under `$XDG_DATA_HOME`.
+/// the prior llamastash-managed install dir under `$XDG_DATA_HOME`.
 fn common_locations() -> Vec<PathBuf> {
   let mut roots: Vec<PathBuf> = Vec::new();
   if let Some(home) = crate::util::paths::home_dir() {
     roots.push(home.join(".local/bin/llama-server"));
   }
-  // llamadash-managed install dir from Unit 8 — Vec keeps order stable
+  // llamastash-managed install dir from Unit 8 — Vec keeps order stable
   // for tests.
   if let Some(data) = directories::BaseDirs::new().and_then(|b| {
     b.data_dir()
-      .join("llamadash/llama-cpp")
+      .join("llamastash/llama-cpp")
       .canonicalize()
       .ok()
-      .or_else(|| Some(b.data_dir().join("llamadash/llama-cpp")))
+      .or_else(|| Some(b.data_dir().join("llamastash/llama-cpp")))
   }) {
     // The actual binary lives under `<data>/<version>/llama-server`;
     // we don't enumerate versions here, but expose the root so a
@@ -347,7 +347,7 @@ mod tests {
       .unwrap()
       .as_nanos();
     let dir = std::env::temp_dir().join(format!(
-      "llamadash-detect-binary-test-{}-{nanos}",
+      "llamastash-detect-binary-test-{}-{nanos}",
       std::process::id()
     ));
     fs::create_dir_all(&dir).unwrap();

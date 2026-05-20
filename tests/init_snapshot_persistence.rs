@@ -5,7 +5,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use llamadash::init::snapshot::{self, InitSnapshot, InstallMethod, LoadError, ManagedKey};
+use llamastash::init::snapshot::{self, InitSnapshot, InstallMethod, LoadError, ManagedKey};
 
 fn temp_state_dir(label: &str) -> PathBuf {
   let nanos = SystemTime::now()
@@ -13,7 +13,7 @@ fn temp_state_dir(label: &str) -> PathBuf {
     .expect("clock")
     .as_nanos();
   let p = std::env::temp_dir().join(format!(
-    "llamadash-init-snapshot-it-{label}-{}-{nanos}",
+    "llamastash-init-snapshot-it-{label}-{}-{nanos}",
     std::process::id()
   ));
   fs::create_dir_all(&p).expect("temp");
@@ -31,7 +31,7 @@ fn save_then_load_round_trips_a_real_world_snapshot() {
     install_method: Some(InstallMethod::GhReleases),
     init_date: Some("2026-05-19T00:00:00Z".into()),
     llama_server_path: Some(PathBuf::from(
-      "/home/u/.local/share/llamadash/llama-cpp/b9219/llama-server",
+      "/home/u/.local/share/llamastash/llama-cpp/b9219/llama-server",
     )),
     llama_server_digest: Some("a".repeat(64)),
     snapshot_bundle_date: Some("2026-05-18".into()),

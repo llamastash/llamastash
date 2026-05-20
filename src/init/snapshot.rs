@@ -1,9 +1,9 @@
 //! `init_snapshot.json` — the init wizard's record of what it
 //! detected, installed, and wrote.
 //!
-//! Lives alongside `state.json` under `$XDG_STATE_HOME/llamadash/`
+//! Lives alongside `state.json` under `$XDG_STATE_HOME/llamastash/`
 //! (see [`crate::util::paths::init_snapshot_file`]). The daemon does
-//! not read this file; only `llamadash init` and `llamadash doctor`
+//! not read this file; only `llamastash init` and `llamastash doctor`
 //! do. Persistence reuses the same hardening as `state.json`:
 //! `tempfile`-based atomic write, mode 0600 on Unix, parse-fail
 //! quarantine to `init_snapshot.json.broken-<ts>` so a re-run can
@@ -95,7 +95,7 @@ fn current_schema_version() -> u32 {
   CURRENT_SCHEMA_VERSION
 }
 
-/// What `llamadash init` records after a successful run. Every field
+/// What `llamastash init` records after a successful run. Every field
 /// is optional in the on-disk shape via `#[serde(default)]` so the
 /// wizard can partial-write across `--only X` invocations without
 /// losing previously-recorded data.
@@ -332,7 +332,7 @@ mod tests {
       llama_server_version: Some("b9219".into()),
       install_method: Some(InstallMethod::GhReleases),
       init_date: Some("2026-05-19T00:00:00Z".into()),
-      llama_server_path: Some(PathBuf::from("/opt/llamadash/llama-cpp/b9219/llama-server")),
+      llama_server_path: Some(PathBuf::from("/opt/llamastash/llama-cpp/b9219/llama-server")),
       llama_server_digest: Some("a".repeat(64)),
       snapshot_bundle_date: Some("2026-05-18".into()),
       remote_fetch_failures: 0,

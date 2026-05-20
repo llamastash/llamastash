@@ -1,4 +1,4 @@
-//! `llamadash init` orchestration (R48 / R49 / R50 / R72 / R76 / R77).
+//! `llamastash init` orchestration (R48 / R49 / R50 / R72 / R76 / R77).
 //!
 //! Six-step flow:
 //!   1. detect (hardware + binary) — always runs.
@@ -260,12 +260,12 @@ pub async fn run(args: InitArgs, cli: &Cli, config: &Config) -> CliResult {
 
   // Thread the same flag/env/config the daemon does (see
   // `cli/daemon.rs::resolved_inputs`) so `--llama-server <path>` and
-  // `LLAMADASH_LLAMA_SERVER` hint the wizard's existing-install probe.
+  // `LLAMASTASH_LLAMA_SERVER` hint the wizard's existing-install probe.
   // Without this the wizard probes only PATH + common locations and
   // silently misses a binary the user explicitly pointed at.
   let binary = detect_binary(DetectBinaryInputs {
     cli_flag: cli.llama_server.clone(),
-    env_var: std::env::var_os("LLAMADASH_LLAMA_SERVER"),
+    env_var: std::env::var_os("LLAMASTASH_LLAMA_SERVER"),
     config_path: config.llama_server_path.clone(),
   });
 
@@ -717,7 +717,7 @@ async fn run_models_step(
     ModelChoice::Paste(raw) => {
       // Parse through `RepoSpec::parse` so the interactive paste
       // accepts the same `owner/repo[:filename.gguf]` syntax as the
-      // `llamadash pull` CLI surface. Without this, a colon-suffix
+      // `llamastash pull` CLI surface. Without this, a colon-suffix
       // is silently treated as part of the repo name and the
       // downstream hf-hub call fails with a confusing error.
       let spec = crate::init::download::RepoSpec::parse(&raw)
@@ -948,7 +948,7 @@ struct InitConfigAdditions {
 }
 
 /// Advisory flock around `init_snapshot.json` writes so two concurrent
-/// `llamadash init` runs can't clobber each other's persisted state.
+/// `llamastash init` runs can't clobber each other's persisted state.
 /// Failure to acquire (unsupported FS, EACCES on the lock file) is
 /// non-fatal — the lock is best-effort and the caller proceeds
 /// unsynchronised, which is no worse than v2's pre-fix behaviour.
@@ -984,7 +984,7 @@ impl SnapshotWriteLock {
           //
           // `LOCK_NB` (non-blocking) is critical: this function is
           // called from an async context. A blocking `LOCK_EX` would
-          // stall the Tokio worker thread if a concurrent `llamadash
+          // stall the Tokio worker thread if a concurrent `llamastash
           // init` already holds the lock. EWOULDBLOCK / EAGAIN map
           // to "couldn't lock now" which we treat as best-effort and
           // proceed unsynchronised — matching the wider best-effort
@@ -1021,7 +1021,7 @@ fn persist_init_snapshot(
   let state_dir =
     crate::util::paths::state_dir().ok_or_else(|| CliExit::new(UNKNOWN, "no state dir"))?;
   let now = SystemTime::now();
-  // Best-effort advisory lock so two concurrent `llamadash init`
+  // Best-effort advisory lock so two concurrent `llamastash init`
   // processes don't race on the load-modify-save cycle of
   // `init_snapshot.json`. The lock file is per-state-dir, opened
   // with `OpenOptions::create(true).truncate(false)`, and the file

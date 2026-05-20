@@ -10,34 +10,34 @@
 # overwritten on every tag.
 class Llamastash < Formula
   desc "Fast, keyboard-driven TUI for launching local llama.cpp models"
-  homepage "https://github.com/llamastash-rs/llamastash"
+  homepage "https://github.com/llamastash/llamastash"
   version "$version"
   license "MIT"
 
   on_macos do
     on_arm do
-      url "https://github.com/llamastash-rs/llamastash/releases/download/v#{version}/llamastash-#{version}-aarch64-apple-darwin.tar.gz"
+      url "https://github.com/llamastash/llamastash/releases/download/v#{version}/llamastash-#{version}-aarch64-apple-darwin.tar.gz"
       sha256 "$sha_aarch64_darwin"
     end
     on_intel do
-      url "https://github.com/llamastash-rs/llamastash/releases/download/v#{version}/llamastash-#{version}-x86_64-apple-darwin.tar.gz"
+      url "https://github.com/llamastash/llamastash/releases/download/v#{version}/llamastash-#{version}-x86_64-apple-darwin.tar.gz"
       sha256 "$sha_x86_64_darwin"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/llamastash-rs/llamastash/releases/download/v#{version}/llamastash-#{version}-aarch64-unknown-linux-gnu.tar.gz"
+      url "https://github.com/llamastash/llamastash/releases/download/v#{version}/llamastash-#{version}-aarch64-unknown-linux-gnu.tar.gz"
       sha256 "$sha_aarch64_linux"
     end
     on_intel do
-      url "https://github.com/llamastash-rs/llamastash/releases/download/v#{version}/llamastash-#{version}-x86_64-unknown-linux-gnu.tar.gz"
+      url "https://github.com/llamastash/llamastash/releases/download/v#{version}/llamastash-#{version}-x86_64-unknown-linux-gnu.tar.gz"
       sha256 "$sha_x86_64_linux"
     end
   end
 
   head do
-    url "https://github.com/llamastash-rs/llamastash.git", branch: "main"
+    url "https://github.com/llamastash/llamastash.git", branch: "main"
     depends_on "rust" => :build
   end
 

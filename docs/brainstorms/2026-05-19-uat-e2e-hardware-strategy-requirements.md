@@ -12,7 +12,7 @@ related:
 revision: 3 (focused refine after round-2 document-review: factual bugs F1-F4 + sprawl trims S1-S5)
 ---
 
-# UAT / E2E strategy for LlamaDash, with per-vendor GPU coverage
+# UAT / E2E strategy for LlamaStash, with per-vendor GPU coverage
 
 ## Problem
 
@@ -30,7 +30,7 @@ There is also no UAT contract for what a maintainer should manually verify befor
 
 A reasonable alternative: tag every release as `rc` for ≥ 48h and let early adopters with diverse hardware catch regressions on their own boxes. For a pre-1.0 project with an established user base, that would be plenty.
 
-LlamaDash is pre-1.0 with **no established user base yet** (pre-publish to crates.io, pre-tap, pre-binaries). The expected contributor-UAT response rate on the first several RCs is ~0. Until that changes, the project has nobody to soak with — so the maintainer is the only source of real-hardware signal that exists. Once a user base forms, this calculation shifts and the community path becomes the primary defense; the maintainer-run UAT then degrades into a pre-major-release sanity check rather than a per-release gate (see [Outcome metric](#outcome-metric--when-to-retire-or-reshape)).
+LlamaStash is pre-1.0 with **no established user base yet** (pre-publish to crates.io, pre-tap, pre-binaries). The expected contributor-UAT response rate on the first several RCs is ~0. Until that changes, the project has nobody to soak with — so the maintainer is the only source of real-hardware signal that exists. Once a user base forms, this calculation shifts and the community path becomes the primary defense; the maintainer-run UAT then degrades into a pre-major-release sanity check rather than a per-release gate (see [Outcome metric](#outcome-metric--when-to-retire-or-reshape)).
 
 ## Goal
 
@@ -69,7 +69,7 @@ A new scripted UAT command that runs the **user lifecycle** on whichever real ha
 Isolation strategy: the UAT sets a fresh tempdir as the state-dir + runtime-dir for the lifetime of its child processes. The mechanism is platform-specific:
 
 - **Linux:** set `XDG_STATE_HOME=<tempdir>` and `XDG_RUNTIME_DIR=<tempdir>` — `paths::state_dir()` and the daemon socket path already honor those.
-- **macOS:** the `directories` crate ignores XDG vars on macOS, so XDG-only isolation silently writes into `~/Library/Application Support/llamadash` and the maintainer's real socket. The UAT must also set `LLAMADASH_SOCKET=<tempdir>/daemon.sock` (the existing override at `paths::runtime_socket_path`), plus a **new** `LLAMADASH_STATE_DIR=<tempdir>` env var that `paths::state_dir()` must be taught to consult. The state-dir env-var addition is a planning prerequisite — Tier 3 cannot land on macOS until it exists.
+- **macOS:** the `directories` crate ignores XDG vars on macOS, so XDG-only isolation silently writes into `~/Library/Application Support/llamastash` and the maintainer's real socket. The UAT must also set `LLAMASTASH_SOCKET=<tempdir>/daemon.sock` (the existing override at `paths::runtime_socket_path`), plus a **new** `LLAMASTASH_STATE_DIR=<tempdir>` env var that `paths::state_dir()` must be taught to consult. The state-dir env-var addition is a planning prerequisite — Tier 3 cannot land on macOS until it exists.
 
 This is the minimum change set: one new env var (Linux + macOS), no CLI flag additions on `init`/`doctor`/`start`/`status`.
 
@@ -117,7 +117,7 @@ JSON shape mirrors the existing `GpuInfo` enum (tagged union) so per-backend fie
     "os": "linux",
     "arch": "x86_64",
     "kernel": "...",
-    "llamadash_version": "0.4.0-rc1",
+    "llamastash_version": "0.4.0-rc1",
     "llama_server_version": "..."
   },
   "backend": {
@@ -157,7 +157,7 @@ Existing `cli::exit_codes` constants (72-74 for init, 70 for binary-not-found, e
 
 #### Invocation surface
 
-`llamadash uat ...` as a hidden subcommand gated behind a new `--features uat` Cargo feature. The release binary on crates.io / Homebrew bottle ships without the feature, so `uat` is unreachable from a user install. `cargo run --features uat -- uat --backend nvidia` is the maintainer's invocation.
+`llamastash uat ...` as a hidden subcommand gated behind a new `--features uat` Cargo feature. The release binary on crates.io / Homebrew bottle ships without the feature, so `uat` is unreachable from a user install. `cargo run --features uat -- uat --backend nvidia` is the maintainer's invocation.
 
 Why this over `cargo xtask uat`: the repo is currently a single-crate manifest (no `[workspace]` table). Adopting `xtask` would require converting to a workspace just to add one dev command, with no second dev binary on the horizon to amortize the cost. A `--features uat` subcommand achieves the same "not reachable from a release binary" guarantee with `#[cfg(feature = "uat")]` gating around the subcommand handler and its module. Revisit `xtask` if/when a second dev-only command appears.
 
@@ -177,7 +177,7 @@ Cold mode does none of this assumption — it exercises install + pull from scra
 - Loads in ≤ 3 GB of usable GPU memory at `--ctx 2048`, *including* unified-memory and iGPU configurations.
 - Supports OpenAI-compatible chat completion meaningfully.
 
-**Supply-chain posture.** Pin by HuggingFace commit SHA (requires adding a `--revision <sha>` flag to `llamadash pull` and threading it through `init`'s pull invocation — see [Planning prerequisites](#planning-prerequisites)). Define one fallback model meeting the same constraint envelope; if the primary fails to fetch, the UAT command falls back automatically and records `model_used: "<fallback-name>"` in the report.
+**Supply-chain posture.** Pin by HuggingFace commit SHA (requires adding a `--revision <sha>` flag to `llamastash pull` and threading it through `init`'s pull invocation — see [Planning prerequisites](#planning-prerequisites)). Define one fallback model meeting the same constraint envelope; if the primary fails to fetch, the UAT command falls back automatically and records `model_used: "<fallback-name>"` in the report.
 
 If both primary and fallback fail to fetch, the UAT errors loudly — the maintainer falls back to manually staging a model and re-runs. No mirror, no BLAKE3 cache verification, no license-redistribution path. Revisit if HF unavailability actually breaks a release UAT run.
 
@@ -264,8 +264,8 @@ Use `gh pr list --label uat-caught --state merged` to surface the catch list at 
 
 Items that must land *as part of* (or before) the UAT implementation, surfaced explicitly because they're load-bearing for the spec above:
 
-1. **`LLAMADASH_STATE_DIR` env var** consulted by `util::paths::state_dir()` on all platforms. Required for macOS UAT isolation; without it, Tier 3 Metal lane writes into the runner's real `~/Library/Application Support/llamadash` and Tier 2 on the maintainer's Mac collides with their daily-driver state.
-2. **`--revision <sha>` flag on `llamadash pull`**, plumbed through `init`'s internal pull invocation so `init --recommended --revision <sha>` honors it. Required for HF commit-SHA pinning; without it, the UAT's reference model is branch-tracked and silently moves under it.
+1. **`LLAMASTASH_STATE_DIR` env var** consulted by `util::paths::state_dir()` on all platforms. Required for macOS UAT isolation; without it, Tier 3 Metal lane writes into the runner's real `~/Library/Application Support/llamastash` and Tier 2 on the maintainer's Mac collides with their daily-driver state.
+2. **`--revision <sha>` flag on `llamastash pull`**, plumbed through `init`'s internal pull invocation so `init --recommended --revision <sha>` honors it. Required for HF commit-SHA pinning; without it, the UAT's reference model is branch-tracked and silently moves under it.
 3. **Release-PR template** containing the UAT backends-checked checklist and an `uat-caught` label hint. Required for the compliance + value metric tracking; without it, the 6-month retire-or-reshape evaluation has no signal.
 
 ## Open questions for the planning phase
@@ -277,9 +277,9 @@ Items that must land *as part of* (or before) the UAT implementation, surfaced e
 
 A `/ce:plan` derived from this doc should produce implementation units that cover:
 
-- [ ] **Planning prerequisite work:** `LLAMADASH_STATE_DIR` env var added to `paths::state_dir()`; `--revision <sha>` flag added to `llamadash pull` and threaded through `init`'s pull invocation; release-PR template added with UAT checklist + `uat-caught` label registered. (See [Planning prerequisites](#planning-prerequisites).)
-- [ ] New `--features uat` Cargo feature wiring a hidden `llamadash uat` subcommand. `cfg(feature = "uat")` gates the subcommand variant in `Subcommands`. No `xtask`.
-- [ ] UAT command: cross-platform state-dir/socket isolation (Linux XDG + macOS `LLAMADASH_STATE_DIR` + `LLAMADASH_SOCKET`), the 5-step lifecycle, `--mode {warm|cold}` flag (default warm), `--backend <name>` normalization to `GpuInfo` discriminant, structured JSON report (verbatim `GpuInfo` serialization for `backend.detected`), 0/1 exit codes with `failure_summary.exit_code` carrying the failing child's exit status, automatic fallback model on primary fetch failure.
+- [ ] **Planning prerequisite work:** `LLAMASTASH_STATE_DIR` env var added to `paths::state_dir()`; `--revision <sha>` flag added to `llamastash pull` and threaded through `init`'s pull invocation; release-PR template added with UAT checklist + `uat-caught` label registered. (See [Planning prerequisites](#planning-prerequisites).)
+- [ ] New `--features uat` Cargo feature wiring a hidden `llamastash uat` subcommand. `cfg(feature = "uat")` gates the subcommand variant in `Subcommands`. No `xtask`.
+- [ ] UAT command: cross-platform state-dir/socket isolation (Linux XDG + macOS `LLAMASTASH_STATE_DIR` + `LLAMASTASH_SOCKET`), the 5-step lifecycle, `--mode {warm|cold}` flag (default warm), `--backend <name>` normalization to `GpuInfo` discriminant, structured JSON report (verbatim `GpuInfo` serialization for `backend.detected`), 0/1 exit codes with `failure_summary.exit_code` carrying the failing child's exit status, automatic fallback model on primary fetch failure.
 - [ ] Reference GGUF + fallback model selection in planning, both pinned by HuggingFace commit SHA. License redistribution not required (no mirror).
 - [ ] `docs/testing/hardware-uat.md` — per-backend one-time setup, how to run warm and cold modes, the [Degraded gate policy](#degraded-gate-policy) and cold-mode cadence requirement, how to attach the JSON to a release PR, how to apply the `uat-caught` label.
 - [ ] Falsifying spike before Tier 3 lands — throwaway `.github/workflows/uat-metal-spike.yml` proving Metal is reachable on `macos-14`. Capture result in the PR description; delete the spike workflow in the same PR that lands the real one. No separate spike doc.

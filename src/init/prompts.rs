@@ -196,7 +196,7 @@ pub enum ModelChoice {
 /// JSON callers bypass this (the wizard's `print_handoff` already
 /// returns early on `--json`).
 pub fn intro(hardware: &HardwareSnapshot) {
-  let _ = cliclack::intro(console::style("llamadash init").bold().to_string());
+  let _ = cliclack::intro(console::style("llamastash init").bold().to_string());
   let line = hardware_line(hardware);
   let _ = cliclack::log::info(line);
 }
@@ -234,7 +234,7 @@ pub fn outro(summary: &InitSummary) {
     ));
   }
   body.push_str(
-    "Next: run `llamadash` to enter the TUI, or `llamadash list` to see discovered models.",
+    "Next: run `llamastash` to enter the TUI, or `llamastash list` to see discovered models.",
   );
   let _ = cliclack::outro(body);
 }

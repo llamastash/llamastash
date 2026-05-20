@@ -2,7 +2,7 @@
 //!
 //! Each frame is a 4-byte big-endian length followed by `len` body bytes.
 //! `MAX_FRAME_SIZE` is enforced on read *before* the body buffer is
-//! allocated, so a malicious peer cannot ask llamadash to allocate a
+//! allocated, so a malicious peer cannot ask llamastash to allocate a
 //! gigabyte by sending an inflated prefix.
 
 use std::io;

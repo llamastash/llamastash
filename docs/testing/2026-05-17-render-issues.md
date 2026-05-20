@@ -60,7 +60,7 @@ hardware:
 
 Findings from running `--render` across T1..T6 from
 `2026-05-17-render-test-plan.md`. All renders use the binary at
-`target/release/llamadash`.
+`target/release/llamastash`.
 
 Severity legend: **P0** — breaks a user-visible promise of the plan;
 **P1** — degraded UX or stale metadata; **P2** — polish.
@@ -102,7 +102,7 @@ on a real model is a clear regression signal.
 
 ## I2 (P0) — `start_detached` drops `-p` / `--no-scan` / `--llama-server` / `--config` on re-exec
 
-**Symptom:** `llamadash --render -p /mnt/work/lmstudio-models --no-scan`
+**Symptom:** `llamastash --render -p /mnt/work/lmstudio-models --no-scan`
 ignores both flags. The auto-spawned detached daemon walks the default
 LM Studio path (`~/.lmstudio/models`, 2 GGUFs) instead of the requested
 root (`/mnt/work/lmstudio-models`, 11 GGUFs).
@@ -110,8 +110,8 @@ root (`/mnt/work/lmstudio-models`, 11 GGUFs).
 Repro:
 
 ```text
-$ llamadash daemon stop
-$ llamadash --render -p /mnt/work/lmstudio-models --no-scan
+$ llamastash daemon stop
+$ llamastash --render -p /mnt/work/lmstudio-models --no-scan
 # Models block title shows "[2]" with paths under ~/.lmstudio/models
 ```
 
@@ -151,7 +151,7 @@ mode hint defaults to `unknown`.
 
 ## I4 (P0) — `status --json` is missing the `host` field
 
-**Symptom:** `llamadash status --json` returns no top-level `host`
+**Symptom:** `llamastash status --json` returns no top-level `host`
 block. AGENTS.md guarantees `host` is "always an object (no `null`)".
 
 ```json
@@ -337,7 +337,7 @@ layout audit. Filed for a follow-up.
 ## I12 (P2) — Tiny-terminal title row truncates mid-version
 
 **Symptom:** At 50×12 the title row reads
-`LlamaDash v0.1.?:help  t:theme  /:filter  q:quit` — the `v0.1.0-dev`
+`LlamaStash v0.1.?:help  t:theme  /:filter  q:quit` — the `v0.1.0-dev`
 is cut mid-string by the global hint set.
 
 **Fix (deferred):** Drop the version suffix first when total width is
