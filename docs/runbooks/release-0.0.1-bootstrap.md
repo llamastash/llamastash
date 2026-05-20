@@ -1,129 +1,215 @@
-# Release 0.2.0 bootstrap — org-admin runbook
+# Release 0.0.1 bootstrap — agent-native runbook
 
-This runbook lists the manual GitHub org-admin actions that have to happen **before** the first `v0.2.0` tag can produce a working release. They cannot be scripted from inside the repo — they require the org owner to click through GitHub's web UI.
+This runbook lists the GitHub org-admin actions that have to happen **before** the first `v0.0.1` tag can produce a working release. Every step has a `gh` CLI primitive a human or an agent can run from the terminal; the web-UI fallback is documented inline for steps that benefit from it.
 
-The companion plan is [`docs/plans/2026-05-19-003-feat-0.2.0-release-setup-plan.md`](../plans/2026-05-19-003-feat-0.2.0-release-setup-plan.md); this runbook is the operational checklist for the parts that plan defers to humans.
+Companion plan: [`docs/plans/2026-05-19-003-feat-0.2.0-release-setup-plan.md`](../plans/2026-05-19-003-feat-0.2.0-release-setup-plan.md) (filename retains the original `0.2.0` slug for historical record; the actual first release is `0.0.1` per the WIP-versioning decision documented in CHANGELOG).
 
 ## Prerequisites
 
-- Owner of the `llamadash-rs` GitHub organization (or invited as Owner before starting).
-- `gh` CLI authenticated with that account (`gh auth status` shows org membership).
-- A crates.io account; ability to receive verification email at the address tied to that account.
+```sh
+gh auth status       # must show org membership in llamastash-rs
+gh --version         # 2.40+ recommended for the api commands below
+```
+
+- Owner of the `llamastash-rs` GitHub organization (or invited as Owner before starting).
+- A crates.io account capable of receiving verification email for the publish-update token mint (Step 2). **This is the one step with no CLI primitive** — crates.io has no token-mint API.
+- A user account capable of minting a fine-grained PAT under the `llamastash-rs` org. **Also CLI-unavailable** — GitHub has no PAT-mint API.
 
 ---
 
 ## Step 1 — Create the four repos
 
-| Repo                                | Purpose                                  | Visibility | Initial content                       |
-| ----------------------------------- | ---------------------------------------- | ---------- | ------------------------------------- |
-| `llamadash-rs/llamadash`            | Main source repo (this one)              | public     | First push of local `main` from here  |
-| `llamadash-rs/homebrew-llamadash`   | Homebrew tap                             | public     | Push from `../homebrew-llamadash/`    |
-| `llamadash-rs/llamadash-rs.github.io` | Marketing site → `llamadash.cli.rs`    | public     | Push from `../llamadash-rs.github.io/` |
-| `llamadash-rs/.github`              | Org profile (optional, low priority)     | public     | Minimal `profile/README.md`           |
-
-Create each via the web UI (`https://github.com/organizations/llamadash-rs/repositories/new`) with:
-
-- **No** README / LICENSE / .gitignore checkboxes (we push the existing tree).
-- Default branch name: `main`.
-- Description: copy the short one-liner from each repo's README.
-
-Then point a remote at the existing local checkout and push:
+| Repo                                    | Purpose                                 | Visibility | Initial content                       |
+| --------------------------------------- | --------------------------------------- | ---------- | ------------------------------------- |
+| `llamastash-rs/llamastash`                | Main source repo (this one)             | public     | Push `main` from the local checkout   |
+| `llamastash-rs/homebrew-llamastash`       | Homebrew tap                            | public     | Push from `../homebrew-llamastash/`    |
+| `llamastash-rs/llamastash-rs.github.io`   | Marketing site → `llamastash.cli.rs`     | public     | Push from `../llamastash-rs.github.io/` |
+| `llamastash-rs/.github`                  | Org profile (optional, low priority)    | public     | Minimal `profile/README.md`           |
 
 ```sh
-# Main repo
-cd /path/to/llamadash
-git remote add origin git@github.com:llamadash-rs/llamadash.git
-git push -u origin main
+# Main repo — assumes you're inside the existing checkout.
+gh repo create llamastash-rs/llamastash \
+  --public \
+  --description "Fast, keyboard-driven TUI for launching local llama.cpp models" \
+  --source=. --remote=origin --push
 
 # Homebrew tap
-cd ../homebrew-llamadash
-git init && git add -A && git commit -m "chore: bootstrap tap"
-git branch -M main
-git remote add origin git@github.com:llamadash-rs/homebrew-llamadash.git
-git push -u origin main
+cd ../homebrew-llamastash
+git init -b main && git add -A && git commit -m "chore: bootstrap tap"
+gh repo create llamastash-rs/homebrew-llamastash \
+  --public \
+  --description "Homebrew tap for llamastash" \
+  --source=. --remote=origin --push
 
 # Marketing site
-cd ../llamadash-rs.github.io
-git init && git add -A && git commit -m "chore: bootstrap site"
-git branch -M main
-git remote add origin git@github.com:llamadash-rs/llamadash-rs.github.io.git
-git push -u origin main
+cd ../llamastash-rs.github.io
+git init -b main && git add -A && git commit -m "chore: bootstrap site"
+gh repo create llamastash-rs/llamastash-rs.github.io \
+  --public \
+  --description "Marketing site for llamastash — llamastash.cli.rs" \
+  --source=. --remote=origin --push
 ```
 
-Verify after each push: the repo loads in a browser with the expected README + file tree.
+The org-profile repo is optional. If you want one:
+
+```sh
+mkdir -p ../.github/profile && cd ../.github
+git init -b main
+printf '# llamastash-rs\n\nA fast TUI for local llama.cpp models.\n' > profile/README.md
+git add -A && git commit -m "chore: bootstrap org profile"
+gh repo create llamastash-rs/.github --public --source=. --remote=origin --push
+```
+
+Verify each push:
+
+```sh
+for repo in llamastash homebrew-llamastash llamastash-rs.github.io; do
+  gh repo view "llamastash-rs/$repo" --json name,defaultBranchRef \
+    --jq '"\(.name) | default=\(.defaultBranchRef.name)"'
+done
+```
 
 ---
 
 ## Step 2 — Add secrets
 
-### Main repo (`llamadash-rs/llamadash`)
+Two secrets live on `llamastash-rs/llamastash`. Both come from mint flows GitHub and crates.io expose only via the web — set them once, then push via `gh secret set`.
 
-**Settings → Secrets and variables → Actions → New repository secret**, add two:
+### `CRATES_IO_TOKEN`
 
-#### `CRATES_IO_TOKEN`
+Scope: **`publish-update` on crate `llamastash` only.** Do not use a global account token.
 
-Scope: **only the `llamadash` crate** — do **not** use a global account token.
+1. Open https://crates.io and sign in with the GitHub account that will own the crate.
+2. Reserve the crate name by publishing a placeholder version (or use a verification-only token first).
+3. **Account → API tokens → New token.** Scope: `publish-update` on crate `llamastash` (per-crate scopes shipped mid-2024).
+4. Copy the token.
 
-1. Sign in at https://crates.io with the GitHub account that will own the crate.
-2. Reserve the crate name (publishing v0.0.0 is one option; another is to use a verification-only token first).
-3. Account → API tokens → New token. **Scope: `publish-update` on crate `llamadash`** (per-crate scope was added in mid-2024).
-4. Copy the token; paste into the GitHub secret.
+```sh
+gh secret set CRATES_IO_TOKEN --repo llamastash-rs/llamastash --body '<paste-here>'
+# or pipe from a password manager:
+op read 'op://Personal/crates-io/llamastash-publish-token' \
+  | gh secret set CRATES_IO_TOKEN --repo llamastash-rs/llamastash
+```
 
-If the per-crate scope isn't yet available (cargo registry policy churns), use a token scoped to `publish-update` only and rotate immediately after the first publish.
+### `GH_BUMP_TOKEN`
 
-#### `GH_BUMP_TOKEN`
+Fine-grained PAT used by `release.yml`'s `publish-homebrew` and `publish-site` jobs to clone + commit + push directly into the tap and site repos.
 
-Fine-grained personal access token used by `release.yml`'s `publish-homebrew` and `publish-site` jobs to clone + commit + push directly into the tap and site repos (kdash pattern, mirrors `cd.yml` in `github.com/kdash-rs/kdash`).
+1. **Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token.**
+2. **Resource owner:** `llamastash-rs`.
+3. **Repository access:** Only select repositories → `homebrew-llamastash`, `llamastash-rs.github.io`.
+4. **Permissions:** `Contents: Read and write` only. Do **not** grant `Actions: Read and write` — a leaked token with that scope can fire any workflow in the tap or site repo (including a hostile one a maintainer pushes to a feature branch). The release pipeline does not need it.
+5. **Expiration:** 1 year. Set a calendar reminder. Rotation steps are at the bottom of this file.
 
-1. Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token.
-2. **Resource owner:** `llamadash-rs`.
-3. **Repository access:** Only select repositories → `homebrew-llamadash`, `llamadash-rs.github.io`.
-4. **Permissions:**
-   - `Contents`: Read and write
-   - (no others)
-   - `Actions: Read and write` is **not** required under the kdash pattern (no `repository_dispatch` triggers), but it's harmless if granted. Add it only if you ever flip back to dispatch-style automation.
-5. Expiration: 1 year (set a calendar reminder to rotate; mark in `docs/runbooks/secret-rotation.md` if/when that runbook exists).
-6. Copy the token; paste into the GitHub secret.
+```sh
+gh secret set GH_BUMP_TOKEN --repo llamastash-rs/llamastash --body '<paste-here>'
+
+# Confirm both secrets are set (values are not shown):
+gh secret list --repo llamastash-rs/llamastash
+```
 
 ---
 
 ## Step 3 — Configure GitHub Pages on the site repo
 
-`llamadash-rs/llamadash-rs.github.io` → **Settings → Pages**:
+Source must be **GitHub Actions** (not "Deploy from a branch"). The deploy workflow calls `actions/configure-pages@v5` with `enablement: true`, which auto-enables Pages on first deploy — but doing it explicitly first removes the 404 window.
 
-- **Source:** GitHub Actions (not "Deploy from a branch").
-- Custom domain: leave empty for now — Unit 7's CNAME step sets it after the `cli.rs` PR resolves.
+```sh
+gh api -X POST -H 'Accept: application/vnd.github+json' \
+  /repos/llamastash-rs/llamastash-rs.github.io/pages \
+  -f 'build_type=workflow' \
+  -f 'source[branch]=main' \
+  -f 'source[path]=/'
+```
 
-The first push to `main` triggers `.github/workflows/deploy.yml`, which calls `actions/configure-pages@v5` with `enablement: true`. That action programmatically enables Pages with the Actions source, but the value of clicking the setting yourself is that you see the toggle is on before the workflow runs. If you don't, the first deploy may 404 for a few minutes while GH propagates the source change.
+Verify:
+
+```sh
+gh api /repos/llamastash-rs/llamastash-rs.github.io/pages \
+  --jq '"build_type=\(.build_type) | https=\(.https_enforced)"'
+```
+
+Custom domain is left empty for now — the `cli.rs` zone-config PR sets it later.
 
 ---
 
-## Step 4 — Branch protection (optional but recommended)
+## Step 4 — Branch protection (recommended)
 
-For each repo, **Settings → Branches → Add rule** on `main`:
+Pre-bootstrap, you'll be pushing direct commits. Apply protection after the first real tag completes; until then the rules will block your own bootstrap pushes.
 
-- Require a pull request before merging (1 review).
-- Specifically for `homebrew-llamadash` and `llamadash-rs.github.io`: also restrict pushes that change `.github/workflows/bump.yml`. The bump workflow is the trust boundary for `GH_BUMP_TOKEN`; pinning its review is the operational mitigation if the token ever leaks.
+```sh
+# Main repo — require PR review, status checks pass, conversation resolution.
+gh api -X PUT -H 'Accept: application/vnd.github+json' \
+  /repos/llamastash-rs/llamastash/branches/main/protection \
+  -F 'required_pull_request_reviews[required_approving_review_count]=1' \
+  -F 'required_pull_request_reviews[dismiss_stale_reviews]=true' \
+  -F 'required_status_checks[strict]=true' \
+  -F 'required_status_checks[contexts][]=ci' \
+  -F 'enforce_admins=false' \
+  -F 'required_conversation_resolution=true' \
+  -F 'allow_force_pushes=false' \
+  -F 'allow_deletions=false'
 
-Pre-Unit-7, you'll be pushing direct commits to bootstrap each repo. After Unit 7's first real tag completes, flip the rules on. Until then, the rules will block your own bootstrap pushes.
+# Tap + site — required PR review on any workflow change. The bump.yml
+# fallback workflows + deploy.yml are the trust boundary for GH_BUMP_TOKEN,
+# so workflow file edits must be human-reviewed.
+for repo in homebrew-llamastash llamastash-rs.github.io; do
+  gh api -X PUT -H 'Accept: application/vnd.github+json' \
+    "/repos/llamastash-rs/$repo/branches/main/protection" \
+    -F 'required_pull_request_reviews[required_approving_review_count]=1' \
+    -F 'allow_force_pushes=false' \
+    -F 'allow_deletions=false'
+done
+```
+
+Add a CODEOWNERS file in each downstream repo so workflow changes require maintainer review:
+
+```sh
+for repo in homebrew-llamastash llamastash-rs.github.io; do
+  cd "../$repo"
+  printf '* @deepu105\n.github/workflows/* @deepu105\n' > CODEOWNERS
+  git add CODEOWNERS && git commit -m "chore: add CODEOWNERS" && git push
+  cd -
+done
+```
 
 ---
 
-## Step 5 — Test the chain end-to-end before tagging `v0.2.0`
+## Step 5 — Dry-run the release pipeline with `v0.0.0-rc1`
 
-The plan calls this the `v0.0.0-rc1` test cycle. With everything bootstrapped:
+Pre-release tags (`vX.Y.Z-<suffix>`) exercise the upstream half of the pipeline only: `create-release` → `build` → `publish-shasums`. The `publish-homebrew`, `publish-site`, and `publish-cargo` jobs all gate on `is_prerelease == 'false'` and are skipped. **This is intentional** — it means the dry run never writes to the tap, site, or crates.io, so cleanup after the dry run is just deleting the tag and the test release.
 
-1. On a throwaway branch in the main repo, push a tag like `v0.0.0-rc1`.
-2. Watch `.github/workflows/release.yml`:
-   - `create-release` job extracts the version + flags the tag as `is_prerelease=true`.
-   - `build` matrix produces four tarballs + sidecars; each job uploads to the GH Release.
-   - `publish-shasums` aggregates SHA256SUMS and uploads `install.sh` + `install.sh.sha256`.
-   - `publish-homebrew` runs `deployment/homebrew/packager.py`, clones the tap, commits the new formula.
-   - `publish-site` fetches install.sh from the release, re-verifies the SHA-256, clones the site, commits the mirror + version bump.
-   - `publish-cargo` is **skipped** because `is_prerelease=true` — no test publish hits crates.io.
-3. Verify each downstream artifact exists: the GH Release page, the new tap commit, the new site commit (which triggers the site's `deploy.yml`).
-4. Delete the test tag (`git push --delete origin v0.0.0-rc1`) and the throwaway branch.
-5. On the published release page, delete the test release.
+```sh
+# From a throwaway branch in the main repo:
+git checkout -b release-dry-run
+git tag v0.0.0-rc1
+git push origin release-dry-run v0.0.0-rc1
+
+# Watch the run live (blocks until completion):
+gh run list --repo llamastash-rs/llamastash --workflow=release.yml --limit 1 \
+  --json databaseId --jq '.[0].databaseId' \
+  | xargs -I {} gh run watch --repo llamastash-rs/llamastash --exit-status {}
+
+# Verify what landed:
+gh release view v0.0.0-rc1 --repo llamastash-rs/llamastash \
+  --json assets --jq '.assets[].name | "  " + .'
+# Expect: 4 tarballs, 4 .sha256 sidecars, SHA256SUMS, install.sh, install.sh.sha256.
+
+# Verify nothing was written downstream (publish-homebrew / -site / -cargo
+# should all be skipped):
+gh api /repos/llamastash-rs/homebrew-llamastash/commits/main \
+  --jq '.commit.message'   # must NOT mention v0.0.0-rc1
+gh api /repos/llamastash-rs/llamastash-rs.github.io/commits/main \
+  --jq '.commit.message'   # must NOT mention v0.0.0-rc1
+```
+
+Cleanup:
+
+```sh
+gh release delete v0.0.0-rc1 --repo llamastash-rs/llamastash --yes --cleanup-tag
+git push origin --delete release-dry-run
+git branch -D release-dry-run
+```
 
 ---
 
@@ -131,22 +217,54 @@ The plan calls this the `v0.0.0-rc1` test cycle. With everything bootstrapped:
 
 Only after Step 5 succeeds:
 
-1. Confirm `Cargo.toml` is at `0.2.0` (Unit 7 commit), CHANGELOG promotes `[Unreleased]` → `[0.2.0]`, README mentions live install commands.
-2. `git tag v0.2.0 && git push --tags`.
-3. Monitor the GH Actions tab through the full ~10 minute pipeline.
-4. Verify the live URLs:
-   - `cargo install llamadash` works on a fresh box.
-   - `brew install llamadash-rs/llamadash/llamadash` works on a fresh macOS box.
-   - `curl -fsSL https://llamadash.cli.rs/install.sh | sh` works (or the `github.com/.../releases/.../install.sh` URL if cli.rs DNS hasn't landed yet — see Unit 7).
-5. Record transcripts of each fresh-box install for the GH Release notes.
+```sh
+# 1. Confirm Cargo.toml + CHANGELOG agree (the release-readiness CI job and
+#    create-release both verify this — these are local belt-and-suspenders).
+grep '^version' Cargo.toml                # version = "0.0.1"
+grep -E '^## \[0\.0\.1\]' CHANGELOG.md    # ## [0.0.1] — <date>
+
+# 2. Tag and push.
+git tag v0.0.1
+git push origin v0.0.1
+
+# 3. Watch the full pipeline (10-15 min on cold caches).
+gh run list --repo llamastash-rs/llamastash --workflow=release.yml --limit 1 \
+  --json databaseId --jq '.[0].databaseId' \
+  | xargs -I {} gh run watch --repo llamastash-rs/llamastash --exit-status {}
+
+# 4. Verify each channel:
+gh release view v0.0.1 --repo llamastash-rs/llamastash --web
+gh api /repos/llamastash-rs/homebrew-llamastash/commits/main \
+  --jq '.commit.message'    # mentions v0.0.1
+gh api /repos/llamastash-rs/llamastash-rs.github.io/commits/main \
+  --jq '.commit.message'    # mentions v0.0.1
+
+# 5. Fresh-box smoke (Ubuntu container + macOS VM):
+docker run --rm -it ubuntu:24.04 bash -c '
+  apt-get update && apt-get install -y curl
+  curl -fsSL https://llamastash.cli.rs/install.sh | sh
+  ~/.local/bin/llamastash --version
+'
+# macOS smoke: cargo install llamastash, brew install llamastash-rs/llamastash/llamastash,
+# curl -fsSL https://llamastash.cli.rs/install.sh | sh — all three.
+```
+
+If anything in the post-`publish-cargo` chain fails (rare):
+
+```sh
+# Re-run a single failed job from the Actions UI, or via:
+gh run rerun --repo llamastash-rs/llamastash --failed <run-id>
+```
 
 ---
 
 ## Token rotation cadence
 
-| Secret             | Rotation trigger                          | Rotation cadence default |
-| ------------------ | ----------------------------------------- | ------------------------ |
-| `CRATES_IO_TOKEN`  | First publish, suspected leak, annually   | annual                   |
-| `GH_BUMP_TOKEN`    | Expiry (set at creation time), leak, annually | annual                |
+| Secret             | Trigger to rotate                              | Default cadence | Rotation primitive |
+| ------------------ | ---------------------------------------------- | --------------- | ------------------ |
+| `CRATES_IO_TOKEN`  | First publish, suspected leak, annually        | annual          | crates.io UI → `gh secret set CRATES_IO_TOKEN --repo llamastash-rs/llamastash --body '<new>'` |
+| `GH_BUMP_TOKEN`    | PAT expiry, leak, annually                     | annual          | GitHub PAT UI → `gh secret set GH_BUMP_TOKEN --repo llamastash-rs/llamastash --body '<new>'` |
 
-The long-term answer (deferred to 0.3.x) is a GitHub App with OIDC instead of PATs. Track in the project's TODO/follow-up doc; not in scope for 0.2.0.
+The long-term answer (tracked in `TODO.md`) is migrating to a scoped GitHub App with OIDC instead of PATs — eliminates rotation entirely. Out of scope for 0.0.1.
+
+To monitor PAT expiry without waiting for the first failed release, set a calendar reminder for ~30 days before the configured expiry. GitHub does not yet expose token expiration via API for fine-grained PATs.

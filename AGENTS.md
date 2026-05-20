@@ -73,10 +73,10 @@ The v1 contract — these are deliberate omissions, not gaps:
 
 - **Loopback-only, same-UID.** The daemon binds a Unix domain socket (mode `0600`) with peercred auth. There is no network listener and no v1 path to one. `--host` / `--listen` / `--bind` / `--api-key` / `--ssl-*` are refused if passed via `advanced[]` to `start_model`, and `LLAMA_ARG_*` env vars are stripped before spawn.
 - **No HTTP or MCP surfaces.** Deferred from v1 (R34); v2 keeps the deferral. Re-evaluate post-v2.
-- **`llamadash pull`** graduated in v2 from the v1 `unimplemented!` shim. MVP shape: `llamadash pull <owner/repo[:filename.gguf]>` — downloads via the [`hf-hub`](https://crates.io/crates/hf-hub) crate (0.5 line, resolves the same `reqwest 0.12` we pin elsewhere) into the canonical HF cache layout that discovery already scans.
-- **`llamadash init` / `llamadash doctor`** are v2 surfaces. Init is the first-run wizard + maintenance tool; doctor is the read-only diagnostic. Both honor `--json` per the v2 plan §"init/doctor mode/flag decision matrix". `init` is **interactive by default**; agents that need non-interactive runs pass `--recommended` (`--yes` remains a permanent hidden alias) and may pre-answer individual prompts with `--install`, `--model`, and `--config-step`.
+- **`llamastash pull`** graduated in v2 from the v1 `unimplemented!` shim. MVP shape: `llamastash pull <owner/repo[:filename.gguf]>` — downloads via the [`hf-hub`](https://crates.io/crates/hf-hub) crate (0.5 line, resolves the same `reqwest 0.12` we pin elsewhere) into the canonical HF cache layout that discovery already scans.
+- **`llamastash init` / `llamastash doctor`** are v2 surfaces. Init is the first-run wizard + maintenance tool; doctor is the read-only diagnostic. Both honor `--json` per the v2 plan §"init/doctor mode/flag decision matrix". `init` is **interactive by default**; agents that need non-interactive runs pass `--recommended` (`--yes` remains a permanent hidden alias) and may pre-answer individual prompts with `--install`, `--model`, and `--config-step`.
 - **CLI color policy.** Every human-readable output uses ANSI colors when stdout is a TTY, `NO_COLOR` is unset, and `--no-colors` was not passed. Any one of those three conditions silences color. `--json` output is byte-stable regardless of the color policy.
-- **Single binary, three roles.** The TUI, CLI, and daemon are all `llamadash`. Daemon spawns on demand when TUI/CLI attach and find the socket missing.
+- **Single binary, three roles.** The TUI, CLI, and daemon are all `llamastash`. Daemon spawns on demand when TUI/CLI attach and find the socket missing.
 - **Catppuccin Macchiato is the default theme.** Five themes ship total (Macchiato, Latte, Gruvbox Dark, Solarized Dark, Monochrome). Themes are hard-coded palettes; no dynamic loading.
 
 ## Build, test, lint
@@ -107,7 +107,7 @@ cargo run                                # opens the TUI against the same daemon
 cargo run -- daemon stop
 ```
 
-Socket paths: `$XDG_RUNTIME_DIR/llamadash/daemon.sock` (Linux), `$TMPDIR/llamadash-$USER/daemon.sock` (macOS). Override with `LLAMADASH_SOCKET=/path/daemon.sock` for side-by-side daemons. If wedged, deleting both `daemon.sock` and `daemon.pid` in the same dir is safe — next `daemon start` rebinds clean.
+Socket paths: `$XDG_RUNTIME_DIR/llamastash/daemon.sock` (Linux), `$TMPDIR/llamastash-$USER/daemon.sock` (macOS). Override with `LLAMASTASH_SOCKET=/path/daemon.sock` for side-by-side daemons. If wedged, deleting both `daemon.sock` and `daemon.pid` in the same dir is safe — next `daemon start` rebinds clean.
 
 ## Architecture in one breath
 
@@ -125,7 +125,7 @@ TUI / CLI ──attach──► Unix-socket JSON-RPC server (peercred)
 - **Model lifecycle.** `Launching → Loading → Ready → Stopping → Stopped`, plus `Error{cause}`. Transitions are guarded — once Stopping or Error, the model never moves out. The supervisor health-probes `/health` every 500 ms during Loading. See `src/daemon/supervisor.rs`.
 - **Process survival.** `llama-server` children get their own session via `setsid`, so they outlive the daemon. On daemon restart, an orphan sweep re-adopts each entry in `state.running` only after three-factor confirmation: PID alive, recorded port answering, and `/v1/models` body mentioning the recorded model path.
 - **Model identity.** `(canonical absolute path, BLAKE3 of header bytes)`. Renames survive; symlinks dedupe to target; split GGUFs collapse to shard 1.
-- **Persistence.** `$XDG_STATE_HOME/llamadash/state.json`, written via `state.json.tmp.<pid>.<rand>` + rename so concurrent writes can't clobber and a same-UID symlink plant can't redirect. Parse failure → `state.json.broken-<ts>` quarantine, boot with defaults.
+- **Persistence.** `$XDG_STATE_HOME/llamastash/state.json`, written via `state.json.tmp.<pid>.<rand>` + rename so concurrent writes can't clobber and a same-UID symlink plant can't redirect. Parse failure → `state.json.broken-<ts>` quarantine, boot with defaults.
 
 ## CLI agent surface (Units 8 + 10/13)
 
@@ -141,7 +141,7 @@ Every read-and-mutation command supports `--json` and emits a wrapped object: `{
 | 66 | `MODEL_NOT_FOUND` | Model reference matched zero or multiple |
 | 67 | `LAUNCH_FAILED` | `start_model` accepted but supervisor failed |
 | 68 | `STOP_FAILED` | `stop_model` / `stop_all` returned an error |
-| 69 | `PULL_FAILED` | Standalone `llamadash pull` failed |
+| 69 | `PULL_FAILED` | Standalone `llamastash pull` failed |
 | 70 | `BINARY_NOT_FOUND` | `llama-server` not on PATH / config |
 | 71 | `UNKNOWN` | Catch-all (anyhow bubble-up) |
 | 72 | `INIT_ABORTED` | Init pre-smoke abort (integrity / daemon stop) |
@@ -180,7 +180,15 @@ Do not flag these for deletion or `.gitignore` during reviews — they are part 
 
 ## Common gotchas
 
-- The CLI/TUI/daemon are one binary. `cargo run -- daemon start` and `cargo run` (TUI) talk to each other via the same socket — running two `cargo run` invocations in parallel without distinct `LLAMADASH_SOCKET` will both attach to the same daemon.
+- The CLI/TUI/daemon are one binary. `cargo run -- daemon start` and `cargo run` (TUI) talk to each other via the same socket — running two `cargo run` invocations in parallel without distinct `LLAMASTASH_SOCKET` will both attach to the same daemon.
 - Integration tests bind to a temp dir per test (`unique_temp_dir(label)`); never share `state_dir` between tests, or they'll race the lockfile.
 - `cargo build` (without `--features test-fixtures`) intentionally omits `fake_llama_server` and `_test_sleep`. CI runs both with and without the feature to catch accidental dependencies on test-only surface.
 - `cargo install` artifacts deliberately exclude `src/gguf/test_fixtures` and the `_test_sleep` IPC method via feature gating — don't move them out from behind `#[cfg(any(test, feature = "test-fixtures"))]`.
+- Release pipeline runs `publish-homebrew`, `publish-site`, and `publish-cargo` in parallel after the upstream build matrix; a single-job failure leaves channels diverged. Recovery is to re-run the failed job from the Actions UI (or `gh run rerun --failed <run-id>`). Pre-release tags (`vX.Y.Z-<suffix>`) skip all three downstream jobs by design so dry runs never write to external repos.
+
+## Release & distribution
+
+- Steady-state contract: `git tag vX.Y.Z && git push --tags` triggers `.github/workflows/release.yml`, which builds 4 target tarballs, uploads release assets, pushes the new Homebrew formula to `llamastash-rs/homebrew-llamastash`, pushes the verified `install.sh` mirror to `llamastash-rs/llamastash-rs.github.io`, and publishes to crates.io. The full pipeline takes ~10-15 minutes on cold caches.
+- First-time setup (creating org repos, minting tokens, configuring Pages) lives in [`docs/runbooks/release-0.0.1-bootstrap.md`](docs/runbooks/release-0.0.1-bootstrap.md) — every step has a `gh` CLI primitive.
+- Pre-tag CI guards in `release-readiness` (ci.yml) catch most release-breaking PRs before tag time: `cargo publish --dry-run --locked`, crates.io name-availability against a publisher allowlist, old-org URL grep, CHANGELOG `[Unreleased]` header presence, Cargo.toml ↔ CHANGELOG version alignment, packager.py unit tests.
+- Action SHA-pinning policy: trust-critical actions in release.yml (those alongside secrets) are pinned to commit SHAs; first-party `actions/*` are tag-pinned. Updates flow through Dependabot PRs (`.github/dependabot.yml`).
