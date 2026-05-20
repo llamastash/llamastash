@@ -368,6 +368,102 @@ fn fits(peak_bytes: u64, ceiling: u64, _hw: &HardwareSnapshot) -> bool {
   peak_bytes > 0 && peak_bytes <= ceiling
 }
 
+/// Hardware-fit verdict for a single GGUF file. Mirrors the
+/// recommender's gating math but takes the TUI-shaped primitives
+/// (`gpu_backend` string + `Option<u64>` VRAM + `u64` total RAM)
+/// directly so the HF pull dialog can render `✓/⚠/✗/—` icons next
+/// to each file row without building a `HardwareSnapshot` from
+/// scratch (R111).
+///
+/// - **Fit** — peak ≤ 85% of the effective ceiling (comfortable
+///   headroom).
+/// - **Tight** — peak between 85% and 100% of the ceiling (will
+///   load but with little room for OS / driver volatility).
+/// - **Over** — peak exceeds the ceiling (refused as a launch).
+/// - **Unknown** — Vulkan-only fallback (`backend = "unknown"`) or
+///   the inputs are too sparse to compute (R113 — omit the indicator
+///   rather than render fake confidence).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileFit {
+  Fit,
+  Tight,
+  Over,
+  Unknown,
+}
+
+/// Peak / ceiling fraction at which a file flips from `Fit` to
+/// `Tight`. 0.85 matches the recommender's overall "fits with
+/// comfortable headroom" intuition without re-deriving the constant.
+const FIT_TIGHT_THRESHOLD: f64 = 0.85;
+
+/// Compute a [`FileFit`] for a candidate GGUF. `backend` accepts the
+/// `host_metrics.gpu_backend` strings (`"cuda"`, `"hip"`, `"metal"`,
+/// `"vulkan"`, `"cpu_only"`, `"unknown"`); anything else returns
+/// `Unknown`. `overhead_band_bytes` is the per-backend overhead the
+/// caller pulled out of the bundled benchmark snapshot — kept as a
+/// parameter so this helper stays a pure function and tests don't
+/// have to assemble a full `BenchmarkSnapshot`.
+pub fn vram_fit_for_file(
+  file_size_bytes: u64,
+  ctx: u32,
+  backend: &str,
+  vram_bytes: Option<u64>,
+  ram_total_bytes: u64,
+  overhead_band_bytes: Option<u64>,
+) -> FileFit {
+  if backend == "unknown" || backend == "unsampled" {
+    return FileFit::Unknown;
+  }
+  if file_size_bytes == 0 {
+    return FileFit::Unknown;
+  }
+  let overhead = overhead_band_bytes.unwrap_or(0);
+  let ceiling = match (backend, vram_bytes) {
+    ("cpu_only" | "cpu", _) => {
+      if ram_total_bytes == 0 {
+        return FileFit::Unknown;
+      }
+      (ram_total_bytes as f64 * CPU_RAM_FRACTION) as u64
+    }
+    (_, Some(vram)) => (vram as f64 * SAFETY_MARGIN) as u64,
+    (_, None) => {
+      // GPU backend reported but no VRAM yet (sampler still warming
+      // up). Don't fabricate a verdict.
+      return FileFit::Unknown;
+    }
+  };
+  let ceiling = ceiling.saturating_sub(overhead);
+  if ceiling == 0 {
+    return FileFit::Unknown;
+  }
+  let peak = estimate_peak_bytes(file_size_bytes, ctx);
+  if peak == 0 {
+    return FileFit::Unknown;
+  }
+  let ratio = peak as f64 / ceiling as f64;
+  if ratio > 1.0 {
+    FileFit::Over
+  } else if ratio >= FIT_TIGHT_THRESHOLD {
+    FileFit::Tight
+  } else {
+    FileFit::Fit
+  }
+}
+
+impl FileFit {
+  /// Single-char glyph the file picker renders next to each row.
+  /// Returns an empty string for `Unknown` (R113 — omit the icon
+  /// rather than show fake confidence).
+  pub fn glyph(self) -> &'static str {
+    match self {
+      FileFit::Fit => "✓",
+      FileFit::Tight => "⚠",
+      FileFit::Over => "✗",
+      FileFit::Unknown => "—",
+    }
+  }
+}
+
 /// Composite weighted score (R55).
 pub fn composite_score(
   entry: &ModelEntry,
@@ -509,6 +605,91 @@ mod tests {
   use crate::gpu::{GpuDevice, GpuInfo};
   use crate::init::benchmark::load_bundled;
   use crate::init::detection::{CpuArch, HardwareSnapshot, OsFamily};
+
+  const GB: u64 = 1024 * 1024 * 1024;
+
+  #[test]
+  fn vram_fit_returns_fit_for_small_file_on_large_gpu() {
+    let fit = vram_fit_for_file(
+      6 * GB,
+      DEFAULT_CTX,
+      "cuda",
+      Some(24 * GB),
+      32 * GB,
+      Some(512 * 1024 * 1024),
+    );
+    assert_eq!(fit, FileFit::Fit);
+  }
+
+  #[test]
+  fn vram_fit_returns_over_for_oversized_file() {
+    let fit = vram_fit_for_file(
+      30 * GB,
+      DEFAULT_CTX,
+      "cuda",
+      Some(24 * GB),
+      32 * GB,
+      Some(512 * 1024 * 1024),
+    );
+    assert_eq!(fit, FileFit::Over);
+  }
+
+  #[test]
+  fn vram_fit_returns_unknown_for_vulkan_backend() {
+    // R113: omit the indicator on `GpuInfo::Unknown` (Vulkan-only)
+    // rather than fabricate confidence.
+    let fit = vram_fit_for_file(
+      6 * GB,
+      DEFAULT_CTX,
+      "unknown",
+      Some(24 * GB),
+      32 * GB,
+      None,
+    );
+    assert_eq!(fit, FileFit::Unknown);
+  }
+
+  #[test]
+  fn vram_fit_falls_back_to_ram_for_cpu_only() {
+    // 50% of 16 GB RAM = 8 GB ceiling. A 4 GB file fits.
+    let fit = vram_fit_for_file(4 * GB, DEFAULT_CTX, "cpu_only", None, 16 * GB, None);
+    assert!(matches!(fit, FileFit::Fit | FileFit::Tight));
+  }
+
+  #[test]
+  fn vram_fit_cpu_only_over_when_file_exceeds_ram_fraction() {
+    let fit = vram_fit_for_file(12 * GB, DEFAULT_CTX, "cpu_only", None, 16 * GB, None);
+    assert_eq!(fit, FileFit::Over);
+  }
+
+  #[test]
+  fn vram_fit_unknown_when_inputs_are_zero() {
+    assert_eq!(
+      vram_fit_for_file(0, DEFAULT_CTX, "cuda", Some(24 * GB), 32 * GB, None),
+      FileFit::Unknown,
+    );
+    assert_eq!(
+      vram_fit_for_file(4 * GB, DEFAULT_CTX, "cpu_only", None, 0, None),
+      FileFit::Unknown,
+    );
+  }
+
+  #[test]
+  fn vram_fit_unknown_when_gpu_backend_lacks_vram_yet() {
+    // gpu_backend reported but VRAM still warming up.
+    assert_eq!(
+      vram_fit_for_file(6 * GB, DEFAULT_CTX, "cuda", None, 32 * GB, None),
+      FileFit::Unknown,
+    );
+  }
+
+  #[test]
+  fn vram_fit_glyphs_match_taxonomy() {
+    assert_eq!(FileFit::Fit.glyph(), "✓");
+    assert_eq!(FileFit::Tight.glyph(), "⚠");
+    assert_eq!(FileFit::Over.glyph(), "✗");
+    assert_eq!(FileFit::Unknown.glyph(), "—");
+  }
 
   fn linux_nvidia(vram_gb: f64) -> HardwareSnapshot {
     HardwareSnapshot {

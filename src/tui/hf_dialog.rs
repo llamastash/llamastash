@@ -22,9 +22,11 @@ use ratatui::widgets::{Clear, Paragraph, Wrap};
 use ratatui::Frame;
 use tokio::sync::mpsc;
 
+use crate::discovery::split_gguf::parse_shard_name;
 use crate::init::download::RepoSpec;
 use crate::init::fetch::FetchError;
 use crate::init::hf_api::{HfRepoFile, HfSearchPage, HfSearchResult, HfSortKey, ListRepoFilesError};
+use crate::init::recommender::FileFit;
 use crate::theme::Palette;
 
 /// Three-state modal contract (R105).
@@ -72,6 +74,153 @@ pub enum HfDialogEvent {
     repo_id: String,
     error: ListRepoFilesError,
   },
+}
+
+/// One row in the File picker. Either a standalone GGUF file or a
+/// collapsed split-shard set (R112). Splits surface their sum of
+/// sizes and the launch filename (shard 1) for the eventual pull
+/// dispatch (Unit 6 walks `shard_filenames` to enqueue every
+/// sibling).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PickerRow {
+  Single {
+    filename: String,
+    size_bytes: Option<u64>,
+  },
+  Split {
+    /// Display label — the shard base with `.gguf` appended.
+    label: String,
+    total: u32,
+    /// `true` when every shard from 1..=total is present in the
+    /// repo listing. Incomplete sets render greyed-out and refuse
+    /// selection so the user can't pull a half-set.
+    complete: bool,
+    /// Sum of `size_bytes` across the shards. `None` when any
+    /// sibling is missing its size (a HEAD probe at Confirm time
+    /// fills the gap).
+    total_size_bytes: Option<u64>,
+    /// File to launch via `download_repo` — shard 1 when present,
+    /// otherwise the lowest-index shard seen. `select_files` in
+    /// `init::download` then expands the shard set so every
+    /// sibling lands.
+    launch_filename: String,
+    /// All shard filenames in the set, sorted by index. Carried
+    /// here so a future Unit 6 progress shim can show
+    /// `<shard>-NNNNN-of-MMMMM` granularity if needed.
+    shard_filenames: Vec<String>,
+  },
+}
+
+impl PickerRow {
+  /// Display filename in the picker row.
+  pub fn label(&self) -> &str {
+    match self {
+      PickerRow::Single { filename, .. } => filename,
+      PickerRow::Split { label, .. } => label,
+    }
+  }
+
+  /// Total bytes for the row (sum across shards when applicable).
+  pub fn size_bytes(&self) -> Option<u64> {
+    match self {
+      PickerRow::Single { size_bytes, .. } => *size_bytes,
+      PickerRow::Split {
+        total_size_bytes, ..
+      } => *total_size_bytes,
+    }
+  }
+
+  /// Filename to download. Shard 1 for collapsed split sets so the
+  /// existing `download_repo` shard-expansion path takes over.
+  pub fn download_filename(&self) -> &str {
+    match self {
+      PickerRow::Single { filename, .. } => filename,
+      PickerRow::Split {
+        launch_filename, ..
+      } => launch_filename,
+    }
+  }
+
+  /// `true` when the row can be selected. Incomplete shard sets
+  /// return `false` so the picker can grey them out.
+  pub fn selectable(&self) -> bool {
+    match self {
+      PickerRow::Single { .. } => true,
+      PickerRow::Split { complete, .. } => *complete,
+    }
+  }
+}
+
+/// Collapse a flat sibling list into picker rows. Shards sharing a
+/// `(base, total)` tuple group into one [`PickerRow::Split`]; everything
+/// else flows through as [`PickerRow::Single`]. Mirrors
+/// `discovery::split_gguf::group` but operates on filenames (the HF
+/// listing doesn't carry a parent path) and an `Option<u64>` size
+/// instead of a filesystem stat.
+pub fn collapse_picker_rows(files: Vec<HfRepoFile>) -> Vec<PickerRow> {
+  use std::collections::BTreeMap;
+  // Bucket by (base, total) preserving the first-seen insertion order
+  // so the picker reads predictably.
+  type BucketKey = (String, u32);
+  type BucketShard = (u32, HfRepoFile);
+  type Bucket = (usize, Vec<BucketShard>);
+  let mut singles: Vec<(usize, HfRepoFile)> = Vec::new();
+  let mut buckets: BTreeMap<BucketKey, Bucket> = BTreeMap::new();
+  for (idx, f) in files.into_iter().enumerate() {
+    match parse_shard_name(&f.filename) {
+      Some(info) => {
+        let entry = buckets
+          .entry((info.base.clone(), info.total))
+          .or_insert_with(|| (idx, Vec::new()));
+        entry.0 = entry.0.min(idx);
+        entry.1.push((info.index, f));
+      }
+      None => singles.push((idx, f)),
+    }
+  }
+  let mut entries: Vec<(usize, PickerRow)> = singles
+    .into_iter()
+    .map(|(o, f)| {
+      (
+        o,
+        PickerRow::Single {
+          filename: f.filename,
+          size_bytes: f.size_bytes,
+        },
+      )
+    })
+    .collect();
+  for ((base, total), (order, mut shards)) in buckets {
+    shards.sort_by_key(|(idx, _)| *idx);
+    let complete = shards.iter().enumerate().all(|(i, (idx, _))| {
+      *idx as usize == i + 1 && shards.len() as u32 == total
+    });
+    let total_size_bytes = if shards.iter().all(|(_, f)| f.size_bytes.is_some()) {
+      Some(shards.iter().map(|(_, f)| f.size_bytes.unwrap_or(0)).sum())
+    } else {
+      None
+    };
+    let launch_filename = shards
+      .iter()
+      .find(|(idx, _)| *idx == 1)
+      .map(|(_, f)| f.filename.clone())
+      .unwrap_or_else(|| shards[0].1.filename.clone());
+    let shard_filenames: Vec<String> = shards.iter().map(|(_, f)| f.filename.clone()).collect();
+    let label = format!("{base}.gguf");
+    entries.push((
+      order,
+      PickerRow::Split {
+        label,
+        total,
+        complete,
+        total_size_bytes,
+        launch_filename,
+        shard_filenames,
+      },
+    ));
+  }
+  entries.sort_by_key(|(o, _)| *o);
+  entries.into_iter().map(|(_, row)| row).collect()
 }
 
 /// Owned by `App` as `Option<HfDialogState>` — `None` when the dialog
@@ -122,13 +271,19 @@ pub struct HfDialogState {
   /// a pasted `owner/repo` slug).
   pub picker_repo_id: Option<String>,
   pub picker_load: PickerLoad,
-  pub picker_files: Vec<HfRepoFile>,
+  /// Collapsed picker rows — singles plus split-shard groups (R112).
+  pub picker_rows: Vec<PickerRow>,
   pub picker_idx: usize,
-  /// File selected from the picker, surfaced on Confirm.
-  pub confirm_file: Option<HfRepoFile>,
+  /// Row selected for Confirm. Carries the download filename + sum
+  /// of sizes; the caller hands this to `download_repo` (Unit 6).
+  pub confirm_row: Option<PickerRow>,
   /// `true` when the FetchClient is offline so the search bar can
   /// render an "offline — paste a repo ID …" hint immediately.
   pub offline: bool,
+  /// Snapshot of the inputs `vram_fit_for_file` needs to compute the
+  /// File picker's per-row fit indicator. Refreshed at dialog-open
+  /// time from `App::host_metrics` + the bundled benchmark snapshot.
+  pub hardware_fit_ctx: HardwareFitContext,
   /// Drain endpoint for background tasks. Created on `open`.
   pub event_rx: mpsc::UnboundedReceiver<HfDialogEvent>,
   /// Clonable sender background tasks use to ship results back.
@@ -140,9 +295,42 @@ pub struct HfDialogState {
 /// search). Matches the HuggingFace web UI cadence.
 pub const DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(300);
 
+/// Inputs to [`crate::init::recommender::vram_fit_for_file`] the file
+/// picker carries across render frames. Lifted into its own struct so
+/// the dialog can be constructed in tests without faking a full
+/// `HostMetricsSnapshot` + `BenchmarkSnapshot`.
+#[derive(Debug, Clone, Default)]
+pub struct HardwareFitContext {
+  pub backend: String,
+  pub vram_bytes: Option<u64>,
+  pub ram_total_bytes: u64,
+  pub overhead_band_bytes: Option<u64>,
+  pub ctx_tokens: u32,
+}
+
+impl HardwareFitContext {
+  /// Compute the [`FileFit`] for a candidate row size.
+  pub fn fit_for(&self, size_bytes: Option<u64>) -> FileFit {
+    let Some(size) = size_bytes else {
+      return FileFit::Unknown;
+    };
+    if self.backend.is_empty() {
+      return FileFit::Unknown;
+    }
+    crate::init::recommender::vram_fit_for_file(
+      size,
+      self.ctx_tokens,
+      &self.backend,
+      self.vram_bytes,
+      self.ram_total_bytes,
+      self.overhead_band_bytes,
+    )
+  }
+}
+
 impl HfDialogState {
   /// Construct a fresh dialog in the Search stage.
-  pub fn open(offline: bool) -> Self {
+  pub fn open(offline: bool, hardware_fit_ctx: HardwareFitContext) -> Self {
     let (tx, rx) = mpsc::unbounded_channel();
     Self {
       stage: HfStage::Search,
@@ -161,10 +349,11 @@ impl HfDialogState {
       error: None,
       picker_repo_id: None,
       picker_load: PickerLoad::Idle,
-      picker_files: Vec::new(),
+      picker_rows: Vec::new(),
       picker_idx: 0,
-      confirm_file: None,
+      confirm_row: None,
       offline,
+      hardware_fit_ctx,
       event_rx: rx,
       event_tx: tx,
     }
@@ -273,7 +462,7 @@ impl HfDialogState {
         }
       }
       HfStage::FilePicker => {
-        if !self.picker_files.is_empty() && self.picker_idx + 1 < self.picker_files.len() {
+        if !self.picker_rows.is_empty() && self.picker_idx + 1 < self.picker_rows.len() {
           self.picker_idx += 1;
         }
       }
@@ -343,23 +532,31 @@ impl HfDialogState {
     };
     self.stage = HfStage::FilePicker;
     self.picker_repo_id = Some(repo_id.clone());
-    self.picker_files.clear();
+    self.picker_rows.clear();
     self.picker_idx = 0;
     self.picker_load = PickerLoad::Loading;
     Some(repo_id)
   }
 
-  /// Apply a successful `list_repo_files` response.
+  /// Apply a successful `list_repo_files` response. Filters to
+  /// `.gguf` files and collapses split-shard sets (R112) into one
+  /// logical row per group.
   pub fn apply_repo_files(&mut self, repo_id: &str, mut files: Vec<HfRepoFile>) {
     // Drop if the dialog moved on to a different repo.
     if self.picker_repo_id.as_deref() != Some(repo_id) {
       return;
     }
-    // GGUF filter — Unit 5 will overlay shard collapse on top.
     files.retain(|f| f.filename.to_ascii_lowercase().ends_with(".gguf"));
+    let rows = collapse_picker_rows(files);
+    // Pre-select the first selectable row so an incomplete shard
+    // set doesn't trap the cursor on a non-selectable row.
+    let picker_idx = rows
+      .iter()
+      .position(PickerRow::selectable)
+      .unwrap_or(0);
     self.picker_load = PickerLoad::Ready;
-    self.picker_files = files;
-    self.picker_idx = 0;
+    self.picker_rows = rows;
+    self.picker_idx = picker_idx;
   }
 
   /// Apply a `list_repo_files` failure.
@@ -370,13 +567,16 @@ impl HfDialogState {
     self.picker_load = PickerLoad::Failed(err.to_string());
   }
 
-  /// Move from FilePicker → Confirm. Returns `true` when a file is
-  /// selectable and the transition happened.
+  /// Move from FilePicker → Confirm. Returns `true` when a row is
+  /// selectable (incomplete shard sets refuse selection per R112).
   pub fn submit_picker(&mut self) -> bool {
-    let Some(file) = self.picker_files.get(self.picker_idx).cloned() else {
+    let Some(row) = self.picker_rows.get(self.picker_idx).cloned() else {
       return false;
     };
-    self.confirm_file = Some(file);
+    if !row.selectable() {
+      return false;
+    }
+    self.confirm_row = Some(row);
     self.stage = HfStage::Confirm;
     true
   }
@@ -386,25 +586,25 @@ impl HfDialogState {
   pub fn back_to_search(&mut self) {
     self.stage = HfStage::Search;
     self.picker_repo_id = None;
-    self.picker_files.clear();
+    self.picker_rows.clear();
     self.picker_load = PickerLoad::Idle;
     self.picker_idx = 0;
-    self.confirm_file = None;
+    self.confirm_row = None;
   }
 
   /// Step from Confirm back to FilePicker.
   pub fn back_to_picker(&mut self) {
     self.stage = HfStage::FilePicker;
-    self.confirm_file = None;
+    self.confirm_row = None;
   }
 
-  /// Consume the dialog's pending confirm selection (repo +
-  /// filename). Caller forwards this to the download orchestrator;
-  /// closing the dialog is the caller's job too.
-  pub fn take_confirm_target(&self) -> Option<(String, HfRepoFile)> {
+  /// Consume the dialog's pending confirm selection (repo + row).
+  /// Caller forwards this to the download orchestrator (Unit 6);
+  /// closing the dialog is the caller's job.
+  pub fn take_confirm_target(&self) -> Option<(String, PickerRow)> {
     let repo = self.picker_repo_id.clone()?;
-    let file = self.confirm_file.clone()?;
-    Some((repo, file))
+    let row = self.confirm_row.clone()?;
+    Some((repo, row))
   }
 }
 
@@ -607,7 +807,7 @@ fn render_picker_body(
         palette.muted_style(),
       )));
     }
-    PickerLoad::Ready if state.picker_files.is_empty() => {
+    PickerLoad::Ready if state.picker_rows.is_empty() => {
       lines.push(Line::from(Span::styled(
         "no `.gguf` files in this repo.",
         palette.muted_style(),
@@ -618,21 +818,51 @@ fn render_picker_body(
       )));
     }
     PickerLoad::Ready => {
-      for (idx, f) in state.picker_files.iter().enumerate() {
+      for (idx, row) in state.picker_rows.iter().enumerate() {
         let selected = idx == state.picker_idx;
         let prefix = if selected { "▌ " } else { "  " };
         let mut style = palette.text_style();
         if selected {
           style = style.add_modifier(Modifier::REVERSED);
         }
-        let size = f
-          .size_bytes
+        let size = row
+          .size_bytes()
           .map(crate::tui::fmt::format_bytes)
           .unwrap_or_else(|| "?".into());
+        let label = match row {
+          PickerRow::Single { filename, .. } => filename.clone(),
+          PickerRow::Split {
+            label,
+            total,
+            complete,
+            ..
+          } => {
+            if *complete {
+              format!("{label}  ({total} shards)")
+            } else {
+              format!("{label}  ({total} shards — incomplete)")
+            }
+          }
+        };
+        let fit = state.hardware_fit_ctx.fit_for(row.size_bytes());
+        let fit_glyph = fit.glyph();
+        let fit_style = match fit {
+          FileFit::Fit => palette.success_style(),
+          FileFit::Tight => palette.warning_style(),
+          FileFit::Over => palette.error_style(),
+          FileFit::Unknown => palette.muted_style(),
+        };
+        let row_style = if matches!(row, PickerRow::Split { complete: false, .. }) {
+          // Greyed-out incomplete shard set — refused on submit.
+          palette.muted_style()
+        } else {
+          style
+        };
         lines.push(Line::from(vec![
-          Span::styled(prefix.to_string(), style),
-          Span::styled(format!("{:<58}  ", truncate(&f.filename, 58)), style),
-          Span::styled(size, palette.label_style()),
+          Span::styled(prefix.to_string(), row_style),
+          Span::styled(format!("{:<58}  ", truncate(&label, 58)), row_style),
+          Span::styled(format!("{size:>9}  "), palette.label_style()),
+          Span::styled(fit_glyph.to_string(), fit_style),
         ]));
       }
     }
@@ -651,14 +881,14 @@ fn render_confirm_body(
     .as_deref()
     .unwrap_or("(no repo)");
   let file = state
-    .confirm_file
+    .confirm_row
     .as_ref()
-    .map(|f| f.filename.clone())
+    .map(|r| r.label().to_string())
     .unwrap_or_else(|| "(no file)".into());
   let size = state
-    .confirm_file
+    .confirm_row
     .as_ref()
-    .and_then(|f| f.size_bytes)
+    .and_then(|r| r.size_bytes())
     .map(crate::tui::fmt::format_bytes)
     .unwrap_or_else(|| "size unknown until probe".into());
   let lines = vec![
@@ -755,7 +985,7 @@ mod tests {
 
   #[test]
   fn open_starts_in_search_stage() {
-    let s = HfDialogState::open(false);
+    let s = HfDialogState::open(false, HardwareFitContext::default());
     assert_eq!(s.stage, HfStage::Search);
     assert!(s.query.is_empty());
     assert_eq!(s.sort, HfSortKey::Downloads);
@@ -765,7 +995,7 @@ mod tests {
 
   #[test]
   fn typing_bumps_seq_so_late_responses_are_dropped() {
-    let mut s = HfDialogState::open(false);
+    let mut s = HfDialogState::open(false, HardwareFitContext::default());
     s.insert('q');
     let seq_after_first = s.query_seq;
     s.insert('w');
@@ -796,7 +1026,7 @@ mod tests {
 
   #[test]
   fn search_due_requires_debounce_window_to_elapse() {
-    let mut s = HfDialogState::open(false);
+    let mut s = HfDialogState::open(false, HardwareFitContext::default());
     s.insert('q');
     let now = s.last_keystroke_at;
     assert!(!s.search_due(now), "immediate dispatch would defeat the debounce");
@@ -805,13 +1035,13 @@ mod tests {
 
   #[test]
   fn empty_query_never_dispatches() {
-    let s = HfDialogState::open(false);
+    let s = HfDialogState::open(false, HardwareFitContext::default());
     assert!(!s.search_due(Instant::now() + DEBOUNCE + Duration::from_secs(5)));
   }
 
   #[test]
   fn cycle_sort_walks_all_four_back_to_downloads() {
-    let mut s = HfDialogState::open(false);
+    let mut s = HfDialogState::open(false, HardwareFitContext::default());
     let start = s.sort;
     for _ in 0..4 {
       s.cycle_sort();
@@ -825,7 +1055,7 @@ mod tests {
 
   #[test]
   fn submit_search_prefers_pasted_slug_over_selected_row() {
-    let mut s = HfDialogState::open(false);
+    let mut s = HfDialogState::open(false, HardwareFitContext::default());
     s.results = vec![fake_result("from-list/repo")];
     s.query = "owner/typed-repo".into();
     let target = s.submit_search();
@@ -836,7 +1066,7 @@ mod tests {
 
   #[test]
   fn submit_search_uses_selected_result_when_query_is_not_a_slug() {
-    let mut s = HfDialogState::open(false);
+    let mut s = HfDialogState::open(false, HardwareFitContext::default());
     s.results = vec![
       fake_result("alpha/repo"),
       fake_result("beta/repo"),
@@ -849,14 +1079,14 @@ mod tests {
 
   #[test]
   fn submit_search_returns_none_when_no_query_and_no_selection() {
-    let mut s = HfDialogState::open(false);
+    let mut s = HfDialogState::open(false, HardwareFitContext::default());
     assert!(s.submit_search().is_none());
     assert_eq!(s.stage, HfStage::Search);
   }
 
   #[test]
   fn back_to_search_clears_picker_state_but_keeps_query() {
-    let mut s = HfDialogState::open(false);
+    let mut s = HfDialogState::open(false, HardwareFitContext::default());
     s.query = "qwen".into();
     s.results = vec![fake_result("a/b")];
     s.submit_search();
@@ -869,7 +1099,7 @@ mod tests {
 
   #[test]
   fn apply_repo_files_filters_to_gguf_and_drops_stale_repo() {
-    let mut s = HfDialogState::open(false);
+    let mut s = HfDialogState::open(false, HardwareFitContext::default());
     s.picker_repo_id = Some("owner/repo".into());
     s.picker_load = PickerLoad::Loading;
     s.apply_repo_files(
@@ -879,7 +1109,7 @@ mod tests {
         size_bytes: None,
       }],
     );
-    assert!(s.picker_files.is_empty(), "stale repo files leaked through");
+    assert!(s.picker_rows.is_empty(), "stale repo files leaked through");
     s.apply_repo_files(
       "owner/repo",
       vec![
@@ -893,16 +1123,16 @@ mod tests {
         },
       ],
     );
-    assert_eq!(s.picker_files.len(), 1);
-    assert_eq!(s.picker_files[0].filename, "model.gguf");
+    assert_eq!(s.picker_rows.len(), 1);
+    assert_eq!(s.picker_rows[0].label(), "model.gguf");
     assert_eq!(s.picker_load, PickerLoad::Ready);
   }
 
   #[test]
   fn submit_picker_requires_a_selectable_file() {
-    let mut s = HfDialogState::open(false);
+    let mut s = HfDialogState::open(false, HardwareFitContext::default());
     assert!(!s.submit_picker());
-    s.picker_files = vec![HfRepoFile {
+    s.picker_rows = vec![PickerRow::Single {
       filename: "x.gguf".into(),
       size_bytes: Some(4096),
     }];
@@ -914,7 +1144,7 @@ mod tests {
 
   #[test]
   fn move_up_and_down_respect_stage() {
-    let mut s = HfDialogState::open(false);
+    let mut s = HfDialogState::open(false, HardwareFitContext::default());
     s.results = vec![fake_result("a/b"), fake_result("c/d"), fake_result("e/f")];
     s.move_down();
     assert_eq!(s.selected_idx, 1);
@@ -925,12 +1155,12 @@ mod tests {
     assert_eq!(s.selected_idx, 1);
     // Switch stages; picker has separate cursor.
     s.stage = HfStage::FilePicker;
-    s.picker_files = vec![
-      HfRepoFile {
+    s.picker_rows = vec![
+      PickerRow::Single {
         filename: "a.gguf".into(),
         size_bytes: None,
       },
-      HfRepoFile {
+      PickerRow::Single {
         filename: "b.gguf".into(),
         size_bytes: None,
       },
@@ -943,7 +1173,7 @@ mod tests {
 
   #[test]
   fn advance_and_retreat_page_track_cursor_history() {
-    let mut s = HfDialogState::open(false);
+    let mut s = HfDialogState::open(false, HardwareFitContext::default());
     s.query = "qwen".into();
     // After page 1's response: current_cursor=None, next_cursor=cursor-1.
     s.next_cursor = Some("cursor-1".into());
@@ -975,13 +1205,132 @@ mod tests {
 
   #[test]
   fn search_failed_with_offline_clears_in_flight_and_renders_hint() {
-    let mut s = HfDialogState::open(false);
+    let mut s = HfDialogState::open(false, HardwareFitContext::default());
     s.insert('q');
     s.mark_dispatched();
     s.apply_search_failed(s.last_dispatched_seq, FetchError::Offline);
     assert!(!s.search_in_flight);
     let err = s.error.expect("error message must surface");
     assert!(err.contains("offline"), "got `{err}`");
+  }
+
+  fn file(name: &str, size: Option<u64>) -> HfRepoFile {
+    HfRepoFile {
+      filename: name.into(),
+      size_bytes: size,
+    }
+  }
+
+  #[test]
+  fn collapse_picker_rows_groups_complete_shard_set_with_sum_size() {
+    let rows = collapse_picker_rows(vec![
+      file("Qwen-32B-Q4_K_M-00001-of-00003.gguf", Some(7 * 1024 * 1024 * 1024)),
+      file("Qwen-32B-Q4_K_M-00002-of-00003.gguf", Some(7 * 1024 * 1024 * 1024)),
+      file("Qwen-32B-Q4_K_M-00003-of-00003.gguf", Some(7 * 1024 * 1024 * 1024)),
+      file("config.gguf", Some(1024)),
+    ]);
+    assert_eq!(rows.len(), 2, "3 shards collapse to 1 row + 1 single");
+    match &rows[0] {
+      PickerRow::Split {
+        label,
+        total,
+        complete,
+        total_size_bytes,
+        launch_filename,
+        shard_filenames,
+        ..
+      } => {
+        assert_eq!(label, "Qwen-32B-Q4_K_M.gguf");
+        assert_eq!(*total, 3);
+        assert!(complete);
+        assert_eq!(*total_size_bytes, Some(21 * 1024 * 1024 * 1024));
+        assert_eq!(launch_filename, "Qwen-32B-Q4_K_M-00001-of-00003.gguf");
+        assert_eq!(shard_filenames.len(), 3);
+      }
+      other => panic!("expected Split, got {other:?}"),
+    }
+    assert!(matches!(rows[1], PickerRow::Single { ref filename, .. } if filename == "config.gguf"));
+  }
+
+  #[test]
+  fn collapse_picker_rows_marks_incomplete_shard_set() {
+    // Missing shard 3 of 3 — Split entry must be marked incomplete
+    // and refused on submit per R112.
+    let rows = collapse_picker_rows(vec![
+      file("partial-00001-of-00003.gguf", Some(1024)),
+      file("partial-00002-of-00003.gguf", Some(1024)),
+    ]);
+    assert_eq!(rows.len(), 1);
+    match &rows[0] {
+      PickerRow::Split { complete, .. } => assert!(!complete),
+      other => panic!("expected Split, got {other:?}"),
+    }
+    assert!(!rows[0].selectable(), "incomplete shard set must refuse selection");
+  }
+
+  #[test]
+  fn submit_picker_refuses_incomplete_shard_set() {
+    let mut s = HfDialogState::open(false, HardwareFitContext::default());
+    s.stage = HfStage::FilePicker;
+    s.picker_rows = vec![PickerRow::Split {
+      label: "partial.gguf".into(),
+      total: 3,
+      complete: false,
+      total_size_bytes: None,
+      launch_filename: "partial-00001-of-00003.gguf".into(),
+      shard_filenames: vec!["partial-00001-of-00003.gguf".into()],
+    }];
+    assert!(
+      !s.submit_picker(),
+      "incomplete shard set must refuse on submit"
+    );
+    assert_eq!(s.stage, HfStage::FilePicker, "stage must not advance");
+  }
+
+  #[test]
+  fn apply_repo_files_collapses_shards_and_preselects_first_selectable() {
+    let mut s = HfDialogState::open(false, HardwareFitContext::default());
+    s.picker_repo_id = Some("owner/repo".into());
+    s.apply_repo_files(
+      "owner/repo",
+      vec![
+        // Two-shard set that's missing shard 2 — incomplete.
+        file("a-00001-of-00002.gguf", Some(1024)),
+        file("b.gguf", Some(2048)),
+      ],
+    );
+    // The first row is the incomplete Split; cursor must land on
+    // the next selectable row.
+    assert_eq!(s.picker_rows.len(), 2);
+    assert!(matches!(s.picker_rows[0], PickerRow::Split { complete: false, .. }));
+    assert!(matches!(s.picker_rows[1], PickerRow::Single { .. }));
+    assert_eq!(s.picker_idx, 1, "cursor pre-selected the selectable row");
+  }
+
+  #[test]
+  fn hardware_fit_context_routes_through_recommender_helper() {
+    let ctx = HardwareFitContext {
+      backend: "cuda".into(),
+      vram_bytes: Some(24 * 1024 * 1024 * 1024),
+      ram_total_bytes: 32 * 1024 * 1024 * 1024,
+      overhead_band_bytes: Some(512 * 1024 * 1024),
+      ctx_tokens: crate::init::recommender::DEFAULT_CTX,
+    };
+    // Small file → Fit.
+    assert_eq!(ctx.fit_for(Some(4 * 1024 * 1024 * 1024)), FileFit::Fit);
+    // Oversized → Over.
+    assert_eq!(ctx.fit_for(Some(30 * 1024 * 1024 * 1024)), FileFit::Over);
+    // None size → Unknown.
+    assert_eq!(ctx.fit_for(None), FileFit::Unknown);
+  }
+
+  #[test]
+  fn hardware_fit_context_empty_backend_yields_unknown() {
+    // Default context (backend = ""): every fit verdict must be
+    // Unknown so the dialog can render without faking a verdict
+    // when the daemon's host-metrics sampler hasn't reported yet.
+    let ctx = HardwareFitContext::default();
+    assert_eq!(ctx.fit_for(Some(4 * 1024 * 1024 * 1024)), FileFit::Unknown);
   }
 
   #[test]

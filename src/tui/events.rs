@@ -1657,10 +1657,10 @@ fn handle_hf_dialog_input(
         // Unit 6 wires the actual pull dispatch here. For now,
         // surface the intended action so users can validate the
         // path end-to-end and the dialog closes cleanly.
-        if let Some((repo, file)) = state.take_confirm_target() {
+        if let Some((repo, row)) = state.take_confirm_target() {
           HfDialogOutcome::PullQueued {
             repo,
-            filename: file.filename,
+            filename: row.label().to_string(),
           }
         } else {
           HfDialogOutcome::Close

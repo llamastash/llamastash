@@ -27,6 +27,26 @@ use crate::tui::tabs::{tabs_for_mode, RightTab};
 /// transient yank confirmations from sticking around forever.
 const TOAST_TTL: Duration = Duration::from_secs(3);
 
+/// Map the daemon's wire-stable `gpu_backend` label
+/// (`"nvidia"`/`"amd"`/...) to the recommender's per-backend key
+/// (`"cuda"`/`"hip"`/...). Kept here so the dialog stays decoupled
+/// from the daemon's sampler vocabulary. R113: `"unknown"` and
+/// `"unsampled"` pass through verbatim so `vram_fit_for_file` can
+/// return `FileFit::Unknown`.
+fn recommender_backend_key(wire: &str) -> &'static str {
+  use crate::daemon::host_metrics::HostMetricsSnapshot as H;
+  match wire {
+    H::BACKEND_NVIDIA => "cuda",
+    H::BACKEND_AMD => "hip",
+    H::BACKEND_APPLE_METAL => "metal",
+    H::BACKEND_CPU_ONLY => "cpu",
+    // Vulkan-only or never-sampled fall through; the dialog renders
+    // `FileFit::Unknown` rather than fake confidence.
+    H::BACKEND_UNKNOWN => "unknown",
+    _ => "unknown",
+  }
+}
+
 /// How many entries the `↺ Recent` section surfaces. Five matches
 /// what the user picked during planning; the daemon's storage
 /// itself isn't capped — the cap is purely a render-side window.
@@ -258,9 +278,33 @@ impl App {
   /// FetchClient is offline.
   pub fn open_hf_dialog(&mut self, offline: bool) {
     if self.hf_dialog.is_none() {
-      self.hf_dialog = Some(crate::tui::hf_dialog::HfDialogState::open(offline));
+      let ctx = self.hf_hardware_fit_ctx();
+      self.hf_dialog = Some(crate::tui::hf_dialog::HfDialogState::open(offline, ctx));
     }
     self.focus = Focus::HfDialog;
+  }
+
+  /// Snapshot the inputs `vram_fit_for_file` needs into the dialog
+  /// state at open time. Backend / VRAM / RAM come from the
+  /// daemon's host-metrics sampler; the per-backend overhead band
+  /// is read from the bundled benchmark snapshot. R111 + R113.
+  fn hf_hardware_fit_ctx(&self) -> crate::tui::hf_dialog::HardwareFitContext {
+    use crate::tui::hf_dialog::HardwareFitContext;
+    let backend = recommender_backend_key(&self.host_metrics.gpu_backend);
+    let vram_bytes = self.host_metrics.gpu_mem_total_bytes;
+    let ram_total_bytes = self.host_metrics.ram_total_bytes;
+    let overhead_band_bytes = crate::init::benchmark::load_bundled()
+      .recommender_weights
+      .overhead_band_bytes
+      .get(backend)
+      .copied();
+    HardwareFitContext {
+      backend: backend.to_string(),
+      vram_bytes,
+      ram_total_bytes,
+      overhead_band_bytes,
+      ctx_tokens: crate::init::recommender::DEFAULT_CTX,
+    }
   }
 
   /// Close the HuggingFace pull dialog and snap focus back to the
