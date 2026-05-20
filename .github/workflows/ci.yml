@@ -72,6 +72,26 @@ jobs:
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
+  actionlint:
+    # Static analysis for the workflow YAML themselves. Catches expression
+    # mistakes, shell quoting bugs, deprecated keywords, and similar shape
+    # issues that would otherwise only surface when a release.yml regression
+    # detonates mid-tag.
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install actionlint + shellcheck
+        run: |
+          set -euo pipefail
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          # Pin to a specific actionlint release for reproducibility.
+          curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash \
+            | bash -s -- 1.7.7
+          ./actionlint -version
+      - name: actionlint
+        run: ./actionlint -color
+
   release-readiness:
     # Pre-tag guards that catch release-breaking PRs *before* a maintainer
     # cuts a tag. Each check is cheap and fast; running them on every PR
@@ -79,6 +99,7 @@ jobs:
     # surfaced.
     name: release readiness
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -90,86 +111,109 @@ jobs:
         run: cargo publish --dry-run --locked
 
       - name: crate-name availability
-        # Per R86: crates.io API check that `llamadash` is either unclaimed
-        # or owned by a member of the llamadash-rs org. Anything else fails
-        # the PR with a pointer to the R87 `llamadash-cli` rename path.
+        # Per plan R86: confirm `llamastash` is unclaimed on crates.io, or if
+        # claimed, owned by the publishing maintainer (d4udts@gmail.com /
+        # deepu105 — the same account that will hold CRATES_IO_TOKEN). We
+        # query crates.io directly and check the owners list against an
+        # allowlist that's expanded in this file rather than via a token-
+        # gated GitHub API call.
+        #
+        # Why no `gh api /orgs/.../members`: that endpoint with the default
+        # GITHUB_TOKEN can only see *publicly visible* members. If the org's
+        # members default to private membership, the result is an empty list
+        # and the guard fires on every PR after first publish (the exact
+        # opposite of what we want). A small allowlist captures the
+        # invariant we actually care about: "is the publisher one of us."
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          crate="llamadash"
-          # Use curl's --write-out to get the HTTP code separately from the body
-          # without relying on jq + status code multiplexing.
+          crate="llamastash"
+          # Publisher allowlist — bump if the publishing account changes.
+          # GitHub login of every llamastash-rs member who could hold the
+          # CRATES_IO_TOKEN. Crates.io owner logins are case-insensitive.
+          publisher_allowlist=(
+            "deepu105"
+          )
+
           tmp=$(mktemp)
-          http_code=$(curl --silent --show-error --location \
-            --user-agent "llamadash-ci-name-check" \
+          trap 'rm -f "$tmp"' EXIT
+
+          http_code=$(curl --silent --show-error --location --max-time 15 \
+            --user-agent "llamastash-ci-name-check" \
             --output "$tmp" \
             --write-out '%{http_code}' \
             "https://crates.io/api/v1/crates/${crate}")
+
           case "$http_code" in
             404)
               echo "crate name '${crate}' is unclaimed on crates.io; OK"
-              rm -f "$tmp"
               exit 0
               ;;
             200) ;;
             *)
-              echo "::error::crates.io returned HTTP $http_code"
+              echo "::error::crates.io returned HTTP $http_code for /api/v1/crates/${crate}"
               cat "$tmp"
-              rm -f "$tmp"
               exit 1
               ;;
           esac
 
-          # 200: inspect owners. The crate exists. Pass if at least one owner
-          # is a member of llamadash-rs.
+          # 200 — crate exists. Extract owner logins and check against the
+          # allowlist. The /api/v1/crates/<name> response carries them at
+          # `.crate.owners[].login`.
           owners=$(python3 -c '
           import json, sys
           d = json.load(open(sys.argv[1]))
           for owner in d.get("crate", {}).get("owners", []) or []:
               print(owner.get("login", ""))
-          ' "$tmp" 2>/dev/null || true)
-          rm -f "$tmp"
+          ' "$tmp")
 
+          echo "crates.io owners for ${crate}: ${owners:-<none>}"
           if [ -z "$owners" ]; then
-            # The /owners shape lives at a separate endpoint; fall back.
-            owners=$(curl --silent --location \
-              "https://crates.io/api/v1/crates/${crate}/owners" \
-              | python3 -c 'import json,sys; d=json.load(sys.stdin); [print(u["login"]) for u in d.get("users",[])]')
+            echo "::error::Crate exists but reports no owners. Inspect manually."
+            exit 1
           fi
 
-          echo "crates.io owners: $owners"
-          # gh api lists org members; matches any owner login present in the list.
-          members=$(gh api -H "Accept: application/vnd.github+json" \
-            "/orgs/llamadash-rs/members?per_page=100" --jq '.[].login' 2>/dev/null || echo "")
-          echo "llamadash-rs members: $members"
-
           for owner in $owners; do
-            for member in $members; do
-              if [ "$owner" = "$member" ]; then
-                echo "owner '$owner' is a member of llamadash-rs; OK"
+            for allowed in "${publisher_allowlist[@]}"; do
+              if [ "${owner,,}" = "${allowed,,}" ]; then
+                echo "owner '$owner' is in the publisher allowlist; OK"
                 exit 0
               fi
             done
           done
 
-          echo "::error::crate '${crate}' is owned by a non-member of llamadash-rs."
-          echo "::error::Fall back to the 'llamadash-cli' rename path per plan R87."
+          echo "::error::crate '${crate}' is claimed by an owner outside the publisher allowlist:"
+          echo "::error::  owners: ${owners}"
+          echo "::error::  allowed: ${publisher_allowlist[*]}"
+          echo "::error::Fall back to the 'llamastash-cli' rename path per plan R87."
           exit 1
 
       - name: url-grep-guard
-        # Refuse PRs that re-introduce the pre-migration `github.com/llamadash/llamadash`
-        # URL in user-visible files. Plan + brainstorm docs are excluded because
-        # they preserve the historical record.
+        # Refuse PRs that re-introduce the pre-migration `github.com/llamastash/llamastash`
+        # URL in user-visible files. Excludes docs/brainstorms + docs/plans
+        # which preserve the historical record. Discover the file set
+        # dynamically via `git ls-files` so adding or removing a top-level
+        # doc doesn't silently bypass the check or abort on missing files.
         run: |
           set -euo pipefail
-          if grep -rn 'github.com/llamadash/llamadash' \
-                Cargo.toml README.md AGENTS.md CONTRIBUTING.md CHANGELOG.md SECURITY.md NOTICE; then
-            echo "::error::Old-org URL (github.com/llamadash/llamadash) found in user-visible files."
-            echo "::error::Replace with github.com/llamadash-rs/llamadash."
+          # All tracked Markdown + Cargo.toml at the repo root, minus the
+          # historical-record subtrees.
+          mapfile -t candidates < <(git ls-files \
+            'Cargo.toml' '*.md' \
+            ':!:docs/brainstorms/**' \
+            ':!:docs/plans/**' \
+            ':!:docs/solutions/**')
+          if [ "${#candidates[@]}" -eq 0 ]; then
+            echo "::error::URL guard found no files to scan; the glob must have lost coverage."
             exit 1
           fi
-          echo "no stray old-org URLs; OK"
+          if grep -Hn 'github.com/llamastash/llamastash' "${candidates[@]}"; then
+            echo "::error::Old-org URL (github.com/llamastash/llamastash) found in user-visible files."
+            echo "::error::Replace with github.com/llamastash-rs/llamastash."
+            exit 1
+          fi
+          printf 'scanned %d file(s); no stray old-org URLs; OK\n' "${#candidates[@]}"
 
       - name: changelog has unreleased or current-version heading
         # On PRs we just want SOMETHING under [Unreleased]; on tag-builds the
@@ -182,6 +226,28 @@ jobs:
             exit 1
           fi
           echo "[Unreleased] heading present; OK"
+
+      - name: Cargo.toml ↔ CHANGELOG version alignment
+        # If Cargo.toml's version is not -dev (i.e. it has been bumped for a
+        # release), CHANGELOG.md must already have a matching section.
+        run: |
+          set -euo pipefail
+          version=$(awk -F\" '/^version[[:space:]]*=/ {print $2; exit}' Cargo.toml)
+          if [[ "$version" == *-dev ]]; then
+            echo "Cargo.toml is at a -dev version; skipping CHANGELOG alignment check"
+            exit 0
+          fi
+          if ! grep -Eq "^## \[${version}\]" CHANGELOG.md; then
+            echo "::error::Cargo.toml is at ${version} but CHANGELOG.md has no [${version}] section."
+            echo "::error::Either promote [Unreleased] to [${version}], or revert the Cargo.toml bump."
+            exit 1
+          fi
+          echo "Cargo.toml ${version} matches CHANGELOG [${version}]; OK"
+
+      - name: packager.py unit tests
+        # Catches template / argv regressions in the homebrew packager before
+        # the release workflow tries to use it.
+        run: python3 deployment/homebrew/packager_test.py
 
   install-sh-lint:
     # POSIX-strict lint of scripts/install.sh. The script targets Bash 3.2+

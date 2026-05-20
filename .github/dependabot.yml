@@ -1,0 +1,27 @@
+version: 2
+
+# Automated updates for action SHA pins. Trust-critical actions in
+# .github/workflows/release.yml are pinned to commit SHAs (not floating
+# tags) per the security review; Dependabot opens PRs when newer SHAs
+# are available so the pins don't rot.
+#
+# Cargo + npm updates are not enabled here yet — add `package-ecosystem:
+# "cargo"` and `package-ecosystem: "npm"` when desired.
+
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(actions)"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    groups:
+      # Group all action updates into one PR per week to keep the queue tidy.
+      actions-all:
+        patterns:
+          - "*"

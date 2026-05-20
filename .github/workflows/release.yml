@@ -1,31 +1,42 @@
 name: release
 
-# Triggered by a vX.Y.Z tag push. The chain follows kdash's cd.yml shape:
+# Triggered by a vX.Y.Z tag push. Pipeline shape (kdash cd.yml lineage):
 #
-#   1. create-release       — extract version from tag, share as artifact.
+#   1. create-release       — extract version from tag, cross-check it against
+#                             Cargo.toml + CHANGELOG, then `gh release create`
+#                             (idempotent). Releases are made exactly once so
+#                             the build matrix never races to create them.
 #   2. build                — matrix builds 4 target tarballs; each job uploads
-#                             its own tarball + .sha256 sidecar to the GH Release.
-#   3. publish-shasums      — aggregates per-target .sha256 into SHA256SUMS,
-#                             uploads SHA256SUMS + install.sh + install.sh.sha256
-#                             to the GH Release.
-#   4. publish-homebrew     — runs deployment/homebrew/packager.py against the
-#                             template + per-target SHA-256s, clones the tap
-#                             repo via GH_BUMP_TOKEN, replaces Formula/llamadash.rb,
-#                             commits, pushes.
+#                             its own tarball + .sha256 sidecar via `gh release
+#                             upload`, which is purely additive (no create).
+#   3. publish-shasums      — aggregates per-target .sha256 into a sorted
+#                             SHA256SUMS, uploads SHA256SUMS + install.sh +
+#                             install.sh.sha256 to the GH Release.
+#   4. publish-homebrew     — runs deployment/homebrew/packager.py, clones the
+#                             tap via GH_BUMP_TOKEN (GIT_ASKPASS — token never
+#                             touches argv or URL strings), rewrites the
+#                             formula, lints with `brew style`, commits with
+#                             rebase-and-retry. Skipped on pre-release tags.
 #   5. publish-site         — fetches install.sh + sidecar from the release,
-#                             re-verifies the SHA-256, clones the site repo via
-#                             GH_BUMP_TOKEN, writes public/install.sh (with a
-#                             provenance header) + public/install.sh.sha256 +
-#                             src/data/version.ts, commits, pushes.
-#   6. publish-cargo        — runs `cargo publish` to crates.io with
-#                             CRATES_IO_TOKEN. Pre-release tags (vX.Y.Z-<suffix>)
-#                             are skipped so test runs against feature branches
-#                             never publish.
+#                             re-verifies SHA-256, prepends a provenance header,
+#                             recomputes the sidecar over the headered file
+#                             (so curl https://.../install.sh.sha256 matches
+#                             curl https://.../install.sh), writes version.ts
+#                             via a quoted heredoc, clones + pushes the site
+#                             repo. Skipped on pre-release tags.
+#   6. publish-cargo        — `cargo publish` with retries on transient
+#                             crates.io failures, idempotent against re-runs.
+#                             Skipped on pre-release tags.
 #
-# Steps 4/5/6 run in parallel; all gate on `publish-shasums`. The plan's
-# original two-phase ordering (tap+site first, then cargo) was relaxed to
-# match kdash's pattern after the maintainer asked for kdash-style direct
-# clone+push instead of repository_dispatch.
+# Pre-release tags (vX.Y.Z-suffix) exercise only create-release + build +
+# publish-shasums so feature-branch dry runs never write to the tap, site,
+# or crates.io. The downstream cleanup needed after an rc1 dry run is
+# therefore just `git push --delete origin <tag>` plus `gh release delete`.
+#
+# Steps 4-6 run in parallel; all gate on publish-shasums. cargo publish is
+# parallel with tap/site by intent (per the kdash pattern); failure modes
+# are catalogued in docs/plans/2026-05-19-003-feat-0.2.0-release-setup-plan.md
+# §Risks & Dependencies.
 
 on:
   push:
@@ -34,7 +45,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to build against (e.g. v0.2.0)"
+        description: "Tag to build against (e.g. v0.0.1)"
         required: true
 
 env:
@@ -42,6 +53,11 @@ env:
 
 permissions:
   contents: write
+
+# One release run per tag; queued tags wait rather than racing.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   create-release:
@@ -52,13 +68,18 @@ jobs:
       version: ${{ steps.tag.outputs.version }}
       is_prerelease: ${{ steps.tag.outputs.is_prerelease }}
     steps:
-      - name: get version from tag
+      - name: resolve tag (env-only, no template interpolation into shell)
         id: tag
+        # `inputs.tag` is interpolated via env, never directly into the shell,
+        # so an arbitrary `workflow_dispatch` value cannot template-inject.
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          GITHUB_REF: ${{ github.ref }}
         shell: bash
         run: |
           set -euo pipefail
-          if [ -n "${{ inputs.tag }}" ]; then
-            tag="${{ inputs.tag }}"
+          if [ -n "${INPUT_TAG:-}" ]; then
+            tag="$INPUT_TAG"
           else
             tag="${GITHUB_REF#refs/tags/}"
           fi
@@ -71,17 +92,65 @@ jobs:
             *-*) prerelease=true ;;
             *)   prerelease=false ;;
           esac
-          echo "tag=$tag" >>"$GITHUB_OUTPUT"
-          echo "version=$version" >>"$GITHUB_OUTPUT"
-          echo "is_prerelease=$prerelease" >>"$GITHUB_OUTPUT"
-          mkdir -p artifacts
-          printf '%s' "$tag"     >artifacts/release-tag
-          printf '%s' "$version" >artifacts/release-version
-          printf '%s' "$prerelease" >artifacts/release-is-prerelease
-      - uses: actions/upload-artifact@v4
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "is_prerelease=$prerelease"
+          } >>"$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
         with:
-          name: release-info
-          path: artifacts
+          # On push, github.ref is the tag and the default works. On
+          # workflow_dispatch, github.ref is the branch the workflow was
+          # dispatched from; switch to the tag so every downstream job sees
+          # the same source the tag captures.
+          ref: ${{ steps.tag.outputs.tag }}
+
+      - name: cross-check Cargo.toml, tag, CHANGELOG agree
+        env:
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.tag.outputs.version }}
+          IS_PRERELEASE: ${{ steps.tag.outputs.is_prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo_version=$(awk -F\" '/^version[[:space:]]*=/ {print $2; exit}' Cargo.toml)
+          if [ "$cargo_version" != "$RELEASE_VERSION" ]; then
+            echo "::error::Cargo.toml version ($cargo_version) does not match tag ($RELEASE_VERSION)."
+            echo "::error::Bump Cargo.toml before tagging."
+            exit 1
+          fi
+          # Pre-release tags can ship before the CHANGELOG section exists.
+          # Stable tags must already have a CHANGELOG heading.
+          if [ "$IS_PRERELEASE" = "false" ]; then
+            if ! grep -Eq "^## \[${RELEASE_VERSION}\]" CHANGELOG.md; then
+              echo "::error::CHANGELOG.md is missing a [${RELEASE_VERSION}] section heading."
+              exit 1
+            fi
+          fi
+
+      - name: create release (idempotent)
+        env:
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+          IS_PRERELEASE: ${{ steps.tag.outputs.is_prerelease }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `gh release view` returns 0 if the release already exists for this
+          # tag; in that case the build matrix is re-running and we should not
+          # re-create. Otherwise create with auto-generated notes.
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "release ${RELEASE_TAG} already exists; matrix uploads will append"
+            exit 0
+          fi
+          flags=(--title "$RELEASE_TAG" --generate-notes)
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            flags+=(--prerelease)
+          else
+            flags+=(--latest)
+          fi
+          gh release create "$RELEASE_TAG" "${flags[@]}"
 
   build:
     name: build ${{ matrix.target }}
@@ -89,30 +158,32 @@ jobs:
     env:
       RELEASE_VERSION: ${{ needs.create-release.outputs.version }}
       RELEASE_TAG: ${{ needs.create-release.outputs.tag }}
-      IS_PRERELEASE: ${{ needs.create-release.outputs.is_prerelease }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            cross: false
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
-            cross: true
           - target: aarch64-apple-darwin
             os: macos-latest
-            cross: false
           - target: x86_64-apple-darwin
             os: macos-latest
-            cross: false
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+        with:
+          ref: ${{ needs.create-release.outputs.tag }}
+
+      # SHA-pinned per the project's release-secrets review: actions that
+      # execute alongside CRATES_IO_TOKEN / GH_BUMP_TOKEN must not be
+      # tag-pinned, since a compromised tag would get those secrets. Bumps
+      # land via the Dependabot config in .github/dependabot.yml.
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable, 2026-05
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
 
       - name: install cross-linker (linux aarch64)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
@@ -121,51 +192,65 @@ jobs:
       - name: cargo build --release --locked
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-        run: cargo build --release --target ${{ matrix.target }} --bin llamadash --locked
+        run: cargo build --release --target ${{ matrix.target }} --bin llamastash --locked
 
-      - name: verify binary
+      - name: verify binary is an executable for the target arch
         shell: bash
-        run: file "target/${{ matrix.target }}/release/llamadash"
+        run: |
+          set -euo pipefail
+          out=$(file "target/${{ matrix.target }}/release/llamastash")
+          echo "$out"
+          case "${{ matrix.target }}" in
+            x86_64-unknown-linux-gnu)
+              echo "$out" | grep -Eq 'ELF .*x86-64' || { echo "::error::wrong arch"; exit 1; } ;;
+            aarch64-unknown-linux-gnu)
+              echo "$out" | grep -Eq 'ELF .*(aarch64|ARM aarch64)' || { echo "::error::wrong arch"; exit 1; } ;;
+            aarch64-apple-darwin)
+              echo "$out" | grep -Eq 'Mach-O .*(arm64|aarch64)' || { echo "::error::wrong arch"; exit 1; } ;;
+            x86_64-apple-darwin)
+              echo "$out" | grep -Eq 'Mach-O .*x86_64' || { echo "::error::wrong arch"; exit 1; } ;;
+          esac
 
       - name: strip binary
         shell: bash
         run: |
           set -euo pipefail
-          case "${{ matrix.target }}" in
-            aarch64-unknown-linux-gnu) strip_cmd="aarch64-linux-gnu-strip" ;;
-            *)                         strip_cmd="strip" ;;
-          esac
-          "$strip_cmd" "target/${{ matrix.target }}/release/llamadash"
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+            aarch64-linux-gnu-strip "target/${{ matrix.target }}/release/llamastash"
+          else
+            strip "target/${{ matrix.target }}/release/llamastash"
+          fi
 
       - name: package tarball
         shell: bash
         run: |
           set -euo pipefail
-          stage="llamadash-${RELEASE_VERSION}-${{ matrix.target }}"
+          stage="llamastash-${RELEASE_VERSION}-${{ matrix.target }}"
           mkdir -p "dist/${stage}"
-          cp "target/${{ matrix.target }}/release/llamadash" "dist/${stage}/"
+          cp "target/${{ matrix.target }}/release/llamastash" "dist/${stage}/"
           cp LICENSE README.md CHANGELOG.md "dist/${stage}/"
           (cd dist && tar -czf "${stage}.tar.gz" "${stage}" \
             && shasum -a 256 "${stage}.tar.gz" >"${stage}.tar.gz.sha256")
           ls -la dist
 
-      - name: upload release assets
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          name: ${{ env.RELEASE_TAG }}
-          prerelease: ${{ env.IS_PRERELEASE == 'true' }}
-          generate_release_notes: true
-          fail_on_unmatched_files: true
-          files: |
-            dist/*.tar.gz
-            dist/*.tar.gz.sha256
+      - name: upload assets to the existing release
+        # `gh release upload` is purely additive — no create. The release is
+        # already there from create-release, so the four matrix jobs cannot
+        # race to create it. `--clobber` lets a workflow re-run overwrite.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" --clobber \
+            dist/llamastash-${RELEASE_VERSION}-${{ matrix.target }}.tar.gz \
+            dist/llamastash-${RELEASE_VERSION}-${{ matrix.target }}.tar.gz.sha256
 
       - name: stash sha sidecar for downstream jobs
         shell: bash
         run: |
           mkdir -p sha-stash
-          cp dist/*.tar.gz.sha256 sha-stash/
+          cp dist/llamastash-${RELEASE_VERSION}-${{ matrix.target }}.tar.gz.sha256 sha-stash/
       - uses: actions/upload-artifact@v4
         with:
           name: sha-${{ matrix.target }}
@@ -178,9 +263,13 @@ jobs:
     env:
       RELEASE_VERSION: ${{ needs.create-release.outputs.version }}
       RELEASE_TAG: ${{ needs.create-release.outputs.tag }}
-      IS_PRERELEASE: ${{ needs.create-release.outputs.is_prerelease }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.create-release.outputs.tag }}
+          sparse-checkout: |
+            scripts/install.sh
+          sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@v4
         with:
           pattern: sha-*
@@ -192,16 +281,22 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          # Concatenate per-target .sha256 sidecars into a single SHA256SUMS.
-          # Each sidecar is one line: "<hex>  <tarball-name>".
-          cat sha-stash/*.tar.gz.sha256 >dist/SHA256SUMS
-          # Sanity-check format: hex(64) + whitespace + filename, no empty lines.
+          # Concatenate per-target .sha256 sidecars into a single SHA256SUMS,
+          # sorted for deterministic line order across runs.
+          cat sha-stash/*.tar.gz.sha256 | LC_ALL=C sort >dist/SHA256SUMS
+          # Verify shape: hex(64) + whitespace + filename, exactly 4 lines.
           awk '
             NF < 2 || $1 !~ /^[a-fA-F0-9]{64}$/ {
               printf "::error::bad SHA256SUMS line: %s\n", $0 > "/dev/stderr"
               exit 1
             }
           ' dist/SHA256SUMS
+          line_count=$(wc -l <dist/SHA256SUMS)
+          if [ "$line_count" -ne 4 ]; then
+            echo "::error::SHA256SUMS has $line_count lines; expected 4 (one per target)"
+            cat dist/SHA256SUMS
+            exit 1
+          fi
 
           cp scripts/install.sh dist/install.sh
           chmod +x dist/install.sh
@@ -209,25 +304,30 @@ jobs:
           ls -la dist
 
       - name: upload SHA256SUMS + install.sh + sidecar
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          prerelease: ${{ env.IS_PRERELEASE == 'true' }}
-          fail_on_unmatched_files: true
-          files: |
-            dist/SHA256SUMS
-            dist/install.sh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" --clobber \
+            dist/SHA256SUMS \
+            dist/install.sh \
             dist/install.sh.sha256
 
   publish-homebrew:
     name: publish homebrew formula
     needs: [create-release, publish-shasums]
     runs-on: ubuntu-latest
+    # Pre-release tags exercise the upstream chain (build + shasums) but never
+    # touch external repos. Cleanup after a dry-run is `gh release delete`.
+    if: needs.create-release.outputs.is_prerelease == 'false'
     env:
       RELEASE_VERSION: ${{ needs.create-release.outputs.version }}
       RELEASE_TAG: ${{ needs.create-release.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.create-release.outputs.tag }}
       - uses: actions/download-artifact@v4
         with:
           pattern: sha-*
@@ -239,19 +339,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          shopt -s nullglob
-
           extract() {
             local triple="$1"
-            local f
-            for f in sha-stash/llamadash-${RELEASE_VERSION}-${triple}.tar.gz.sha256; do
-              awk '{print $1; exit}' "$f"
-              return 0
-            done
-            echo "::error::missing sha256 sidecar for ${triple}" >&2
-            exit 1
+            local f="sha-stash/llamastash-${RELEASE_VERSION}-${triple}.tar.gz.sha256"
+            if [ ! -f "$f" ]; then
+              echo "::error::missing sha256 sidecar for ${triple}: $f" >&2
+              exit 1
+            fi
+            awk '{print $1; exit}' "$f"
           }
-
           {
             echo "sha_aarch64_darwin=$(extract aarch64-apple-darwin)"
             echo "sha_x86_64_darwin=$(extract x86_64-apple-darwin)"
@@ -259,101 +355,179 @@ jobs:
             echo "sha_x86_64_linux=$(extract x86_64-unknown-linux-gnu)"
           } >>"$GITHUB_OUTPUT"
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.11"
 
-      - name: render formula
+      - name: render + validate formula
+        env:
+          RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
+          SHA_AARCH64_DARWIN: ${{ steps.shas.outputs.sha_aarch64_darwin }}
+          SHA_X86_64_DARWIN:  ${{ steps.shas.outputs.sha_x86_64_darwin }}
+          SHA_AARCH64_LINUX:  ${{ steps.shas.outputs.sha_aarch64_linux }}
+          SHA_X86_64_LINUX:   ${{ steps.shas.outputs.sha_x86_64_linux }}
         run: |
+          set -euo pipefail
           python3 deployment/homebrew/packager.py \
-            "${{ env.RELEASE_VERSION }}" \
-            deployment/homebrew/llamadash.rb.template \
-            llamadash.rb \
-            "${{ steps.shas.outputs.sha_aarch64_darwin }}" \
-            "${{ steps.shas.outputs.sha_x86_64_darwin }}" \
-            "${{ steps.shas.outputs.sha_aarch64_linux }}" \
-            "${{ steps.shas.outputs.sha_x86_64_linux }}"
+            "$RELEASE_VERSION" \
+            deployment/homebrew/llamastash.rb.template \
+            llamastash.rb \
+            "$SHA_AARCH64_DARWIN" \
+            "$SHA_X86_64_DARWIN" \
+            "$SHA_AARCH64_LINUX" \
+            "$SHA_X86_64_LINUX"
 
-      - name: clone + push tap repo
+      - name: brew style (catches template regressions before push)
+        run: |
+          set -euo pipefail
+          # Linuxbrew installs to /home/linuxbrew/.linuxbrew/bin which is not
+          # on $PATH by default on the runner.
+          /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" </dev/null
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          brew style llamastash.rb
+
+      - name: clone + push tap (token via GIT_ASKPASS, retry on non-fast-forward)
         env:
           GH_BUMP_TOKEN: ${{ secrets.GH_BUMP_TOKEN }}
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
         run: |
           set -euo pipefail
           if [ -z "${GH_BUMP_TOKEN:-}" ]; then
             echo "::error::GH_BUMP_TOKEN secret is unset; cannot push to tap repo"
             exit 1
           fi
+
+          # GIT_ASKPASS keeps the token out of process argv and any URL log.
+          askpass_dir=$(mktemp -d)
+          cat >"$askpass_dir/askpass.sh" <<'ASKPASS'
+          #!/bin/sh
+          printf '%s\n' "$GH_BUMP_TOKEN"
+          ASKPASS
+          chmod +x "$askpass_dir/askpass.sh"
+          export GIT_ASKPASS="$askpass_dir/askpass.sh"
+
           git config --global user.email "release-bot@users.noreply.github.com"
-          git config --global user.name  "llamadash-release-bot"
-          git clone \
-            "https://x-access-token:${GH_BUMP_TOKEN}@github.com/llamadash-rs/homebrew-llamadash.git" \
-            --branch main brew
-          cp llamadash.rb brew/Formula/llamadash.rb
+          git config --global user.name  "llamastash-release-bot"
+          git config --global credential.helper ""
+
+          git clone "https://x-access-token@github.com/llamastash-rs/homebrew-llamastash.git" --branch main brew
+          cp llamastash.rb brew/Formula/llamastash.rb
           cd brew
-          git add Formula/llamadash.rb
+          git add Formula/llamastash.rb
           if git diff-index --quiet HEAD; then
             echo "tap already up to date for ${RELEASE_TAG}; nothing to commit"
             exit 0
           fi
-          git commit -m "chore(formula): bump llamadash to ${RELEASE_TAG}"
-          git push origin main
+          git commit -m "chore(formula): bump llamastash to ${RELEASE_TAG}"
+
+          # Retry push with pull --rebase on non-fast-forward (concurrent
+          # human edit to the tap repo's main during the release window).
+          for attempt in 1 2 3; do
+            if git push origin main; then
+              exit 0
+            fi
+            echo "push attempt ${attempt} failed; pulling --rebase and retrying"
+            git pull --rebase origin main
+            sleep $((attempt * 5))
+          done
+          echo "::error::tap push failed after 3 attempts; inspect manually"
+          exit 1
 
   publish-site:
     name: publish site install.sh mirror
     needs: [create-release, publish-shasums]
     runs-on: ubuntu-latest
+    if: needs.create-release.outputs.is_prerelease == 'false'
     env:
       RELEASE_VERSION: ${{ needs.create-release.outputs.version }}
       RELEASE_TAG: ${{ needs.create-release.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.create-release.outputs.tag }}
 
-      - name: download install.sh + sidecar from the release
+      - name: download install.sh + sidecar from the release (with retry)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           mkdir -p stage
-          gh release download "${RELEASE_TAG}" \
-            --repo "${{ github.repository }}" \
-            --pattern install.sh \
-            --pattern install.sh.sha256 \
-            --dir stage
+          # GH Releases asset propagation can lag a few seconds behind the
+          # publish-shasums upload. Retry briefly before failing.
+          for attempt in 1 2 3 4 5; do
+            if gh release download "$RELEASE_TAG" \
+                 --repo "${{ github.repository }}" \
+                 --pattern install.sh \
+                 --pattern install.sh.sha256 \
+                 --dir stage \
+                 --clobber; then
+              break
+            fi
+            echo "download attempt ${attempt} failed; sleeping ${attempt}s"
+            sleep "$attempt"
+          done
           (cd stage && sha256sum -c install.sh.sha256)
 
-      - name: clone + push site repo
+      - name: clone + push site (token via GIT_ASKPASS, retry on non-fast-forward)
         env:
           GH_BUMP_TOKEN: ${{ secrets.GH_BUMP_TOKEN }}
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+          RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
         run: |
           set -euo pipefail
           if [ -z "${GH_BUMP_TOKEN:-}" ]; then
             echo "::error::GH_BUMP_TOKEN secret is unset; cannot push to site repo"
             exit 1
           fi
+
+          askpass_dir=$(mktemp -d)
+          cat >"$askpass_dir/askpass.sh" <<'ASKPASS'
+          #!/bin/sh
+          printf '%s\n' "$GH_BUMP_TOKEN"
+          ASKPASS
+          chmod +x "$askpass_dir/askpass.sh"
+          export GIT_ASKPASS="$askpass_dir/askpass.sh"
+
           released_at=$(date -u +%Y-%m-%d)
           git config --global user.email "release-bot@users.noreply.github.com"
-          git config --global user.name  "llamadash-release-bot"
-          git clone \
-            "https://x-access-token:${GH_BUMP_TOKEN}@github.com/llamadash-rs/llamadash-rs.github.io.git" \
-            --branch main site
+          git config --global user.name  "llamastash-release-bot"
+          git config --global credential.helper ""
 
-          # Prepend a provenance header so anyone reading the served file can
-          # see the source without consulting workflow logs.
+          git clone "https://x-access-token@github.com/llamastash-rs/llamastash-rs.github.io.git" --branch main site
+
+          # Prepend a provenance header to install.sh, then RECOMPUTE the
+          # sidecar so `curl .../install.sh.sha256 | sha256sum -c` against the
+          # served file matches. The previous version copied the original
+          # sidecar, which was computed before the header — a real verification
+          # break for users.
           {
-            printf '# Source: github.com/llamadash-rs/llamadash@%s/scripts/install.sh\n' "$RELEASE_TAG"
+            printf '# Source: github.com/llamastash-rs/llamastash@%s/scripts/install.sh\n' "$RELEASE_TAG"
             printf '# SHA-256 verified by .github/workflows/release.yml on %s.\n' "$released_at"
             cat stage/install.sh
           } >site/public/install.sh
-          cp stage/install.sh.sha256 site/public/install.sh.sha256
+          chmod +x site/public/install.sh
+          (cd site/public && shasum -a 256 install.sh >install.sh.sha256)
 
-          cat >site/src/data/version.ts <<EOF
+          # Generate version.ts via a quoted heredoc + sed substitution so
+          # tag/version values cannot expand inside the heredoc. The upstream
+          # tag regex blocks `"` today but the indirection makes the file safe
+          # against any future regex relaxation as well.
+          cat >site/src/data/version.ts <<'TS_EOF'
           // Bumped on every release by .github/workflows/release.yml in the main
           // repo. Do not edit by hand.
 
-          export const VERSION = "${RELEASE_VERSION}";
-          export const TAG = "${RELEASE_TAG}";
-          export const RELEASED_AT = "${released_at}";
-          EOF
+          export const VERSION = "__VERSION__";
+          export const TAG = "__TAG__";
+          export const RELEASED_AT = "__RELEASED_AT__";
+          TS_EOF
+          # sed substitutes the placeholders with the validated values. The
+          # values went through the tag regex in create-release; the dates
+          # are date-formatted by `date -u`. Both are safe to inline.
+          sed -i \
+            -e "s|__VERSION__|${RELEASE_VERSION}|g" \
+            -e "s|__TAG__|${RELEASE_TAG}|g" \
+            -e "s|__RELEASED_AT__|${released_at}|g" \
+            site/src/data/version.ts
 
           cd site
           git add public/install.sh public/install.sh.sha256 src/data/version.ts
@@ -362,27 +536,55 @@ jobs:
             exit 0
           fi
           git commit -m "chore(release): mirror install.sh for ${RELEASE_TAG}"
-          git push origin main
+
+          for attempt in 1 2 3; do
+            if git push origin main; then
+              exit 0
+            fi
+            echo "push attempt ${attempt} failed; pulling --rebase and retrying"
+            git pull --rebase origin main
+            sleep $((attempt * 5))
+          done
+          echo "::error::site push failed after 3 attempts; inspect manually"
+          exit 1
 
   publish-cargo:
     name: publish to crates.io
     needs: [create-release, publish-shasums]
     runs-on: ubuntu-latest
-    # Skip pre-release tags so `v0.0.0-rc1`-style dry runs against feature
-    # branches exercise the full build + tap + site chain without burning
-    # a real crates.io version.
     if: needs.create-release.outputs.is_prerelease == 'false'
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: cargo publish
+        with:
+          ref: ${{ needs.create-release.outputs.tag }}
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable, 2026-05
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
+
+      - name: cargo publish (retry on transient crates.io errors, idempotent on already-published)
         env:
-          CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+          # Pass via env, never via --token argv, so the token never appears
+          # in the process table or any future `set -x` log.
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "${CRATES_IO_TOKEN:-}" ]; then
+          if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
             echo "::error::CRATES_IO_TOKEN secret is unset"
             exit 1
           fi
-          cargo publish --token "$CRATES_IO_TOKEN" --locked
+          for attempt in 1 2 3; do
+            if cargo publish --locked 2> publish.err; then
+              echo "cargo publish succeeded on attempt ${attempt}"
+              exit 0
+            fi
+            cat publish.err >&2
+            # Treat "already uploaded" / "already exists" as success — happens
+            # on a re-run after a workflow-level retry.
+            if grep -qiE 'already uploaded|already exists' publish.err; then
+              echo "crates.io reports this version is already published; treating as success"
+              exit 0
+            fi
+            echo "cargo publish attempt ${attempt} failed; sleeping $((attempt * 15))s"
+            sleep $((attempt * 15))
+          done
+          echo "::error::cargo publish failed 3 times; investigate crates.io status"
+          exit 1
