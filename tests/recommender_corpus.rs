@@ -78,6 +78,10 @@ fn nvidia(vram_gb: f64, ram_gb: f64) -> HardwareSnapshot {
     vram_bytes: Some((vram_gb * 1024.0 * 1024.0 * 1024.0) as u64),
     gpu_device_count: 1,
     ram_total_bytes: (ram_gb * 1024.0 * 1024.0 * 1024.0) as u64,
+    disk_free_bytes: 0,
+    cpu_brand: String::new(),
+    cpu_cores: 0,
+    cpu_features: Vec::new(),
     os: OsFamily::Linux,
     cpu_arch: CpuArch::X86_64,
   }
@@ -97,6 +101,10 @@ fn amd(vram_gb: f64, ram_gb: f64) -> HardwareSnapshot {
     vram_bytes: Some((vram_gb * 1024.0 * 1024.0 * 1024.0) as u64),
     gpu_device_count: 1,
     ram_total_bytes: (ram_gb * 1024.0 * 1024.0 * 1024.0) as u64,
+    disk_free_bytes: 0,
+    cpu_brand: String::new(),
+    cpu_cores: 0,
+    cpu_features: Vec::new(),
     os: OsFamily::Linux,
     cpu_arch: CpuArch::X86_64,
   }
@@ -108,6 +116,10 @@ fn cpu(ram_gb: f64) -> HardwareSnapshot {
     vram_bytes: None,
     gpu_device_count: 0,
     ram_total_bytes: (ram_gb * 1024.0 * 1024.0 * 1024.0) as u64,
+    disk_free_bytes: 0,
+    cpu_brand: String::new(),
+    cpu_cores: 0,
+    cpu_features: Vec::new(),
     os: OsFamily::Linux,
     cpu_arch: CpuArch::X86_64,
   }
@@ -122,6 +134,10 @@ fn apple(unified_gb: f64) -> HardwareSnapshot {
     vram_bytes: Some((bytes as f64 * 0.75) as u64),
     gpu_device_count: 1,
     ram_total_bytes: bytes,
+    disk_free_bytes: 0,
+    cpu_brand: String::new(),
+    cpu_cores: 0,
+    cpu_features: Vec::new(),
     os: OsFamily::MacOs,
     cpu_arch: CpuArch::Arm64,
   }

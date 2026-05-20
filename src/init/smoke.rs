@@ -246,6 +246,10 @@ mod tests {
       vram_bytes: Some(bytes),
       gpu_device_count: 1,
       ram_total_bytes: 64 * 1024 * 1024 * 1024,
+      disk_free_bytes: 0,
+      cpu_brand: String::new(),
+      cpu_cores: 0,
+      cpu_features: Vec::new(),
       os: OsFamily::Linux,
       cpu_arch: CpuArch::X86_64,
     }
@@ -257,6 +261,10 @@ mod tests {
       vram_bytes: None,
       gpu_device_count: 0,
       ram_total_bytes: (ram_gb * 1024.0 * 1024.0 * 1024.0) as u64,
+      disk_free_bytes: 0,
+      cpu_brand: String::new(),
+      cpu_cores: 0,
+      cpu_features: Vec::new(),
       os: OsFamily::Linux,
       cpu_arch: CpuArch::X86_64,
     }
@@ -303,7 +311,8 @@ mod tests {
   #[test]
   fn extract_version_parses_llama_cpp_modern_format() {
     // Current `llama-server --version` output as of llama.cpp b5037+.
-    let out = "version: 5037 (b00d09c)\nbuilt with cc (Debian 12.2.0-14) 12.2.0 for x86_64-pc-linux-gnu\n";
+    let out =
+      "version: 5037 (b00d09c)\nbuilt with cc (Debian 12.2.0-14) 12.2.0 for x86_64-pc-linux-gnu\n";
     assert_eq!(extract_version(out), "build 5037 (b00d09c)");
   }
 

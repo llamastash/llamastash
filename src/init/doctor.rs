@@ -387,6 +387,10 @@ mod tests {
       vram_bytes: None,
       gpu_device_count: 0,
       ram_total_bytes: 16 * 1024 * 1024 * 1024,
+      disk_free_bytes: 0,
+      cpu_brand: String::new(),
+      cpu_cores: 0,
+      cpu_features: Vec::new(),
       os: OsFamily::Linux,
       cpu_arch: CpuArch::X86_64,
     }

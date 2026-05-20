@@ -16,7 +16,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
-use sysinfo::System;
+use sysinfo::{Disks, System};
 
 use crate::gpu::{self, GpuInfo};
 use crate::launch::binary::{locate, LocateInputs};
@@ -51,6 +51,26 @@ pub struct HardwareSnapshot {
   pub gpu_device_count: u32,
   /// Total physical RAM in bytes.
   pub ram_total_bytes: u64,
+  /// Free disk space on the partition holding the user's home directory
+  /// (the same volume model downloads land on). `0` when no disk could
+  /// be matched — sysinfo skipped, container without an obvious home
+  /// mount, etc. The banner renders this as a hint, not a gate.
+  #[serde(default)]
+  pub disk_free_bytes: u64,
+  /// Human CPU brand string as reported by sysinfo (e.g.
+  /// "AMD Ryzen AI MAX+ 395"). Empty when sysinfo couldn't read it.
+  #[serde(default)]
+  pub cpu_brand: String,
+  /// Number of physical cores. Falls back to logical count when
+  /// `sysinfo::System::physical_core_count` returns `None`.
+  #[serde(default)]
+  pub cpu_cores: u32,
+  /// Inference-relevant CPU instruction-set names detected at runtime
+  /// (subset of `std::arch::is_*_feature_detected!`). Empty on archs
+  /// without a meaningful surface (Other) or when no listed feature
+  /// is present.
+  #[serde(default)]
+  pub cpu_features: Vec<String>,
   /// OS family the recommender + install router branches on.
   pub os: OsFamily,
   /// CPU architecture the install router branches on (variant select
@@ -109,15 +129,89 @@ pub fn detect_hardware() -> HardwareSnapshot {
   };
   let mut sys = System::new();
   sys.refresh_memory();
+  sys.refresh_cpu_all();
   let ram_total_bytes = sys.total_memory();
+  let cpu_brand = sys
+    .cpus()
+    .first()
+    .map(|c| c.brand().trim().to_string())
+    .unwrap_or_default();
+  let cpu_cores = System::physical_core_count()
+    .or_else(|| {
+      let n = sys.cpus().len();
+      if n == 0 { None } else { Some(n) }
+    })
+    .unwrap_or(0) as u32;
+  let cpu_features = detect_cpu_features();
+  let disk_free_bytes = detect_home_disk_free_bytes();
   HardwareSnapshot {
     gpu,
     vram_bytes,
     gpu_device_count,
     ram_total_bytes,
+    disk_free_bytes,
+    cpu_brand,
+    cpu_cores,
+    cpu_features,
     os: OsFamily::detect(),
     cpu_arch: CpuArch::detect(),
   }
+}
+
+/// Runtime SIMD detection. We only surface features that meaningfully
+/// affect LLM inference (AVX2 / AVX-512 / FMA on x86_64; NEON / SVE on
+/// arm64). Anything not listed here is omitted to keep the banner from
+/// drowning in flags. Returns an empty vec on `CpuArch::Other`.
+fn detect_cpu_features() -> Vec<String> {
+  let mut out: Vec<String> = Vec::new();
+  #[cfg(target_arch = "x86_64")]
+  {
+    if std::arch::is_x86_feature_detected!("avx2") {
+      out.push("AVX2".into());
+    }
+    if std::arch::is_x86_feature_detected!("avx512f") {
+      out.push("AVX-512".into());
+    }
+    if std::arch::is_x86_feature_detected!("fma") {
+      out.push("FMA".into());
+    }
+  }
+  #[cfg(target_arch = "aarch64")]
+  {
+    if std::arch::is_aarch64_feature_detected!("neon") {
+      out.push("NEON".into());
+    }
+    if std::arch::is_aarch64_feature_detected!("sve") {
+      out.push("SVE".into());
+    }
+  }
+  out
+}
+
+/// Free bytes on the volume the user's home directory lives on. That's
+/// where model downloads land by default, so it's the number the user
+/// actually cares about when sizing a 30B Q4 download. Falls back to
+/// the longest-prefix-matching mount on `/` if `$HOME` is unset or
+/// nothing matches. Returns `0` on any failure — the banner treats
+/// zero as "unknown" and elides the segment.
+fn detect_home_disk_free_bytes() -> u64 {
+  let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+  let home_path = PathBuf::from(&home);
+  let disks = Disks::new_with_refreshed_list();
+  let mut best: Option<(usize, u64)> = None;
+  for disk in disks.list() {
+    let mount = disk.mount_point();
+    if !home_path.starts_with(mount) {
+      continue;
+    }
+    let depth = mount.components().count();
+    let free = disk.available_space();
+    match best {
+      Some((d, _)) if depth <= d => continue,
+      _ => best = Some((depth, free)),
+    }
+  }
+  best.map(|(_, free)| free).unwrap_or(0)
 }
 
 /// Where the binary came from. Distinct from

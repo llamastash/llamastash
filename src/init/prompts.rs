@@ -20,8 +20,9 @@ use std::io::IsTerminal;
 
 use crate::cli::cli_args::{ConfigOverride, InitArgs, InstallOverride, ModelOverride};
 use crate::cli::exit_codes::{CliExit, INIT_ABORTED};
+use crate::gpu::{GpuDevice, GpuInfo};
 use crate::init::benchmark::ModelEntry;
-use crate::init::detection::{BinaryPresence, HardwareSnapshot};
+use crate::init::detection::{BinaryPresence, CpuArch, HardwareSnapshot, OsFamily};
 use crate::init::install::InstallChoice;
 use crate::init::recommender::{Recommendation, RecommendationKind};
 use crate::init::wizard::InitSummary;
@@ -246,20 +247,115 @@ pub fn outro(summary: &InitSummary) {
   let _ = cliclack::outro(body);
 }
 
-/// Pre-formatted "detected: …" line used by both `intro` and the
-/// non-TTY warning path's context message.
+/// Pre-formatted "detected: …" block used by both `intro` and the
+/// non-TTY warning path's context message. Three lines: GPU, CPU,
+/// system. Each segment elides cleanly when its data isn't available.
 fn hardware_line(hw: &HardwareSnapshot) -> String {
-  let vram = match hw.vram_bytes {
-    Some(b) => format!("{:.1} GB VRAM", b as f64 / 1_073_741_824.0),
-    None => "no GPU".to_string(),
+  let mut lines: Vec<String> = Vec::with_capacity(3);
+  lines.push(format!("gpu: {}", format_gpu_segment(hw)));
+  lines.push(format!("cpu: {}", format_cpu_segment(hw)));
+  lines.push(format!("sys: {}", format_system_segment(hw)));
+  lines.join("\n")
+}
+
+fn format_gpu_segment(hw: &HardwareSnapshot) -> String {
+  match &hw.gpu {
+    GpuInfo::CpuOnly => "(none — CPU only)".to_string(),
+    GpuInfo::Nvidia { devices } | GpuInfo::Amd { devices } => {
+      let vendor = match &hw.gpu {
+        GpuInfo::Nvidia { .. } => "NVIDIA",
+        GpuInfo::Amd { .. } => "AMD",
+        _ => unreachable!(),
+      };
+      let name_segment = format_device_name(devices, vendor);
+      let mem = format_gib(hw.vram_bytes.unwrap_or(0));
+      format!("{name_segment} · {mem} VRAM")
+    }
+    GpuInfo::AppleMetal {
+      total_memory_bytes: _,
+    } => {
+      let mem = format_gib(hw.vram_bytes.unwrap_or(0));
+      format!("Apple Silicon · {mem} unified")
+    }
+    GpuInfo::Unknown { devices } => {
+      let name_segment = format_device_name(devices, "GPU (vendor unknown)");
+      let mem = match hw.vram_bytes {
+        Some(b) => format!(" · {} VRAM", format_gib(b)),
+        None => String::new(),
+      };
+      format!("{name_segment}{mem}")
+    }
+  }
+}
+
+fn format_device_name(devices: &[GpuDevice], vendor_fallback: &str) -> String {
+  let count = devices.len();
+  let first_name = devices
+    .first()
+    .map(|d| d.name.trim())
+    .filter(|n| !n.is_empty());
+  match (count, first_name) {
+    (0, _) => vendor_fallback.to_string(),
+    (1, Some(name)) => format!("{vendor_fallback} {name}"),
+    (1, None) => vendor_fallback.to_string(),
+    (n, Some(name)) => format!("{n}× {vendor_fallback} {name}"),
+    (n, None) => format!("{n}× {vendor_fallback}"),
+  }
+}
+
+fn format_cpu_segment(hw: &HardwareSnapshot) -> String {
+  let brand = if hw.cpu_brand.is_empty() {
+    format!("{:?} CPU", hw.cpu_arch)
+  } else {
+    hw.cpu_brand.clone()
   };
-  let ram = format!("{:.0} GB RAM", hw.ram_total_bytes as f64 / 1_073_741_824.0);
-  format!(
-    "detected: {} · {ram} · {vram} · {:?}/{:?}",
-    hw.gpu.label(),
-    hw.os,
-    hw.cpu_arch
-  )
+  let mut parts: Vec<String> = vec![brand];
+  if hw.cpu_cores > 0 {
+    parts.push(format!("{} cores", hw.cpu_cores));
+  }
+  if !hw.cpu_features.is_empty() {
+    parts.push(hw.cpu_features.join(" "));
+  }
+  parts.join(" · ")
+}
+
+fn format_system_segment(hw: &HardwareSnapshot) -> String {
+  let ram = format!("{} RAM", format_gib(hw.ram_total_bytes));
+  let mut parts: Vec<String> = vec![ram];
+  if hw.disk_free_bytes > 0 {
+    parts.push(format!("{} disk free", format_gib(hw.disk_free_bytes)));
+  }
+  parts.push(format!(
+    "{}/{}",
+    os_short(hw.os),
+    arch_short(hw.cpu_arch)
+  ));
+  parts.join(" · ")
+}
+
+fn format_gib(bytes: u64) -> String {
+  let gib = bytes as f64 / 1_073_741_824.0;
+  if gib >= 10.0 {
+    format!("{gib:.0} GB")
+  } else {
+    format!("{gib:.1} GB")
+  }
+}
+
+fn os_short(os: OsFamily) -> &'static str {
+  match os {
+    OsFamily::Linux => "linux",
+    OsFamily::MacOs => "macos",
+    OsFamily::Other => "other",
+  }
+}
+
+fn arch_short(arch: CpuArch) -> &'static str {
+  match arch {
+    CpuArch::X86_64 => "x86_64",
+    CpuArch::Arm64 => "arm64",
+    CpuArch::Other => "other",
+  }
 }
 
 /// Resolve the install-method choice. Returns immediately if the
@@ -583,7 +679,17 @@ fn render_recommendation(r: &Recommendation) -> (String, String) {
 /// used by `cli::colors::init` — an agent piping stdout but leaving
 /// stderr attached gets the same answer from both the color policy
 /// and the prompt fallback path.
+///
+/// `LLAMASTASH_ASSUME_NON_TTY=1` forces a `false` return regardless of
+/// the real fd state. Cargo's libtest captures stdout at the print
+/// layer, not the file-descriptor layer, so an interactive
+/// `cargo test` leaves the binary's fd 1 attached to the user's
+/// terminal. Tests that exercise the non-TTY branches set this env
+/// var so they don't fall through into a blocking cliclack prompt.
 fn stdout_is_terminal() -> bool {
+  if std::env::var_os("LLAMASTASH_ASSUME_NON_TTY").is_some_and(|v| v == "1") {
+    return false;
+  }
   std::io::stdout().is_terminal()
 }
 
@@ -608,6 +714,123 @@ mod tests {
       config_choice: None,
       revision: None,
     }
+  }
+
+  fn base_hw() -> HardwareSnapshot {
+    HardwareSnapshot {
+      gpu: GpuInfo::CpuOnly,
+      vram_bytes: None,
+      gpu_device_count: 0,
+      ram_total_bytes: 32 * 1024 * 1024 * 1024,
+      disk_free_bytes: 0,
+      cpu_brand: String::new(),
+      cpu_cores: 0,
+      cpu_features: Vec::new(),
+      os: OsFamily::Linux,
+      cpu_arch: CpuArch::X86_64,
+    }
+  }
+
+  #[test]
+  fn hardware_line_renders_three_segments() {
+    let line = hardware_line(&base_hw());
+    let segments: Vec<&str> = line.split('\n').collect();
+    assert_eq!(segments.len(), 3, "expected 3 lines, got {segments:?}");
+    assert!(segments[0].starts_with("gpu: "));
+    assert!(segments[1].starts_with("cpu: "));
+    assert!(segments[2].starts_with("sys: "));
+  }
+
+  #[test]
+  fn hardware_line_surfaces_gpu_device_name() {
+    let mut hw = base_hw();
+    hw.gpu = GpuInfo::Nvidia {
+      devices: vec![GpuDevice {
+        name: "GeForce RTX 4090".into(),
+        total_memory_bytes: 24 * 1024 * 1024 * 1024,
+        used_memory_bytes: 0,
+        utilization_pct: None,
+        temperature_c: None,
+      }],
+    };
+    hw.vram_bytes = Some(24 * 1024 * 1024 * 1024);
+    hw.gpu_device_count = 1;
+    let line = hardware_line(&hw);
+    assert!(
+      line.contains("NVIDIA GeForce RTX 4090"),
+      "expected NVIDIA + device name, got {line:?}"
+    );
+    assert!(line.contains("24 GB VRAM"));
+  }
+
+  #[test]
+  fn hardware_line_apple_metal_reports_unified() {
+    let mut hw = base_hw();
+    hw.os = OsFamily::MacOs;
+    hw.cpu_arch = CpuArch::Arm64;
+    let bytes = 64u64 * 1024 * 1024 * 1024;
+    hw.gpu = GpuInfo::AppleMetal {
+      total_memory_bytes: bytes,
+    };
+    hw.vram_bytes = Some((bytes as f64 * 0.75) as u64);
+    hw.gpu_device_count = 1;
+    let line = hardware_line(&hw);
+    assert!(line.contains("Apple Silicon"));
+    assert!(line.contains("unified"));
+    assert!(line.contains("macos/arm64"));
+  }
+
+  #[test]
+  fn hardware_line_multi_gpu_counts() {
+    let mut hw = base_hw();
+    let device = GpuDevice {
+      name: "RTX 4090".into(),
+      total_memory_bytes: 24 * 1024 * 1024 * 1024,
+      used_memory_bytes: 0,
+      utilization_pct: None,
+      temperature_c: None,
+    };
+    hw.gpu = GpuInfo::Nvidia {
+      devices: vec![device.clone(), device],
+    };
+    hw.vram_bytes = Some(24 * 1024 * 1024 * 1024);
+    hw.gpu_device_count = 2;
+    let line = hardware_line(&hw);
+    assert!(
+      line.contains("2× NVIDIA RTX 4090"),
+      "expected multi-GPU prefix, got {line:?}"
+    );
+  }
+
+  #[test]
+  fn hardware_line_cpu_only_says_so() {
+    let line = hardware_line(&base_hw());
+    assert!(line.contains("(none — CPU only)"));
+    assert!(!line.contains("VRAM"));
+  }
+
+  #[test]
+  fn hardware_line_elides_disk_when_zero_and_includes_when_nonzero() {
+    let mut hw = base_hw();
+    let without_disk = hardware_line(&hw);
+    assert!(!without_disk.contains("disk free"));
+    hw.disk_free_bytes = 100 * 1024 * 1024 * 1024;
+    let with_disk = hardware_line(&hw);
+    assert!(with_disk.contains("100 GB disk free"));
+  }
+
+  #[test]
+  fn hardware_line_uses_brand_when_present_and_arch_when_not() {
+    let mut hw = base_hw();
+    let bare = hardware_line(&hw);
+    assert!(bare.contains("cpu: X86_64 CPU"));
+    hw.cpu_brand = "AMD Ryzen AI MAX+ 395".into();
+    hw.cpu_cores = 16;
+    hw.cpu_features = vec!["AVX2".into(), "AVX-512".into()];
+    let branded = hardware_line(&hw);
+    assert!(branded.contains("AMD Ryzen AI MAX+ 395"));
+    assert!(branded.contains("16 cores"));
+    assert!(branded.contains("AVX2 AVX-512"));
   }
 
   #[test]
@@ -797,9 +1020,13 @@ mod tests {
 
   #[tokio::test]
   async fn confirm_config_write_non_tty_without_consent_errors() {
-    // cargo test is always non-TTY; with neither `--recommended` nor
-    // `--config-step` set, the wizard must refuse rather than silently
-    // auto-write (closes the regression that ADV-1 caught).
+    // With neither `--recommended` nor `--config-step` set, the wizard
+    // must refuse rather than silently auto-write (closes the
+    // regression that ADV-1 caught). Force non-TTY explicitly — an
+    // interactive `cargo test` leaves the binary's stdout attached to
+    // the user's terminal, so the natural fd check would fall through
+    // into a blocking cliclack prompt.
+    std::env::set_var("LLAMASTASH_ASSUME_NON_TTY", "1");
     let args = empty_args();
     let result = confirm_config_write(&args, "").await;
     match result {
@@ -877,9 +1104,12 @@ mod tests {
 
   #[tokio::test]
   async fn pick_install_method_non_tty_falls_back_silently() {
-    // cargo test is always non-TTY. With neither override nor
-    // recommended set, the picker silently returns the default —
-    // the consolidated warning (#30) lives in wizard::run, not here.
+    // With neither override nor recommended set, the picker silently
+    // returns the default — the consolidated warning (#30) lives in
+    // wizard::run, not here. Force non-TTY explicitly so the test
+    // still exercises the fallback when run interactively (cargo's
+    // libtest captures at the print layer, not fd 1).
+    std::env::set_var("LLAMASTASH_ASSUME_NON_TTY", "1");
     let args = empty_args();
     let result = pick_install_method(&args, InstallChoice::GhReleases, &no_existing_binary())
       .await
