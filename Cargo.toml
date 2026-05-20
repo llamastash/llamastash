@@ -2,7 +2,7 @@
 name = "llamastash"
 version = "0.0.1"
 authors = ["Deepu K Sasidharan <d4udts@gmail.com>"]
-description = "A fast, keyboard-driven TUI for launching local llama.cpp models"
+description = "A fast, keyboard-driven TUI for running local models via llama.cpp"
 documentation = "https://github.com/llamastash/llamastash"
 categories = ["command-line-utilities"]
 keywords = ["llamastash", "llama-cpp", "llm", "tui", "gguf"]
@@ -101,6 +101,7 @@ unicode-width = "0.2"
 sysinfo = { version = "0.39", default-features = false, features = [
   "system",
   "component",
+  "disk",
 ] }
 tokio = { version = "1.50", default-features = false, features = [
   "fs",

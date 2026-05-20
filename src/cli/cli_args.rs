@@ -16,7 +16,7 @@ use crate::banner::BANNER;
 #[command(
   name = "llamastash",
   version,
-  about = "Fast keyboard-driven TUI + CLI for local llama.cpp models",
+  about = "Fast keyboard-driven TUI + CLI for running local models via llama.cpp",
   long_about = None,
   before_help = BANNER,
 )]
@@ -757,7 +757,8 @@ mod tests {
 
   #[test]
   fn init_only_and_skip_are_mutually_exclusive() {
-    let result = Cli::try_parse_from(["llamastash", "init", "--only", "server", "--skip", "config"]);
+    let result =
+      Cli::try_parse_from(["llamastash", "init", "--only", "server", "--skip", "config"]);
     assert!(result.is_err(), "--only and --skip must conflict");
   }
 

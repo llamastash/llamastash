@@ -1,6 +1,6 @@
 # LlamaStash 🦙
 
-A fast, keyboard-driven TUI **and** CLI for launching local `llama-server` (llama.cpp) instances.
+A fast, keyboard-driven TUI **and** CLI for launching local LLMs via `llama-server` (llama.cpp).
 
 > **Status: v2 work in progress.** v1 scope: [`docs/brainstorms/llamatui-requirements.md`](docs/brainstorms/llamatui-requirements.md), [v1 plan](docs/plans/2026-05-13-001-feat-llamatui-v1-launcher-plan.md). v2 scope: [v2 brainstorm](docs/brainstorms/2026-05-18-init-wizard-requirements.md), [v2 plan](docs/plans/2026-05-18-001-feat-init-wizard-doctor-pull-plan.md) — init wizard, doctor diagnostic, `llamastash pull` MVP, recommender.
 
@@ -26,6 +26,7 @@ Heavy abstractions (Ollama, LM Studio) hide llama.cpp; raw `llama-server` use is
 - **GPU-aware `arch_defaults` config block** — per-architecture launch flags (`qwen2`, `llama`, …) merged into your launch only when you haven't already supplied the flag yourself.
 
 ## Roadmap (post-v2)
+
 - Custom themes
 - HTTP and MCP surfaces (origin: R34).
 - Anthropic API compatibility
@@ -92,19 +93,19 @@ Full subcommand reference: [`docs/usage.md`](docs/usage.md). Architecture and IP
 
 Every non-interactive subcommand returns a documented exit code so agent scripts can branch on failure class. Pin against numbers, not message text — they are the public contract.
 
-| Code | Meaning                                                                                  |
-| ---- | ---------------------------------------------------------------------------------------- |
-| `0`  | Success                                                                                  |
-| `64` | Usage error (missing required arg, invalid combination — clap-emitted)                   |
-| `65` | Daemon unreachable (socket missing, peer hung up, timeout)                               |
-| `66` | Model reference matched zero or multiple models (stderr lists candidates)                |
-| `67` | `start_model` failed at the supervisor (probe timeout, port allocation failure)          |
-| `68` | `stop_model` / `stop_all` failed                                                         |
-| `69` | `pull` download failed (transport, checksum, or HF cache write)                          |
-| `70` | `llama-server` binary not found (`--llama-server`, `LLAMASTASH_LLAMA_SERVER`, or `$PATH`) |
-| `71` | Unexpected error (catch-all)                                                             |
-| `72` | `init` aborted before substantive work — failed precondition, integrity check, or rate-limited GH API. Safe to re-run. |
-| `73` | `init` download failed mid-step — disk space, transport, or HF cache write. Partial state recorded; re-run picks up where it stopped. |
+| Code | Meaning                                                                                                                                                                                                               |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`  | Success                                                                                                                                                                                                               |
+| `64` | Usage error (missing required arg, invalid combination — clap-emitted)                                                                                                                                                |
+| `65` | Daemon unreachable (socket missing, peer hung up, timeout)                                                                                                                                                            |
+| `66` | Model reference matched zero or multiple models (stderr lists candidates)                                                                                                                                             |
+| `67` | `start_model` failed at the supervisor (probe timeout, port allocation failure)                                                                                                                                       |
+| `68` | `stop_model` / `stop_all` failed                                                                                                                                                                                      |
+| `69` | `pull` download failed (transport, checksum, or HF cache write)                                                                                                                                                       |
+| `70` | `llama-server` binary not found (`--llama-server`, `LLAMASTASH_LLAMA_SERVER`, or `$PATH`)                                                                                                                             |
+| `71` | Unexpected error (catch-all)                                                                                                                                                                                          |
+| `72` | `init` aborted before substantive work — failed precondition, integrity check, or rate-limited GH API. Safe to re-run.                                                                                                |
+| `73` | `init` download failed mid-step — disk space, transport, or HF cache write. Partial state recorded; re-run picks up where it stopped.                                                                                 |
 | `74` | `init` smoke-launch failed — phase-1 dry-run exceeded VRAM ceiling, or `--version` probe returned non-zero. Binary is installed; re-run smoke with `init --only smoke` (v2.1) or use `llamastash doctor` to diagnose. |
 
 > **Note on sysexits.h**: the numbers above are deliberately reused from `<sysexits.h>` for familiarity, but LlamaStash's _meanings_ diverge from the standard ones. Scripts that import `EX_NOHOST` (68) expecting "host unreachable" will get our "stop failed"; `EX_DATAERR` (65) is reused for "daemon unreachable", not "data error". Branch on LlamaStash's table above, not the libc constants.
@@ -119,25 +120,25 @@ Quick tour of the top-level keys:
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `theme`                       | Built-in palette: `macchiato` (default), `latte`, `gruvbox-dark`, `solarized-dark`, `mono`. Set to `custom` to use the `custom_theme` block. Cycle live with `t:theme`.   |
 | `custom_theme`                | User-defined palette. Inherits unspecified slots from `base:` (default macchiato). Accepts `#RRGGBB` hex or ANSI names. Once defined, `Custom` joins the `t:theme` cycle. |
-| `model_paths`                 | Extra directories to scan for `.gguf` files. Merged with `-p/--model-path` and `LLAMASTASH_MODEL_PATHS`.                                                                   |
+| `model_paths`                 | Extra directories to scan for `.gguf` files. Merged with `-p/--model-path` and `LLAMASTASH_MODEL_PATHS`.                                                                  |
 | `disable_default_cache_paths` | Per-bucket toggles (`huggingface`, `ollama`, `lm_studio`) for the auto-walked caches.                                                                                     |
-| `disable_scan`                | Skip filesystem scanning entirely. Same as `--no-scan` / `LLAMASTASH_NO_SCAN=1`.                                                                                           |
+| `disable_scan`                | Skip filesystem scanning entirely. Same as `--no-scan` / `LLAMASTASH_NO_SCAN=1`.                                                                                          |
 | `port_range`                  | Inclusive `{start, end}` TCP range the supervisor picks from. Default `41100..=41300`.                                                                                    |
-| `llama_server_path`           | Absolute path to `llama-server`. Overridable by `--llama-server` and `LLAMASTASH_LLAMA_SERVER`.                                                                            |
+| `llama_server_path`           | Absolute path to `llama-server`. Overridable by `--llama-server` and `LLAMASTASH_LLAMA_SERVER`.                                                                           |
 | `probe_timeout_secs`          | Health-probe deadline per launch. Default `120`. Bump for 70B+ on slow disks.                                                                                             |
 | `keybindings`                 | Action-name → key-spec overrides. Kdash-style dialect (`ctrl+q`, `shift+tab`, `f1`, …).                                                                                   |
 
 Environment variables:
 
-| Variable                 | Purpose                                    |
-| ------------------------ | ------------------------------------------ |
-| `LLAMASTASH_CONFIG`       | Override config-file path                  |
-| `LLAMASTASH_LLAMA_SERVER` | Path to `llama-server`                     |
-| `LLAMASTASH_NO_SCAN`      | Skip filesystem scanning                   |
-| `LLAMASTASH_SOCKET`       | Point a CLI at a non-default daemon socket |
+| Variable                  | Purpose                                                                                                                                                                                                                                                                                                        |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LLAMASTASH_CONFIG`       | Override config-file path                                                                                                                                                                                                                                                                                      |
+| `LLAMASTASH_LLAMA_SERVER` | Path to `llama-server`                                                                                                                                                                                                                                                                                         |
+| `LLAMASTASH_NO_SCAN`      | Skip filesystem scanning                                                                                                                                                                                                                                                                                       |
+| `LLAMASTASH_SOCKET`       | Point a CLI at a non-default daemon socket                                                                                                                                                                                                                                                                     |
 | `LLAMASTASH_OFFLINE`      | Disable outbound network for `init`, `pull`, and `doctor` fetch paths. Accepts `true` / `false` when bound via clap's `--offline` flag; the runtime `fetch::offline_requested` check also accepts `1` / `yes` for compatibility with scripts that follow the `XDG`/`gh` convention. Equivalent to `--offline`. |
-| `HF_TOKEN`               | HuggingFace API token. Read by `init` and `pull` only; never propagated into spawned `llama-server` children. Cache-file (`~/.cache/huggingface/token`) source is refused if its mode is group/world-readable. |
-| `HF_ENDPOINT`            | Override the HuggingFace API endpoint host. Must be `https://` and on the HF-allowlist (`huggingface.co` and its LFS CDN); non-allowlisted values are refused. Default: `https://huggingface.co`. |
+| `HF_TOKEN`                | HuggingFace API token. Read by `init` and `pull` only; never propagated into spawned `llama-server` children. Cache-file (`~/.cache/huggingface/token`) source is refused if its mode is group/world-readable.                                                                                                 |
+| `HF_ENDPOINT`             | Override the HuggingFace API endpoint host. Must be `https://` and on the HF-allowlist (`huggingface.co` and its LFS CDN); non-allowlisted values are refused. Default: `https://huggingface.co`.                                                                                                              |
 
 ### Default scan paths
 
