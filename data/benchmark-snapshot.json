@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
-  "bundle_date": "2026-05-19",
+  "bundle_date": "2026-05-20",
   "min_version": "0.2.0",
   "remote_url": "https://github.com/llamadash/llamadash/releases/download/snapshot-latest/benchmark-snapshot.json",
   "recommender_weights": {
     "benchmark": 0.45,
     "tok_per_second": 0.25,
-    "param_quality": 0.20,
-    "recency": 0.10,
+    "param_quality": 0.2,
+    "recency": 0.1,
     "overhead_band_bytes": {
       "cuda": 536870912,
       "hip": 536870912,
@@ -25,8 +25,14 @@
       "quant": "Q4_K_M",
       "params": 1540000000,
       "weights_bytes": 998244352,
-      "task_hints": ["code", "general"],
-      "benchmark_score": { "value": 38.0, "source": "openllm-leaderboard" },
+      "task_hints": [
+        "code",
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 38.0,
+        "source": "openllm-leaderboard"
+      },
       "tok_s_factor": 1.6,
       "recency": 1.0
     },
@@ -38,8 +44,14 @@
       "quant": "Q4_K_M",
       "params": 3090000000,
       "weights_bytes": 1992294400,
-      "task_hints": ["general", "reasoning"],
-      "benchmark_score": { "value": 48.0, "source": "openllm-leaderboard" },
+      "task_hints": [
+        "general",
+        "reasoning"
+      ],
+      "benchmark_score": {
+        "value": 40.7,
+        "source": "openllm-leaderboard"
+      },
       "tok_s_factor": 1.3,
       "recency": 1.0
     },
@@ -51,8 +63,13 @@
       "quant": "Q4_K_M",
       "params": 3210000000,
       "weights_bytes": 2087354368,
-      "task_hints": ["general"],
-      "benchmark_score": { "value": 46.0, "source": "openllm-leaderboard" },
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 36.3,
+        "source": "openllm-leaderboard"
+      },
       "tok_s_factor": 1.3,
       "recency": 1.0
     },
@@ -64,8 +81,15 @@
       "quant": "Q4_K_M",
       "params": 7610000000,
       "weights_bytes": 4683960320,
-      "task_hints": ["general", "code", "reasoning"],
-      "benchmark_score": { "value": 56.0, "source": "openllm-leaderboard" },
+      "task_hints": [
+        "general",
+        "code",
+        "reasoning"
+      ],
+      "benchmark_score": {
+        "value": 52.8,
+        "source": "openllm-leaderboard"
+      },
       "tok_s_factor": 1.0,
       "recency": 1.0
     },
@@ -77,8 +101,13 @@
       "quant": "Q4_K_M",
       "params": 7610000000,
       "weights_bytes": 4683960320,
-      "task_hints": ["code"],
-      "benchmark_score": { "value": 58.0, "source": "aider" },
+      "task_hints": [
+        "code"
+      ],
+      "benchmark_score": {
+        "value": 58.0,
+        "source": "aider"
+      },
       "tok_s_factor": 1.0,
       "recency": 1.0
     },
@@ -90,8 +119,13 @@
       "quant": "Q4_K_M",
       "params": 8030000000,
       "weights_bytes": 4923537408,
-      "task_hints": ["general"],
-      "benchmark_score": { "value": 53.0, "source": "openllm-leaderboard" },
+      "task_hints": [
+        "general"
+      ],
+      "benchmark_score": {
+        "value": 53.0,
+        "source": "openllm-leaderboard"
+      },
       "tok_s_factor": 0.95,
       "recency": 0.9
     },
@@ -103,8 +137,14 @@
       "quant": "Q4_K_M",
       "params": 12200000000,
       "weights_bytes": 7475322880,
-      "task_hints": ["general", "reasoning"],
-      "benchmark_score": { "value": 54.0, "source": "openllm-leaderboard" },
+      "task_hints": [
+        "general",
+        "reasoning"
+      ],
+      "benchmark_score": {
+        "value": 37.0,
+        "source": "openllm-leaderboard"
+      },
       "tok_s_factor": 0.7,
       "recency": 0.85
     },
@@ -116,8 +156,14 @@
       "quant": "Q4_K_M",
       "params": 14770000000,
       "weights_bytes": 9051963392,
-      "task_hints": ["general", "reasoning"],
-      "benchmark_score": { "value": 62.0, "source": "openllm-leaderboard" },
+      "task_hints": [
+        "general",
+        "reasoning"
+      ],
+      "benchmark_score": {
+        "value": 62.0,
+        "source": "openllm-leaderboard"
+      },
       "tok_s_factor": 0.6,
       "recency": 1.0
     },
@@ -129,8 +175,13 @@
       "quant": "Q4_K_M",
       "params": 14770000000,
       "weights_bytes": 9051963392,
-      "task_hints": ["code"],
-      "benchmark_score": { "value": 64.0, "source": "aider" },
+      "task_hints": [
+        "code"
+      ],
+      "benchmark_score": {
+        "value": 64.0,
+        "source": "aider"
+      },
       "tok_s_factor": 0.6,
       "recency": 1.0
     },
@@ -142,8 +193,14 @@
       "quant": "Q4_K_M",
       "params": 32760000000,
       "weights_bytes": 20133101568,
-      "task_hints": ["general", "reasoning"],
-      "benchmark_score": { "value": 68.0, "source": "openllm-leaderboard" },
+      "task_hints": [
+        "general",
+        "reasoning"
+      ],
+      "benchmark_score": {
+        "value": 69.9,
+        "source": "openllm-leaderboard"
+      },
       "tok_s_factor": 0.4,
       "recency": 1.0
     },
@@ -155,8 +212,13 @@
       "quant": "Q4_K_M",
       "params": 32760000000,
       "weights_bytes": 20133101568,
-      "task_hints": ["code"],
-      "benchmark_score": { "value": 70.0, "source": "aider" },
+      "task_hints": [
+        "code"
+      ],
+      "benchmark_score": {
+        "value": 18.2,
+        "source": "aider"
+      },
       "tok_s_factor": 0.4,
       "recency": 1.0
     },
@@ -168,8 +230,14 @@
       "quant": "Q4_K_M",
       "params": 70550000000,
       "weights_bytes": 43331452928,
-      "task_hints": ["general", "reasoning"],
-      "benchmark_score": { "value": 75.0, "source": "openllm-leaderboard" },
+      "task_hints": [
+        "general",
+        "reasoning"
+      ],
+      "benchmark_score": {
+        "value": 67.3,
+        "source": "openllm-leaderboard"
+      },
       "tok_s_factor": 0.2,
       "recency": 1.0
     }
