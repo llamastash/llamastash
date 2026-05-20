@@ -97,7 +97,7 @@ fn resolve_mode(
   override_mode: Option<CliLaunchMode>,
 ) -> Result<&'static str, CliExit> {
   if let Some(m) = override_mode {
-    return Ok(mode_label(m));
+    return Ok(m.as_label());
   }
   match row.mode_hint.as_deref() {
     Some("chat") => Ok("chat"),
@@ -114,14 +114,6 @@ fn resolve_mode(
       USAGE,
       format!("unrecognised mode hint `{other}` from daemon; please file a bug"),
     )),
-  }
-}
-
-fn mode_label(m: CliLaunchMode) -> &'static str {
-  match m {
-    CliLaunchMode::Chat => "chat",
-    CliLaunchMode::Embedding => "embedding",
-    CliLaunchMode::Rerank => "rerank",
   }
 }
 

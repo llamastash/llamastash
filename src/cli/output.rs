@@ -171,7 +171,7 @@ pub fn status_human(snap: &StatusSnapshot) -> String {
     if tty {
       out.push_str(&format::section_header("daemon", None));
       let pid_styled = console::style(d.pid.to_string()).bold().to_string();
-      let uptime = format_uptime_secs(d.uptime_seconds);
+      let uptime = format::format_uptime(d.uptime_seconds);
       out.push_str(&format::kv_block(&[
         ("pid", pid_styled),
         ("uptime", uptime),
@@ -255,28 +255,6 @@ pub fn status_human(snap: &StatusSnapshot) -> String {
     }
   }
   out
-}
-
-/// Same uptime renderer as the daemon-status branch. Kept inline (not
-/// re-exported from cli::daemon) so this module owns its rendering
-/// without a cross-handler dep.
-fn format_uptime_secs(seconds: u64) -> String {
-  let days = seconds / 86_400;
-  let hours = (seconds % 86_400) / 3_600;
-  let mins = (seconds % 3_600) / 60;
-  let secs = seconds % 60;
-  let mut parts: Vec<String> = Vec::with_capacity(4);
-  if days > 0 {
-    parts.push(format!("{days}d"));
-  }
-  if hours > 0 || !parts.is_empty() {
-    parts.push(format!("{hours}h"));
-  }
-  if mins > 0 || !parts.is_empty() {
-    parts.push(format!("{mins}m"));
-  }
-  parts.push(format!("{secs}s"));
-  parts.join(" ")
 }
 
 fn gpu_label(gpu: &Value) -> Option<String> {

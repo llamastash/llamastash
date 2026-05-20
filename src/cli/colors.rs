@@ -157,10 +157,29 @@ fn collapse_home(p: &str) -> String {
   p.to_string()
 }
 
-/// Dim "(N noun)" suffix used by `format::section_header` and
-/// trailing footers on empty / non-empty list output.
+/// Dim "(N noun)" suffix used by the trailing footers on `list` /
+/// `presets list` / `favorites list` / `last-params` output. (Earlier
+/// drafts called this from `format::section_header`; `section_header`
+/// now builds its own dim suffix inline.)
 pub(crate) fn count(n: usize, noun: &str) -> String {
   console::style(format!("({n} {noun})")).dim().to_string()
+}
+
+/// Color a reasoning cell ("on" / "off" / "-").
+///
+/// `on` reads as the affirmative state and is rendered bold green;
+/// `off` / `-` recede via dim so the operator's eye lands on `on`
+/// rows. Anything else passes through plain. Non-TTY / colors-disabled
+/// callers get the input back verbatim so TSV stays byte-stable.
+pub(crate) fn reasoning_cell(raw: &str) -> String {
+  if !console::colors_enabled() {
+    return raw.to_string();
+  }
+  match raw {
+    "on" => console::style("on").green().bold().to_string(),
+    "off" | "-" => dim(raw),
+    _ => raw.to_string(),
+  }
 }
 
 #[cfg(test)]
@@ -170,11 +189,15 @@ mod tests {
   use std::sync::MutexGuard;
 
   /// RAII guard that snapshots the color-enabled flag plus the
-  /// `NO_COLOR` env var on construction and restores both on drop.
+  /// `NO_COLOR` and `HOME` env vars on construction and restores all
+  /// three on drop. Tests that touch any of these acquire the
+  /// `serialize()` mutex via the guard so they never race each other
+  /// on process-global state.
   struct EnvGuard {
     _lock: MutexGuard<'static, ()>,
     prior_colors: bool,
     prior_no_color: Option<std::ffi::OsString>,
+    prior_home: Option<std::ffi::OsString>,
   }
 
   impl EnvGuard {
@@ -183,6 +206,7 @@ mod tests {
         _lock: serialize(),
         prior_colors: console::colors_enabled(),
         prior_no_color: std::env::var_os("NO_COLOR"),
+        prior_home: std::env::var_os("HOME"),
       }
     }
   }
@@ -193,6 +217,10 @@ mod tests {
       match &self.prior_no_color {
         Some(v) => std::env::set_var("NO_COLOR", v),
         None => std::env::remove_var("NO_COLOR"),
+      }
+      match &self.prior_home {
+        Some(v) => std::env::set_var("HOME", v),
+        None => std::env::remove_var("HOME"),
       }
     }
   }
@@ -299,6 +327,44 @@ mod tests {
   }
 
   #[test]
+  fn state_helper_emits_expected_ansi_per_severity_band() {
+    // Each state variant must wire to the documented color band when
+    // colors are enabled. Without this, a regression that swapped
+    // launching→green would pass the strip_ansi_codes round-trip test
+    // above silently.
+    //
+    // The `console` crate emits color and bold as separate SGR codes
+    // (`\x1b[32m\x1b[1m...`), so we assert each component independently
+    // rather than the combined `\x1b[1;32m` form.
+    let _g = EnvGuard::capture();
+    console::set_colors_enabled(true);
+    let ready = state("ready");
+    assert!(
+      ready.contains("\x1b[32m") && ready.contains("\x1b[1m"),
+      "ready → green + bold: {ready:?}"
+    );
+    assert!(
+      state("launching").contains("\x1b[33m"),
+      "launching → yellow"
+    );
+    assert!(state("loading").contains("\x1b[33m"), "loading → yellow");
+    assert!(state("stopping").contains("\x1b[33m"), "stopping → yellow");
+    assert!(state("stopped").contains("\x1b[2m"), "stopped → dim");
+    assert!(state("ext").contains("\x1b[2m"), "ext → dim");
+    assert!(state("external").contains("\x1b[2m"), "external → dim");
+    let err = state("error");
+    assert!(
+      err.contains("\x1b[31m") && err.contains("\x1b[1m"),
+      "error → red + bold: {err:?}"
+    );
+    // Unknown states pass through plain (no ANSI escape at all).
+    assert!(
+      !state("brand-new").contains('\x1b'),
+      "unknown → plain (no ANSI)"
+    );
+  }
+
+  #[test]
   fn state_helper_trims_whitespace() {
     let _g = EnvGuard::capture();
     console::set_colors_enabled(false);
@@ -344,7 +410,11 @@ mod tests {
 
   #[test]
   fn collapse_home_substitutes_tilde_and_leaves_other_paths_alone() {
-    let prior = std::env::var_os("HOME");
+    // EnvGuard holds the cross-module mutex and restores HOME (plus
+    // colors/NO_COLOR) on drop — even if an assert!. below panics.
+    // Without this, the test races every other test that calls
+    // home_dir() and would leak HOME=/home/alice on panic.
+    let _g = EnvGuard::capture();
     std::env::set_var("HOME", "/home/alice");
     // `directories::BaseDirs` is what `paths::home_dir()` reads, and
     // it caches via `BaseDirs::new()`. On Linux it consults `$HOME`
@@ -355,10 +425,6 @@ mod tests {
     // $HOME must not collapse.
     assert_eq!(collapse_home("/home/alicex/y"), "/home/alicex/y");
     assert_eq!(collapse_home("/etc/passwd"), "/etc/passwd");
-    match prior {
-      Some(v) => std::env::set_var("HOME", v),
-      None => std::env::remove_var("HOME"),
-    }
   }
 
   #[test]
@@ -369,5 +435,29 @@ mod tests {
       let s = count(3, "models");
       assert_eq!(console::strip_ansi_codes(&s), "(3 models)");
     }
+  }
+
+  #[test]
+  fn reasoning_cell_renders_on_green_off_dim_passthrough_else() {
+    let _g = EnvGuard::capture();
+    console::set_colors_enabled(true);
+    let on = reasoning_cell("on");
+    assert!(
+      on.contains("\x1b[32m") && on.contains("\x1b[1m"),
+      "on → green + bold: {on:?}"
+    );
+    let off = reasoning_cell("off");
+    assert!(off.contains("\x1b[2m"), "off → dim: {off:?}");
+    let dash = reasoning_cell("-");
+    assert!(dash.contains("\x1b[2m"), "- → dim: {dash:?}");
+    let unknown = reasoning_cell("maybe");
+    assert_eq!(unknown, "maybe", "unknown → plain passthrough");
+    // Colors disabled: every input round-trips verbatim so TSV stays
+    // byte-stable.
+    console::set_colors_enabled(false);
+    assert_eq!(reasoning_cell("on"), "on");
+    assert_eq!(reasoning_cell("off"), "off");
+    assert_eq!(reasoning_cell("-"), "-");
+    assert_eq!(reasoning_cell("maybe"), "maybe");
   }
 }

@@ -30,23 +30,8 @@ pub async fn handle(args: FavoritesArgs, cli: &Cli, config: &Config) -> CliResul
         // field added to `favorite_list` would silently become part
         // of the CLI agent contract.
         println!("{}", pretty_json(&favorites_json(&arr)));
-      } else if arr.is_empty() {
-        println!("{}", colors::dim("(no favorites)"));
       } else {
-        let tty = console::colors_enabled();
-        for fav in &arr {
-          let path = crate::cli::output::row_path(fav).unwrap_or("?");
-          if tty {
-            // Home-prefix collapse for human scannability; piped
-            // (non-TTY) consumers still get verbatim absolute paths.
-            println!("{}", colors::path(path));
-          } else {
-            println!("{path}");
-          }
-        }
-        if tty {
-          println!("{}", colors::count(arr.len(), "favorites"));
-        }
+        print!("{}", render_favorites_human(&arr));
       }
       Ok(())
     }
@@ -120,5 +105,90 @@ pub async fn handle(args: FavoritesArgs, cli: &Cli, config: &Config) -> CliResul
       }
       Ok(())
     }
+  }
+}
+
+/// Pure renderer for `favorites list` human output. One path per line.
+/// On TTY collapses `$HOME → ~` and appends a dim `(N favorites)`
+/// footer; piped consumers see verbatim absolute paths with no footer.
+fn render_favorites_human(arr: &[Value]) -> String {
+  use std::fmt::Write as _;
+  if arr.is_empty() {
+    return format!("{}\n", colors::dim("(no favorites)"));
+  }
+  let tty = console::colors_enabled();
+  let mut out = String::new();
+  for fav in arr {
+    let path = crate::cli::output::row_path(fav).unwrap_or("?");
+    if tty {
+      let _ = writeln!(out, "{}", colors::path(path));
+    } else {
+      let _ = writeln!(out, "{path}");
+    }
+  }
+  if tty {
+    let _ = writeln!(out, "{}", colors::count(arr.len(), "favorites"));
+  }
+  out
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::cli::test_lock::serialize;
+  use serde_json::json;
+  use std::sync::MutexGuard;
+
+  struct ColorGuard {
+    _lock: MutexGuard<'static, ()>,
+    prior: bool,
+  }
+
+  impl ColorGuard {
+    fn set(enabled: bool) -> Self {
+      let g = Self {
+        _lock: serialize(),
+        prior: console::colors_enabled(),
+      };
+      console::set_colors_enabled(enabled);
+      g
+    }
+  }
+
+  impl Drop for ColorGuard {
+    fn drop(&mut self) {
+      console::set_colors_enabled(self.prior);
+    }
+  }
+
+  fn fav(path: &str) -> Value {
+    json!({"id": {"path": path}})
+  }
+
+  #[test]
+  fn render_favorites_human_empty_returns_dim_sentinel() {
+    let _g = ColorGuard::set(false);
+    let out = render_favorites_human(&[]);
+    assert_eq!(out, "(no favorites)\n");
+  }
+
+  #[test]
+  fn render_favorites_human_tsv_branch_is_byte_stable() {
+    // Non-TTY: one absolute path per line, no count footer, no ANSI.
+    let _g = ColorGuard::set(false);
+    let arr = vec![fav("/m/qwen.gguf"), fav("/m/phi.gguf")];
+    let out = render_favorites_human(&arr);
+    assert_eq!(out, "/m/qwen.gguf\n/m/phi.gguf\n");
+  }
+
+  #[test]
+  fn render_favorites_human_tty_branch_appends_count_footer() {
+    let _g = ColorGuard::set(true);
+    let arr = vec![fav("/m/qwen.gguf"), fav("/m/phi.gguf")];
+    let out = render_favorites_human(&arr);
+    let plain = console::strip_ansi_codes(&out);
+    assert!(plain.contains("/m/qwen.gguf"));
+    assert!(plain.contains("/m/phi.gguf"));
+    assert!(plain.contains("(2 favorites)"), "footer missing: {plain:?}");
   }
 }

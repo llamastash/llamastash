@@ -30,7 +30,7 @@ pub async fn handle(action: DaemonAction, cli: &Cli, config: &Config) -> Result<
       socket_path,
     } => handle_start(detach, state_dir, socket_path, cli, config).await,
     DaemonAction::Stop => handle_stop().await,
-    DaemonAction::Status => handle_status().await,
+    DaemonAction::Status { json } => handle_status(json).await,
   }
 }
 
@@ -53,14 +53,7 @@ async fn handle_start(
         Ok(())
       }
       StartOutcome::AlreadyRunning(pid) => {
-        // "daemon: already running" stays dim; the pid lifts to bold
-        // so it's the scannable token in the otherwise dim line.
-        println!(
-          "{} ({} {})",
-          crate::cli::colors::dim("daemon: already running"),
-          crate::cli::colors::dim("pid"),
-          console::style(pid.to_string()).bold(),
-        );
+        print_already_running(pid);
         Ok(())
       }
     }
@@ -68,18 +61,24 @@ async fn handle_start(
     match run_foreground(opts).await? {
       StartOutcome::RanToCompletion => Ok(()),
       StartOutcome::AlreadyRunning(pid) => {
-        // "daemon: already running" stays dim; the pid lifts to bold
-        // so it's the scannable token in the otherwise dim line.
-        println!(
-          "{} ({} {})",
-          crate::cli::colors::dim("daemon: already running"),
-          crate::cli::colors::dim("pid"),
-          console::style(pid.to_string()).bold(),
-        );
+        print_already_running(pid);
         Ok(())
       }
     }
   }
+}
+
+/// "daemon: already running (pid N)" — emitted from both the `--detach`
+/// and the foreground branches of `handle_start` when the daemon is
+/// already up. "daemon: already running" stays dim; the pid lifts to
+/// bold so it's the scannable token in the otherwise dim line.
+fn print_already_running(pid: i32) {
+  println!(
+    "{} ({} {})",
+    crate::cli::colors::dim("daemon: already running"),
+    crate::cli::colors::dim("pid"),
+    console::style(pid.to_string()).bold(),
+  );
 }
 
 async fn handle_stop() -> Result<()> {
@@ -200,7 +199,7 @@ pub(crate) fn resolve_scan_roots(
   })
 }
 
-async fn handle_status() -> Result<()> {
+async fn handle_status(json: bool) -> Result<()> {
   let socket = runtime_socket_path();
   // Short timeout for status — agents shouldn't sit on a dead socket.
   match Client::connect(&socket).await {
@@ -208,11 +207,27 @@ async fn handle_status() -> Result<()> {
       let result = client
         .call_with_timeout("version", None, Duration::from_secs(2))
         .await?;
-      print!("{}", render_daemon_status(&result));
+      if json {
+        // Machine contract: the raw `version` IPC response, byte-stable
+        // across releases. Agents that previously piped `daemon status`
+        // to `jq` should pass `--json` to keep their parser working.
+        println!(
+          "{}",
+          serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string())
+        );
+      } else {
+        print!("{}", render_daemon_status(&result));
+      }
       Ok(())
     }
     Err(ClientError::Connect(_)) => {
-      println!("{}", crate::cli::colors::dim("daemon: not running"));
+      if json {
+        // Surface a stable "not running" envelope in --json mode so
+        // agents see a parseable object instead of a colored dim line.
+        println!("{}", serde_json::json!({"daemon": "not_running"}));
+      } else {
+        println!("{}", crate::cli::colors::dim("daemon: not running"));
+      }
       Ok(())
     }
     Err(other) => Err(other).context("daemon status"),
@@ -265,7 +280,7 @@ fn render_daemon_status(body: &serde_json::Value) -> String {
   let uptime = obj
     .get("uptime_seconds")
     .and_then(Value::as_u64)
-    .map(format_uptime)
+    .map(format::format_uptime)
     .unwrap_or_else(dim_dash);
 
   let mut out = String::new();
@@ -279,27 +294,6 @@ fn render_daemon_status(body: &serde_json::Value) -> String {
     ("connections", u64_field("connections")),
   ]));
   out
-}
-
-/// Render seconds as `1d 2h 3m 4s`, eliding zero higher-order parts.
-/// `0` seconds renders as `"0s"` so we never print an empty string.
-fn format_uptime(seconds: u64) -> String {
-  let days = seconds / 86_400;
-  let hours = (seconds % 86_400) / 3_600;
-  let mins = (seconds % 3_600) / 60;
-  let secs = seconds % 60;
-  let mut parts: Vec<String> = Vec::with_capacity(4);
-  if days > 0 {
-    parts.push(format!("{days}d"));
-  }
-  if hours > 0 || !parts.is_empty() {
-    parts.push(format!("{hours}h"));
-  }
-  if mins > 0 || !parts.is_empty() {
-    parts.push(format!("{mins}m"));
-  }
-  parts.push(format!("{secs}s"));
-  parts.join(" ")
 }
 
 #[cfg(test)]
@@ -450,17 +444,6 @@ mod tests {
   fn propagated_cli_args_is_empty_when_no_global_flags_set() {
     let cli = parse_cli(&["daemon", "start"]);
     assert!(propagated_cli_args(&cli).is_empty());
-  }
-
-  #[test]
-  fn format_uptime_elides_zero_higher_order_parts() {
-    assert_eq!(format_uptime(0), "0s");
-    assert_eq!(format_uptime(42), "42s");
-    assert_eq!(format_uptime(90), "1m 30s");
-    assert_eq!(format_uptime(3_700), "1h 1m 40s");
-    // Boundary: exactly one day rolls into the days segment.
-    assert_eq!(format_uptime(86_400), "1d 0h 0m 0s");
-    assert_eq!(format_uptime(90_061), "1d 1h 1m 1s");
   }
 
   #[test]

@@ -229,16 +229,15 @@ using the libs we already pulled in, without inventing a new visual identity."
   trivial (a few hundred rows max for `list`/`status`). Rationale:
   fixed widths would either truncate paths on a 200-col terminal or
   blow up `list` rows on a 60-col one; per-call sizing is right.
-- **Long-cell truncation uses `unicode-width::display_width` measurement
-  and the same `…` ellipsis already used in `src/cli/output.rs`**.
-  When stdout's terminal width is known (via `console::term_size()`)
-  and the natural row would exceed it, only the last column (typically
-  `PATH`) truncates with a trailing `…`. Other columns never truncate.
-  Rationale: paths are the only column that benefits from truncation;
-  arch / quant / ctx / port are fixed-shape. Falls back to
-  no-truncation when terminal width is unknown (e.g. detached daemon
-  log redirected to a file — but C2 already routes that path to TSV,
-  so this branch is rarely reached).
+- **Long-cell truncation is deferred.** Originally planned as a
+  `with_truncate_last(true|false)` knob on `format::table` with
+  `console::term_size()` + `COLUMNS` env-var lookup; not implemented
+  in the shipped Unit 1. Rows on narrow terminals wrap as the terminal
+  emulator chooses (the common case is the line wrapping at the
+  terminal edge with a soft-wrap indicator). The wrap is a presentation
+  detail — the bytes a script reads via `--json` or piped TSV are
+  unaffected. Reintroducing truncation later is a localised change in
+  `cli::format` and shouldn't require touching call sites.
 - **Header separator is one `─` rune per column-width**, not a
   per-column `+--+--+` form. The chosen preview style is
   "padded + colored, no borders", so the rule is a single horizontal
@@ -331,13 +330,12 @@ using the libs we already pulled in, without inventing a new visual identity."
   one row has primed data; omit when every row's RSS/CPU is `None`.
   Documented here so the implementer doesn't invent the rule at
   review time.
-- **Terminal width source for truncation** — the `console::term_size()`
-  fallback path needs decisions about (a) what to do when stdout is
-  a TTY but the terminal width can't be read, and (b) whether the
-  `COLUMNS` env var should override. Default direction: trust
-  `console::term_size()`, fall back to "no truncation" when None;
-  respect `COLUMNS` if set. Confirm at implementation when wiring
-  the helper.
+- **Terminal width source for truncation** — resolved post-implementation
+  as deferred (see Key Technical Decisions § "Long-cell truncation is
+  deferred"). The shipped `format::table` does not call
+  `console::term_size()` or read `COLUMNS`; rows that overflow the
+  terminal soft-wrap. Truncation may land later as a contained change
+  in `cli::format`.
 
 ## High-Level Technical Design
 
@@ -449,11 +447,11 @@ the TTY/colors-enabled detection that decides padded-vs-TSV.
   the cliclack `intro` panel style.
 - `section_header(title, count)` renders a single bold + underlined
   line like `list (3 models)`, dimming the count suffix.
-- Terminal width via `console::term_size()` is *only* consulted by
-  the table helper for last-column truncation; the helper exposes a
-  small `with_truncate_last(true|false)` knob (default true). Caller
-  ergonomics: report commands pass `true`; future commands that
-  need verbatim values pass `false`.
+- Terminal-width truncation was dropped from the scope of this unit
+  (see Key Technical Decisions § "Long-cell truncation is deferred").
+  `format::table` is shipped without a `with_truncate_last` knob; the
+  helper lays out at natural row width and lets the terminal handle
+  overflow.
 
 **Patterns to follow:**
 - `src/cli/colors.rs` — module shape, `#[cfg(test)] mod tests` style,
@@ -956,7 +954,7 @@ the actual output).
 |------|------------|
 | TSV byte-drift breaks `awk -F\t` pipelines for users who upgrade. | Hard regression guard: each table-rendering test asserts byte-equality against today's TSV in the colors-disabled branch. The TTY/colors-enabled branch is the only divergence. CI catches any drift. |
 | Unicode-width measurement bugs cause misaligned columns under CJK or emoji file names. | `console::measure_text_width` uses the same `unicode-width` crate already pinned in `Cargo.toml`; coverage includes a CJK row in the `format::table` test set. |
-| Terminal width detection returns `None` under `tmux`/`screen` and the helper falls back to no-truncation, producing very wide rows. | The fallback is the safe direction (truncation is the rarer affordance). Document the env override (`COLUMNS`) in `docs/usage.md`. |
+| Wide rows on narrow terminals soft-wrap at the terminal edge. | Accepted; truncation was scoped out of Unit 1 (see Key Technical Decisions). Agents and pipelines use `--json` / piped TSV which are width-independent; humans get a presentation-layer wrap. Reintroducing truncation later is a contained change in `cli::format`. |
 | Snapshot tests for `status_human` / `list_human` get noisier when the rendering forks on color state. | Tests explicitly toggle `console::set_colors_enabled` via the existing `EnvGuard` pattern from `src/cli/colors.rs::tests`; each test scenario covers one branch only. |
 | Help text + banner rendering through clap (`BANNER` in `src/banner.rs`) is unaffected — flagging here just in case a reviewer assumes otherwise. | Not touched; clap renders `BANNER` via `before_help`; the policy initialisation runs after clap, so no interaction. |
 | A consumer of `daemon status` (a script) parses today's pretty-JSON output. | Low likelihood: the daemon also exposes the same fields through `status --json` which is the stable agent contract. The TTY path was never a contract surface. Mention in CHANGELOG that `daemon status` shape changed for human output; JSON path is unchanged. |
@@ -971,8 +969,8 @@ the actual output).
   `--no-colors`, every command emits the same TSV bytes as before so
   `awk -F\t` and `column -t` pipelines keep working unchanged.
   `--json` remains the agent contract."
-- `docs/usage.md`: mention `COLUMNS` env var honored for last-column
-  truncation when set.
+- `docs/usage.md`: scoped-out commitment — `COLUMNS` truncation was
+  deferred so no entry was added.
 - CHANGELOG `[Unreleased]`: one entry — "feat(cli): padded + colored
   tables on TTY for `list`, `status`, `presets`, `favorites`,
   `last-params`, `daemon status`. TSV preserved when piped; JSON

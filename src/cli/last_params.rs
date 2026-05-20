@@ -52,16 +52,22 @@ pub async fn handle(args: LastParamsArgs, cli: &Cli, config: &Config) -> CliResu
     println!("{}", pretty_json(&json!({"last_params": rows})));
     return Ok(());
   }
-  // Human form: one row per model. Columns chosen to match what an
-  // operator typically needs to relaunch (ctx, reasoning, advanced).
-  if rows.is_empty() {
-    println!(
-      "{}",
-      crate::cli::colors::dim("(no recorded last-params; launch a model to populate)")
-    );
-    return Ok(());
-  }
+  print!("{}", render_last_params_human(&rows));
+  Ok(())
+}
+
+/// Pure renderer for `last-params` human output. Empty rows surface a
+/// dim sentinel; non-empty rows pad on TTY and emit byte-stable TSV
+/// when piped. Extracted so unit tests can pin both branches without
+/// driving a live IPC client.
+fn render_last_params_human(rows: &[Value]) -> String {
   use crate::cli::{colors, format};
+  if rows.is_empty() {
+    return format!(
+      "{}\n",
+      colors::dim("(no recorded last-params; launch a model to populate)")
+    );
+  }
   let tty = console::colors_enabled();
   let header = ["MODEL", "CTX", "REASONING", "ADVANCED"];
   let table_rows: Vec<Vec<String>> = rows
@@ -79,15 +85,7 @@ pub async fn handle(args: LastParamsArgs, cli: &Cli, config: &Config) -> CliResu
         .and_then(Value::as_bool)
         .map(|b| if b { "on" } else { "off" }.to_string())
         .unwrap_or_else(|| "-".into());
-      let reasoning = if tty {
-        match reasoning_raw.as_str() {
-          "on" => console::style("on").green().bold().to_string(),
-          "off" | "-" => colors::dim(&reasoning_raw),
-          _ => reasoning_raw.clone(),
-        }
-      } else {
-        reasoning_raw
-      };
+      let reasoning = colors::reasoning_cell(&reasoning_raw);
       let advanced = params
         .and_then(|p| p.get("advanced"))
         .and_then(Value::as_array)
@@ -115,6 +113,91 @@ pub async fn handle(args: LastParamsArgs, cli: &Cli, config: &Config) -> CliResu
     out.push_str(&colors::count(rows.len(), "models"));
     out.push('\n');
   }
-  print!("{out}");
-  Ok(())
+  out
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::cli::test_lock::serialize;
+  use std::sync::MutexGuard;
+
+  struct ColorGuard {
+    _lock: MutexGuard<'static, ()>,
+    prior: bool,
+  }
+
+  impl ColorGuard {
+    fn set(enabled: bool) -> Self {
+      let g = Self {
+        _lock: serialize(),
+        prior: console::colors_enabled(),
+      };
+      console::set_colors_enabled(enabled);
+      g
+    }
+  }
+
+  impl Drop for ColorGuard {
+    fn drop(&mut self) {
+      console::set_colors_enabled(self.prior);
+    }
+  }
+
+  fn row(path: &str, ctx: Option<u64>, reasoning: Option<bool>, advanced: &[&str]) -> Value {
+    let mut params = serde_json::Map::new();
+    if let Some(c) = ctx {
+      params.insert("ctx".into(), json!(c));
+    }
+    if let Some(r) = reasoning {
+      params.insert("reasoning".into(), json!(r));
+    }
+    if !advanced.is_empty() {
+      params.insert(
+        "advanced".into(),
+        Value::Array(advanced.iter().map(|s| json!(s)).collect()),
+      );
+    }
+    json!({"id": {"path": path}, "params": Value::Object(params)})
+  }
+
+  #[test]
+  fn render_last_params_human_empty_returns_dim_sentinel() {
+    let _g = ColorGuard::set(false);
+    let out = render_last_params_human(&[]);
+    assert_eq!(
+      out,
+      "(no recorded last-params; launch a model to populate)\n"
+    );
+  }
+
+  #[test]
+  fn render_last_params_human_tsv_branch_is_byte_stable() {
+    let _g = ColorGuard::set(false);
+    let rows = vec![
+      row("/m/qwen.gguf", Some(32768), Some(true), &["--threads", "8"]),
+      row("/m/phi.gguf", None, Some(false), &[]),
+    ];
+    let out = render_last_params_human(&rows);
+    assert_eq!(
+      out,
+      "MODEL\tCTX\tREASONING\tADVANCED\n\
+       /m/qwen.gguf\t32768\ton\t--threads 8\n\
+       /m/phi.gguf\t-\toff\t\n"
+    );
+  }
+
+  #[test]
+  fn render_last_params_human_tty_branch_pads_and_appends_count_footer() {
+    let _g = ColorGuard::set(true);
+    let rows = vec![row("/m/qwen.gguf", Some(32768), Some(true), &[])];
+    let out = render_last_params_human(&rows);
+    let plain = console::strip_ansi_codes(&out);
+    assert!(plain.starts_with("MODEL"), "header missing: {plain:?}");
+    assert!(
+      !plain.contains("MODEL\t"),
+      "padded layout must not contain tabs: {plain:?}"
+    );
+    assert!(plain.contains("(1 models)"), "footer missing: {plain:?}");
+  }
 }

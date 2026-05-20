@@ -100,10 +100,19 @@ pub(crate) fn table(header: &[&str], rows: &[Vec<String>]) -> String {
 /// cells in (defence in depth — the colors-disabled global already
 /// makes `console::style(...)` a no-op, but caller code that builds
 /// styled cells via raw escapes would otherwise leak).
+///
+/// Header cells get the same strip pass: today every caller passes
+/// literal `&str` slices, but `header: &[&str]` doesn't constrain that
+/// — a future styled-header caller would otherwise leak ANSI into the
+/// machine-readable header line.
 fn render_tsv(header: &[&str], rows: &[Vec<String>]) -> String {
   let mut out = String::new();
   if !header.is_empty() {
-    out.push_str(&header.join("\t"));
+    let stripped_header: Vec<String> = header
+      .iter()
+      .map(|h| console::strip_ansi_codes(h).into_owned())
+      .collect();
+    out.push_str(&stripped_header.join("\t"));
     out.push('\n');
   }
   for row in rows {
@@ -135,6 +144,12 @@ fn pad_cell(cell: &str, width: usize) -> String {
 /// helper from `cli::colors`. Non-TTY / colors-disabled output drops
 /// the bold styling transparently, leaving the literal
 /// `"  key  value"` shape.
+///
+/// **TTY-only surface.** The output is space-aligned for humans, not
+/// tab-separated for machines — pipelines that grep / awk by column
+/// position will misread it. Always gate calls on
+/// `console::colors_enabled()` (or use the JSON branch) so piped
+/// consumers see TSV or JSON, never this layout.
 pub(crate) fn kv_block(items: &[(&str, String)]) -> String {
   if items.is_empty() {
     return String::new();
@@ -160,6 +175,9 @@ pub(crate) fn kv_block(items: &[(&str, String)]) -> String {
 ///   `"list (3 models)\n"` (bold title, dim count) when colors are
 ///   enabled; plain `"list (3 models)\n"` when disabled.
 /// - `section_header("daemon", None)` → `"daemon\n"`.
+///
+/// Like [`kv_block`], the output is human-facing — gate piped output
+/// to JSON / TSV branches that don't call this helper.
 pub(crate) fn section_header(title: &str, count: Option<(usize, &str)>) -> String {
   let mut head = console::style(title).bold().to_string();
   if let Some((n, noun)) = count {
@@ -168,6 +186,30 @@ pub(crate) fn section_header(title: &str, count: Option<(usize, &str)>) -> Strin
   }
   head.push('\n');
   head
+}
+
+/// Render seconds as `1d 2h 3m 4s`, eliding zero higher-order parts.
+/// `0` seconds renders as `"0s"` so we never print an empty string.
+///
+/// Shared by `cli::daemon::render_daemon_status` and `cli::output::status_human`
+/// so the two surfaces never drift in how the same uptime is shown.
+pub(crate) fn format_uptime(seconds: u64) -> String {
+  let days = seconds / 86_400;
+  let hours = (seconds % 86_400) / 3_600;
+  let mins = (seconds % 3_600) / 60;
+  let secs = seconds % 60;
+  let mut parts: Vec<String> = Vec::with_capacity(4);
+  if days > 0 {
+    parts.push(format!("{days}d"));
+  }
+  if hours > 0 || !parts.is_empty() {
+    parts.push(format!("{hours}h"));
+  }
+  if mins > 0 || !parts.is_empty() {
+    parts.push(format!("{mins}m"));
+  }
+  parts.push(format!("{secs}s"));
+  parts.join(" ")
 }
 
 #[cfg(test)]
@@ -364,5 +406,21 @@ mod tests {
     assert!(s.contains("\x1b[1m"), "expected bold escape: {s:?}");
     assert!(s.contains("\x1b[2m"), "expected dim escape: {s:?}");
     assert_eq!(console::strip_ansi_codes(&s), "list (2 items)\n");
+  }
+
+  #[test]
+  fn format_uptime_elides_zero_higher_order_parts() {
+    assert_eq!(format_uptime(0), "0s");
+    assert_eq!(format_uptime(42), "42s");
+    // Exact unit boundaries: 60s → 1m (mins=1, secs=0) preserves both
+    // segments per the elision rule.
+    assert_eq!(format_uptime(60), "1m 0s");
+    assert_eq!(format_uptime(90), "1m 30s");
+    // 3600s → 1h flips hours into the "any higher-order present →
+    // include all lower" branch, so we get 1h 0m 0s.
+    assert_eq!(format_uptime(3_600), "1h 0m 0s");
+    assert_eq!(format_uptime(3_700), "1h 1m 40s");
+    assert_eq!(format_uptime(86_400), "1d 0h 0m 0s");
+    assert_eq!(format_uptime(90_061), "1d 1h 1m 1s");
   }
 }

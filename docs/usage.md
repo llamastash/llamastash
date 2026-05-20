@@ -273,10 +273,12 @@ llamastash last-params [<ref>] [--json]
 ```
 llamastash daemon start [--detach]
 llamastash daemon stop
-llamastash daemon status        # PID + uptime + connections + managed launches
+llamastash daemon status [--json]   # PID + uptime + connections + managed launches
 ```
 
 `start --detach` double-forks into the background; without it the daemon stays in the foreground.
+
+`daemon status --json` emits the raw `version` IPC response (the same `{name, version, protocol_version, pid, uptime_seconds, connections}` object an agent would get by hitting the UDS directly). The plain form is a human key/value block and is not a stable machine contract — agents should always use `--json`.
 
 ## Setup subcommands
 

@@ -20,7 +20,7 @@ _None — the four vendoring items shipped 2026-05-19 via [`docs/plans/2026-05-1
 - [x] **In progress**: Init install method doesnt offer custom path as option.
 - [ ] Models downloaded from HF has cryptic names; we should rename them to something human friendly and show that in the UI instead of the HF ID.
 - [ ] if `--llama-server` is passed, add it as fallback in config file and use it when llama-server is not on path.
-- [ ] Better/colorful/formatted CLI output for commands.
+- [x] ~~Better/colorful/formatted CLI output for commands.~~ Shipped via [`docs/plans/2026-05-20-002-feat-colorful-cli-output-plan.md`](docs/plans/2026-05-20-002-feat-colorful-cli-output-plan.md).
 - [ ] best-model (find nicer alias) command. reuse init and just download the best model for current setup/hardware
 - [ ] `R:restart` daemon hotkey.
 - [ ] **Need brainstorm/plan**: Built in architecture defaults for all popular architectures, a default for all others. Advanced modal - replace free-text editor with typed key/value fields like settings; Its should be populated with architecture defaults for the model. keys = advanced options for the model, values = last settings or architecture default; pre-populate from the model's last params or architecture defaults and let users edit before launch. Requires a refactor of the advanced modal to support dynamic fields. Consider showing this inline in settings pane instead of a modal dialog, unless you think thats not good idea. Also provide a free text fields where user can enter arbitrary extra params that we won't show in the UI, for power users who want to use features we don't yet support in the UI.

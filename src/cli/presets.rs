@@ -6,9 +6,7 @@
 
 use serde_json::{json, Value};
 
-use crate::cli::cli_args::{
-  Cli, LaunchMode as CliLaunchMode, PresetsAction, PresetsArgs, ReasoningFlag,
-};
+use crate::cli::cli_args::{Cli, PresetsAction, PresetsArgs, ReasoningFlag};
 use crate::cli::client::connect_or_spawn;
 use crate::cli::exit_codes::{CliExit, CliResult, USAGE};
 use crate::cli::output::pretty_json;
@@ -36,60 +34,8 @@ pub async fn handle(args: PresetsArgs, cli: &Cli, config: &Config) -> CliResult 
         // (now `{"models": [...]}`) so agent parsers can rely on a
         // single "always object" rule across the CLI surface.
         println!("{}", pretty_json(&serde_json::json!({"presets": arr})));
-      } else if arr.is_empty() {
-        println!(
-          "{}",
-          crate::cli::colors::dim(&format!("(no presets for {})", row.name()))
-        );
       } else {
-        use crate::cli::{colors, format};
-        let tty = console::colors_enabled();
-        let header = ["NAME", "CTX", "REASONING", "EXTRA"];
-        let table_rows: Vec<Vec<String>> = arr
-          .iter()
-          .map(|preset| {
-            let name = preset.get("name").and_then(Value::as_str).unwrap_or("?");
-            let p = preset.get("params");
-            let ctx = p
-              .and_then(|p| p.get("ctx"))
-              .and_then(Value::as_u64)
-              .map(|n| n.to_string())
-              .unwrap_or_else(|| "-".into());
-            let reasoning_raw = p
-              .and_then(|p| p.get("reasoning"))
-              .and_then(Value::as_bool)
-              .map(|b| if b { "on" } else { "off" }.to_string())
-              .unwrap_or_else(|| "-".into());
-            // `on` reads as the affirmative state → green; `off`/`-`
-            // recede via dim so the operator's eye lands on `on` rows.
-            let reasoning = if tty {
-              match reasoning_raw.as_str() {
-                "on" => console::style("on").green().bold().to_string(),
-                "off" | "-" => colors::dim(&reasoning_raw),
-                _ => reasoning_raw.clone(),
-              }
-            } else {
-              reasoning_raw
-            };
-            let extra = p
-              .and_then(|p| p.get("advanced"))
-              .and_then(Value::as_array)
-              .map(|a| {
-                a.iter()
-                  .filter_map(|v| v.as_str().map(str::to_string))
-                  .collect::<Vec<_>>()
-                  .join(" ")
-              })
-              .unwrap_or_default();
-            vec![name.to_string(), ctx, reasoning, extra]
-          })
-          .collect();
-        let mut out = format::table(&header, &table_rows);
-        if tty {
-          out.push_str(&colors::count(arr.len(), "presets"));
-          out.push('\n');
-        }
-        print!("{out}");
+        print!("{}", render_presets_human(&arr, &row.name()));
       }
       Ok(())
     }
@@ -185,7 +131,7 @@ pub async fn handle(args: PresetsArgs, cli: &Cli, config: &Config) -> CliResult 
         payload.insert("reasoning".into(), json!(matches!(r, ReasoningFlag::On)));
       }
       if let Some(m) = mode {
-        payload.insert("mode".into(), json!(mode_label(m)));
+        payload.insert("mode".into(), json!(m.as_label()));
       }
       let extras: Vec<String> = extra
         .iter()
@@ -216,10 +162,136 @@ pub async fn handle(args: PresetsArgs, cli: &Cli, config: &Config) -> CliResult 
   }
 }
 
-fn mode_label(m: CliLaunchMode) -> &'static str {
-  match m {
-    CliLaunchMode::Chat => "chat",
-    CliLaunchMode::Embedding => "embedding",
-    CliLaunchMode::Rerank => "rerank",
+/// Pure renderer for `presets list` human output. Composes the empty
+/// sentinel, the padded TTY table, and the byte-stable TSV branch in
+/// one function so tests can drive both branches without an IPC stub.
+/// `model_name` flows into the empty-state line; it's display-only.
+fn render_presets_human(arr: &[Value], model_name: &str) -> String {
+  use crate::cli::{colors, format};
+  if arr.is_empty() {
+    return format!(
+      "{}\n",
+      colors::dim(&format!("(no presets for {model_name})"))
+    );
+  }
+  let tty = console::colors_enabled();
+  let header = ["NAME", "CTX", "REASONING", "EXTRA"];
+  let table_rows: Vec<Vec<String>> = arr
+    .iter()
+    .map(|preset| {
+      let name = preset.get("name").and_then(Value::as_str).unwrap_or("?");
+      let p = preset.get("params");
+      let ctx = p
+        .and_then(|p| p.get("ctx"))
+        .and_then(Value::as_u64)
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "-".into());
+      let reasoning_raw = p
+        .and_then(|p| p.get("reasoning"))
+        .and_then(Value::as_bool)
+        .map(|b| if b { "on" } else { "off" }.to_string())
+        .unwrap_or_else(|| "-".into());
+      let reasoning = colors::reasoning_cell(&reasoning_raw);
+      let extra = p
+        .and_then(|p| p.get("advanced"))
+        .and_then(Value::as_array)
+        .map(|a| {
+          a.iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect::<Vec<_>>()
+            .join(" ")
+        })
+        .unwrap_or_default();
+      vec![name.to_string(), ctx, reasoning, extra]
+    })
+    .collect();
+  let mut out = format::table(&header, &table_rows);
+  if tty {
+    out.push_str(&colors::count(arr.len(), "presets"));
+    out.push('\n');
+  }
+  out
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::cli::test_lock::serialize;
+  use std::sync::MutexGuard;
+
+  struct ColorGuard {
+    _lock: MutexGuard<'static, ()>,
+    prior: bool,
+  }
+
+  impl ColorGuard {
+    fn set(enabled: bool) -> Self {
+      let g = Self {
+        _lock: serialize(),
+        prior: console::colors_enabled(),
+      };
+      console::set_colors_enabled(enabled);
+      g
+    }
+  }
+
+  impl Drop for ColorGuard {
+    fn drop(&mut self) {
+      console::set_colors_enabled(self.prior);
+    }
+  }
+
+  fn preset(name: &str, ctx: Option<u64>, reasoning: Option<bool>, advanced: &[&str]) -> Value {
+    let mut params = serde_json::Map::new();
+    if let Some(c) = ctx {
+      params.insert("ctx".into(), json!(c));
+    }
+    if let Some(r) = reasoning {
+      params.insert("reasoning".into(), json!(r));
+    }
+    if !advanced.is_empty() {
+      params.insert(
+        "advanced".into(),
+        Value::Array(advanced.iter().map(|s| json!(s)).collect()),
+      );
+    }
+    json!({"name": name, "params": Value::Object(params)})
+  }
+
+  #[test]
+  fn render_presets_human_empty_returns_dim_sentinel() {
+    let _g = ColorGuard::set(false);
+    let out = render_presets_human(&[], "qwen-coder");
+    assert_eq!(out, "(no presets for qwen-coder)\n");
+  }
+
+  #[test]
+  fn render_presets_human_tsv_branch_is_byte_stable() {
+    let _g = ColorGuard::set(false);
+    let arr = vec![
+      preset("coding", Some(32768), Some(true), &["--threads", "8"]),
+      preset("default", None, Some(false), &[]),
+    ];
+    let out = render_presets_human(&arr, "qwen-coder");
+    assert_eq!(
+      out,
+      "NAME\tCTX\tREASONING\tEXTRA\n\
+       coding\t32768\ton\t--threads 8\n\
+       default\t-\toff\t\n"
+    );
+  }
+
+  #[test]
+  fn render_presets_human_tty_branch_pads_and_appends_count_footer() {
+    let _g = ColorGuard::set(true);
+    let arr = vec![preset("coding", Some(32768), Some(true), &[])];
+    let out = render_presets_human(&arr, "qwen-coder");
+    let plain = console::strip_ansi_codes(&out);
+    assert!(plain.starts_with("NAME"), "header missing: {plain:?}");
+    assert!(
+      !plain.contains("NAME\t"),
+      "padded layout must not contain tabs: {plain:?}"
+    );
+    assert!(plain.contains("(1 presets)"), "footer missing: {plain:?}");
   }
 }
