@@ -25,7 +25,9 @@ use tokio::sync::mpsc;
 use crate::discovery::split_gguf::parse_shard_name;
 use crate::init::download::RepoSpec;
 use crate::init::fetch::FetchError;
-use crate::init::hf_api::{HfRepoFile, HfSearchPage, HfSearchResult, HfSortKey, ListRepoFilesError};
+use crate::init::hf_api::{
+  HfRepoFile, HfSearchPage, HfSearchResult, HfSortKey, ListRepoFilesError,
+};
 use crate::init::recommender::FileFit;
 use crate::theme::Palette;
 
@@ -192,9 +194,10 @@ pub fn collapse_picker_rows(files: Vec<HfRepoFile>) -> Vec<PickerRow> {
     .collect();
   for ((base, total), (order, mut shards)) in buckets {
     shards.sort_by_key(|(idx, _)| *idx);
-    let complete = shards.iter().enumerate().all(|(i, (idx, _))| {
-      *idx as usize == i + 1 && shards.len() as u32 == total
-    });
+    let complete = shards
+      .iter()
+      .enumerate()
+      .all(|(i, (idx, _))| *idx as usize == i + 1 && shards.len() as u32 == total);
     let total_size_bytes = if shards.iter().all(|(_, f)| f.size_bytes.is_some()) {
       Some(shards.iter().map(|(_, f)| f.size_bytes.unwrap_or(0)).sum())
     } else {
@@ -550,10 +553,7 @@ impl HfDialogState {
     let rows = collapse_picker_rows(files);
     // Pre-select the first selectable row so an incomplete shard
     // set doesn't trap the cursor on a non-selectable row.
-    let picker_idx = rows
-      .iter()
-      .position(PickerRow::selectable)
-      .unwrap_or(0);
+    let picker_idx = rows.iter().position(PickerRow::selectable).unwrap_or(0);
     self.picker_load = PickerLoad::Ready;
     self.picker_rows = rows;
     self.picker_idx = picker_idx;
@@ -697,18 +697,10 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, state: &HfDialogState, palet
   frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
 }
 
-fn render_search_body(
-  frame: &mut Frame<'_>,
-  area: Rect,
-  state: &HfDialogState,
-  palette: &Palette,
-) {
+fn render_search_body(frame: &mut Frame<'_>, area: Rect, state: &HfDialogState, palette: &Palette) {
   if let Some(err) = &state.error {
-    let err_line = Paragraph::new(Line::from(Span::styled(
-      err.clone(),
-      palette.error_style(),
-    )))
-    .wrap(Wrap { trim: true });
+    let err_line = Paragraph::new(Line::from(Span::styled(err.clone(), palette.error_style())))
+      .wrap(Wrap { trim: true });
     frame.render_widget(err_line, area);
     return;
   }
@@ -764,24 +756,19 @@ fn render_search_row(
       .unwrap_or_else(|| "⏱ —".into()),
     HfSortKey::Trending => "★ trending".into(),
   };
-  let tag = r
-    .pipeline_tag
-    .clone()
-    .unwrap_or_else(|| "—".to_string());
+  let tag = r.pipeline_tag.clone().unwrap_or_else(|| "—".to_string());
   Line::from(vec![
     Span::styled(prefix.to_string(), style),
     Span::styled(format!("{:<48}  ", truncate(&r.repo_id, 48)), style),
-    Span::styled(format!("{:<22}  ", truncate(&tag, 22)), palette.muted_style()),
+    Span::styled(
+      format!("{:<22}  ", truncate(&tag, 22)),
+      palette.muted_style(),
+    ),
     Span::styled(metric, palette.label_style()),
   ])
 }
 
-fn render_picker_body(
-  frame: &mut Frame<'_>,
-  area: Rect,
-  state: &HfDialogState,
-  palette: &Palette,
-) {
+fn render_picker_body(frame: &mut Frame<'_>, area: Rect, state: &HfDialogState, palette: &Palette) {
   let repo = state
     .picker_repo_id
     .as_deref()
@@ -852,7 +839,13 @@ fn render_picker_body(
           FileFit::Over => palette.error_style(),
           FileFit::Unknown => palette.muted_style(),
         };
-        let row_style = if matches!(row, PickerRow::Split { complete: false, .. }) {
+        let row_style = if matches!(
+          row,
+          PickerRow::Split {
+            complete: false,
+            ..
+          }
+        ) {
           // Greyed-out incomplete shard set — refused on submit.
           palette.muted_style()
         } else {
@@ -876,10 +869,7 @@ fn render_confirm_body(
   state: &HfDialogState,
   palette: &Palette,
 ) {
-  let repo = state
-    .picker_repo_id
-    .as_deref()
-    .unwrap_or("(no repo)");
+  let repo = state.picker_repo_id.as_deref().unwrap_or("(no repo)");
   let file = state
     .confirm_row
     .as_ref()
@@ -1029,7 +1019,10 @@ mod tests {
     let mut s = HfDialogState::open(false, HardwareFitContext::default());
     s.insert('q');
     let now = s.last_keystroke_at;
-    assert!(!s.search_due(now), "immediate dispatch would defeat the debounce");
+    assert!(
+      !s.search_due(now),
+      "immediate dispatch would defeat the debounce"
+    );
     assert!(s.search_due(now + DEBOUNCE));
   }
 
@@ -1067,10 +1060,7 @@ mod tests {
   #[test]
   fn submit_search_uses_selected_result_when_query_is_not_a_slug() {
     let mut s = HfDialogState::open(false, HardwareFitContext::default());
-    s.results = vec![
-      fake_result("alpha/repo"),
-      fake_result("beta/repo"),
-    ];
+    s.results = vec![fake_result("alpha/repo"), fake_result("beta/repo")];
     s.selected_idx = 1;
     s.query = "qwen".into();
     let target = s.submit_search();
@@ -1224,9 +1214,18 @@ mod tests {
   #[test]
   fn collapse_picker_rows_groups_complete_shard_set_with_sum_size() {
     let rows = collapse_picker_rows(vec![
-      file("Qwen-32B-Q4_K_M-00001-of-00003.gguf", Some(7 * 1024 * 1024 * 1024)),
-      file("Qwen-32B-Q4_K_M-00002-of-00003.gguf", Some(7 * 1024 * 1024 * 1024)),
-      file("Qwen-32B-Q4_K_M-00003-of-00003.gguf", Some(7 * 1024 * 1024 * 1024)),
+      file(
+        "Qwen-32B-Q4_K_M-00001-of-00003.gguf",
+        Some(7 * 1024 * 1024 * 1024),
+      ),
+      file(
+        "Qwen-32B-Q4_K_M-00002-of-00003.gguf",
+        Some(7 * 1024 * 1024 * 1024),
+      ),
+      file(
+        "Qwen-32B-Q4_K_M-00003-of-00003.gguf",
+        Some(7 * 1024 * 1024 * 1024),
+      ),
       file("config.gguf", Some(1024)),
     ]);
     assert_eq!(rows.len(), 2, "3 shards collapse to 1 row + 1 single");
@@ -1265,7 +1264,10 @@ mod tests {
       PickerRow::Split { complete, .. } => assert!(!complete),
       other => panic!("expected Split, got {other:?}"),
     }
-    assert!(!rows[0].selectable(), "incomplete shard set must refuse selection");
+    assert!(
+      !rows[0].selectable(),
+      "incomplete shard set must refuse selection"
+    );
   }
 
   #[test]
@@ -1302,7 +1304,13 @@ mod tests {
     // The first row is the incomplete Split; cursor must land on
     // the next selectable row.
     assert_eq!(s.picker_rows.len(), 2);
-    assert!(matches!(s.picker_rows[0], PickerRow::Split { complete: false, .. }));
+    assert!(matches!(
+      s.picker_rows[0],
+      PickerRow::Split {
+        complete: false,
+        ..
+      }
+    ));
     assert!(matches!(s.picker_rows[1], PickerRow::Single { .. }));
     assert_eq!(s.picker_idx, 1, "cursor pre-selected the selectable row");
   }

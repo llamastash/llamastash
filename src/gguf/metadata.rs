@@ -723,10 +723,7 @@ mod tests {
 
   #[test]
   fn from_filename_matches_q8_0_with_extension() {
-    assert_eq!(
-      Quant::from_filename("weights-Q8_0.gguf"),
-      Some(Quant::Q8_0),
-    );
+    assert_eq!(Quant::from_filename("weights-Q8_0.gguf"), Some(Quant::Q8_0),);
   }
 
   #[test]
@@ -747,10 +744,7 @@ mod tests {
 
   #[test]
   fn from_filename_collapses_q3_k_s_suffix() {
-    assert_eq!(
-      Quant::from_filename("model-Q3_K_S.gguf"),
-      Some(Quant::Q3_K),
-    );
+    assert_eq!(Quant::from_filename("model-Q3_K_S.gguf"), Some(Quant::Q3_K),);
   }
 
   #[test]
@@ -760,10 +754,7 @@ mod tests {
 
   #[test]
   fn from_filename_no_extension_works() {
-    assert_eq!(
-      Quant::from_filename("Qwen2.5-7B-Q4_K"),
-      Some(Quant::Q4_K),
-    );
+    assert_eq!(Quant::from_filename("Qwen2.5-7B-Q4_K"), Some(Quant::Q4_K),);
   }
 
   #[test]

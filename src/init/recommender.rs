@@ -638,14 +638,7 @@ mod tests {
   fn vram_fit_returns_unknown_for_vulkan_backend() {
     // R113: omit the indicator on `GpuInfo::Unknown` (Vulkan-only)
     // rather than fabricate confidence.
-    let fit = vram_fit_for_file(
-      6 * GB,
-      DEFAULT_CTX,
-      "unknown",
-      Some(24 * GB),
-      32 * GB,
-      None,
-    );
+    let fit = vram_fit_for_file(6 * GB, DEFAULT_CTX, "unknown", Some(24 * GB), 32 * GB, None);
     assert_eq!(fit, FileFit::Unknown);
   }
 

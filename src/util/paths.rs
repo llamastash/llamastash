@@ -327,9 +327,7 @@ mod tests {
 
   #[test]
   fn model_display_name_renders_question_mark_for_unknown_quant() {
-    let path = PathBuf::from(
-      "/cache/hf/models--owner--mystery/snapshots/rev/model.gguf",
-    );
+    let path = PathBuf::from("/cache/hf/models--owner--mystery/snapshots/rev/model.gguf");
     assert_eq!(model_display_name(&path, None), "mystery (?)");
   }
 
@@ -341,17 +339,14 @@ mod tests {
 
   #[test]
   fn model_display_name_falls_back_for_ollama_path() {
-    let path = PathBuf::from(
-      "/home/u/.ollama/models/manifests/registry.ollama.ai/library/llama3/latest",
-    );
+    let path =
+      PathBuf::from("/home/u/.ollama/models/manifests/registry.ollama.ai/library/llama3/latest");
     assert_eq!(model_display_name(&path, None), "latest");
   }
 
   #[test]
   fn model_display_name_walks_deeply_nested_hf_snapshot() {
-    let path = PathBuf::from(
-      "/cache/hf/models--owner--repo/snapshots/rev/sub/dir/file.gguf",
-    );
+    let path = PathBuf::from("/cache/hf/models--owner--repo/snapshots/rev/sub/dir/file.gguf");
     let md = fixture_metadata(Quant::Q6_K);
     assert_eq!(model_display_name(&path, Some(&md)), "repo (Q6_K)");
   }
@@ -362,22 +357,15 @@ mod tests {
     // `models--owner--repo` parent) should still get the friendly
     // name — the helper depends on the segment, not the snapshot
     // intermediate.
-    let path = PathBuf::from(
-      "/somewhere/models--owner--CompactRepo/CompactRepo-Q4_K_M.gguf",
-    );
-    assert_eq!(
-      model_display_name(&path, None),
-      "CompactRepo (Q4_K)"
-    );
+    let path = PathBuf::from("/somewhere/models--owner--CompactRepo/CompactRepo-Q4_K_M.gguf");
+    assert_eq!(model_display_name(&path, None), "CompactRepo (Q4_K)");
   }
 
   #[test]
   fn model_display_name_metadata_overrides_filename_for_hf_cache() {
     // Metadata.quant is canonical; even if the filename suggests a
     // different quant, parsed GGUF metadata wins.
-    let path = PathBuf::from(
-      "/cache/hf/models--owner--repo/snapshots/rev/legacy-Q4_K_M.gguf",
-    );
+    let path = PathBuf::from("/cache/hf/models--owner--repo/snapshots/rev/legacy-Q4_K_M.gguf");
     let md = fixture_metadata(Quant::Q8_0);
     assert_eq!(model_display_name(&path, Some(&md)), "repo (Q8_0)");
   }
@@ -386,9 +374,7 @@ mod tests {
   fn model_display_name_ignores_unknown_metadata_quant() {
     // Unknown(_) metadata quant must not render as "Unknown"; the
     // helper falls back to the filename heuristic instead.
-    let path = PathBuf::from(
-      "/cache/hf/models--owner--repo/snapshots/rev/file-Q4_0.gguf",
-    );
+    let path = PathBuf::from("/cache/hf/models--owner--repo/snapshots/rev/file-Q4_0.gguf");
     let md = fixture_metadata(Quant::Unknown(99));
     assert_eq!(model_display_name(&path, Some(&md)), "repo (Q4_0)");
   }

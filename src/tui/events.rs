@@ -1584,11 +1584,7 @@ enum HfDialogOutcome {
 /// extends the query buffer; arrows move the row cursor; Enter
 /// advances stages; Esc closes; Backspace steps back (or pops a
 /// character off the query when at the top of the Search stage).
-fn handle_hf_dialog_input(
-  app: &mut App,
-  key: KeyEvent,
-  _writer: Option<&mpsc::Sender<WriterCmd>>,
-) {
+fn handle_hf_dialog_input(app: &mut App, key: KeyEvent, _writer: Option<&mpsc::Sender<WriterCmd>>) {
   let outcome = {
     use crate::tui::hf_dialog::HfStage;
     let Some(state) = app.hf_dialog.as_mut() else {
@@ -1685,11 +1681,7 @@ fn handle_hf_dialog_input(
 /// Push a pull onto the download-strip queue and — when no pull is
 /// currently active — promote it and spawn the background download
 /// task that ships progress back over the strip's mpsc.
-fn enqueue_hf_pull(
-  app: &mut App,
-  repo: String,
-  row: crate::tui::hf_dialog::PickerRow,
-) {
+fn enqueue_hf_pull(app: &mut App, repo: String, row: crate::tui::hf_dialog::PickerRow) {
   use crate::tui::download_strip::QueuedPull;
   let filename = row.download_filename().to_string();
   let friendly_name = friendly_pull_name(&repo, &filename);
@@ -1736,7 +1728,11 @@ fn spawn_download_task(
   use crate::init::download::{DownloadOptions, RepoSpec};
   use crate::init::fetch;
   tokio::spawn(async move {
-    let spec = match RepoSpec::parse(&format!("{}:{}", pull.repo_id, pull.row.download_filename())) {
+    let spec = match RepoSpec::parse(&format!(
+      "{}:{}",
+      pull.repo_id,
+      pull.row.download_filename()
+    )) {
       Ok(s) => s,
       Err(e) => {
         let _ = tx.send(crate::tui::download_strip::DownloadEvent::Error {
@@ -1746,11 +1742,8 @@ fn spawn_download_task(
         return;
       }
     };
-    let fetch_client = fetch::build_with_offline_check(
-      false,
-      fetch::FetchClientConfig::default(),
-    )
-    .unwrap_or_else(|_| fetch::FetchClient::offline());
+    let fetch_client = fetch::build_with_offline_check(false, fetch::FetchClientConfig::default())
+      .unwrap_or_else(|_| fetch::FetchClient::offline());
     let progress = std::sync::Arc::new(StripProgress {
       tx: tx.clone(),
       repo_id: pull.repo_id.clone(),
@@ -1760,7 +1753,9 @@ fn spawn_download_task(
     let options = DownloadOptions {
       extension_filter: Some(".gguf".into()),
       estimated_bytes: pull.row.size_bytes(),
-      progress: Some(progress.clone() as std::sync::Arc<dyn crate::init::download::DownloadProgress>),
+      progress: Some(
+        progress.clone() as std::sync::Arc<dyn crate::init::download::DownloadProgress>
+      ),
       revision: None,
     };
     match crate::init::download::download_repo(&spec, &fetch_client, &options).await {
@@ -1875,10 +1870,7 @@ fn spawn_hf_search(state: &mut crate::tui::hf_dialog::HfDialogState, cursor: Opt
 
 /// Spawn a background `list_repo_files` task whose result is
 /// shipped back over the dialog's mpsc.
-fn spawn_hf_list_repo_files(
-  state: &mut crate::tui::hf_dialog::HfDialogState,
-  repo_id: String,
-) {
+fn spawn_hf_list_repo_files(state: &mut crate::tui::hf_dialog::HfDialogState, repo_id: String) {
   use crate::init::hf_api;
   let tx = state.event_tx.clone();
   tokio::spawn(async move {
@@ -1904,7 +1896,8 @@ fn spawn_hf_list_repo_files(
 /// network calls fail with a clean typed error instead of panicking.
 fn build_tui_fetch_client() -> crate::init::fetch::FetchClient {
   use crate::init::fetch::{build_with_offline_check, FetchClient, FetchClientConfig};
-  build_with_offline_check(false, FetchClientConfig::default()).unwrap_or_else(|_| FetchClient::offline())
+  build_with_offline_check(false, FetchClientConfig::default())
+    .unwrap_or_else(|_| FetchClient::offline())
 }
 
 /// Drain pending DownloadEvents into the strip. Promotes the next
@@ -1948,7 +1941,9 @@ pub fn drain_download_strip(app: &mut App) {
         }
         next
       }
-      DownloadEvent::Error { repo_id, message } => app.download_strip.apply_error(&repo_id, message),
+      DownloadEvent::Error { repo_id, message } => {
+        app.download_strip.apply_error(&repo_id, message)
+      }
       DownloadEvent::AlreadyCached {
         repo_id,
         cached_path,
@@ -1969,9 +1964,10 @@ pub fn drain_download_strip(app: &mut App) {
             // model path so the cursor visibly snaps.
             let target = app.models[idx].path.clone();
             let rows = app.rendered_rows();
-            if let Some(row_idx) = rows.iter().position(|r| {
-              r.path().map(|p| p == target).unwrap_or(false)
-            }) {
+            if let Some(row_idx) = rows
+              .iter()
+              .position(|r| r.path().map(|p| p == target).unwrap_or(false))
+            {
               app.list_cursor = row_idx;
             }
           }
@@ -2044,10 +2040,7 @@ mod tests {
     // Type into the search buffer.
     pump_input(&mut app, key(KeyCode::Char('q'), KeyModifiers::NONE));
     pump_input(&mut app, key(KeyCode::Char('w'), KeyModifiers::NONE));
-    assert_eq!(
-      app.hf_dialog.as_ref().map(|d| d.query.as_str()),
-      Some("qw")
-    );
+    assert_eq!(app.hf_dialog.as_ref().map(|d| d.query.as_str()), Some("qw"));
     // Esc closes and snaps focus back.
     pump_input(&mut app, key(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.hf_dialog.is_none());

@@ -191,7 +191,8 @@ fn parse_next_link(header: &str) -> Option<String> {
       let p = p.trim();
       // Accept both `rel=next` and `rel="next"`.
       matches!(
-        p.split_once('=').map(|(k, v)| (k.trim(), v.trim().trim_matches('"'))),
+        p.split_once('=')
+          .map(|(k, v)| (k.trim(), v.trim().trim_matches('"'))),
         Some(("rel", "next"))
       )
     });
@@ -340,8 +341,7 @@ mod tests {
   fn extract_next_cursor_accepts_huggingface_cdn_subdomain() {
     // HF occasionally hosts pagination URLs on a subdomain;
     // subdomain matching against `huggingface.co` is the policy.
-    let header =
-      "<https://api-inference.huggingface.co/api/models?cursor=sub>; rel=\"next\"";
+    let header = "<https://api-inference.huggingface.co/api/models?cursor=sub>; rel=\"next\"";
     assert_eq!(extract_next_cursor(header), Some("sub".to_string()));
   }
 

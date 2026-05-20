@@ -60,10 +60,7 @@ pub struct ActivePull {
 pub enum DownloadEvent {
   /// Repo listing + HEAD probes resolved; the strip now knows the
   /// `bytes_total` for the active pull.
-  Started {
-    repo_id: String,
-    bytes_total: u64,
-  },
+  Started { repo_id: String, bytes_total: u64 },
   /// One chunk landed.
   Progress {
     repo_id: String,
@@ -71,15 +68,10 @@ pub enum DownloadEvent {
     bytes_total: u64,
   },
   /// All files downloaded.
-  Finished {
-    repo_id: String,
-  },
+  Finished { repo_id: String },
   /// hf-hub or the disk precheck refused. `message` lands on the
   /// strip for [`ERROR_LINGER`] then the strip clears.
-  Error {
-    repo_id: String,
-    message: String,
-  },
+  Error { repo_id: String, message: String },
   /// The file is already in the HF cache. The dialog toasts +
   /// selects the matching catalog row; the strip skips the active
   /// state and drains the next queued pull immediately (R116).
@@ -257,7 +249,10 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &DownloadStripState, pal
       crate::tui::fmt::format_bytes(active.bytes_total)
     );
     let throughput = if active.throughput_bps > 0.0 {
-      format!("{}/s", crate::tui::fmt::format_bytes(active.throughput_bps as u64))
+      format!(
+        "{}/s",
+        crate::tui::fmt::format_bytes(active.throughput_bps as u64)
+      )
     } else {
       "—".into()
     };
