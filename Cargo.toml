@@ -1,13 +1,13 @@
 [package]
-name = "llamadash"
-version = "0.2.0"
+name = "llamastash"
+version = "0.0.1"
 authors = ["Deepu K Sasidharan <d4udts@gmail.com>"]
 description = "A fast, keyboard-driven TUI for launching local llama.cpp models"
-documentation = "https://github.com/llamadash-rs/llamadash"
+documentation = "https://github.com/llamastash-rs/llamastash"
 categories = ["command-line-utilities"]
-keywords = ["llamadash", "llama-cpp", "llm", "tui", "gguf"]
-repository = "https://github.com/llamadash-rs/llamadash"
-homepage = "https://github.com/llamadash-rs/llamadash"
+keywords = ["llamastash", "llama-cpp", "llm", "tui", "gguf"]
+repository = "https://github.com/llamastash-rs/llamastash"
+homepage = "https://github.com/llamastash-rs/llamastash"
 readme = "README.md"
 license = "MIT"
 edition = "2021"
@@ -17,7 +17,7 @@ rust-version = "1.80"
 # under the `test-fixtures` feature, but cargo's run-target picker
 # checks the manifest before feature resolution, so we still need
 # this hint.
-default-run = "llamadash"
+default-run = "llamastash"
 exclude = [
   "test_data/*",
   "deployment/*",
@@ -142,11 +142,11 @@ sha2 = { version = "0.10", default-features = false, features = ["std"] }
 # on Unix and is not needed.
 
 [lib]
-name = "llamadash"
+name = "llamastash"
 path = "src/lib.rs"
 
 [[bin]]
-name = "llamadash"
+name = "llamastash"
 path = "src/main.rs"
 bench = false
 
