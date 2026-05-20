@@ -33,6 +33,150 @@ pub fn is_recommended(args: &InitArgs) -> bool {
   args.recommended || args.yes
 }
 
+/// Wraps a cliclack spinner so wizard steps can give the user
+/// running narration ("Installing llama.cpp via Homebrew…",
+/// "Downloaded foo.gguf") without writing two code paths for the
+/// TTY and non-TTY cases.
+///
+/// In TTY mode this drives an animated cliclack spinner. In non-TTY
+/// mode (piped output, CI) the spinner would be silent, so we fall
+/// back to `cliclack::log::info` / `log::success` / `log::error`
+/// which emit themed but static lines to stderr. Either way the
+/// user (or the script reading the logs) sees a clear "started X →
+/// finished X" pair instead of a long unexplained pause.
+enum StepProgressInner {
+  /// TTY-attached: animate a cliclack spinner.
+  Spinner(cliclack::ProgressBar),
+  /// Non-TTY but human-facing: emit themed static lines via
+  /// `cliclack::log` so the script reading the logs still sees
+  /// "started → finished" pairs.
+  Log,
+  /// `--json` mode: callers don't want any narration on stderr.
+  Quiet,
+}
+
+pub struct StepProgress {
+  inner: StepProgressInner,
+}
+
+impl StepProgress {
+  /// Start a step. Pass the present-tense label the user should see
+  /// while the work is running (e.g. `"Installing llama.cpp via
+  /// Homebrew"`).
+  pub fn start(label: impl Into<String>) -> Self {
+    let label = label.into();
+    if std::io::stderr().is_terminal() {
+      let bar = cliclack::spinner();
+      bar.start(label);
+      Self {
+        inner: StepProgressInner::Spinner(bar),
+      }
+    } else {
+      let _ = cliclack::log::info(label);
+      Self {
+        inner: StepProgressInner::Log,
+      }
+    }
+  }
+
+  /// No-op variant for `--json` mode. Every method becomes a noop so
+  /// the wizard can keep a single call shape regardless of human-vs-
+  /// machine output.
+  pub fn quiet() -> Self {
+    Self {
+      inner: StepProgressInner::Quiet,
+    }
+  }
+
+  /// `start` if `emit` is true, otherwise `quiet`. Convenience for
+  /// wizard sites that already have an `args.json` boolean in scope.
+  pub fn start_if(emit: bool, label: impl Into<String>) -> Self {
+    if emit {
+      Self::start(label)
+    } else {
+      Self::quiet()
+    }
+  }
+
+  /// Update the in-progress label without finishing the step. Useful
+  /// for multi-phase work ("Downloading… → Verifying… → Extracting…")
+  /// where each sub-phase is too short to merit its own spinner.
+  pub fn update(&self, msg: impl Into<String>) {
+    match &self.inner {
+      StepProgressInner::Spinner(b) => b.set_message(msg.into()),
+      StepProgressInner::Log => {
+        let _ = cliclack::log::info(msg.into());
+      }
+      StepProgressInner::Quiet => {}
+    }
+  }
+
+  /// Mark the step done with a success message and surrender the
+  /// spinner (a `StepProgress` cannot be reused once stopped).
+  pub fn success(self, msg: impl Into<String>) {
+    match self.inner {
+      StepProgressInner::Spinner(b) => b.stop(msg.into()),
+      StepProgressInner::Log => {
+        let _ = cliclack::log::success(msg.into());
+      }
+      StepProgressInner::Quiet => {}
+    }
+  }
+
+  /// Mark the step done with a failure message. The wizard usually
+  /// follows this immediately with a `return Err(...)` carrying the
+  /// matching exit code.
+  pub fn fail(self, msg: impl Into<String>) {
+    match self.inner {
+      StepProgressInner::Spinner(b) => b.error(msg.into()),
+      StepProgressInner::Log => {
+        let _ = cliclack::log::error(msg.into());
+      }
+      StepProgressInner::Quiet => {}
+    }
+  }
+}
+
+/// Render the dry-run diff with light YAML syntax coloring so the
+/// preview the user confirms doesn't look like a wall of plain text.
+/// Marker (`+` / `~`) is colored, dotted key paths are bold-cyan,
+/// values are left in their canonical form (already redacted by
+/// `config_writer` when the path matches the secrets list). Colors
+/// are produced via `console::style`, so `--no-colors` / `NO_COLOR`
+/// / non-TTY downgrade to plain text automatically.
+pub fn render_diff_preview(diff: &[crate::init::config_writer::RedactedDiffEntry]) -> String {
+  let mut out = String::new();
+  out.push_str(&console::style("config diff (preview):").bold().to_string());
+  out.push('\n');
+  if diff.is_empty() {
+    out.push_str(&console::style("  (no changes)").dim().to_string());
+    return out;
+  }
+  for entry in diff {
+    let marker = match entry.kind {
+      "added" => console::style("+").green().bold().to_string(),
+      "changed" => console::style("~").yellow().bold().to_string(),
+      _ => console::style(" ").to_string(),
+    };
+    let path = console::style(&entry.path).cyan().bold().to_string();
+    let value = entry.value_yaml.trim_end();
+    if value.contains('\n') {
+      out.push_str(&format!("  {marker} {path}:\n"));
+      for line in value.lines() {
+        out.push_str(&format!("      {line}\n"));
+      }
+    } else {
+      out.push_str(&format!("  {marker} {path}: {value}\n"));
+    }
+  }
+  // Trim only the trailing newline so the cliclack panel that hosts
+  // this string doesn't double-space.
+  if out.ends_with('\n') {
+    out.pop();
+  }
+  out
+}
+
 /// What `pick_model` returns. Mirrors the recommender's outcome but
 /// adds the `Skip` variant for `--model none`. `ModelEntry` does not
 /// implement `PartialEq` so this enum doesn't either — callers use
@@ -404,6 +548,35 @@ mod tests {
       model: None,
       config_choice: None,
     }
+  }
+
+  #[test]
+  fn render_diff_preview_marks_added_and_changed_paths() {
+    use crate::init::config_writer::RedactedDiffEntry;
+    let entries = vec![
+      RedactedDiffEntry {
+        path: "llama_server_path".into(),
+        kind: "added",
+        value_yaml: "/opt/llama-server".into(),
+      },
+      RedactedDiffEntry {
+        path: "port_range.start".into(),
+        kind: "changed",
+        value_yaml: "50000".into(),
+      },
+    ];
+    let rendered = render_diff_preview(&entries);
+    let plain = console::strip_ansi_codes(&rendered);
+    assert!(plain.contains("config diff (preview):"));
+    assert!(plain.contains("+ llama_server_path: /opt/llama-server"));
+    assert!(plain.contains("~ port_range.start: 50000"));
+  }
+
+  #[test]
+  fn render_diff_preview_handles_empty() {
+    let rendered = render_diff_preview(&[]);
+    let plain = console::strip_ansi_codes(&rendered);
+    assert!(plain.contains("(no changes)"));
   }
 
   fn no_existing_binary() -> BinaryPresence {

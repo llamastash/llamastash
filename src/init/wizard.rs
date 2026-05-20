@@ -345,7 +345,12 @@ pub async fn run(args: InitArgs, cli: &Cli, config: &Config) -> CliResult {
   // Step 5: smoke launch (Unit 12). Phase 1 + --version probe runs
   // whenever both an install and a downloaded model are present;
   // otherwise we emit an honest "skipped" note.
-  let smoke = run_smoke_step(install.as_ref(), summary.model.as_ref(), &hardware);
+  let smoke = run_smoke_step(
+    install.as_ref(),
+    summary.model.as_ref(),
+    &hardware,
+    !args.json,
+  );
   let smoke_ok = smoke.ok;
   let smoke_note = smoke.note.clone();
   summary.smoke = Some(smoke);
@@ -377,6 +382,7 @@ fn run_smoke_step(
   install: Option<&BinaryInstall>,
   model: Option<&ModelSummary>,
   hardware: &HardwareSnapshot,
+  emit_progress: bool,
 ) -> SmokeSummary {
   let Some(install) = install else {
     return SmokeSummary {
@@ -396,6 +402,10 @@ fn run_smoke_step(
     .and_then(|p| std::fs::metadata(p).ok())
     .map(|m| m.len())
     .unwrap_or(model.total_bytes);
+  let sp = prompts::StepProgress::start_if(
+    emit_progress,
+    "Running smoke probe (llama-server --version + phase-1 launch)",
+  );
   match crate::init::smoke::run_phase_one_and_version(
     &install.path,
     hardware,
@@ -420,12 +430,14 @@ fn run_smoke_step(
           report.binary_version.unwrap_or_else(|| "unknown".into())
         ),
       };
+      sp.success(format!("Smoke probe OK ({note})"));
       SmokeSummary { ok: true, note }
     }
-    Err(failure) => SmokeSummary {
-      ok: false,
-      note: format!("{failure}"),
-    },
+    Err(failure) => {
+      let note = format!("{failure}");
+      sp.fail(format!("Smoke probe failed: {note}"));
+      SmokeSummary { ok: false, note }
+    }
   }
 }
 
@@ -478,6 +490,7 @@ async fn run_install_step(
   hardware: &HardwareSnapshot,
   binary: &BinaryPresence,
 ) -> Result<BinaryInstall, CliExit> {
+  let emit_progress = !args.json;
   // In recommended mode, if the user already has a safe-to-adopt binary
   // on PATH or at a common location, prefer adopting it over running a
   // fresh install. Matches the prior `--yes` behavior.
@@ -488,8 +501,20 @@ async fn run_install_step(
   if prompts::is_recommended(args) && args.install.is_none() {
     if let Some(path) = binary.resolved_path.clone() {
       if crate::init::install::custom_path::is_safe_to_adopt(&path) {
-        return crate::init::install::custom_path::install_from_custom_path(&path)
-          .map_err(install_err_to_exit);
+        let sp = prompts::StepProgress::start_if(
+          emit_progress,
+          format!("Adopting existing llama-server at {}", path.display()),
+        );
+        return match crate::init::install::custom_path::install_from_custom_path(&path) {
+          Ok(install) => {
+            sp.success(format!("Adopted llama-server ({})", install.path.display()));
+            Ok(install)
+          }
+          Err(e) => {
+            sp.fail(format!("Could not adopt {}: {e}", path.display()));
+            Err(install_err_to_exit(e))
+          }
+        };
       }
     }
   }
@@ -497,21 +522,78 @@ async fn run_install_step(
   let choice = prompts::pick_install_method(args, default, binary).await?;
   match choice {
     InstallChoice::Brew => {
-      crate::init::install::brew::install_via_brew().map_err(install_err_to_exit)
+      let sp = prompts::StepProgress::start_if(
+        emit_progress,
+        "Installing llama.cpp via Homebrew (running `brew install --quiet llama.cpp`)",
+      );
+      match crate::init::install::brew::install_via_brew() {
+        Ok(install) => {
+          sp.success(format!(
+            "Installed llama.cpp via Homebrew → {}",
+            install.path.display()
+          ));
+          Ok(install)
+        }
+        Err(e) => {
+          sp.fail(format!("Homebrew install failed: {e}"));
+          Err(install_err_to_exit(e))
+        }
+      }
     }
     InstallChoice::GhReleases => {
       let install_root = crate::util::paths::state_dir()
         .ok_or_else(|| CliExit::new(INIT_ABORTED, "no state dir"))?
         .join("llama-cpp");
-      let pick = gh_releases::fetch_latest_asset(fetch, hardware)
-        .await
-        .map_err(install_err_to_exit)?;
-      gh_releases::install_picked(fetch, &pick, &install_root)
-        .await
-        .map_err(install_err_to_exit)
+      let sp_query = prompts::StepProgress::start_if(
+        emit_progress,
+        "Querying GitHub Releases for the latest llama.cpp asset",
+      );
+      let pick = match gh_releases::fetch_latest_asset(fetch, hardware).await {
+        Ok(p) => {
+          sp_query.success(format!(
+            "Selected GitHub Releases asset `{}` ({})",
+            p.asset_name, p.tag
+          ));
+          p
+        }
+        Err(e) => {
+          sp_query.fail(format!("GitHub Releases query failed: {e}"));
+          return Err(install_err_to_exit(e));
+        }
+      };
+      let sp_install = prompts::StepProgress::start_if(
+        emit_progress,
+        format!("Downloading + verifying + extracting `{}`", pick.asset_name),
+      );
+      match gh_releases::install_picked(fetch, &pick, &install_root).await {
+        Ok(install) => {
+          sp_install.success(format!(
+            "Installed llama-server at {}",
+            install.path.display()
+          ));
+          Ok(install)
+        }
+        Err(e) => {
+          sp_install.fail(format!("GitHub Releases install failed: {e}"));
+          Err(install_err_to_exit(e))
+        }
+      }
     }
     InstallChoice::CustomPath(p) => {
-      crate::init::install::custom_path::install_from_custom_path(&p).map_err(install_err_to_exit)
+      let sp = prompts::StepProgress::start_if(
+        emit_progress,
+        format!("Adopting llama-server binary at {}", p.display()),
+      );
+      match crate::init::install::custom_path::install_from_custom_path(&p) {
+        Ok(install) => {
+          sp.success(format!("Adopted llama-server ({})", install.path.display()));
+          Ok(install)
+        }
+        Err(e) => {
+          sp.fail(format!("Could not adopt {}: {e}", p.display()));
+          Err(install_err_to_exit(e))
+        }
+      }
     }
   }
 }
@@ -545,6 +627,7 @@ async fn run_models_step(
   fetch: &FetchClient,
   hardware: &HardwareSnapshot,
 ) -> Result<ModelsStepResult, CliExit> {
+  let emit_progress = !args.json;
   let bundled = load_bundled();
   // Try the verified remote tier; on any failure, fall back silently
   // to the bundled snapshot but record the failure so doctor can
@@ -553,12 +636,29 @@ async fn run_models_step(
   let (snapshot, remote_snapshot_attempt) = if fetch.is_offline() {
     (bundled, None)
   } else {
+    let sp =
+      prompts::StepProgress::start_if(emit_progress, "Fetching latest model benchmark snapshot");
     match crate::init::benchmark::load_remote(fetch, &bundled).await {
-      Ok(Some(fresh)) => (fresh, Some(true)),
+      Ok(Some(fresh)) => {
+        sp.success(format!(
+          "Loaded benchmark snapshot ({} model entries)",
+          fresh.models.len()
+        ));
+        (fresh, Some(true))
+      }
       // `Ok(None)` means the bundled snapshot carries no remote_url
       // (e.g. a dev build pointed at a private fork) — not a failure.
-      Ok(None) => (bundled, None),
+      Ok(None) => {
+        sp.success(format!(
+          "Using bundled benchmark snapshot ({} entries)",
+          bundled.models.len()
+        ));
+        (bundled, None)
+      }
       Err(e) => {
+        sp.fail(format!(
+          "Remote benchmark snapshot unreachable; falling back to bundled ({e})"
+        ));
         log::info!("init: remote benchmark snapshot fetch failed (using bundled): {e}");
         (bundled, Some(false))
       }
@@ -595,9 +695,18 @@ async fn run_models_step(
     repo_id: repo.clone(),
     pinned_filename,
   };
+  let progress: Option<std::sync::Arc<dyn crate::init::download::DownloadProgress>> =
+    if emit_progress {
+      Some(std::sync::Arc::new(WizardDownloadProgress::new(
+        repo.clone(),
+      )))
+    } else {
+      None
+    };
   let options = crate::init::download::DownloadOptions {
     extension_filter: None,
     estimated_bytes,
+    progress,
   };
   let result = crate::init::download::run_for_init(&spec, fetch, &options).await?;
   Ok(ModelsStepResult {
@@ -608,6 +717,51 @@ async fn run_models_step(
     },
     remote_snapshot_attempt,
   })
+}
+
+/// Bridges hf-hub's per-file lifecycle (resolved → started → finished)
+/// into a single rolling cliclack spinner so the user sees one
+/// "Downloading file X of N" line that updates rather than N
+/// flickering spinners. The spinner is replaced on each file
+/// transition; `Mutex<Option<...>>` accommodates the trait's `&self`
+/// receivers without making `StepProgress` itself `Sync`.
+struct WizardDownloadProgress {
+  repo: String,
+  spinner: std::sync::Mutex<Option<prompts::StepProgress>>,
+}
+
+impl WizardDownloadProgress {
+  fn new(repo: String) -> Self {
+    Self {
+      repo,
+      spinner: std::sync::Mutex::new(None),
+    }
+  }
+}
+
+impl crate::init::download::DownloadProgress for WizardDownloadProgress {
+  fn on_files_resolved(&self, files: &[(String, u64)]) {
+    let total_mib = files.iter().map(|(_, s)| *s as f64).sum::<f64>() / (1024.0 * 1024.0);
+    let _ = cliclack::log::info(format!(
+      "Resolved {} file(s) (~{total_mib:.1} MiB) from `{}`",
+      files.len(),
+      self.repo
+    ));
+  }
+  fn on_file_started(&self, filename: &str, size: u64, index: usize, total: usize) {
+    let mib = size as f64 / (1024.0 * 1024.0);
+    let sp = prompts::StepProgress::start(format!(
+      "Downloading {}/{} `{filename}` (~{mib:.1} MiB)",
+      index + 1,
+      total
+    ));
+    *self.spinner.lock().unwrap() = Some(sp);
+  }
+  fn on_file_finished(&self, filename: &str, index: usize, total: usize) {
+    if let Some(sp) = self.spinner.lock().unwrap().take() {
+      sp.success(format!("Downloaded {}/{} `{filename}`", index + 1, total));
+    }
+  }
 }
 
 async fn run_config_step(
@@ -674,7 +828,7 @@ async fn run_config_step(
   } else {
     let dry = crate::init::config_writer::dry_run_diff(&path, additions_value.clone())
       .map_err(|e| CliExit::prefix(INIT_ABORTED, "init config", e))?;
-    dry.diff_human
+    prompts::render_diff_preview(&dry.diff_json)
   };
   let confirmed = prompts::confirm_config_write(args, &preview_for_confirm).await?;
   if !confirmed {

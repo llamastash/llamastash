@@ -4,6 +4,10 @@ All notable changes to llamadash will be documented in this file. The format fol
 
 ## [Unreleased]
 
+### Fixed
+
+- **`llamadash init` model step no longer fails with "returned zero matching files" on sharded GGUF repos.** Three benchmark-snapshot entries (`Qwen/Qwen2.5-{7B,14B,32B}-Instruct-GGUF`) point at a single unsharded filename, but those repos only host the `q4_k_m` weights split across 2/3/5 shards. The download filter now falls back to the canonical `<stem>-NNNNN-of-NNNNN.<ext>` shard pattern when the exact pinned filename has no match, and pulls every shard. llama.cpp loads the shard set natively from the first shard, so the smoke probe and config write keep working unchanged.
+
 ### Changed
 
 - **`llamadash init` shows live progress for long steps.** Every long-running phase the wizard runs (Homebrew install, GitHub Releases query + download + extract, HuggingFace per-file download, benchmark-snapshot fetch, smoke probe) now drives a `cliclack` spinner with a present-tense narration message that flips to a `✓` success line (or `✗` failure line) on completion. Replaces the previous "blinking cursor for several minutes" UX. Non-TTY runs fall back to static themed `cliclack::log` lines; `--json` mode emits no progress at all so the structured-stdout contract stays byte-stable.

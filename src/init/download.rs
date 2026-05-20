@@ -184,21 +184,45 @@ pub fn resolve_hf_token() -> Result<Option<String>, DownloadError> {
 }
 
 /// Options the wizard / standalone pull both feed in.
-#[derive(Debug, Clone)]
+#[derive(Clone, Default)]
 pub struct DownloadOptions {
   /// `.gguf` by default; the wizard's "skip non-weights" rule.
   pub extension_filter: Option<String>,
   /// Estimated size for the R64 precheck. `None` skips precheck.
   pub estimated_bytes: Option<u64>,
+  /// Optional callback fired after the repo listing + HEAD probes
+  /// resolve, and again at the start/end of each per-file download.
+  /// `None` is the default — `download_repo` runs silently. The
+  /// wizard wires this to its `StepProgress` so users see "Downloading
+  /// foo.gguf (425 MiB) → Downloaded foo.gguf" instead of one long
+  /// silent await.
+  pub progress: Option<std::sync::Arc<dyn DownloadProgress>>,
 }
 
-impl Default for DownloadOptions {
-  fn default() -> Self {
-    Self {
-      extension_filter: Some(".gguf".to_string()),
-      estimated_bytes: None,
-    }
+impl std::fmt::Debug for DownloadOptions {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("DownloadOptions")
+      .field("extension_filter", &self.extension_filter)
+      .field("estimated_bytes", &self.estimated_bytes)
+      .field("progress", &self.progress.as_ref().map(|_| "<callback>"))
+      .finish()
   }
+}
+
+/// Per-file progress hook the wizard can plug into a download so the
+/// user sees what's happening file-by-file. All methods take `&self`
+/// so the implementation can hold a cliclack spinner internally
+/// (cliclack's `ProgressBar` is `Send + Sync` and updates via
+/// interior mutability).
+pub trait DownloadProgress: Send + Sync {
+  /// Fired once after the repo listing + HEAD probes resolve, before
+  /// any byte is downloaded. `files` is `(filename, size_bytes)`.
+  fn on_files_resolved(&self, files: &[(String, u64)]);
+  /// Fired right before each file's download starts.
+  fn on_file_started(&self, filename: &str, size: u64, index: usize, total: usize);
+  /// Fired right after each file's download completes (cached files
+  /// also fire — hf-hub returns the cached path without re-downloading).
+  fn on_file_finished(&self, filename: &str, index: usize, total: usize);
 }
 
 /// Disk-space precheck (R64). Refuses when free < needed + headroom.
@@ -299,6 +323,65 @@ fn build_api(cache_dir: PathBuf) -> Result<Api, DownloadError> {
     .map_err(DownloadError::from)
 }
 
+/// Pick which repo files to download given the pinned filename and the
+/// `.gguf` extension filter. When a pinned filename has no exact match,
+/// expand to the GGUF shard convention `<stem>-NNNNN-of-NNNNN.<ext>`
+/// (e.g. `Qwen/Qwen2.5-7B-Instruct-GGUF` only hosts
+/// `qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf`, never the
+/// unsharded basename that the benchmark snapshot records).
+/// llama.cpp loads sharded GGUFs natively from the first shard, so the
+/// smoke step and config-write step keep working unchanged.
+pub(crate) fn select_files(
+  all_files: &[String],
+  pinned: Option<&str>,
+  ext: Option<&str>,
+) -> Vec<String> {
+  match (pinned, ext) {
+    (Some(name), _) => {
+      if all_files.iter().any(|f| f == name) {
+        return vec![name.to_string()];
+      }
+      let mut shards = expand_shards(name, all_files);
+      shards.sort();
+      shards
+    }
+    (None, Some(ext)) => all_files
+      .iter()
+      .filter(|p| p.ends_with(ext))
+      .cloned()
+      .collect(),
+    (None, None) => all_files.to_vec(),
+  }
+}
+
+fn expand_shards(name: &str, all_files: &[String]) -> Vec<String> {
+  let (stem, ext) = match name.rfind('.') {
+    Some(i) => (&name[..i], &name[i..]),
+    None => (name, ""),
+  };
+  let prefix = format!("{stem}-");
+  all_files
+    .iter()
+    .filter(|f| {
+      f.starts_with(&prefix) && f.ends_with(ext) && {
+        let mid = &f[prefix.len()..f.len() - ext.len()];
+        is_shard_index(mid)
+      }
+    })
+    .cloned()
+    .collect()
+}
+
+fn is_shard_index(s: &str) -> bool {
+  let Some((a, b)) = s.split_once("-of-") else {
+    return false;
+  };
+  !a.is_empty()
+    && !b.is_empty()
+    && a.chars().all(|c| c.is_ascii_digit())
+    && b.chars().all(|c| c.is_ascii_digit())
+}
+
 /// Orchestrator. Lists, filters, prechecks disk, downloads via hf-hub.
 pub async fn download_repo(
   spec: &RepoSpec,
@@ -313,18 +396,12 @@ pub async fn download_repo(
   let repo = api.model(spec.repo_id.clone());
 
   let info = repo.info().await?;
-  let filtered: Vec<String> = info
-    .siblings
-    .into_iter()
-    .map(|s| s.rfilename)
-    .filter(
-      |path| match (&spec.pinned_filename, &options.extension_filter) {
-        (Some(name), _) => path == name,
-        (None, Some(ext)) => path.ends_with(ext.as_str()),
-        (None, None) => true,
-      },
-    )
-    .collect();
+  let all_files: Vec<String> = info.siblings.into_iter().map(|s| s.rfilename).collect();
+  let filtered = select_files(
+    &all_files,
+    spec.pinned_filename.as_deref(),
+    options.extension_filter.as_deref(),
+  );
   if filtered.is_empty() {
     return Err(DownloadError::NoMatchingFiles {
       repo: spec.repo_id.clone(),
@@ -354,9 +431,20 @@ pub async fn download_repo(
 
   precheck_disk(&cache_root, total_size)?;
 
-  let mut paths = Vec::with_capacity(sizes.len());
-  for (filename, _) in &sizes {
+  if let Some(p) = &options.progress {
+    p.on_files_resolved(&sizes);
+  }
+
+  let total_files = sizes.len();
+  let mut paths = Vec::with_capacity(total_files);
+  for (idx, (filename, size)) in sizes.iter().enumerate() {
+    if let Some(p) = &options.progress {
+      p.on_file_started(filename, *size, idx, total_files);
+    }
     let path = repo.get(filename).await?;
+    if let Some(p) = &options.progress {
+      p.on_file_finished(filename, idx, total_files);
+    }
     paths.push(path);
   }
 
@@ -524,6 +612,91 @@ mod tests {
   fn precheck_disk_fails_when_needed_exceeds_available() {
     let err = precheck_disk(Path::new("/"), u64::MAX / 2).unwrap_err();
     assert!(matches!(err, DownloadError::InsufficientDisk { .. }));
+  }
+
+  #[test]
+  fn select_files_exact_pinned_match() {
+    let files = vec![
+      "qwen2.5-7b-instruct-q4_k_m.gguf".to_string(),
+      "qwen2.5-7b-instruct-q8_0.gguf".to_string(),
+      "README.md".to_string(),
+    ];
+    let picked = select_files(
+      &files,
+      Some("qwen2.5-7b-instruct-q4_k_m.gguf"),
+      Some(".gguf"),
+    );
+    assert_eq!(picked, vec!["qwen2.5-7b-instruct-q4_k_m.gguf"]);
+  }
+
+  #[test]
+  fn select_files_expands_sharded_pinned_filename() {
+    // Real layout of `Qwen/Qwen2.5-7B-Instruct-GGUF` — the snapshot
+    // records the unsharded basename but the repo only hosts shards.
+    let files = vec![
+      "qwen2.5-7b-instruct-q4_0-00001-of-00002.gguf".to_string(),
+      "qwen2.5-7b-instruct-q4_0-00002-of-00002.gguf".to_string(),
+      "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf".to_string(),
+      "qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf".to_string(),
+      "README.md".to_string(),
+    ];
+    let picked = select_files(
+      &files,
+      Some("qwen2.5-7b-instruct-q4_k_m.gguf"),
+      Some(".gguf"),
+    );
+    assert_eq!(
+      picked,
+      vec![
+        "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf",
+        "qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf",
+      ]
+    );
+  }
+
+  #[test]
+  fn select_files_expands_5_shard_set() {
+    let files = vec![
+      "qwen2.5-32b-instruct-q4_k_m-00001-of-00005.gguf".to_string(),
+      "qwen2.5-32b-instruct-q4_k_m-00002-of-00005.gguf".to_string(),
+      "qwen2.5-32b-instruct-q4_k_m-00003-of-00005.gguf".to_string(),
+      "qwen2.5-32b-instruct-q4_k_m-00004-of-00005.gguf".to_string(),
+      "qwen2.5-32b-instruct-q4_k_m-00005-of-00005.gguf".to_string(),
+    ];
+    let picked = select_files(&files, Some("qwen2.5-32b-instruct-q4_k_m.gguf"), None);
+    assert_eq!(picked.len(), 5);
+    assert_eq!(
+      picked.first().unwrap(),
+      "qwen2.5-32b-instruct-q4_k_m-00001-of-00005.gguf"
+    );
+  }
+
+  #[test]
+  fn select_files_extension_filter_only() {
+    let files = vec![
+      "weights.gguf".to_string(),
+      "tokenizer.json".to_string(),
+      "README.md".to_string(),
+    ];
+    let picked = select_files(&files, None, Some(".gguf"));
+    assert_eq!(picked, vec!["weights.gguf"]);
+  }
+
+  #[test]
+  fn select_files_returns_empty_when_no_match_and_no_shards() {
+    let files = vec!["completely-different.gguf".to_string()];
+    let picked = select_files(&files, Some("missing.gguf"), Some(".gguf"));
+    assert!(picked.is_empty());
+  }
+
+  #[test]
+  fn is_shard_index_recognises_canonical_pattern() {
+    assert!(is_shard_index("00001-of-00002"));
+    assert!(is_shard_index("00005-of-00005"));
+    assert!(!is_shard_index("00001of00002"));
+    assert!(!is_shard_index("-of-"));
+    assert!(!is_shard_index(""));
+    assert!(!is_shard_index("foo-of-bar"));
   }
 
   #[tokio::test]
