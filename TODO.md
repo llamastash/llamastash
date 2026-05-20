@@ -12,30 +12,38 @@ _None — the four vendoring items shipped 2026-05-19 via [`docs/plans/2026-05-1
 
 ## v2-GA blockers (must clear before v2 GA, not v2 launch)
 
-- [ ] Remeasure per-backend VRAM overhead band on real CUDA / HIP / Vulkan / Metal hardware — [`docs/spikes/2026-05-19-vram-overhead-band.md`](docs/spikes/2026-05-19-vram-overhead-band.md) `todo:` frontmatter. Harness ready: [`scripts/measure-overhead-band.sh`](scripts/measure-overhead-band.sh) + runbook at [`docs/runbooks/measure-vram-overhead-band.md`](docs/runbooks/measure-vram-overhead-band.md)
+- [ ] **In progress**: ~~Remeasure per-backend VRAM overhead band on real CUDA / HIP / Vulkan / Metal hardware — [`docs/spikes/2026-05-19-vram-overhead-band.md`](docs/spikes/2026-05-19-vram-overhead-band.md) `todo:` frontmatter.~~ Harness ready: [`scripts/measure-overhead-band.sh`](scripts/measure-overhead-band.sh) + runbook at [`docs/runbooks/measure-vram-overhead-band.md`](docs/runbooks/measure-vram-overhead-band.md) - Changing catalog of defaults etc [docs/plans/2026-05-19-004-feat-live-hf-snapshot-discovery-plan.md](docs/plans/2026-05-19-004-feat-live-hf-snapshot-discovery-plan.md)
 
 ## v1+ release blockers
 
-- [ ] /ce:review from commit 5f290d7e27fe0204faf5394895c891f6150dce6b onwards except 07ce5abdede7d9c63e2e4352b34de9c8d5566e40 as thats already reviewed.
+- [ ] **In progress**: init should show progress and text descriptions of what its doing (like installing llama.cpp via brew, Installed llama.cpp, downloading models, download complete, etc.) instead of just a blinking line.
+- [ ] **In progress**: Init install method doesnt offer custom path as option.
+- [ ] Models downloaded from HF has cryptic names; we should rename them to something human friendly and show that in the UI instead of the HF ID.
 - [ ] if `--llama-server` is passed, add it as fallback in config file and use it when llama-server is not on path.
 - [ ] Better/colorful/formatted CLI output for commands.
-- [ ] Readme and other docs sync.
 - [ ] best-model (find nicer alias) command. reuse init and just download the best model for current setup/hardware
 - [ ] `R:restart` daemon hotkey.
-- [ ] **Need brainstorm/plan**: Advanced modal - replace free-text editor with typed key/value fields like settings; keys = advanced options for the model, values = current settings; pre-populate from the model's last params and let users edit before launch. Requires a refactor of the advanced modal to support dynamic fields.
+- [ ] **Need brainstorm/plan**: Built in architecture defaults for all popular architectures, a default for all others. Advanced modal - replace free-text editor with typed key/value fields like settings; Its should be populated with architecture defaults for the model. keys = advanced options for the model, values = last settings or architecture default; pre-populate from the model's last params or architecture defaults and let users edit before launch. Requires a refactor of the advanced modal to support dynamic fields. Consider showing this inline in settings pane instead of a modal dialog, unless you think thats not good idea. Also provide a free text fields where user can enter arbitrary extra params that we won't show in the UI, for power users who want to use features we don't yet support in the UI.
 - [ ] **Need brainstorm/plan**: HuggingFace pull TUI dialog with search / sort / pagination (origin: R46, [`docs/plans/2026-05-13-001-feat-llamatui-v1-launcher-plan.md`](docs/plans/2026-05-13-001-feat-llamatui-v1-launcher-plan.md)).
 - [ ] **Need brainstorm/plan**: Proxy router that maps a single endpoint to running models by model name. If the model isn't running, start it; if launch fails, fall back to a running model when one is available; otherwise error. Keep it OpenCode / π compatible so agents and tools can hit one URL.
-- [ ] **Need brainstorm/plan**: Test strategy for Nvidia / AMD / Apple GPU support (origin: R34).
+- [ ] **In progress**: Test strategy for Nvidia / AMD / Apple GPU support (origin: R34).
 - [ ] Skills.
-- [ ] **In progress**: Release setup: website, brew tap, etc. (KDash-style).
-- [ ] Release pipeline like Kdash
+- [ ] Readme and other docs sync.
+- [ ] Audit (binary size, dependencies, test coverage, security, etc.).
+- [ ] **Need brainstorm/plan**: Benchmark against ollama, LMStudio and other popular options.
+- [x] ~~Release setup: website, brew tap, etc. (KDash-style).~~ shipped via [`docs/plans/2026-05-19-003-feat-0.2.0-release-setup-plan.md`](docs/plans/2026-05-19-003-feat-0.2.0-release-setup-plan.md) + [`docs/runbooks/release-0.0.1-bootstrap.md`](docs/runbooks/release-0.0.1-bootstrap.md). Org-admin bootstrap (creating repos, secrets, Pages) still pending — see runbook.
+- [x] ~~Release pipeline like Kdash~~ shipped in `.github/workflows/release.yml` (kdash cd.yml lineage).
+- [ ] Add llamastash to cli.rs https://github.com/zackify/cli.rs/pull/1/changes — Unit 7 cutover step, post-org-bootstrap.
+- [ ] Write `docs/runbooks/secret-rotation.md` — operational steps for rotating `CRATES_IO_TOKEN` + `GH_BUMP_TOKEN`. Referenced from [`docs/runbooks/release-0.0.1-bootstrap.md`](docs/runbooks/release-0.0.1-bootstrap.md) §"Token rotation cadence".
+- [ ] **Need brainstorm/plan**: Migrate release pipeline secrets from PATs to a scoped GitHub App with OIDC. Eliminates `GH_BUMP_TOKEN` rotation and shrinks token blast radius. Deferred from 0.0.1 per the release-setup plan §"Token rotation surface".
 - [ ] **Need brainstorm/plan**: Release blog.
 - [ ] **Need brainstorm/research/plan**:Social promotion — research an approach for max reach.
 
 ## v2+ roadmap
 
+- [ ] **Need brainstorm/plan**: Windows support.
 - [ ] **Need brainstorm/plan**: HTTP and MCP surfaces (origin: R34).
-- [ ] **Need brainstorm/plan**:Anthropic API compatibility.
+- [ ] **Need brainstorm/plan**: Anthropic API compatibility.
 - [ ] **Need brainstorm/plan**: MLX and vLLM if cheap to add.
 - [ ] **Need brainstorm/plan**: Docker-ready packaging.
 - [ ] **Need brainstorm/plan**: Per-PID VRAM attribution via NVML's `nvmlDeviceGetComputeRunningProcesses` (Linux + Windows; AMD / Apple parity depends on upstream surface). Check ROCm and Metal for equivalents. Today the right-pane block title surfaces per-model RAM + CPU%; per-model VRAM is reported only at the host level.
