@@ -183,13 +183,72 @@ impl Quant {
   /// `Unknown(0)` and a hard error. Stays in sync with `label()`
   /// because it walks the same enum.
   pub fn from_label(label: &str) -> Option<Self> {
+    Self::ALL_LABELLED
+      .iter()
+      .copied()
+      .find(|q| q.label() == label)
+  }
+
+  /// Canonical list of labelled variants (everything except `Unknown(_)`).
+  /// Walked by `from_label` and `from_filename`.
+  const ALL_LABELLED: [Quant; 31] = {
     use Quant::*;
-    let all = [
+    [
       F32, F16, BF16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q8_1, Q2_K, Q3_K, Q4_K, Q5_K, Q6_K, Q8_K,
       IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S, IQ1_S, IQ1_M, IQ4_NL, IQ4_XS, TQ1_0, TQ2_0, I8, I16,
       I32, I64, F64,
-    ];
-    all.into_iter().find(|q| q.label() == label)
+    ]
+  };
+
+  /// Best-effort parser that pulls a `Quant` out of a `.gguf` filename
+  /// (or stem). Matches canonical labels at `-` / `.` / start-of-string
+  /// boundaries and folds the llama.cpp K-quant size suffixes
+  /// (`_M` / `_S` / `_L`) back to the base K-quant (so `Q4_K_M` →
+  /// `Q4_K`). Returns `None` when no recognised label appears, or when
+  /// the only quant-looking substring is buried inside a longer word.
+  pub fn from_filename(name: &str) -> Option<Self> {
+    let upper = name.to_ascii_uppercase();
+    let bytes = upper.as_bytes();
+    if bytes.is_empty() {
+      return None;
+    }
+    let is_boundary = |b: u8| matches!(b, b'-' | b'.');
+    let is_k_quant = |q: &Quant| {
+      matches!(
+        q,
+        Quant::Q2_K | Quant::Q3_K | Quant::Q4_K | Quant::Q5_K | Quant::Q6_K | Quant::Q8_K
+      )
+    };
+
+    let mut labels: Vec<Quant> = Self::ALL_LABELLED.to_vec();
+    // Longest first — keeps `IQ3_XXS` from being shadowed if we ever
+    // add a label that's a prefix of another.
+    labels.sort_by_key(|q| std::cmp::Reverse(q.label().len()));
+
+    for start in 0..bytes.len() {
+      if start > 0 && !is_boundary(bytes[start - 1]) {
+        continue;
+      }
+      for q in &labels {
+        let label = q.label().as_bytes();
+        let end = start + label.len();
+        if end > bytes.len() || &bytes[start..end] != label {
+          continue;
+        }
+        if end == bytes.len() || is_boundary(bytes[end]) {
+          return Some(*q);
+        }
+        if is_k_quant(q)
+          && end + 2 <= bytes.len()
+          && bytes[end] == b'_'
+          && matches!(bytes[end + 1], b'M' | b'S' | b'L')
+          && (end + 2 == bytes.len() || is_boundary(bytes[end + 2]))
+        {
+          return Some(*q);
+        }
+      }
+    }
+    None
   }
 
   pub fn label(&self) -> &'static str {
@@ -644,6 +703,96 @@ mod tests {
       .build();
     let m = parse(bytes);
     assert_eq!(m.total_parameters, Some(200));
+  }
+
+  #[test]
+  fn from_filename_canonical_q4_k_m_collapses_to_q4_k() {
+    assert_eq!(
+      Quant::from_filename("Qwen2.5-7B-Instruct-Q4_K_M.gguf"),
+      Some(Quant::Q4_K),
+    );
+  }
+
+  #[test]
+  fn from_filename_is_case_insensitive() {
+    assert_eq!(
+      Quant::from_filename("model-iq3_xxs.gguf"),
+      Some(Quant::IQ3_XXS),
+    );
+  }
+
+  #[test]
+  fn from_filename_matches_q8_0_with_extension() {
+    assert_eq!(
+      Quant::from_filename("weights-Q8_0.gguf"),
+      Some(Quant::Q8_0),
+    );
+  }
+
+  #[test]
+  fn from_filename_matches_f16() {
+    assert_eq!(
+      Quant::from_filename("ggml-model-f16.gguf"),
+      Some(Quant::F16),
+    );
+  }
+
+  #[test]
+  fn from_filename_collapses_q5_k_l_suffix() {
+    assert_eq!(
+      Quant::from_filename("Qwen2.5-7B-Q5_K_L.gguf"),
+      Some(Quant::Q5_K),
+    );
+  }
+
+  #[test]
+  fn from_filename_collapses_q3_k_s_suffix() {
+    assert_eq!(
+      Quant::from_filename("model-Q3_K_S.gguf"),
+      Some(Quant::Q3_K),
+    );
+  }
+
+  #[test]
+  fn from_filename_ambiguous_returns_none() {
+    assert_eq!(Quant::from_filename("model.gguf"), None);
+  }
+
+  #[test]
+  fn from_filename_no_extension_works() {
+    assert_eq!(
+      Quant::from_filename("Qwen2.5-7B-Q4_K"),
+      Some(Quant::Q4_K),
+    );
+  }
+
+  #[test]
+  fn from_filename_empty_input_returns_none() {
+    assert_eq!(Quant::from_filename(""), None);
+  }
+
+  #[test]
+  fn from_filename_word_boundary_rejects_inquant() {
+    // Synthetic: an IQ-quant label buried inside a longer word must
+    // not match because the preceding byte is not a separator.
+    assert_eq!(Quant::from_filename("inquant.gguf"), None);
+  }
+
+  #[test]
+  fn from_filename_rejects_non_kquant_suffix_garbage() {
+    // `Q4_0` is not a K-quant; `_M` after it doesn't collapse and
+    // breaks the word boundary, so the whole match fails.
+    assert_eq!(Quant::from_filename("file-Q4_0_M.gguf"), None);
+  }
+
+  #[test]
+  fn from_filename_picks_first_word_boundary_match() {
+    // A K-quant label appearing after the first separator should be
+    // matched without depending on the file's overall shape.
+    assert_eq!(
+      Quant::from_filename("Llama-3.1-8B-Instruct-IQ4_XS.gguf"),
+      Some(Quant::IQ4_XS),
+    );
   }
 
   #[test]
