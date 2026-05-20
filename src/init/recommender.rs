@@ -397,12 +397,21 @@ pub enum FileFit {
 const FIT_TIGHT_THRESHOLD: f64 = 0.85;
 
 /// Compute a [`FileFit`] for a candidate GGUF. `backend` accepts the
-/// `host_metrics.gpu_backend` strings (`"cuda"`, `"hip"`, `"metal"`,
-/// `"vulkan"`, `"cpu_only"`, `"unknown"`); anything else returns
-/// `Unknown`. `overhead_band_bytes` is the per-backend overhead the
-/// caller pulled out of the bundled benchmark snapshot — kept as a
-/// parameter so this helper stays a pure function and tests don't
-/// have to assemble a full `BenchmarkSnapshot`.
+/// recommender's internal backend keys: `"cuda"`, `"hip"`, `"metal"`,
+/// `"vulkan"`, `"cpu_only"` / `"cpu"`, plus the sentinel values
+/// `"unknown"` / `"unsampled"` which short-circuit to `Unknown`.
+/// Anything else falls through to `Unknown`.
+///
+/// **Note**: these are *not* the wire-format `host_metrics.gpu_backend`
+/// values (`"nvidia"` / `"amd"` / `"apple_metal"` / `"cpu_only"` /
+/// `"unknown"`). The TUI normalises wire labels to recommender keys
+/// via `App::recommender_backend_key` before passing them here; CLI
+/// callers should do the same.
+///
+/// `overhead_band_bytes` is the per-backend overhead the caller pulled
+/// out of the bundled benchmark snapshot — kept as a parameter so this
+/// helper stays a pure function and tests don't have to assemble a
+/// full `BenchmarkSnapshot`.
 pub fn vram_fit_for_file(
   file_size_bytes: u64,
   ctx: u32,
@@ -452,8 +461,9 @@ pub fn vram_fit_for_file(
 
 impl FileFit {
   /// Single-char glyph the file picker renders next to each row.
-  /// Returns an empty string for `Unknown` (R113 — omit the icon
-  /// rather than show fake confidence).
+  /// `Unknown` returns an em-dash `—` (R113 — the picker keeps the
+  /// fit column width stable across rows; a blank slot would shift
+  /// the rest of the line when the sampler is still warming up).
   pub fn glyph(self) -> &'static str {
     match self {
       FileFit::Fit => "✓",

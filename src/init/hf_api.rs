@@ -1,6 +1,8 @@
 //! HuggingFace Hub API client (Unit 3 / R104–R109).
 //!
-//! Two surfaces:
+//! Two surfaces, both routed through [`FetchClient`] so the v2 fetch
+//! contract (HTTPS-only, host allowlist, redirect cap, body cap,
+//! offline branch) gates every metadata request:
 //! - [`search`] hits `GET /api/models` with `search`, `filter=gguf`,
 //!   `sort`, and `limit` query params. Results carry the sort-relevant
 //!   metric, the `pipeline_tag`, tags, and the canonical repo id.
@@ -9,17 +11,16 @@
 //!   so a server-supplied pagination URL can't redirect outside the
 //!   fetch contract's host allowlist (defense in depth — the redirect
 //!   policy already runs `check_url` on every hop).
-//! - [`list_repo_files`] returns the sibling list for a single repo via
-//!   `hf_hub::Api::model(id).info()` — same path `download_repo` uses,
-//!   so the bearer-token + endpoint plumbing is shared.
+//! - [`list_repo_files`] hits `GET /api/models/<repo>/tree/main`, which
+//!   returns per-file `path` + `size` (unlike `hf-hub::Api::model(id).info()`,
+//!   whose `Siblings` struct only carries the filename). Sizes feed the
+//!   picker's hardware-fit indicator (R111) directly.
 //!
-//! Both surfaces route through [`FetchClient`] (search) and `hf-hub`
-//! (per-repo listing). Search calls are deliberately unauthenticated;
-//! the v2 fetch contract forbids opportunistic `Authorization`
-//! headers, and the `/api/models` search endpoint is public anyway.
-//! Private repos may surface in search results but fail to pull from
-//! the existing `download_repo` path; the dialog renders the error
-//! per R117 rather than gating search behind auth.
+//! Search + listing are deliberately unauthenticated; the v2 fetch
+//! contract forbids opportunistic `Authorization` headers, and both
+//! endpoints are public. Private repos may surface in search but fail
+//! to pull from the existing `download_repo` path; the dialog renders
+//! the error per R117 rather than gating browse behind auth.
 
 use serde::Deserialize;
 
@@ -32,9 +33,10 @@ use crate::init::fetch_policy::{check_url, HostAllowlist};
 /// this is treated as a misbehaving endpoint, not a real result.
 pub const SEARCH_BODY_CAP: u64 = 1024 * 1024;
 
-/// Max bytes for the per-repo file listing (`/api/models/<id>`). 256
-/// KiB covers even sharded repos with dozens of siblings.
-#[allow(dead_code)]
+/// Max bytes for the per-repo tree listing (`/api/models/<id>/tree/main`).
+/// 256 KiB covers even sharded repos with dozens of siblings — the
+/// largest GGUF mirrors (Llama 70B Q4_K_M, 30+ shards) come in under
+/// 50 KiB.
 pub const REPO_LIST_BODY_CAP: u64 = 256 * 1024;
 
 /// Default page size; matches R108's target of 20 rows per page.
@@ -103,13 +105,28 @@ pub struct HfSearchPage {
 }
 
 /// One sibling file in an HF repo. `size_bytes` is `None` when the
-/// upstream `RepoInfo` doesn't carry the field — some shards are
-/// missing it; the dialog falls back to a HEAD probe on Confirm to
-/// surface the real total before dispatching the pull.
+/// upstream tree response omits the field (rare — pre-LFS pointer
+/// files in legacy repos). The dialog renders `?` and the hardware-fit
+/// indicator falls back to `FileFit::Unknown` for those rows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HfRepoFile {
   pub filename: String,
   pub size_bytes: Option<u64>,
+}
+
+/// One entry in the `/api/models/<repo>/tree/<rev>` response. Mirrors
+/// the public HF Hub tree schema — `type` is `"file"` / `"directory"`,
+/// `size` is the resolved blob size (LFS pointer files report their
+/// LFS-resolved size here, not the pointer size). `oid`, `lfs`, and
+/// other fields exist in the payload but are not needed for the
+/// picker — `serde` ignores unknown fields by default.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct HfTreeEntry {
+  #[serde(rename = "type")]
+  entry_type: String,
+  path: String,
+  #[serde(default)]
+  size: Option<u64>,
 }
 
 /// Issue an HF Hub search. Cursor-based pagination — pass
@@ -203,10 +220,16 @@ fn parse_next_link(header: &str) -> Option<String> {
   None
 }
 
-/// List the GGUF-relevant sibling files of a single repo. Routes
-/// through the same `hf-hub::Api` build path `download_repo` uses so
-/// the bearer-token / endpoint resolution stays in one place (R65 +
-/// the existing HF carve-out).
+/// List the files of a single repo with their resolved sizes. Hits
+/// `/api/models/<repo>/tree/main` via [`FetchClient`] so the v2 fetch
+/// contract guards the request (cap, allowlist, offline branch) and
+/// the picker's hardware-fit indicator (R111) can read real sizes for
+/// every row. Directories are filtered out — the picker only renders
+/// flat files.
+///
+/// `repo_id` is appended as path segments (`owner` / `name`), so the
+/// `url` crate percent-encodes any path-special characters and the
+/// server can't be tricked into hitting a non-`/api/models/...` path.
 pub async fn list_repo_files(
   fetch: &FetchClient,
   repo_id: &str,
@@ -214,23 +237,42 @@ pub async fn list_repo_files(
   if fetch.is_offline() {
     return Err(ListRepoFilesError::Offline);
   }
-  let cache_root = download::hf_cache_dir().map_err(ListRepoFilesError::download)?;
-  let api = download::build_api(cache_root).map_err(ListRepoFilesError::download)?;
-  let info = api
-    .model(repo_id.to_string())
-    .info()
+  let (owner, name) = parse_repo_id(repo_id)?;
+  let endpoint = endpoint_or_default();
+  let mut url = reqwest::Url::parse(&endpoint)
+    .map_err(|e| ListRepoFilesError::Fetch(FetchError::Transport(format!("URL parse: {e}"))))?;
+  {
+    let mut segs = url.path_segments_mut().map_err(|_| {
+      ListRepoFilesError::Fetch(FetchError::Transport(
+        "HF endpoint is not a base URL".to_string(),
+      ))
+    })?;
+    segs.extend(["api", "models", owner, name, "tree", "main"]);
+  }
+  let entries: Vec<HfTreeEntry> = fetch
+    .get_json(url.as_str(), REPO_LIST_BODY_CAP)
     .await
-    .map_err(|e| ListRepoFilesError::HfHub(e.to_string()))?;
+    .map_err(ListRepoFilesError::Fetch)?;
   Ok(
-    info
-      .siblings
+    entries
       .into_iter()
-      .map(|s| HfRepoFile {
-        filename: s.rfilename,
-        size_bytes: None,
+      .filter(|e| e.entry_type == "file")
+      .map(|e| HfRepoFile {
+        filename: e.path,
+        size_bytes: e.size,
       })
       .collect(),
   )
+}
+
+fn parse_repo_id(repo_id: &str) -> Result<(&str, &str), ListRepoFilesError> {
+  let (owner, name) = repo_id
+    .split_once('/')
+    .ok_or_else(|| ListRepoFilesError::BadRepoId(repo_id.to_string()))?;
+  if owner.is_empty() || name.is_empty() || name.contains('/') {
+    return Err(ListRepoFilesError::BadRepoId(repo_id.to_string()));
+  }
+  Ok((owner, name))
 }
 
 /// Why a `list_repo_files` call failed. Mirrors the variants the
@@ -239,15 +281,20 @@ pub async fn list_repo_files(
 pub enum ListRepoFilesError {
   #[error("network egress is disabled (LLAMASTASH_OFFLINE / --offline)")]
   Offline,
-  #[error("HF auth / cache resolution failed: {0}")]
-  Download(String),
-  #[error("hf-hub: {0}")]
-  HfHub(String),
+  #[error("`{0}` is not an `owner/repo` HuggingFace id")]
+  BadRepoId(String),
+  #[error("fetch: {0}")]
+  Fetch(#[from] FetchError),
 }
 
 impl ListRepoFilesError {
-  fn download(e: download::DownloadError) -> Self {
-    Self::Download(e.to_string())
+  /// Convenience for branches in the dialog that branch on offline /
+  /// transient-vs-permanent without re-matching the inner `FetchError`.
+  pub fn is_offline(&self) -> bool {
+    matches!(
+      self,
+      ListRepoFilesError::Offline | ListRepoFilesError::Fetch(FetchError::Offline)
+    )
   }
 }
 
@@ -374,6 +421,52 @@ mod tests {
     let fetch = FetchClient::offline();
     let r = list_repo_files(&fetch, "owner/repo").await;
     assert!(matches!(r, Err(ListRepoFilesError::Offline)), "got {r:?}");
+    assert!(r.unwrap_err().is_offline());
+  }
+
+  #[tokio::test]
+  async fn list_repo_files_rejects_bad_repo_ids() {
+    let fetch = FetchClient::new(crate::init::fetch::FetchClientConfig::default()).unwrap();
+    for bad in ["", "no-slash", "/", "owner/", "/repo", "a/b/c"] {
+      let r = list_repo_files(&fetch, bad).await;
+      assert!(
+        matches!(r, Err(ListRepoFilesError::BadRepoId(_))),
+        "`{bad}` should be rejected, got {r:?}"
+      );
+    }
+  }
+
+  #[test]
+  fn parse_repo_id_accepts_owner_slash_repo() {
+    assert_eq!(
+      parse_repo_id("Qwen/Qwen2.5-7B-Instruct-GGUF").unwrap(),
+      ("Qwen", "Qwen2.5-7B-Instruct-GGUF")
+    );
+  }
+
+  #[test]
+  fn tree_entry_deserialises_files_and_directories() {
+    // Recorded sample of `/api/models/Qwen/Qwen2.5-7B-Instruct-GGUF/tree/main`.
+    let json = r#"[
+      { "type": "file", "path": "qwen2.5-7b-instruct-q4_k_m.gguf", "size": 4683074336, "oid": "abc", "lfs": { "size": 4683074336, "sha256": "deadbeef", "pointerSize": 134 } },
+      { "type": "file", "path": "config.json", "size": 612, "oid": "def" },
+      { "type": "directory", "path": "subdir" },
+      { "type": "file", "path": "README.md", "size": 8421, "oid": "ghi" }
+    ]"#;
+    let entries: Vec<HfTreeEntry> = serde_json::from_str(json).unwrap();
+    assert_eq!(entries.len(), 4);
+    assert_eq!(entries[0].entry_type, "file");
+    assert_eq!(entries[0].size, Some(4683074336));
+    assert_eq!(entries[2].entry_type, "directory");
+    assert_eq!(entries[2].size, None);
+  }
+
+  #[test]
+  fn tree_entry_tolerates_missing_size() {
+    // Defensive: legacy pre-LFS pointer rows occasionally omit `size`.
+    let json = r#"[{ "type": "file", "path": "pointer.gguf", "oid": "x" }]"#;
+    let entries: Vec<HfTreeEntry> = serde_json::from_str(json).unwrap();
+    assert!(entries[0].size.is_none());
   }
 
   #[test]
