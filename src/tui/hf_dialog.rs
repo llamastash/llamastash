@@ -30,7 +30,9 @@ use crate::init::hf_api::{
 };
 use crate::init::recommender::FileFit;
 use crate::theme::Palette;
+use crate::tui::app::App;
 use crate::tui::input_field::{InputField, InputOutcome};
+use crate::tui::keybindings::{Action as KeyAction, Focus};
 
 /// Three-state modal contract (R105).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -660,8 +662,14 @@ fn format_fetch_error(error: &FetchError) -> String {
 // ============================================================
 
 /// Paint the dialog centred over `area` (matches the
-/// `advanced_panel::render` overlay pattern).
-pub fn render(frame: &mut Frame<'_>, area: Rect, state: &HfDialogState, palette: &Palette) {
+/// `advanced_panel::render` overlay pattern). Takes `app` so the
+/// footer can resolve the live label for every bound key
+/// (`Submit`, `Cancel`, `MoveUp`, `MoveDown`) — a config-side
+/// `keybindings:` rebind flows through to the chip strip.
+pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
+  let Some(state) = app.hf_dialog.as_ref() else {
+    return;
+  };
   let modal = centered_rect(86, 70, area);
   frame.render_widget(Clear, modal);
   crate::tui::render::paint_theme_bg(frame, modal, palette);
@@ -683,16 +691,33 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &HfDialogState, palette:
     ])
     .split(inner);
 
-  render_header(frame, layout[0], state, palette);
+  render_header(frame, layout[0], app, state, palette);
   match state.stage {
     HfStage::Search => render_search_body(frame, layout[1], state, palette),
-    HfStage::FilePicker => render_picker_body(frame, layout[1], state, palette),
-    HfStage::Confirm => render_confirm_body(frame, layout[1], state, palette),
+    HfStage::FilePicker => render_picker_body(frame, layout[1], app, state, palette),
+    HfStage::Confirm => render_confirm_body(frame, layout[1], app, state, palette),
   }
-  render_footer(frame, layout[2], state, palette);
+  render_footer(frame, layout[2], app, state, palette);
 }
 
-fn render_header(frame: &mut Frame<'_>, area: Rect, state: &HfDialogState, palette: &Palette) {
+/// Resolve the live label for an HF dialog binding. Falls back to
+/// the static default if the user has unbound the action entirely.
+fn dialog_label(app: &App, action: KeyAction, fallback: &str) -> String {
+  app
+    .bindings_for(Focus::HfDialog)
+    .iter()
+    .find(|b| b.action == action)
+    .map(|b| b.label.to_string())
+    .unwrap_or_else(|| fallback.to_string())
+}
+
+fn render_header(
+  frame: &mut Frame<'_>,
+  area: Rect,
+  app: &App,
+  state: &HfDialogState,
+  palette: &Palette,
+) {
   let sort_label = match state.sort {
     HfSortKey::Downloads => "↓ downloads",
     HfSortKey::Likes => "♡ likes",
@@ -739,11 +764,13 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, state: &HfDialogState, palet
       muted,
     ));
   }
+  let submit = dialog_label(app, KeyAction::Submit, "Enter");
+  let cancel = dialog_label(app, KeyAction::Cancel, "Esc");
   let lines = vec![
     Line::from(spans),
     Line::from(second),
     Line::from(Span::styled(
-      "Enter on a row drills into files. Esc walks back.",
+      format!("{submit} on a row drills into files. {cancel} walks back."),
       muted,
     )),
   ];
@@ -845,7 +872,13 @@ fn render_search_row(
   ])
 }
 
-fn render_picker_body(frame: &mut Frame<'_>, area: Rect, state: &HfDialogState, palette: &Palette) {
+fn render_picker_body(
+  frame: &mut Frame<'_>,
+  area: Rect,
+  app: &App,
+  state: &HfDialogState,
+  palette: &Palette,
+) {
   let repo = state
     .picker_repo_id
     .as_deref()
@@ -854,6 +887,7 @@ fn render_picker_body(frame: &mut Frame<'_>, area: Rect, state: &HfDialogState, 
     Span::styled("repo: ", palette.label_style()),
     Span::styled(repo.to_string(), palette.text_style()),
   ])];
+  let cancel = dialog_label(app, KeyAction::Cancel, "Esc");
   match &state.picker_load {
     PickerLoad::Idle | PickerLoad::Loading => {
       lines.push(Line::from(Span::styled(
@@ -867,7 +901,7 @@ fn render_picker_body(frame: &mut Frame<'_>, area: Rect, state: &HfDialogState, 
         palette.error_style(),
       )));
       lines.push(Line::from(Span::styled(
-        "Backspace returns to Search.",
+        format!("{cancel} returns to Search."),
         palette.muted_style(),
       )));
     }
@@ -877,7 +911,7 @@ fn render_picker_body(frame: &mut Frame<'_>, area: Rect, state: &HfDialogState, 
         palette.muted_style(),
       )));
       lines.push(Line::from(Span::styled(
-        "Backspace returns to Search.",
+        format!("{cancel} returns to Search."),
         palette.muted_style(),
       )));
     }
@@ -943,6 +977,7 @@ fn render_picker_body(frame: &mut Frame<'_>, area: Rect, state: &HfDialogState, 
 fn render_confirm_body(
   frame: &mut Frame<'_>,
   area: Rect,
+  app: &App,
   state: &HfDialogState,
   palette: &Palette,
 ) {
@@ -973,25 +1008,49 @@ fn render_confirm_body(
     ]),
     Line::from(Span::raw("")),
     Line::from(Span::styled(
-      "Press Enter to confirm — the download enqueues in the status strip.",
+      format!(
+        "Press {} to confirm — the download enqueues in the status strip.",
+        dialog_label(app, KeyAction::Submit, "Enter")
+      ),
       palette.muted_style(),
     )),
     Line::from(Span::styled(
-      "Backspace returns to the file picker.",
+      format!(
+        "{} returns to the file picker.",
+        dialog_label(app, KeyAction::Cancel, "Esc")
+      ),
       palette.muted_style(),
     )),
   ];
   frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
 }
 
-fn render_footer(frame: &mut Frame<'_>, area: Rect, state: &HfDialogState, palette: &Palette) {
+fn render_footer(
+  frame: &mut Frame<'_>,
+  area: Rect,
+  app: &App,
+  state: &HfDialogState,
+  palette: &Palette,
+) {
+  // Bound chords come from the keymap so a config-side
+  // `keybindings:` rebind flows through to the chip strip. The
+  // dialog-internal chords (`o`, `n`, `p`, `e`) aren't actions —
+  // they're component-internal or stage-specific routing — so they
+  // stay as literal labels.
+  let submit = dialog_label(app, KeyAction::Submit, "Enter");
+  let cancel = dialog_label(app, KeyAction::Cancel, "Esc");
+  let up = dialog_label(app, KeyAction::MoveUp, "↑");
+  let down = dialog_label(app, KeyAction::MoveDown, "↓");
+  let arrows = format!("{up}/{down}");
   let hints = match state.stage {
     HfStage::Search if state.input.is_editing() => {
-      "type to search · ↑/↓:row · Enter:open · Esc:stop edit"
+      format!("type to search · {arrows}:row · {submit}:open · {cancel}:stop edit")
     }
-    HfStage::Search => "e:edit · ↑/↓:row · Enter:open · o:sort · n/p:page · Esc:close",
-    HfStage::FilePicker => "↑/↓:file · Enter:select · Esc:back",
-    HfStage::Confirm => "Enter:pull · Esc:back",
+    HfStage::Search => {
+      format!("e:edit · {arrows}:row · {submit}:open · o:sort · n/p:page · {cancel}:close")
+    }
+    HfStage::FilePicker => format!("{arrows}:file · {submit}:select · {cancel}:back"),
+    HfStage::Confirm => format!("{submit}:pull · {cancel}:back"),
   };
   let line = Line::from(Span::styled(hints, palette.muted_style()));
   frame.render_widget(Paragraph::new(line).alignment(Alignment::Right), area);

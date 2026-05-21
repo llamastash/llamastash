@@ -136,8 +136,8 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
       advanced_panel::render(frame, area, state, &palette);
     }
   }
-  if let Some(state) = app.hf_dialog.as_ref() {
-    super::hf_dialog::render(frame, area, state, &palette);
+  if app.hf_dialog.is_some() {
+    super::hf_dialog::render(frame, area, app, &palette);
   }
   if app.show_help {
     help_overlay::render(frame, area, app, &palette);
