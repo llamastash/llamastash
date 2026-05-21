@@ -300,6 +300,7 @@ fn theme_cycle_swaps_palette_without_restart() {
     theme: ThemeName::Macchiato,
     custom_palette: None,
     keymap: KeyMap::default(),
+    ..Default::default()
   });
   pump_input(&mut app, key(KeyCode::Char('t'), KeyModifiers::NONE));
   assert_ne!(app.options.theme, ThemeName::Macchiato);

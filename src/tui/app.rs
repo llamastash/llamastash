@@ -113,6 +113,12 @@ pub struct AppOptions {
   /// (vs. directly on `App`) so it travels through the same
   /// construction path as the theme.
   pub keymap: KeyMap,
+  /// Resolved offline mode for this TUI session. `true` when the
+  /// user passed `--offline` on the CLI or `LLAMASTASH_OFFLINE=1`
+  /// at startup. Threads into the HF dialog's FetchClient + the
+  /// download dispatch so a pull confirmation can't trigger network
+  /// I/O behind the user's back.
+  pub offline: bool,
 }
 
 impl Default for AppOptions {
@@ -121,6 +127,7 @@ impl Default for AppOptions {
       theme: ThemeName::Macchiato,
       custom_palette: None,
       keymap: KeyMap::default(),
+      offline: false,
     }
   }
 }
@@ -230,6 +237,14 @@ pub enum ConfirmAction {
   /// is symlinked into `~/.cache/huggingface`, so a confirmed
   /// delete reclaims the blob bytes too.
   DeleteModel { path: PathBuf, display_name: String },
+  /// `Ctrl+X:cancel download` — abort the currently-active HF
+  /// download. The queue stays intact; the next queued pull is
+  /// promoted on confirm. `friendly_name` is what the popup renders
+  /// so the user reads the same identifier the strip is showing.
+  CancelDownload {
+    repo_id: String,
+    friendly_name: String,
+  },
   /// `Enter:launch` on a model that already has a managed launch
   /// (round-8). v1 supports duplicate launches on fresh ports, but
   /// we ask the user to confirm so a stray Enter doesn't silently
@@ -294,12 +309,15 @@ impl App {
 
   /// Open the HuggingFace pull dialog. Initialises in the Search
   /// stage and snaps focus into [`Focus::HfDialog`] so the per-stage
-  /// key router takes over. `offline` is forwarded so the dialog
-  /// renders the "search disabled" hint immediately when the
-  /// FetchClient is offline.
-  pub fn open_hf_dialog(&mut self, offline: bool) {
+  /// key router takes over. The dialog reads its offline flag from
+  /// [`AppOptions::offline`] (which is itself the runtime-resolved
+  /// `--offline` ∨ `LLAMASTASH_OFFLINE` value) so the "search
+  /// disabled" hint renders immediately and the dialog's spawned
+  /// fetch tasks short-circuit before any HF traffic.
+  pub fn open_hf_dialog(&mut self) {
     if self.hf_dialog.is_none() {
       let ctx = self.hf_hardware_fit_ctx();
+      let offline = self.options.offline || crate::init::fetch::offline_requested(false);
       self.hf_dialog = Some(crate::tui::hf_dialog::HfDialogState::open(offline, ctx));
     }
     self.focus = Focus::HfDialog;
@@ -443,6 +461,22 @@ impl App {
       .iter()
       .find(|b| b.action == action)?;
     Some(format!("{}:{}", b.label, description))
+  }
+
+  /// Resolve the live label (`Esc`, `Enter`, `Ctrl+X`, …) for
+  /// `(focus, action)`, falling back to `fallback` when the action
+  /// is unbound. Used by dialog renderers that want a single-token
+  /// chord label (without a description) so `format!("{label}
+  /// returns to ...")` reads naturally. Both the HF dialog footer
+  /// and the confirm-popup body call this; the helper lives on
+  /// `App` so we have one canonical lookup.
+  pub fn resolve_label(&self, focus: Focus, action: Action, fallback: &str) -> String {
+    self
+      .bindings_for(focus)
+      .iter()
+      .find(|b| b.action == action)
+      .map(|b| b.label.to_string())
+      .unwrap_or_else(|| fallback.to_string())
   }
 
   /// Apply a `list_models` IPC response. The TUI calls this after
@@ -1440,6 +1474,7 @@ mod tests {
       theme: ThemeName::Macchiato,
       custom_palette: Some(custom),
       keymap: KeyMap::default(),
+      ..Default::default()
     });
     let total = ThemeName::iter().count();
     let mut saw_custom = false;

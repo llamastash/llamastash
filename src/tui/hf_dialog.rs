@@ -700,15 +700,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   render_footer(frame, layout[2], app, state, palette);
 }
 
-/// Resolve the live label for an HF dialog binding. Falls back to
-/// the static default if the user has unbound the action entirely.
+/// Thin shim over [`App::resolve_label`] specialised to
+/// [`Focus::HfDialog`] so the call sites below stay compact. The
+/// generic helper lives on `App` so other dialogs that need the
+/// same label-resolution shape don't re-invent it.
 fn dialog_label(app: &App, action: KeyAction, fallback: &str) -> String {
-  app
-    .bindings_for(Focus::HfDialog)
-    .iter()
-    .find(|b| b.action == action)
-    .map(|b| b.label.to_string())
-    .unwrap_or_else(|| fallback.to_string())
+  app.resolve_label(Focus::HfDialog, action, fallback)
 }
 
 fn render_header(
@@ -916,6 +913,33 @@ fn render_picker_body(
       )));
     }
     PickerLoad::Ready => {
+      // Small one-line legend so the fit glyph column is
+      // self-describing (R113). Coloured spans mirror the per-row
+      // styles below so the legend doubles as a visual key. Stays
+      // muted-tinted around the glyphs so it doesn't compete with
+      // the row data.
+      lines.push(Line::from(vec![
+        Span::styled("fit:  ", palette.label_style()),
+        Span::styled(FileFit::Fit.glyph(), palette.success_style()),
+        Span::styled(" fits  ", palette.muted_style()),
+        Span::styled(FileFit::Tight.glyph(), palette.warning_style()),
+        Span::styled(" tight  ", palette.muted_style()),
+        Span::styled(FileFit::Over.glyph(), palette.error_style()),
+        Span::styled(" oversize  ", palette.muted_style()),
+        Span::styled(FileFit::Unknown.glyph(), palette.muted_style()),
+        Span::styled(" unknown", palette.muted_style()),
+      ]));
+      // Check if every row is unselectable (e.g. only incomplete
+      // shard sets) so the user understands why Enter would refuse
+      // and Esc walks back is the only path forward.
+      if !state.picker_rows.iter().any(PickerRow::selectable) {
+        lines.push(Line::from(Span::styled(
+          format!(
+            "no selectable files (every shard set is incomplete). {cancel} returns to Search."
+          ),
+          palette.warning_style(),
+        )));
+      }
       for (idx, row) in state.picker_rows.iter().enumerate() {
         let selected = idx == state.picker_idx;
         let prefix = if selected { "▌ " } else { "  " };

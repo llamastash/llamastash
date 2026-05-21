@@ -386,6 +386,7 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
       app.confirm_dialog = Some(ConfirmAction::RestartDaemon);
     }
     Action::DeleteModel => apply_delete_model(app),
+    Action::CancelDownload => apply_cancel_download(app),
     Action::EnterEdit => {
       // Tab-aware:
       //  - Chat / Embed / Rerank: shift focus into the input buffer
@@ -662,21 +663,69 @@ fn apply_stop_model(app: &mut App) {
   app.confirm_dialog = Some(ConfirmAction::StopModel { launch_id, name });
 }
 
+/// Stage a cancel-download confirmation. Refuses (with a toast) when
+/// no pull is currently active — pressing Ctrl+X on an empty strip
+/// shouldn't bring up a popup with nothing to confirm. The popup
+/// payload mirrors what the strip is showing so the user reads the
+/// same identifier they pressed Ctrl+X over.
+fn apply_cancel_download(app: &mut App) {
+  let Some(active) = app.download_strip.active.as_ref() else {
+    app.show_toast("no active download to cancel");
+    return;
+  };
+  app.confirm_dialog = Some(ConfirmAction::CancelDownload {
+    repo_id: active.repo_id.clone(),
+    friendly_name: active.friendly_name.clone(),
+  });
+}
+
 /// Stage a delete-model confirmation. Refuses (with a toast) when
-/// the focused row is a running managed launch — the user has to
-/// stop the launch first so we don't yank the file out from under
-/// llama-server.
+/// the focused row points at a file something else is actively
+/// reading — a supervised managed launch, an external read-only
+/// `llama-server`, or a row that's still in an Error/Loading/
+/// Launching state with a pending file handle. The toast names the
+/// reason so the user knows whether to wait, stop, or kill the
+/// external owner.
 fn apply_delete_model(app: &mut App) {
   let Some(path) = app.focused_path() else {
     app.show_toast("nothing to delete — focus a model row");
     return;
   };
-  if app.focused_managed().is_some() {
-    app.show_toast("model is running — stop the launch first");
+  if let Some(reason) = delete_refusal_reason(app) {
+    app.show_toast(reason);
     return;
   }
   let display_name = crate::util::paths::model_display_name(&path);
   app.confirm_dialog = Some(ConfirmAction::DeleteModel { path, display_name });
+}
+
+/// Returns the toast message describing why a delete must refuse on
+/// the focused row, or `None` when the delete should be allowed.
+/// Mirrors the chip-rendering rule in `render::focused_row_is_deletable`
+/// so the hint and the keybinding stay in lock-step.
+fn delete_refusal_reason(app: &App) -> Option<&'static str> {
+  use crate::tui::status_icons::SurfaceState;
+  if let Some(managed) = app.focused_managed() {
+    return Some(match managed.state {
+      SurfaceState::Ready | SurfaceState::Loading | SurfaceState::Launching => {
+        "model is running — stop the launch first"
+      }
+      SurfaceState::Error => "launch is in error — stop it first, then delete",
+      // Stopped/NotLaunched routes through the managed-table but is
+      // free to delete; fall through.
+      _ => return None,
+    });
+  }
+  // External (read-only daemon-tracked process). Not in `managed`,
+  // so we walk `external` by path.
+  if app
+    .external
+    .iter()
+    .any(|e| Some(&e.path) == app.focused_path().as_ref())
+  {
+    return Some("model is open in an external process — close it first");
+  }
+  None
 }
 
 /// Perform the actual file removal. Walks the path's parent chain
@@ -685,40 +734,83 @@ fn apply_delete_model(app: &mut App) {
 /// orphan blobs after every "delete". Non-HF paths just unlink the
 /// single file. Returns a human-readable summary suitable for a
 /// toast.
+///
+/// Thin wrapper over [`delete_model_with_cache_root`] that resolves
+/// the live `hf_cache_dir()` — tests pass their own root to exercise
+/// the cache-gate without touching env vars.
 fn delete_model_on_disk(path: &std::path::Path) -> Result<String, std::io::Error> {
+  let cache_root = crate::init::download::hf_cache_dir().ok();
+  delete_model_with_cache_root(path, cache_root.as_deref())
+}
+
+/// Worker for [`delete_model_on_disk`] parameterised on the HF cache
+/// root. Treats `path` as part of the HF cache only when *both* the
+/// directory shape (`models--*/snapshots/<rev>/`) matches *and* the
+/// resolved repo dir lives under `cache_root`. Anything else — a
+/// `models--*` layout outside the cache root (manually rsynced
+/// backup, restored archive, surprise Docker volume), a plain user
+/// path, or a `cache_root = None` build — falls through to a
+/// single-file unlink so a confirmed delete can't recursively rm-rf
+/// an unrelated directory tree.
+fn delete_model_with_cache_root(
+  path: &std::path::Path,
+  cache_root: Option<&std::path::Path>,
+) -> Result<String, std::io::Error> {
   use std::fs;
-  // HF cache layout: `<cache>/models--<owner>--<repo>/snapshots/<rev>/<filename>`
-  // is a symlink into `<cache>/models--<owner>--<repo>/blobs/<sha>`.
-  // Deleting the symlink alone leaves the blob behind. Detect the
-  // pattern by walking up: if `path.parent().parent()` is a
-  // `snapshots` directory whose parent's name starts with `models--`,
-  // this is an HF cache layout and we should remove the whole repo
-  // dir to reclaim space.
-  if let Some(snapshot_dir) = path.parent() {
-    if let Some(snapshots_root) = snapshot_dir.parent() {
-      if snapshots_root.file_name().and_then(|n| n.to_str()) == Some("snapshots") {
-        if let Some(repo_dir) = snapshots_root.parent() {
-          let is_hf_repo = repo_dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n.starts_with("models--"));
-          if is_hf_repo {
-            fs::remove_dir_all(repo_dir)?;
-            return Ok(format!(
-              "deleted HF cache for {}",
-              repo_dir.file_name().and_then(|n| n.to_str()).unwrap_or("?")
-            ));
-          }
-        }
-      }
-    }
+  if let Some(repo_dir) = hf_repo_dir_for_snapshot_path(path, cache_root) {
+    fs::remove_dir_all(&repo_dir)?;
+    return Ok(format!(
+      "deleted HF cache for {}",
+      repo_dir.file_name().and_then(|n| n.to_str()).unwrap_or("?")
+    ));
   }
-  // Plain GGUF on a user path — just unlink the file.
+  // Plain GGUF on a user path (or HF-shaped path outside the cache
+  // root) — just unlink the single file.
   fs::remove_file(path)?;
   Ok(format!(
     "deleted {}",
     path.file_name().and_then(|n| n.to_str()).unwrap_or("file")
   ))
+}
+
+/// Return the `models--<owner>--<repo>` directory the given snapshot
+/// path lives under, but only when the directory shape matches the
+/// HF cache layout *and* the resolved repo dir is inside `cache_root`.
+/// Returns `None` for anything else, including HF-shaped layouts
+/// outside the cache root — those get a single-file unlink in
+/// `delete_model_with_cache_root` rather than a recursive removal.
+/// Carved out as a pure helper so tests can pin the gate without
+/// constructing the rest of the dispatch chain.
+fn hf_repo_dir_for_snapshot_path(
+  path: &std::path::Path,
+  cache_root: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
+  let snapshot_dir = path.parent()?;
+  let snapshots_root = snapshot_dir.parent()?;
+  if snapshots_root.file_name().and_then(|n| n.to_str()) != Some("snapshots") {
+    return None;
+  }
+  let repo_dir = snapshots_root.parent()?;
+  let is_hf_repo = repo_dir
+    .file_name()
+    .and_then(|n| n.to_str())
+    .is_some_and(|n| n.starts_with("models--"));
+  if !is_hf_repo {
+    return None;
+  }
+  // Refuse to treat a `models--*/snapshots/*/file` layout as an HF
+  // cache when the resolved repo dir is *not* inside the configured
+  // HF cache root. Falling through to single-file unlink is the
+  // conservative behaviour for unfamiliar layouts.
+  let cache_root = cache_root?;
+  let cache_root_canonical = cache_root
+    .canonicalize()
+    .unwrap_or_else(|_| cache_root.to_path_buf());
+  let candidate = repo_dir.canonicalize().unwrap_or_else(|_| repo_dir.into());
+  if !candidate.starts_with(&cache_root_canonical) {
+    return None;
+  }
+  Some(candidate)
 }
 
 /// Apply a confirmed [`ConfirmAction`] — dispatches the writer
@@ -772,6 +864,33 @@ fn apply_confirmed(app: &mut App, action: ConfirmAction, writer: Option<&mpsc::S
       }
       Err(e) => app.show_toast(format!("delete failed: {e}")),
     },
+    ConfirmAction::CancelDownload { .. } => {
+      use crate::tui::download_strip::CancelOutcome;
+      match app.download_strip.cancel_active() {
+        CancelOutcome::NothingActive => {
+          // Race between the popup being staged and the active pull
+          // finishing on its own. No-op + low-key toast so the user
+          // understands the confirm landed.
+          app.show_toast("download already finished");
+        }
+        CancelOutcome::Cancelled {
+          cancelled_friendly_name,
+          next,
+          ..
+        } => {
+          app.show_toast(format!("cancelled: {cancelled_friendly_name}"));
+          if let Some(promoted) = next {
+            app.download_strip.install_active(&promoted);
+            let abort = spawn_download_task(
+              promoted,
+              app.options.offline,
+              app.download_strip.event_tx.clone(),
+            );
+            app.download_strip.active_abort = Some(abort);
+          }
+        }
+      }
+    }
     ConfirmAction::LaunchDuplicate {
       model_path,
       ctx,
@@ -1576,6 +1695,7 @@ pub async fn launch(
   theme: crate::theme::ThemeName,
   custom_palette: Option<crate::theme::Palette>,
   keymap: crate::tui::keybindings::KeyMap,
+  offline: bool,
   socket: &Path,
   daemon_opts: Option<crate::daemon::DaemonOptions>,
 ) -> Result<()> {
@@ -1583,6 +1703,7 @@ pub async fn launch(
     theme,
     custom_palette,
     keymap,
+    offline,
   });
   run(app, socket.to_path_buf(), daemon_opts).await
 }
@@ -1704,12 +1825,13 @@ pub fn drain_rerank_pending(app: &mut App) {
   }
 }
 
-/// Open the HuggingFace pull dialog (`Shift+D` in `Focus::List`).
-/// `LLAMASTASH_OFFLINE` flips the dialog into offline mode so the
-/// search bar renders the disabled-search hint immediately.
+/// Open the HuggingFace pull dialog (`d` in `Focus::List`).
+/// Offline state is resolved inside `App::open_hf_dialog` from
+/// `app.options.offline` ∨ `LLAMASTASH_OFFLINE`, so the call site
+/// stays a single line and the runtime offline value travels through
+/// `AppOptions`.
 fn apply_open_hf_dialog(app: &mut App) {
-  let offline = crate::init::fetch::offline_requested(false);
-  app.open_hf_dialog(offline);
+  app.open_hf_dialog();
 }
 
 /// Outcome of dispatching a key into the HF dialog. The router
@@ -1879,7 +2001,12 @@ fn enqueue_hf_pull(app: &mut App, repo: String, row: crate::tui::hf_dialog::Pick
   if app.download_strip.active.is_none() {
     if let Some(promoted) = app.download_strip.promote_next() {
       app.download_strip.install_active(&promoted);
-      spawn_download_task(promoted, app.download_strip.event_tx.clone());
+      let abort = spawn_download_task(
+        promoted,
+        app.options.offline,
+        app.download_strip.event_tx.clone(),
+      );
+      app.download_strip.active_abort = Some(abort);
     }
   }
 }
@@ -1922,13 +2049,27 @@ fn probe_cached_pull(repo_id: &str, filenames: &[String]) -> Option<std::path::P
 /// the requested files, so this path only fires for real downloads —
 /// the cache-hit short-circuit (R116) lives next to the queue
 /// enqueue, not inside the spawn.
+///
+/// Returns the spawned task's [`tokio::task::AbortHandle`] so the
+/// `Ctrl+X:cancel download` flow can interrupt an in-flight pull
+/// mid-chunk. Aborting drops hf-hub's stream future, leaves any
+/// partial blob in the cache, and (because the task never sends
+/// `Finished` / `Error` after the abort point) lets the strip's
+/// own state transition drive the next promotion.
+///
+/// `offline` is the runtime-resolved offline flag (CLI `--offline` ∨
+/// `LLAMASTASH_OFFLINE`). Passing `true` ensures the spawned task's
+/// FetchClient short-circuits before it issues any HF traffic — the
+/// pull surfaces as a clean offline error in the strip rather than
+/// silently bypassing the user's chosen network policy.
 fn spawn_download_task(
   pull: crate::tui::download_strip::QueuedPull,
+  offline: bool,
   tx: tokio::sync::mpsc::UnboundedSender<crate::tui::download_strip::DownloadEvent>,
-) {
+) -> tokio::task::AbortHandle {
   use crate::init::download::{DownloadOptions, RepoSpec};
   use crate::init::fetch;
-  tokio::spawn(async move {
+  let handle = tokio::spawn(async move {
     let spec = match RepoSpec::parse(&format!(
       "{}:{}",
       pull.repo_id,
@@ -1943,8 +2084,9 @@ fn spawn_download_task(
         return;
       }
     };
-    let fetch_client = fetch::build_with_offline_check(false, fetch::FetchClientConfig::default())
-      .unwrap_or_else(|_| fetch::FetchClient::offline());
+    let fetch_client =
+      fetch::build_with_offline_check(offline, fetch::FetchClientConfig::default())
+        .unwrap_or_else(|_| fetch::FetchClient::offline());
     let progress = std::sync::Arc::new(StripProgress {
       tx: tx.clone(),
       repo_id: pull.repo_id.clone(),
@@ -1972,13 +2114,20 @@ fn spawn_download_task(
       }
     }
   });
+  handle.abort_handle()
 }
 
 /// DownloadProgress shim that forwards hf-hub callbacks into the
 /// download strip's mpsc. Tracks per-file sizes resolved at the
 /// listing pass so per-file finish callbacks aggregate cleanly
-/// across multi-shard pulls. hf-hub doesn't expose byte-level
-/// callbacks today — the strip's "% done" steps per shard boundary.
+/// across multi-shard pulls. Byte-level progress flows via
+/// `on_bytes_progress` — driven by `HfHubProgressAdapter` bridging
+/// hf-hub's `Progress::update(size)` chunk callbacks into our
+/// cumulative `(filename, bytes_in_file)` shape. The `bytes_total`
+/// clamp inside [`StripProgressInner`] protects against the
+/// (theoretical) race where a late `update` chunk lands after the
+/// per-file `Finished` callback — `bytes_done.saturating_add` is
+/// clamped to `bytes_total` so the strip can't overshoot 100%.
 struct StripProgress {
   tx: tokio::sync::mpsc::UnboundedSender<crate::tui::download_strip::DownloadEvent>,
   repo_id: String,
@@ -2077,9 +2226,10 @@ fn spawn_hf_search(state: &mut crate::tui::hf_dialog::HfDialogState, cursor: Opt
   let query = state.input.buffer().to_string();
   let sort = state.sort;
   let seq = state.query_seq;
+  let offline = state.offline;
   state.mark_dispatched();
   tokio::spawn(async move {
-    let fetch_client = build_tui_fetch_client();
+    let fetch_client = build_tui_fetch_client(offline);
     let evt = match hf_api::search(&fetch_client, &query, sort, cursor.as_deref()).await {
       Ok(page) => crate::tui::hf_dialog::HfDialogEvent::SearchResults { seq, page },
       Err(e) => crate::tui::hf_dialog::HfDialogEvent::SearchFailed { seq, error: e },
@@ -2093,8 +2243,9 @@ fn spawn_hf_search(state: &mut crate::tui::hf_dialog::HfDialogState, cursor: Opt
 fn spawn_hf_list_repo_files(state: &mut crate::tui::hf_dialog::HfDialogState, repo_id: String) {
   use crate::init::hf_api;
   let tx = state.event_tx.clone();
+  let offline = state.offline;
   tokio::spawn(async move {
-    let fetch_client = build_tui_fetch_client();
+    let fetch_client = build_tui_fetch_client(offline);
     let evt = match hf_api::list_repo_files(&fetch_client, &repo_id).await {
       Ok(files) => crate::tui::hf_dialog::HfDialogEvent::RepoFiles {
         repo_id: repo_id.clone(),
@@ -2111,12 +2262,15 @@ fn spawn_hf_list_repo_files(state: &mut crate::tui::hf_dialog::HfDialogState, re
 
 /// Build the dialog's FetchClient. Mirrors the wizard's resolution:
 /// honour `LLAMASTASH_OFFLINE`, fall back to a fresh client with the
-/// default config (host allowlist + redirect cap + body cap). On
-/// builder error we hand back an offline stub so the dialog's
-/// network calls fail with a clean typed error instead of panicking.
-fn build_tui_fetch_client() -> crate::init::fetch::FetchClient {
+/// default config (host allowlist + redirect cap + body cap). The
+/// `offline` arg threads the runtime's resolved offline state
+/// (CLI `--offline` ∨ `LLAMASTASH_OFFLINE`) so the dialog can't make
+/// network calls behind the user's back. On builder error we hand
+/// back an offline stub so the dialog's network calls fail with a
+/// clean typed error instead of panicking.
+fn build_tui_fetch_client(offline: bool) -> crate::init::fetch::FetchClient {
   use crate::init::fetch::{build_with_offline_check, FetchClient, FetchClientConfig};
-  build_with_offline_check(false, FetchClientConfig::default())
+  build_with_offline_check(offline, FetchClientConfig::default())
     .unwrap_or_else(|_| FetchClient::offline())
 }
 
@@ -2197,7 +2351,12 @@ pub fn drain_download_strip(app: &mut App) {
     };
     if let Some(pull) = next_pull {
       app.download_strip.install_active(&pull);
-      spawn_download_task(pull, app.download_strip.event_tx.clone());
+      let abort = spawn_download_task(
+        pull,
+        app.options.offline,
+        app.download_strip.event_tx.clone(),
+      );
+      app.download_strip.active_abort = Some(abort);
     }
   }
 }
@@ -2285,13 +2444,16 @@ mod tests {
   }
 
   #[test]
-  fn delete_model_removes_full_hf_repo_dir_when_snapshot_layout_detected() {
+  fn delete_model_removes_full_hf_repo_dir_when_under_cache_root() {
     // Mimic the HF cache layout the deleter is supposed to recognise:
-    //   models--owner--repo/
+    //   <cache_root>/models--owner--repo/
     //     blobs/<sha>
     //     snapshots/main/file.gguf -> ../../blobs/<sha>
-    let dir = std::env::temp_dir().join(format!("llamastash-delete-hf-{}", std::process::id()));
-    let repo_dir = dir.join("models--owner--repo");
+    // The cache-root gate is explicit here so we don't rely on the
+    // ambient `HF_HOME` env var (which would race other tests).
+    let cache_root =
+      std::env::temp_dir().join(format!("llamastash-delete-hf-cache-{}", std::process::id()));
+    let repo_dir = cache_root.join("models--owner--repo");
     let blobs = repo_dir.join("blobs");
     let snap = repo_dir.join("snapshots").join("main");
     std::fs::create_dir_all(&blobs).unwrap();
@@ -2303,10 +2465,127 @@ mod tests {
     #[cfg(not(unix))]
     std::fs::write(&symlink_target, b"blob").unwrap();
     assert!(symlink_target.exists());
-    let summary = delete_model_on_disk(&symlink_target).expect("delete must succeed");
+    let summary = delete_model_with_cache_root(&symlink_target, Some(&cache_root))
+      .expect("delete must succeed");
     assert!(summary.contains("HF cache"), "got `{summary}`");
     assert!(!repo_dir.exists(), "the whole repo dir should be gone");
+    let _ = std::fs::remove_dir_all(&cache_root);
+  }
+
+  #[test]
+  fn delete_model_only_unlinks_when_hf_layout_lives_outside_cache_root() {
+    // Same `models--owner--repo/snapshots/main/file.gguf` shape but
+    // *not* under the configured HF cache root (think rsynced backup
+    // or restored archive). The deleter must refuse to recursively
+    // remove that tree and instead only unlink the single file.
+    let outside =
+      std::env::temp_dir().join(format!("llamastash-delete-outside-{}", std::process::id()));
+    let repo_dir = outside.join("models--owner--repo");
+    let snap = repo_dir.join("snapshots").join("main");
+    std::fs::create_dir_all(&snap).unwrap();
+    let file = snap.join("file.gguf");
+    std::fs::write(&file, b"weights").unwrap();
+    let other = snap.join("other.gguf");
+    std::fs::write(&other, b"other").unwrap();
+    // Point the cache root somewhere unrelated; the deleter must
+    // fall through to single-file unlink.
+    let unrelated_cache = std::env::temp_dir().join("llamastash-unrelated-cache");
+    let _ = std::fs::create_dir_all(&unrelated_cache);
+    let summary =
+      delete_model_with_cache_root(&file, Some(&unrelated_cache)).expect("delete must succeed");
+    assert!(
+      !summary.contains("HF cache"),
+      "non-cache HF-shaped layout must not be treated as HF cache: `{summary}`"
+    );
+    assert!(!file.exists(), "the target file should be unlinked");
+    assert!(
+      other.exists(),
+      "sibling file in the same snapshot dir must NOT have been removed"
+    );
+    assert!(
+      repo_dir.exists(),
+      "the repo dir itself must NOT have been removed"
+    );
+    let _ = std::fs::remove_dir_all(&outside);
+    let _ = std::fs::remove_dir_all(&unrelated_cache);
+  }
+
+  #[test]
+  fn delete_model_with_no_cache_root_only_unlinks() {
+    // Defense in depth: when `hf_cache_dir()` returns an error (HOME
+    // unresolvable, exotic build target), the deleter must still
+    // safely unlink a single file rather than recursing.
+    let dir =
+      std::env::temp_dir().join(format!("llamastash-delete-no-cache-{}", std::process::id()));
+    let repo_dir = dir.join("models--owner--repo");
+    let snap = repo_dir.join("snapshots").join("main");
+    std::fs::create_dir_all(&snap).unwrap();
+    let file = snap.join("file.gguf");
+    std::fs::write(&file, b"weights").unwrap();
+    let summary =
+      delete_model_with_cache_root(&file, None).expect("no-cache-root delete must succeed");
+    assert!(!summary.contains("HF cache"), "got `{summary}`");
+    assert!(!file.exists());
+    assert!(
+      repo_dir.exists(),
+      "with no cache root we must NOT remove the repo dir"
+    );
     let _ = std::fs::remove_dir_all(&dir);
+  }
+
+  #[test]
+  fn ctrl_d_on_error_managed_model_refuses_with_toast() {
+    use crate::tui::app::ManagedRow;
+    use crate::tui::status_icons::SurfaceState;
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.managed = vec![ManagedRow {
+      launch_id: "L-error".into(),
+      path: PathBuf::from("/m/qwen.gguf"),
+      port: 41100,
+      state: SurfaceState::Error,
+      rss_bytes: None,
+      cpu_pct: None,
+    }];
+    app.go_top();
+    pump_input(&mut app, key(KeyCode::Char('d'), KeyModifiers::CONTROL));
+    assert!(
+      app.confirm_dialog.is_none(),
+      "error-state row must not stage delete"
+    );
+    let toast = app.toast_message().unwrap_or("");
+    assert!(
+      toast.contains("error"),
+      "expected error-specific toast, got `{toast}`"
+    );
+  }
+
+  #[test]
+  fn ctrl_d_on_external_model_refuses_with_toast() {
+    use crate::tui::app::ManagedRow;
+    use crate::tui::status_icons::SurfaceState;
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    // External rows live on `app.external`, not `app.managed`.
+    app.external = vec![ManagedRow {
+      launch_id: "ext-1".into(),
+      path: PathBuf::from("/m/qwen.gguf"),
+      port: 41200,
+      state: SurfaceState::External,
+      rss_bytes: None,
+      cpu_pct: None,
+    }];
+    app.go_top();
+    pump_input(&mut app, key(KeyCode::Char('d'), KeyModifiers::CONTROL));
+    assert!(
+      app.confirm_dialog.is_none(),
+      "external-process row must not stage delete"
+    );
+    let toast = app.toast_message().unwrap_or("");
+    assert!(
+      toast.contains("external"),
+      "expected external-specific toast, got `{toast}`"
+    );
   }
 
   #[test]
@@ -2375,6 +2654,135 @@ mod tests {
       app.hf_dialog.as_ref().map(|d| d.sort),
       Some(HfSortKey::Likes)
     );
+  }
+
+  #[test]
+  fn opening_hf_dialog_inherits_offline_flag_from_app_options() {
+    // Regression: app.options.offline must propagate into the dialog
+    // state at open time so the dialog renders "search disabled" and
+    // its spawned fetch tasks short-circuit before HF traffic. A
+    // false `app.options.offline` plus `LLAMASTASH_OFFLINE` unset
+    // means the dialog stays online; a true value forces offline.
+    let mut online = App::new(crate::tui::app::AppOptions {
+      offline: false,
+      ..Default::default()
+    });
+    online.open_hf_dialog();
+    assert_eq!(
+      online.hf_dialog.as_ref().map(|d| d.offline),
+      Some(false),
+      "online AppOptions must not flip the dialog into offline mode"
+    );
+
+    let mut offline = App::new(crate::tui::app::AppOptions {
+      offline: true,
+      ..Default::default()
+    });
+    offline.open_hf_dialog();
+    assert_eq!(
+      offline.hf_dialog.as_ref().map(|d| d.offline),
+      Some(true),
+      "offline AppOptions must flip the dialog into offline mode"
+    );
+  }
+
+  #[test]
+  fn ctrl_x_with_no_active_download_toasts_refusal() {
+    let mut app = App::new(Default::default());
+    pump_input(&mut app, key(KeyCode::Char('x'), KeyModifiers::CONTROL));
+    assert!(
+      app.confirm_dialog.is_none(),
+      "idle strip must not stage cancel confirm"
+    );
+    let toast = app.toast_message().unwrap_or("");
+    assert!(
+      toast.contains("no active download"),
+      "expected refusal toast, got `{toast}`"
+    );
+  }
+
+  #[test]
+  fn ctrl_x_with_active_download_stages_cancel_confirm() {
+    use crate::tui::app::ConfirmAction;
+    use crate::tui::download_strip::QueuedPull;
+    use crate::tui::hf_dialog::PickerRow;
+    let mut app = App::new(Default::default());
+    let pull = QueuedPull {
+      repo_id: "owner/repo".into(),
+      friendly_name: "owner/repo :model.gguf".into(),
+      row: PickerRow::Single {
+        filename: "model.gguf".into(),
+        size_bytes: Some(123),
+      },
+    };
+    app.download_strip.enqueue(pull);
+    let promoted = app.download_strip.promote_next().unwrap();
+    app.download_strip.install_active(&promoted);
+    pump_input(&mut app, key(KeyCode::Char('x'), KeyModifiers::CONTROL));
+    match app
+      .confirm_dialog
+      .as_ref()
+      .expect("cancel popup must stage")
+    {
+      ConfirmAction::CancelDownload {
+        repo_id,
+        friendly_name,
+      } => {
+        assert_eq!(repo_id, "owner/repo");
+        assert!(friendly_name.contains("model.gguf"));
+      }
+      other => panic!("expected CancelDownload, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn confirmed_cancel_download_clears_active_and_keeps_queue() {
+    // Confirm flow: stage the cancel popup, press Enter, then assert
+    // the active slot is empty + the queued pull stayed in line.
+    // (The queued pull is auto-promoted by apply_confirmed; with no
+    // tokio runtime here we just verify the strip state.)
+    use crate::tui::download_strip::QueuedPull;
+    use crate::tui::hf_dialog::PickerRow;
+    let mut app = App::new(Default::default());
+    for (repo, file) in [("a/active", "active.gguf"), ("b/queued", "queued.gguf")] {
+      app.download_strip.enqueue(QueuedPull {
+        repo_id: repo.into(),
+        friendly_name: format!("{repo} :{file}"),
+        row: PickerRow::Single {
+          filename: file.into(),
+          size_bytes: Some(1),
+        },
+      });
+    }
+    let promoted = app.download_strip.promote_next().unwrap();
+    app.download_strip.install_active(&promoted);
+    // Stage the popup, then confirm with `y` (named cancel keys + y
+    // are the confirmation chord per `handle_key`).
+    pump_input(&mut app, key(KeyCode::Char('x'), KeyModifiers::CONTROL));
+    assert!(app.confirm_dialog.is_some());
+    // The confirm dispatch spawns the next pull through tokio. We
+    // can't run tokio here, so use a current-thread runtime to drive
+    // the dispatch synchronously.
+    let rt = tokio::runtime::Builder::new_current_thread()
+      .enable_all()
+      .build()
+      .unwrap();
+    rt.block_on(async {
+      pump_input(&mut app, key(KeyCode::Char('y'), KeyModifiers::NONE));
+    });
+    assert!(app.confirm_dialog.is_none(), "popup must close on confirm");
+    let toast = app.toast_message().unwrap_or("");
+    assert!(
+      toast.contains("cancelled"),
+      "expected cancelled toast, got `{toast}`"
+    );
+    // The next pull was promoted, so active is now `b/queued`.
+    let active = app
+      .download_strip
+      .active
+      .as_ref()
+      .expect("queued pull must have been promoted");
+    assert_eq!(active.repo_id, "b/queued");
   }
 
   #[test]

@@ -191,10 +191,12 @@ async fn handle_tui(cli: &Cli, config: &crate::config::Config) -> CliResult {
   // resolve options is non-fatal: the writer task falls back to
   // `from_defaults` and logs.
   let daemon_opts = daemon::build_options(None, None, cli, config).ok();
+  let offline = crate::init::fetch::offline_requested(false);
   match crate::tui::events::launch(
     config.theme,
     resolve_custom_palette(config),
     keymap,
+    offline,
     &socket,
     daemon_opts,
   )
@@ -262,6 +264,7 @@ async fn render_snapshot(
     theme: config.theme,
     custom_palette: resolve_custom_palette(config),
     keymap: resolve_keymap(config),
+    offline: crate::init::fetch::offline_requested(false),
   });
   if let Ok(body) = client.call("list_models", None).await {
     app.ingest_list_models(&body);

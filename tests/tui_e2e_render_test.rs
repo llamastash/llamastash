@@ -57,6 +57,7 @@ fn seeded_dashboard_app() -> App {
     theme: ThemeName::Macchiato,
     custom_palette: None,
     keymap: KeyMap::default(),
+    ..Default::default()
   });
   app.daemon_connected = true;
   app.daemon_info = DaemonInfo {

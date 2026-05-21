@@ -91,20 +91,27 @@ impl InputField {
   }
 
   fn handle_key_editing(&mut self, key: KeyEvent) -> InputOutcome {
+    // Modifier policy:
+    // - `Esc`, `Enter`, `Backspace` accept only the bare key. A
+    //   modified variant (`Ctrl+Enter`, `Shift+Enter`, `Ctrl+Esc`,
+    //   …) is a chord — pass through so the action layer can route
+    //   it (e.g. `Shift+Enter → Action::InsertNewline`).
+    // - Printable `Char` accepts `SHIFT` only (capitals). `CONTROL`,
+    //   `ALT`, `SUPER`/`META`, and the kitty-protocol `HYPER` are
+    //   reserved for chorded shortcuts and must pass through.
+    let bare = key.modifiers.is_empty();
+    let char_allowed = (key.modifiers - KeyModifiers::SHIFT).is_empty();
     match key.code {
-      KeyCode::Esc => {
+      KeyCode::Esc if bare => {
         self.editing = false;
         InputOutcome::Handled
       }
-      KeyCode::Enter => InputOutcome::Submit,
-      KeyCode::Backspace => {
+      KeyCode::Enter if bare => InputOutcome::Submit,
+      KeyCode::Backspace if bare => {
         self.buffer.pop();
         InputOutcome::Handled
       }
-      KeyCode::Char(c)
-        if !key.modifiers.contains(KeyModifiers::CONTROL)
-          && !key.modifiers.contains(KeyModifiers::ALT) =>
-      {
+      KeyCode::Char(c) if char_allowed => {
         self.buffer.push(c);
         InputOutcome::Handled
       }
@@ -113,12 +120,19 @@ impl InputField {
   }
 
   fn handle_key_resting(&mut self, key: KeyEvent) -> InputOutcome {
-    match (key.code, key.modifiers) {
-      (KeyCode::Char('e'), m) if m.is_empty() => {
+    // Resting mode is strictly unmodified — `Ctrl+E` is a chord
+    // (reserved for the action layer); only bare `e` enters edit.
+    // Bare `Esc` on a non-empty buffer clears it; everything else
+    // falls through so the caller's keymap fires.
+    if !key.modifiers.is_empty() {
+      return InputOutcome::PassThrough;
+    }
+    match key.code {
+      KeyCode::Char('e') => {
         self.editing = true;
         InputOutcome::Handled
       }
-      (KeyCode::Esc, _) if !self.buffer.is_empty() => {
+      KeyCode::Esc if !self.buffer.is_empty() => {
         self.buffer.clear();
         InputOutcome::Handled
       }
@@ -270,6 +284,84 @@ mod tests {
     let outcome = field.handle_key(key_with(KeyCode::Char('d'), KeyModifiers::CONTROL));
     assert_eq!(outcome, InputOutcome::PassThrough);
     assert_eq!(field.buffer(), "");
+  }
+
+  #[test]
+  fn editing_super_meta_chars_pass_through() {
+    // Cmd-style chords delivered by kitty / WezTerm protocols must
+    // pass through so the action layer can dispatch them. The field
+    // only accepts plain printable + SHIFT (capital letters).
+    let mut field = InputField::new();
+    field.enter_edit();
+    for m in [
+      KeyModifiers::SUPER,
+      KeyModifiers::ALT,
+      KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    ] {
+      let outcome = field.handle_key(key_with(KeyCode::Char('w'), m));
+      assert_eq!(
+        outcome,
+        InputOutcome::PassThrough,
+        "modifier {m:?} on a char must pass through"
+      );
+    }
+    assert_eq!(field.buffer(), "", "no chord should land in the buffer");
+  }
+
+  #[test]
+  fn editing_shift_char_is_typed_as_capital() {
+    // SHIFT is the one modifier that must NOT pass through — it
+    // carries the capital-letter signal that the field is meant to
+    // type. Without this, capitals would route to the action layer
+    // instead of the buffer.
+    let mut field = InputField::new();
+    field.enter_edit();
+    let outcome = field.handle_key(key_with(KeyCode::Char('Q'), KeyModifiers::SHIFT));
+    assert_eq!(outcome, InputOutcome::Handled);
+    assert_eq!(field.buffer(), "Q");
+  }
+
+  #[test]
+  fn editing_modified_esc_and_enter_pass_through() {
+    // `Ctrl+Esc` / `Shift+Enter` are chords, not plain edit gestures.
+    // They must pass so a bound action (e.g. Action::InsertNewline on
+    // Shift+Enter) fires.
+    let mut field = InputField::new();
+    field.enter_edit();
+    field.set_text("hi");
+    field.enter_edit();
+    assert_eq!(
+      field.handle_key(key_with(KeyCode::Esc, KeyModifiers::CONTROL)),
+      InputOutcome::PassThrough
+    );
+    assert!(
+      field.is_editing(),
+      "modified Esc must NOT exit edit mode (it's a chord)"
+    );
+    assert_eq!(
+      field.handle_key(key_with(KeyCode::Enter, KeyModifiers::CONTROL)),
+      InputOutcome::PassThrough,
+      "Ctrl+Enter must pass through so the action layer can handle it"
+    );
+    // Plain Shift+Enter is still a chord — Submit is the bare Enter
+    // gesture. Action::InsertNewline owns Shift+Enter at the action
+    // layer.
+    assert_eq!(
+      field.handle_key(key_with(KeyCode::Enter, KeyModifiers::SHIFT)),
+      InputOutcome::PassThrough,
+      "Shift+Enter must pass so Action::InsertNewline can fire"
+    );
+  }
+
+  #[test]
+  fn resting_modified_esc_passes_through() {
+    // A stray `Ctrl+Esc` / `Shift+Esc` on a resting buffer must not
+    // silently wipe the contents — those are chords reserved for the
+    // action layer (or no-ops). Only bare `Esc` clears.
+    let mut field = InputField::with_text("hello");
+    let outcome = field.handle_key(key_with(KeyCode::Esc, KeyModifiers::CONTROL));
+    assert_eq!(outcome, InputOutcome::PassThrough);
+    assert_eq!(field.buffer(), "hello", "modified Esc must NOT clear");
   }
 
   #[test]

@@ -29,6 +29,23 @@ use crate::tui::hf_dialog::PickerRow;
 /// flow to logs" guidance.
 pub const ERROR_LINGER: Duration = Duration::from_secs(5);
 
+/// Outcome of [`DownloadStripState::cancel_active`] — fold the
+/// "active vs idle" branch into a single returned value so callers
+/// (event dispatch, tests) read one source of truth.
+#[derive(Debug)]
+pub enum CancelOutcome {
+  /// No active pull; the cancel was a no-op.
+  NothingActive,
+  /// The active pull was aborted. `cancelled_friendly_name` is what
+  /// the caller surfaces in the success toast. `next` is the queued
+  /// pull (if any) the caller should now spawn.
+  Cancelled {
+    cancelled_repo_id: String,
+    cancelled_friendly_name: String,
+    next: Option<QueuedPull>,
+  },
+}
+
 /// A pull queued from the dialog's Confirm action. `friendly_name`
 /// is what the strip shows mid-flight (R115); `repo_id` + `row`
 /// drive the actual `download_repo` call.
@@ -95,6 +112,12 @@ pub struct DownloadStripState {
   /// consumes this once to toast + select the matching list-pane
   /// row, then clears it.
   pub pending_cache_hit: Option<std::path::PathBuf>,
+  /// Abort handle for the tokio task currently writing to the cache.
+  /// Held next to `active` so `Ctrl+X:cancel download` can stop the
+  /// in-flight pull without touching the FIFO queue. Cleared on every
+  /// terminal event (Finished / Error / AlreadyCached / explicit
+  /// cancel) so stale handles never accumulate.
+  pub active_abort: Option<tokio::task::AbortHandle>,
 }
 
 impl Default for DownloadStripState {
@@ -107,6 +130,7 @@ impl Default for DownloadStripState {
       event_rx: rx,
       event_tx: tx,
       pending_cache_hit: None,
+      active_abort: None,
     }
   }
 }
@@ -190,6 +214,7 @@ impl DownloadStripState {
       return None;
     }
     self.active = None;
+    self.active_abort = None;
     self.last_error = None;
     self.promote_next()
   }
@@ -201,6 +226,7 @@ impl DownloadStripState {
       return None;
     }
     self.active = None;
+    self.active_abort = None;
     self.last_error = Some((message, Instant::now()));
     self.promote_next()
   }
@@ -219,10 +245,34 @@ impl DownloadStripState {
     if let Some(active) = self.active.as_ref() {
       if active.repo_id == repo_id {
         self.active = None;
+        self.active_abort = None;
       }
     }
     self.pending_cache_hit = Some(cached_path);
     self.promote_next()
+  }
+
+  /// Cancel the currently-active pull. Aborts the spawned download
+  /// task (so hf-hub stops writing to the cache mid-chunk), clears
+  /// the active slot + its abort handle, and returns the next queued
+  /// pull for the caller to spawn. Returns `None` when nothing was
+  /// active — caller should toast in that case.
+  ///
+  /// Queue ordering: the queued tail stays intact. Pressing Ctrl+X
+  /// again once the next pull promotes will cancel that one too.
+  pub fn cancel_active(&mut self) -> CancelOutcome {
+    let Some(active) = self.active.take() else {
+      return CancelOutcome::NothingActive;
+    };
+    if let Some(handle) = self.active_abort.take() {
+      handle.abort();
+    }
+    let next = self.promote_next();
+    CancelOutcome::Cancelled {
+      cancelled_repo_id: active.repo_id,
+      cancelled_friendly_name: active.friendly_name,
+      next,
+    }
   }
 
   /// Construct the [`ActivePull`] shell that's filled in by the
@@ -239,8 +289,18 @@ impl DownloadStripState {
   }
 }
 
-/// Paint the 1-line strip into `area`.
-pub fn render(frame: &mut Frame<'_>, area: Rect, state: &DownloadStripState, palette: &Palette) {
+/// Paint the 1-line strip into `area`. `cancel_hint` (when supplied)
+/// renders to the right of the progress text so the `Ctrl+X:cancel`
+/// chip is discoverable without opening the help overlay. Caller
+/// resolves the live key label off the keymap so a config rebind
+/// flows through.
+pub fn render(
+  frame: &mut Frame<'_>,
+  area: Rect,
+  state: &DownloadStripState,
+  cancel_hint: Option<&str>,
+  palette: &Palette,
+) {
   if let Some(active) = state.active.as_ref() {
     let percent = if active.bytes_total > 0 {
       (active.bytes_done as f64 / active.bytes_total as f64 * 100.0) as u32
@@ -265,7 +325,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &DownloadStripState, pal
     } else {
       format!(" · +{} queued", state.queue.len())
     };
-    let line = Line::from(vec![
+    let mut spans = vec![
       Span::styled("⬇ ", palette.label_style()),
       Span::styled(active.friendly_name.clone(), palette.text_style()),
       Span::raw("  "),
@@ -275,8 +335,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &DownloadStripState, pal
       Span::styled(" · ", palette.muted_style()),
       Span::styled(throughput, palette.label_style()),
       Span::styled(queue_tail, palette.muted_style()),
-    ]);
-    frame.render_widget(Paragraph::new(line), area);
+    ];
+    if let Some(hint) = cancel_hint {
+      spans.push(Span::styled("  · ", palette.muted_style()));
+      spans.push(Span::styled(hint.to_string(), palette.warning_style()));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
     return;
   }
   if let Some(err) = state.lingering_error() {
@@ -402,6 +466,93 @@ mod tests {
     strip.apply_already_cached("owner/repo", path.clone());
     assert!(strip.active.is_none());
     assert_eq!(strip.pending_cache_hit.as_ref(), Some(&path));
+  }
+
+  #[test]
+  fn cancel_active_on_idle_strip_returns_nothing_active() {
+    let mut strip = DownloadStripState::default();
+    match strip.cancel_active() {
+      CancelOutcome::NothingActive => {}
+      other => panic!("expected NothingActive, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn cancel_active_aborts_promotes_next_and_returns_friendly_name() {
+    // Two pulls queued; cancel the active one and assert the second
+    // is returned for the caller to spawn. The cancelled repo id
+    // matches what the popup confirmed against so toasts stay honest.
+    let mut strip = DownloadStripState::default();
+    strip.enqueue(make_pull("a/b", "a.gguf", Some(100)));
+    strip.enqueue(make_pull("c/d", "c.gguf", Some(200)));
+    let first = strip.promote_next().unwrap();
+    strip.install_active(&first);
+    match strip.cancel_active() {
+      CancelOutcome::Cancelled {
+        cancelled_repo_id,
+        cancelled_friendly_name,
+        next,
+      } => {
+        assert_eq!(cancelled_repo_id, "a/b");
+        assert!(cancelled_friendly_name.contains("a.gguf"));
+        let next = next.expect("c/d must be returned for the caller to spawn");
+        assert_eq!(next.repo_id, "c/d");
+      }
+      other => panic!("expected Cancelled, got {other:?}"),
+    }
+    assert!(strip.active.is_none(), "active slot must be cleared");
+    assert!(
+      strip.active_abort.is_none(),
+      "abort handle must be cleared so a later cancel doesn't abort the wrong task"
+    );
+  }
+
+  #[test]
+  fn cancel_active_with_empty_queue_clears_active_and_returns_no_next() {
+    let mut strip = DownloadStripState::default();
+    strip.enqueue(make_pull("solo/repo", "solo.gguf", Some(123)));
+    let pull = strip.promote_next().unwrap();
+    strip.install_active(&pull);
+    match strip.cancel_active() {
+      CancelOutcome::Cancelled {
+        cancelled_repo_id,
+        next,
+        ..
+      } => {
+        assert_eq!(cancelled_repo_id, "solo/repo");
+        assert!(next.is_none(), "empty queue → no next pull");
+      }
+      other => panic!("expected Cancelled, got {other:?}"),
+    }
+    assert!(!strip.is_active());
+  }
+
+  #[test]
+  fn finished_event_clears_abort_handle_too() {
+    // Regression: a Finished / Error event must drop the active
+    // abort handle alongside the active slot, otherwise a later
+    // Ctrl+X would try to abort a tokio task that has already
+    // completed (a no-op, but indicates a state-machine bug).
+    let mut strip = DownloadStripState::default();
+    strip.enqueue(make_pull("a/b", "a.gguf", None));
+    let p = strip.promote_next().unwrap();
+    strip.install_active(&p);
+    // Simulate "we just spawned a task" by parking a fake abort
+    // handle. Using a freshly-aborted handle so no real task leaks.
+    let placeholder = tokio::runtime::Builder::new_current_thread()
+      .enable_all()
+      .build()
+      .unwrap()
+      .block_on(async {
+        let h = tokio::spawn(async {});
+        h.abort_handle()
+      });
+    strip.active_abort = Some(placeholder);
+    let _ = strip.apply_finished("a/b");
+    assert!(
+      strip.active_abort.is_none(),
+      "abort handle survived Finished"
+    );
   }
 
   #[test]

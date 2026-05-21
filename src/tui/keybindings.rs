@@ -131,6 +131,13 @@ pub enum Action {
   /// to `Ctrl+D` in [`Focus::List`]; refuses (with a toast) when
   /// the focused row is a running managed launch.
   DeleteModel,
+  /// Cancel the currently-active HF download after confirmation.
+  /// Bound to `Ctrl+X` everywhere it makes sense (List + RightPane)
+  /// so the download strip's chip is reachable from either side of
+  /// the dashboard. Queued pulls behind the active one stay in the
+  /// queue — a second `Ctrl+X` cancels whichever pull was promoted
+  /// next. No-op (toast) when no pull is active.
+  CancelDownload,
   /// Jump focus to the Logs tab in the right pane. No-op (with a
   /// toast) when the focused model isn't running, since Logs is
   /// only reachable for live launches.
@@ -483,6 +490,18 @@ const LIST_BINDINGS: &[Binding] = &[
     label: "Ctrl+D",
     description: "delete model",
   },
+  // Ctrl+X cancels the currently-active HF download after a confirm
+  // popup. Queued downloads keep their place; the user presses Ctrl+X
+  // again on the next promoted pull. Refusal-on-idle is handled in
+  // `apply_cancel_download` so the binding is uniform and the chip
+  // strip on the download line is the discoverability surface.
+  Binding {
+    key: KeyCode::Char('x'),
+    mods: KeyModifiers::CONTROL,
+    action: Action::CancelDownload,
+    label: "Ctrl+X",
+    description: "cancel download",
+  },
 ];
 
 /// HF pull dialog (R104). The per-stage routing (Search / FilePicker
@@ -796,6 +815,16 @@ const RIGHT_PANE_BINDINGS: &[Binding] = &[
     action: Action::FocusSettingsTab,
     label: "S",
     description: "settings",
+  },
+  // Mirror LIST_BINDINGS so Ctrl+X cancels the active download from
+  // either pane. `apply_cancel_download` gates idle / non-active
+  // states so the binding stays uniform across focuses.
+  Binding {
+    key: KeyCode::Char('x'),
+    mods: KeyModifiers::CONTROL,
+    action: Action::CancelDownload,
+    label: "Ctrl+X",
+    description: "cancel download",
   },
 ];
 
@@ -1165,6 +1194,7 @@ impl Action {
     ("kill_daemon", Action::KillDaemon),
     ("restart_daemon", Action::RestartDaemon),
     ("delete_model", Action::DeleteModel),
+    ("cancel_download", Action::CancelDownload),
     ("focus_logs_tab", Action::FocusLogsTab),
     ("focus_chat_tab", Action::FocusChatTab),
     ("focus_settings_tab", Action::FocusSettingsTab),

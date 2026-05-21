@@ -114,23 +114,30 @@ fn describe(action: &ConfirmAction) -> (&'static str, String) {
     ConfirmAction::DeleteModel { display_name, .. } => (
       "Delete model",
       format!(
-        "Delete `{display_name}` from disk? This removes the GGUF file (and the
-         HF snapshot blobs if it's part of a cached repo)."
+        "Delete `{display_name}` from disk?\n\n\
+         If the file lives in the HuggingFace cache (`~/.cache/huggingface/hub/\
+         models--<owner>--<repo>/snapshots/<rev>/<file>`), the entire repo \
+         directory — every revision, every shard, every blob — is removed to \
+         reclaim cache space. Otherwise just the single GGUF file is unlinked."
+      ),
+    ),
+    ConfirmAction::CancelDownload { friendly_name, .. } => (
+      "Cancel download",
+      format!(
+        "Cancel the active pull `{friendly_name}`? Any partial file in the HF \
+         cache stays where it is. Queued pulls behind this one keep their \
+         place; press Ctrl+X again on the next promoted pull to cancel it too."
       ),
     ),
   }
 }
 
-/// Pull just the key label off the confirm popup's `(focus, action)`
-/// binding, falling back to a literal default when the user has
-/// unbound the action entirely.
+/// Thin shim over [`App::resolve_label`] specialised to
+/// [`Focus::ConfirmPopup`] so the per-line key chips below stay
+/// compact. Falls back to a literal default when the user has
+/// unbound the action entirely so the popup still reads sensibly.
 fn keymap_label(app: &App, action: KeyAction, fallback: &str) -> String {
-  app
-    .bindings_for(Focus::ConfirmPopup)
-    .iter()
-    .find(|b| b.action == action)
-    .map(|b| b.label.to_string())
-    .unwrap_or_else(|| fallback.to_string())
+  app.resolve_label(Focus::ConfirmPopup, action, fallback)
 }
 
 fn centred(area: Rect, w: u16, h: u16) -> Rect {

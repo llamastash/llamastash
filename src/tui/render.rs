@@ -23,7 +23,7 @@ use ratatui::Frame;
 
 use crate::theme::Palette;
 use crate::tui::app::App;
-use crate::tui::keybindings::Focus;
+use crate::tui::keybindings::{Action, Focus};
 use crate::tui::{
   advanced_panel, confirm_overlay, help_bar, help_overlay, host_stats_pane, info_pane, list_pane,
   logo_pane, right_pane,
@@ -122,7 +122,21 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
       height: 1,
       ..chunks[idx]
     };
-    super::download_strip::render(frame, strip_area, &app.download_strip, &palette);
+    // Surface the cancel-download chip only while a pull is actually
+    // active — the lingering-error / queue-promoting interstitials
+    // can't be cancelled because they're not consuming bytes.
+    let cancel_hint = if app.download_strip.active.is_some() {
+      app.hint(Focus::List, Action::CancelDownload)
+    } else {
+      None
+    };
+    super::download_strip::render(
+      frame,
+      strip_area,
+      &app.download_strip,
+      cancel_hint.as_deref(),
+      &palette,
+    );
     idx += 1;
   }
   render_body(frame, chunks[idx], app, &palette);
@@ -354,7 +368,8 @@ fn build_models_title<'a>(
     list_pane::FilterTitle::Inactive
   };
   let on_running = focused_row_is_running(app, rows);
-  let hints = build_models_hints(app, filter_active, on_running);
+  let deletable = focused_row_is_deletable(app, rows);
+  let hints = build_models_hints(app, filter_active, on_running, deletable);
   list_pane::TitleInputs {
     total: app.models.len(),
     area_width,
@@ -368,8 +383,12 @@ fn build_models_title<'a>(
 /// title bar. Order matters: the first chip is never dropped under
 /// budget pressure, so put the most important keystroke first
 /// (`Enter:apply` while filtering, `Enter:launch` otherwise).
-fn build_models_hints(app: &App, filter_active: bool, on_running: bool) -> Vec<String> {
-  use crate::tui::keybindings::Action;
+fn build_models_hints(
+  app: &App,
+  filter_active: bool,
+  on_running: bool,
+  deletable: bool,
+) -> Vec<String> {
   let mut out: Vec<String> = Vec::with_capacity(7);
   if filter_active {
     // While the filter is being typed only the apply/clear keys are
@@ -416,12 +435,15 @@ fn build_models_hints(app: &App, filter_active: bool, on_running: bool) -> Vec<S
         out.push(h);
       }
     }
-    // Delete-model chip is gated to non-running rows: deleting an
-    // in-flight launch's GGUF would yank the file out from under
-    // llama-server. The keybinding still fires on a running row
-    // (it toasts "stop the launch first") — the chip just stays
-    // hidden so we don't tempt the user toward a refusal.
-    if app.focused_name().is_some() && !on_running {
+    // Delete-model chip is gated to *idle* rows only — see
+    // [`focused_row_is_deletable`] for the exact rule. Running
+    // (Ready / Loading / Launching), Error, and External rows hide
+    // the chip so we don't tempt the user toward a refusal or a
+    // delete that would crash an out-of-process llama-server. The
+    // keybinding still fires on those rows (it toasts the reason it
+    // refused) so muscle memory works — the chip is purely the
+    // discovery surface.
+    if app.focused_name().is_some() && deletable {
       if let Some(h) = app.hint(Focus::List, Action::DeleteModel) {
         out.push(h);
       }
@@ -435,7 +457,6 @@ fn build_models_hints(app: &App, filter_active: bool, on_running: bool) -> Vec<S
 /// back to a static `/` glyph if the user has unbound the action
 /// (the chip still hints at the filter feature even without a key).
 fn models_filter_chip(app: &App) -> String {
-  use crate::tui::keybindings::Action;
   app
     .hint(Focus::List, Action::OpenFilter)
     .unwrap_or_else(|| "/:filter".to_string())
@@ -451,6 +472,29 @@ fn focused_row_is_running(app: &App, rows: &[list_pane::ListRow]) -> bool {
       state,
       SurfaceState::Ready | SurfaceState::Loading | SurfaceState::Launching
     ),
+    _ => false,
+  }
+}
+
+/// True when the focused row points at a model that's safe to delete
+/// from disk — i.e. nothing is currently reading the file. Idle
+/// states are `NotLaunched` (never launched in this session) and
+/// `Stopped` (gracefully terminated). Everything else (Launching,
+/// Loading, Ready, Error, External) keeps the file pinned by a
+/// process we'd otherwise crash, so the `Ctrl+D` hint chip hides
+/// and the keybinding refuses with a toast.
+///
+/// `Error` is included in the blocked set because the user's reading
+/// of "non-error" is: a failed-to-launch row still has a managed
+/// entry that may hold a file lock, and surfacing delete on the same
+/// row as "Error" reads as "retry by deleting" — wrong UX shape for
+/// a v1 surface.
+fn focused_row_is_deletable(app: &App, rows: &[list_pane::ListRow]) -> bool {
+  use crate::tui::status_icons::SurfaceState;
+  match rows.get(app.list_cursor) {
+    Some(list_pane::ListRow::Model { state, .. }) => {
+      matches!(state, SurfaceState::NotLaunched | SurfaceState::Stopped)
+    }
     _ => false,
   }
 }
@@ -558,6 +602,7 @@ mod tests {
       theme: ThemeName::Latte,
       custom_palette: None,
       keymap: KeyMap::default(),
+      ..Default::default()
     });
     // Force the Models pane into its populated path so the body cell
     // we probe is inside a real list area, not the empty-state hint.
@@ -590,6 +635,7 @@ mod tests {
       theme: ThemeName::Macchiato,
       custom_palette: None,
       keymap: KeyMap::default(),
+      ..Default::default()
     });
     let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
     let mut app_mut = app;
@@ -611,6 +657,7 @@ mod tests {
       theme: ThemeName::Mono,
       custom_palette: None,
       keymap: KeyMap::default(),
+      ..Default::default()
     });
     let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
     let mut app_mut = app;
@@ -634,6 +681,7 @@ mod tests {
       theme: ThemeName::Latte,
       custom_palette: None,
       keymap: KeyMap::default(),
+      ..Default::default()
     });
     app.show_help = true;
     let mut term = Terminal::new(TestBackend::new(140, 40)).unwrap();
@@ -662,6 +710,7 @@ mod tests {
       theme: ThemeName::Mono,
       custom_palette: None,
       keymap: KeyMap::default(),
+      ..Default::default()
     });
     app.show_help = true;
     let mut term = Terminal::new(TestBackend::new(140, 40)).unwrap();
@@ -754,7 +803,7 @@ mod tests {
     // keeps the headline action visible.
     let app = App::new(AppOptions::default());
     let hints = build_models_hints(
-      &app, /*filter_active=*/ false, /*on_running=*/ true,
+      &app, /*filter_active=*/ false, /*on_running=*/ true, /*deletable=*/ false,
     );
     let stop_at = hints
       .iter()
@@ -777,7 +826,7 @@ mod tests {
     // path keys remain so the strip stays uncluttered.
     let app = App::new(AppOptions::default());
     let hints = build_models_hints(
-      &app, /*filter_active=*/ false, /*on_running=*/ false,
+      &app, /*filter_active=*/ false, /*on_running=*/ false, /*deletable=*/ true,
     );
     assert!(!hints.iter().any(|h| h.contains("stop")), "{hints:?}");
     assert!(!hints.iter().any(|h| h.contains(":url")), "{hints:?}");
@@ -786,18 +835,19 @@ mod tests {
   }
 
   #[test]
-  fn delete_chip_appears_only_on_non_running_focused_model_rows() {
+  fn delete_chip_appears_only_when_focused_row_is_deletable() {
     use crate::discovery::{DiscoveredModel, ModelSource};
     use std::path::PathBuf;
     // No focused row → chip hidden.
     let empty_app = App::new(AppOptions::default());
-    let empty_hints = build_models_hints(&empty_app, false, false);
+    let empty_hints = build_models_hints(&empty_app, false, false, false);
     assert!(
       !empty_hints.iter().any(|h| h.contains("delete")),
       "no focused name = no delete chip: {empty_hints:?}"
     );
 
-    // Focused row + not running → chip appears.
+    // Focused row + deletable=true (NotLaunched / Stopped) → chip
+    // appears.
     let mut focused_app = App::new(AppOptions::default());
     focused_app.models = vec![DiscoveredModel {
       path: PathBuf::from("/m/qwen.gguf"),
@@ -808,17 +858,62 @@ mod tests {
       split_siblings: Vec::new(),
     }];
     focused_app.go_top();
-    let resting_hints = build_models_hints(&focused_app, false, false);
+    let deletable_hints = build_models_hints(&focused_app, false, false, true);
     assert!(
-      resting_hints.iter().any(|h| h.contains("delete")),
-      "non-running focused row must surface delete: {resting_hints:?}"
+      deletable_hints.iter().any(|h| h.contains("delete")),
+      "deletable focused row must surface delete chip: {deletable_hints:?}"
     );
 
-    // Focused row + running → chip hidden.
-    let running_hints = build_models_hints(&focused_app, false, true);
+    // Same focused row but deletable=false → chip hidden.
+    let non_deletable = build_models_hints(&focused_app, false, false, false);
     assert!(
-      !running_hints.iter().any(|h| h.contains("delete")),
-      "running row must hide delete: {running_hints:?}"
+      !non_deletable.iter().any(|h| h.contains("delete")),
+      "non-deletable row must hide delete chip: {non_deletable:?}"
     );
+  }
+
+  #[test]
+  fn focused_row_is_deletable_matches_idle_states_only() {
+    use crate::tui::list_pane::ListRow;
+    use crate::tui::status_icons::SurfaceState;
+    use std::path::PathBuf;
+    fn model_row(state: SurfaceState) -> ListRow {
+      ListRow::Model {
+        path: PathBuf::from("/m/qwen.gguf"),
+        name: "qwen".into(),
+        arch: String::new(),
+        quant: String::new(),
+        native_ctx: None,
+        weights_bytes: None,
+        mode_hint: String::new(),
+        favorite: false,
+        state,
+        port: None,
+        launch_id: None,
+      }
+    }
+    let app = App::new(AppOptions::default());
+    // Idle states allow delete.
+    for s in [SurfaceState::NotLaunched, SurfaceState::Stopped] {
+      let rows = vec![model_row(s)];
+      assert!(
+        focused_row_is_deletable(&app, &rows),
+        "{s:?} should be deletable"
+      );
+    }
+    // In-use states refuse delete.
+    for s in [
+      SurfaceState::Launching,
+      SurfaceState::Loading,
+      SurfaceState::Ready,
+      SurfaceState::Error,
+      SurfaceState::External,
+    ] {
+      let rows = vec![model_row(s)];
+      assert!(
+        !focused_row_is_deletable(&app, &rows),
+        "{s:?} must block delete"
+      );
+    }
   }
 }

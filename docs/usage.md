@@ -393,7 +393,8 @@ These are the defaults. Override any binding via the `keybindings:` block in `co
 | `Tab` / `Shift+Tab` | Move focus across panes (arrows / `h` / `l` do the same) |
 | `Shift+M` / `Shift+L` / `Shift+C` / `Shift+S` | Jump focus to Models / Logs / Chat / Settings respectively. `L` and `C` only fire when the focused model is running. |
 | `d` | Open the HuggingFace pull dialog (Models list focus only — search + sort + paginate, download via the pinned status strip) |
-| `Ctrl+D` | Delete the focused model from disk (non-running rows only — opens a confirmation popup) |
+| `Ctrl+D` | Delete the focused model from disk (idle rows only: `NotLaunched` / `Stopped` — opens a confirmation popup; HF-cache models remove the entire `models--<owner>--<repo>` directory to reclaim blob bytes) |
+| `Ctrl+X` | Cancel the currently-active HF download (any focus; opens a confirmation popup; queued pulls stay in line — press again on the next promoted pull) |
 
 ### HuggingFace pull dialog (`Focus::HfDialog`, `d` from the Models list)
 
@@ -401,13 +402,14 @@ Three-stage modal: **Search → File picker → Confirm**. Search runs live agai
 
 | Key | Action |
 |---|---|
-| (alphanumerics / Backspace) | Edit the search query in the Search stage |
+| `e` | Enter edit mode on the search field (auto-enabled on dialog open). Resting Esc clears the buffer; a further Esc closes the dialog. |
+| (alphanumerics / Backspace) | Mutate the search query while editing |
 | `↑` / `↓` | Move the row cursor |
-| `o` | Cycle sort (Downloads → Likes → Recently Updated → Trending). Resets to page 1. |
-| `n` / `p` | Next / previous page |
+| `o` | Cycle sort (Downloads → Likes → Recently Updated → Trending). Resets to page 1. Only fires while the search field is resting. |
+| `n` / `p` | Next / previous page (only fires while the search field is resting; `‹›` chevrons next to `page N` indicate when they're available) |
 | `Enter` | Search → drill into the focused repo's files; FilePicker → confirm the chosen file; Confirm → enqueue the pull on the download strip |
-| `Backspace` | Step back one stage (FilePicker → Search; Confirm → FilePicker) |
-| `Esc` | Close the dialog (in-flight downloads keep running) |
+| `Esc` | Walk back one layer: editing → exit edit · resting+content → clear · resting+empty → close (in-flight downloads keep running). In the FilePicker / Confirm stages, Esc steps back to the previous stage. |
+| `Ctrl+X` | Cancel the currently-active HF download (also reachable from anywhere outside the dialog) |
 
 ### Launch picker
 
