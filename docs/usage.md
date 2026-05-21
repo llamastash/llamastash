@@ -392,9 +392,10 @@ These are the defaults. Override any binding via the `keybindings:` block in `co
 | `t` | Cycle theme |
 | `Tab` / `Shift+Tab` | Move focus across panes (arrows / `h` / `l` do the same) |
 | `Shift+M` / `Shift+L` / `Shift+C` / `Shift+S` | Jump focus to Models / Logs / Chat / Settings respectively. `L` and `C` only fire when the focused model is running. |
-| `Shift+D` | Open the HuggingFace pull dialog (Models list focus only — search + sort + paginate, download via the pinned status strip) |
+| `d` | Open the HuggingFace pull dialog (Models list focus only — search + sort + paginate, download via the pinned status strip) |
+| `Ctrl+D` | Delete the focused model from disk (non-running rows only — opens a confirmation popup) |
 
-### HuggingFace pull dialog (`Focus::HfDialog`, `Shift+D` from the Models list)
+### HuggingFace pull dialog (`Focus::HfDialog`, `d` from the Models list)
 
 Three-stage modal: **Search → File picker → Confirm**. Search runs live against the public `/api/models` endpoint (300 ms debounce); paste an `owner/repo[:filename]` slug + Enter to bypass search.
 

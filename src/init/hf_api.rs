@@ -141,18 +141,7 @@ pub async fn search(
     return Err(FetchError::Offline);
   }
   let endpoint = endpoint_or_default();
-  let mut url = reqwest::Url::parse(&format!("{endpoint}/api/models"))
-    .map_err(|e| FetchError::Transport(format!("URL parse: {e}")))?;
-  {
-    let mut pairs = url.query_pairs_mut();
-    pairs.append_pair("search", query);
-    pairs.append_pair("filter", "gguf");
-    pairs.append_pair("sort", sort.as_query_token());
-    pairs.append_pair("limit", &SEARCH_LIMIT.to_string());
-    if let Some(c) = cursor {
-      pairs.append_pair("cursor", c);
-    }
-  }
+  let url = build_search_url(&endpoint, query, sort, cursor)?;
   let (results, headers) = fetch
     .get_json_with_headers::<Vec<HfSearchResult>>(url.as_str(), SEARCH_BODY_CAP)
     .await?;
@@ -164,6 +153,36 @@ pub async fn search(
     results,
     next_cursor,
   })
+}
+
+/// Pure URL builder for the `/api/models` search endpoint. Carved out
+/// of [`search`] so the encoding rules can be unit-tested without a
+/// runtime / FetchClient. Honors the `Trending` carve-out: HF rejects
+/// `search=` with `sort=trending` (HTTP 400 — trending is a curated
+/// list, not a text-search index), so the param is dropped under that
+/// sort. The buffered query stays in the dialog so cycling back to a
+/// searchable sort re-uses it.
+fn build_search_url(
+  endpoint: &str,
+  query: &str,
+  sort: HfSortKey,
+  cursor: Option<&str>,
+) -> Result<reqwest::Url, FetchError> {
+  let mut url = reqwest::Url::parse(&format!("{endpoint}/api/models"))
+    .map_err(|e| FetchError::Transport(format!("URL parse: {e}")))?;
+  {
+    let mut pairs = url.query_pairs_mut();
+    if sort != HfSortKey::Trending {
+      pairs.append_pair("search", query);
+    }
+    pairs.append_pair("filter", "gguf");
+    pairs.append_pair("sort", sort.as_query_token());
+    pairs.append_pair("limit", &SEARCH_LIMIT.to_string());
+    if let Some(c) = cursor {
+      pairs.append_pair("cursor", c);
+    }
+  }
+  Ok(url)
 }
 
 /// Resolve the HF endpoint; on any error (env var validation failure)
@@ -533,6 +552,38 @@ mod tests {
       "/api/models/owner/weird%3Fname/tree/main",
       "path-special characters must be percent-encoded into the segment"
     );
+  }
+
+  #[test]
+  fn build_search_url_includes_search_for_non_trending_sorts() {
+    for sort in [
+      HfSortKey::Downloads,
+      HfSortKey::Likes,
+      HfSortKey::RecentlyUpdated,
+    ] {
+      let url = build_search_url("https://huggingface.co", "qwen", sort, None).expect("build url");
+      let q = url.query().unwrap_or("");
+      assert!(
+        q.contains("search=qwen"),
+        "{sort:?} must carry the search param: {q}"
+      );
+      assert!(q.contains(&format!("sort={}", sort.as_query_token())));
+    }
+  }
+
+  #[test]
+  fn build_search_url_drops_search_param_under_trending_sort() {
+    // Regression: HF returns 400 when both `sort=trending` and
+    // `search=...` are sent. Drop the search param so the dispatch
+    // succeeds with the user's text preserved in the dialog state.
+    let url = build_search_url("https://huggingface.co", "qwen", HfSortKey::Trending, None)
+      .expect("build url");
+    let q = url.query().unwrap_or("");
+    assert!(
+      !q.contains("search="),
+      "trending must drop search to avoid 400: {q}"
+    );
+    assert!(q.contains("sort=trending"));
   }
 
   #[test]

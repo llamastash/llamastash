@@ -127,6 +127,10 @@ pub enum Action {
   /// options. Bound to `Ctrl+R` in the model list focus so the
   /// `Shift+R` mnemonic stays free for the Rerank tab alias.
   RestartDaemon,
+  /// Delete the focused model from disk after confirmation. Bound
+  /// to `Ctrl+D` in [`Focus::List`]; refuses (with a toast) when
+  /// the focused row is a running managed launch.
+  DeleteModel,
   /// Jump focus to the Logs tab in the right pane. No-op (with a
   /// toast) when the focused model isn't running, since Logs is
   /// only reachable for live launches.
@@ -458,18 +462,26 @@ const LIST_BINDINGS: &[Binding] = &[
     label: "S",
     description: "settings",
   },
-  // R104: Shift+D opens the HuggingFace pull dialog. The dialog
-  // takes over input via `Focus::HfDialog` once it's open. We use
-  // Shift+D (single keystroke) rather than Ctrl+D so the binding
-  // lines up with the rest of the Shift-letter quick-jumps in this
-  // table and stays terminal-portable (some terminals swallow Ctrl+D
-  // as EOF).
+  // R104: `d` opens the HuggingFace pull dialog. Lowercase so the
+  // dialog is reachable with a single un-modified keystroke; Ctrl+D
+  // is reserved for delete-model on the focused row.
   Binding {
-    key: KeyCode::Char('D'),
-    mods: KeyModifiers::SHIFT,
+    key: KeyCode::Char('d'),
+    mods: KeyModifiers::NONE,
     action: Action::OpenHfDialog,
-    label: "D",
+    label: "d",
     description: "pull from HF",
+  },
+  // Ctrl+D deletes the focused model after a confirmation popup.
+  // Refusal-on-running is handled inside `apply_delete_model` so the
+  // binding stays uniform; the on-screen hint chip only renders for
+  // non-running rows (see `list_pane` hints).
+  Binding {
+    key: KeyCode::Char('d'),
+    mods: KeyModifiers::CONTROL,
+    action: Action::DeleteModel,
+    label: "Ctrl+D",
+    description: "delete model",
   },
 ];
 
@@ -1152,6 +1164,7 @@ impl Action {
     ("exit_edit", Action::ExitEdit),
     ("kill_daemon", Action::KillDaemon),
     ("restart_daemon", Action::RestartDaemon),
+    ("delete_model", Action::DeleteModel),
     ("focus_logs_tab", Action::FocusLogsTab),
     ("focus_chat_tab", Action::FocusChatTab),
     ("focus_settings_tab", Action::FocusSettingsTab),
@@ -1358,17 +1371,18 @@ mod tests {
   }
 
   #[test]
-  fn shift_d_in_list_focus_opens_hf_dialog() {
-    // R104: Shift+D opens the HF pull dialog from the model list.
-    // Crossterm surfaces Shift+letter as `Char('D')` + SHIFT mod.
+  fn lowercase_d_in_list_focus_opens_hf_dialog() {
+    // Round-13: HF pull moved from Shift+D to lowercase `d` so it's
+    // reachable with a single unmodified keystroke. Ctrl+D is now
+    // bound to delete-model (see below).
     assert_eq!(
-      action_for(Focus::List, KeyCode::Char('D'), KeyModifiers::SHIFT),
+      action_for(Focus::List, KeyCode::Char('d'), KeyModifiers::NONE),
       Some(Action::OpenHfDialog),
     );
   }
 
   #[test]
-  fn shift_d_is_not_shadowed_in_any_sub_focus() {
+  fn d_is_not_shadowed_in_any_sub_focus() {
     // The dialog steals input via `Focus::HfDialog`; the binding
     // must not also fire under another focus (e.g. RightPane or
     // the input modes) where it would collide with an unrelated
@@ -1384,22 +1398,20 @@ mod tests {
       ConfirmPopup,
       HfDialog,
     ] {
-      let action = action_for(focus, KeyCode::Char('D'), KeyModifiers::SHIFT);
+      let action = action_for(focus, KeyCode::Char('d'), KeyModifiers::NONE);
       assert!(
         action.is_none() || action == Some(Action::OpenHfDialog),
-        "Shift+D collision under {focus:?}: {action:?}"
+        "`d` collision under {focus:?}: {action:?}"
       );
     }
   }
 
   #[test]
-  fn legacy_ctrl_d_no_longer_opens_hf_dialog() {
-    // Round-12 retired Ctrl+D in favour of Shift+D (matches the
-    // Shift-letter quick-jump family and survives terminals that
-    // swallow Ctrl+D as EOF). Pin the removal so a future refactor
-    // doesn't accidentally re-add the chord.
+  fn shift_d_no_longer_opens_hf_dialog() {
+    // Round-13 retired Shift+D in favour of lowercase `d`. Pin the
+    // removal so a future refactor doesn't accidentally re-add it.
     assert_eq!(
-      action_for(Focus::List, KeyCode::Char('d'), KeyModifiers::CONTROL),
+      action_for(Focus::List, KeyCode::Char('D'), KeyModifiers::SHIFT),
       None,
     );
   }

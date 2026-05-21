@@ -157,7 +157,10 @@ mod tests {
   #[test]
   fn resting_e_enters_edit_mode() {
     let mut field = InputField::new();
-    assert_eq!(field.handle_key(key(KeyCode::Char('e'))), InputOutcome::Handled);
+    assert_eq!(
+      field.handle_key(key(KeyCode::Char('e'))),
+      InputOutcome::Handled
+    );
     assert!(field.is_editing());
     assert_eq!(field.buffer(), "");
   }
@@ -183,7 +186,10 @@ mod tests {
   #[test]
   fn resting_esc_on_empty_buffer_passes_through() {
     let mut field = InputField::new();
-    assert_eq!(field.handle_key(key(KeyCode::Esc)), InputOutcome::PassThrough);
+    assert_eq!(
+      field.handle_key(key(KeyCode::Esc)),
+      InputOutcome::PassThrough
+    );
   }
 
   #[test]
@@ -199,7 +205,10 @@ mod tests {
     let mut field = InputField::new();
     field.enter_edit();
     for ch in ['q', 'w', 'e', 'n'] {
-      assert_eq!(field.handle_key(key(KeyCode::Char(ch))), InputOutcome::Handled);
+      assert_eq!(
+        field.handle_key(key(KeyCode::Char(ch))),
+        InputOutcome::Handled
+      );
     }
     assert_eq!(field.buffer(), "qwen");
     assert!(field.is_editing());
@@ -209,7 +218,10 @@ mod tests {
   fn editing_backspace_pops_buffer() {
     let mut field = InputField::with_text("qwen");
     field.enter_edit();
-    assert_eq!(field.handle_key(key(KeyCode::Backspace)), InputOutcome::Handled);
+    assert_eq!(
+      field.handle_key(key(KeyCode::Backspace)),
+      InputOutcome::Handled
+    );
     assert_eq!(field.buffer(), "qwe");
   }
 
@@ -217,7 +229,10 @@ mod tests {
   fn editing_backspace_on_empty_is_noop_handled() {
     let mut field = InputField::new();
     field.enter_edit();
-    assert_eq!(field.handle_key(key(KeyCode::Backspace)), InputOutcome::Handled);
+    assert_eq!(
+      field.handle_key(key(KeyCode::Backspace)),
+      InputOutcome::Handled
+    );
     assert_eq!(field.buffer(), "");
     assert!(field.is_editing());
   }
@@ -269,7 +284,10 @@ mod tests {
     assert_eq!(field.handle_key(key(KeyCode::Esc)), InputOutcome::Handled);
     assert!(field.is_empty());
     // 3rd Esc: pass through (caller walks navigation back).
-    assert_eq!(field.handle_key(key(KeyCode::Esc)), InputOutcome::PassThrough);
+    assert_eq!(
+      field.handle_key(key(KeyCode::Esc)),
+      InputOutcome::PassThrough
+    );
   }
 
   #[test]

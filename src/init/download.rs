@@ -227,6 +227,54 @@ pub trait DownloadProgress: Send + Sync {
   /// Fired right after each file's download completes (cached files
   /// also fire — hf-hub returns the cached path without re-downloading).
   fn on_file_finished(&self, filename: &str, index: usize, total: usize);
+  /// Fired by the hf-hub progress adapter on every byte chunk landed
+  /// during a non-cached download. `bytes_in_file` is the running
+  /// total for the current file (not cumulative across the pull).
+  /// Default no-op so existing implementations (the wizard's
+  /// cliclack spinner) don't have to opt in.
+  fn on_bytes_progress(&self, _filename: &str, _bytes_in_file: u64) {}
+}
+
+/// Bridge between hf-hub's chunk-level `Progress` trait and our
+/// [`DownloadProgress::on_bytes_progress`] callback. Holds a running
+/// byte counter (Arc'd so hf-hub's parallel chunk workers all add to
+/// the same total) and forwards every `update` into the caller's
+/// progress hook.
+#[derive(Clone)]
+struct HfHubProgressAdapter {
+  filename: String,
+  bytes_in_file: std::sync::Arc<std::sync::atomic::AtomicU64>,
+  inner: Option<std::sync::Arc<dyn DownloadProgress>>,
+}
+
+impl HfHubProgressAdapter {
+  fn new(filename: String, inner: Option<std::sync::Arc<dyn DownloadProgress>>) -> Self {
+    Self {
+      filename,
+      bytes_in_file: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+      inner,
+    }
+  }
+}
+
+impl hf_hub::api::tokio::Progress for HfHubProgressAdapter {
+  async fn init(&mut self, _size: usize, _filename: &str) {
+    self
+      .bytes_in_file
+      .store(0, std::sync::atomic::Ordering::Relaxed);
+  }
+
+  async fn update(&mut self, size: usize) {
+    let prev = self
+      .bytes_in_file
+      .fetch_add(size as u64, std::sync::atomic::Ordering::Relaxed);
+    let cumulative = prev.saturating_add(size as u64);
+    if let Some(inner) = &self.inner {
+      inner.on_bytes_progress(&self.filename, cumulative);
+    }
+  }
+
+  async fn finish(&mut self) {}
 }
 
 /// Disk-space precheck (R64). Refuses when free < needed + headroom.
@@ -453,11 +501,43 @@ pub async fn download_repo(
 
   let total_files = sizes.len();
   let mut paths = Vec::with_capacity(total_files);
+  let cache_handle = hf_hub::Cache::new(cache_root.clone());
   for (idx, (filename, size)) in sizes.iter().enumerate() {
     if let Some(p) = &options.progress {
       p.on_file_started(filename, *size, idx, total_files);
     }
-    let path = repo.get(filename).await?;
+    // Cache short-circuit: if the file already lives in the HF
+    // snapshot, return the cached path without hitting the network.
+    // Otherwise route through `download_with_progress` so the
+    // chunk-level callback drives byte-accurate progress.
+    let cache_repo = cache_handle.repo(hf_hub::Repo::with_revision(
+      spec.repo_id.clone(),
+      hf_hub::RepoType::Model,
+      options
+        .revision
+        .clone()
+        .unwrap_or_else(|| "main".to_string()),
+    ));
+    let cached = if options.revision.is_some() {
+      cache_repo.get(filename)
+    } else {
+      // For the default branch hf-hub stores the resolved ref under
+      // `refs/main`; the with-revision lookup misses that. Probe the
+      // model handle's default cache repo too.
+      cache_handle
+        .model(spec.repo_id.clone())
+        .get(filename)
+        .or_else(|| cache_repo.get(filename))
+    };
+    let path = if let Some(p) = cached {
+      if let Some(cb) = &options.progress {
+        cb.on_bytes_progress(filename, *size);
+      }
+      p
+    } else {
+      let adapter = HfHubProgressAdapter::new(filename.clone(), options.progress.clone());
+      repo.download_with_progress(filename, adapter).await?
+    };
     if let Some(p) = &options.progress {
       p.on_file_finished(filename, idx, total_files);
     }
@@ -522,6 +602,63 @@ pub async fn run_for_init(
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  /// Capture-only progress sink used by the trait-default tests.
+  #[derive(Default)]
+  struct CaptureProgress {
+    bytes_progress: std::sync::Mutex<Vec<(String, u64)>>,
+  }
+
+  impl DownloadProgress for CaptureProgress {
+    fn on_files_resolved(&self, _files: &[(String, u64)]) {}
+    fn on_file_started(&self, _filename: &str, _size: u64, _index: usize, _total: usize) {}
+    fn on_file_finished(&self, _filename: &str, _index: usize, _total: usize) {}
+    fn on_bytes_progress(&self, filename: &str, bytes_in_file: u64) {
+      self
+        .bytes_progress
+        .lock()
+        .unwrap()
+        .push((filename.to_string(), bytes_in_file));
+    }
+  }
+
+  #[tokio::test]
+  async fn hf_hub_progress_adapter_accumulates_bytes_per_chunk() {
+    // Adapter must convert hf-hub's delta-style `update(size)`
+    // callbacks into a cumulative byte count and forward each one
+    // into `on_bytes_progress`. Without this the dialog's strip
+    // sits at 0% for the duration of the download.
+    use hf_hub::api::tokio::Progress;
+    let capture = std::sync::Arc::new(CaptureProgress::default());
+    let inner: std::sync::Arc<dyn DownloadProgress> = capture.clone();
+    let mut adapter = HfHubProgressAdapter::new("model.gguf".into(), Some(inner));
+    adapter.init(0, "model.gguf").await;
+    adapter.update(100).await;
+    adapter.update(50).await;
+    adapter.update(25).await;
+    adapter.finish().await;
+    let events = capture.bytes_progress.lock().unwrap().clone();
+    assert_eq!(events.len(), 3, "one event per chunk: {events:?}");
+    assert_eq!(events[0], ("model.gguf".to_string(), 100));
+    assert_eq!(events[1], ("model.gguf".to_string(), 150));
+    assert_eq!(events[2], ("model.gguf".to_string(), 175));
+  }
+
+  #[test]
+  fn download_progress_trait_has_default_bytes_callback() {
+    // The wizard's cliclack progress impl doesn't implement the new
+    // byte callback — verify the default no-op exists so existing
+    // call sites keep compiling and running.
+    struct LegacyProgress;
+    impl DownloadProgress for LegacyProgress {
+      fn on_files_resolved(&self, _files: &[(String, u64)]) {}
+      fn on_file_started(&self, _filename: &str, _size: u64, _index: usize, _total: usize) {}
+      fn on_file_finished(&self, _filename: &str, _index: usize, _total: usize) {}
+    }
+    let p: Box<dyn DownloadProgress> = Box::new(LegacyProgress);
+    // Default impl is a no-op — must not panic.
+    p.on_bytes_progress("file", 123);
+  }
 
   #[test]
   fn parse_owner_repo() {

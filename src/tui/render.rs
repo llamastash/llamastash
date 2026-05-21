@@ -97,7 +97,10 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     constraints.push(Constraint::Length(INFO_ROW_HEIGHT));
   }
   if show_strip {
-    constraints.push(Constraint::Length(1));
+    // 1 row for the strip itself + 1 row of vertical margin below
+    // it so the body's panel border doesn't sit flush against the
+    // progress text.
+    constraints.push(Constraint::Length(2));
   }
   constraints.push(Constraint::Min(1));
   let chunks = Layout::default()
@@ -113,7 +116,13 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     idx += 1;
   }
   if show_strip {
-    super::download_strip::render(frame, chunks[idx], &app.download_strip, &palette);
+    // Strip renders into the top row of its 2-row slot; the bottom
+    // row stays blank (theme-painted background) as a visual gutter.
+    let strip_area = ratatui::layout::Rect {
+      height: 1,
+      ..chunks[idx]
+    };
+    super::download_strip::render(frame, strip_area, &app.download_strip, &palette);
     idx += 1;
   }
   render_body(frame, chunks[idx], app, &palette);
@@ -404,6 +413,16 @@ fn build_models_hints(app: &App, filter_active: bool, on_running: bool) -> Vec<S
         out.push(h);
       }
       if let Some(h) = app.hint(Focus::List, Action::YankCurl) {
+        out.push(h);
+      }
+    }
+    // Delete-model chip is gated to non-running rows: deleting an
+    // in-flight launch's GGUF would yank the file out from under
+    // llama-server. The keybinding still fires on a running row
+    // (it toasts "stop the launch first") — the chip just stays
+    // hidden so we don't tempt the user toward a refusal.
+    if app.focused_name().is_some() && !on_running {
+      if let Some(h) = app.hint(Focus::List, Action::DeleteModel) {
         out.push(h);
       }
     }
@@ -764,5 +783,42 @@ mod tests {
     assert!(!hints.iter().any(|h| h.contains(":url")), "{hints:?}");
     assert!(!hints.iter().any(|h| h.contains(":curl")), "{hints:?}");
     assert!(hints.iter().any(|h| h.contains("fav")), "{hints:?}");
+  }
+
+  #[test]
+  fn delete_chip_appears_only_on_non_running_focused_model_rows() {
+    use crate::discovery::{DiscoveredModel, ModelSource};
+    use std::path::PathBuf;
+    // No focused row → chip hidden.
+    let empty_app = App::new(AppOptions::default());
+    let empty_hints = build_models_hints(&empty_app, false, false);
+    assert!(
+      !empty_hints.iter().any(|h| h.contains("delete")),
+      "no focused name = no delete chip: {empty_hints:?}"
+    );
+
+    // Focused row + not running → chip appears.
+    let mut focused_app = App::new(AppOptions::default());
+    focused_app.models = vec![DiscoveredModel {
+      path: PathBuf::from("/m/qwen.gguf"),
+      parent: PathBuf::from("/m"),
+      source: ModelSource::UserPath,
+      metadata: None,
+      parse_error: None,
+      split_siblings: Vec::new(),
+    }];
+    focused_app.go_top();
+    let resting_hints = build_models_hints(&focused_app, false, false);
+    assert!(
+      resting_hints.iter().any(|h| h.contains("delete")),
+      "non-running focused row must surface delete: {resting_hints:?}"
+    );
+
+    // Focused row + running → chip hidden.
+    let running_hints = build_models_hints(&focused_app, false, true);
+    assert!(
+      !running_hints.iter().any(|h| h.contains("delete")),
+      "running row must hide delete: {running_hints:?}"
+    );
   }
 }

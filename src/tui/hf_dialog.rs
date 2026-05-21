@@ -30,6 +30,7 @@ use crate::init::hf_api::{
 };
 use crate::init::recommender::FileFit;
 use crate::theme::Palette;
+use crate::tui::input_field::{InputField, InputOutcome};
 
 /// Three-state modal contract (R105).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,9 +245,13 @@ pub fn collapse_picker_rows(files: Vec<HfRepoFile>) -> Vec<PickerRow> {
 #[derive(Debug)]
 pub struct HfDialogState {
   pub stage: HfStage,
-  /// User-typed query buffer. Debounced; an in-flight task may still
-  /// be running against an older snapshot of this buffer.
-  pub query: String,
+  /// Modal search-input field. Auto-edits on dialog open so the user
+  /// can type without first pressing `e`. While editing, Esc exits
+  /// edit; with a non-empty buffer a second Esc clears; with an
+  /// empty buffer the third Esc reaches the dialog's keymap and
+  /// closes the modal. Sort/page chords (`o`, `n`, `p`) only fire
+  /// while the field is resting.
+  pub input: InputField,
   /// Monotonic dispatch counter. Bumped on every keystroke so a
   /// background search response that arrives after a newer keystroke
   /// can be discarded.
@@ -347,9 +352,11 @@ impl HfDialogState {
   /// Construct a fresh dialog in the Search stage.
   pub fn open(offline: bool, hardware_fit_ctx: HardwareFitContext) -> Self {
     let (tx, rx) = mpsc::unbounded_channel();
+    let mut input = InputField::new();
+    input.enter_edit();
     Self {
       stage: HfStage::Search,
-      query: String::new(),
+      input,
       query_seq: 0,
       last_dispatched_seq: 0,
       last_keystroke_at: Instant::now(),
@@ -376,24 +383,25 @@ impl HfDialogState {
 
   // ----- Search state transitions -----
 
-  /// Append a character to the query and bump the seq so any
-  /// in-flight task's result is treated as stale.
-  pub fn insert(&mut self, ch: char) {
-    self.query.push(ch);
-    self.query_seq = self.query_seq.saturating_add(1);
-    self.last_keystroke_at = Instant::now();
-    self.error = None;
-  }
-
-  /// Delete the trailing character. Same seq-bump semantics as
-  /// [`Self::insert`] so the search bar's `loading…` indicator
-  /// reflects the new query.
-  pub fn backspace_query(&mut self) {
-    if self.query.pop().is_some() {
+  /// Route a key event through the search input. Bumps the
+  /// dispatch seq (and resets the debounce timer) when the key
+  /// actually mutated the buffer so a stale response can be
+  /// discarded.
+  pub fn handle_search_key(&mut self, key: crossterm::event::KeyEvent) -> InputOutcome {
+    let before = self.input.buffer().len();
+    let outcome = self.input.handle_key(key);
+    if self.input.buffer().len() != before {
       self.query_seq = self.query_seq.saturating_add(1);
       self.last_keystroke_at = Instant::now();
       self.error = None;
     }
+    outcome
+  }
+
+  /// Read-only view onto the current query buffer. Trimmed downstream
+  /// when used as a search argument.
+  pub fn query(&self) -> &str {
+    self.input.buffer()
   }
 
   /// Cycle to the next sort key (R107). Resets pagination to page 1
@@ -409,15 +417,18 @@ impl HfDialogState {
     self.last_keystroke_at = Instant::now();
   }
 
-  /// `true` when a debounced dispatch should fire — the buffer has a
-  /// non-empty query, `DEBOUNCE` has elapsed since the last keystroke,
-  /// and the current seq hasn't already been dispatched. Caller
-  /// records the seq via [`Self::mark_dispatched`] when it spawns the
-  /// task.
+  /// `true` when a debounced dispatch should fire. The dialog only
+  /// dispatches once `DEBOUNCE` has elapsed since the last keystroke
+  /// and the current seq hasn't already been dispatched. For
+  /// `Trending` sort the dispatch fires regardless of buffer content
+  /// (the HF endpoint ignores `search` for trending — see
+  /// [`init::hf_api::search`]); every other sort still needs a
+  /// non-empty query to avoid hammering the API with empty searches.
   pub fn search_due(&self, now: Instant) -> bool {
-    !self.query.trim().is_empty()
-      && now.duration_since(self.last_keystroke_at) >= DEBOUNCE
-      && self.query_seq > self.last_dispatched_seq
+    let seq_advanced = self.query_seq > self.last_dispatched_seq;
+    let debounce_elapsed = now.duration_since(self.last_keystroke_at) >= DEBOUNCE;
+    let has_query = !self.input.buffer().trim().is_empty();
+    seq_advanced && debounce_elapsed && (has_query || self.sort == HfSortKey::Trending)
   }
 
   /// Record that a search task has been spawned for the current seq.
@@ -554,7 +565,7 @@ impl HfDialogState {
   /// `owner/repo[:filename]` RepoSpec, that wins over the selected
   /// search-result row.
   pub fn submit_search(&mut self) -> Option<String> {
-    let slug = RepoSpec::parse(self.query.trim()).ok();
+    let slug = RepoSpec::parse(self.input.buffer().trim()).ok();
     let repo_id = if let Some(spec) = slug {
       spec.repo_id
     } else {
@@ -693,17 +704,32 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, state: &HfDialogState, palet
   let muted = palette.muted_style();
   let mut spans: Vec<Span<'static>> = Vec::new();
   spans.push(Span::styled("search: ", label_style));
-  if state.query.is_empty() {
-    spans.push(Span::styled("(type a query or paste owner/repo)", muted));
+  let query = state.input.buffer();
+  if query.is_empty() {
+    let placeholder = if state.input.is_editing() {
+      "(type a query or paste owner/repo)"
+    } else {
+      "(press e to edit)"
+    };
+    spans.push(Span::styled(placeholder, muted));
   } else {
-    spans.push(Span::styled(state.query.clone(), value_style));
-    spans.push(crate::tui::fmt::caret(palette));
+    spans.push(Span::styled(query.to_string(), value_style));
+    if state.input.is_editing() {
+      spans.push(crate::tui::fmt::caret(palette));
+    }
   }
   let mut second: Vec<Span<'static>> = Vec::new();
   second.push(Span::styled("sort: ", label_style));
   second.push(Span::styled(sort_label.to_string(), value_style));
   second.push(Span::styled("  ·  ", muted));
-  second.push(Span::styled(format!("page {}", state.page), label_style));
+  // Page indicator with prev/next arrows so the user knows whether
+  // `p` / `n` will do anything before pressing them.
+  let prev_mark = if state.can_prev_page() { "‹ " } else { "" };
+  let next_mark = if state.can_next_page() { " ›" } else { "" };
+  second.push(Span::styled(
+    format!("{prev_mark}page {}{next_mark}", state.page),
+    label_style,
+  ));
   if state.search_in_flight {
     second.push(Span::styled("  loading…".to_string(), muted));
   }
@@ -717,7 +743,7 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, state: &HfDialogState, palet
     Line::from(spans),
     Line::from(second),
     Line::from(Span::styled(
-      "Enter on a row drills into files. Backspace steps back. Esc closes.",
+      "Enter on a row drills into files. Esc walks back.",
       muted,
     )),
   ];
@@ -732,7 +758,7 @@ fn render_search_body(frame: &mut Frame<'_>, area: Rect, state: &HfDialogState, 
     return;
   }
   if state.results.is_empty() {
-    let message = if state.query.is_empty() {
+    let message = if state.input.is_empty() {
       "Start typing to search HuggingFace, or paste an owner/repo slug."
     } else if state.search_in_flight {
       "loading…"
@@ -746,13 +772,37 @@ fn render_search_body(frame: &mut Frame<'_>, area: Rect, state: &HfDialogState, 
     );
     return;
   }
+  // Scroll the visible window so the selected row stays in view —
+  // mirrors the list-pane convention. Without this the Paragraph
+  // would always render rows from index 0 and arrow-down past the
+  // visible bottom would silently park the cursor off-screen.
+  let visible = area.height.max(1) as usize;
+  let scroll_offset = scroll_offset_for(state.selected_idx, state.results.len(), visible);
   let lines: Vec<Line<'static>> = state
     .results
     .iter()
     .enumerate()
+    .skip(scroll_offset)
+    .take(visible)
     .map(|(idx, r)| render_search_row(idx, idx == state.selected_idx, state.sort, r, palette))
     .collect();
   frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// Pure scroll-window math: given a selected row index, a total row
+/// count, and the number of visible rows, return how many leading
+/// rows to skip so the selection sits inside the viewport. Returns
+/// `0` when everything already fits. Lifted out of the renderer so
+/// the windowing rule is unit-testable.
+pub(crate) fn scroll_offset_for(selected: usize, total: usize, visible: usize) -> usize {
+  if visible == 0 || total <= visible {
+    return 0;
+  }
+  if selected < visible {
+    return 0;
+  }
+  // Park the selection at the last visible row.
+  (selected + 1).saturating_sub(visible).min(total - visible)
 }
 
 fn render_search_row(
@@ -936,9 +986,12 @@ fn render_confirm_body(
 
 fn render_footer(frame: &mut Frame<'_>, area: Rect, state: &HfDialogState, palette: &Palette) {
   let hints = match state.stage {
-    HfStage::Search => "↑/↓: row · Enter: open · o: sort · n/p: page · Esc: close",
-    HfStage::FilePicker => "↑/↓: file · Enter: select · Backspace: search · Esc: close",
-    HfStage::Confirm => "Enter: pull · Backspace: files · Esc: close",
+    HfStage::Search if state.input.is_editing() => {
+      "type to search · ↑/↓:row · Enter:open · Esc:stop edit"
+    }
+    HfStage::Search => "e:edit · ↑/↓:row · Enter:open · o:sort · n/p:page · Esc:close",
+    HfStage::FilePicker => "↑/↓:file · Enter:select · Esc:back",
+    HfStage::Confirm => "Enter:pull · Esc:back",
   };
   let line = Line::from(Span::styled(hints, palette.muted_style()));
   frame.render_widget(Paragraph::new(line).alignment(Alignment::Right), area);
@@ -989,6 +1042,13 @@ mod tests {
   use super::*;
   use std::time::Duration;
 
+  fn type_query(state: &mut HfDialogState, text: &str) {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    for ch in text.chars() {
+      state.handle_search_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+    }
+  }
+
   fn fake_result(id: &str) -> HfSearchResult {
     HfSearchResult {
       repo_id: id.into(),
@@ -1001,10 +1061,28 @@ mod tests {
   }
 
   #[test]
+  fn scroll_offset_keeps_selection_in_window() {
+    // Everything fits → no scrolling.
+    assert_eq!(scroll_offset_for(0, 5, 10), 0);
+    assert_eq!(scroll_offset_for(4, 5, 10), 0);
+    // Selection still within the first window.
+    assert_eq!(scroll_offset_for(3, 20, 5), 0);
+    assert_eq!(scroll_offset_for(4, 20, 5), 0);
+    // Crossing the bottom edge of the window — scroll one row.
+    assert_eq!(scroll_offset_for(5, 20, 5), 1);
+    assert_eq!(scroll_offset_for(6, 20, 5), 2);
+    // Pegged at the end.
+    assert_eq!(scroll_offset_for(19, 20, 5), 15);
+    // Edge: 0 visible rows.
+    assert_eq!(scroll_offset_for(3, 20, 0), 0);
+  }
+
+  #[test]
   fn open_starts_in_search_stage() {
     let s = HfDialogState::open(false, HardwareFitContext::default());
     assert_eq!(s.stage, HfStage::Search);
-    assert!(s.query.is_empty());
+    assert!(s.input.is_empty());
+    assert!(s.input.is_editing(), "dialog opens in edit mode");
     assert_eq!(s.sort, HfSortKey::Downloads);
     assert_eq!(s.page, 1);
     assert!(!s.offline);
@@ -1013,9 +1091,9 @@ mod tests {
   #[test]
   fn typing_bumps_seq_so_late_responses_are_dropped() {
     let mut s = HfDialogState::open(false, HardwareFitContext::default());
-    s.insert('q');
+    type_query(&mut s, "q");
     let seq_after_first = s.query_seq;
-    s.insert('w');
+    type_query(&mut s, "w");
     assert!(s.query_seq > seq_after_first);
     // Mark the most recent typed seq dispatched.
     s.mark_dispatched();
@@ -1044,7 +1122,7 @@ mod tests {
   #[test]
   fn search_due_requires_debounce_window_to_elapse() {
     let mut s = HfDialogState::open(false, HardwareFitContext::default());
-    s.insert('q');
+    type_query(&mut s, "q");
     let now = s.last_keystroke_at;
     assert!(
       !s.search_due(now),
@@ -1054,9 +1132,24 @@ mod tests {
   }
 
   #[test]
-  fn empty_query_never_dispatches() {
+  fn empty_query_never_dispatches_for_non_trending_sorts() {
     let s = HfDialogState::open(false, HardwareFitContext::default());
     assert!(!s.search_due(Instant::now() + DEBOUNCE + Duration::from_secs(5)));
+  }
+
+  #[test]
+  fn trending_sort_dispatches_with_empty_query() {
+    let mut s = HfDialogState::open(false, HardwareFitContext::default());
+    // cycle through downloads → likes → updated → trending
+    for _ in 0..3 {
+      s.cycle_sort();
+    }
+    assert_eq!(s.sort, HfSortKey::Trending);
+    let due_at = s.last_keystroke_at + DEBOUNCE + Duration::from_millis(1);
+    assert!(
+      s.search_due(due_at),
+      "trending dispatch must fire even with an empty query"
+    );
   }
 
   #[test]
@@ -1077,7 +1170,7 @@ mod tests {
   fn submit_search_prefers_pasted_slug_over_selected_row() {
     let mut s = HfDialogState::open(false, HardwareFitContext::default());
     s.results = vec![fake_result("from-list/repo")];
-    s.query = "owner/typed-repo".into();
+    s.input.set_text("owner/typed-repo");
     let target = s.submit_search();
     assert_eq!(target.as_deref(), Some("owner/typed-repo"));
     assert_eq!(s.stage, HfStage::FilePicker);
@@ -1089,7 +1182,7 @@ mod tests {
     let mut s = HfDialogState::open(false, HardwareFitContext::default());
     s.results = vec![fake_result("alpha/repo"), fake_result("beta/repo")];
     s.selected_idx = 1;
-    s.query = "qwen".into();
+    s.input.set_text("qwen");
     let target = s.submit_search();
     assert_eq!(target.as_deref(), Some("beta/repo"));
   }
@@ -1104,13 +1197,17 @@ mod tests {
   #[test]
   fn back_to_search_clears_picker_state_but_keeps_query() {
     let mut s = HfDialogState::open(false, HardwareFitContext::default());
-    s.query = "qwen".into();
+    s.input.set_text("qwen");
     s.results = vec![fake_result("a/b")];
     s.submit_search();
     assert_eq!(s.stage, HfStage::FilePicker);
     s.back_to_search();
     assert_eq!(s.stage, HfStage::Search);
-    assert_eq!(s.query, "qwen", "query buffer must survive back-step");
+    assert_eq!(
+      s.input.buffer(),
+      "qwen",
+      "query buffer must survive back-step"
+    );
     assert!(s.picker_repo_id.is_none());
   }
 
@@ -1225,7 +1322,7 @@ mod tests {
   #[test]
   fn advance_and_retreat_page_track_cursor_history() {
     let mut s = HfDialogState::open(false, HardwareFitContext::default());
-    s.query = "qwen".into();
+    s.input.set_text("qwen");
     // After page 1's response: current_cursor=None, next_cursor=cursor-1.
     s.next_cursor = Some("cursor-1".into());
     let first = s.advance_page();
@@ -1257,7 +1354,7 @@ mod tests {
   #[test]
   fn search_failed_with_offline_clears_in_flight_and_renders_hint() {
     let mut s = HfDialogState::open(false, HardwareFitContext::default());
-    s.insert('q');
+    type_query(&mut s, "q");
     s.mark_dispatched();
     s.apply_search_failed(s.last_dispatched_seq, FetchError::Offline);
     assert!(!s.search_in_flight);

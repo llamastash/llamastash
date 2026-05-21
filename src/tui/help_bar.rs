@@ -289,7 +289,7 @@ mod tests {
     assert!(text.contains("q:quit"), "got: {text}");
     // R104: the HF pull dialog chip sits immediately after `panes`
     // so the affordance is discoverable from the top row.
-    assert!(text.contains("D:pull"), "got: {text}");
+    assert!(text.contains("d:pull"), "got: {text}");
     let panes_pos = text.find(":panes").expect("panes chip present");
     let pull_pos = text.find(":pull").expect("pull chip present");
     let theme_pos = text.find(":theme").expect("theme chip present");

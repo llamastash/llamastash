@@ -111,6 +111,13 @@ fn describe(action: &ConfirmAction) -> (&'static str, String) {
         plural = if *active_instances == 1 { "" } else { "s" }
       ),
     ),
+    ConfirmAction::DeleteModel { display_name, .. } => (
+      "Delete model",
+      format!(
+        "Delete `{display_name}` from disk? This removes the GGUF file (and the
+         HF snapshot blobs if it's part of a cached repo)."
+      ),
+    ),
   }
 }
 

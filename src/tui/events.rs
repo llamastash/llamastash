@@ -346,6 +346,7 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
     Action::RestartDaemon => {
       app.confirm_dialog = Some(ConfirmAction::RestartDaemon);
     }
+    Action::DeleteModel => apply_delete_model(app),
     Action::EnterEdit => {
       // Tab-aware:
       //  - Chat / Embed / Rerank: shift focus into the input buffer
@@ -586,6 +587,65 @@ fn apply_stop_model(app: &mut App) {
   app.confirm_dialog = Some(ConfirmAction::StopModel { launch_id, name });
 }
 
+/// Stage a delete-model confirmation. Refuses (with a toast) when
+/// the focused row is a running managed launch — the user has to
+/// stop the launch first so we don't yank the file out from under
+/// llama-server.
+fn apply_delete_model(app: &mut App) {
+  let Some(path) = app.focused_path() else {
+    app.show_toast("nothing to delete — focus a model row");
+    return;
+  };
+  if app.focused_managed().is_some() {
+    app.show_toast("model is running — stop the launch first");
+    return;
+  }
+  let display_name = crate::util::paths::model_display_name(&path);
+  app.confirm_dialog = Some(ConfirmAction::DeleteModel { path, display_name });
+}
+
+/// Perform the actual file removal. Walks the path's parent chain
+/// up to the HF cache root so symlinked snapshot files take the
+/// underlying blob with them — otherwise the cache fills up with
+/// orphan blobs after every "delete". Non-HF paths just unlink the
+/// single file. Returns a human-readable summary suitable for a
+/// toast.
+fn delete_model_on_disk(path: &std::path::Path) -> Result<String, std::io::Error> {
+  use std::fs;
+  // HF cache layout: `<cache>/models--<owner>--<repo>/snapshots/<rev>/<filename>`
+  // is a symlink into `<cache>/models--<owner>--<repo>/blobs/<sha>`.
+  // Deleting the symlink alone leaves the blob behind. Detect the
+  // pattern by walking up: if `path.parent().parent()` is a
+  // `snapshots` directory whose parent's name starts with `models--`,
+  // this is an HF cache layout and we should remove the whole repo
+  // dir to reclaim space.
+  if let Some(snapshot_dir) = path.parent() {
+    if let Some(snapshots_root) = snapshot_dir.parent() {
+      if snapshots_root.file_name().and_then(|n| n.to_str()) == Some("snapshots") {
+        if let Some(repo_dir) = snapshots_root.parent() {
+          let is_hf_repo = repo_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("models--"));
+          if is_hf_repo {
+            fs::remove_dir_all(repo_dir)?;
+            return Ok(format!(
+              "deleted HF cache for {}",
+              repo_dir.file_name().and_then(|n| n.to_str()).unwrap_or("?")
+            ));
+          }
+        }
+      }
+    }
+  }
+  // Plain GGUF on a user path — just unlink the file.
+  fs::remove_file(path)?;
+  Ok(format!(
+    "deleted {}",
+    path.file_name().and_then(|n| n.to_str()).unwrap_or("file")
+  ))
+}
+
 /// Apply a confirmed [`ConfirmAction`] — dispatches the writer
 /// command and shows an outcome toast. Called from [`handle_key`]
 /// when the user presses `y` / Enter in the confirm dialog.
@@ -623,6 +683,20 @@ fn apply_confirmed(app: &mut App, action: ConfirmAction, writer: Option<&mpsc::S
         "daemon restart (no writer)".into(),
       );
     }
+    ConfirmAction::DeleteModel { path, display_name } => match delete_model_on_disk(&path) {
+      Ok(_summary) => {
+        // Drop the row from the cached model list so the next render
+        // doesn't flash a stale entry. A real refresh re-discovers on
+        // the next tick and will catch any siblings (e.g. split-shard
+        // members that lived in the same HF snapshot).
+        app.models.retain(|m| m.path != path);
+        if app.list_cursor >= app.models.len() {
+          app.list_cursor = app.models.len().saturating_sub(1);
+        }
+        app.show_toast(format!("deleted {display_name}"));
+      }
+      Err(e) => app.show_toast(format!("delete failed: {e}")),
+    },
     ConfirmAction::LaunchDuplicate {
       model_path,
       ctx,
@@ -1577,91 +1651,112 @@ enum HfDialogOutcome {
   Close,
 }
 
-/// Per-stage key router for `Focus::HfDialog`. Typing in Search
-/// extends the query buffer; arrows move the row cursor; Enter
-/// advances stages; Esc closes; Backspace steps back (or pops a
-/// character off the query when at the top of the Search stage).
+/// Per-stage key router for `Focus::HfDialog`.
+///
+/// Search stage routes keys through the modal `InputField` first:
+/// while editing, printable chars / Backspace mutate the query and
+/// Esc steps the field out of edit; while resting `e` re-enters
+/// edit, Esc clears a non-empty buffer (or closes the dialog when
+/// already empty), and the dialog's own keymap (`o`, `n`, `p`, …)
+/// fires through. Enter always means "submit the current query /
+/// row" regardless of edit mode. FilePicker and Confirm stages use
+/// Esc to walk back one stage; arrow keys move the cursor.
 fn handle_hf_dialog_input(app: &mut App, key: KeyEvent, _writer: Option<&mpsc::Sender<WriterCmd>>) {
+  use crate::tui::hf_dialog::HfStage;
+  use crate::tui::input_field::InputOutcome;
   let outcome = {
-    use crate::tui::hf_dialog::HfStage;
     let Some(state) = app.hf_dialog.as_mut() else {
       return;
     };
-    match (state.stage, key.code) {
-      (_, KeyCode::Esc) => HfDialogOutcome::Close,
-
-      (HfStage::Search, KeyCode::Up) => {
-        state.move_up();
-        HfDialogOutcome::None
-      }
-      (HfStage::Search, KeyCode::Down) => {
-        state.move_down();
-        HfDialogOutcome::None
-      }
-      (HfStage::Search, KeyCode::Char('o')) => {
-        state.cycle_sort();
-        HfDialogOutcome::None
-      }
-      (HfStage::Search, KeyCode::Char('n')) => {
-        if let Some(cursor) = state.advance_page() {
-          spawn_hf_search(state, cursor);
+    match state.stage {
+      HfStage::Search => {
+        match state.handle_search_key(key) {
+          InputOutcome::Handled => HfDialogOutcome::None,
+          InputOutcome::Submit => match state.submit_search() {
+            Some(repo_id) => {
+              spawn_hf_list_repo_files(state, repo_id);
+              HfDialogOutcome::None
+            }
+            None => HfDialogOutcome::Toast("type a query, paste a slug, or pick a row"),
+          },
+          InputOutcome::PassThrough => match key.code {
+            // The input only PassThroughs Esc when the buffer is
+            // empty and the field is resting, so this arm always
+            // means "close the dialog."
+            KeyCode::Esc => HfDialogOutcome::Close,
+            KeyCode::Up => {
+              state.move_up();
+              HfDialogOutcome::None
+            }
+            KeyCode::Down => {
+              state.move_down();
+              HfDialogOutcome::None
+            }
+            KeyCode::Enter => match state.submit_search() {
+              Some(repo_id) => {
+                spawn_hf_list_repo_files(state, repo_id);
+                HfDialogOutcome::None
+              }
+              None => HfDialogOutcome::Toast("type a query, paste a slug, or pick a row"),
+            },
+            KeyCode::Char('o') => {
+              state.cycle_sort();
+              HfDialogOutcome::None
+            }
+            KeyCode::Char('n') => {
+              if let Some(cursor) = state.advance_page() {
+                spawn_hf_search(state, cursor);
+              }
+              HfDialogOutcome::None
+            }
+            KeyCode::Char('p') => {
+              if let Some(cursor) = state.retreat_page() {
+                spawn_hf_search(state, cursor);
+              }
+              HfDialogOutcome::None
+            }
+            _ => HfDialogOutcome::None,
+          },
         }
-        HfDialogOutcome::None
       }
-      (HfStage::Search, KeyCode::Char('p')) => {
-        if let Some(cursor) = state.retreat_page() {
-          spawn_hf_search(state, cursor);
-        }
-        HfDialogOutcome::None
-      }
-      (HfStage::Search, KeyCode::Enter) => match state.submit_search() {
-        Some(repo_id) => {
-          spawn_hf_list_repo_files(state, repo_id);
+      HfStage::FilePicker => match key.code {
+        // Esc walks back to Search (per R3 Esc-navigation contract);
+        // a further Esc on Search closes the dialog.
+        KeyCode::Esc => {
+          state.back_to_search();
           HfDialogOutcome::None
         }
-        None => HfDialogOutcome::Toast("type a query, paste a slug, or pick a row"),
+        KeyCode::Up => {
+          state.move_up();
+          HfDialogOutcome::None
+        }
+        KeyCode::Down => {
+          state.move_down();
+          HfDialogOutcome::None
+        }
+        KeyCode::Enter => {
+          if state.submit_picker() {
+            HfDialogOutcome::None
+          } else {
+            HfDialogOutcome::Toast("no file selected")
+          }
+        }
+        _ => HfDialogOutcome::None,
       },
-      (HfStage::Search, KeyCode::Backspace) => {
-        state.backspace_query();
-        HfDialogOutcome::None
-      }
-      (HfStage::Search, KeyCode::Char(ch)) => {
-        state.insert(ch);
-        HfDialogOutcome::None
-      }
-
-      (HfStage::FilePicker, KeyCode::Up) => {
-        state.move_up();
-        HfDialogOutcome::None
-      }
-      (HfStage::FilePicker, KeyCode::Down) => {
-        state.move_down();
-        HfDialogOutcome::None
-      }
-      (HfStage::FilePicker, KeyCode::Enter) => {
-        if !state.submit_picker() {
-          HfDialogOutcome::Toast("no file selected")
-        } else {
+      HfStage::Confirm => match key.code {
+        KeyCode::Esc => {
+          state.back_to_picker();
           HfDialogOutcome::None
         }
-      }
-      (HfStage::FilePicker, KeyCode::Backspace) => {
-        state.back_to_search();
-        HfDialogOutcome::None
-      }
-
-      (HfStage::Confirm, KeyCode::Enter) => {
-        if let Some((repo, row)) = state.take_confirm_target() {
-          HfDialogOutcome::EnqueuePull { repo, row }
-        } else {
-          HfDialogOutcome::Close
+        KeyCode::Enter => {
+          if let Some((repo, row)) = state.take_confirm_target() {
+            HfDialogOutcome::EnqueuePull { repo, row }
+          } else {
+            HfDialogOutcome::Close
+          }
         }
-      }
-      (HfStage::Confirm, KeyCode::Backspace) => {
-        state.back_to_picker();
-        HfDialogOutcome::None
-      }
-      _ => HfDialogOutcome::None,
+        _ => HfDialogOutcome::None,
+      },
     }
   };
   match outcome {
@@ -1822,6 +1917,11 @@ struct StripProgressInner {
   file_sizes: std::collections::HashMap<String, u64>,
   bytes_total: u64,
   bytes_done: u64,
+  /// Bytes credited so far for the file currently downloading.
+  /// Replaces the running per-file counter every `on_bytes_progress`;
+  /// reset to zero at `on_file_finished` so the next file starts
+  /// fresh.
+  bytes_in_current_file: u64,
 }
 
 impl crate::init::download::DownloadProgress for StripProgress {
@@ -1839,13 +1939,47 @@ impl crate::init::download::DownloadProgress for StripProgress {
   }
 
   fn on_file_started(&self, _filename: &str, _size: u64, _index: usize, _total: usize) {
-    // No byte-level callback from hf-hub; aggregate on file finish.
+    // Per-file byte counter resets on every file boundary; the
+    // hf-hub adapter then drives `on_bytes_progress` as chunks land.
+    let mut inner = self.inner.lock().unwrap();
+    inner.bytes_in_current_file = 0;
   }
 
   fn on_file_finished(&self, filename: &str, _index: usize, _total: usize) {
     let mut inner = self.inner.lock().unwrap();
     let size = inner.file_sizes.get(filename).copied().unwrap_or(0);
-    inner.bytes_done = inner.bytes_total.min(inner.bytes_done.saturating_add(size));
+    let prior_in_file = inner.bytes_in_current_file;
+    // Aggregate the file's full size into the pull total (subtract any
+    // partial credit `on_bytes_progress` already attributed so we don't
+    // double-count).
+    let credit = size.saturating_sub(prior_in_file);
+    inner.bytes_done = inner
+      .bytes_total
+      .min(inner.bytes_done.saturating_add(credit));
+    inner.bytes_in_current_file = 0;
+    let bytes_done = inner.bytes_done;
+    let bytes_total = inner.bytes_total;
+    drop(inner);
+    let _ = self
+      .tx
+      .send(crate::tui::download_strip::DownloadEvent::Progress {
+        repo_id: self.repo_id.clone(),
+        bytes_done,
+        bytes_total,
+      });
+  }
+
+  fn on_bytes_progress(&self, _filename: &str, bytes_in_file: u64) {
+    let mut inner = self.inner.lock().unwrap();
+    // Replace the running per-file count with the new cumulative
+    // value. Subtract the previous in-file credit so the pull's
+    // aggregate `bytes_done` only ever grows monotonically.
+    let prior = inner.bytes_in_current_file;
+    let delta = bytes_in_file.saturating_sub(prior);
+    inner.bytes_in_current_file = bytes_in_file;
+    inner.bytes_done = inner
+      .bytes_total
+      .min(inner.bytes_done.saturating_add(delta));
     let bytes_done = inner.bytes_done;
     let bytes_total = inner.bytes_total;
     drop(inner);
@@ -1865,7 +1999,7 @@ impl crate::init::download::DownloadProgress for StripProgress {
 fn spawn_hf_search(state: &mut crate::tui::hf_dialog::HfDialogState, cursor: Option<String>) {
   use crate::init::hf_api;
   let tx = state.event_tx.clone();
-  let query = state.query.clone();
+  let query = state.input.buffer().to_string();
   let sort = state.sort;
   let seq = state.query_seq;
   state.mark_dispatched();
@@ -2037,40 +2171,153 @@ mod tests {
   }
 
   #[test]
-  fn shift_d_opens_hf_dialog_and_esc_closes_it() {
+  fn ctrl_d_on_user_path_model_stages_delete_confirm() {
+    use crate::tui::app::ConfirmAction;
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.go_top();
+    pump_input(&mut app, key(KeyCode::Char('d'), KeyModifiers::CONTROL));
+    match app
+      .confirm_dialog
+      .as_ref()
+      .expect("confirm popup must stage")
+    {
+      ConfirmAction::DeleteModel { display_name, .. } => {
+        assert!(
+          display_name.contains("qwen"),
+          "got display name `{display_name}`"
+        );
+      }
+      other => panic!("expected DeleteModel confirm, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn delete_model_unlinks_user_path_file() {
+    use std::io::Write;
+    let dir = std::env::temp_dir().join(format!("llamastash-delete-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("victim.gguf");
+    {
+      let mut f = std::fs::File::create(&path).unwrap();
+      writeln!(f, "fake gguf").unwrap();
+    }
+    assert!(path.exists());
+    let summary = delete_model_on_disk(&path).expect("delete must succeed");
+    assert!(summary.contains("victim.gguf"), "got `{summary}`");
+    assert!(!path.exists(), "user-path file must be unlinked");
+    let _ = std::fs::remove_dir_all(&dir);
+  }
+
+  #[test]
+  fn delete_model_removes_full_hf_repo_dir_when_snapshot_layout_detected() {
+    // Mimic the HF cache layout the deleter is supposed to recognise:
+    //   models--owner--repo/
+    //     blobs/<sha>
+    //     snapshots/main/file.gguf -> ../../blobs/<sha>
+    let dir = std::env::temp_dir().join(format!("llamastash-delete-hf-{}", std::process::id()));
+    let repo_dir = dir.join("models--owner--repo");
+    let blobs = repo_dir.join("blobs");
+    let snap = repo_dir.join("snapshots").join("main");
+    std::fs::create_dir_all(&blobs).unwrap();
+    std::fs::create_dir_all(&snap).unwrap();
+    std::fs::write(blobs.join("sha"), b"blob").unwrap();
+    let symlink_target = snap.join("file.gguf");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(blobs.join("sha"), &symlink_target).unwrap();
+    #[cfg(not(unix))]
+    std::fs::write(&symlink_target, b"blob").unwrap();
+    assert!(symlink_target.exists());
+    let summary = delete_model_on_disk(&symlink_target).expect("delete must succeed");
+    assert!(summary.contains("HF cache"), "got `{summary}`");
+    assert!(!repo_dir.exists(), "the whole repo dir should be gone");
+    let _ = std::fs::remove_dir_all(&dir);
+  }
+
+  #[test]
+  fn ctrl_d_on_running_model_refuses_with_toast() {
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.managed = vec![ready_managed_for_events("/m/qwen.gguf", 41100)];
+    app.go_top();
+    pump_input(&mut app, key(KeyCode::Char('d'), KeyModifiers::CONTROL));
+    assert!(
+      app.confirm_dialog.is_none(),
+      "running model must not stage delete"
+    );
+    let toast = app.toast_message().unwrap_or("");
+    assert!(
+      toast.contains("stop the launch"),
+      "expected stop-first toast, got `{toast}`"
+    );
+  }
+
+  #[test]
+  fn d_opens_hf_dialog_and_esc_closes_it() {
     use crate::tui::hf_dialog::HfStage;
     let mut app = App::new(Default::default());
     assert!(app.hf_dialog.is_none());
-    pump_input(&mut app, key(KeyCode::Char('D'), KeyModifiers::SHIFT));
-    let dialog = app
-      .hf_dialog
-      .as_ref()
-      .expect("Shift+D must open the HF dialog");
+    pump_input(&mut app, key(KeyCode::Char('d'), KeyModifiers::NONE));
+    let dialog = app.hf_dialog.as_ref().expect("`d` must open the HF dialog");
     assert_eq!(dialog.stage, HfStage::Search);
+    assert!(
+      dialog.input.is_editing(),
+      "search field must auto-enter edit mode so the user can type immediately"
+    );
     assert_eq!(app.focus, Focus::HfDialog);
     // Type into the search buffer.
     pump_input(&mut app, key(KeyCode::Char('q'), KeyModifiers::NONE));
     pump_input(&mut app, key(KeyCode::Char('w'), KeyModifiers::NONE));
-    assert_eq!(app.hf_dialog.as_ref().map(|d| d.query.as_str()), Some("qw"));
-    // Esc closes and snaps focus back.
+    assert_eq!(app.hf_dialog.as_ref().map(|d| d.input.buffer()), Some("qw"));
+    // First Esc: exit edit (buffer kept, dialog still open).
+    pump_input(&mut app, key(KeyCode::Esc, KeyModifiers::NONE));
+    let after_first_esc = app.hf_dialog.as_ref().expect("first Esc must keep dialog");
+    assert!(!after_first_esc.input.is_editing());
+    assert_eq!(after_first_esc.input.buffer(), "qw");
+    // Second Esc: clear buffer (still open, still resting).
+    pump_input(&mut app, key(KeyCode::Esc, KeyModifiers::NONE));
+    let after_second_esc = app.hf_dialog.as_ref().expect("second Esc must keep dialog");
+    assert!(after_second_esc.input.is_empty());
+    // Third Esc: closes the dialog and returns focus.
     pump_input(&mut app, key(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.hf_dialog.is_none());
     assert_eq!(app.focus, Focus::List);
   }
 
   #[test]
-  fn hf_dialog_o_cycles_sort_key() {
+  fn hf_dialog_o_in_resting_mode_cycles_sort_key() {
     use crate::init::hf_api::HfSortKey;
     let mut app = App::new(Default::default());
-    pump_input(&mut app, key(KeyCode::Char('D'), KeyModifiers::SHIFT));
+    pump_input(&mut app, key(KeyCode::Char('d'), KeyModifiers::NONE));
     assert_eq!(
       app.hf_dialog.as_ref().map(|d| d.sort),
       Some(HfSortKey::Downloads)
     );
+    // First Esc exits edit so the dialog's keymap (o / n / p) fires.
+    pump_input(&mut app, key(KeyCode::Esc, KeyModifiers::NONE));
     pump_input(&mut app, key(KeyCode::Char('o'), KeyModifiers::NONE));
     assert_eq!(
       app.hf_dialog.as_ref().map(|d| d.sort),
       Some(HfSortKey::Likes)
+    );
+  }
+
+  #[test]
+  fn hf_dialog_o_while_editing_is_typed_not_cycled() {
+    use crate::init::hf_api::HfSortKey;
+    let mut app = App::new(Default::default());
+    pump_input(&mut app, key(KeyCode::Char('d'), KeyModifiers::NONE));
+    // Field is auto-edit on open, so `o` is typed.
+    pump_input(&mut app, key(KeyCode::Char('o'), KeyModifiers::NONE));
+    assert_eq!(
+      app.hf_dialog.as_ref().map(|d| d.input.buffer()),
+      Some("o"),
+      "`o` while editing must go into the buffer, not cycle sort"
+    );
+    assert_eq!(
+      app.hf_dialog.as_ref().map(|d| d.sort),
+      Some(HfSortKey::Downloads),
+      "sort must not have cycled while editing"
     );
   }
 

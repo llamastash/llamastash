@@ -220,6 +220,12 @@ pub enum ConfirmAction {
   /// `Ctrl+R:restart daemon` — shuts the daemon down and re-spawns
   /// a fresh one. All managed launches are stopped in the process.
   RestartDaemon,
+  /// `Ctrl+D:delete` — remove a non-running model from disk.
+  /// `path` is the GGUF (or split-shard launch file); the deleter
+  /// walks the HF snapshot dir up to the cache root when the file
+  /// is symlinked into `~/.cache/huggingface`, so a confirmed
+  /// delete reclaims the blob bytes too.
+  DeleteModel { path: PathBuf, display_name: String },
   /// `Enter:launch` on a model that already has a managed launch
   /// (round-8). v1 supports duplicate launches on fresh ports, but
   /// we ask the user to confirm so a stray Enter doesn't silently
