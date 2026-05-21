@@ -138,7 +138,7 @@ fn slash_opens_filter_and_keystrokes_extend_buffer() {
   for ch in "qwen".chars() {
     pump_input(&mut app, key(KeyCode::Char(ch), KeyModifiers::NONE));
   }
-  assert_eq!(app.filter_buffer, "qwen");
+  assert_eq!(app.filter_input.buffer(), "qwen");
   let frame = render_to_string(&mut app, 100, 20);
   assert!(
     frame.contains("qwen"),

@@ -344,10 +344,10 @@ fn build_models_title<'a>(
   area_width: usize,
   rows: &[list_pane::ListRow],
 ) -> list_pane::TitleInputs<'a> {
-  let filter_active = !(app.filter_buffer.is_empty() && app.focus != Focus::Filter);
+  let filter_active = !(app.filter_input.is_empty() && app.focus != Focus::Filter);
   let filter = if filter_active {
     list_pane::FilterTitle::Active {
-      buffer: app.filter_buffer.as_str(),
+      buffer: app.filter_input.buffer(),
       focused: app.focus == Focus::Filter,
     }
   } else {
@@ -731,7 +731,7 @@ mod tests {
   fn filter_input_appears_inline_in_models_title_when_focused() {
     let mut app = App::new(AppOptions::default());
     app.focus = Focus::Filter;
-    app.filter_buffer = "qwen".into();
+    app.filter_input.set_text("qwen");
     let rows = render_into(100, 30, app);
     let frame = rows.join("\n");
     // The inline input renders inside the Models block title strip.

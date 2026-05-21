@@ -110,6 +110,27 @@ pub fn pump_input_with_writer(
   app.should_exit
 }
 
+/// Top-level key dispatcher.
+///
+/// **Esc walk-back precedence (R3 / item-8 contract):** the user
+/// expects a single `Esc` to peel one layer off the navigation
+/// tree, no matter where they are. The order below resolves
+/// ambiguities so the highest-priority surface owns the chord:
+/// 1. Help overlay open → close the overlay (this function).
+/// 2. Confirm popup open → cancel (this function).
+/// 3. HF dialog open → stage walk-back (`handle_hf_dialog_input`).
+/// 4. Modal text input editing → exit edit (`InputField::handle_key`
+///    inside each focus handler).
+/// 5. Modal text input resting with content → clear buffer.
+/// 6. Modal text input empty → close the input or step focus back.
+/// 7. `RightPane` focused → `Action::FocusList` returns to the list.
+/// 8. `List` focused → no-op (already at the root).
+///
+/// Layers 4–6 live inside the input field's state machine and only
+/// apply to inputs that have been migrated to [`InputField`]
+/// (currently `filter_input` and the HF dialog search field; the
+/// chat / embed / rerank composers + advanced-panel extras input
+/// migrate in a follow-up).
 fn handle_key(app: &mut App, key: KeyEvent, writer: Option<&mpsc::Sender<WriterCmd>>) {
   // Help dialog owns Esc and `?` ahead of every focus-specific
   // routing: when it's open, the user expects Esc to dismiss it
@@ -197,20 +218,23 @@ fn handle_tab_input(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_filter_input(app: &mut App, key: KeyEvent) {
-  match key.code {
-    KeyCode::Esc => {
-      app.clear_filter();
-    }
-    KeyCode::Enter => {
+  use crate::tui::input_field::InputOutcome;
+  match app.filter_input.handle_key(key) {
+    InputOutcome::Handled => {}
+    InputOutcome::Submit => {
+      // Enter while editing returns focus to the list without
+      // dropping the filter — the predicate stays active until the
+      // user explicitly clears it via Esc walk-back.
+      app.filter_input.exit_edit();
       app.focus = Focus::List;
     }
-    KeyCode::Backspace => {
-      app.filter_buffer.pop();
+    InputOutcome::PassThrough => {
+      // Resting + empty buffer + Esc → close the filter entirely
+      // (back to the list). Other resting keys are unbound here.
+      if matches!(key.code, KeyCode::Esc) {
+        app.clear_filter();
+      }
     }
-    KeyCode::Char(ch) => {
-      app.filter_buffer.push(ch);
-    }
-    _ => {}
   }
 }
 
@@ -2368,21 +2392,31 @@ mod tests {
   #[test]
   fn typing_in_filter_extends_buffer() {
     let mut app = App::new(Default::default());
-    app.focus = Focus::Filter;
+    app.open_filter();
     for ch in "qwen".chars() {
       pump_input(&mut app, key(KeyCode::Char(ch), KeyModifiers::NONE));
     }
-    assert_eq!(app.filter_buffer, "qwen");
+    assert_eq!(app.filter_input.buffer(), "qwen");
   }
 
   #[test]
-  fn esc_in_filter_clears_and_returns_focus() {
+  fn esc_in_filter_walks_back_edit_then_clear_then_close() {
     let mut app = App::new(Default::default());
-    app.focus = Focus::Filter;
-    app.filter_buffer = "qwen".into();
+    app.open_filter();
+    app.filter_input.set_text("qwen");
+    assert!(app.filter_input.is_editing());
+    // 1st Esc: exit edit (buffer kept, focus on filter).
+    pump_input(&mut app, key(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.focus, Focus::Filter);
+    assert!(!app.filter_input.is_editing());
+    assert_eq!(app.filter_input.buffer(), "qwen");
+    // 2nd Esc: clear buffer (still resting, still on filter).
+    pump_input(&mut app, key(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.focus, Focus::Filter);
+    assert!(app.filter_input.is_empty());
+    // 3rd Esc: close filter, return to list.
     pump_input(&mut app, key(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.focus, Focus::List);
-    assert!(app.filter_buffer.is_empty());
   }
 
   #[test]

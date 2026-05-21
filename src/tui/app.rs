@@ -163,7 +163,11 @@ pub struct App {
   /// Cursor index into the rendered row list (which mixes headers
   /// and models). Header rows are skipped during `move_*`.
   pub list_cursor: usize,
-  pub filter_buffer: String,
+  /// Filter input — modal text field backed by [`InputField`] so the
+  /// editing semantics (`e` enters edit, `Esc` walks back exit-edit
+  /// → clear → close) match every other text input. Filter auto-
+  /// enters edit on `open_filter` so the user can type immediately.
+  pub filter_input: crate::tui::input_field::InputField,
   pub launch_picker: Option<LaunchPickerState>,
   pub advanced_panel: Option<AdvancedPanelState>,
   pub toast: Option<(String, Instant)>,
@@ -264,7 +268,7 @@ impl App {
       rerank: Default::default(),
       logs_state: Default::default(),
       list_cursor: 0,
-      filter_buffer: String::new(),
+      filter_input: crate::tui::input_field::InputField::new(),
       launch_picker: None,
       advanced_panel: None,
       toast: None,
@@ -684,8 +688,8 @@ impl App {
       running: &running,
       recent_paths: &self.recent_paths,
     });
-    if !self.filter_buffer.is_empty() {
-      all = apply_filter(&all, &self.filter_buffer);
+    if !self.filter_input.is_empty() {
+      all = apply_filter(&all, self.filter_input.buffer());
     }
     all
   }
@@ -1013,11 +1017,19 @@ impl App {
 
   pub fn open_filter(&mut self) {
     self.focus = Focus::Filter;
+    // Auto-enter edit so the user can type immediately. The Esc
+    // walk-back (exit-edit → clear → close) handles teardown.
+    self.filter_input.enter_edit();
   }
 
-  /// Esc clears + leaves filter mode.
+  /// Close the filter input entirely (matches the legacy
+  /// `Esc clears + leaves filter mode` behaviour for callers that
+  /// still want the one-shot reset). Distinct from
+  /// [`InputField`]'s `Esc` walk-back, which only exits edit / clears
+  /// the buffer; this resets both at once.
   pub fn clear_filter(&mut self) {
-    self.filter_buffer.clear();
+    self.filter_input.clear();
+    self.filter_input.exit_edit();
     self.focus = Focus::List;
     self.clamp_cursor();
   }
@@ -1823,7 +1835,7 @@ mod tests {
       fake("/m/x/qwen.gguf", "/m/x"),
       fake("/m/y/phi.gguf", "/m/y"),
     ];
-    app.filter_buffer = "qwen".into();
+    app.filter_input.set_text("qwen");
     let rows = app.rendered_rows();
     let names: Vec<String> = rows
       .iter()
