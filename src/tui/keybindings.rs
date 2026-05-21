@@ -545,12 +545,16 @@ const FILTER_BINDINGS: &[Binding] = &[
     label: "Esc",
     description: "clear",
   },
+  // Filter is a live predicate (applies on every keystroke), so
+  // Enter has no apply semantics — it drills into the focused
+  // result row by opening the launch picker. See
+  // `handle_filter_input`'s `Submit` arm.
   Binding {
     key: KeyCode::Enter,
     mods: KeyModifiers::NONE,
     action: Action::Submit,
     label: "Enter",
-    description: "apply",
+    description: "launch",
   },
 ];
 

@@ -433,31 +433,35 @@ fn build_models_hints(
   deletable: bool,
 ) -> Vec<String> {
   let mut out: Vec<String> = Vec::with_capacity(7);
+  // Filter is a live predicate (applies on every keystroke), so
+  // `Submit` carries `Enter:launch` semantics: drill into the
+  // focused result. Override the binding's description to read as
+  // the actual user-facing action.
+  let enter_launch = || {
+    app
+      .hint_with(Focus::Filter, Action::Submit, "launch")
+      .unwrap_or_else(|| "Enter:launch".to_string())
+  };
   if filter_mode == FilterChipMode::Editing {
     // While editing only the in-edit chord is useful — `Esc:stop
-    // edit` exits to resting (buffer kept), `Enter:apply` applies
-    // the predicate. The InputField's static binding for Esc inside
-    // Focus::Filter is `ClearFilter`, but in edit mode the field
-    // intercepts Esc first and exits edit; we surface the actual
-    // observed behavior here.
-    if let Some(h) = app.hint(Focus::Filter, Action::Submit) {
-      out.push(h);
-    }
+    // edit` exits to resting (buffer kept). The InputField's static
+    // binding for Esc inside Focus::Filter is `ClearFilter`, but in
+    // edit mode the field intercepts Esc first and exits edit; we
+    // surface the actual observed behavior here.
+    out.push(enter_launch());
     out.push("Esc:stop edit".to_string());
     return out;
   }
   if filter_mode == FilterChipMode::Resting {
     // Resting: the InputField is in its post-first-Esc state. `e`
-    // re-enters edit, `Esc` clears the buffer, `Enter` applies the
-    // existing predicate. ↑/↓ scroll the filtered results without
-    // leaving the filter focus.
+    // re-enters edit, `Esc` clears the buffer, `Enter` launches the
+    // focused row. ↑/↓ scroll the filtered results without leaving
+    // the filter focus.
     out.push("e:edit".to_string());
     if let Some(h) = app.hint(Focus::Filter, Action::ClearFilter) {
       out.push(h);
     }
-    if let Some(h) = app.hint(Focus::Filter, Action::Submit) {
-      out.push(h);
-    }
+    out.push(enter_launch());
     out.push("↑/↓:nav".to_string());
     return out;
   }
@@ -942,20 +946,29 @@ mod tests {
 
   #[test]
   fn filter_chip_strip_switches_between_editing_and_resting() {
-    // Edit mode: chip strip surfaces the in-edit chord
-    // (`Esc:stop edit`), NOT the resting clear chord.
+    // Edit mode: chip strip surfaces `Enter:launch` (filter is a
+    // live predicate, so Enter drills into the focused row) plus
+    // the in-edit chord (`Esc:stop edit`).
     let mut app = App::new(AppOptions::default());
     app.open_filter();
     let editing = build_models_hints(&app, FilterChipMode::Editing, false, false);
+    assert!(
+      editing.iter().any(|h| h == "Enter:launch"),
+      "editing mode must surface Enter:launch (filter is live, no apply): {editing:?}"
+    );
     assert!(
       editing.iter().any(|h| h == "Esc:stop edit"),
       "editing mode must surface stop-edit chord: {editing:?}"
     );
     assert!(
+      !editing.iter().any(|h| h.contains("apply")),
+      "editing mode must NOT surface Enter:apply (filter applies live): {editing:?}"
+    );
+    assert!(
       !editing.iter().any(|h| h.contains("clear")),
       "editing mode must NOT surface clear: {editing:?}"
     );
-    // Resting mode: `e:edit`, `Esc:clear`, `Enter:apply`, plus a
+    // Resting mode: `e:edit`, `Esc:clear`, `Enter:launch`, plus a
     // navigation hint so the user knows arrows still work.
     let resting = build_models_hints(&app, FilterChipMode::Resting, false, false);
     assert!(
@@ -965,6 +978,14 @@ mod tests {
     assert!(
       resting.iter().any(|h| h.contains("clear")),
       "resting mode must surface clear chord: {resting:?}"
+    );
+    assert!(
+      resting.iter().any(|h| h == "Enter:launch"),
+      "resting mode must surface Enter:launch: {resting:?}"
+    );
+    assert!(
+      !resting.iter().any(|h| h.contains("apply")),
+      "resting mode must NOT surface Enter:apply: {resting:?}"
     );
     assert!(
       resting.iter().any(|h| h.contains("↑/↓")),

@@ -384,7 +384,7 @@ These are the defaults. Override any binding via the `keybindings:` block in `co
 | `↑` / `k`, `↓` / `j` | Navigate |
 | `PgUp` / `PgDn` | Page |
 | `g` / `G` | Top / bottom |
-| `/` | Open filter (Enter applies, Esc clears) |
+| `/` | Open filter (predicate applies live as you type; `Enter` drills into the focused result by opening the launch picker; `Esc` walks back: exit edit → clear → close) |
 | `f` | Toggle favorite on focused model |
 | `Enter` | Open launch picker on focused model |
 | `a` | Open advanced flags panel |

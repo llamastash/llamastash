@@ -232,11 +232,19 @@ fn handle_filter_input(app: &mut App, key: KeyEvent) {
   match app.filter_input.handle_key(key) {
     InputOutcome::Handled => {}
     InputOutcome::Submit => {
-      // Enter while editing returns focus to the list without
-      // dropping the filter — the predicate stays active until the
-      // user explicitly clears it via Esc walk-back.
+      // Filter is a *live* predicate (filter_input.buffer() applies
+      // on every keystroke via `rendered_rows()`), so Enter carries
+      // no "apply" semantics — it drills into the focused result
+      // row by opening the launch picker. Exit edit first so the
+      // user's typing doesn't continue feeding the filter once
+      // focus moves to the right pane; when no row is focused
+      // (header / empty result set) just drop back to the list
+      // with the filter buffer intact.
       app.filter_input.exit_edit();
       app.focus = Focus::List;
+      if app.focused_name().is_some() {
+        app.open_launch_picker();
+      }
     }
     InputOutcome::PassThrough => match key.code {
       // Resting + empty buffer + Esc → close the filter entirely
@@ -2743,6 +2751,55 @@ mod tests {
       Focus::RightPane,
       "third Esc must walk focus back to RightPane"
     );
+  }
+
+  #[test]
+  fn filter_enter_opens_launch_picker_on_focused_row() {
+    // Filter is a live predicate (rows update on every keystroke),
+    // so Enter has no "apply" semantics. Instead it drills into the
+    // focused result by opening the launch picker — same affordance
+    // as `Enter` on the model list. The filter buffer survives the
+    // drill-in so the user can dismiss the picker and keep scrolling
+    // the filtered results.
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.go_top();
+    // Open filter, type a query, then Enter.
+    pump_input(&mut app, key(KeyCode::Char('/'), KeyModifiers::NONE));
+    pump_input(&mut app, key(KeyCode::Char('q'), KeyModifiers::NONE));
+    pump_input(&mut app, key(KeyCode::Char('w'), KeyModifiers::NONE));
+    assert_eq!(app.focus, Focus::Filter);
+    assert!(app.filter_input.is_editing());
+    pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::NONE));
+    // Picker is open + focus moved to the right pane's Settings tab.
+    assert!(
+      app.launch_picker.is_some(),
+      "Enter on filter must open the launch picker for the focused row"
+    );
+    assert_eq!(app.focus, Focus::RightPane);
+    assert_eq!(app.right_tab, RightTab::Settings);
+    // Filter buffer survives so the user keeps the predicate after
+    // dismissing the picker.
+    assert_eq!(app.filter_input.buffer(), "qw");
+    assert!(
+      !app.filter_input.is_editing(),
+      "filter must have exited edit before drilling into picker"
+    );
+  }
+
+  #[test]
+  fn filter_enter_on_empty_results_only_exits_edit() {
+    // With no rows matching the filter, Enter falls back to "stop
+    // editing + return to list" — no picker (there's nothing to
+    // launch), no toast.
+    let mut app = App::new(Default::default());
+    app.models = vec![]; // empty catalog → zero rows after filter.
+    pump_input(&mut app, key(KeyCode::Char('/'), KeyModifiers::NONE));
+    pump_input(&mut app, key(KeyCode::Char('z'), KeyModifiers::NONE));
+    pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.launch_picker.is_none());
+    assert_eq!(app.focus, Focus::List);
+    assert!(!app.filter_input.is_editing());
   }
 
   #[test]
