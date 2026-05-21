@@ -582,7 +582,7 @@ fn apply_stop_model(app: &mut App) {
   };
   let launch_id = managed.launch_id.clone();
   let path = managed.path.clone();
-  let name = crate::util::paths::model_display_name(&path, app.metadata_for(&path));
+  let name = crate::util::paths::model_display_name(&path);
   app.confirm_dialog = Some(ConfirmAction::StopModel { launch_id, name });
 }
 
@@ -754,8 +754,7 @@ fn apply_send_chat(app: &mut App) {
     return;
   }
   let prompt = app.chat.prompt.clone();
-  let model_name =
-    crate::util::paths::model_display_name(&managed.path, app.metadata_for(&managed.path));
+  let model_name = crate::util::paths::model_display_name(&managed.path);
   app.chat.reset_for_send();
   let rx = spawn_chat_stream(managed.port, model_name, prompt);
   app.chat.stream_rx = Some(rx);
@@ -773,8 +772,7 @@ fn apply_embed_submit(app: &mut App) {
     return;
   }
   let input = app.embed.input.clone();
-  let model_name =
-    crate::util::paths::model_display_name(&managed.path, app.metadata_for(&managed.path));
+  let model_name = crate::util::paths::model_display_name(&managed.path);
   let (tx, rx) = mpsc::unbounded_channel::<TabEvent>();
   app.embed.busy = true;
   app.embed.pending = Some(rx);
@@ -830,8 +828,7 @@ fn apply_rerank_submit(app: &mut App) {
   }
   let query = app.rerank.query.clone();
   let candidates = app.rerank.candidates.clone();
-  let model_name =
-    crate::util::paths::model_display_name(&managed.path, app.metadata_for(&managed.path));
+  let model_name = crate::util::paths::model_display_name(&managed.path);
   let (tx, rx) = mpsc::unbounded_channel::<TabEvent>();
   app.rerank.busy = true;
   app.rerank.pending = Some(rx);
@@ -956,7 +953,7 @@ fn apply_launch_submit(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) 
   // but a fat-finger shouldn't silently triple-launch a 14B model.
   let active_instances = app.managed.iter().filter(|m| m.path == path).count();
   if active_instances > 0 {
-    let name = crate::util::paths::model_display_name(&path, app.metadata_for(&path));
+    let name = crate::util::paths::model_display_name(&path);
     app.confirm_dialog = Some(ConfirmAction::LaunchDuplicate {
       name,
       active_instances,
@@ -1014,7 +1011,7 @@ fn build_yank_text(app: &App, action: Action) -> Option<String> {
     Action::YankCurl => {
       let m = app.focused_managed()?;
       let url = format!("http://127.0.0.1:{}/v1", m.port);
-      let model_name = crate::util::paths::model_display_name(&m.path, app.metadata_for(&m.path));
+      let model_name = crate::util::paths::model_display_name(&m.path);
       Some(format!(
         "curl -s -H 'Content-Type: application/json' -d '{{\"model\":\"{}\",\"messages\":[{{\"role\":\"user\",\"content\":\"hello\"}}]}}' {}/chat/completions",
         model_name,
@@ -1682,12 +1679,27 @@ fn handle_hf_dialog_input(app: &mut App, key: KeyEvent, _writer: Option<&mpsc::S
 /// currently active — promote it and spawn the background download
 /// task that ships progress back over the strip's mpsc.
 fn enqueue_hf_pull(app: &mut App, repo: String, row: crate::tui::hf_dialog::PickerRow) {
-  use crate::tui::download_strip::QueuedPull;
+  use crate::tui::download_strip::{DownloadEvent, QueuedPull};
   let filename = row.download_filename().to_string();
-  let friendly_name = friendly_pull_name(&repo, &filename);
+  // R116 cache-hit short-circuit: probe the HF cache before queuing
+  // anything. When every requested file already lives under a single
+  // snapshot dir, emit AlreadyCached directly via the strip's mpsc
+  // and skip both the queue and the download spawn. Deterministic —
+  // replaces the earlier "<200 ms elapsed" heuristic that conflated
+  // a fast network with a real cache hit.
+  if let Some(cached_path) = probe_cached_pull(&repo, &row.all_filenames()) {
+    let _ = app
+      .download_strip
+      .event_tx
+      .send(DownloadEvent::AlreadyCached {
+        repo_id: repo.clone(),
+        cached_path,
+      });
+    return;
+  }
   let pull = QueuedPull {
     repo_id: repo.clone(),
-    friendly_name,
+    friendly_name: format!("{repo} :{filename}"),
     row,
   };
   let queue_pos = app.download_strip.enqueue(pull);
@@ -1702,25 +1714,44 @@ fn enqueue_hf_pull(app: &mut App, repo: String, row: crate::tui::hf_dialog::Pick
   }
 }
 
-/// Build a friendly mid-flight label for the strip: HF cache layout
-/// uses `<repo> (<quant>)` via `model_display_name`. The path is
-/// reconstructed from the repo id + filename so the helper picks the
-/// HF branch even before the file lands on disk.
-fn friendly_pull_name(repo: &str, filename: &str) -> String {
-  let path = std::path::PathBuf::from("hf-cache")
-    .join(crate::init::download::repo_folder_name(repo))
-    .join("snapshots/pending")
-    .join(filename);
-  crate::util::paths::model_display_name(&path, None)
+/// Probe the HF cache for every filename the pull would produce on
+/// disk and, when all are present under the same snapshot directory,
+/// return the path to the user-facing first file (the row's
+/// `download_filename`). Used by `spawn_download_task` to short-
+/// circuit a redundant pull deterministically, replacing the
+/// previous elapsed-time heuristic (R116). Returns `None` when the
+/// repo isn't cached, any shard is missing, or the cache root can't
+/// be resolved on this platform.
+fn probe_cached_pull(repo_id: &str, filenames: &[String]) -> Option<std::path::PathBuf> {
+  if filenames.is_empty() {
+    return None;
+  }
+  let cache_root = crate::init::download::hf_cache_dir().ok()?;
+  let repo_dir = cache_root.join(crate::init::download::repo_folder_name(repo_id));
+  let snapshots = repo_dir.join("snapshots");
+  let entries = std::fs::read_dir(&snapshots).ok()?;
+  for entry in entries.filter_map(|e| e.ok()) {
+    let snapshot = entry.path();
+    if !snapshot.is_dir() {
+      continue;
+    }
+    // The HF cache exposes files as symlinks under `snapshots/<rev>/`.
+    // A snapshot only counts as a hit when every requested filename
+    // resolves there — partial caches (e.g. only shard 1) must fall
+    // through to the real download path.
+    if filenames.iter().all(|f| snapshot.join(f).exists()) {
+      return Some(snapshot.join(&filenames[0]));
+    }
+  }
+  None
 }
 
 /// Spawn a tokio task that calls `init::download::download_repo`
 /// with a `DownloadProgress` shim relaying every callback to the
-/// strip's mpsc. The shim also short-circuits to `AlreadyCached`
-/// when a file finishes within an unreasonably short window —
-/// hf-hub returns the cached path instantly when the blob already
-/// exists, so a sub-200ms finish on a non-trivial file is a cache
-/// hit (R116).
+/// strip's mpsc. Caller has already run `probe_cached_pull` against
+/// the requested files, so this path only fires for real downloads —
+/// the cache-hit short-circuit (R116) lives next to the queue
+/// enqueue, not inside the spawn.
 fn spawn_download_task(
   pull: crate::tui::download_strip::QueuedPull,
   tx: tokio::sync::mpsc::UnboundedSender<crate::tui::download_strip::DownloadEvent>,
@@ -1748,7 +1779,6 @@ fn spawn_download_task(
       tx: tx.clone(),
       repo_id: pull.repo_id.clone(),
       inner: std::sync::Mutex::new(StripProgressInner::default()),
-      started_at: std::time::Instant::now(),
     });
     let options = DownloadOptions {
       extension_filter: Some(".gguf".into()),
@@ -1759,28 +1789,10 @@ fn spawn_download_task(
       revision: None,
     };
     match crate::init::download::download_repo(&spec, &fetch_client, &options).await {
-      Ok(result) => {
-        // R116 cache-hit detection: if the whole download finished
-        // implausibly fast for a non-trivial size, surface as
-        // AlreadyCached so the dialog toasts + the strip skips a
-        // 100%-immediately flash. Otherwise emit a normal Finished.
-        let elapsed = progress.started_at.elapsed();
-        let total_bytes = progress.inner.lock().map(|i| i.bytes_total).unwrap_or(0);
-        if elapsed < std::time::Duration::from_millis(200) && total_bytes > 64 * 1024 * 1024 {
-          let cached_path = result
-            .paths
-            .first()
-            .cloned()
-            .unwrap_or_else(|| std::path::PathBuf::from(pull.row.download_filename()));
-          let _ = tx.send(crate::tui::download_strip::DownloadEvent::AlreadyCached {
-            repo_id: pull.repo_id.clone(),
-            cached_path,
-          });
-        } else {
-          let _ = tx.send(crate::tui::download_strip::DownloadEvent::Finished {
-            repo_id: pull.repo_id.clone(),
-          });
-        }
+      Ok(_) => {
+        let _ = tx.send(crate::tui::download_strip::DownloadEvent::Finished {
+          repo_id: pull.repo_id.clone(),
+        });
       }
       Err(e) => {
         let _ = tx.send(crate::tui::download_strip::DownloadEvent::Error {
@@ -1801,7 +1813,6 @@ struct StripProgress {
   tx: tokio::sync::mpsc::UnboundedSender<crate::tui::download_strip::DownloadEvent>,
   repo_id: String,
   inner: std::sync::Mutex<StripProgressInner>,
-  started_at: std::time::Instant,
 }
 
 #[derive(Default)]

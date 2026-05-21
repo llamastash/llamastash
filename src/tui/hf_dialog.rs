@@ -143,6 +143,18 @@ impl PickerRow {
     }
   }
 
+  /// Every filename the pull will produce on disk. Used by the
+  /// pre-download cache probe so a split-shard pull only short-
+  /// circuits to `AlreadyCached` when every shard is present.
+  pub fn all_filenames(&self) -> Vec<String> {
+    match self {
+      PickerRow::Single { filename, .. } => vec![filename.clone()],
+      PickerRow::Split {
+        shard_filenames, ..
+      } => shard_filenames.clone(),
+    }
+  }
+
   /// `true` when the row can be selected. Incomplete shard sets
   /// return `false` so the picker can grey them out.
   pub fn selectable(&self) -> bool {
@@ -439,7 +451,10 @@ impl HfDialogState {
   }
 
   /// Move the search-result cursor up by one (no-op when no
-  /// results).
+  /// results). In the FilePicker stage, skip past non-selectable
+  /// rows (incomplete shard sets) so the cursor never parks where
+  /// Enter would refuse — feels less rough than hitting Enter and
+  /// being told "no file selected".
   pub fn move_up(&mut self) {
     match self.stage {
       HfStage::Search => {
@@ -448,15 +463,21 @@ impl HfDialogState {
         }
       }
       HfStage::FilePicker => {
-        if self.picker_idx > 0 {
-          self.picker_idx -= 1;
+        let mut i = self.picker_idx;
+        while i > 0 {
+          i -= 1;
+          if self.picker_rows[i].selectable() {
+            self.picker_idx = i;
+            return;
+          }
         }
       }
       HfStage::Confirm => {}
     }
   }
 
-  /// Move the cursor down by one, clamping at the row count.
+  /// Move the cursor down by one, clamping at the row count. Same
+  /// skip-non-selectable rule as [`Self::move_up`].
   pub fn move_down(&mut self) {
     match self.stage {
       HfStage::Search => {
@@ -465,8 +486,14 @@ impl HfDialogState {
         }
       }
       HfStage::FilePicker => {
-        if !self.picker_rows.is_empty() && self.picker_idx + 1 < self.picker_rows.len() {
-          self.picker_idx += 1;
+        let len = self.picker_rows.len();
+        let mut i = self.picker_idx + 1;
+        while i < len {
+          if self.picker_rows[i].selectable() {
+            self.picker_idx = i;
+            return;
+          }
+          i += 1;
         }
       }
       HfStage::Confirm => {}
@@ -1159,6 +1186,40 @@ mod tests {
     assert_eq!(s.picker_idx, 1);
     // Search cursor untouched.
     assert_eq!(s.selected_idx, 1);
+  }
+
+  #[test]
+  fn move_down_in_picker_skips_non_selectable_rows() {
+    // Cursor on a selectable row; the next row is an incomplete
+    // shard set (refuses selection); the row after that is
+    // selectable. `move_down` must land on the third row, not the
+    // unselectable middle, so Enter never fires the "no file
+    // selected" toast under normal arrow navigation.
+    let mut s = HfDialogState::open(false, HardwareFitContext::default());
+    s.stage = HfStage::FilePicker;
+    s.picker_rows = vec![
+      PickerRow::Single {
+        filename: "a.gguf".into(),
+        size_bytes: Some(1),
+      },
+      PickerRow::Split {
+        label: "incomplete.gguf".into(),
+        total: 3,
+        complete: false,
+        total_size_bytes: None,
+        launch_filename: "incomplete-00001-of-00003.gguf".into(),
+        shard_filenames: vec!["incomplete-00001-of-00003.gguf".into()],
+      },
+      PickerRow::Single {
+        filename: "c.gguf".into(),
+        size_bytes: Some(1),
+      },
+    ];
+    s.picker_idx = 0;
+    s.move_down();
+    assert_eq!(s.picker_idx, 2, "arrow must skip the incomplete shard row");
+    s.move_up();
+    assert_eq!(s.picker_idx, 0, "arrow-up also skips back across it");
   }
 
   #[test]

@@ -1,12 +1,20 @@
 ---
-title: HuggingFace Pull TUI Dialog (Search / Sort / Pagination + Friendly Names)
+title: HuggingFace Pull TUI Dialog (Search / Sort / Pagination)
 type: feat
 status: completed
 date: 2026-05-20
 origin: docs/brainstorms/2026-05-20-hf-pull-tui-dialog-requirements.md
 ---
 
-# HuggingFace Pull TUI Dialog (Search / Sort / Pagination + Friendly Names)
+> **2026-05-21 update.** The friendly-display-name slice (R118 / R119 /
+> R120) was dropped from this PR after review — real catalogs use
+> well-named GGUFs, so `file_stem` is fine for now. The plan below still
+> describes the original two-feature bundle for historical context; only
+> the dialog + download strip + `vram_fit_for_file` helper landed. The
+> dialog hotkey also moved from `Ctrl+D` to `Shift+D` so terminals that
+> swallow `Ctrl+D` as EOF still work.
+
+# HuggingFace Pull TUI Dialog (Search / Sort / Pagination)
 
 ## Overview
 

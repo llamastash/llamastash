@@ -6,14 +6,13 @@
 //! behaviour without spinning up tokio.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
 use crate::daemon::host_metrics::HostMetricsSnapshot;
 use crate::discovery::DiscoveredModel;
-use crate::gguf::metadata::ModelMetadata;
 use crate::theme::{palette_for, Palette, ThemeName};
 use crate::tui::advanced_panel::AdvancedPanelState;
 use crate::tui::filter::rank;
@@ -885,18 +884,6 @@ impl App {
       Some(ListRow::Model { name, .. }) => Some(name.clone()),
       _ => None,
     }
-  }
-
-  /// Look up parsed GGUF metadata for the given path from the
-  /// discovered-model catalog. Returns `None` for paths the catalog
-  /// hasn't seen (e.g. a freshly launched stub before the first
-  /// catalog refresh).
-  pub fn metadata_for(&self, path: &Path) -> Option<&ModelMetadata> {
-    self
-      .models
-      .iter()
-      .find(|m| m.path == path)
-      .and_then(|m| m.metadata.as_ref())
   }
 
   pub fn focused_managed(&self) -> Option<&ManagedRow> {

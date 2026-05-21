@@ -227,6 +227,11 @@ fn parse_next_link(header: &str) -> Option<String> {
 /// every row. Directories are filtered out — the picker only renders
 /// flat files.
 ///
+/// Falls back to `/tree/master` when `/tree/main` returns 404 — the
+/// HF Hub doesn't enforce a default-branch name and a small but
+/// non-zero slice of legacy repos still ship from `master`. Other
+/// failures (auth, transport) surface immediately without retry.
+///
 /// `repo_id` is appended as path segments (`owner` / `name`), so the
 /// `url` crate percent-encodes any path-special characters and the
 /// server can't be tricked into hitting a non-`/api/models/...` path.
@@ -238,17 +243,22 @@ pub async fn list_repo_files(
     return Err(ListRepoFilesError::Offline);
   }
   let (owner, name) = parse_repo_id(repo_id)?;
-  let endpoint = endpoint_or_default();
-  let mut url = reqwest::Url::parse(&endpoint)
-    .map_err(|e| ListRepoFilesError::Fetch(FetchError::Transport(format!("URL parse: {e}"))))?;
-  {
-    let mut segs = url.path_segments_mut().map_err(|_| {
-      ListRepoFilesError::Fetch(FetchError::Transport(
-        "HF endpoint is not a base URL".to_string(),
-      ))
-    })?;
-    segs.extend(["api", "models", owner, name, "tree", "main"]);
+  match list_repo_files_for_branch(fetch, owner, name, "main").await {
+    Err(ListRepoFilesError::Fetch(FetchError::RemoteStatus { status: 404 })) => {
+      list_repo_files_for_branch(fetch, owner, name, "master").await
+    }
+    other => other,
   }
+}
+
+async fn list_repo_files_for_branch(
+  fetch: &FetchClient,
+  owner: &str,
+  name: &str,
+  branch: &str,
+) -> Result<Vec<HfRepoFile>, ListRepoFilesError> {
+  let endpoint = endpoint_or_default();
+  let url = build_tree_url(&endpoint, owner, name, branch)?;
   let entries: Vec<HfTreeEntry> = fetch
     .get_json(url.as_str(), REPO_LIST_BODY_CAP)
     .await
@@ -263,6 +273,25 @@ pub async fn list_repo_files(
       })
       .collect(),
   )
+}
+
+fn build_tree_url(
+  endpoint: &str,
+  owner: &str,
+  name: &str,
+  branch: &str,
+) -> Result<reqwest::Url, ListRepoFilesError> {
+  let mut url = reqwest::Url::parse(endpoint)
+    .map_err(|e| ListRepoFilesError::Fetch(FetchError::Transport(format!("URL parse: {e}"))))?;
+  {
+    let mut segs = url.path_segments_mut().map_err(|_| {
+      ListRepoFilesError::Fetch(FetchError::Transport(
+        "HF endpoint is not a base URL".to_string(),
+      ))
+    })?;
+    segs.extend(["api", "models", owner, name, "tree", branch]);
+  }
+  Ok(url)
 }
 
 fn parse_repo_id(repo_id: &str) -> Result<(&str, &str), ListRepoFilesError> {
@@ -467,6 +496,43 @@ mod tests {
     let json = r#"[{ "type": "file", "path": "pointer.gguf", "oid": "x" }]"#;
     let entries: Vec<HfTreeEntry> = serde_json::from_str(json).unwrap();
     assert!(entries[0].size.is_none());
+  }
+
+  #[test]
+  fn build_tree_url_targets_requested_branch() {
+    // Regression: the `/tree/<branch>` segment must reflect the
+    // branch argument so the `main` → `master` fallback actually
+    // hits the second branch rather than re-issuing /main twice.
+    let main = build_tree_url(
+      "https://huggingface.co",
+      "Qwen",
+      "Qwen2.5-7B-Instruct-GGUF",
+      "main",
+    )
+    .unwrap();
+    assert_eq!(
+      main.path(),
+      "/api/models/Qwen/Qwen2.5-7B-Instruct-GGUF/tree/main"
+    );
+    let master =
+      build_tree_url("https://huggingface.co", "owner", "legacy-repo", "master").unwrap();
+    assert_eq!(master.path(), "/api/models/owner/legacy-repo/tree/master");
+  }
+
+  #[test]
+  fn build_tree_url_percent_encodes_owner_and_name() {
+    // Even though parse_repo_id rejects `/` in name, owners and
+    // names can legally contain `.` and other allowed-but-special
+    // characters; the path-segment builder must encode anything that
+    // would collide with the URL grammar. `?` would otherwise be
+    // parsed as the start of the query string and the
+    // `/tree/<branch>` token would silently disappear.
+    let url = build_tree_url("https://huggingface.co", "owner", "weird?name", "main").unwrap();
+    assert_eq!(
+      url.path(),
+      "/api/models/owner/weird%3Fname/tree/main",
+      "path-special characters must be percent-encoded into the segment"
+    );
   }
 
   #[test]

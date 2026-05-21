@@ -5,6 +5,13 @@ topic: hf-pull-tui-dialog
 
 # HuggingFace Pull TUI Dialog (Search / Sort / Pagination + Friendly Names)
 
+> **2026-05-21 update.** R118 / R119 / R120 (friendly display names for
+> HF-cache models) were dropped from the shipped PR. The renames were
+> cosmetic on real catalogs whose GGUFs already have descriptive
+> filenames; revisit if the ambiguity (`model.gguf` /
+> `ggml-model-q4_k_m.gguf`) becomes a real pain point. The original
+> requirements text is kept below for historical context.
+
 > Companion to [`docs/brainstorms/llamatui-requirements.md`](./llamatui-requirements.md) (origin: R46, the deferred TUI HF-pull hotkey) and [`docs/brainstorms/2026-05-18-init-wizard-requirements.md`](./2026-05-18-init-wizard-requirements.md) (R65 — the TUI HF-pull surface was the schedule-flexible piece of R46's release). IDs continue from R103 to stay globally unambiguous.
 
 ## Problem Frame

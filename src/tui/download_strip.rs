@@ -205,18 +205,22 @@ impl DownloadStripState {
     self.promote_next()
   }
 
-  /// Apply an `AlreadyCached` event. The active pull (which was
-  /// promoted hoping to download) clears immediately; the caller
-  /// will toast + select the matching catalog row.
+  /// Apply an `AlreadyCached` event. The active pull (if any matches
+  /// the repo id) clears so the strip stops claiming a row; the
+  /// caller will toast + select the matching catalog row. Also fires
+  /// when no active pull is installed — the pre-flight cache probe
+  /// in `enqueue_hf_pull` emits this event without ever promoting,
+  /// so the drain still needs to surface the toast + row-snap.
   pub fn apply_already_cached(
     &mut self,
     repo_id: &str,
     cached_path: std::path::PathBuf,
   ) -> Option<QueuedPull> {
-    if self.active.as_ref().map(|a| a.repo_id.as_str()) != Some(repo_id) {
-      return None;
+    if let Some(active) = self.active.as_ref() {
+      if active.repo_id == repo_id {
+        self.active = None;
+      }
     }
-    self.active = None;
     self.pending_cache_hit = Some(cached_path);
     self.promote_next()
   }
@@ -395,6 +399,20 @@ mod tests {
     let promoted = strip.promote_next().unwrap();
     strip.install_active(&promoted);
     let path = std::path::PathBuf::from("/cache/hf/.../snapshot/file.gguf");
+    strip.apply_already_cached("owner/repo", path.clone());
+    assert!(strip.active.is_none());
+    assert_eq!(strip.pending_cache_hit.as_ref(), Some(&path));
+  }
+
+  #[test]
+  fn already_cached_records_path_even_without_active_pull() {
+    // Regression: the pre-flight cache probe in `enqueue_hf_pull`
+    // fires `AlreadyCached` without ever calling `install_active`.
+    // The drain still needs to surface the toast + row-snap, so
+    // `pending_cache_hit` must be populated even when no pull is
+    // currently active.
+    let mut strip = DownloadStripState::default();
+    let path = std::path::PathBuf::from("/cache/hf/snapshot/file.gguf");
     strip.apply_already_cached("owner/repo", path.clone());
     assert!(strip.active.is_none());
     assert_eq!(strip.pending_cache_hit.as_ref(), Some(&path));

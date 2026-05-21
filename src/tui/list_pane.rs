@@ -235,7 +235,7 @@ pub fn build_rows(inputs: RowInputs<'_>) -> Vec<ListRow> {
       label: "★ Favorites".into(),
     });
     let mut sorted = favorites.clone();
-    sorted.sort_by_key(|a| friendly_name(a));
+    sorted.sort_by_key(|a| display_name(a));
     for m in sorted {
       rows.push(model_row(
         m,
@@ -261,7 +261,7 @@ pub fn build_rows(inputs: RowInputs<'_>) -> Vec<ListRow> {
     rows.push(ListRow::Header {
       label: parent.display().to_string(),
     });
-    entries.sort_by_key(|a| friendly_name(a));
+    entries.sort_by_key(|a| display_name(a));
     for m in entries {
       let fav = favorite_set.contains(&m.path);
       rows.push(model_row(
@@ -299,7 +299,12 @@ fn running_row(m: &DiscoveredModel, launch: &RunningLaunchRow) -> ListRow {
 fn running_row_stub(launch: &RunningLaunchRow) -> ListRow {
   ListRow::Model {
     path: launch.path.clone(),
-    name: crate::util::paths::model_display_name(&launch.path, None),
+    name: launch
+      .path
+      .file_stem()
+      .and_then(|s| s.to_str())
+      .unwrap_or("(unknown)")
+      .to_string(),
     arch: String::new(),
     quant: String::new(),
     native_ctx: None,
@@ -322,8 +327,12 @@ fn surface_state_for(
     .unwrap_or(SurfaceState::NotLaunched)
 }
 
-fn friendly_name(m: &DiscoveredModel) -> String {
-  crate::util::paths::model_display_name(&m.path, m.metadata.as_ref())
+fn display_name(m: &DiscoveredModel) -> String {
+  m.path
+    .file_stem()
+    .and_then(|s| s.to_str())
+    .map(|s| s.to_string())
+    .unwrap_or_else(|| m.path.display().to_string())
 }
 
 fn model_row(
@@ -345,7 +354,7 @@ fn model_row(
   };
   ListRow::Model {
     path: m.path.clone(),
-    name: friendly_name(m),
+    name: display_name(m),
     arch,
     quant,
     native_ctx,
@@ -879,62 +888,6 @@ mod tests {
       parse_error: None,
       split_siblings: Vec::new(),
     }
-  }
-
-  fn hf_cache_fake(repo_owner: &str, repo: &str, file: &str) -> DiscoveredModel {
-    let parent = PathBuf::from(format!(
-      "/home/u/.cache/huggingface/hub/models--{repo_owner}--{repo}/snapshots/abc123",
-    ));
-    let path = parent.join(file);
-    DiscoveredModel {
-      path,
-      parent,
-      source: ModelSource::UserPath,
-      metadata: Some(ModelMetadata {
-        arch: Some("llama".into()),
-        total_parameters: None,
-        parameter_label: None,
-        quant: Quant::Q4_K,
-        native_ctx: None,
-        chat_template: None,
-        tokenizer_kind: None,
-        reasoning_hint: false,
-        mode_hint: ModeHint::Chat,
-        weights_bytes: None,
-      }),
-      parse_error: None,
-      split_siblings: Vec::new(),
-    }
-  }
-
-  #[test]
-  fn build_rows_uses_friendly_name_for_hf_cache_models() {
-    // Regression: rows for HF-cache models must show
-    // `<repo> (<quant>)` instead of the raw `file_stem`.
-    let m = hf_cache_fake("Qwen", "Qwen2.5-7B-Instruct-GGUF", "qwen.gguf");
-    let states = BTreeMap::new();
-    let rows = build_rows(RowInputs {
-      models: std::slice::from_ref(&m),
-      favorites: &[],
-      model_states: &states,
-      model_ports: &BTreeMap::new(),
-      running: &[],
-      recent_paths: &[],
-    });
-    let names: Vec<&str> = rows
-      .iter()
-      .filter_map(|r| {
-        if let ListRow::Model { name, .. } = r {
-          Some(name.as_str())
-        } else {
-          None
-        }
-      })
-      .collect();
-    assert!(
-      names.contains(&"Qwen2.5-7B-Instruct-GGUF (Q4_K)"),
-      "expected friendly HF name in row set; saw {names:?}"
-    );
   }
 
   #[test]
