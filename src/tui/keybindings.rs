@@ -373,18 +373,13 @@ const LIST_BINDINGS: &[Binding] = &[
     description: "stop",
   },
   // Tab/⇧+Tab cycle panes (Models → Logs → Chat/Embed/Rerank →
-  // Settings → wrap). ↑/↓ scroll the list cursor. Right (→) jumps
-  // into the right pane from the model list (asymmetric — Left
-  // stays unbound here because the user lives in Models by
-  // default; Esc on the right pane snaps back). h/l stay as
-  // vi-style pane-cycle aliases for home-row navigators.
-  Binding {
-    key: KeyCode::Right,
-    mods: KeyModifiers::NONE,
-    action: Action::NextFocus,
-    label: "→",
-    description: "right pane",
-  },
+  // Settings → wrap). ↑/↓ scroll the list cursor. The `→` chord is
+  // deliberately unbound on the Models list: arrow-right reads as
+  // "cycle value" everywhere else (Settings tab) and surfaced as
+  // an asymmetric pane-jump it confused users into pressing it for
+  // every navigation. Pane cycle is reachable via Tab/Shift+Tab or
+  // the vi `h`/`l` aliases (still bound below); Enter launches the
+  // focused model into the right pane.
   Binding {
     key: KeyCode::Tab,
     mods: KeyModifiers::NONE,
@@ -1487,20 +1482,25 @@ mod tests {
 
   #[test]
   fn list_right_arrow_enters_right_pane_but_left_is_unbound() {
-    // Round-8 nav: from the Models list, `→` opens / focuses the
-    // right pane. `←` is intentionally not bound — Esc on the
-    // right pane handles the return path; binding both would
-    // shadow potential future intents (e.g. column scroll). The
-    // canonical `Tab` / `⇧+Tab` cycle still works on top.
+    // 2026-05-21: the `→` shortcut from the Models list was removed
+    // — it read as "cycle value" everywhere else (Settings tab) and
+    // the asymmetric pane-jump confused users. Pane cycle is now
+    // reachable via Tab / Shift+Tab / `h` / `l` only. Left was
+    // already unbound; Right joins it.
     assert_eq!(
       action_for(Focus::List, KeyCode::Right, KeyModifiers::NONE),
-      Some(Action::NextFocus),
-      "Right arrow from Models must enter the right pane"
+      None,
+      "Right arrow must NOT open the right pane (removed)"
     );
     assert_eq!(
       action_for(Focus::List, KeyCode::Left, KeyModifiers::NONE),
       None,
-      "Left arrow stays unbound in Models — asymmetric on purpose"
+      "Left arrow stays unbound in Models"
+    );
+    assert_eq!(
+      action_for(Focus::List, KeyCode::Tab, KeyModifiers::NONE),
+      Some(Action::NextFocus),
+      "Tab remains the canonical pane-cycle chord"
     );
   }
 

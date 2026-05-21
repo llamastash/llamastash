@@ -238,13 +238,25 @@ fn handle_filter_input(app: &mut App, key: KeyEvent) {
       app.filter_input.exit_edit();
       app.focus = Focus::List;
     }
-    InputOutcome::PassThrough => {
+    InputOutcome::PassThrough => match key.code {
       // Resting + empty buffer + Esc → close the filter entirely
-      // (back to the list). Other resting keys are unbound here.
-      if matches!(key.code, KeyCode::Esc) {
-        app.clear_filter();
-      }
-    }
+      // (back to the list). Other resting Esc cases are handled
+      // inside the InputField (clears the buffer).
+      KeyCode::Esc => app.clear_filter(),
+      // Arrow / vi-aliased navigation while the filter is focused
+      // must still move the list cursor so the user can scroll the
+      // filtered results without leaving the filter focus. The
+      // InputField passes arrows through in both editing and
+      // resting modes (no in-buffer cursor model), so this is the
+      // single place that wires the gesture. `j`/`k` only fire in
+      // resting mode — the InputField captures them as typed chars
+      // while editing.
+      KeyCode::Up | KeyCode::Char('k') => app.move_up(),
+      KeyCode::Down | KeyCode::Char('j') => app.move_down(),
+      KeyCode::PageUp => app.move_by(-10),
+      KeyCode::PageDown => app.move_by(10),
+      _ => {}
+    },
   }
 }
 
@@ -2657,6 +2669,131 @@ mod tests {
   }
 
   #[test]
+  fn filter_focus_three_esc_walk_back_chain() {
+    // Lock down the Esc walk-back contract for the filter input
+    // documented in handle_key:
+    //   1st Esc → exit edit (buffer kept, focus stays)
+    //   2nd Esc → clear buffer (focus stays)
+    //   3rd Esc → close filter (focus walks back to List)
+    let mut app = App::new(Default::default());
+    pump_input(&mut app, key(KeyCode::Char('/'), KeyModifiers::NONE));
+    assert_eq!(app.focus, Focus::Filter);
+    pump_input(&mut app, key(KeyCode::Char('q'), KeyModifiers::NONE));
+    pump_input(&mut app, key(KeyCode::Char('w'), KeyModifiers::NONE));
+    assert!(app.filter_input.is_editing());
+    assert_eq!(app.filter_input.buffer(), "qw");
+    // 1st Esc.
+    pump_input(&mut app, key(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.focus, Focus::Filter, "filter still focused");
+    assert!(
+      !app.filter_input.is_editing(),
+      "edit must exit on first Esc"
+    );
+    assert_eq!(app.filter_input.buffer(), "qw", "buffer must survive");
+    // 2nd Esc.
+    pump_input(&mut app, key(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.focus, Focus::Filter, "filter still focused");
+    assert!(
+      app.filter_input.is_empty(),
+      "buffer must clear on second Esc"
+    );
+    // 3rd Esc.
+    pump_input(&mut app, key(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(
+      app.focus,
+      Focus::List,
+      "third Esc must walk focus back to List"
+    );
+  }
+
+  #[test]
+  fn chat_input_three_esc_walk_back_chain() {
+    // Same contract for the chat composer (representative of
+    // chat/embed/rerank). The third Esc dispatches `Action::ExitEdit`
+    // which exits edit on every tab field + flips focus back to
+    // RightPane.
+    let mut app = App::new(Default::default());
+    app.right_tab = RightTab::Chat;
+    app.focus = Focus::RightPane;
+    // `e` activates the chat-input focus (auto-enters edit).
+    pump_input(&mut app, key(KeyCode::Char('e'), KeyModifiers::NONE));
+    assert_eq!(app.focus, Focus::ChatInput);
+    assert!(app.chat.prompt.is_editing());
+    // Type something so the second Esc has buffer content to clear.
+    pump_input(&mut app, key(KeyCode::Char('h'), KeyModifiers::NONE));
+    pump_input(&mut app, key(KeyCode::Char('i'), KeyModifiers::NONE));
+    assert_eq!(app.chat.prompt.buffer(), "hi");
+    // 1st Esc — exit edit.
+    pump_input(&mut app, key(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.focus, Focus::ChatInput, "focus stays on chat input");
+    assert!(!app.chat.prompt.is_editing());
+    assert_eq!(app.chat.prompt.buffer(), "hi");
+    // 2nd Esc — clear.
+    pump_input(&mut app, key(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.chat.prompt.is_empty());
+    assert_eq!(
+      app.focus,
+      Focus::ChatInput,
+      "focus stays on chat input after clear"
+    );
+    // 3rd Esc — exit chat input back to the right pane.
+    pump_input(&mut app, key(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(
+      app.focus,
+      Focus::RightPane,
+      "third Esc must walk focus back to RightPane"
+    );
+  }
+
+  #[test]
+  fn filter_focus_arrow_keys_move_the_list_cursor() {
+    // Up/Down (and the vi `k`/`j` aliases) must scroll the filtered
+    // model list while focus stays on the filter input, in both
+    // editing and resting modes. The InputField passes arrows
+    // through; `handle_filter_input` is the single wire that turns
+    // those passthroughs into list-cursor movement.
+    let mut app = App::new(Default::default());
+    app.models = vec![
+      fake_model_for_events("/m/a.gguf", "/m"),
+      fake_model_for_events("/m/b.gguf", "/m"),
+      fake_model_for_events("/m/c.gguf", "/m"),
+    ];
+    app.go_top();
+    let cursor_before = app.list_cursor;
+    // Enter filter focus (auto-enters edit).
+    pump_input(&mut app, key(KeyCode::Char('/'), KeyModifiers::NONE));
+    assert_eq!(app.focus, Focus::Filter);
+    assert!(app.filter_input.is_editing(), "filter must auto-edit");
+    // Down while editing → list cursor advances.
+    pump_input(&mut app, key(KeyCode::Down, KeyModifiers::NONE));
+    assert!(
+      app.list_cursor > cursor_before,
+      "Down arrow in filter edit mode must advance the list cursor"
+    );
+    let mid_cursor = app.list_cursor;
+    pump_input(&mut app, key(KeyCode::Up, KeyModifiers::NONE));
+    assert!(
+      app.list_cursor < mid_cursor,
+      "Up arrow in filter edit mode must rewind the list cursor"
+    );
+    // Now leave edit mode (resting). `j` is captured as a typed char
+    // while editing, but in resting mode it goes through to the list
+    // cursor.
+    pump_input(&mut app, key(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(
+      !app.filter_input.is_editing(),
+      "first Esc must exit edit (filter still focused)"
+    );
+    let before_j = app.list_cursor;
+    pump_input(&mut app, key(KeyCode::Char('j'), KeyModifiers::NONE));
+    assert!(
+      app.list_cursor > before_j,
+      "`j` in resting filter must scroll the list, got cursor {before_j} → {}",
+      app.list_cursor
+    );
+  }
+
+  #[test]
   fn opening_hf_dialog_inherits_offline_flag_from_app_options() {
     // Regression: app.options.offline must propagate into the dialog
     // state at open time so the dialog renders "search disabled" and
@@ -3524,7 +3661,11 @@ mod tests {
   }
 
   #[test]
-  fn right_arrow_on_models_list_enters_right_pane() {
+  fn right_arrow_on_models_list_does_not_change_focus() {
+    // 2026-05-21: the `→` shortcut was removed (read as
+    // "cycle value" everywhere else and the asymmetric pane-jump
+    // confused users). Pane focus moves via Tab / Shift+Tab / `l`
+    // / `h` instead. Verify a stray Right keystroke is a no-op.
     let mut app = App::new(Default::default());
     app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
     app.go_top();
@@ -3532,8 +3673,8 @@ mod tests {
     pump_input(&mut app, key(KeyCode::Right, KeyModifiers::NONE));
     assert_eq!(
       app.focus,
-      Focus::RightPane,
-      "→ from Models must focus the right pane (round-8)"
+      Focus::List,
+      "→ must NOT move focus off Models (binding removed)"
     );
   }
 

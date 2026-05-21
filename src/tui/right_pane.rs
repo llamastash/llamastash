@@ -110,14 +110,37 @@ pub(crate) fn bottom_hint_chips(app: &App) -> Vec<String> {
       c.push(h);
     }
   };
+  /// Surface the `InputField` modal-contract chips for one of the
+  /// tab inputs (chat / embed / rerank / candidate). Mirrors the
+  /// rule documented in `src/tui/input_field.rs`:
+  /// - editing → `Esc:stop edit`
+  /// - resting + buffer content → `e:edit · Esc:clear`
+  /// - resting + empty buffer → `e:edit` only (one more Esc walks
+  ///   back via `Action::ExitEdit`).
+  fn push_input_field_chips(c: &mut Vec<String>, editing: bool, empty: bool) {
+    if editing {
+      c.push("Esc:stop edit".to_string());
+      return;
+    }
+    c.push("e:edit".to_string());
+    if !empty {
+      c.push("Esc:clear".to_string());
+    }
+  }
   match (app.focus, app.right_tab) {
-    // Edit-mode focuses surface the keys live inside the buffer.
-    // Override descriptions to keep the chips short without
-    // muddying the help-overlay rows.
+    // Edit-mode focuses surface the InputField's modal-contract
+    // chord under the user's current state:
+    // - editing: `Esc:stop edit` (Esc exits edit, buffer kept).
+    // - resting + non-empty buffer: `e:edit · Esc:clear` (second
+    //   Esc clears the buffer).
+    // - resting + empty buffer: `e:edit` only; one more Esc
+    //   walks back to the right pane via Action::ExitEdit.
+    // Plus the action-layer chips (Send / Embed / Rerank / ToggleThink).
     (Focus::ChatInput, _) => {
-      push(
+      push_input_field_chips(
         &mut chips,
-        app.hint_with(Focus::ChatInput, Action::ExitEdit, "clear"),
+        app.chat.prompt.is_editing(),
+        app.chat.prompt.is_empty(),
       );
       push(&mut chips, app.hint(Focus::ChatInput, Action::SendChat));
       push(
@@ -126,17 +149,26 @@ pub(crate) fn bottom_hint_chips(app: &App) -> Vec<String> {
       );
     }
     (Focus::EmbedInput, _) => {
-      push(
+      push_input_field_chips(
         &mut chips,
-        app.hint_with(Focus::EmbedInput, Action::ExitEdit, "clear"),
+        app.embed.input.is_editing(),
+        app.embed.input.is_empty(),
       );
       push(&mut chips, app.hint(Focus::EmbedInput, Action::Submit));
     }
     (Focus::RerankInput, _) => {
-      push(
-        &mut chips,
-        app.hint_with(Focus::RerankInput, Action::ExitEdit, "clear"),
-      );
+      // Rerank has two `InputField`s (query / candidate); the
+      // chip surfaces whichever one currently has focus.
+      let (editing, empty) = match app.rerank.field {
+        crate::tui::tabs::rerank::RerankField::Query => {
+          (app.rerank.query.is_editing(), app.rerank.query.is_empty())
+        }
+        crate::tui::tabs::rerank::RerankField::Candidate => (
+          app.rerank.candidate_buffer.is_editing(),
+          app.rerank.candidate_buffer.is_empty(),
+        ),
+      };
+      push_input_field_chips(&mut chips, editing, empty);
       // Submit is dual-duty: in the query field it dispatches
       // `/v1/rerank`; in the candidate field it stages the buffer
       // onto the candidate list. The chip description reflects the
@@ -476,34 +508,73 @@ mod tests {
     // so no chips fire — the bottom border stays bare instead of
     // teaching keys that no-op.
     assert!(bottom_hint_chips(&app_with_focus(Focus::RightPane, RightTab::Settings)).is_empty());
-    // Edit-mode focuses surface the in-buffer keystrokes.
+    // Edit-mode focuses surface InputField-aware modal chips. In a
+    // fresh app the field is *not* editing yet, so the chip strip
+    // shows `e:edit` (no `Esc:clear` because the buffer is empty).
     assert_eq!(
       bottom_hint_chips(&app_with_focus(Focus::ChatInput, RightTab::Chat)),
       vec![
+        "e:edit".to_string(),
+        "Enter:send".to_string(),
+        "Ctrl+r:think".to_string(),
+      ]
+    );
+    // Same field after the user enters edit mode — chip switches to
+    // `Esc:stop edit` so the user sees how to exit. (Sibling chips
+    // unchanged.)
+    let mut chat_app = app_with_focus(Focus::ChatInput, RightTab::Chat);
+    chat_app.chat.prompt.enter_edit();
+    assert_eq!(
+      bottom_hint_chips(&chat_app),
+      vec![
+        "Esc:stop edit".to_string(),
+        "Enter:send".to_string(),
+        "Ctrl+r:think".to_string(),
+      ]
+    );
+    // After exiting edit but with a non-empty buffer (a `Esc` press
+    // landed the field in its resting + non-empty state), the chip
+    // strip surfaces both `e:edit` and `Esc:clear` so the user sees
+    // the next step of the walk-back.
+    chat_app.chat.prompt.set_text("hi");
+    chat_app.chat.prompt.exit_edit();
+    assert_eq!(
+      bottom_hint_chips(&chat_app),
+      vec![
+        "e:edit".to_string(),
         "Esc:clear".to_string(),
         "Enter:send".to_string(),
         "Ctrl+r:think".to_string(),
       ]
     );
+    // Embed mirrors the same shape (one fewer trailing chip).
     assert_eq!(
       bottom_hint_chips(&app_with_focus(Focus::EmbedInput, RightTab::Embed)),
-      vec!["Esc:clear".to_string(), "Enter:embed".to_string()]
+      vec!["e:edit".to_string(), "Enter:embed".to_string()]
     );
-    // Rerank input: chip strip depends on which sub-field is
-    // active. Default field is Query, so Enter dispatches the
-    // rerank call.
-    let mut app = app_with_focus(Focus::RerankInput, RightTab::Rerank);
+    // Rerank input: chip strip reflects the active sub-field's
+    // editing state. Default field is Query (not editing, empty
+    // buffer) — `e:edit · Enter:rerank`.
+    let mut rerank_app = app_with_focus(Focus::RerankInput, RightTab::Rerank);
     assert_eq!(
-      bottom_hint_chips(&app),
-      vec!["Esc:clear".to_string(), "Enter:rerank".to_string()]
+      bottom_hint_chips(&rerank_app),
+      vec!["e:edit".to_string(), "Enter:rerank".to_string()]
     );
     // Cycling to the candidate field swaps the Enter description
-    // to `add candidate` — Enter now stages the buffer instead of
-    // dispatching `/v1/rerank`.
-    app.rerank.cycle_field();
+    // to `add candidate`.
+    rerank_app.rerank.cycle_field();
     assert_eq!(
-      bottom_hint_chips(&app),
-      vec!["Esc:clear".to_string(), "Enter:add candidate".to_string()]
+      bottom_hint_chips(&rerank_app),
+      vec!["e:edit".to_string(), "Enter:add candidate".to_string()]
+    );
+    // Entering edit on the candidate field flips the modal chip.
+    rerank_app.rerank.candidate_buffer.enter_edit();
+    assert_eq!(
+      bottom_hint_chips(&rerank_app),
+      vec![
+        "Esc:stop edit".to_string(),
+        "Enter:add candidate".to_string(),
+      ]
     );
   }
 

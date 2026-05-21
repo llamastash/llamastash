@@ -369,7 +369,12 @@ fn build_models_title<'a>(
   };
   let on_running = focused_row_is_running(app, rows);
   let deletable = focused_row_is_deletable(app, rows);
-  let hints = build_models_hints(app, filter_active, on_running, deletable);
+  // Mode the chip strip resolves against. `filter_active` collapses
+  // three independent signals (focus, edit state, buffer-non-empty)
+  // into one explicit enum so build_models_hints reads as a single
+  // match instead of three nested `if`s. See `FilterChipMode`.
+  let filter_chip_mode = filter_chip_mode(app, filter_active);
+  let hints = build_models_hints(app, filter_chip_mode, on_running, deletable);
   list_pane::TitleInputs {
     total: app.models.len(),
     area_width,
@@ -383,23 +388,80 @@ fn build_models_title<'a>(
 /// title bar. Order matters: the first chip is never dropped under
 /// budget pressure, so put the most important keystroke first
 /// (`Enter:apply` while filtering, `Enter:launch` otherwise).
+/// Filter-chip rendering mode. The chip strip differentiates three
+/// states so the InputField's modal contract (`e:edit / Esc:stop /
+/// 2nd-Esc:clear`) reads as a sequence of chips the user can follow
+/// without leaving the filter pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FilterChipMode {
+  /// No filter — render the normal row-action chips.
+  Inactive,
+  /// Filter input has focus and is in edit mode (typing). Surface
+  /// the in-edit chord — `Esc:stop edit · Enter:apply` — instead of
+  /// the row actions so the user can see how to exit edit.
+  Editing,
+  /// Filter has focus but is resting (Esc was pressed once, buffer
+  /// kept). Surface `e:edit · Esc:clear · Enter:apply` so the user
+  /// can either re-enter edit, walk back one more step (clear), or
+  /// apply the predicate they already typed.
+  Resting,
+}
+
+/// Decide which filter-chip mode the title strip should render.
+/// Pure projection of the three relevant signals (`filter_active`,
+/// the focus, the InputField edit state). The
+/// `Editing` / `Resting` arms only fire when focus *is* the filter
+/// — once the user steps focus back to the list (filter buffer
+/// retained), the chip strip falls back to the normal model row
+/// chips and the filter-chip slot drops out so the model nav chord
+/// is the headline.
+fn filter_chip_mode(app: &App, filter_active: bool) -> FilterChipMode {
+  if !filter_active || app.focus != Focus::Filter {
+    return FilterChipMode::Inactive;
+  }
+  if app.filter_input.is_editing() {
+    FilterChipMode::Editing
+  } else {
+    FilterChipMode::Resting
+  }
+}
+
 fn build_models_hints(
   app: &App,
-  filter_active: bool,
+  filter_mode: FilterChipMode,
   on_running: bool,
   deletable: bool,
 ) -> Vec<String> {
   let mut out: Vec<String> = Vec::with_capacity(7);
-  if filter_active {
-    // While the filter is being typed only the apply/clear keys are
-    // useful — every row-action hint would just clutter the strip.
+  if filter_mode == FilterChipMode::Editing {
+    // While editing only the in-edit chord is useful — `Esc:stop
+    // edit` exits to resting (buffer kept), `Enter:apply` applies
+    // the predicate. The InputField's static binding for Esc inside
+    // Focus::Filter is `ClearFilter`, but in edit mode the field
+    // intercepts Esc first and exits edit; we surface the actual
+    // observed behavior here.
     if let Some(h) = app.hint(Focus::Filter, Action::Submit) {
       out.push(h);
     }
+    out.push("Esc:stop edit".to_string());
+    return out;
+  }
+  if filter_mode == FilterChipMode::Resting {
+    // Resting: the InputField is in its post-first-Esc state. `e`
+    // re-enters edit, `Esc` clears the buffer, `Enter` applies the
+    // existing predicate. ↑/↓ scroll the filtered results without
+    // leaving the filter focus.
+    out.push("e:edit".to_string());
     if let Some(h) = app.hint(Focus::Filter, Action::ClearFilter) {
       out.push(h);
     }
-  } else {
+    if let Some(h) = app.hint(Focus::Filter, Action::Submit) {
+      out.push(h);
+    }
+    out.push("↑/↓:nav".to_string());
+    return out;
+  }
+  {
     // Audit §F5 #23: only surface `Enter:launch` when the cursor
     // sits on a launchable row. `open_launch_picker` is silently a
     // no-op on header rows (`★ Favorites`, `↺ Recent`, folder
@@ -803,7 +865,10 @@ mod tests {
     // keeps the headline action visible.
     let app = App::new(AppOptions::default());
     let hints = build_models_hints(
-      &app, /*filter_active=*/ false, /*on_running=*/ true, /*deletable=*/ false,
+      &app,
+      FilterChipMode::Inactive,
+      /*on_running=*/ true,
+      /*deletable=*/ false,
     );
     let stop_at = hints
       .iter()
@@ -826,7 +891,10 @@ mod tests {
     // path keys remain so the strip stays uncluttered.
     let app = App::new(AppOptions::default());
     let hints = build_models_hints(
-      &app, /*filter_active=*/ false, /*on_running=*/ false, /*deletable=*/ true,
+      &app,
+      FilterChipMode::Inactive,
+      /*on_running=*/ false,
+      /*deletable=*/ true,
     );
     assert!(!hints.iter().any(|h| h.contains("stop")), "{hints:?}");
     assert!(!hints.iter().any(|h| h.contains(":url")), "{hints:?}");
@@ -840,7 +908,7 @@ mod tests {
     use std::path::PathBuf;
     // No focused row → chip hidden.
     let empty_app = App::new(AppOptions::default());
-    let empty_hints = build_models_hints(&empty_app, false, false, false);
+    let empty_hints = build_models_hints(&empty_app, FilterChipMode::Inactive, false, false);
     assert!(
       !empty_hints.iter().any(|h| h.contains("delete")),
       "no focused name = no delete chip: {empty_hints:?}"
@@ -858,18 +926,70 @@ mod tests {
       split_siblings: Vec::new(),
     }];
     focused_app.go_top();
-    let deletable_hints = build_models_hints(&focused_app, false, false, true);
+    let deletable_hints = build_models_hints(&focused_app, FilterChipMode::Inactive, false, true);
     assert!(
       deletable_hints.iter().any(|h| h.contains("delete")),
       "deletable focused row must surface delete chip: {deletable_hints:?}"
     );
 
     // Same focused row but deletable=false → chip hidden.
-    let non_deletable = build_models_hints(&focused_app, false, false, false);
+    let non_deletable = build_models_hints(&focused_app, FilterChipMode::Inactive, false, false);
     assert!(
       !non_deletable.iter().any(|h| h.contains("delete")),
       "non-deletable row must hide delete chip: {non_deletable:?}"
     );
+  }
+
+  #[test]
+  fn filter_chip_strip_switches_between_editing_and_resting() {
+    // Edit mode: chip strip surfaces the in-edit chord
+    // (`Esc:stop edit`), NOT the resting clear chord.
+    let mut app = App::new(AppOptions::default());
+    app.open_filter();
+    let editing = build_models_hints(&app, FilterChipMode::Editing, false, false);
+    assert!(
+      editing.iter().any(|h| h == "Esc:stop edit"),
+      "editing mode must surface stop-edit chord: {editing:?}"
+    );
+    assert!(
+      !editing.iter().any(|h| h.contains("clear")),
+      "editing mode must NOT surface clear: {editing:?}"
+    );
+    // Resting mode: `e:edit`, `Esc:clear`, `Enter:apply`, plus a
+    // navigation hint so the user knows arrows still work.
+    let resting = build_models_hints(&app, FilterChipMode::Resting, false, false);
+    assert!(
+      resting.iter().any(|h| h == "e:edit"),
+      "resting mode must surface enter-edit chord: {resting:?}"
+    );
+    assert!(
+      resting.iter().any(|h| h.contains("clear")),
+      "resting mode must surface clear chord: {resting:?}"
+    );
+    assert!(
+      resting.iter().any(|h| h.contains("↑/↓")),
+      "resting mode must hint that arrows still navigate: {resting:?}"
+    );
+  }
+
+  #[test]
+  fn filter_chip_mode_projects_focus_and_edit_state() {
+    let mut app = App::new(AppOptions::default());
+    // No filter — Inactive.
+    assert_eq!(filter_chip_mode(&app, false), FilterChipMode::Inactive);
+    // Open filter (auto-enters edit) — Editing.
+    app.open_filter();
+    assert_eq!(filter_chip_mode(&app, true), FilterChipMode::Editing);
+    // Exit edit — Resting (focus still on filter).
+    app.filter_input.exit_edit();
+    assert_eq!(filter_chip_mode(&app, true), FilterChipMode::Resting);
+    // Focus moves back to List but buffer still has content — the
+    // chip strip stops claiming the filter slot and falls back to
+    // the model navigation chips. Filter remains visible in the
+    // pane title, just not in the chip strip.
+    app.filter_input.set_text("qwen");
+    app.focus = Focus::List;
+    assert_eq!(filter_chip_mode(&app, true), FilterChipMode::Inactive);
   }
 
   #[test]
