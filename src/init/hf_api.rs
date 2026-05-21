@@ -76,12 +76,18 @@ pub enum HfSortKey {
 
 impl HfSortKey {
   /// Wire token the `sort=` query parameter takes.
+  ///
+  /// `Trending` maps to `trendingScore` — the HF Hub API renamed
+  /// the parameter value in 2026 (the legacy `sort=trending` now
+  /// returns `HTTP 400`). `trendingScore` accepts `search` and
+  /// `filter=gguf` natively, so unlike the legacy carve-out we
+  /// don't have to strip either param under trending.
   pub fn as_query_token(self) -> &'static str {
     match self {
       HfSortKey::Downloads => "downloads",
       HfSortKey::Likes => "likes",
       HfSortKey::RecentlyUpdated => "lastModified",
-      HfSortKey::Trending => "trending",
+      HfSortKey::Trending => "trendingScore",
     }
   }
 
@@ -142,17 +148,9 @@ pub async fn search(
   }
   let endpoint = endpoint_or_default();
   let url = build_search_url(&endpoint, query, sort, cursor)?;
-  let (mut results, headers) = fetch
+  let (results, headers) = fetch
     .get_json_with_headers::<Vec<HfSearchResult>>(url.as_str(), SEARCH_BODY_CAP)
     .await?;
-  // Under `sort=trending` the API refuses the `filter` query param
-  // (HTTP 400 — trending is a curated cross-tag list), so we drop it
-  // server-side and apply the GGUF gate client-side to keep the
-  // picker dependent on a single uniform invariant: every row in the
-  // search pane is GGUF-compatible.
-  if sort == HfSortKey::Trending {
-    results.retain(is_gguf_repo);
-  }
   let next_cursor = headers
     .get(reqwest::header::LINK)
     .and_then(|v| v.to_str().ok())
@@ -163,25 +161,11 @@ pub async fn search(
   })
 }
 
-/// Recognise a search row as a GGUF repo. The HF Hub flags GGUF mirrors
-/// with the `"gguf"` tag (case-insensitive) — every `bartowski/*-GGUF`,
-/// `TheBloke/*-GGUF`, and `Qwen/Qwen2.5-*-Instruct-GGUF` repo we
-/// surveyed carries it. Used as the client-side fallback when the
-/// server-side `filter=gguf` is unavailable (see `search` under
-/// `HfSortKey::Trending`).
-fn is_gguf_repo(r: &HfSearchResult) -> bool {
-  r.tags.iter().any(|t| t.eq_ignore_ascii_case("gguf"))
-}
-
 /// Pure URL builder for the `/api/models` search endpoint. Carved out
 /// of [`search`] so the encoding rules can be unit-tested without a
-/// runtime / FetchClient. Honors the full `Trending` carve-out: HF
-/// rejects both `search=` *and* `filter=` when combined with
-/// `sort=trending` (HTTP 400 — trending is a curated cross-tag list,
-/// not a faceted-text-search index). Both params are dropped under
-/// that sort; the buffered query stays in the dialog so cycling back
-/// to a searchable sort re-uses it, and the caller applies the
-/// `gguf`-only gate to the response (`is_gguf_repo`).
+/// runtime / FetchClient. Every sort key — including `Trending` (now
+/// `sort=trendingScore`) — accepts `search` and `filter=gguf`
+/// natively, so the URL shape is uniform across sorts.
 fn build_search_url(
   endpoint: &str,
   query: &str,
@@ -192,10 +176,8 @@ fn build_search_url(
     .map_err(|e| FetchError::Transport(format!("URL parse: {e}")))?;
   {
     let mut pairs = url.query_pairs_mut();
-    if sort != HfSortKey::Trending {
-      pairs.append_pair("search", query);
-      pairs.append_pair("filter", "gguf");
-    }
+    pairs.append_pair("search", query);
+    pairs.append_pair("filter", "gguf");
     pairs.append_pair("sort", sort.as_query_token());
     pairs.append_pair("limit", &SEARCH_LIMIT.to_string());
     if let Some(c) = cursor {
@@ -375,7 +357,12 @@ mod tests {
     assert_eq!(HfSortKey::Downloads.as_query_token(), "downloads");
     assert_eq!(HfSortKey::Likes.as_query_token(), "likes");
     assert_eq!(HfSortKey::RecentlyUpdated.as_query_token(), "lastModified");
-    assert_eq!(HfSortKey::Trending.as_query_token(), "trending");
+    // Regression: HF Hub renamed `sort=trending` → `sort=trendingScore`
+    // (the legacy token now returns HTTP 400). The 2026-05-21 round-1
+    // fix tried to compensate by dropping `search=` server-side; the
+    // round-3 follow-up is the actual rename. Confirmed via curl
+    // against the live Hub at fix time.
+    assert_eq!(HfSortKey::Trending.as_query_token(), "trendingScore");
   }
 
   #[test]
@@ -592,63 +579,24 @@ mod tests {
   }
 
   #[test]
-  fn build_search_url_drops_search_and_filter_params_under_trending_sort() {
-    // Regression: HF returns 400 when `sort=trending` is combined with
-    // either `search=...` *or* `filter=...`. Trending is a curated
-    // cross-tag list, not a faceted-search facet. Dropping both keeps
-    // the dispatch alive; the caller applies the gguf-only gate
-    // client-side against the response.
-    let url = build_search_url("https://huggingface.co", "qwen", HfSortKey::Trending, None)
-      .expect("build url");
-    let q = url.query().unwrap_or("");
-    assert!(
-      !q.contains("search="),
-      "trending must drop search to avoid 400: {q}"
-    );
-    assert!(
-      !q.contains("filter="),
-      "trending must drop filter to avoid 400: {q}"
-    );
-    assert!(q.contains("sort=trending"));
-  }
-
-  #[test]
-  fn build_search_url_includes_filter_for_non_trending_sorts() {
+  fn build_search_url_carries_search_and_filter_for_every_sort_including_trending() {
+    // Regression: with `sort=trendingScore` (the renamed trending
+    // token), the HF API accepts `search` and `filter=gguf` natively
+    // — the URL shape is uniform across every sort. The previous
+    // round of carve-outs (drop both params under trending) was
+    // chasing the 400 symptom rather than the rename root cause.
     for sort in [
       HfSortKey::Downloads,
       HfSortKey::Likes,
       HfSortKey::RecentlyUpdated,
+      HfSortKey::Trending,
     ] {
       let url = build_search_url("https://huggingface.co", "qwen", sort, None).expect("build url");
       let q = url.query().unwrap_or("");
-      assert!(q.contains("filter=gguf"), "{sort:?} must filter: {q}");
+      assert!(q.contains("search=qwen"), "{sort:?} must carry search: {q}");
+      assert!(q.contains("filter=gguf"), "{sort:?} must carry filter: {q}");
+      assert!(q.contains(&format!("sort={}", sort.as_query_token())));
     }
-  }
-
-  #[test]
-  fn is_gguf_repo_matches_tagged_results_case_insensitively() {
-    // Mirrors the shape of a trending-cohort row that ships without
-    // server-side filter — we accept the canonical lowercase tag
-    // alongside any case variant the Hub might emit.
-    let with_lower = HfSearchResult {
-      repo_id: "Qwen/Qwen2.5-7B-Instruct-GGUF".into(),
-      downloads: None,
-      likes: None,
-      last_modified: None,
-      pipeline_tag: None,
-      tags: vec!["gguf".into(), "qwen".into()],
-    };
-    let with_upper = HfSearchResult {
-      tags: vec!["GGUF".into()],
-      ..with_lower.clone()
-    };
-    let without = HfSearchResult {
-      tags: vec!["text-generation".into()],
-      ..with_lower.clone()
-    };
-    assert!(is_gguf_repo(&with_lower));
-    assert!(is_gguf_repo(&with_upper));
-    assert!(!is_gguf_repo(&without));
   }
 
   #[test]
