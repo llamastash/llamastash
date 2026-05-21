@@ -23,14 +23,17 @@ pub enum RerankField {
 
 #[derive(Debug, Default)]
 pub struct RerankTabState {
-  pub query: String,
+  /// Modal text-input for the rerank query. Same `e:edit / Esc:stop /
+  /// 2nd-Esc:clear` contract as every other text input in the TUI.
+  pub query: crate::tui::input_field::InputField,
   pub candidates: Vec<String>,
   pub ranked: Vec<(usize, f64)>,
   pub last_error: Option<String>,
   pub busy: bool,
   /// In-progress candidate text — staged onto `candidates` when
-  /// the user presses `Tab` in the candidate sub-field.
-  pub candidate_buffer: String,
+  /// the user presses `Tab` in the candidate sub-field. Same modal
+  /// contract as `query`.
+  pub candidate_buffer: crate::tui::input_field::InputField,
   pub field: RerankField,
   /// Top-of-viewport offset into the rendered output. Round-8: ↑/↓
   /// in `Focus::RightPane` walk this — same shape as Chat / Embed.
@@ -69,10 +72,12 @@ impl RerankTabState {
 
   pub fn clear(&mut self) {
     self.query.clear();
+    self.query.exit_edit();
     self.candidates.clear();
     self.ranked.clear();
     self.last_error = None;
     self.candidate_buffer.clear();
+    self.candidate_buffer.exit_edit();
     self.field = RerankField::Query;
   }
 
@@ -88,7 +93,7 @@ impl RerankTabState {
   /// Stage the in-progress candidate buffer onto the candidate list.
   /// Returns true if a candidate was added.
   pub fn stage_candidate(&mut self) -> bool {
-    let trimmed = self.candidate_buffer.trim().to_string();
+    let trimmed = self.candidate_buffer.buffer().trim().to_string();
     if trimmed.is_empty() {
       return false;
     }
@@ -150,12 +155,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   let prompts = [
     PromptField {
       title: "Query",
-      text: &state.query,
+      text: state.query.buffer(),
       active: query_active,
     },
     PromptField {
       title: "Candidate",
-      text: &state.candidate_buffer,
+      text: state.candidate_buffer.buffer(),
       active: cand_active,
     },
   ];
@@ -187,11 +192,12 @@ mod tests {
 
   #[test]
   fn clear_drops_state() {
+    use crate::tui::input_field::InputField;
     let mut s = RerankTabState {
-      query: "q".into(),
+      query: InputField::with_text("q"),
       candidates: vec!["c".into()],
       ranked: vec![(0, 1.0)],
-      candidate_buffer: "buf".into(),
+      candidate_buffer: InputField::with_text("buf"),
       field: RerankField::Candidate,
       ..Default::default()
     };
@@ -215,8 +221,9 @@ mod tests {
 
   #[test]
   fn stage_candidate_moves_buffer_to_candidates_when_non_empty() {
+    use crate::tui::input_field::InputField;
     let mut s = RerankTabState {
-      candidate_buffer: "doc one".into(),
+      candidate_buffer: InputField::with_text("doc one"),
       ..Default::default()
     };
     assert!(s.stage_candidate());
@@ -226,8 +233,9 @@ mod tests {
 
   #[test]
   fn stage_candidate_returns_false_when_buffer_empty() {
+    use crate::tui::input_field::InputField;
     let mut s = RerankTabState {
-      candidate_buffer: "   ".into(),
+      candidate_buffer: InputField::with_text("   "),
       ..Default::default()
     };
     assert!(!s.stage_candidate());

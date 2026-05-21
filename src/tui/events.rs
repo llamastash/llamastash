@@ -169,8 +169,17 @@ fn handle_key(app: &mut App, key: KeyEvent, writer: Option<&mpsc::Sender<WriterC
     Focus::Filter => handle_filter_input(app, key),
     Focus::AdvancedPanel => handle_advanced_input(app, key),
     Focus::HfDialog => handle_hf_dialog_input(app, key, writer),
-    Focus::ChatInput | Focus::EmbedInput | Focus::RerankInput if bound.is_none() => {
-      handle_tab_input(app, key);
+    Focus::ChatInput | Focus::EmbedInput | Focus::RerankInput => {
+      // Modal text-input focuses give the field first crack at every
+      // key so the `Esc` walk-back (exit-edit → clear → close) wins
+      // over the static action binding. The field returns `false`
+      // (PassThrough) for Tab / Shift+Enter / final-Esc-at-root so
+      // those still dispatch through `apply_action`.
+      if !handle_tab_input(app, key) {
+        if let Some(action) = bound {
+          apply_action(app, action, writer);
+        }
+      }
     }
     _ => {
       if let Some(action) = bound {
@@ -181,39 +190,40 @@ fn handle_key(app: &mut App, key: KeyEvent, writer: Option<&mpsc::Sender<WriterC
 }
 
 /// Text-capture handler for the chat / embed / rerank prompt
-/// buffers. Bound actions (Enter, Tab, Esc, etc.) are routed
-/// through [`apply_action`] *before* this is called — see
-/// [`handle_key`] — so alphanumerics fall through to the buffer
-/// without trampling the surrounding keybindings. Shift+Enter is
-/// also bound (`Action::InsertNewline`); it never reaches this
-/// fallthrough.
-fn handle_tab_input(app: &mut App, key: KeyEvent) {
-  match (app.focus, key.code) {
-    (Focus::ChatInput, KeyCode::Backspace) => {
-      app.chat.prompt.pop();
-    }
-    (Focus::ChatInput, KeyCode::Char(ch)) => {
-      app.chat.prompt.push(ch);
-    }
-    (Focus::EmbedInput, KeyCode::Backspace) => {
-      app.embed.input.pop();
-    }
-    (Focus::EmbedInput, KeyCode::Char(ch)) => {
-      app.embed.input.push(ch);
-    }
-    (Focus::RerankInput, KeyCode::Backspace) => match app.rerank.field {
-      RerankField::Query => {
-        app.rerank.query.pop();
-      }
-      RerankField::Candidate => {
-        app.rerank.candidate_buffer.pop();
-      }
+/// buffers. Each tab's input is a modal
+/// [`crate::tui::input_field::InputField`]. The dispatcher routes
+/// keys here ahead of the action layer so the field's `Esc`
+/// walk-back (exit-edit → clear → close) wins over the static
+/// `Esc:exit_edit` binding. Keys the field declines
+/// (`InputOutcome::PassThrough`) fall through to the bound
+/// action — Tab cycles fields, Shift+Enter inserts a newline,
+/// final-Esc-at-root triggers `Action::ExitEdit`.
+///
+/// Returns `true` when the field consumed the key — caller skips
+/// the action-layer dispatch in that case.
+fn handle_tab_input(app: &mut App, key: KeyEvent) -> bool {
+  use crate::tui::input_field::InputOutcome;
+  let outcome = match app.focus {
+    Focus::ChatInput => app.chat.prompt.handle_key(key),
+    Focus::EmbedInput => app.embed.input.handle_key(key),
+    Focus::RerankInput => match app.rerank.field {
+      RerankField::Query => app.rerank.query.handle_key(key),
+      RerankField::Candidate => app.rerank.candidate_buffer.handle_key(key),
     },
-    (Focus::RerankInput, KeyCode::Char(ch)) => match app.rerank.field {
-      RerankField::Query => app.rerank.query.push(ch),
-      RerankField::Candidate => app.rerank.candidate_buffer.push(ch),
-    },
-    _ => {}
+    _ => return false,
+  };
+  match outcome {
+    InputOutcome::Handled => true,
+    InputOutcome::Submit => {
+      match app.focus {
+        Focus::ChatInput => apply_send_chat(app),
+        Focus::EmbedInput => apply_embed_submit(app),
+        Focus::RerankInput => apply_rerank_submit(app),
+        _ => {}
+      }
+      true
+    }
+    InputOutcome::PassThrough => false,
   }
 }
 
@@ -239,16 +249,21 @@ fn handle_filter_input(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_advanced_input(app: &mut App, key: KeyEvent) {
-  let panel = match &mut app.advanced_panel {
-    Some(p) => p,
+  use crate::tui::input_field::InputOutcome;
+  let outcome = match app.advanced_panel.as_mut() {
+    Some(panel) => panel.buffer.handle_key(key),
     None => return,
   };
-  match key.code {
-    KeyCode::Esc => app.close_advanced_panel(),
-    KeyCode::Enter => app.close_advanced_panel(),
-    KeyCode::Backspace => panel.backspace(),
-    KeyCode::Char(ch) => panel.insert(ch),
-    _ => {}
+  match outcome {
+    InputOutcome::Handled => {}
+    InputOutcome::Submit => app.close_advanced_panel(),
+    InputOutcome::PassThrough => {
+      // Field decided not to handle: Esc walks back at the panel
+      // level (close), other keys are unbound.
+      if matches!(key.code, KeyCode::Esc) {
+        app.close_advanced_panel();
+      }
+    }
   }
 }
 
@@ -374,7 +389,9 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
     Action::EnterEdit => {
       // Tab-aware:
       //  - Chat / Embed / Rerank: shift focus into the input buffer
-      //    so subsequent keystrokes go to the prompt.
+      //    so subsequent keystrokes go to the prompt. The field
+      //    itself enters edit mode so typing works immediately and
+      //    the `Esc` walk-back is wired up.
       //  - Settings on a running launch: stage the launch picker so
       //    the user can edit next-launch params over the live
       //    read-only view (the arrow-keys path no longer
@@ -382,6 +399,15 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
       //  - Anywhere else: no-op.
       if let Some(target) = edit_focus_for_tab(app.right_tab) {
         app.focus = target;
+        match target {
+          Focus::ChatInput => app.chat.prompt.enter_edit(),
+          Focus::EmbedInput => app.embed.input.enter_edit(),
+          Focus::RerankInput => match app.rerank.field {
+            RerankField::Query => app.rerank.query.enter_edit(),
+            RerankField::Candidate => app.rerank.candidate_buffer.enter_edit(),
+          },
+          _ => {}
+        }
       } else if app.right_tab == RightTab::Settings && app.launch_picker.is_none() {
         if app.focused_path().is_some() {
           app.open_launch_picker();
@@ -391,23 +417,48 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
       }
     }
     Action::ExitEdit => {
-      // Step back from a text-input focus to the surrounding right
-      // pane navigation focus. Keystrokes resume hitting the chain
-      // (Tab / Shift+Tab / h / l) instead of the buffer.
+      // Final Esc at the input root walks one step further back:
+      // exit edit on whatever field was active and return focus to
+      // the right-pane chain so Tab/Shift+Tab/h/l resume working.
+      match app.focus {
+        Focus::ChatInput => app.chat.prompt.exit_edit(),
+        Focus::EmbedInput => app.embed.input.exit_edit(),
+        Focus::RerankInput => {
+          app.rerank.query.exit_edit();
+          app.rerank.candidate_buffer.exit_edit();
+        }
+        _ => {}
+      }
       app.focus = Focus::RightPane;
     }
     Action::FocusLogsTab => apply_focus_logs_tab(app),
     Action::FocusChatTab => apply_focus_chat_tab(app),
     Action::FocusSettingsTab => apply_focus_settings_tab(app),
-    Action::InsertNewline => match app.focus {
-      Focus::ChatInput => app.chat.prompt.push('\n'),
-      Focus::EmbedInput => app.embed.input.push('\n'),
-      Focus::RerankInput => match app.rerank.field {
-        RerankField::Query => app.rerank.query.push('\n'),
-        RerankField::Candidate => app.rerank.candidate_buffer.push('\n'),
-      },
-      _ => {}
-    },
+    Action::InsertNewline => {
+      // Force-insert a newline into whichever modal field is in
+      // focus. Skips the input component's modifier filter so
+      // Shift+Enter still works even when the field is resting
+      // (resting + Shift+Enter would otherwise PassThrough and
+      // hit nothing).
+      fn push_newline(field: &mut crate::tui::input_field::InputField) {
+        let mut next = String::from(field.buffer());
+        next.push('\n');
+        let editing = field.is_editing();
+        field.set_text(next);
+        if editing {
+          field.enter_edit();
+        }
+      }
+      match app.focus {
+        Focus::ChatInput => push_newline(&mut app.chat.prompt),
+        Focus::EmbedInput => push_newline(&mut app.embed.input),
+        Focus::RerankInput => match app.rerank.field {
+          RerankField::Query => push_newline(&mut app.rerank.query),
+          RerankField::Candidate => push_newline(&mut app.rerank.candidate_buffer),
+        },
+        _ => {}
+      }
+    }
     // ↑/↓ cycle the cursor across the form's input fields. Only
     // meaningful in the Settings tab (cycles ctx / reasoning /
     // advanced) and the Rerank input (cycles query / candidate).
@@ -847,11 +898,11 @@ fn apply_send_chat(app: &mut App) {
   let Some(managed) = focused_managed_or_toast(app, "chat") else {
     return;
   };
-  if app.chat.prompt.trim().is_empty() {
+  if app.chat.prompt.buffer().trim().is_empty() {
     app.show_toast("prompt is empty");
     return;
   }
-  let prompt = app.chat.prompt.clone();
+  let prompt = app.chat.prompt.buffer().to_string();
   let model_name = crate::util::paths::model_display_name(&managed.path);
   app.chat.reset_for_send();
   let rx = spawn_chat_stream(managed.port, model_name, prompt);
@@ -865,11 +916,11 @@ fn apply_embed_submit(app: &mut App) {
   let Some(managed) = focused_managed_or_toast(app, "embed") else {
     return;
   };
-  if app.embed.input.trim().is_empty() {
+  if app.embed.input.buffer().trim().is_empty() {
     app.show_toast("embed input is empty");
     return;
   }
-  let input = app.embed.input.clone();
+  let input = app.embed.input.buffer().to_string();
   let model_name = crate::util::paths::model_display_name(&managed.path);
   let (tx, rx) = mpsc::unbounded_channel::<TabEvent>();
   app.embed.busy = true;
@@ -911,7 +962,7 @@ fn apply_rerank_submit(app: &mut App) {
   let Some(managed) = focused_managed_or_toast(app, "rerank") else {
     return;
   };
-  if app.rerank.query.trim().is_empty() {
+  if app.rerank.query.buffer().trim().is_empty() {
     app.show_toast("rerank query is empty");
     return;
   }
@@ -924,7 +975,7 @@ fn apply_rerank_submit(app: &mut App) {
     app.show_toast("stage at least one candidate (↓ to candidate field, Enter to add)");
     return;
   }
-  let query = app.rerank.query.clone();
+  let query = app.rerank.query.buffer().to_string();
   let candidates = app.rerank.candidates.clone();
   let model_name = crate::util::paths::model_display_name(&managed.path);
   let (tx, rx) = mpsc::unbounded_channel::<TabEvent>();

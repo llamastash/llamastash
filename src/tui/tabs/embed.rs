@@ -13,7 +13,9 @@ use crate::tui::tabs::input_pane::{InputPaneOpts, PromptField};
 
 #[derive(Debug, Default)]
 pub struct EmbedTabState {
-  pub input: String,
+  /// Modal text-input field. Same `e:edit / Esc:stop / 2nd-Esc:clear`
+  /// contract as every other text input in the TUI.
+  pub input: crate::tui::input_field::InputField,
   pub dim: Option<usize>,
   pub preview: Vec<f64>,
   pub norm: Option<f64>,
@@ -104,7 +106,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
 
   let prompt = PromptField {
     title: "Input",
-    text: &state.input,
+    text: state.input.buffer(),
     active,
   };
   crate::tui::tabs::input_pane::render(

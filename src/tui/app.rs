@@ -971,9 +971,9 @@ impl App {
     if let Some(path) = self.focused_path() {
       if let Some(last) = self.last_params.get(&path) {
         if !last.advanced.is_empty() {
-          let buffer = last.advanced.join(" ");
-          let cursor = buffer.len();
-          self.advanced_panel = Some(AdvancedPanelState { buffer, cursor });
+          let mut buffer = crate::tui::input_field::InputField::with_text(last.advanced.join(" "));
+          buffer.enter_edit();
+          self.advanced_panel = Some(AdvancedPanelState { buffer });
         }
       }
     }
@@ -997,7 +997,11 @@ impl App {
   }
 
   pub fn open_advanced_panel(&mut self) {
-    self.advanced_panel = Some(AdvancedPanelState::default());
+    let mut panel = AdvancedPanelState::default();
+    // Auto-enter edit mode so the user can type immediately. The
+    // `Esc` walk-back (exit-edit → clear → close) handles teardown.
+    panel.buffer.enter_edit();
+    self.advanced_panel = Some(panel);
     self.focus = Focus::AdvancedPanel;
   }
 
@@ -1653,7 +1657,7 @@ mod tests {
     let advanced = app
       .advanced_panel
       .as_ref()
-      .map(|p| p.buffer.clone())
+      .map(|p| p.buffer.buffer().to_string())
       .expect("advanced panel must materialise when last_params carries flags");
     assert_eq!(advanced, "--flash-attn --n-gpu-layers 20");
   }

@@ -420,7 +420,8 @@ fn launch_picker_seeds_from_persisted_last_params() {
     .as_ref()
     .expect("advanced panel seeded")
     .buffer
-    .clone();
+    .buffer()
+    .to_string();
   assert!(
     advanced.contains("--threads"),
     "advanced flags must seed from last_params: {advanced}"
@@ -517,7 +518,7 @@ fn typing_into_chat_input_extends_prompt_buffer() {
   for ch in "hello".chars() {
     pump_input(&mut app, key(KeyCode::Char(ch), KeyModifiers::NONE));
   }
-  assert_eq!(app.chat.prompt, "hello");
+  assert_eq!(app.chat.prompt.buffer(), "hello");
 }
 
 #[test]
@@ -556,12 +557,15 @@ fn rerank_enter_in_candidate_field_stages_buffer() {
   use llamastash::tui::tabs::rerank::RerankField;
   let mut app = App::new(AppOptions::default());
   app.focus = Focus::RerankInput;
+  // Modal field needs edit mode before typing lands in the buffer.
+  app.rerank.query.enter_edit();
   // Type a query then ↓ to the candidate field.
   for ch in "what?".chars() {
     pump_input(&mut app, key(KeyCode::Char(ch), KeyModifiers::NONE));
   }
   pump_input(&mut app, key(KeyCode::Down, KeyModifiers::NONE));
   assert_eq!(app.rerank.field, RerankField::Candidate);
+  app.rerank.candidate_buffer.enter_edit();
   for ch in "doc one".chars() {
     pump_input(&mut app, key(KeyCode::Char(ch), KeyModifiers::NONE));
   }
@@ -569,7 +573,7 @@ fn rerank_enter_in_candidate_field_stages_buffer() {
   // list, clears the buffer, stays in the candidate field so the
   // user can keep typing.
   pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::NONE));
-  assert_eq!(app.rerank.query, "what?");
+  assert_eq!(app.rerank.query.buffer(), "what?");
   assert_eq!(app.rerank.candidates, vec!["doc one".to_string()]);
   assert!(app.rerank.candidate_buffer.is_empty());
   assert_eq!(app.rerank.field, RerankField::Candidate);

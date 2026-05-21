@@ -28,8 +28,11 @@ use crate::tui::tabs::input_pane::{self, InputPaneOpts, PromptField};
 /// so the streamer and the renderer share one buffer.
 #[derive(Debug, Default)]
 pub struct ChatTabState {
-  /// The user's current prompt input.
-  pub prompt: String,
+  /// The user's current prompt input. Uses the modal
+  /// [`crate::tui::input_field::InputField`] component so the
+  /// `e:edit / Esc:stop / 2nd-Esc:clear` walk-back contract matches
+  /// every other text input in the TUI.
+  pub prompt: crate::tui::input_field::InputField,
   /// Accumulated response from the most recent send.
   pub response: String,
   /// Whether a stream is currently in flight.
@@ -132,7 +135,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
 
   let prompt = PromptField {
     title: "Prompt",
-    text: &state.prompt,
+    text: state.prompt.buffer(),
     active,
   };
   input_pane::render(

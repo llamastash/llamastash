@@ -13,15 +13,15 @@ use ratatui::Frame;
 
 use crate::theme::Palette;
 
-/// State of the advanced panel.
+/// State of the advanced panel. Wraps the modal
+/// [`crate::tui::input_field::InputField`] so the
+/// `e:edit / Esc:stop / 2nd-Esc:clear` contract matches every other
+/// text input in the TUI. The panel auto-enters edit mode on open
+/// (see `App::open_advanced_panel`) so the user can type immediately.
 #[derive(Debug, Clone, Default)]
 pub struct AdvancedPanelState {
-  /// Current text buffer. Caller is responsible for splitting on
-  /// whitespace when assembling the launch params.
-  pub buffer: String,
-  /// Caret position into `buffer` (in bytes — the renderer accepts
-  /// it as the column to highlight).
-  pub cursor: usize,
+  /// Modal text-input field carrying the free-form flag list.
+  pub buffer: crate::tui::input_field::InputField,
 }
 
 impl AdvancedPanelState {
@@ -30,28 +30,9 @@ impl AdvancedPanelState {
       .iter()
       .map(|s| s.to_string_lossy().into_owned())
       .collect();
-    let buffer = parts.join(" ");
-    let cursor = buffer.len();
-    Self { buffer, cursor }
-  }
-
-  /// Insert a single character at the cursor.
-  pub fn insert(&mut self, ch: char) {
-    self.buffer.insert(self.cursor, ch);
-    self.cursor += ch.len_utf8();
-  }
-
-  /// Delete the char to the left of the cursor (Backspace).
-  pub fn backspace(&mut self) {
-    if self.cursor == 0 {
-      return;
-    }
-    let mut new_cursor = self.cursor - 1;
-    while !self.buffer.is_char_boundary(new_cursor) {
-      new_cursor -= 1;
-    }
-    self.buffer.replace_range(new_cursor..self.cursor, "");
-    self.cursor = new_cursor;
+    let mut buffer = crate::tui::input_field::InputField::with_text(parts.join(" "));
+    buffer.enter_edit();
+    Self { buffer }
   }
 
   /// Split the current buffer into `OsString` argv tokens. Empty
@@ -60,6 +41,7 @@ impl AdvancedPanelState {
   pub fn argv(&self) -> Vec<std::ffi::OsString> {
     self
       .buffer
+      .buffer()
       .split_whitespace()
       .map(std::ffi::OsString::from)
       .collect()
@@ -93,11 +75,14 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &AdvancedPanelState, pal
   // Round-8: caret style mirrors the filter input (no leading
   // `▌ ` block, `▏` cursor) so every text-input in the TUI reads
   // identically.
-  let body = Paragraph::new(Line::from(vec![
-    Span::styled(&state.buffer, palette.text_style()),
-    crate::tui::fmt::caret(palette),
-  ]))
-  .wrap(Wrap { trim: false });
+  let mut spans = vec![Span::styled(
+    state.buffer.buffer().to_string(),
+    palette.text_style(),
+  )];
+  if state.buffer.is_editing() {
+    spans.push(crate::tui::fmt::caret(palette));
+  }
+  let body = Paragraph::new(Line::from(spans)).wrap(Wrap { trim: false });
   frame.render_widget(body, layout[1]);
 }
 
@@ -126,43 +111,25 @@ mod tests {
   use std::ffi::OsString;
 
   #[test]
-  fn from_advanced_joins_with_spaces() {
+  fn from_advanced_joins_with_spaces_and_auto_edits() {
     let advanced = vec![OsString::from("--threads"), OsString::from("8")];
     let s = AdvancedPanelState::from_advanced(&advanced);
-    assert_eq!(s.buffer, "--threads 8");
-    assert_eq!(s.cursor, "--threads 8".len());
+    assert_eq!(s.buffer.buffer(), "--threads 8");
+    assert!(
+      s.buffer.is_editing(),
+      "panel must auto-enter edit so the user can type immediately"
+    );
   }
 
   #[test]
   fn argv_splits_on_whitespace_and_collapses_runs() {
-    let s = AdvancedPanelState {
-      buffer: "  --threads   8  --flash-attn  ".into(),
-      ..Default::default()
-    };
+    let buffer = crate::tui::input_field::InputField::with_text("  --threads   8  --flash-attn  ");
+    let s = AdvancedPanelState { buffer };
     let v: Vec<String> = s
       .argv()
       .iter()
       .map(|o| o.to_string_lossy().into())
       .collect();
     assert_eq!(v, vec!["--threads", "8", "--flash-attn"]);
-  }
-
-  #[test]
-  fn insert_then_backspace_round_trips() {
-    let mut s = AdvancedPanelState::default();
-    for ch in "--threads 8".chars() {
-      s.insert(ch);
-    }
-    assert_eq!(s.buffer, "--threads 8");
-    s.backspace();
-    assert_eq!(s.buffer, "--threads ");
-  }
-
-  #[test]
-  fn backspace_at_zero_is_noop() {
-    let mut s = AdvancedPanelState::default();
-    s.backspace();
-    assert_eq!(s.buffer, "");
-    assert_eq!(s.cursor, 0);
   }
 }
