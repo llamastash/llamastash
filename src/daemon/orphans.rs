@@ -124,7 +124,15 @@ pub async fn sweep(inputs: SweepInputs<'_>) -> SweepReport {
         .iter()
         .map(|s| s.to_string_lossy().into())
         .collect();
-      if !cmd.iter().any(|c| c.contains(inputs.external_marker)) {
+      // Match the marker against the executable basename only, not
+      // arbitrary argv elements. Earlier versions scanned every argv
+      // string for "llama-server", which caused llamastash to flag
+      // itself: its argv carries `--llama-server <path>` whose value
+      // contains the substring. `proc.name()` is the kernel-reported
+      // basename — for `/usr/bin/llama-server` it is `llama-server`,
+      // for `target/debug/llamastash` it is `llamastash`.
+      let basename = proc.name().to_string_lossy();
+      if !basename.contains(inputs.external_marker) {
         return None;
       }
       let model_path = extract_model_path(&cmd);
@@ -468,6 +476,45 @@ mod tests {
     assert!(
       found,
       "sweep should have found the spawned `sleep` process by cmdline marker"
+    );
+  }
+
+  #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+  async fn marker_match_ignores_argv_values() {
+    // Regression: the matcher must consider the executable basename
+    // only, not arbitrary argv values. Spawn `sleep` with the
+    // marker substring embedded in an arg — the process must NOT
+    // be classified as external because its basename is `sleep`,
+    // not `llama-server`. (Equivalent to llamastash carrying
+    // `--llama-server <path>` in its own argv.)
+    use std::process::{Command, Stdio};
+    use std::time::Duration as StdDuration;
+
+    let mut child = Command::new("sleep")
+      .arg("30")
+      .arg("--decoy=llama-server-path")
+      .stdout(Stdio::null())
+      .stderr(Stdio::null())
+      .spawn()
+      .expect("spawn sleep");
+
+    std::thread::sleep(StdDuration::from_millis(100));
+    let recorded: Vec<RunningSnapshot> = Vec::new();
+    let report = sweep(SweepInputs {
+      recorded_running: &recorded,
+      external_marker: "llama-server",
+      probe_timeout: Duration::from_millis(100),
+    })
+    .await;
+    let matched_by_argv = report.external.iter().any(|p| p.pid == child.id());
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(
+      !matched_by_argv,
+      "process whose basename does not match the marker must not be \
+       classified as external even when an argv value contains the \
+       marker substring (this was the bug that caused llamastash to \
+       flag itself via `--llama-server <path>`)"
     );
   }
 }

@@ -444,17 +444,17 @@ const LIST_BINDINGS: &[Binding] = &[
   // tab without thinking. The daemon-restart hotkey lives on Ctrl+R
   // so this mnemonic stays free.
   Binding {
-    key: KeyCode::Char('R'),
-    mods: KeyModifiers::SHIFT,
-    action: Action::FocusChatTab,
-    label: "R",
-    description: "chat/embed/rerank",
-  },
-  Binding {
     key: KeyCode::Char('E'),
     mods: KeyModifiers::SHIFT,
     action: Action::FocusChatTab,
     label: "E",
+    description: "chat/embed/rerank",
+  },
+  Binding {
+    key: KeyCode::Char('R'),
+    mods: KeyModifiers::SHIFT,
+    action: Action::FocusChatTab,
+    label: "R",
     description: "chat/embed/rerank",
   },
   Binding {

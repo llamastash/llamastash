@@ -8,6 +8,10 @@ default: run
 test:
 	@make lint && cargo test --features test-fixtures
 
+## Regenerate golden test fixtures
+test-golden:
+	@UPDATE_GOLDEN=1 cargo test --features test-fixtures --test tui_e2e_render_test dashboard_golden_render_matches_fixture
+
 ## Run all tests with coverage — `cargo install cargo-tarpaulin`
 test-cov:
 	@cargo tarpaulin --features test-fixtures

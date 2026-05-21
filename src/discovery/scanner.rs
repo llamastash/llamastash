@@ -198,9 +198,29 @@ fn collect_gguf_paths(root: &Path, excludes: &[String]) -> Vec<PathBuf> {
           // it collapse to a single row. Falling back to the raw path
           // if canonicalisation fails (broken symlink, permission
           // denied) keeps the row visible — the user can investigate.
-          let canonical = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+          let raw = p.to_path_buf();
+          let canonical = std::fs::canonicalize(p).unwrap_or_else(|_| raw.clone());
           if seen.insert(canonical.clone()) {
-            out.push(canonical);
+            // For most files we emit the canonical path so user-managed
+            // aliases (e.g. `ln -s /big-disk/m.gguf ~/models/`) display
+            // under their target name. The exception is HuggingFace's
+            // hub layout: blobs are sha256-named files with no `.gguf`
+            // extension, surfaced via `snapshots/<rev>/<name>.gguf`
+            // symlinks. llama.cpp's split-GGUF loader parses the
+            // filename for `-NNNNN-of-NNNNN.gguf` and rejects bare
+            // sha256 names, so emitting the canonical path would make
+            // every HF-cached multi-part model fail to launch with
+            // `invalid split file name`. When canonicalisation strips
+            // the `.gguf` extension we treat that as the HF-blob signal
+            // and keep the symlink path. Single-file HF models still
+            // load fine either way; the path swap only matters for the
+            // split-aware loader.
+            let emit = if canonical.extension().and_then(|s| s.to_str()) == Some("gguf") {
+              canonical
+            } else {
+              raw
+            };
+            out.push(emit);
           }
         }
       }
@@ -378,6 +398,44 @@ mod tests {
     // The emitted path is the canonical (target) path, not the alias.
     let canon_real = fs::canonicalize(dir.join("real.gguf")).unwrap();
     assert_eq!(paths[0], canon_real);
+    fs::remove_dir_all(&dir).ok();
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn hf_cache_blob_symlink_keeps_symlink_path() {
+    // Regression: in the HuggingFace hub layout, the canonical file
+    // is a sha256-named blob (no `.gguf` extension) and the launch-
+    // friendly path lives behind a snapshot symlink that preserves
+    // the upstream name. llama.cpp's split loader requires the
+    // `-NNNNN-of-NNNNN.gguf` naming convention, so emitting the
+    // canonical blob path makes every multi-part HF model fail to
+    // load with `invalid split file name`. The walker must therefore
+    // keep the symlink path when the canonical target lacks a
+    // `.gguf` extension. Layout mirrors `~/.cache/huggingface/hub`.
+    let dir = temp_dir("hfcache");
+    let blobs = dir.join("blobs");
+    let snap = dir.join("snapshots/main");
+    fs::create_dir_all(&blobs).unwrap();
+    fs::create_dir_all(&snap).unwrap();
+    let blob = blobs.join("403434e5c8454520");
+    fs::write(&blob, build_minimal_gguf("llama")).unwrap();
+    let named = snap.join("qwen2.5-32b-q4_k_m-00001-of-00005.gguf");
+    std::os::unix::fs::symlink(&blob, &named).unwrap();
+
+    let paths = collect_gguf_paths(&dir, &[]);
+    assert_eq!(paths.len(), 1, "blob + symlink collapse to one row");
+    let emitted = &paths[0];
+    assert!(
+      emitted.extension().and_then(|s| s.to_str()) == Some("gguf"),
+      "emitted path must keep `.gguf` extension, got {emitted:?}"
+    );
+    assert_eq!(
+      emitted.file_name().and_then(|s| s.to_str()),
+      Some("qwen2.5-32b-q4_k_m-00001-of-00005.gguf"),
+      "emitted path must be the snapshot symlink (split-aware name), \
+       not the canonical blob"
+    );
     fs::remove_dir_all(&dir).ok();
   }
 

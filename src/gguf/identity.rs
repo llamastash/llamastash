@@ -84,12 +84,27 @@ impl ModelId {
 /// `path` is canonicalised via [`std::fs::canonicalize`] when possible;
 /// when the file does not exist (in tests that build only an in-memory
 /// header), we fall back to the path as supplied.
+///
+/// HuggingFace cache exception: when canonicalisation strips the
+/// `.gguf` extension (the HF hub layout, where canonical targets are
+/// sha256-named blobs surfaced via `snapshots/<rev>/<name>.gguf`
+/// symlinks), keep the supplied symlink path. The blob path looks
+/// like an id to users, breaks llama.cpp's split-aware filename
+/// parser, and produces useless log filenames downstream. Identity
+/// equality across renames is still anchored on `header_blake3`, so
+/// keeping a non-canonical path here does not weaken the rename
+/// detection contract.
 pub fn compute<P: AsRef<Path>>(path: P, header_bytes: &[u8]) -> ModelId {
-  let canonical =
-    std::fs::canonicalize(path.as_ref()).unwrap_or_else(|_| path.as_ref().to_path_buf());
+  let supplied = path.as_ref().to_path_buf();
+  let canonical = std::fs::canonicalize(&supplied).unwrap_or_else(|_| supplied.clone());
+  let resolved = if canonical.extension().and_then(|s| s.to_str()) == Some("gguf") {
+    canonical
+  } else {
+    supplied
+  };
   let digest = blake3::hash(header_bytes);
   ModelId {
-    path: canonical,
+    path: resolved,
     header_blake3: *digest.as_bytes(),
   }
 }
@@ -120,6 +135,57 @@ mod tests {
     let id_b = compute(&b, &bytes);
     assert_eq!(id_a.header_blake3, id_b.header_blake3);
     assert_ne!(id_a.path, id_b.path);
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn hf_blob_symlink_keeps_named_path() {
+    // Regression: when the supplied path is the HuggingFace
+    // snapshot symlink (named `*.gguf`) and the canonical target is
+    // a sha256-named blob (no extension), `compute` must keep the
+    // symlink path. Otherwise it leaks the blob path into
+    // state.json, status output, log filenames, and llama-server's
+    // `-m` flag — the last of which trips the split-aware loader
+    // with `invalid split file name` and surfaces the model in the
+    // TUI as a sha256 id instead of its real name.
+    let dir = tempdir_for_test();
+    let blob = dir.join("403434e5c8454520");
+    let bytes = b"GGUF\x03\x00\x00\x00 hf-cache header".to_vec();
+    fs::write(&blob, &bytes).unwrap();
+    let named = dir.join("qwen2.5-32b-q4_k_m-00001-of-00005.gguf");
+    std::os::unix::fs::symlink(&blob, &named).unwrap();
+
+    let id = compute(&named, &bytes);
+    assert_eq!(
+      id.path.file_name().and_then(|s| s.to_str()),
+      Some("qwen2.5-32b-q4_k_m-00001-of-00005.gguf"),
+      "blob target should not replace the symlink path: got {:?}",
+      id.path,
+    );
+    fs::remove_dir_all(&dir).ok();
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn user_alias_symlink_still_canonicalises() {
+    // The HF-blob carve-out must not regress the user-alias case:
+    // when both source and target end in `.gguf`, the canonical
+    // (target) path is the right identity so multiple aliases of
+    // the same file collapse to a single row.
+    let dir = tempdir_for_test();
+    let real = dir.join("model.gguf");
+    let bytes = b"GGUF\x03\x00\x00\x00 user header".to_vec();
+    fs::write(&real, &bytes).unwrap();
+    let alias = dir.join("alias.gguf");
+    std::os::unix::fs::symlink(&real, &alias).unwrap();
+
+    let id = compute(&alias, &bytes);
+    assert_eq!(
+      id.path,
+      fs::canonicalize(&real).unwrap(),
+      "user-managed gguf alias must resolve to the canonical target"
+    );
+    fs::remove_dir_all(&dir).ok();
   }
 
   #[test]

@@ -12,7 +12,9 @@
 //!
 //! Verification rules (Key Decisions):
 //! - `min_version > CARGO_PKG_VERSION` → reject (rollback-DoS gate).
-//! - `bundle_date ≤ bundled.bundle_date` → reject (monotonic gate).
+//! - `bundle_date < bundled.bundle_date` → reject (rollback gate).
+//!   Equal dates are accepted so a same-day source build doesn't
+//!   loop on the freshly-published cron output forever.
 //! - Any fetch / parse / verification failure → silent fallback to
 //!   bundled. `doctor` finding `RemoteSnapshotUnreachable` surfaces
 //!   prolonged outages via the `remote_fetch_failures` counter in
@@ -203,7 +205,8 @@ pub fn load_bundled() -> BenchmarkSnapshot {
 }
 
 /// Try to fetch the snapshot's `remote_url` (when set) and accept it
-/// only if both gates pass: `bundle_date > bundled.bundle_date` and
+/// only if both gates pass: `bundle_date >= bundled.bundle_date`
+/// (rollback gate; equal-date is accepted) and
 /// `min_version ≤ CARGO_PKG_VERSION`. Returns `Ok(None)` when the
 /// bundled snapshot carries no `remote_url`; returns `Err(...)` for
 /// every other failure path so the caller can log telemetry.
@@ -238,7 +241,14 @@ pub fn verify_remote(
       max: SUPPORTED_SCHEMA_VERSION,
     });
   }
-  if candidate.bundle_date <= bundled.bundle_date {
+  // Reject strictly older candidates only: equal-date is "same day,
+  // same content tier" (a `cargo install` that lands on the same day
+  // CI publishes will see equal dates and should still adopt the
+  // refresh) — the rollback-DoS gate the docs reference is about
+  // *older* dates. Without this carve-out, anyone building from source
+  // on a regen day perpetually trips StaleBundle and accumulates
+  // remote_fetch_failures until the next-day cron lands.
+  if candidate.bundle_date < bundled.bundle_date {
     return Err(LoadRemoteError::StaleBundle {
       got: candidate.bundle_date.clone(),
       bundled: bundled.bundle_date.clone(),
@@ -401,6 +411,23 @@ mod tests {
     };
     let err = verify_remote(&candidate, &bundled).unwrap_err();
     assert!(matches!(err, LoadRemoteError::StaleBundle { .. }));
+  }
+
+  #[test]
+  fn verify_remote_accepts_equal_bundle_date() {
+    // Equal-date candidate is the "built on the same day CI publishes"
+    // case — the same-day cron output is content-equivalent or a small
+    // re-pull. Without this, every source build on a regen day would
+    // perpetually trip StaleBundle and bump remote_fetch_failures until
+    // the next-day cron lands. The rollback-DoS gate only cares about
+    // *older* dates.
+    let bundled = bundled_test();
+    let candidate = BenchmarkSnapshot {
+      bundle_date: bundled.bundle_date.clone(),
+      min_version: "0.0.1".into(),
+      ..bundled_test()
+    };
+    assert!(verify_remote(&candidate, &bundled).is_ok());
   }
 
   #[test]
