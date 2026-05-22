@@ -8,8 +8,8 @@
 //!   5. smoke launch — `--only` / `--skip` gated (Unit 12 owns the body).
 //!   6. handoff — always runs.
 //!
-//! `--recommended` short-circuits every prompt to its hardware-aware
-//! default. Three per-step value flags
+//! `--recommended` (or the hidden `--yes` alias) short-circuits every
+//! prompt to its hardware-aware default. Three per-step value flags
 //! (`--install`, `--model`, `--config-step`) pre-answer individual
 //! prompts without skipping the rest of the wizard. `--json` emits a
 //! single summary on completion; per-step progress goes to stderr at

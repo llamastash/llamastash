@@ -1,6 +1,6 @@
 //! Integration coverage for the `init` clap surface — repeatable +
 //! comma-separated `--only`/`--skip`, mutual exclusion, the
-//! `--recommended --json --offline` triple, and the new exit codes.
+//! `--yes --json --offline` triple, and the new exit codes.
 
 use std::path::PathBuf;
 
@@ -97,15 +97,32 @@ fn init_recommended_flag_parses() {
   match parse(&["init", "--recommended"]).command {
     Some(Command::Init(args)) => {
       assert!(args.recommended);
+      assert!(!args.yes);
     }
     other => panic!("expected init, got {other:?}"),
   }
 }
 
 #[test]
-fn init_yes_is_rejected() {
-  let result = Cli::try_parse_from(["llamastash", "init", "--yes"]);
-  assert!(result.is_err(), "--yes should be rejected");
+fn init_yes_is_hidden_alias_still_parses() {
+  match parse(&["init", "--yes"]).command {
+    Some(Command::Init(args)) => {
+      assert!(args.yes);
+      assert!(!args.recommended);
+    }
+    other => panic!("expected init, got {other:?}"),
+  }
+}
+
+#[test]
+fn init_recommended_and_yes_are_combinable_no_mutex() {
+  match parse(&["init", "--recommended", "--yes"]).command {
+    Some(Command::Init(args)) => {
+      assert!(args.recommended);
+      assert!(args.yes);
+    }
+    other => panic!("expected init, got {other:?}"),
+  }
 }
 
 #[test]

@@ -368,6 +368,10 @@ pub struct InitArgs {
   /// silently downgraded.
   #[arg(long, action = ArgAction::SetTrue)]
   pub recommended: bool,
+  /// Hidden alias for `--recommended` kept for agent/script
+  /// compatibility.
+  #[arg(long, hide = true)]
+  pub yes: bool,
   /// Emit a single structured summary at completion. Per-step progress
   /// goes to stderr (only in `--verbose`). Mutually compatible with
   /// `--recommended`.
@@ -590,6 +594,7 @@ pub enum InitStep {
 pub fn recommend_to_init_args(args: RecommendArgs) -> InitArgs {
   InitArgs {
     recommended: false,
+    yes: false,
     json: args.json,
     offline: args.offline,
     only: vec![InitStep::Models],
@@ -800,7 +805,7 @@ mod tests {
     let cli = parse(&["init"]);
     match cli.command {
       Some(Command::Init(args)) => {
-        assert!(!args.json && !args.offline);
+        assert!(!args.yes && !args.json && !args.offline);
         assert!(args.only.is_empty());
         assert!(args.skip.is_empty());
       }
@@ -836,6 +841,7 @@ mod tests {
     match cli.command {
       Some(Command::Init(args)) => {
         assert!(args.recommended);
+        assert!(!args.yes);
         assert!(args.json);
         assert!(args.offline);
       }
@@ -849,6 +855,7 @@ mod tests {
     match cli.command {
       Some(Command::Init(args)) => {
         assert!(args.recommended);
+        assert!(!args.yes);
       }
       other => panic!("expected init, got {other:?}"),
     }
@@ -870,7 +877,33 @@ mod tests {
       "help must list --config-step"
     );
     assert!(!rendered.contains("--yes"), "help must not list --yes");
-    assert!(Cli::try_parse_from(["llamastash", "init", "--yes"]).is_err());
+    assert!(Cli::try_parse_from(["llamastash", "init", "--yes"]).is_ok());
+  }
+
+  #[test]
+  fn init_yes_json_offline_flags_parse() {
+    let cli = parse(&["init", "--yes", "--json", "--offline"]);
+    match cli.command {
+      Some(Command::Init(args)) => {
+        assert!(args.yes);
+        assert!(!args.recommended);
+        assert!(args.json);
+        assert!(args.offline);
+      }
+      other => panic!("expected init, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn init_recommended_and_yes_are_combinable() {
+    let cli = parse(&["init", "--recommended", "--yes"]);
+    match cli.command {
+      Some(Command::Init(args)) => {
+        assert!(args.recommended);
+        assert!(args.yes);
+      }
+      other => panic!("expected init, got {other:?}"),
+    }
   }
 
   #[test]

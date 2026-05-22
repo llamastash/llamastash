@@ -290,7 +290,7 @@ These three are first-run and admin surfaces. They're separated from the runtime
 Six-step first-run wizard: detect hardware → install `llama-server` → pick + download a starter GGUF → write `config.yaml` with `arch_defaults` → smoke launch → handoff. Interactive by default (built on `cliclack`); per-step pre-answer flags let agents drive every prompt non-interactively.
 
 ```
-llamastash init [--recommended] [--json] [--offline]
+llamastash init [--recommended] [--yes] [--json] [--offline]
                [--only <STEPS>] [--skip <STEPS>]
                [--install <CHOICE>] [--model <CHOICE>]
                [--config-step <CHOICE>]
@@ -299,6 +299,7 @@ llamastash init [--recommended] [--json] [--offline]
 | Flag | Effect |
 |---|---|
 | `--recommended` | Accept the hardware-aware default for every prompt; no prompts fire. Canonical form. |
+| `--yes` | Hidden alias for `--recommended`. Preserved for script and agent compatibility. |
 | `--json` | Emit a structured summary (schema: `schema_version`, `steps_ran`, `steps_skipped`, `install`, `model`, `config`, `smoke`, `hardware`) and skip all human prose. |
 | `--offline` | Refuse outbound network. Useful for `--only config` / `--only server` reruns where the model and snapshot are already cached. `LLAMASTASH_OFFLINE=1` is equivalent. |
 | `--only <STEPS>` | Comma-separated list of `server,models,config` (other names rejected). Only the listed steps run. |
