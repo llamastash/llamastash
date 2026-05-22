@@ -33,6 +33,9 @@ behavior, the CLI / IPC surface, configuration shape, install paths, exit
 codes, dependencies, scope boundaries, or architecture, update the affected
 docs in the **same change** (same commit, same PR). Treat a PR that ships
 code without the matching doc update as incomplete.
+Agents working on this app must always keep core docs in sync (README,
+AGENTS.md, feature docs, CHANGELOG, usage docs, install docs, and adjacent
+user/developer docs touched by the change).
 
 Files to review for drift on every change — skip the ones a change doesn't
 touch, but check before assuming:
@@ -41,6 +44,11 @@ touch, but check before assuming:
   table when present.
 - `AGENTS.md` (this file) — scope boundaries, exit-code table, CLI agent
   surface, `status` IPC fields, build/test/lint, common gotchas.
+- `INSTALL.md` — installer paths, prerequisites, and installation flows
+  across supported environments.
+- feature docs (`docs/brainstorms/*requirements*.md`, `docs/plans/*.md`,
+  and feature-focused sections in `README.md` / `docs/usage.md`) — keep
+  feature scope, status, and user-facing behavior aligned with shipped code.
 - `CHANGELOG.md` — noteworthy user-visible changes land an entry under
   `[Unreleased]` (or the active release section). Internal-only refactors
   can be omitted. Entries must be **short, human-scannable one-liners** —
