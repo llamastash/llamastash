@@ -151,13 +151,7 @@ async fn llamastash_offline_true_env_triggers_offline_only_models_refusal() {
   let root = isolated_xdg("env-offline");
   let old = std::env::var_os("LLAMASTASH_OFFLINE");
   std::env::set_var("LLAMASTASH_OFFLINE", "true");
-  let (cli, args) = parse_init(&[
-    "init",
-    "--only",
-    "models",
-    "--recommended",
-    "--json",
-  ]);
+  let (cli, args) = parse_init(&["init", "--only", "models", "--recommended", "--json"]);
   assert!(
     args.offline,
     "LLAMASTASH_OFFLINE=true should populate args.offline via clap env()"

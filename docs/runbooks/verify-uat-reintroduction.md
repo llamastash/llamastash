@@ -1,8 +1,7 @@
 # Runbook: verify the UAT reintroduction
 
-Background: the `llamastash uat` feature was deleted on `main` during
-the `llamadash → llamastash` rename, then squash-merged back from
-`feat/uat-hardware-strategy` with the rename applied and the ce-review
+Background: the `llamastash uat` feature was deleted on `main`, then
+squash-merged back from `feat/uat-hardware-strategy` with the ce-review
 fixes folded in. This runbook is the maintainer's local-verification
 gate before pushing `main` to the remote.
 
@@ -23,7 +22,7 @@ isolation → revision plumbing → pre-merge follow-ups. Each step has a
 ## 0. Preconditions
 
 ```sh
-cd /mnt/work/Workspace/oss-libs/llamadash-rs/llamastash
+cd /mnt/work/Workspace/oss-libs/llamastash
 
 git status --short                          # working tree should be clean (TODO.md edit is expected)
 git log --oneline -3                        # HEAD should be the squash-merge commit
