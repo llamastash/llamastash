@@ -51,24 +51,6 @@ LLAMASTASH_SOCKET=/tmp/llamastash-dev/daemon.sock cargo run -- list
 
 If something is wedged and the normal `daemon stop` won't go through, deleting the socket file and `daemon.pid` in the same directory is safe — the next `daemon start` re-binds clean.
 
-## One-shot rename migration (existing local installs)
-
-The project was renamed from LlamaDash to LlamaStash before the first public release. If you ran the old binary locally before the rename, your config / cache / share directories still live under `llamadash/`. Run this once after pulling the rename to move them in place; sockets are ephemeral and regenerate on next `daemon start`.
-
-```sh
-[ -d "${XDG_CONFIG_HOME:-$HOME/.config}/llamadash" ] && \
-  mv "${XDG_CONFIG_HOME:-$HOME/.config}/llamadash" \
-     "${XDG_CONFIG_HOME:-$HOME/.config}/llamastash"
-[ -d "${XDG_CACHE_HOME:-$HOME/.cache}/llamadash" ] && \
-  mv "${XDG_CACHE_HOME:-$HOME/.cache}/llamadash" \
-     "${XDG_CACHE_HOME:-$HOME/.cache}/llamastash"
-[ -d "$HOME/.local/share/llamadash" ] && \
-  mv "$HOME/.local/share/llamadash" \
-     "$HOME/.local/share/llamastash"
-```
-
-The binary intentionally does not check old paths — pre-publish was the time to delete legacy code cleanly.
-
 ## Code conventions
 
 - Rust edition 2021. Minimum supported Rust version is pinned in `Cargo.toml` (`rust-version`).

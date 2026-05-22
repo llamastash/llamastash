@@ -319,16 +319,11 @@ fn parse_running_row(v: &Value) -> Option<RunningRow> {
     .and_then(Value::as_str)
     .unwrap_or_default()
     .to_string();
-  // Accept both the legacy nested `state.state` enum repr and the
-  // flat `state: "ready"` shape (post-P2-16 daemon). Falls back to
-  // empty string when neither is present.
+  // Daemon status rows carry a flat `state: "ready"` string.
   let state = v
     .get("state")
-    .and_then(|s| {
-      s.as_str()
-        .map(str::to_string)
-        .or_else(|| s.get("state").and_then(Value::as_str).map(str::to_string))
-    })
+    .and_then(Value::as_str)
+    .map(str::to_string)
     .unwrap_or_default();
   let pid = v.get("pid").and_then(Value::as_u64);
   let ready_at = v.get("ready_at").and_then(Value::as_u64);

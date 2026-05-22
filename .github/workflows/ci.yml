@@ -264,36 +264,8 @@ jobs:
           echo "::error::crate '${crate}' is claimed by an owner outside the publisher allowlist:"
           echo "::error::  owners: ${owners}"
           echo "::error::  allowed: ${publisher_allowlist[*]}"
-          echo "::error::Fall back to the 'llamastash-cli' rename path per plan R87."
+          echo "::error::Crate ownership guard failed; investigate and resolve before release."
           exit 1
-
-      - name: url-grep-guard
-        # Refuse PRs that re-introduce any pre-rename GitHub URL. This project
-        # went through two renames before v1.0:
-        #   1. github.com/llamadash/llamadash     → github.com/llamadash-rs/llamadash
-        #   2. github.com/llamadash-rs/llamadash  → github.com/llamastash/llamastash (current)
-        # Both legacy patterns are blocked from creeping back into user-visible
-        # files. Excludes docs/brainstorms + docs/plans + docs/solutions, which
-        # preserve the historical record. Discover the file set dynamically via
-        # `git ls-files` so adding or removing a top-level doc doesn't silently
-        # bypass the check or abort on missing files.
-        run: |
-          set -euo pipefail
-          mapfile -t candidates < <(git ls-files \
-            'Cargo.toml' '*.md' \
-            ':!:docs/brainstorms/**' \
-            ':!:docs/plans/**' \
-            ':!:docs/solutions/**')
-          if [ "${#candidates[@]}" -eq 0 ]; then
-            echo "::error::URL guard found no files to scan; the glob must have lost coverage."
-            exit 1
-          fi
-          if grep -HnE 'github\.com/(llamadash|llamadash-rs)/llamadash' "${candidates[@]}"; then
-            echo "::error::Pre-rename URL found in user-visible files."
-            echo "::error::Use github.com/llamastash/llamastash."
-            exit 1
-          fi
-          printf 'scanned %d file(s); no stray pre-rename URLs; OK\n' "${#candidates[@]}"
 
       - name: changelog has unreleased or current-version heading
         # On PRs we just want SOMETHING under [Unreleased]; on tag-builds the

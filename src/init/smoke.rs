@@ -43,8 +43,8 @@ pub struct SmokeReport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SmokeWarning {
   /// Phase 1: estimated peak is within 10% of the safety ceiling.
-  /// Wizard prompts for confirm under interactive mode; auto-yes
-  /// under `--yes`.
+  /// Wizard prompts for confirm under interactive mode; auto-accepts
+  /// under `--recommended`.
   VramTight { peak_bytes: u64, ceiling_bytes: u64 },
   /// Phase 1: no GPU detected; user is running CPU only. Surface
   /// so the handoff message can suggest a smaller model if the user

@@ -2,8 +2,8 @@
 //!
 //! Each picker check, in order:
 //!   1. The corresponding per-step value flag → return it immediately.
-//!   2. `is_recommended()` (either `--recommended` or hidden alias
-//!      `--yes`) → return the supplied default.
+//!   2. `is_recommended()` (`--recommended`) → return the supplied
+//!      default.
 //!   3. stdout is not a TTY → return the default and emit one stderr
 //!      warning so headless callers know defaults were used.
 //!   4. otherwise → cliclack prompt.
@@ -13,8 +13,7 @@
 //! responsive while the user reads the prompt.
 //!
 //! The wizard's step functions delegate to these helpers; raw
-//! `args.recommended` / `args.yes` reads live in `is_recommended`
-//! only.
+//! `args.recommended` reads live in `is_recommended` only.
 
 use std::io::IsTerminal;
 
@@ -29,9 +28,9 @@ use crate::init::wizard::InitSummary;
 
 /// Canonical "use derived defaults" predicate. The wizard reads this
 /// once at the top of `run` and threads the boolean into each step;
-/// no other site reads `args.recommended` / `args.yes` directly.
+/// no other site reads `args.recommended` directly.
 pub fn is_recommended(args: &InitArgs) -> bool {
-  args.recommended || args.yes
+  args.recommended
 }
 
 /// Wraps a cliclack spinner so wizard steps can give the user
@@ -700,7 +699,6 @@ mod tests {
   fn empty_args() -> InitArgs {
     InitArgs {
       recommended: false,
-      yes: false,
       json: false,
       offline: false,
       only: Vec::new(),
@@ -876,13 +874,6 @@ mod tests {
   fn is_recommended_reads_recommended_field() {
     let mut args = empty_args();
     args.recommended = true;
-    assert!(is_recommended(&args));
-  }
-
-  #[test]
-  fn is_recommended_reads_yes_alias() {
-    let mut args = empty_args();
-    args.yes = true;
     assert!(is_recommended(&args));
   }
 

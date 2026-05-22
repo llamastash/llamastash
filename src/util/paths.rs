@@ -440,21 +440,21 @@ mod tests {
   }
 
   #[test]
-  fn state_dir_honors_llamadash_state_dir_override() {
+  fn state_dir_honors_llamastash_state_dir_override() {
     let _guard = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
     let _e = EnvVarGuard::set("LLAMASTASH_STATE_DIR", "/tmp/uat-state-override");
     assert_eq!(state_dir(), Some(PathBuf::from("/tmp/uat-state-override")));
   }
 
   #[test]
-  fn cache_dir_honors_llamadash_cache_dir_override() {
+  fn cache_dir_honors_llamastash_cache_dir_override() {
     let _guard = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
     let _e = EnvVarGuard::set("LLAMASTASH_CACHE_DIR", "/tmp/uat-cache-override");
     assert_eq!(cache_dir(), Some(PathBuf::from("/tmp/uat-cache-override")));
   }
 
   #[test]
-  fn config_dir_honors_llamadash_config_dir_override() {
+  fn config_dir_honors_llamastash_config_dir_override() {
     let _guard = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
     let _e = EnvVarGuard::set("LLAMASTASH_CONFIG_DIR", "/tmp/uat-config-override");
     assert_eq!(

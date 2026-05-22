@@ -82,7 +82,14 @@ fn cleanup_xdg(root: &std::path::PathBuf) {
 async fn offline_only_models_refused_upfront_with_init_aborted() {
   let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
   let root = isolated_xdg("offline-only-models");
-  let (cli, args) = parse_init(&["init", "--offline", "--only", "models", "--yes", "--json"]);
+  let (cli, args) = parse_init(&[
+    "init",
+    "--offline",
+    "--only",
+    "models",
+    "--recommended",
+    "--json",
+  ]);
   let config = Config::default();
   let result = wizard::run(args, &cli, &config).await;
   let err = result.expect_err("expected INIT_ABORTED on --offline --only models");
@@ -107,7 +114,14 @@ async fn offline_only_models_refused_upfront_with_init_aborted() {
 async fn offline_only_config_completes_without_network() {
   let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
   let root = isolated_xdg("offline-only-config");
-  let (cli, args) = parse_init(&["init", "--offline", "--only", "config", "--yes", "--json"]);
+  let (cli, args) = parse_init(&[
+    "init",
+    "--offline",
+    "--only",
+    "config",
+    "--recommended",
+    "--json",
+  ]);
   let config = Config::default();
   let result = wizard::run(args, &cli, &config).await;
   // Either success (config wrote cleanly) or UNKNOWN/INIT_ABORTED if
@@ -137,7 +151,13 @@ async fn llamastash_offline_true_env_triggers_offline_only_models_refusal() {
   let root = isolated_xdg("env-offline");
   let old = std::env::var_os("LLAMASTASH_OFFLINE");
   std::env::set_var("LLAMASTASH_OFFLINE", "true");
-  let (cli, args) = parse_init(&["init", "--only", "models", "--yes", "--json"]);
+  let (cli, args) = parse_init(&[
+    "init",
+    "--only",
+    "models",
+    "--recommended",
+    "--json",
+  ]);
   assert!(
     args.offline,
     "LLAMASTASH_OFFLINE=true should populate args.offline via clap env()"
@@ -181,11 +201,10 @@ fn only_and_skip_together_refused_by_clap() {
   );
 }
 
-/// `--recommended --offline --only config` exercises the same path
-/// the old `--yes --offline --only config` test did; ensures the new
-/// canonical flag behaves identically to the hidden alias.
+/// `--recommended --offline --only config` keeps the config-only path
+/// non-interactive.
 #[tokio::test]
-async fn recommended_alias_runs_offline_only_config_like_yes_did() {
+async fn recommended_runs_offline_only_config() {
   let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
   let root = isolated_xdg("recommended-offline-only-config");
   let (cli, args) = parse_init(&[

@@ -8,8 +8,8 @@
 //!   5. smoke launch — `--only` / `--skip` gated (Unit 12 owns the body).
 //!   6. handoff — always runs.
 //!
-//! `--recommended` (or the hidden `--yes` alias) short-circuits every
-//! prompt to its hardware-aware default. Three per-step value flags
+//! `--recommended` short-circuits every prompt to its hardware-aware
+//! default. Three per-step value flags
 //! (`--install`, `--model`, `--config-step`) pre-answer individual
 //! prompts without skipping the rest of the wizard. `--json` emits a
 //! single summary on completion; per-step progress goes to stderr at
@@ -533,7 +533,7 @@ async fn run_install_step(
   let emit_progress = !args.json;
   // In recommended mode, if the user already has a safe-to-adopt binary
   // on PATH or at a common location, prefer adopting it over running a
-  // fresh install. Matches the prior `--yes` behavior.
+  // fresh install.
   //
   // `args.install.is_none()` guards the shortcut so an explicit
   // `--install <choice>` always wins over recommended-mode adoption

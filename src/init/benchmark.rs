@@ -304,8 +304,8 @@ mod tests {
   fn old_schema_snapshot_defaults_new_fields() {
     // A pre-Unit-1 snapshot (no source_hf_id / params_active / is_moe
     // / gguf_publisher) must still deserialise via the serde defaults.
-    // This keeps the "old asset still loads on a new binary" half of
-    // Unit 1's backward-compat contract — even after the bundled JSON
+    // This keeps older snapshot assets loadable on newer binaries,
+    // even after the bundled JSON
     // gets regenerated with the new fields populated.
     let body = serde_json::json!({
       "schema_version": 1,

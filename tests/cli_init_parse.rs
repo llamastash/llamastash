@@ -1,6 +1,6 @@
 //! Integration coverage for the `init` clap surface — repeatable +
 //! comma-separated `--only`/`--skip`, mutual exclusion, the
-//! `--yes --json --offline` triple, and the new exit codes.
+//! `--recommended --json --offline` triple, and the new exit codes.
 
 use std::path::PathBuf;
 
@@ -63,10 +63,10 @@ fn init_only_and_skip_conflict() {
 }
 
 #[test]
-fn init_yes_json_offline_combinable() {
-  match parse(&["init", "--yes", "--json", "--offline"]).command {
+fn init_recommended_json_offline_combinable() {
+  match parse(&["init", "--recommended", "--json", "--offline"]).command {
     Some(Command::Init(args)) => {
-      assert!(args.yes);
+      assert!(args.recommended);
       assert!(args.json);
       assert!(args.offline);
     }
@@ -97,32 +97,15 @@ fn init_recommended_flag_parses() {
   match parse(&["init", "--recommended"]).command {
     Some(Command::Init(args)) => {
       assert!(args.recommended);
-      assert!(!args.yes);
     }
     other => panic!("expected init, got {other:?}"),
   }
 }
 
 #[test]
-fn init_yes_is_hidden_alias_still_parses() {
-  match parse(&["init", "--yes"]).command {
-    Some(Command::Init(args)) => {
-      assert!(args.yes);
-      assert!(!args.recommended);
-    }
-    other => panic!("expected init, got {other:?}"),
-  }
-}
-
-#[test]
-fn init_recommended_and_yes_are_combinable_no_mutex() {
-  match parse(&["init", "--recommended", "--yes"]).command {
-    Some(Command::Init(args)) => {
-      assert!(args.recommended);
-      assert!(args.yes);
-    }
-    other => panic!("expected init, got {other:?}"),
-  }
+fn init_yes_is_rejected() {
+  let result = Cli::try_parse_from(["llamastash", "init", "--yes"]);
+  assert!(result.is_err(), "--yes should be rejected");
 }
 
 #[test]
@@ -307,7 +290,7 @@ fn init_revision_with_paste_model_carries_both_fields() {
 
 #[test]
 fn init_revision_empty_rejected_at_parse_time() {
-  let result = Cli::try_parse_from(["llamadash", "init", "--revision", ""]);
+  let result = Cli::try_parse_from(["llamastash", "init", "--revision", ""]);
   let err = result.expect_err("empty revision must be rejected");
   assert!(
     err.to_string().contains("non-empty"),
@@ -317,7 +300,7 @@ fn init_revision_empty_rejected_at_parse_time() {
 
 #[test]
 fn init_revision_whitespace_rejected() {
-  let result = Cli::try_parse_from(["llamadash", "init", "--revision", "abc 123"]);
+  let result = Cli::try_parse_from(["llamastash", "init", "--revision", "abc 123"]);
   assert!(
     result.is_err(),
     "whitespace inside --revision must be rejected"

@@ -1030,7 +1030,7 @@ mod tests {
 
   #[test]
   fn download_options_default_carries_no_revision() {
-    // Pre-`--revision` callers (the standalone `llamadash pull`
+    // Pre-`--revision` callers (the standalone `llamastash pull`
     // handler, every existing wizard integration test) must keep
     // resolving the default branch — verified by `Default` returning
     // `revision: None`.

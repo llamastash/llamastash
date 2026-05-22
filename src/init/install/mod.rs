@@ -13,7 +13,7 @@
 //! Every path returns a [`BinaryInstall`] the wizard records in
 //! `_init_snapshot` (Unit 2) so `doctor` (Unit 13) can flag drift.
 //! Integrity-check failures abort with `INIT_ABORTED` (72) per the
-//! `--yes` semantics in the plan.
+//! non-interactive semantics in the plan.
 
 pub mod brew;
 pub mod custom_path;
@@ -76,7 +76,7 @@ pub fn sha256_file(path: &Path) -> Result<String, InstallError> {
 
 /// Plan-time helper exposed for tests: which install method should the
 /// wizard pre-select given the host's hardware? Returns the choice the
-/// `--yes` mode would accept.
+/// non-interactive `--recommended` mode would accept.
 pub fn default_install_method(hw: &HardwareSnapshot) -> InstallChoice {
   use crate::gpu::GpuInfo;
   match (&hw.gpu, hw.os, hw.cpu_arch) {

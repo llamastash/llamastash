@@ -5,7 +5,7 @@
 //! - human-friendly + JSON diff rendering,
 //! - secret-key redaction (path matches `token` / `secret` /
 //!   `password` substring → value rendered as `<redacted>`),
-//! - --yes / interactive confirm hook,
+//! - non-interactive / interactive confirm hook,
 //! - managed_keys list build that Unit 10 then stamps into
 //!   `_init_snapshot.json`.
 //!
@@ -51,7 +51,8 @@ pub struct RedactedDiffEntry {
 ///
 /// - `show_diff_preview = true` renders the diff to stderr before the
 ///   write so a human can audit it. Unit 10's prompt is layered on
-///   top in interactive mode; `--yes` / `--json` runs pass `false`.
+///   top in interactive mode; `--recommended` / `--json` runs pass
+///   `false`.
 /// - `verbose = true` always renders the diff to stderr (legacy
 ///   `--verbose` semantics). Mutually compatible with the preview
 ///   flag: setting both is the same as either one.
