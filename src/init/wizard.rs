@@ -531,7 +531,8 @@ async fn run_install_step(
   binary: &BinaryPresence,
 ) -> Result<BinaryInstall, CliExit> {
   let emit_progress = !args.json;
-  // In recommended mode, if the user already has a safe-to-adopt binary
+  // In non-interactive mode (`--recommended` or `--yes`), if the user
+  // already has a safe-to-adopt binary
   // on PATH or at a common location, prefer adopting it over running a
   // fresh install.
   //

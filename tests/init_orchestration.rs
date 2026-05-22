@@ -223,6 +223,28 @@ async fn recommended_runs_offline_only_config() {
   cleanup_xdg(&root);
 }
 
+/// `--yes` remains a hidden alias for `--recommended`; config-only
+/// offline flow should behave identically.
+#[tokio::test]
+async fn yes_alias_runs_offline_only_config() {
+  let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+  let root = isolated_xdg("yes-alias-offline-only-config");
+  let (cli, args) = parse_init(&["init", "--yes", "--offline", "--only", "config", "--json"]);
+  assert!(args.yes);
+  assert!(!args.recommended);
+  let config = Config::default();
+  let result = wizard::run(args, &cli, &config).await;
+  if let Err(e) = &result {
+    assert_ne!(
+      e.code,
+      llamastash::cli::exit_codes::INIT_DOWNLOAD_FAILED,
+      "config-only run must not surface INIT_DOWNLOAD_FAILED: {:?}",
+      e.message
+    );
+  }
+  cleanup_xdg(&root);
+}
+
 /// `--config-step skip` causes the wizard's config step to record
 /// itself as skipped without writing — the dry-run + confirm path
 /// resolves Skip synchronously without prompting.
