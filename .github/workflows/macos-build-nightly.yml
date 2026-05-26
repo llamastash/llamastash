@@ -30,7 +30,7 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -41,7 +41,7 @@ jobs:
       - name: cargo build --release --target aarch64-apple-darwin
         run: cargo build --release --target aarch64-apple-darwin --bin llamastash
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: llamastash-aarch64-apple-darwin-${{ github.run_id }}
           path: target/aarch64-apple-darwin/release/llamastash
