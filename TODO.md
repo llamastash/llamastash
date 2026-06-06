@@ -101,6 +101,10 @@ Two release tracks:
 
 ## R2 (v0.0.2 checklist)
 
+### Config presets per model
+
+- [ ] **Config-file presets per model with default selection** — today presets live in `state.json` (user-mutated, ephemeral), have no default concept, and aren't agent-facing. Design: move presets to `config.yaml` under a per-model `presets:` block (keyed by GGUF `general.architecture`), add `default` + `entries` fields, TUI selector in launch picker, TUI CRUD modal, `status` method exposes presets for Pi/Claude Code, `llamastash start --preset <name>` picks from config or state.json. Backward compat: one-time migration of existing `state.json` presets into config. Brainstorm: [`docs/brainstorms/2026-06-06-config-presets-per-model.md`](docs/brainstorms/2026-06-06-config-presets-per-model.md).
+
 - [x] **IP**: **R1 launch promotion** — telling the world about v0.0.1.
   - [x] Release blog.
   - [x] Bench blog
