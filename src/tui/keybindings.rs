@@ -512,12 +512,21 @@ fn build_default_bindings() -> Vec<Binding> {
     chords: [(KeyCode::Char('x'), KeyModifiers::CONTROL, crate::ctrl_label!("x"), CAT_GLOBAL)],
   });
   // ─── Motion (arrows + vi aliases). ↑/↓ extend into HF_DIALOG ──
-  // for row selection; k/j stay NAV-only. Two `binds!` calls per
-  // direction because scope diverges per chord.
+  // for row selection, and into CHAT_INPUT/EMBED_INPUT so the output
+  // viewport scrolls while the prompt field is focused.
+  // RERANK_INPUT is excluded — that focus binds ↑/↓ to PrevField /
+  // NextField for cycling between the query and candidate sub-fields.
+  // k/j stay NAV-only (typing chars would conflict with editing).
+  // Two `binds!` calls per direction because scope diverges per chord.
   v.extend_from_slice(&binds! {
-    action: Action::MoveUp, scopes: FocusSet::NAV.union(FocusSet::HF_DIALOG),
+    action: Action::MoveUp,
+    scopes: FocusSet::NAV
+      .union(FocusSet::HF_DIALOG)
+      .union(FocusSet::CHAT_INPUT)
+      .union(FocusSet::EMBED_INPUT),
     hint: "up", description: Some("up/prev"),
-    chords: [(KeyCode::Up, KeyModifiers::NONE, "↑", CAT_GLOBAL)],
+    chords: [(KeyCode::Up, KeyModifiers::NONE, "↑",
+      &[Category::Global, Category::InputTabs])],
   });
   v.extend_from_slice(&binds! {
     action: Action::MoveUp, scopes: FocusSet::NAV,
@@ -525,9 +534,14 @@ fn build_default_bindings() -> Vec<Binding> {
     chords: [(KeyCode::Char('k'), KeyModifiers::NONE, "k", CAT_GLOBAL)],
   });
   v.extend_from_slice(&binds! {
-    action: Action::MoveDown, scopes: FocusSet::NAV.union(FocusSet::HF_DIALOG),
+    action: Action::MoveDown,
+    scopes: FocusSet::NAV
+      .union(FocusSet::HF_DIALOG)
+      .union(FocusSet::CHAT_INPUT)
+      .union(FocusSet::EMBED_INPUT),
     hint: "down", description: Some("down/next"),
-    chords: [(KeyCode::Down, KeyModifiers::NONE, "↓", CAT_GLOBAL)],
+    chords: [(KeyCode::Down, KeyModifiers::NONE, "↓",
+      &[Category::Global, Category::InputTabs])],
   });
   v.extend_from_slice(&binds! {
     action: Action::MoveDown, scopes: FocusSet::NAV,

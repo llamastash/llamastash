@@ -1030,6 +1030,30 @@ fn apply_arrow_in_pane(app: &mut App, dir: ArrowDir) {
         ArrowDir::Down => app.rerank.scroll_down(),
       },
     },
+    // Arrow keys also scroll the output viewport when the prompt
+    // input field holds focus (ChatInput / EmbedInput). The InputField
+    // passes arrows through in both editing and resting modes (no
+    // in-buffer cursor model), so the action layer always fires —
+    // letting the user scroll the response without first pressing Esc
+    // to leave the input focus.
+    Focus::ChatInput => match dir {
+      ArrowDir::Up => app.chat.scroll_up(),
+      ArrowDir::Down => app.chat.scroll_down(),
+    },
+    Focus::EmbedInput => match dir {
+      ArrowDir::Up => app.embed.scroll_up(),
+      ArrowDir::Down => app.embed.scroll_down(),
+    },
+    // RerankInput keyboard ↑/↓ is bound to PrevField/NextField (field
+    // cycling between query and candidate sub-fields) — not MoveUp/
+    // MoveDown — so this arm is only reached via mouse-wheel scroll,
+    // which bypasses the binding scope check and calls apply_action
+    // directly. Mouse wheel should scroll the ranked output, not move
+    // the list cursor.
+    Focus::RerankInput => match dir {
+      ArrowDir::Up => app.rerank.scroll_up(),
+      ArrowDir::Down => app.rerank.scroll_down(),
+    },
     _ => match dir {
       ArrowDir::Up => app.move_up(),
       ArrowDir::Down => app.move_down(),
@@ -4975,6 +4999,71 @@ mod tests {
     app.right_tab = RightTab::Rerank;
     pump_input(&mut app, key(KeyCode::Up, KeyModifiers::NONE));
     assert_eq!(app.rerank.scroll_offset, 1);
+  }
+
+  #[test]
+  fn arrow_keys_in_chat_input_focus_scroll_output() {
+    // Issue #31: ↑/↓ in ChatInput focus (the default focus when the
+    // chat tab is active) must scroll the response viewport just as
+    // they do when focus is RightPane. The InputField passes arrows
+    // through in both resting and editing modes, so the action layer
+    // always fires.
+    let mut app = App::new(Default::default());
+    app.focus = Focus::ChatInput;
+    app.right_tab = RightTab::Chat;
+    pump_input(&mut app, key(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(app.chat.scroll_offset, 1, "Up scrolls up in ChatInput");
+    pump_input(&mut app, key(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(app.chat.scroll_offset, 2);
+    pump_input(&mut app, key(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.chat.scroll_offset, 1, "Down scrolls down in ChatInput");
+    pump_input(&mut app, key(KeyCode::Down, KeyModifiers::NONE));
+    pump_input(&mut app, key(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(
+      app.chat.scroll_offset, 0,
+      "Down past zero clamps to 0, not underflow"
+    );
+  }
+
+  #[test]
+  fn arrow_keys_in_embed_input_focus_scroll_output() {
+    let mut app = App::new(Default::default());
+    app.focus = Focus::EmbedInput;
+    app.right_tab = RightTab::Embed;
+    pump_input(&mut app, key(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(app.embed.scroll_offset, 1, "Up scrolls embed in EmbedInput");
+    pump_input(&mut app, key(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(
+      app.embed.scroll_offset, 0,
+      "Down scrolls back in EmbedInput"
+    );
+  }
+
+  #[test]
+  fn mouse_scroll_in_chat_input_focus_scrolls_output() {
+    // Mouse wheel dispatches MoveUp/MoveDown bypassing the binding
+    // scope check, so this exercises apply_arrow_in_pane directly
+    // for ChatInput focus.
+    use crossterm::event::{MouseEvent, MouseEventKind};
+    let mouse_up = TermEvent::Mouse(MouseEvent {
+      kind: MouseEventKind::ScrollUp,
+      column: 0,
+      row: 0,
+      modifiers: KeyModifiers::NONE,
+    });
+    let mouse_down = TermEvent::Mouse(MouseEvent {
+      kind: MouseEventKind::ScrollDown,
+      column: 0,
+      row: 0,
+      modifiers: KeyModifiers::NONE,
+    });
+    let mut app = App::new(Default::default());
+    app.focus = Focus::ChatInput;
+    app.right_tab = RightTab::Chat;
+    pump_input(&mut app, mouse_up);
+    assert_eq!(app.chat.scroll_offset, 1, "mouse scroll-up scrolls chat");
+    pump_input(&mut app, mouse_down);
+    assert_eq!(app.chat.scroll_offset, 0, "mouse scroll-down scrolls back");
   }
 
   #[test]

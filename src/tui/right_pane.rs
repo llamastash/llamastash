@@ -153,24 +153,45 @@ pub(crate) fn bottom_hint_chips(app: &App) -> Vec<crate::tui::hint_picker::Ranke
       let editing = app.chat.prompt.is_editing();
       push_input_field_chips(&mut chips, editing, app.chat.prompt.is_empty());
       push(&mut chips, 30, app.hint(Focus::ChatInput, Action::SendChat));
-      // `r:think` only fires when the field is resting (editing mode
-      // captures the char). Hiding the chip during edit keeps the
-      // hint truthful instead of teaching a key that won't fire.
+      // `r:think` and `↑↓:scroll` only fire when the field is resting
+      // (editing mode captures the char). Hiding these chips during edit
+      // keeps the hint truthful instead of teaching keys that won't fire.
       if !editing {
         push(
           &mut chips,
           40,
           app.hint_with(Focus::ChatInput, Action::ToggleThinkCollapse, "think"),
         );
+        // Scroll hint surfaces once there is a response to navigate.
+        if !app.chat.response.is_empty() {
+          if let (Some(down), Some(up)) = (
+            app.hint_with(Focus::ChatInput, Action::MoveDown, "scroll"),
+            app.hint_with(Focus::ChatInput, Action::MoveUp, "scroll"),
+          ) {
+            chips.push(RankedChip::new(
+              50,
+              bidirectional_chip(&up, &down, "scroll"),
+            ));
+          }
+        }
       }
     }
     (Focus::EmbedInput, _) => {
-      push_input_field_chips(
-        &mut chips,
-        app.embed.input.is_editing(),
-        app.embed.input.is_empty(),
-      );
+      let editing = app.embed.input.is_editing();
+      push_input_field_chips(&mut chips, editing, app.embed.input.is_empty());
       push(&mut chips, 30, app.hint(Focus::EmbedInput, Action::Submit));
+      // Scroll hint when embed output is present and field is resting.
+      if !editing && app.embed.dim.is_some() {
+        if let (Some(down), Some(up)) = (
+          app.hint_with(Focus::EmbedInput, Action::MoveDown, "scroll"),
+          app.hint_with(Focus::EmbedInput, Action::MoveUp, "scroll"),
+        ) {
+          chips.push(RankedChip::new(
+            40,
+            bidirectional_chip(&up, &down, "scroll"),
+          ));
+        }
+      }
     }
     (Focus::RerankInput, _) => {
       // Rerank has two `InputField`s (query / candidate); the
@@ -231,6 +252,25 @@ pub(crate) fn bottom_hint_chips(app: &App) -> Vec<crate::tui::hint_picker::Ranke
           20,
           app.hint_with(Focus::RightPane, Action::ToggleThinkCollapse, "think"),
         );
+      }
+      // Scroll hint when there is output to navigate (browsing focus
+      // already has ↑/↓ bound via MoveUp/MoveDown on RIGHT_PANE).
+      let has_output = match app.right_tab {
+        RightTab::Chat => !app.chat.response.is_empty(),
+        RightTab::Embed => app.embed.dim.is_some(),
+        RightTab::Rerank => !app.rerank.ranked.is_empty(),
+        _ => false,
+      };
+      if has_output {
+        if let (Some(down), Some(up)) = (
+          app.hint_with(Focus::RightPane, Action::MoveDown, "scroll"),
+          app.hint_with(Focus::RightPane, Action::MoveUp, "scroll"),
+        ) {
+          chips.push(RankedChip::new(
+            30,
+            bidirectional_chip(&up, &down, "scroll"),
+          ));
+        }
       }
     }
     (_, RightTab::Settings) => {
@@ -826,6 +866,70 @@ mod tests {
         "Esc:stop edit".to_string(),
         format!("{ENTER_LABEL}:add candidate"),
       ]
+    );
+  }
+
+  #[test]
+  fn scroll_chip_appears_when_chat_input_has_response() {
+    // Issue #31: ↑↓:scroll chip must appear in the ChatInput strip
+    // when there is a response to navigate (resting mode only — the
+    // chip hides during active editing to avoid clutter).
+    use crate::tui::keybindings::Focus;
+    let mut app = app_with_focus(Focus::ChatInput, RightTab::Chat);
+    // No response yet — scroll chip absent.
+    assert!(
+      !chip_texts(&app).iter().any(|c| c.contains("scroll")),
+      "scroll chip must not appear before a response exists"
+    );
+    // Populate a response.
+    app.chat.response = "Hello from the model".into();
+    let chips = chip_texts(&app);
+    assert!(
+      chips.iter().any(|c| c.contains("scroll")),
+      "scroll chip must appear once response is non-empty; chips={chips:?}"
+    );
+    // During active edit the chip hides so the bar stays uncluttered.
+    app.chat.prompt.enter_edit();
+    let chips_editing = chip_texts(&app);
+    assert!(
+      !chips_editing.iter().any(|c| c.contains("scroll")),
+      "scroll chip must not appear during active editing; chips={chips_editing:?}"
+    );
+  }
+
+  #[test]
+  fn scroll_chip_appears_when_right_pane_chat_has_response() {
+    // The ↑↓:scroll chip also surfaces on the RightPane+Chat strip
+    // (browsing focus) once output is available, so users who never
+    // enter the ChatInput focus still discover the scroll affordance.
+    use crate::tui::keybindings::Focus;
+    let mut app = app_with_focus(Focus::RightPane, RightTab::Chat);
+    assert!(
+      !chip_texts(&app).iter().any(|c| c.contains("scroll")),
+      "scroll chip absent when response is empty"
+    );
+    app.chat.response = "Some response".into();
+    let chips = chip_texts(&app);
+    assert!(
+      chips.iter().any(|c| c.contains("scroll")),
+      "scroll chip must appear on RightPane+Chat once response is non-empty; chips={chips:?}"
+    );
+  }
+
+  #[test]
+  fn scroll_chip_appears_when_embed_input_has_output() {
+    // EmbedInput: scroll chip appears after a successful embed call.
+    use crate::tui::keybindings::Focus;
+    let mut app = app_with_focus(Focus::EmbedInput, RightTab::Embed);
+    assert!(
+      !chip_texts(&app).iter().any(|c| c.contains("scroll")),
+      "scroll chip absent before embed result"
+    );
+    app.embed.dim = Some(1024);
+    let chips = chip_texts(&app);
+    assert!(
+      chips.iter().any(|c| c.contains("scroll")),
+      "scroll chip must appear once embed output is present; chips={chips:?}"
     );
   }
 
