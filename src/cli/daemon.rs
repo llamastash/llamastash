@@ -1388,8 +1388,10 @@ mod tests {
 
   #[test]
   fn provision_generates_persists_and_sets_key_for_lan() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let cfg = dir.path().join("config.yaml");
+    // unique_temp_dir sets mode 0o700; tempfile::tempdir() uses 0o775
+    // which preflight rejects as group-writable.
+    let dir = crate::util::test_temp::unique_temp_dir("provision-generates");
+    let cfg = dir.join("config.yaml");
     let (mut opts, cli) = non_loopback_opts(&cfg);
     assert!(opts.proxy.api_key.is_none());
     provision_proxy_key(&mut opts, &cli, false).expect("provision");
@@ -1398,12 +1400,13 @@ mod tests {
     let written = std::fs::read_to_string(&cfg).expect("config written");
     assert!(written.contains(&key), "key not persisted: {written}");
     assert!(written.contains("api_key"));
+    std::fs::remove_dir_all(&dir).ok();
   }
 
   #[test]
   fn provision_is_idempotent_when_key_already_set() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let cfg = dir.path().join("config.yaml");
+    let dir = crate::util::test_temp::unique_temp_dir("provision-idempotent");
+    let cfg = dir.join("config.yaml");
     let (mut opts, cli) = non_loopback_opts(&cfg);
     provision_proxy_key(&mut opts, &cli, false).expect("first");
     let first = opts.proxy.api_key.clone().unwrap();
@@ -1412,6 +1415,7 @@ mod tests {
     provision_proxy_key(&mut opts, &cli, false).expect("second");
     assert_eq!(opts.proxy.api_key.as_deref(), Some(first.as_str()));
     assert_eq!(std::fs::read_to_string(&cfg).unwrap(), first_file);
+    std::fs::remove_dir_all(&dir).ok();
   }
 
   #[test]
@@ -1489,8 +1493,8 @@ mod tests {
   #[test]
   fn provision_preserves_existing_proxy_keys_in_config() {
     // A recursive merge must keep the user's other proxy settings.
-    let dir = tempfile::tempdir().expect("tempdir");
-    let cfg = dir.path().join("config.yaml");
+    let dir = crate::util::test_temp::unique_temp_dir("provision-preserves");
+    let cfg = dir.join("config.yaml");
     std::fs::write(&cfg, "proxy:\n  port: 18080\n  ollama_compat: true\n").unwrap();
     let (mut opts, cli) = non_loopback_opts(&cfg);
     provision_proxy_key(&mut opts, &cli, false).expect("provision");
@@ -1504,6 +1508,7 @@ mod tests {
       "existing flag dropped: {written}"
     );
     assert!(written.contains(opts.proxy.api_key.as_ref().unwrap().as_str()));
+    std::fs::remove_dir_all(&dir).ok();
   }
 
   #[test]
