@@ -454,7 +454,7 @@ behavior is byte-identical (no backend returns knobs in this plan).
 
 ---
 
-- [ ] **Unit 3: Prefer-safetensors pull guard**
+- [x] **Unit 3: Prefer-safetensors pull guard**
 
 **Goal:** Make the existing multi-file repo downloader clean for safetensors
 snapshots: when a repo ships both `*.safetensors` and PyTorch `*.bin`/`*.pth`,

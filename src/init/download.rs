@@ -472,8 +472,27 @@ pub(crate) fn select_files(
       .filter(|p| p.ends_with(ext))
       .cloned()
       .collect(),
-    (None, None) => all_files.to_vec(),
+    // Whole-repo pull (`pull owner/repo`): keep everything, but don't
+    // double-download a safetensors repo's weights in two formats.
+    (None, None) => prefer_safetensors(all_files.to_vec()),
   }
+}
+
+/// Drop PyTorch weight duplicates (`*.bin` / `*.pth`) from a whole-repo file
+/// list **when safetensors are present**, so a safetensors snapshot pull
+/// doesn't fetch the same weights twice. The safetensors, configs, and
+/// tokenizers are all kept. A no-op when there are no safetensors (e.g. a
+/// PyTorch-only repo, where the `.bin` *is* the weights), so GGUF and
+/// PyTorch-only pulls are unchanged.
+fn prefer_safetensors(files: Vec<String>) -> Vec<String> {
+  let has_safetensors = files.iter().any(|f| f.ends_with(".safetensors"));
+  if !has_safetensors {
+    return files;
+  }
+  files
+    .into_iter()
+    .filter(|f| !f.ends_with(".bin") && !f.ends_with(".pth"))
+    .collect()
 }
 
 fn expand_shards(name: &str, all_files: &[String]) -> Vec<String> {
@@ -1314,6 +1333,71 @@ mod tests {
     let files = vec!["completely-different.gguf".to_string()];
     let picked = select_files(&files, Some("missing.gguf"), Some(".gguf"));
     assert!(picked.is_empty());
+  }
+
+  #[test]
+  fn whole_repo_prefers_safetensors_over_pytorch_duplicates() {
+    // A mixed repo shipping both formats: the safetensors win, the PyTorch
+    // weights are dropped, and configs / tokenizers are kept.
+    let files = vec![
+      "config.json".to_string(),
+      "tokenizer.json".to_string(),
+      "tokenizer_config.json".to_string(),
+      "model.safetensors".to_string(),
+      "pytorch_model.bin".to_string(),
+      "pytorch_model-00001-of-00002.bin".to_string(),
+      "consolidated.00.pth".to_string(),
+    ];
+    let picked = select_files(&files, None, None);
+    assert!(picked.contains(&"model.safetensors".to_string()));
+    assert!(picked.contains(&"config.json".to_string()));
+    assert!(picked.contains(&"tokenizer.json".to_string()));
+    assert!(picked.contains(&"tokenizer_config.json".to_string()));
+    assert!(
+      !picked.iter().any(|f| f.ends_with(".bin")),
+      "no PyTorch .bin"
+    );
+    assert!(!picked.iter().any(|f| f.ends_with(".pth")), "no .pth");
+  }
+
+  #[test]
+  fn whole_repo_safetensors_only_is_a_no_op() {
+    let files = vec![
+      "config.json".to_string(),
+      "model-00001-of-00002.safetensors".to_string(),
+      "model-00002-of-00002.safetensors".to_string(),
+    ];
+    let picked = select_files(&files, None, None);
+    assert_eq!(picked, files, "no .bin/.pth to drop → unchanged");
+  }
+
+  #[test]
+  fn whole_repo_pytorch_only_keeps_bin_weights() {
+    // No safetensors present → the `.bin` IS the weights, so keep it.
+    let files = vec!["config.json".to_string(), "pytorch_model.bin".to_string()];
+    let picked = select_files(&files, None, None);
+    assert_eq!(picked, files);
+  }
+
+  #[test]
+  fn whole_repo_gguf_pull_unchanged() {
+    // GGUF whole-repo pull: no safetensors, so the filter is a no-op.
+    let files = vec!["README.md".to_string(), "model-Q4_K_M.gguf".to_string()];
+    let picked = select_files(&files, None, None);
+    assert_eq!(picked, files);
+  }
+
+  #[test]
+  fn pinned_gguf_pull_skips_the_safetensors_filter() {
+    // `pull owner/repo:file.gguf` takes the pinned arm, not the whole-repo
+    // arm, so the prefer-safetensors dedup never runs.
+    let files = vec![
+      "model.safetensors".to_string(),
+      "pytorch_model.bin".to_string(),
+      "model-Q4_K_M.gguf".to_string(),
+    ];
+    let picked = select_files(&files, Some("model-Q4_K_M.gguf"), Some(".gguf"));
+    assert_eq!(picked, vec!["model-Q4_K_M.gguf"]);
   }
 
   #[test]
