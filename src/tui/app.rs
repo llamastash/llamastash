@@ -2187,6 +2187,10 @@ fn parse_list_models_row(row: &Value) -> Option<DiscoveredModel> {
           .and_then(Value::as_str)
           .map(parse_quant)
           .unwrap_or_else(|| Quant::Unknown(0)),
+        // Not carried on the status `metadata` JSON yet (no backend sets
+        // it); the follow-up MLX plan wires both ends. Mirrors the other
+        // non-round-tripped fields (chat_template / reasoning_hint).
+        quant_label: None,
         native_ctx: md.get("native_ctx").and_then(Value::as_u64),
         chat_template: None,
         tokenizer_kind: md
@@ -2463,6 +2467,7 @@ mod tests {
         total_parameters: Some(7_000_000_000),
         parameter_label: Some("7B".into()),
         quant: Quant::Q4_K,
+        quant_label: None,
         native_ctx: Some(8192),
         chat_template: None,
         tokenizer_kind: None,

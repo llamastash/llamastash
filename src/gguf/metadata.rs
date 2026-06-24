@@ -22,6 +22,14 @@ pub struct ModelMetadata {
   pub parameter_label: Option<String>,
   /// Dominant tensor quantisation across the model's weight tensors.
   pub quant: Quant,
+  /// Verbatim quant string for backends whose quantisation has no GGML
+  /// tag (e.g. MLX affine "4-bit gs64", vLLM AWQ/GPTQ labels). `quant`
+  /// is GGML-only and `Copy`, and `Unknown(u32)` means "unknown *GGML*
+  /// tag" — wrong to reuse for a non-GGML scheme. GGUF constructors leave
+  /// this `None`; a safetensors backend overlays it in its projection.
+  /// Rendered verbatim where present (the follow-up MLX plan wires the
+  /// display); GGUF output is unchanged while it stays `None`.
+  pub quant_label: Option<String>,
   pub native_ctx: Option<u64>,
   pub chat_template: Option<String>,
   pub tokenizer_kind: Option<String>,
@@ -332,6 +340,8 @@ pub fn summarise(header: &GgufHeader) -> ModelMetadata {
     total_parameters,
     parameter_label,
     quant,
+    // GGUF carries a GGML quant tag, not a verbatim non-GGML label.
+    quant_label: None,
     native_ctx,
     chat_template,
     tokenizer_kind,
@@ -386,6 +396,9 @@ pub(crate) fn tensor_param_sum(header: &GgufHeader) -> u64 {
 /// `1_200_000_000_000` → `1.2T`. A value at/above 100 in its unit drops the
 /// decimal, and a trailing `.0` is trimmed so `7.0B` reads as `7B`. `None`
 /// only for a zero count (the caller already suppresses a zero tensor sum).
+/// Shared with the backend-neutral safetensors substrate
+/// ([`crate::discovery::hf_repos::config_to_metadata`]) so a config-dim
+/// param estimate renders with the same labels GGUF rows use.
 pub(crate) fn label_for_param_count(count: u64) -> Option<String> {
   if count == 0 {
     return None;

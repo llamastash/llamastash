@@ -162,6 +162,7 @@ mod tests {
         total_parameters: Some(7_000_000_000),
         parameter_label: Some("7B".to_string()),
         quant: Quant::Q4_K,
+        quant_label: None,
         native_ctx: Some(8192),
         chat_template: Some("{% ... %}".to_string()),
         tokenizer_kind: Some("llama".to_string()),

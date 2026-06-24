@@ -806,6 +806,7 @@ mod tests {
       metadata: Some(ModelMetadata {
         arch: Some("llama".into()),
         quant: Quant::Q4_K,
+        quant_label: None,
         native_ctx: Some(4096),
         parameter_label: Some("7B".into()),
         weights_bytes: Some(100),

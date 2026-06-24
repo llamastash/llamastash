@@ -301,7 +301,7 @@ follows.
 
 ---
 
-- [ ] **Unit 1: Shared HF-snapshot-repo enumerator + `HfRepoCandidate` + `config_to_metadata` + `quant_label`**
+- [x] **Unit 1: Shared HF-snapshot-repo enumerator + `HfRepoCandidate` + `config_to_metadata` + `quant_label`**
 
 **Goal:** A backend-neutral enumerator that walks the HF hub cache and yields
 `HfRepoCandidate` rows for non-GGUF model repos, plus a shared

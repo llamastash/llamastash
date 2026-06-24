@@ -740,6 +740,7 @@ mod tests {
       metadata: Some(ModelMetadata {
         arch: Some("nomic-bert".into()),
         quant: crate::gguf::metadata::Quant::Q2_K,
+        quant_label: None,
         native_ctx: Some(2048),
         parameter_label: Some("0.5B".into()),
         weights_bytes: Some(100_000_000),

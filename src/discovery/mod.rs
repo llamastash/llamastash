@@ -10,8 +10,13 @@
 //! Cache-aware enumerators (HuggingFace, Ollama, LM Studio), the
 //! filesystem watcher, and the HuggingFace pull worker live in the
 //! sibling modules.
+//!
+//! [`hf_repos`] is the backend-neutral substrate for **non-GGUF**
+//! safetensors/HF-format model repos — a shared snapshot-repo enumerator a
+//! future safetensors engine adopts via a predicate + projection only.
 
 pub mod catalog;
+pub mod hf_repos;
 pub mod known_caches;
 pub mod lm_studio;
 pub mod metadata_cache;

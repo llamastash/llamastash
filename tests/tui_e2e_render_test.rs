@@ -45,6 +45,7 @@ fn fake_model(path: &str, parent: &str, arch: &str, ctx: u64, weights: u64) -> D
       total_parameters: Some(7_000_000_000),
       parameter_label: Some("7B".into()),
       quant: Quant::Q4_K,
+      quant_label: None,
       native_ctx: Some(ctx),
       chat_template: None,
       tokenizer_kind: None,
