@@ -128,6 +128,16 @@ fn repo_id_from_cache_dir(name: &str) -> Option<String> {
   if owner.is_empty() || repo.is_empty() {
     return None;
   }
+  // The repo_id is a catalog key a consuming backend turns back into a path
+  // (`<scheme>://<repo-id>`), so reject path-traversal shapes a crafted cache
+  // dir name (`models--..--passwd`) could mint. A real HF owner/repo never
+  // contains a separator or `..`.
+  if [owner, repo]
+    .iter()
+    .any(|s| s.contains('/') || s.contains('\\') || s.contains(".."))
+  {
+    return None;
+  }
   Some(format!("{owner}/{repo}"))
 }
 
@@ -137,7 +147,9 @@ fn resolve_snapshot_dir(repo_dir: &Path) -> Option<PathBuf> {
   let snapshots = repo_dir.join("snapshots");
   if let Ok(hash) = std::fs::read_to_string(repo_dir.join("refs/main")) {
     let hash = hash.trim();
-    if !hash.is_empty() {
+    // Only join a plausible commit ref — a `refs/main` carrying separators or
+    // `..` (a crafted cache) must not escape the snapshots dir via `join`.
+    if !hash.is_empty() && !hash.contains('/') && !hash.contains('\\') && !hash.contains("..") {
       let pinned = snapshots.join(hash);
       if pinned.is_dir() {
         return Some(pinned);
@@ -554,28 +566,163 @@ mod tests {
     );
     assert_eq!(repo_id_from_cache_dir("not-a-models-dir"), None);
     assert_eq!(repo_id_from_cache_dir("models--onlyowner"), None);
+    // Empty owner / empty repo segment → None.
+    assert_eq!(repo_id_from_cache_dir("models----repo"), None);
+    assert_eq!(repo_id_from_cache_dir("models--org--"), None);
+  }
+
+  #[test]
+  fn repo_id_rejects_path_traversal_shapes() {
+    // A crafted cache dir name must not mint a traversal-shaped repo_id (the
+    // catalog key a backend turns back into a path).
+    assert_eq!(repo_id_from_cache_dir("models--..--passwd"), None);
+    assert_eq!(repo_id_from_cache_dir("models--org--..--etc"), None);
+  }
+
+  #[test]
+  fn resolve_snapshot_rejects_traversal_in_refs_main() {
+    use std::fs;
+    let root = temp_root("traversal-ref");
+    let repo = root.join("models--org--Evil");
+    let snap = repo.join("snapshots/abc123");
+    fs::create_dir_all(&snap).unwrap();
+    fs::write(snap.join("config.json"), "{}").unwrap();
+    fs::write(snap.join("model.safetensors"), "st").unwrap();
+    fs::create_dir_all(repo.join("refs")).unwrap();
+    // A refs/main that tries to escape the snapshots dir.
+    fs::write(repo.join("refs/main"), "../../../../etc").unwrap();
+    // The traversal ref is rejected; the fallback finds the real snapshot dir.
+    let got = enumerate_repos(std::slice::from_ref(&root));
+    assert_eq!(got.len(), 1);
+    assert_eq!(
+      got[0].snapshot_path, snap,
+      "falls back to the real snapshot"
+    );
+    fs::remove_dir_all(&root).ok();
+  }
+
+  #[test]
+  fn resolve_snapshot_falls_back_to_first_dir_without_refs_main() {
+    use std::fs;
+    let root = temp_root("no-refs");
+    let repo = root.join("models--org--NoRefs");
+    // Two snapshot revs, no refs/main → the sorted-first one is chosen.
+    for rev in ["aaa111", "bbb222"] {
+      let snap = repo.join("snapshots").join(rev);
+      fs::create_dir_all(&snap).unwrap();
+      fs::write(snap.join("model.safetensors"), "st").unwrap();
+    }
+    let got = enumerate_repos(std::slice::from_ref(&root));
+    assert_eq!(got.len(), 1);
+    assert!(got[0].snapshot_path.ends_with("aaa111"), "first sorted rev");
+    fs::remove_dir_all(&root).ok();
+  }
+
+  #[test]
+  fn enumerate_hf_cache_resolves_roots_from_home() {
+    // The convenience entry point resolves `~/.cache/huggingface/hub` from the
+    // home dir (the same root GGUF discovery scans) and enumerates it.
+    use std::fs;
+    let _lock = crate::cli::test_lock::serialize();
+    let saved: Vec<(&str, _)> = [
+      "HF_HUB_CACHE",
+      "HUGGINGFACE_HUB_CACHE",
+      "HF_HOME",
+      "XDG_CACHE_HOME",
+    ]
+    .iter()
+    .map(|k| (*k, std::env::var_os(k)))
+    .collect();
+    for (k, _) in &saved {
+      std::env::remove_var(k);
+    }
+    let home = temp_root("hf-cache-home");
+    let hub = home.join(".cache/huggingface/hub");
+    fs::create_dir_all(&hub).unwrap();
+    make_repo(
+      &hub,
+      "models--mlx-community--Repo",
+      &[
+        ("config.json", r#"{"model_type":"qwen2"}"#),
+        ("model.safetensors", "st"),
+      ],
+    );
+    let got = enumerate_hf_cache(Some(&home));
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].repo_id, "mlx-community/Repo");
+    for (k, v) in saved {
+      match v {
+        Some(val) => std::env::set_var(k, val),
+        None => std::env::remove_var(k),
+      }
+    }
+    fs::remove_dir_all(&home).ok();
+  }
+
+  #[test]
+  fn config_to_metadata_mode_hint_covers_lm_classes_and_unknown() {
+    let causal = ConfigSummary {
+      architectures: vec!["GPT2LMHeadModel".into()],
+      ..Default::default()
+    };
+    assert_eq!(config_to_metadata(&causal, "o/m").mode_hint, ModeHint::Chat);
+    let cond = ConfigSummary {
+      architectures: vec!["T5ForConditionalGeneration".into()],
+      ..Default::default()
+    };
+    assert_eq!(config_to_metadata(&cond, "o/m").mode_hint, ModeHint::Chat);
+    // No LM class, no chat template → Unknown.
+    let unknown = ConfigSummary {
+      architectures: vec!["BertModel".into()],
+      ..Default::default()
+    };
+    assert_eq!(
+      config_to_metadata(&unknown, "o/m").mode_hint,
+      ModeHint::Unknown
+    );
+  }
+
+  #[test]
+  fn config_to_metadata_reasoning_hint_from_think_in_chat_template() {
+    let reasoning = ConfigSummary {
+      model_type: Some("qwen3".into()),
+      chat_template: Some("{% if x %}<think>{% endif %}".into()),
+      ..Default::default()
+    };
+    assert!(config_to_metadata(&reasoning, "o/m").reasoning_hint);
+    let plain = ConfigSummary {
+      chat_template: Some("{{ messages }}".into()),
+      ..Default::default()
+    };
+    assert!(!config_to_metadata(&plain, "o/m").reasoning_hint);
   }
 
   #[test]
   fn module_references_no_backend_symbols() {
     // Neutrality is the deliverable: the enumerator's production code must
     // name no engine / backend symbol. Scope to the pre-test portion so a
-    // realistic sample org name in a test fixture (legitimate *data*) can't
-    // false-trip the check; needles are split so it can't match itself.
+    // realistic sample org name in a fixture (legitimate *data*) can't
+    // false-trip the check; needles are split so they can't match themselves.
     let full = include_str!("hf_repos.rs");
     let prod = full.split(concat!("#[cfg", "(test)]")).next().unwrap();
-    let lower = prod.to_ascii_lowercase();
-    let forbidden: &[&str] = &[
-      concat!("crate::", "backend"),
-      concat!("Back", "ends"),
-      concat!("m", "lx"),
-      concat!("v", "llm"),
-    ];
-    for n in forbidden {
+    // Code symbols are matched CASE-SENSITIVELY: they only appear as the
+    // literal module path / type name, so prose like "backend-neutral" or a
+    // plural "backends" in a comment can't false-trip them.
+    for sym in &[concat!("crate::", "backend"), concat!("Back", "ends")] {
       assert!(
-        !lower.contains(&n.to_ascii_lowercase()),
-        "neutrality violation: production code names a forbidden engine symbol (id {})",
-        n.len(),
+        !prod.contains(sym),
+        "neutrality violation: production code references a backend symbol (len {})",
+        sym.len(),
+      );
+    }
+    // Engine names are matched case-insensitively — any mention at all is a
+    // leak, in code or prose.
+    let lower = prod.to_ascii_lowercase();
+    for name in &[concat!("m", "lx"), concat!("v", "llm")] {
+      assert!(
+        !lower.contains(name),
+        "neutrality violation: production code names an engine (len {})",
+        name.len(),
       );
     }
   }

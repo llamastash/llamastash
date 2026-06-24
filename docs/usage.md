@@ -419,6 +419,8 @@ llamastash last-params [<ref>] [--json]
 
 `--json` wraps rows in `{"last_params": [...]}`. Exit `64` if `<ref>` resolves to a model with no recorded params yet — launch it once to populate.
 
+Each row's `params` object may carry an additive `backend_knobs` map (per-backend native tunables, keyed by descriptor id) — omitted when empty, so it is absent for every model today (no shipping backend declares native knobs). The same field rides the `start_model` IPC request body, also omitted when empty. See [`docs/architecture.md` § Backend-neutral substrate seams](architecture.md).
+
 ### `llamastash daemon`
 
 ```
