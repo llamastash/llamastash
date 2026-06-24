@@ -1,7 +1,7 @@
 ---
 title: "feat: Shared safetensors/HF-repo discovery substrate (MLX/vLLM-ready)"
 type: feat
-status: active
+status: completed
 date: 2026-06-24
 origin: docs/brainstorms/2026-06-08-multi-backend-abstraction-requirements.md
 ---
