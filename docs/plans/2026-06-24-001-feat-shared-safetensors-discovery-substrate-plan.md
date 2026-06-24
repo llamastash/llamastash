@@ -378,7 +378,7 @@ backend-neutral; `quant_label` adds without changing GGUF output.
 
 ---
 
-- [ ] **Unit 2: Per-backend native-knob mechanism (generic, stub-tested)**
+- [x] **Unit 2: Per-backend native-knob mechanism (generic, stub-tested)**
 
 **Goal:** A generic channel for a backend to declare its own knobs (beyond the
 llama.cpp `KnobField` IR), rendered as backend-filtered cycling/edit rows in the

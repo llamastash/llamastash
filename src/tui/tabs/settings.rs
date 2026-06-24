@@ -359,6 +359,42 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
     }
   }
 
+  // Per-backend native knob rows — trail the form, below extras. Empty for
+  // every shipping backend (none declare native knobs), so this loop renders
+  // nothing today; an MLX-style backend surfaces its curated rows here.
+  for (i, descriptor) in picker_view.native_descriptors.iter().enumerate() {
+    let field = PickerField::NativeKnob(i);
+    if !picker_view.field_visible(field) {
+      continue;
+    }
+    let focused = row_for(field);
+    if focused {
+      focused_line = Some(lines.len() as u16);
+    }
+    if picker_view.inline_edit.is_open() && picker_view.inline_edit.field == Some(field) {
+      lines.push(inline_edit_row(
+        descriptor.label,
+        picker_view.inline_edit.input.buffer(),
+        focused,
+        palette,
+      ));
+      if let Some(err) = &picker_view.inline_edit.error {
+        lines.push(inline_warning_row(err, palette));
+      }
+    } else {
+      lines.push(crate::tui::fmt::kv_row_focused(
+        descriptor.label,
+        picker_view.native_value_label(i),
+        None,
+        focused,
+        // Cycle / bool rows take ←/→; free-text rows are `e`-edited.
+        !descriptor.is_editable(),
+        palette,
+        show_source,
+      ));
+    }
+  }
+
   lines.push(Line::default());
   let hint = if managed.is_some() {
     let edit_chip = app
