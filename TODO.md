@@ -165,6 +165,9 @@ places.
 
 ## R5 (v0.0.5 checklist)
 
+- [ ] MLX as a native peer backend (the generic `ModelIdentity` seam already supports it; would drop in alongside llama.cpp/Lemonade). Planned in two parts:
+  - [ ] **(1)** shared safetensors/HF-repo discovery substrate (Linux, first) — [`docs/plans/2026-06-24-001-feat-shared-safetensors-discovery-substrate-plan.md`](docs/plans/2026-06-24-001-feat-shared-safetensors-discovery-substrate-plan.md);
+  - [ ] **(2)** the MLX backend on top (needs a Mac) — [`docs/plans/2026-06-24-002-feat-mlx-backend-plan.md`](docs/plans/2026-06-24-002-feat-mlx-backend-plan.md).
 - [x] ~~Fix "unable to follow symlinks" issue~~ — config writes now follow a symlinked `config.yaml` to its canonical target (the link is preserved) instead of refusing with `TargetIsSymlink`. `config::writer::preflight` resolves the link chain and the security check runs on the resolved parent; `state.json` keeps its non-following behavior. (the presets writer, init wizard, and `daemon` proxy-key/server-path persistence all go through this)
 - [x] help legends as new row with 1 column
 - [x] ~~Presets feature from PR #18~~ — shipped. Plan: `docs/plans/2026-06-22-001-feat-config-presets-per-model-plan.md` (config.yaml as the writable source of truth, `yamlpath`+`yamlpatch` comment-safe writes, per-model/arch keys, in-memory store + write-through, TUI preset cycle row + `Ctrl+P` save). Remaining follow-ups below.
