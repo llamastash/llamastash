@@ -500,7 +500,7 @@ is unchanged; the filter is a no-op where there's nothing to dedup.
 
 ---
 
-- [ ] **Unit 4: Substrate docs + TODO**
+- [x] **Unit 4: Substrate docs + TODO**
 
 **Goal:** Document the shared substrate (the repo's "docs ship with code" rule)
 and record deferred follow-ups, without yet describing MLX (that's the follow-up
