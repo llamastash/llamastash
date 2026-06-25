@@ -18,7 +18,9 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::gguf::metadata::{label_for_param_count, ModeHint, ModelMetadata, Quant};
+use crate::gguf::metadata::{
+  label_for_param_count, ModeHint, ModelMetadata, Quant, REASONING_MARKERS,
+};
 
 /// One non-GGUF HF repo surfaced by the enumerator. Neutral: it carries no
 /// engine tag and no `ModelSource` — the consuming leaf decides eligibility
@@ -238,7 +240,7 @@ pub fn config_to_metadata(summary: &ConfigSummary, repo_id: &str) -> ModelMetada
   let reasoning_hint = summary
     .chat_template
     .as_deref()
-    .map(|t| t.contains("<think>"))
+    .map(template_signals_reasoning)
     .unwrap_or(false);
   let (total_parameters, parameter_label) = match estimate_params(summary) {
     Some(n) => (Some(n), label_for_param_count(n)),
@@ -260,6 +262,13 @@ pub fn config_to_metadata(summary: &ConfigSummary, repo_id: &str) -> ModelMetada
     // The leaf sums `*.safetensors` file sizes for the SIZE column.
     weights_bytes: None,
   }
+}
+
+/// Whether a chat template embeds a reasoning marker. Shares the marker set
+/// with the GGUF token scan ([`crate::gguf::metadata::REASONING_MARKERS`]) so
+/// both detectors grow from one list.
+fn template_signals_reasoning(template: &str) -> bool {
+  REASONING_MARKERS.iter().any(|m| template.contains(m))
 }
 
 /// Infer the mode hint from the architectures class list, falling back to the

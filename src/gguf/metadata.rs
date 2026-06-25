@@ -522,13 +522,19 @@ fn infer_mode_hint(header: &GgufHeader, arch: Option<&str>) -> ModeHint {
   ModeHint::Unknown
 }
 
+/// Reasoning markers — special tokens (GGUF) / chat-template substrings
+/// (safetensors) that signal a model emits explicit reasoning. Shared so the
+/// GGUF token scan here and the safetensors chat-template scan in
+/// [`crate::discovery::hf_repos`] grow from one list instead of drifting.
+pub(crate) const REASONING_MARKERS: &[&str] = &["<think>"];
+
 fn infer_reasoning_hint(header: &GgufHeader) -> bool {
-  // Scan the tokenizer.ggml.tokens array (when present) for `<think>` —
-  // a strong, model-agnostic signal that the model emits explicit reasoning.
+  // Scan the tokenizer.ggml.tokens array (when present) for a reasoning
+  // marker — a strong, model-agnostic signal the model emits explicit reasoning.
   if let Some(GgufValue::Array(items)) = header.metadata.get("tokenizer.ggml.tokens") {
     for v in items {
       if let GgufValue::String(s) = v {
-        if s == "<think>" {
+        if REASONING_MARKERS.contains(&s.as_str()) {
           return true;
         }
       }
