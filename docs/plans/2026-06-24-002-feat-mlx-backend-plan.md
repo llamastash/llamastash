@@ -567,6 +567,18 @@ config.
 - Default-true bool; binary detection is the real gate, so no platform cfg gate is
   needed (a box without `mlx_lm.server` sees no change). The Linux pip-install edge
   case is a documented caveat, resolved by `mlx.enabled: false`.
+- **Freshness:** Part 1's `discovery::hf_repos` enumerator is a one-shot
+  synchronous walk — it shares cache **roots** with GGUF discovery but none of the
+  `notify` watcher / rescan-on-change machinery. This unit's rescan hook is what
+  gives MLX rows GGUF-like auto-refresh on pull/delete; until it lands the
+  substrate is roots-only, not watch-driven (see `docs/architecture.md`
+  §"Backend-neutral substrate seams").
+- **Cache-layout helpers:** the `repo_id ↔ models--owner--name` encode/decode pair
+  already lives centralized in `util::model_caches` (`repo_folder_name` /
+  `repo_id_from_cache_dir`). The `refs/main → snapshots/<rev>` resolver
+  (`hf_repos::resolve_snapshot_dir`) was left local because Part 1 was its only
+  caller; when this unit's wiring (or U3's sizing) adds a second caller, lift it
+  next to that pair so all HF cache-layout knowledge stays in one module.
 
 **Test scenarios:**
 - Happy path: missing `mlx:` section → `enabled` defaults `true`; `mlx_enabled` is

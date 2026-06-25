@@ -238,7 +238,7 @@ pub(crate) fn probe_cached_pull(repo_id: &str, filenames: &[String]) -> Option<s
     return None;
   }
   let cache_root = crate::init::download::hf_cache_dir().ok()?;
-  let repo_dir = cache_root.join(crate::init::download::repo_folder_name(repo_id));
+  let repo_dir = cache_root.join(crate::util::model_caches::repo_folder_name(repo_id));
   let snapshots = repo_dir.join("snapshots");
   let entries = std::fs::read_dir(&snapshots).ok()?;
   for entry in entries.filter_map(|e| e.ok()) {

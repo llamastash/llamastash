@@ -99,7 +99,7 @@ fn enumerate_root(root: &Path, out: &mut Vec<HfRepoCandidate>) {
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
       continue;
     };
-    let Some(repo_id) = repo_id_from_cache_dir(name) else {
+    let Some(repo_id) = crate::util::model_caches::repo_id_from_cache_dir(name) else {
       continue;
     };
     let Some(snapshot) = resolve_snapshot_dir(&path) else {
@@ -117,30 +117,6 @@ fn enumerate_root(root: &Path, out: &mut Vec<HfRepoCandidate>) {
       });
     }
   }
-}
-
-/// Reconstruct `owner/name` from a `models--owner--name` cache dir.
-///
-/// HF encodes a repo id by replacing `/` with `--`; a repo id has exactly one
-/// `/`, so the owner is the segment before the first `--` and the name is the
-/// rest verbatim (preserving any `--` a repo name itself contains).
-fn repo_id_from_cache_dir(name: &str) -> Option<String> {
-  let rest = name.strip_prefix("models--")?;
-  let (owner, repo) = rest.split_once("--")?;
-  if owner.is_empty() || repo.is_empty() {
-    return None;
-  }
-  // The repo_id is a catalog key a consuming backend turns back into a path
-  // (`<scheme>://<repo-id>`), so reject path-traversal shapes a crafted cache
-  // dir name (`models--..--passwd`) could mint. A real HF owner/repo never
-  // contains a separator or `..`.
-  if [owner, repo]
-    .iter()
-    .any(|s| s.contains('/') || s.contains('\\') || s.contains(".."))
-  {
-    return None;
-  }
-  Some(format!("{owner}/{repo}"))
 }
 
 /// Resolve the snapshot directory for a repo: prefer the revision `refs/main`
@@ -564,28 +540,6 @@ mod tests {
     // A sub-1B label round-trips its decimal.
     let half = config_to_metadata(&summary, "mlx-community/Qwen2.5-0.5B");
     assert_eq!(half.parameter_label.as_deref(), Some("0.5B"));
-  }
-
-  #[test]
-  fn repo_id_reverse_preserves_double_dash_in_repo_name() {
-    // A repo name that itself contains `--` keeps it (split on first `--`).
-    assert_eq!(
-      repo_id_from_cache_dir("models--org--foo--bar"),
-      Some("org/foo--bar".to_string())
-    );
-    assert_eq!(repo_id_from_cache_dir("not-a-models-dir"), None);
-    assert_eq!(repo_id_from_cache_dir("models--onlyowner"), None);
-    // Empty owner / empty repo segment → None.
-    assert_eq!(repo_id_from_cache_dir("models----repo"), None);
-    assert_eq!(repo_id_from_cache_dir("models--org--"), None);
-  }
-
-  #[test]
-  fn repo_id_rejects_path_traversal_shapes() {
-    // A crafted cache dir name must not mint a traversal-shaped repo_id (the
-    // catalog key a backend turns back into a path).
-    assert_eq!(repo_id_from_cache_dir("models--..--passwd"), None);
-    assert_eq!(repo_id_from_cache_dir("models--org--..--etc"), None);
   }
 
   #[test]
