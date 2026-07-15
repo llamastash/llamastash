@@ -322,6 +322,9 @@ pub(crate) fn spawn_download_task(
       revision: None,
       fallback_repos: Vec::new(),
       quant_hint: None,
+      // The TUI pull dialog grabs a model's companion (mmproj / MTP head) so it
+      // launches ready — one per kind (the default).
+      companions: crate::init::download::CompanionPolicy::OnePerKind,
     };
     match crate::init::download::download_repo(&spec, &fetch_client, &options).await {
       Ok(_) => {

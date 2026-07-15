@@ -139,6 +139,7 @@ pub fn enumerate(root: PathBuf, cache: Option<MetadataCache>) -> mpsc::Receiver<
             // apply here — left unset until Ollama-side detection lands.
             multimodal: None,
             supported_backends: hit.supported_backends.clone(),
+            mtp_head: None,
           };
           if tx.send(model).await.is_err() {
             return;
@@ -158,12 +159,14 @@ pub fn enumerate(root: PathBuf, cache: Option<MetadataCache>) -> mpsc::Receiver<
           parse_error: None,
           multimodal: None,
           supported_backends: crate::backend::supported_backends_for(&read.header),
+          mtp_head: None,
         },
         Ok(Err(e)) => CachedParse {
           metadata: None,
           parse_error: Some(format!("{resolved_name_tag}: {e}")),
           multimodal: None,
           supported_backends: Vec::new(),
+          mtp_head: None,
         },
         Err(join_err) => {
           log::warn!("ollama parser task panicked: {join_err}");
@@ -186,6 +189,7 @@ pub fn enumerate(root: PathBuf, cache: Option<MetadataCache>) -> mpsc::Receiver<
         display_label: Some(resolved_name_tag.clone()),
         multimodal: None,
         supported_backends: cached.supported_backends.clone(),
+        mtp_head: None,
       };
       if tx.send(model).await.is_err() {
         return;

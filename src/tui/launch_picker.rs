@@ -57,6 +57,10 @@ pub enum PickerField {
   /// descriptor is resolved through [`LaunchPickerState::native_descriptors`].
   /// Six rows for ds4; none for llama.cpp / Lemonade.
   NativeKnob(usize),
+  /// MTP (multi-token prediction) enable cycle (`auto`/`on`/`off`). Shown only
+  /// when the model is MTP-capable, and backend-agnostic: the resolved intent
+  /// is honored by whichever backend runs the model.
+  Mtp,
   Extras,
 }
 
@@ -128,8 +132,8 @@ impl PickerField {
   /// on those rows) so the chip and the handler stay in lockstep.
   pub fn is_editable(self) -> bool {
     match self {
-      // Preset / Server are cycle-only rows (←/→), like a boolean knob.
-      PickerField::Preset | PickerField::Server => false,
+      // Preset / Server / Mtp are cycle-only rows (←/→), like a boolean knob.
+      PickerField::Preset | PickerField::Server | PickerField::Mtp => false,
       PickerField::Extras => true,
       // The native row's editability depends on its descriptor kind, which
       // the bare index can't see — resolved by
@@ -282,6 +286,13 @@ pub struct LaunchPickerState {
   pub default_stop: PresetStop,
   /// Current cycle stop. The Preset row's value column renders this.
   pub preset_stop: PresetStop,
+  /// MTP speculative-decoding intent for this launch (`auto`/`on`/`off`). The
+  /// `Mtp` cycle row renders this; sent as the `mtp` start param. Backend-agnostic.
+  pub mtp: crate::launch::params::MtpEnable,
+  /// Whether the focused model is MTP-capable (embedded nextn head or a separate
+  /// `mtp-*.gguf` drafter). Gates the `Mtp` row — hidden when the model can't do
+  /// MTP, shown for any capable model regardless of backend.
+  pub mtp_capable: bool,
   /// The non-preset baseline (the build-time `user_knobs` / `extras` seed:
   /// last-used params, or empty). Restored when cycling back to `auto`.
   preset_baseline_knobs: TypedKnobs,
@@ -318,6 +329,8 @@ impl LaunchPickerState {
       presets: Vec::new(),
       default_stop: PresetStop::LastUsed,
       preset_stop: PresetStop::LastUsed,
+      mtp: crate::launch::params::MtpEnable::default(),
+      mtp_capable: false,
       preset_baseline_knobs: TypedKnobs::default(),
       preset_baseline_extras: Vec::new(),
       preset_baseline_backend_knobs: BTreeMap::new(),
@@ -544,9 +557,14 @@ impl LaunchPickerState {
   /// stays last. For shipping backends the descriptor slice is empty, so this
   /// equals the static order exactly.
   pub fn ordered_fields(&self) -> Vec<PickerField> {
-    let natives: Vec<PickerField> = (0..self.native_descriptors.len())
+    let mut natives: Vec<PickerField> = (0..self.native_descriptors.len())
       .map(PickerField::NativeKnob)
       .collect();
+    // The MTP row rides just after the native knobs (before Extras), shown only
+    // for an MTP-capable model.
+    if self.mtp_capable {
+      natives.push(PickerField::Mtp);
+    }
     let mut v: Vec<PickerField> = PickerField::all().to_vec();
     let extras_at = v
       .iter()
@@ -581,6 +599,7 @@ impl LaunchPickerState {
       PickerField::Server => self.cycle_server(true),
       PickerField::Knob(k) => self.cycle_knob(k, true),
       PickerField::NativeKnob(i) => self.cycle_native(i, true),
+      PickerField::Mtp => self.mtp = self.mtp.cycled(true),
       PickerField::Extras => {}
     }
   }
@@ -592,6 +611,7 @@ impl LaunchPickerState {
       PickerField::Server => self.cycle_server(false),
       PickerField::Knob(k) => self.cycle_knob(k, false),
       PickerField::NativeKnob(i) => self.cycle_native(i, false),
+      PickerField::Mtp => self.mtp = self.mtp.cycled(false),
       PickerField::Extras => {}
     }
   }
@@ -1014,6 +1034,10 @@ impl LaunchPickerState {
       PickerField::Extras => {
         self.extras.clear();
       }
+      // Reset the MTP row back to `auto` (the default intent).
+      PickerField::Mtp => {
+        self.mtp = crate::launch::params::MtpEnable::default();
+      }
     }
   }
 
@@ -1041,8 +1065,15 @@ impl LaunchPickerState {
       // A native row exists iff its index is within the backend's slice
       // (six for ds4, empty for llama.cpp / Lemonade).
       PickerField::NativeKnob(i) => i < self.native_descriptors.len(),
+      // The MTP row shows only for an MTP-capable model (any backend).
+      PickerField::Mtp => self.mtp_capable,
       PickerField::Extras => true,
     }
+  }
+
+  /// The MTP row's value label (`auto`/`on`/`off`) for the Settings render.
+  pub fn mtp_value_label(&self) -> &'static str {
+    self.mtp.label()
   }
 
   /// Move cursor to the next visible row.
@@ -1460,6 +1491,38 @@ mod tests {
     let s = LaunchPickerState::for_model("qwen");
     assert!(s.knob_supported(KnobField::Ctx));
     assert_eq!(s.active_backend_id(), "llamacpp");
+  }
+
+  #[test]
+  fn mtp_row_shown_only_when_capable_and_cycles() {
+    use crate::launch::params::MtpEnable;
+    let mut s = LaunchPickerState::for_model("qwen");
+    // Not MTP-capable → row hidden, not in the ordered field list.
+    assert!(!s.field_visible(PickerField::Mtp));
+    assert!(!s.ordered_fields().contains(&PickerField::Mtp));
+    // MTP-capable → row shown, spliced before Extras.
+    s.mtp_capable = true;
+    assert!(s.field_visible(PickerField::Mtp));
+    let ordered = s.ordered_fields();
+    let mtp_at = ordered.iter().position(|f| *f == PickerField::Mtp).unwrap();
+    let extras_at = ordered
+      .iter()
+      .position(|f| *f == PickerField::Extras)
+      .unwrap();
+    assert!(mtp_at < extras_at, "MTP row sits before Extras");
+    // Cycling the focused MTP row walks auto → on → off → auto.
+    s.field = PickerField::Mtp;
+    assert_eq!(s.mtp, MtpEnable::Auto);
+    s.cycle_focused_value_next();
+    assert_eq!(s.mtp, MtpEnable::On);
+    s.cycle_focused_value_next();
+    assert_eq!(s.mtp, MtpEnable::Off);
+    s.cycle_focused_value_next();
+    assert_eq!(s.mtp, MtpEnable::Auto);
+    // Backspace resets to auto.
+    s.mtp = MtpEnable::On;
+    s.reset_focused_row();
+    assert_eq!(s.mtp, MtpEnable::Auto);
   }
 
   #[test]
@@ -1909,10 +1972,10 @@ mod tests {
       ),
     ];
     s.field = PickerField::Server;
-    // Unset → the model's own backend (ds4) with its six native knobs.
+    // Unset → the model's own backend (ds4) with its nine native knobs.
     s.seed_native_descriptors();
     assert_eq!(s.active_backend_id(), "ds4");
-    assert_eq!(s.native_descriptors.len(), 6);
+    assert_eq!(s.native_descriptors.len(), 9);
     // Pick the llamacpp server → knob set swaps to llama.cpp (no native rows).
     s.selected_server = Some("llamacpp-rocm".into());
     s.seed_native_descriptors();
@@ -2225,7 +2288,7 @@ mod tests {
   }
 
   #[test]
-  fn seed_native_descriptors_empty_for_llamacpp_lemonade_six_for_ds4() {
+  fn seed_native_descriptors_empty_for_llamacpp_lemonade_nine_for_ds4() {
     // llama.cpp / Lemonade declare no native knobs, so the picker stays
     // byte-identical for them; ds4 declares six. (A future backend with knobs
     // must extend the exhaustive `resolved_backend` match — a compile error
@@ -2248,8 +2311,8 @@ mod tests {
     s.seed_native_descriptors();
     assert_eq!(
       s.native_descriptors.len(),
-      6,
-      "ds4 must surface its six native knobs"
+      9,
+      "ds4 must surface its nine native knobs (6 base + the MTP trio)"
     );
   }
 

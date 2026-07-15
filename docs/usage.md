@@ -433,6 +433,40 @@ llamastash daemon status [--json]   # PID + uptime + connections + managed launc
 
 `daemon status --json` emits the raw `version` IPC response (the same `{name, version, protocol_version, pid, uptime_seconds, connections}` object an agent would get by hitting the UDS directly). The plain form is a human key/value block and is not a stable machine contract — agents should always use `--json`.
 
+## MTP speculative decoding
+
+**MTP (multi-token prediction)** speeds up decoding by letting the model guess several tokens ahead and verifying them in one forward pass — roughly a **2x decode speedup** at high draft acceptance. It is **output-equivalent** to normal decoding (the model still verifies every token), so it is safe to leave on.
+
+llamastash **auto-detects and enables it** for capable models. A model is MTP-capable when either:
+
+- it carries an **embedded** draft head (`{arch}.nextn_predict_layers > 0` — Qwen3.5/3.6, GLM-4.x, DeepSeek), or
+- a **separate** draft head sits next to it as a `mtp-*.gguf` sibling (the Gemma-4 shape).
+
+The `⚡` glyph next to a model title (TUI) and the `mtp` block in `status` (`enable` / `active` / `acceptance`) tell you whether MTP is capable and running.
+
+### Controlling it
+
+```bash
+llamastash start <model>                 # auto: MTP on when capable (default)
+llamastash start <model> --mtp off       # never use MTP for this launch
+llamastash start <model> --mtp on        # force on (warns + skips if not capable)
+llamastash start <model> --spec-draft-n-max 5   # draft-token count (llama.cpp default 3)
+```
+
+`--mtp` is a **launch-only** setting (there is no `config.yaml` key for it); it persists in `last_params` and presets like any other launch choice. The TUI launch picker shows the same control as an `mtp` cycle row (auto/on/off), but only for MTP-capable models. Forcing it on a model that has no draft head **warns and skips** rather than failing the launch (emitting the flag blind is a hard llama-server error). If you drive `--spec-type` yourself through the `-- <extras>` tail, llamastash defers entirely and adds nothing.
+
+Under the hood, llama.cpp launches get `--spec-type draft-mtp` (plus `--model-draft <head>` for a separate head), emitted **before** `--fit-ctx` so `--fit` reserves the draft context. **DeepSeek-V4 on the ds4 backend** uses ds4's own `--mtp`/`--mtp-draft`/`--mtp-margin` (the `mtp` / `mtp_draft` / `mtp_margin` native knobs), auto-pairing a sidecar found next to the model.
+
+### Getting the companion files
+
+`llamastash pull <repo>` now also fetches a model's companion siblings — the **mmproj** projector (multimodal) and any **MTP draft head** — so a pulled model arrives ready to launch:
+
+```bash
+llamastash pull owner/repo:model.gguf                 # base + one companion per kind (default)
+llamastash pull owner/repo:model.gguf --no-companions # base file only
+llamastash pull owner/repo:model.gguf --all-companions # every projector precision / head
+```
+
 ## ds4 backend
 
 > **⚠️ Experimental.** ds4 support is new and lightly road-tested (validated on a single Strix Halo / ROCm host). Its behaviour, config keys, and defaults may change between releases. llama.cpp is the stable default and runs DeepSeek-V4 too on a current build (**b9840+**), so ds4 is never required — if anything here misbehaves, force llama.cpp with `--backend llamacpp` or `backend.ds4.enabled: false`.

@@ -473,9 +473,9 @@ fn open_focused_inline_edit(app: &mut App) {
       picker.extras_input.set_text(joined);
       picker.extras_input.enter_edit();
     }
-    // Filtered out by the `is_editable` guard above (Preset / Server are
+    // Filtered out by the `is_editable` guard above (Preset / Server / Mtp are
     // cycle-only).
-    PickerField::Preset | PickerField::Server => {}
+    PickerField::Preset | PickerField::Server | PickerField::Mtp => {}
   }
 }
 
@@ -520,7 +520,7 @@ fn commit_inline_edit(app: &mut App) -> bool {
       }
       // Empty buffer clears a native row back to inherited.
       PickerField::NativeKnob(i) => picker.set_native_text(i, ""),
-      PickerField::Preset | PickerField::Server | PickerField::Extras => {}
+      PickerField::Preset | PickerField::Server | PickerField::Mtp | PickerField::Extras => {}
     }
     picker.inline_edit.close();
     return true;
@@ -615,8 +615,8 @@ fn commit_inline_edit(app: &mut App) -> bool {
       Ok(())
     }
     PickerField::Extras => Ok(()),
-    // Preset / Server are cycle-only — never open an inline edit to commit.
-    PickerField::Preset | PickerField::Server => Ok(()),
+    // Preset / Server / Mtp are cycle-only — never open an inline edit to commit.
+    PickerField::Preset | PickerField::Server | PickerField::Mtp => Ok(()),
   };
   match result {
     Ok(()) => {
@@ -1948,6 +1948,7 @@ fn apply_launch_submit(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) 
     // Chosen server build (or `None` for the priority default). The daemon
     // derives the binary — and, when `backend` is `Auto`, the backend — from it.
     server: picker.selected_server.clone(),
+    mtp: picker.mtp,
   });
 
   if active_instances > 0 {
@@ -2283,6 +2284,7 @@ fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
         selection,
         backend_knobs,
         server,
+        mtp,
       } = *args;
       let mode_str = mode.map(|m| match m {
         crate::launch::mode::LaunchMode::Chat => "chat",
@@ -2309,6 +2311,8 @@ fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
           "backend_knobs": backend_knobs,
           // Chosen server build id; daemon ignores `null` / stale ids.
           "server": server,
+          // MTP intent from the picker's cycle row (auto/on/off).
+          "mtp": mtp.label(),
         }),
       )
     }
@@ -3454,6 +3458,7 @@ mod tests {
       display_label: None,
       multimodal: None,
       supported_backends: Vec::new(),
+      mtp_head: None,
     }];
     app.list_cursor = 2;
     let original_focus = app.focus;
@@ -3643,6 +3648,7 @@ mod tests {
         display_label: None,
         multimodal: None,
         supported_backends: Vec::new(),
+        mtp_head: None,
       })
       .collect();
     app.focus = Focus::List;
@@ -3828,12 +3834,14 @@ mod tests {
         reasoning_hint: false,
         mode_hint: ModeHint::Chat,
         weights_bytes: None,
+        mtp: None,
       }),
       parse_error: None,
       split_siblings: Vec::new(),
       display_label: None,
       multimodal: None,
       supported_backends: Vec::new(),
+      mtp_head: None,
     }];
     app.go_top();
     // Open picker and tweak ctx + reasoning so we can assert they
@@ -3895,12 +3903,14 @@ mod tests {
         reasoning_hint: false,
         mode_hint: ModeHint::Chat,
         weights_bytes: None,
+        mtp: None,
       }),
       parse_error: None,
       split_siblings: Vec::new(),
       display_label: None,
       multimodal: None,
       supported_backends: Vec::new(),
+      mtp_head: None,
     }];
     app.go_top();
     let (tx, mut rx) = mpsc::channel::<WriterCmd>(8);
@@ -3945,12 +3955,14 @@ mod tests {
         reasoning_hint: false,
         mode_hint: ModeHint::Chat,
         weights_bytes: None,
+        mtp: None,
       }),
       parse_error: None,
       split_siblings: Vec::new(),
       display_label: None,
       multimodal: None,
       supported_backends: Vec::new(),
+      mtp_head: None,
     }
   }
 

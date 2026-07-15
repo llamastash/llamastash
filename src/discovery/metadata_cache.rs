@@ -44,6 +44,11 @@ pub struct CachedParse {
   /// tensor info. Determined generically over the backend registry — names no
   /// backend. See [`crate::backend::supported_backends_for`].
   pub supported_backends: Vec<String>,
+  /// Path to the model's separate MTP draft head (`--model-draft`), or `None`
+  /// for embedded-head / no-head models. Resolved on the same cache-miss
+  /// blocking hop as `multimodal` (a sibling `read_dir`), keyed on the *model*
+  /// file — same staleness caveat as `multimodal`.
+  pub mtp_head: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -192,10 +197,12 @@ mod tests {
         reasoning_hint: false,
         mode_hint: ModeHint::Chat,
         weights_bytes: None,
+        mtp: None,
       }),
       parse_error: None,
       multimodal: None,
       supported_backends: Vec::new(),
+      mtp_head: None,
     }
   }
 

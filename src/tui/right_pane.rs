@@ -548,6 +548,15 @@ fn render_header_name(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Pa
           palette.accent_style(),
         ));
       }
+      // `⚡` MTP after any modality glyphs when discovery found the model
+      // MTP-capable (embedded nextn head or a separate drafter sibling) — see
+      // `discovery::MTP_LEGEND` (also in the help overlay).
+      if app.mtp_capable_for(&path) {
+        spans.push(Span::styled(
+          format!("  {}", crate::discovery::MTP_LEGEND.0),
+          palette.accent_style(),
+        ));
+      }
       Line::from(spans)
     }
     None => Line::from(Span::styled("—", palette.muted_style())),
@@ -1223,6 +1232,7 @@ mod tests {
       display_label: None,
       multimodal: None,
       supported_backends: Vec::new(),
+      mtp_head: None,
     }
   }
 
@@ -1608,6 +1618,7 @@ mod tests {
       display_label: None,
       multimodal: None,
       supported_backends: Vec::new(),
+      mtp_head: None,
     }];
     app.managed = vec![ready_managed("qwen", Some(4_500_000_000), Some(312.0))];
     // Row 0 is the table header, row 1 is the directory group
@@ -1634,6 +1645,7 @@ mod tests {
       display_label: None,
       multimodal: None,
       supported_backends: Vec::new(),
+      mtp_head: None,
     }];
     // Row 0 is the table header, row 1 is the directory group
     // header, row 2 is the model.
@@ -1659,6 +1671,7 @@ mod tests {
       display_label: None,
       multimodal: None,
       supported_backends: Vec::new(),
+      mtp_head: None,
     }];
     app.list_cursor = 2;
     let palette = app.palette();
@@ -1697,6 +1710,7 @@ mod tests {
         audio: false,
       }),
       supported_backends: Vec::new(),
+      mtp_head: None,
     }];
     app.list_cursor = 2;
     let palette = app.palette();
@@ -1775,6 +1789,7 @@ mod tests {
       display_label: None,
       multimodal: None,
       supported_backends: Vec::new(),
+      mtp_head: None,
     }];
     app.managed = vec![ready_managed("qwen", Some(4_500_000_000), Some(312.0))];
     app.list_cursor = 2;
@@ -1850,6 +1865,7 @@ mod tests {
       display_label: None,
       multimodal: None,
       supported_backends: Vec::new(),
+      mtp_head: None,
     }];
     app.managed = vec![ready_managed("qwen", None, None)];
     app.list_cursor = 2;

@@ -153,6 +153,9 @@ pub struct LastParamsRow {
   /// Server id (build/binary) the last launch used, when one was picked.
   /// Seeds the picker's Server row so a relaunch reuses the same build.
   pub server: Option<String>,
+  /// MTP intent from the last successful launch (`auto`/`on`/`off`). Seeds the
+  /// picker's MTP row so a returning user keeps their choice.
+  pub mtp: crate::launch::params::MtpEnable,
 }
 
 /// Snapshot of the daemon-side metadata the Daemon info panel
@@ -479,6 +482,9 @@ pub struct StartModelArgs {
   /// the daemon derives the binary (and, when `backend` is `Auto`, the backend)
   /// from it.
   pub server: Option<String>,
+  /// MTP speculative-decoding intent from the picker's `mtp` cycle row
+  /// (`auto`/`on`/`off`). Backend-agnostic — sent as the `mtp` start param.
+  pub mtp: crate::launch::params::MtpEnable,
 }
 
 /// The binary + compute-backend label a focused running model launched on
@@ -1121,6 +1127,11 @@ impl App {
           .get("server")
           .and_then(Value::as_str)
           .map(String::from);
+        let mtp = params
+          .get("mtp")
+          .and_then(Value::as_str)
+          .and_then(crate::launch::params::MtpEnable::from_token)
+          .unwrap_or_default();
         if recent.len() < RECENT_LIST_CAP {
           recent.push(path.clone());
         }
@@ -1134,6 +1145,7 @@ impl App {
             extras,
             port,
             server,
+            mtp,
           },
         );
       }
@@ -1440,6 +1452,18 @@ impl App {
       .and_then(|m| m.multimodal)
   }
 
+  /// Whether the model at `path` is MTP-capable (embedded nextn head or a
+  /// separate `mtp-*.gguf` drafter), per discovery. Drives the `⚡` glyph the
+  /// right-pane header renders after the model title.
+  pub fn mtp_capable_for(&self, path: &Path) -> bool {
+    self
+      .models
+      .iter()
+      .find(|m| m.path == path)
+      .map(|m| m.mtp_capable())
+      .unwrap_or(false)
+  }
+
   /// Friendly display name with fallback. Prefers the discovery
   /// label, falls back to the path's file_stem. Centralised so every
   /// surface (toast, confirm dialog, header, daemon panel) renders
@@ -1589,8 +1613,14 @@ impl App {
         .and_then(|m| m.metadata.as_ref())
         .and_then(|md| md.native_ctx)
         .and_then(|c| u32::try_from(c).ok());
+      // Show the MTP row only when this model can actually do MTP (embedded
+      // nextn head or a separate drafter sibling) — the same signal that lights
+      // the `⚡` badge. Backend-agnostic.
+      state.mtp_capable = self.mtp_capable_for(p);
       if let Some(last) = self.last_params.get(p) {
         state.prefer_port = last.port;
+        // A returning user keeps their last MTP choice (auto/on/off).
+        state.mtp = last.mtp;
         // returning user inherits the typed-knob deltas they
         // last shipped. The daemon persists only user-supplied
         // deltas (not the fully resolved set) so seeding straight
@@ -2171,6 +2201,12 @@ fn parse_list_models_row(row: &Value) -> Option<DiscoveredModel> {
   let parent = PathBuf::from(row.get("parent")?.as_str()?);
   let source = ModelSource::from_label(row.get("source").and_then(Value::as_str)?)
     .unwrap_or(ModelSource::UserPath);
+  // MTP capability from the row's `mtp` block, reconstructed so the `⚡` badge
+  // (`DiscoveredModel::mtp_capable`) lights up client-side: the embedded layer
+  // count feeds `metadata.mtp`, and a separate head sets `mtp_head` to a
+  // sentinel (the daemon re-resolves the real head path at launch — the client
+  // only needs the capability bit).
+  let (mtp_embedded, mtp_head) = parse_mtp_from_row(row);
   let metadata = row.get("metadata").and_then(|md| {
     if md.is_null() {
       None
@@ -2196,6 +2232,7 @@ fn parse_list_models_row(row: &Value) -> Option<DiscoveredModel> {
         reasoning_hint: false,
         mode_hint: parse_mode_hint(md.get("mode_hint").and_then(Value::as_str)),
         weights_bytes: md.get("weights_bytes").and_then(Value::as_u64),
+        mtp: mtp_embedded,
       })
     }
   });
@@ -2235,7 +2272,30 @@ fn parse_list_models_row(row: &Value) -> Option<DiscoveredModel> {
           .collect()
       })
       .unwrap_or_default(),
+    mtp_head,
   })
+}
+
+/// Reconstruct the MTP capability signals from a `list_models` row's `mtp`
+/// block (`{embedded_layers, separate_head}` or null): the embedded layer count
+/// and — when a separate head exists — a sentinel head path so `mtp_capable()`
+/// reads true (the real head path is re-resolved daemon-side at launch).
+fn parse_mtp_from_row(row: &Value) -> (Option<u32>, Option<PathBuf>) {
+  let Some(mtp) = row.get("mtp").filter(|v| !v.is_null()) else {
+    return (None, None);
+  };
+  let embedded = mtp
+    .get("embedded_layers")
+    .and_then(Value::as_u64)
+    .map(|n| n as u32);
+  let separate = mtp
+    .get("separate_head")
+    .and_then(Value::as_bool)
+    .unwrap_or(false);
+  (
+    embedded,
+    separate.then(|| PathBuf::from("<separate-mtp-head>")),
+  )
 }
 
 fn parse_multimodal(v: &Value) -> Option<crate::discovery::Multimodal> {
@@ -2469,12 +2529,14 @@ mod tests {
         reasoning_hint: false,
         mode_hint: ModeHint::Chat,
         weights_bytes: Some(4_200_000_000),
+        mtp: None,
       }),
       parse_error: None,
       split_siblings: Vec::new(),
       display_label: None,
       multimodal: None,
       supported_backends: Vec::new(),
+      mtp_head: None,
     }
   }
 
@@ -2588,6 +2650,39 @@ mod tests {
         .multimodal,
       None
     );
+  }
+
+  #[test]
+  fn parse_list_models_row_reads_mtp_capability_for_the_badge() {
+    // A real MTP row always carries a metadata block (both come from the same
+    // header parse); the embedded count rides `metadata.mtp`.
+    let row = |mtp: Value| {
+      json!({
+        "path": "/m/a.gguf",
+        "parent": "/m",
+        "source": "user",
+        "metadata": { "arch": "qwen35", "quant": "Q4_K", "mode_hint": "chat" },
+        "mtp": mtp,
+      })
+    };
+    // No mtp block → not capable (no ⚡).
+    assert!(!parse_list_models_row(&row(Value::Null))
+      .expect("row parses")
+      .mtp_capable());
+    // Embedded head → capable, embedded count surfaces.
+    let embedded = parse_list_models_row(&row(
+      json!({ "embedded_layers": 1, "separate_head": false }),
+    ))
+    .expect("row parses");
+    assert!(embedded.mtp_capable(), "embedded head lights the badge");
+    assert_eq!(embedded.metadata.and_then(|m| m.mtp), Some(1));
+    // Separate head only → capable via the sentinel head.
+    let separate = parse_list_models_row(&row(
+      json!({ "embedded_layers": null, "separate_head": true }),
+    ))
+    .expect("row parses");
+    assert!(separate.mtp_capable(), "separate head lights the badge");
+    assert!(separate.mtp_head.is_some());
   }
 
   #[test]
@@ -3173,6 +3268,7 @@ mod tests {
         extras: vec!["--rope-freq-base".into(), "10000".into()],
         port: Some(41105),
         server: None,
+        mtp: crate::launch::params::MtpEnable::default(),
       },
     );
     app.open_launch_picker();

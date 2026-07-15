@@ -133,6 +133,15 @@ fn model_row(m: &DiscoveredModel, available_routed: &BTreeSet<String>) -> Value 
       "vision": mm.vision,
       "audio": mm.audio,
     })),
+    // MTP (multi-token prediction) speculative-decoding capability, or null
+    // when the model is not MTP-capable. `embedded_layers` is the in-file
+    // draft-head count (`{arch}.nextn_predict_layers`); `separate_head` is
+    // true when a `mtp-*.gguf` drafter sibling was found. Additive — the TUI
+    // renders an MTP glyph from this field.
+    "mtp": m.mtp_capable().then(|| json!({
+      "embedded_layers": m.metadata.as_ref().and_then(|md| md.mtp),
+      "separate_head": m.mtp_head.is_some(),
+    })),
   })
 }
 
@@ -168,12 +177,14 @@ mod tests {
         reasoning_hint: false,
         mode_hint: ModeHint::Chat,
         weights_bytes: Some(4_000_000_000),
+        mtp: None,
       }),
       parse_error: None,
       split_siblings: Vec::new(),
       display_label: None,
       multimodal: None,
       supported_backends: Vec::new(),
+      mtp_head: None,
     }
   }
 
@@ -202,6 +213,32 @@ mod tests {
     // ...but the badge is not "some-engine" when it's unavailable — falls back
     // to the source default.
     assert_eq!(model_row(&routed, &none)["backend"], "llamacpp");
+  }
+
+  #[test]
+  fn model_row_mtp_block_reflects_capability() {
+    let none = BTreeSet::new();
+    // Not MTP-capable → `mtp` is null.
+    let plain = model_row(&fake_model("/m/a.gguf", ModelSource::UserPath), &none);
+    assert!(
+      plain["mtp"].is_null(),
+      "non-capable model omits the mtp block"
+    );
+
+    // Embedded head (metadata.mtp = Some(n)) → embedded_layers set, no head.
+    let mut embedded = fake_model("/m/a.gguf", ModelSource::UserPath);
+    embedded.metadata.as_mut().unwrap().mtp = Some(1);
+    let embedded_row = model_row(&embedded, &none);
+    assert_eq!(embedded_row["mtp"]["embedded_layers"], 1);
+    assert_eq!(embedded_row["mtp"]["separate_head"], false);
+
+    // Separate head only (no embedded) → embedded_layers null, head true.
+    let mut sep = fake_model("/m/a.gguf", ModelSource::UserPath);
+    sep.metadata.as_mut().unwrap().mtp = None;
+    sep.mtp_head = Some(PathBuf::from("/m/mtp-a.gguf"));
+    let sep_row = model_row(&sep, &none);
+    assert!(sep_row["mtp"]["embedded_layers"].is_null());
+    assert_eq!(sep_row["mtp"]["separate_head"], true);
   }
 
   #[tokio::test]
@@ -303,6 +340,7 @@ mod tests {
       display_label: None,
       multimodal: None,
       supported_backends: Vec::new(),
+      mtp_head: None,
     };
     cat.upsert(m).await;
     let v = cat.to_list_response(&BTreeSet::new()).await;

@@ -16,13 +16,13 @@
 //! never a refusal (an older llama.cpp than b9840 rejects the file with
 //! `unknown model architecture: 'deepseek4'`).
 //!
-//! Facts verified against a real ds4 build (`ds4-server --help`, master
-//! 2026-06-17) and the published q2 Flash header:
+//! Facts verified against a real ds4 build (`ds4-server --help`, 2026-07-10):
 //! - readiness: `ds4_engine_open` loads the model *before* `listen_on`, so a
 //!   `GET /v1/models` 200 means the weights are resident (see [`readiness`]);
 //! - flags: ds4-server has `--power`/`--tokens`/`--threads`/`--kv-disk-*`/
-//!   `--ssd-streaming` but **not** `--quality` or `--mtp` (those are ds4-CLI
-//!   only), so the native-knob table is 6 entries, not 8.
+//!   `--ssd-streaming` plus the MTP trio `--mtp`/`--mtp-draft`/`--mtp-margin`
+//!   (confirmed under `--help runtime`), so the native-knob table is 9 entries.
+//!   `--quality` is ds4-CLI-only and excluded.
 
 use std::path::{Path, PathBuf};
 
@@ -267,11 +267,12 @@ fn is_routed_expert_tensor(name: &str) -> bool {
   name.contains("_exps")
 }
 
-/// ds4's native-knob descriptor table (D3) — 6 tunables that have no
-/// llama.cpp IR slot. Ids are stable persistence keys; label/description
-/// drive the launch-picker rows. Only flags the real `ds4-server` binary
-/// accepts (verified via `--help`): `--quality` / `--mtp` are ds4-CLI-only
-/// and deliberately excluded.
+/// ds4's native-knob descriptor table — 9 tunables that have no llama.cpp IR
+/// slot. Ids are stable persistence keys; label/description drive the
+/// launch-picker rows. Only flags the real `ds4-server` binary accepts
+/// (verified via `--help runtime`, 2026-07-10 build): the MTP trio
+/// (`--mtp`/`--mtp-draft`/`--mtp-margin`) is included; `--quality` is
+/// ds4-CLI-only and deliberately excluded.
 pub const DS4_NATIVE_KNOBS: &[NativeKnobDescriptor] = &[
   NativeKnobDescriptor {
     id: "power",
@@ -309,6 +310,24 @@ pub const DS4_NATIVE_KNOBS: &[NativeKnobDescriptor] = &[
     description: "stream weights from disk (below-RAM-floor mode; skips the admission gate)",
     kind: NativeKnobKind::Bool,
   },
+  NativeKnobDescriptor {
+    id: "mtp",
+    label: "MTP sidecar",
+    description: "path to the MTP draft-head GGUF (auto-paired from a sibling when unset)",
+    kind: NativeKnobKind::FreeText,
+  },
+  NativeKnobDescriptor {
+    id: "mtp_draft",
+    label: "MTP draft tokens",
+    description: "max autoregressive MTP draft tokens (ds4 default 1)",
+    kind: NativeKnobKind::FreeText,
+  },
+  NativeKnobDescriptor {
+    id: "mtp_margin",
+    label: "MTP margin",
+    description: "verifier confidence margin for fast MTP acceptance (ds4 default 3)",
+    kind: NativeKnobKind::FreeText,
+  },
 ];
 
 /// `id → ds4-server flag head` mapping consumed by
@@ -320,6 +339,9 @@ const DS4_FLAG_MAP: &[(&str, &str)] = &[
   ("kv_disk_dir", "--kv-disk-dir"),
   ("kv_disk_space_mb", "--kv-disk-space-mb"),
   ("ssd_streaming", "--ssd-streaming"),
+  ("mtp", "--mtp"),
+  ("mtp_draft", "--mtp-draft"),
+  ("mtp_margin", "--mtp-margin"),
 ];
 
 /// Resolve the `ds4-server` binary: an explicit `ds4.binary` config path
@@ -677,12 +699,35 @@ impl Backend for Ds4Backend {
     params: &mut LaunchParams,
     weights_bytes: u64,
   ) -> NativeKnobResolution {
+    let mut out = NativeKnobResolution::default();
+    // MTP auto-pair (KD7): an unset `mtp` knob resolves to a separate MTP
+    // draft-head sidecar found next to the model (the same sibling detection
+    // discovery uses on disk), paired as `--mtp <path>`. A user-set value wins.
+    // Honors the backend-agnostic MTP intent — `mtp: off` (from `--mtp off` or
+    // the picker's MTP row) skips auto-pairing entirely, so the one MTP switch
+    // governs every backend. Independent of host metrics, so it runs before the
+    // streaming gate; the auto-set key is stripped from `last_params` so it
+    // re-resolves each launch.
+    if !matches!(params.mtp, crate::launch::params::MtpEnable::Off)
+      && !matches!(
+        params.backend_knobs.get("mtp"),
+        Some(crate::config::KnobValue::Set(_))
+      )
+    {
+      if let Some(head) = crate::discovery::scanner::find_mtp_head(&params.model_path) {
+        log::info!("ds4: auto-paired MTP sidecar {}", head.display());
+        params.backend_knobs.insert(
+          "mtp".to_string(),
+          crate::config::KnobValue::Set(head.display().to_string()),
+        );
+        out.auto_set.insert("mtp".to_string());
+      }
+    }
     // `ssd_streaming` Auto → on when residency won't fit. ds4 holds the full
     // model plus a cached-expert/KV working set the deepseek4 demand model can't
     // see (~1.25× weights), so a full-residency spawn OOM-kills mid-load
     // (ds4-server sets its own oom_score_adj=1000) — disk-stream instead. A user
     // on/off wins; only the unset/Auto knob resolves here.
-    let mut out = NativeKnobResolution::default();
     if matches!(
       params.backend_knobs.get("ssd_streaming"),
       Some(crate::config::KnobValue::Set(_))
@@ -1035,13 +1080,13 @@ mod tests {
     let descs = b.native_knobs();
     assert_eq!(
       descs.len(),
-      6,
-      "ds4 exposes 6 native knobs (no quality/mtp)"
+      9,
+      "ds4 exposes 9 native knobs (6 base + the MTP trio; no quality)"
     );
     let mut ids: Vec<&str> = descs.iter().map(|d| d.id).collect();
     ids.sort();
     ids.dedup();
-    assert_eq!(ids.len(), 6, "ids are unique persistence keys");
+    assert_eq!(ids.len(), 9, "ids are unique persistence keys");
     for d in descs {
       assert!(!d.label.is_empty(), "{} has a label", d.id);
       assert!(!d.description.is_empty(), "{} has a description", d.id);
@@ -1052,6 +1097,25 @@ mod tests {
         d.id
       );
     }
+  }
+
+  #[test]
+  fn argv_emits_mtp_native_knobs() {
+    // The MTP trio rides the native-knob channel → ds4-server flags.
+    let p = params_with(
+      None,
+      &[
+        ("mtp", "/m/DeepSeek-V4-Flash-mtp.gguf"),
+        ("mtp_draft", "3"),
+        ("mtp_margin", "2.5"),
+      ],
+    );
+    let a = argv_strings(&p, 41100);
+    assert!(a
+      .windows(2)
+      .any(|w| w == ["--mtp", "/m/DeepSeek-V4-Flash-mtp.gguf"]));
+    assert!(a.windows(2).any(|w| w == ["--mtp-draft", "3"]));
+    assert!(a.windows(2).any(|w| w == ["--mtp-margin", "2.5"]));
   }
 
   #[test]

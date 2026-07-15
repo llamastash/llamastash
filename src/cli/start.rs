@@ -74,6 +74,13 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
   if let Some(r) = args.reasoning {
     params.reasoning = Some(matches!(r, ReasoningFlag::On));
   }
+  // MTP overrides layer over any preset baseline, like `--ctx` / `--reasoning`.
+  if let Some(m) = args.mtp {
+    params.mtp = Some(m);
+  }
+  if let Some(n) = args.spec_draft_n_max {
+    params.spec_draft_n_max = Some(n);
+  }
   let (cli_knobs, cli_extras) = parse_cli_knobs(&args.knobs.tokens, &args.extra)?;
   // Layer per-invocation overrides onto the preset baseline instead of
   // replacing it — a CLI `--threads` must not wipe a preset's other
@@ -354,6 +361,8 @@ struct PartialParams {
   reasoning: Option<bool>,
   knobs: TypedKnobs,
   extras: Vec<String>,
+  mtp: Option<crate::launch::params::MtpEnable>,
+  spec_draft_n_max: Option<u32>,
 }
 
 fn resolve_mode(
@@ -427,6 +436,13 @@ async fn fetch_preset_params(
     reasoning: p.get("reasoning").and_then(Value::as_bool),
     knobs,
     extras,
+    mtp: p
+      .get("mtp")
+      .and_then(|v| serde_json::from_value(v.clone()).ok()),
+    spec_draft_n_max: p
+      .get("spec_draft_n_max")
+      .and_then(Value::as_u64)
+      .map(|n| n as u32),
   })
 }
 
@@ -501,6 +517,14 @@ fn build_payload(
       "extras".into(),
       Value::Array(p.extras.iter().cloned().map(Value::String).collect()),
     );
+  }
+  // MTP intent + draft-token count. Omitted when unset so the daemon inherits
+  // (default preset / last_params) and falls to `Auto`.
+  if let Some(m) = p.mtp {
+    obj.insert("mtp".into(), Value::String(m.label().to_string()));
+  }
+  if let Some(n) = p.spec_draft_n_max {
+    obj.insert("spec_draft_n_max".into(), Value::from(n));
   }
   Value::Object(obj)
 }
@@ -661,6 +685,8 @@ mod tests {
       reasoning: Some(true),
       knobs,
       extras: vec!["--rope-freq-base".into(), "10000".into()],
+      mtp: None,
+      spec_draft_n_max: None,
     };
     let v = build_payload("/m/a.gguf", "chat", &p, None, None, "default");
     assert_eq!(v["model_path"], serde_json::json!("/m/a.gguf"));
@@ -688,6 +714,8 @@ mod tests {
       reasoning: None,
       knobs: TypedKnobs::default(),
       extras: vec![],
+      mtp: None,
+      spec_draft_n_max: None,
     };
     let v = build_payload("/m/a.gguf", "chat", &p, Some("llamacpp"), None, "explicit");
     assert_eq!(v["backend"], serde_json::json!("llamacpp"));
@@ -769,6 +797,8 @@ mod tests {
       extra: vec![],
       backend: None,
       server: None,
+      mtp: None,
+      spec_draft_n_max: None,
       json: false,
       wait: false,
     };
@@ -794,6 +824,8 @@ mod tests {
       extra: vec![],
       backend: None,
       server: None,
+      mtp: None,
+      spec_draft_n_max: None,
       json: false,
       wait: false,
     };
@@ -825,6 +857,8 @@ mod tests {
       extra: vec![],
       backend: None,
       server: None,
+      mtp: None,
+      spec_draft_n_max: None,
       json: false,
       wait: false,
     };
@@ -870,6 +904,8 @@ mod tests {
       extra: vec![],
       backend: None,
       server: None,
+      mtp: None,
+      spec_draft_n_max: None,
       json: false,
       wait: false,
     };
