@@ -353,6 +353,8 @@ mod tests {
       total_parameters: None,
       backend: None,
       supported_backends: Vec::new(),
+      multimodal: None,
+      mtp: None,
     }
   }
 

@@ -676,8 +676,8 @@ Maintaining that `models` map by hand is the tedious part. Two ways to skip it:
 OpenAI-standard (`id` / `object` / `created` / `owned_by`) with **no
 capability field**, so nothing downstream can tell a chat model from an
 embedding or reranker off that endpoint alone. `list --json` *does* carry a
-per-model `mode_hint`, so generate the block from it and filter to just the
-chat models:
+per-model `mode_hint` (under the nested `metadata` block), so generate the block
+from it and filter to just the chat models:
 
 ```bash
 BASE="http://$(llamastash status --json | jq -r .proxy.listen)/v1"
@@ -687,10 +687,10 @@ llamastash list --json | jq --arg base "$BASE" '{
     name: "llamastash (local)",
     options: { baseURL: $base },
     models: ( .models
-      | map(select(.mode_hint == "chat"))
+      | map(select(.metadata.mode_hint == "chat"))
       | map({ (.name | sub("\\.gguf$"; "")):
               { name: (.name | sub("\\.gguf$"; "")),
-                limit: { context: .native_ctx } } })
+                limit: { context: .metadata.native_ctx } } })
       | add )
   }}}'
 ```

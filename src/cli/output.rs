@@ -172,41 +172,14 @@ pub fn list_json(rows: &[CatalogRow], running: &HashMap<String, RunningRow>) -> 
   let arr: Vec<Value> = rows
     .iter()
     .map(|r| {
-      // Emit `model_id` only when populated. The IPC `list_models`
-      // doesn't currently include it (the catalog has no scan-time
-      // BLAKE3 yet), so leaving the field present as `null` would
-      // mislead agents into thinking a stable handle exists.
-      let mut row = serde_json::json!({
-        "name": r.name(),
-        "path": r.path,
-        "parent": r.parent,
-        "source": r.source,
-        // Backend that serves this row (R14 badge). Prefer the daemon's
-        // resolved tag (honest for ds4: "ds4" only when compatible AND
-        // available); fall back to a source-derived badge for rows the
-        // daemon didn't tag (older daemon / pre-launch synthetic rows).
-        "backend": r
-          .backend
-          .clone()
-          .unwrap_or_else(|| backend_for_source(&r.source).to_string()),
-        // Every backend that can serve this model, priority-ordered.
-        "supported_backends": r.supported_backends,
-        "arch": r.arch,
-        "quant": r.quant,
-        "native_ctx": r.native_ctx,
-        "mode_hint": r.mode_hint,
-        "parameter_label": r.parameter_label,
-        "weights_bytes": r.weights_bytes,
-        "display_label": r.display_label,
-        "parse_error": r.parse_error,
-      });
-      if let Some(id) = &r.model_id {
-        row["model_id"] = serde_json::Value::String(id.clone());
-      }
+      // One shape: serialise the shared `CatalogRow` — byte-identical to the
+      // daemon's `list_models` rows (nested `metadata`, `mtp`, `multimodal`).
+      // `status` is the only CLI-side enrichment; it comes from a separate
+      // `status` query the catalog itself doesn't carry.
+      let mut row = serde_json::to_value(r).unwrap_or_else(|_| serde_json::json!({}));
       // `status` is a small nested object so agents can pin
-      // `models[i].status.state` / `.port` rather than two flat
-      // `status_state` / `status_port` keys. Absent (not `null`) when
-      // the model has no live supervisor.
+      // `models[i].status.state` / `.port`. Absent (not `null`) when the
+      // model has no live supervisor.
       if let Some(live) = running.get(&r.path) {
         row["status"] = serde_json::json!({
           "state": live.state,
@@ -766,6 +739,8 @@ mod tests {
       total_parameters: None,
       backend: None,
       supported_backends: Vec::new(),
+      multimodal: None,
+      mtp: None,
     }
   }
 
@@ -844,21 +819,41 @@ mod tests {
       .expect("models array");
     assert_eq!(arr.len(), 1);
     let r = &arr[0];
+    // Top-level keys of the unified `list_models` wire shape.
     for key in [
       "name",
       "path",
       "model_id",
       "parent",
       "source",
+      "backend",
+      "supported_backends",
+      "split_siblings",
+      "metadata",
+      "parse_error",
+    ] {
+      assert!(r.get(key).is_some(), "key `{key}` missing in JSON row");
+    }
+    // GGUF-derived fields are nested under `metadata` (not flat top-level).
+    let md = r.get("metadata").expect("metadata block");
+    for key in [
       "arch",
       "quant",
       "native_ctx",
       "mode_hint",
       "parameter_label",
-      "parse_error",
     ] {
-      assert!(r.get(key).is_some(), "key `{key}` missing in JSON row");
+      assert!(
+        md.get(key).is_some(),
+        "key `metadata.{key}` missing in JSON row"
+      );
     }
+    // Capability blocks are present as keys (null when not capable).
+    assert!(r.get("mtp").is_some(), "mtp key present (null when absent)");
+    assert!(
+      r.get("multimodal").is_some(),
+      "multimodal key present (null when absent)"
+    );
   }
 
   #[test]

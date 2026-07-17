@@ -461,6 +461,13 @@ pub(crate) fn catalog_row_from_discovered(m: &DiscoveredModel) -> CatalogRow {
     total_parameters,
     backend: None,
     supported_backends: m.supported_backends.clone(),
+    multimodal: m.multimodal,
+    mtp: m
+      .mtp_capable()
+      .then(|| crate::launch::resolve::MtpCapability {
+        embedded_layers: m.metadata.as_ref().and_then(|md| md.mtp),
+        separate_head: m.mtp_head.is_some(),
+      }),
   }
 }
 

@@ -351,6 +351,8 @@ fn direct_catalog_row(path: PathBuf, mode: CliLaunchMode) -> CatalogRow {
     total_parameters: None,
     backend: None,
     supported_backends: Vec::new(),
+    multimodal: None,
+    mtp: None,
   }
 }
 
@@ -646,6 +648,8 @@ mod tests {
       total_parameters: None,
       backend: None,
       supported_backends: Vec::new(),
+      multimodal: None,
+      mtp: None,
     }
   }
 
@@ -892,6 +896,8 @@ mod tests {
       total_parameters: None,
       backend: None,
       supported_backends: Vec::new(),
+      multimodal: None,
+      mtp: None,
     };
     let args = StartArgs {
       model: Some(path.display().to_string()),

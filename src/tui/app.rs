@@ -2194,119 +2194,73 @@ fn apply_filter(rows: &[ListRow], query: &str) -> Vec<ListRow> {
 }
 
 fn parse_list_models_row(row: &Value) -> Option<DiscoveredModel> {
+  // Deserialise the one shared `CatalogRow` wire shape, then map it into the
+  // TUI's `DiscoveredModel`. The JSON keys are read in exactly one place —
+  // `CatalogRow`'s serde impl — so this never drifts from the daemon.
+  let cr: crate::launch::resolve::CatalogRow = serde_json::from_value(row.clone()).ok()?;
+  if cr.path.is_empty() {
+    return None;
+  }
+  Some(discovered_from_catalog_row(&cr))
+}
+
+/// Map a wire [`CatalogRow`](crate::launch::resolve::CatalogRow) into the TUI's
+/// domain [`DiscoveredModel`]. MTP capability round-trips through a sentinel
+/// head path so `mtp_capable()` (and the `⚡` badge) light up client-side; the
+/// daemon re-resolves the real head at launch — the client only needs the bit.
+fn discovered_from_catalog_row(cr: &crate::launch::resolve::CatalogRow) -> DiscoveredModel {
   use crate::discovery::ModelSource;
   use crate::gguf::metadata::{ModelMetadata, Quant};
 
-  let path = PathBuf::from(row.get("path")?.as_str()?);
-  let parent = PathBuf::from(row.get("parent")?.as_str()?);
-  let source = ModelSource::from_label(row.get("source").and_then(Value::as_str)?)
-    .unwrap_or(ModelSource::UserPath);
-  // MTP capability from the row's `mtp` block, reconstructed so the `⚡` badge
-  // (`DiscoveredModel::mtp_capable`) lights up client-side: the embedded layer
-  // count feeds `metadata.mtp`, and a separate head sets `mtp_head` to a
-  // sentinel (the daemon re-resolves the real head path at launch — the client
-  // only needs the capability bit).
-  let (mtp_embedded, mtp_head) = parse_mtp_from_row(row);
-  let metadata = row.get("metadata").and_then(|md| {
-    if md.is_null() {
-      None
-    } else {
-      Some(ModelMetadata {
-        arch: md.get("arch").and_then(Value::as_str).map(String::from),
-        total_parameters: md.get("total_parameters").and_then(Value::as_u64),
-        parameter_label: md
-          .get("parameter_label")
-          .and_then(Value::as_str)
-          .map(String::from),
-        quant: md
-          .get("quant")
-          .and_then(Value::as_str)
-          .map(parse_quant)
-          .unwrap_or_else(|| Quant::Unknown(0)),
-        native_ctx: md.get("native_ctx").and_then(Value::as_u64),
-        chat_template: None,
-        tokenizer_kind: md
-          .get("tokenizer_kind")
-          .and_then(Value::as_str)
-          .map(String::from),
-        reasoning_hint: false,
-        mode_hint: parse_mode_hint(md.get("mode_hint").and_then(Value::as_str)),
-        weights_bytes: md.get("weights_bytes").and_then(Value::as_u64),
-        mtp: mtp_embedded,
-      })
-    }
+  let mtp_embedded = cr.mtp.and_then(|m| m.embedded_layers);
+  let mtp_head = cr
+    .mtp
+    .filter(|m| m.separate_head)
+    .map(|_| PathBuf::from("<separate-mtp-head>"));
+  // The daemon emits a `metadata` block iff a header parsed (and always sets
+  // `mode_hint` when it does), so these signals track "had a metadata block".
+  let has_metadata = cr.mode_hint.is_some()
+    || cr.arch.is_some()
+    || cr.quant.is_some()
+    || cr.native_ctx.is_some()
+    || cr.parameter_label.is_some()
+    || cr.weights_bytes.is_some()
+    || cr.total_parameters.is_some()
+    || cr.tokenizer_kind.is_some()
+    || cr.has_chat_template
+    || cr.has_reasoning_hint
+    || mtp_embedded.is_some();
+  let metadata = has_metadata.then(|| ModelMetadata {
+    arch: cr.arch.clone(),
+    total_parameters: cr.total_parameters,
+    parameter_label: cr.parameter_label.clone(),
+    quant: cr
+      .quant
+      .as_deref()
+      .map(parse_quant)
+      .unwrap_or(Quant::Unknown(0)),
+    native_ctx: cr.native_ctx,
+    chat_template: None,
+    tokenizer_kind: cr.tokenizer_kind.clone(),
+    reasoning_hint: cr.has_reasoning_hint,
+    mode_hint: parse_mode_hint(cr.mode_hint.as_deref()),
+    weights_bytes: cr.weights_bytes,
+    mtp: mtp_embedded,
   });
-  Some(DiscoveredModel {
-    path,
-    parent,
-    source,
+  DiscoveredModel {
+    path: PathBuf::from(&cr.path),
+    parent: PathBuf::from(&cr.parent),
+    source: ModelSource::from_label(&cr.source).unwrap_or(ModelSource::UserPath),
     metadata,
-    parse_error: row
-      .get("parse_error")
-      .and_then(Value::as_str)
-      .map(String::from),
-    split_siblings: row
-      .get("split_siblings")
-      .and_then(Value::as_array)
-      .map(|arr| {
-        arr
-          .iter()
-          .filter_map(|v| v.as_str().map(PathBuf::from))
-          .collect()
-      })
-      .unwrap_or_default(),
-    display_label: row
-      .get("display_label")
-      .and_then(Value::as_str)
-      .map(String::from),
-    multimodal: row.get("multimodal").and_then(parse_multimodal),
+    parse_error: cr.parse_error.clone(),
+    split_siblings: cr.split_siblings.iter().map(PathBuf::from).collect(),
+    display_label: cr.display_label.clone(),
+    multimodal: cr.multimodal,
     // Priority-ordered backends this model can run on (`ds4`, `llamacpp`, …).
     // Feeds the launch picker's Server row (filters the server catalog).
-    supported_backends: row
-      .get("supported_backends")
-      .and_then(Value::as_array)
-      .map(|arr| {
-        arr
-          .iter()
-          .filter_map(|v| v.as_str().map(String::from))
-          .collect()
-      })
-      .unwrap_or_default(),
+    supported_backends: cr.supported_backends.clone(),
     mtp_head,
-  })
-}
-
-/// Reconstruct the MTP capability signals from a `list_models` row's `mtp`
-/// block (`{embedded_layers, separate_head}` or null): the embedded layer count
-/// and — when a separate head exists — a sentinel head path so `mtp_capable()`
-/// reads true (the real head path is re-resolved daemon-side at launch).
-fn parse_mtp_from_row(row: &Value) -> (Option<u32>, Option<PathBuf>) {
-  let Some(mtp) = row.get("mtp").filter(|v| !v.is_null()) else {
-    return (None, None);
-  };
-  let embedded = mtp
-    .get("embedded_layers")
-    .and_then(Value::as_u64)
-    .map(|n| n as u32);
-  let separate = mtp
-    .get("separate_head")
-    .and_then(Value::as_bool)
-    .unwrap_or(false);
-  (
-    embedded,
-    separate.then(|| PathBuf::from("<separate-mtp-head>")),
-  )
-}
-
-fn parse_multimodal(v: &Value) -> Option<crate::discovery::Multimodal> {
-  if v.is_null() {
-    return None;
   }
-  let flag = |key: &str| v.get(key).and_then(Value::as_bool).unwrap_or(false);
-  Some(crate::discovery::Multimodal {
-    vision: flag("vision"),
-    audio: flag("audio"),
-  })
 }
 
 fn parse_mode_hint(label: Option<&str>) -> crate::gguf::metadata::ModeHint {
