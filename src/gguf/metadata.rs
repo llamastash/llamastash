@@ -23,12 +23,12 @@ pub struct ModelMetadata {
   /// Dominant tensor quantisation across the model's weight tensors.
   pub quant: Quant,
   /// Verbatim quant string for backends whose quantisation has no GGML
-  /// tag (e.g. MLX affine "4-bit gs64", vLLM AWQ/GPTQ labels). `quant`
+  /// tag (e.g. an affine "4-bit gs64" or an AWQ/GPTQ label). `quant`
   /// is GGML-only and `Copy`, and `Unknown(u32)` means "unknown *GGML*
   /// tag" — wrong to reuse for a non-GGML scheme. GGUF constructors leave
   /// this `None`; a safetensors backend overlays it in its projection.
-  /// Rendered verbatim where present (the follow-up MLX plan wires the
-  /// display); GGUF output is unchanged while it stays `None`.
+  /// Rendered verbatim where present (a future safetensors backend wires
+  /// the display); GGUF output is unchanged while it stays `None`.
   pub quant_label: Option<String>,
   pub native_ctx: Option<u64>,
   pub chat_template: Option<String>,

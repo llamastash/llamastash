@@ -2188,8 +2188,8 @@ fn parse_list_models_row(row: &Value) -> Option<DiscoveredModel> {
           .map(parse_quant)
           .unwrap_or_else(|| Quant::Unknown(0)),
         // Not carried on the status `metadata` JSON yet (no backend sets
-        // it); the follow-up MLX plan wires both ends. Mirrors the other
-        // non-round-tripped fields (chat_template / reasoning_hint).
+        // it); a future safetensors backend wires both ends. Mirrors the
+        // other non-round-tripped fields (chat_template / reasoning_hint).
         quant_label: None,
         native_ctx: md.get("native_ctx").and_then(Value::as_u64),
         chat_template: None,
