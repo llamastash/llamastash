@@ -78,7 +78,7 @@ pub struct DiscoveredModel {
   /// [`crate::backend::supported_backends_for`], so this field names no backend.
   pub supported_backends: Vec<String>,
   /// Path to a **separate MTP draft head** (`mtp-*.gguf` sibling) this model
-  /// pairs with for speculative decoding (`--model-draft`), or `None` when the
+  /// pairs with as its speculative drafter, or `None` when the
   /// model is embedded-MTP (draft layers in the base file) or has no head.
   /// Resolved once at scan time (see [`scanner::find_mtp_head`]) and cached, so
   /// the badge can predict MTP capability without a launch. Combined with

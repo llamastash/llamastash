@@ -723,6 +723,27 @@ impl Backend for Ds4Backend {
         out.auto_set.insert("mtp".to_string());
       }
     }
+    // The neutral per-step draft count maps onto ds4's own draft flag, so the
+    // one `--mtp-draft-n` works whichever backend serves the model. Only when a
+    // head is actually paired (the flag is meaningless without one) and the
+    // native knob wasn't set directly, which wins.
+    if let Some(n) = params.mtp_draft_n {
+      let head_paired = matches!(
+        params.backend_knobs.get("mtp"),
+        Some(crate::config::KnobValue::Set(_))
+      );
+      let knob_set_directly = matches!(
+        params.backend_knobs.get("mtp_draft"),
+        Some(crate::config::KnobValue::Set(_))
+      );
+      if head_paired && !knob_set_directly {
+        params.backend_knobs.insert(
+          "mtp_draft".to_string(),
+          crate::config::KnobValue::Set(n.to_string()),
+        );
+        out.auto_set.insert("mtp_draft".to_string());
+      }
+    }
     // `ssd_streaming` Auto → on when residency won't fit. ds4 holds the full
     // model plus a cached-expert/KV working set the deepseek4 demand model can't
     // see (~1.25× weights), so a full-residency spawn OOM-kills mid-load
@@ -758,6 +779,21 @@ impl Backend for Ds4Backend {
     }
     out
   }
+
+  fn mtp_active(&self, params: &LaunchParams) -> bool {
+    // ds4 speculates only when a draft head was paired into `--mtp` (auto from
+    // a sidecar, or user-set) — an embedded nextn head alone does nothing here,
+    // so the generic MTP directive is not the signal.
+    matches!(
+      params.backend_knobs.get("mtp"),
+      Some(crate::config::KnobValue::Set(v)) if !v.is_empty()
+    )
+  }
+
+  // `draft_acceptance` stays on the default `None`: ds4-server's log shape for
+  // acceptance is unverified against the real binary, and a guessed format
+  // would surface as a permanent `null`, indistinguishable from "not printed
+  // one yet". Tracked in TODO.md.
 
   fn bypasses_admission(&self, params: &LaunchParams) -> bool {
     // Streaming weights from disk skips the hard OOM refusal (on-disk bytes ≠
@@ -1116,6 +1152,29 @@ mod tests {
       .any(|w| w == ["--mtp", "/m/DeepSeek-V4-Flash-mtp.gguf"]));
     assert!(a.windows(2).any(|w| w == ["--mtp-draft", "3"]));
     assert!(a.windows(2).any(|w| w == ["--mtp-margin", "2.5"]));
+  }
+
+  #[test]
+  fn mtp_active_keys_on_the_paired_head_not_the_generic_directive() {
+    let b = Ds4Backend::new();
+    // A capable model resolves the generic directive on, but ds4 only
+    // speculates once a head is paired into `--mtp` — reporting `active` off
+    // the directive would claim MTP on a launch that never got a draft head.
+    let mut p = params_with(None, &[]);
+    p.mtp_directive = Some(crate::launch::params::MtpDirective { draft_model: None });
+    assert!(!b.mtp_active(&p), "no paired head → not speculating");
+
+    let paired = params_with(None, &[("mtp", "/m/DeepSeek-V4-Flash-mtp.gguf")]);
+    assert!(b.mtp_active(&paired), "paired head → speculating");
+  }
+
+  #[test]
+  fn draft_acceptance_is_unreported_rather_than_guessed() {
+    // ds4-server's acceptance log shape is unverified, so it must report
+    // nothing instead of parsing another backend's format against its log.
+    let b = Ds4Backend::new();
+    let lines = vec!["draft acceptance = 0.65217 ( 105 accepted / 161 generated )".to_string()];
+    assert!(b.draft_acceptance(&lines).is_none());
   }
 
   #[test]

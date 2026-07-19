@@ -442,7 +442,7 @@ llamastash **auto-detects and enables it** for capable models. A model is MTP-ca
 - it carries an **embedded** draft head (`{arch}.nextn_predict_layers > 0` — Qwen3.5/3.6, GLM-4.x, DeepSeek), or
 - a **separate** draft head sits next to it as a `mtp-*.gguf` sibling (the Gemma-4 shape).
 
-The `⚡` glyph next to a model title (TUI) and the `mtp` block in `status` (`enable` / `active` / `acceptance`) tell you whether MTP is capable and running.
+The `⚡` glyph next to a model title (TUI) and the `mtp` block in `status` tell you whether MTP is capable and running: `enable` is your intent (auto/on/off), `active` is whether the serving backend actually dispatched with MTP, and `acceptance` is the latest draft-acceptance rate it reports (present once the model has served enough tokens; a backend that publishes no acceptance figures leaves it null).
 
 ### Controlling it
 
@@ -450,12 +450,12 @@ The `⚡` glyph next to a model title (TUI) and the `mtp` block in `status` (`en
 llamastash start <model>                 # auto: MTP on when capable (default)
 llamastash start <model> --mtp off       # never use MTP for this launch
 llamastash start <model> --mtp on        # force on (warns + skips if not capable)
-llamastash start <model> --spec-draft-n-max 5   # draft-token count (llama.cpp default 3)
+llamastash start <model> --mtp-draft-n 5  # tokens drafted per step (backend default when unset)
 ```
 
-`--mtp` is a **launch-only** setting (there is no `config.yaml` key for it); it persists in `last_params` and presets like any other launch choice. The TUI launch picker shows the same control as an `mtp` cycle row (auto/on/off), but only for MTP-capable models. Forcing it on a model that has no draft head **warns and skips** rather than failing the launch (emitting the flag blind is a hard llama-server error). If you drive `--spec-type` yourself through the `-- <extras>` tail, llamastash defers entirely and adds nothing.
+`--mtp` is a **launch-only** setting (there is no `config.yaml` key for it); it persists in `last_params` and presets like any other launch choice. `--mtp-draft-n` works whichever backend serves the model. The TUI launch picker shows the same control as an `mtp` cycle row (auto/on/off), but only for MTP-capable models. Forcing it on a model that has no draft head **warns and skips** rather than failing the launch (emitting the flag blind is a hard server error). If you drive speculative decoding yourself through the `-- <extras>` tail, llamastash defers entirely and adds nothing.
 
-Under the hood, llama.cpp launches get `--spec-type draft-mtp` (plus `--model-draft <head>` for a separate head), emitted **before** `--fit-ctx` so `--fit` reserves the draft context. **DeepSeek-V4 on the ds4 backend** uses ds4's own `--mtp`/`--mtp-draft`/`--mtp-margin` (the `mtp` / `mtp_draft` / `mtp_margin` native knobs), auto-pairing a sidecar found next to the model.
+Under the hood, each backend maps this onto its own flags — the serving backend enables speculation with the resolved draft head (and `--mtp-draft-n` when set), emitted **before** the fit step so context reservation stays MTP-aware. **DeepSeek-V4 on the ds4 backend** uses ds4's own `mtp` / `mtp_draft` / `mtp_margin` native knobs, auto-pairing a sidecar found next to the model.
 
 ### Getting the companion files
 
@@ -503,7 +503,7 @@ Routing is automatic and keys on a header-level compatibility predicate — arch
 
 ### ds4 native knobs
 
-ds4-server takes six backend-specific tunables that have no llama.cpp equivalent. Set them per-launch in the TUI launch picker or persist them in a preset; ds4 honors exactly one typed knob from the shared set — `ctx` (→ `--ctx`).
+ds4-server takes nine backend-specific tunables that have no llama.cpp equivalent. Set them per-launch in the TUI launch picker or persist them in a preset; ds4 honors exactly one typed knob from the shared set — `ctx` (→ `--ctx`).
 
 | Knob             | ds4-server flag      | What it does |
 | ---------------- | -------------------- | ------------ |
@@ -513,10 +513,11 @@ ds4-server takes six backend-specific tunables that have no llama.cpp equivalent
 | `kv_disk_dir`    | `--kv-disk-dir`      | Directory for ds4's persistent disk KV cache (see privacy note below) |
 | `kv_disk_space_mb` | `--kv-disk-space-mb` | Disk KV cache budget in MB (ds4 default 4096 when enabled) |
 | `ssd_streaming`  | `--ssd-streaming`    | Stream weights from disk (below-RAM-floor mode; skips the admission gate) |
+| `mtp`            | `--mtp`              | Path to the MTP draft-head sidecar (auto-paired from a sibling when unset; see [MTP speculative decoding](#mtp-speculative-decoding)) |
+| `mtp_draft`      | `--mtp-draft`        | Tokens drafted per step (also set by the neutral `--mtp-draft-n`) |
+| `mtp_margin`     | `--mtp-margin`       | Acceptance margin for the draft verifier |
 
 Any other ds4-server flag (`--kv-cache-*`, `--prefill-chunk`, …) rides the free-form extras tail after `--`, e.g. `start <model> -- --prefill-chunk 512`. The loopback/credential denylist still applies, extended for ds4 with `--cors` and `--dist-` — those are stripped/refused.
-
-> **Note on MTP:** DeepSeek-V4's MTP (speculative-decoding) sidecar GGUF exists on HuggingFace, but the `ds4-server` binary does not consume it (`--mtp` is a ds4-CLI-only flag). There is no MTP knob.
 
 ### Oversized models and below-floor hardware
 

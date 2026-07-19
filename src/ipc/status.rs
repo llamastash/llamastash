@@ -16,31 +16,6 @@ use crate::daemon::context::MethodContext;
 use crate::daemon::host_metrics::HostMetricsSnapshot;
 use crate::ipc::methods::flatten_state;
 
-/// The most recent MTP draft-acceptance figure in `lines`, matching
-/// llama-server's `slot print_timing: … draft acceptance = <rate> ( <acc>
-/// accepted / <gen> generated )` line. Returns `(rate, accepted, generated)`
-/// for the last such line, or `None`. Scans newest-first so an idle model
-/// keeps its final rate rather than an early warm-up figure.
-fn latest_draft_acceptance(lines: &[String]) -> Option<(f32, u64, u64)> {
-  lines
-    .iter()
-    .rev()
-    .find_map(|l| parse_draft_acceptance_line(l))
-}
-
-/// Parse one `… draft acceptance = <rate> ( <acc> accepted / <gen> generated )`
-/// line. Tolerant of the surrounding log prefix and whitespace.
-fn parse_draft_acceptance_line(line: &str) -> Option<(f32, u64, u64)> {
-  const MARKER: &str = "draft acceptance = ";
-  let rest = &line[line.find(MARKER)? + MARKER.len()..];
-  let rate: f32 = rest.split_whitespace().next()?.parse().ok()?;
-  let num_before = |kw: &str| -> Option<u64> {
-    let head = &rest[..rest.find(kw)?];
-    head.split_whitespace().last()?.parse().ok()
-  };
-  Some((rate, num_before("accepted")?, num_before("generated")?))
-}
-
 /// Snapshot every active managed model plus the daemon's GPU info.
 /// `status` is read-only; never triggers any state-machine transitions.
 pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
@@ -69,14 +44,33 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
     // `params` so an agent can reproduce the launch without a
     // separate `last_params_list` call.
     let params = model.params();
-    // MTP draft-acceptance telemetry: when MTP resolved on for this launch,
-    // scan the recent server log for llama-server's latest `draft acceptance =
-    // <rate> ( <acc> accepted / <gen> generated )` line. Read-only over the
-    // existing log ring buffer (no new sampler); `None` until the model has
-    // served enough tokens to print one.
-    let mtp_active = params.mtp_directive.is_some();
+    let running_snap = running.iter().find(|r| r.port == model.port());
+    // The backend this launch *resolved* to, stamped on the running snapshot
+    // at spawn — the honest signal (respects an explicit backend override on a
+    // compatible file), not the routing prediction.
+    // A managed-multiplexer umbrella row keys deterministically on its own
+    // backend id: the umbrella shares its port with every delegated model's
+    // snapshot, so matching by port would pick an arbitrary snapshot (or the
+    // default-backend fallback when none is resident) and the reported backend
+    // would flip-flop between calls. Resolved via the registry so no backend is
+    // named here.
+    let owner = crate::backend::Backends::all()
+      .into_iter()
+      .find(|b| b.umbrella_launch_id().as_ref() == Some(&launch_id))
+      .or_else(|| {
+        let id = running_snap.map(|r| r.resolved_backend.as_str())?;
+        crate::backend::Backends::all()
+          .into_iter()
+          .find(|b| b.id() == id)
+      })
+      .unwrap_or_else(crate::backend::default_backend);
+    let resolved_backend = owner.id().to_string();
+    // MTP telemetry comes from the owning backend: whether it dispatched with
+    // MTP, and — only then — the acceptance figure it prints in its own log
+    // format. Read-only over the existing log ring buffer (no new sampler).
+    let mtp_active = owner.mtp_active(params);
     let mtp_acceptance = if mtp_active {
-      latest_draft_acceptance(&model.tail(200).await)
+      owner.draft_acceptance(&model.tail(200).await)
     } else {
       None
     };
@@ -99,41 +93,22 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
         .map(|s| s.to_string_lossy().into_owned())
         .collect::<Vec<_>>(),
       // MTP (speculative decoding) state for this launch: `enable` is the
-      // intent (auto/on/off), `active` is whether MTP actually resolved on
-      // (`--spec-type draft-mtp` emitted), and `acceptance` is the latest
-      // draft-acceptance rate parsed from the server log (null until printed).
-      // Additive.
+      // intent (auto/on/off), `active` is whether the owning backend actually
+      // dispatched with MTP, and `acceptance` is the latest draft-acceptance
+      // rate it reported (null until printed, or on a backend that publishes
+      // none). Additive.
       "mtp": {
         "enable": params.mtp.label(),
         "active": mtp_active,
-        "acceptance": mtp_acceptance.map(|(r, _, _)| r),
-        "draft_accepted": mtp_acceptance.map(|(_, a, _)| a),
-        "draft_generated": mtp_acceptance.map(|(_, _, g)| g),
+        "acceptance": mtp_acceptance.map(|a| a.rate),
+        "draft_accepted": mtp_acceptance.map(|a| a.accepted),
+        "draft_generated": mtp_acceptance.map(|a| a.generated),
       },
     });
     let latest = model.latest_resource().await;
     let latest_rss_bytes = latest.as_ref().map(|r| r.rss_bytes);
     let latest_cpu_pct = latest.as_ref().map(|r| r.cpu_percent);
-    let running_snap = running.iter().find(|r| r.port == model.port());
     let actuals = running_snap.map(|r| r.actuals);
-    // The backend this launch *resolved* to, stamped on the running snapshot
-    // at spawn — the honest signal (respects an explicit `--backend llamacpp`
-    // on a compatible file), not the `list_models` ds4 badge prediction.
-    // A managed-multiplexer umbrella row keys deterministically on its own
-    // backend id: the umbrella shares its port with every delegated model's
-    // snapshot, so matching by port would pick an arbitrary snapshot (or the
-    // default-backend fallback when none is resident) and the reported backend
-    // would flip-flop between calls. Resolved via the registry so no backend is
-    // named here.
-    let resolved_backend = crate::backend::Backends::all()
-      .iter()
-      .find(|b| b.umbrella_launch_id().as_ref() == Some(&launch_id))
-      .map(|b| b.id().to_string())
-      .unwrap_or_else(|| {
-        running_snap
-          .map(|r| r.resolved_backend.clone())
-          .unwrap_or_else(|| crate::backend::DEFAULT_BACKEND_ID.to_string())
-      });
     let resolved_ctx = actuals.and_then(|a| a.resolved_ctx);
     let ctx_clamped = actuals.map(|a| a.ctx_clamped).unwrap_or(false);
     let (preset_count, preset_default) = super::methods::preset_hint(
@@ -219,6 +194,14 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
         path: running_snap.params.model_path.clone(),
         header_blake3: [0u8; 32],
       };
+      // Same `params.mtp` shape as a managed row, so a delegated model's row is
+      // shape-identical. `active` comes from the owning backend; acceptance is
+      // null for a delegated model (it shares the umbrella's log, so per-model
+      // draft figures aren't separable). Owner resolved via the registry.
+      let owner = crate::backend::Backends::all()
+        .into_iter()
+        .find(|b| b.id() == running_snap.resolved_backend)
+        .unwrap_or_else(crate::backend::default_backend);
       let params_json = json!({
         "model_path": running_snap.params.model_path,
         "mode": running_snap.params.mode.label(),
@@ -232,6 +215,13 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
           .iter()
           .map(|s| s.to_string_lossy().into_owned())
           .collect::<Vec<_>>(),
+        "mtp": {
+          "enable": running_snap.params.mtp.label(),
+          "active": owner.mtp_active(&running_snap.params),
+          "acceptance": Value::Null,
+          "draft_accepted": Value::Null,
+          "draft_generated": Value::Null,
+        },
       });
       let (preset_count, preset_default) = super::methods::preset_hint(
         &running_snap.params.model_path.display().to_string(),
@@ -527,34 +517,7 @@ fn project_proxy_status(cell: &crate::proxy::StatusCell) -> Value {
 mod tests {
   use std::path::PathBuf;
 
-  use super::{latest_draft_acceptance, parse_draft_acceptance_line};
   use serde_json::{json, Value};
-
-  #[test]
-  fn parses_llama_server_draft_acceptance_line() {
-    // The exact shape a real llama-server slot emits (captured 2026-07-14).
-    let line = "0.06.893 I slot print_timing: id  3 | task 0 | draft acceptance = 0.65217 (  105 accepted /   161 generated ), mean len =  2.94";
-    let (rate, acc, gen) = parse_draft_acceptance_line(line).expect("parses");
-    assert!((rate - 0.65217).abs() < 1e-4);
-    assert_eq!(acc, 105);
-    assert_eq!(gen, 161);
-    // A non-matching line yields None.
-    assert!(parse_draft_acceptance_line("srv load_model: loading model").is_none());
-  }
-
-  #[test]
-  fn latest_draft_acceptance_takes_the_newest_line() {
-    let lines = vec![
-      "draft acceptance = 0.10 ( 1 accepted / 10 generated )".to_string(),
-      "some other log line".to_string(),
-      "draft acceptance = 0.90 ( 9 accepted / 10 generated )".to_string(),
-    ];
-    let (rate, acc, gen) = latest_draft_acceptance(&lines).unwrap();
-    assert!((rate - 0.90).abs() < 1e-4);
-    assert_eq!((acc, gen), (9, 10));
-    // No acceptance lines → None.
-    assert!(latest_draft_acceptance(&["nothing here".to_string()]).is_none());
-  }
 
   use crate::daemon::context::MethodContext;
   use crate::daemon::shutdown::ShutdownToken;

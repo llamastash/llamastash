@@ -203,7 +203,7 @@ impl<'de> serde::Deserialize<'de> for BackendChoice {
 }
 
 /// The user's intent for MTP (multi-token prediction) speculative decoding on a
-/// llama.cpp launch. A launch-level, launch-only choice (no `config.yaml` entry
+/// launch. A launch-level, launch-only choice (no `config.yaml` entry
 /// — KD2); persisted in `last_params` / presets like any launch choice. The
 /// resolved *directive* (what argv to emit) is [`MtpDirective`], computed
 /// server-side from this intent plus the model's real capability.
@@ -215,8 +215,8 @@ pub enum MtpEnable {
   #[default]
   Auto,
   /// Force on. If the model is not MTP-capable, warn and skip (never
-  /// emit-and-brick — emitting `--spec-type draft-mtp` on a non-MTP model is a
-  /// hard launch failure).
+  /// emit-and-brick — turning speculation on for a non-MTP model is a hard
+  /// launch failure on the serving backend).
   On,
   /// Never enable MTP for this launch.
   Off,
@@ -272,32 +272,30 @@ impl MtpEnable {
 /// omitted otherwise (byte-stable for non-MTP launches).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct MtpDirective {
-  /// Separate draft-head path to emit as `--model-draft`; `None` for an
-  /// embedded head (the base file self-speculates, no separate drafter).
+  /// Separate draft-head path the serving backend loads as the drafter; `None`
+  /// for an embedded head (the base file self-speculates, no separate drafter).
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub draft_model: Option<PathBuf>,
 }
 
 /// Resolve the effective MTP directive (KD1 hard gate): fold the user's
-/// [`MtpEnable`] intent with the model's real capability. `Some` ⇒ emit
-/// `--spec-type draft-mtp`; `None` ⇒ emit nothing.
+/// [`MtpEnable`] intent with the model's real capability. `Some` ⇒ this launch
+/// speculates; `None` ⇒ it doesn't.
 ///
-/// - A user already driving `--spec-type` via `extras` wins: defer entirely and
-///   return `None` (KD3 — llama.cpp *appends* spec types, so ours would add a
-///   conflicting second one).
 /// - `Off` ⇒ `None`. `Auto` ⇒ enable iff capable. `On` ⇒ enable if capable,
 ///   else push a warning and return `None` (warn + skip, never emit-and-brick).
-/// - An embedded head needs no `--model-draft`; a separate head sets it.
+/// - An embedded head needs no separate drafter; a separate head names one.
+///
+/// The KD3 deferral — a user already hand-driving speculation through `extras`
+/// — is decided by the serving backend ([`crate::backend::Backend::
+/// speculation_set_in_extras`]) before this is called, since only it knows its
+/// own flag spelling.
 pub fn resolve_mtp_directive(
   intent: MtpEnable,
   embedded_capable: bool,
   separate_head: Option<PathBuf>,
-  extras: &[OsString],
   warnings: &mut Vec<String>,
 ) -> Option<MtpDirective> {
-  if extras_have_spec_type(extras) {
-    return None;
-  }
   let directive = || MtpDirective {
     // Embedded head wins (no separate drafter); else the on-disk head.
     draft_model: if embedded_capable {
@@ -322,12 +320,15 @@ pub fn resolve_mtp_directive(
   }
 }
 
-/// Whether `extras` already carries a `--spec-type` flag (space or `=` form).
-fn extras_have_spec_type(extras: &[OsString]) -> bool {
+/// Whether `extras` already carries the flag `head` (space or `=` form).
+///
+/// The flag spelling is the caller's — a backend passes its own — so this stays
+/// a parsing helper rather than knowledge of any one backend's argv.
+pub fn extras_have_flag(extras: &[OsString], head: &str) -> bool {
   extras.iter().any(|e| {
     let lossy = e.to_string_lossy();
-    let head = lossy.split('=').next().unwrap_or(&lossy);
-    head.eq_ignore_ascii_case("--spec-type")
+    let first = lossy.split('=').next().unwrap_or(&lossy);
+    first.eq_ignore_ascii_case(head)
   })
 }
 
@@ -407,23 +408,23 @@ pub struct LaunchParams {
   /// persisted shape byte-stable when no native knob is set.
   #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
   pub backend_knobs: BTreeMap<String, KnobValue<String>>,
-  /// MTP (multi-token prediction) speculative-decoding intent for a llama.cpp
-  /// launch. Default [`MtpEnable::Auto`] (enable when the model is MTP-capable);
+  /// MTP (multi-token prediction) speculative-decoding intent for this launch.
+  /// Default [`MtpEnable::Auto`] (enable when the model is MTP-capable);
   /// launch-only (no config-file entry — KD2), persisted here in `last_params`
   /// like any launch choice. `#[serde(default)]` keeps older rows loading.
   #[serde(default)]
   pub mtp: MtpEnable,
-  /// Draft-token count for MTP — emitted as `--spec-draft-n-max <n>` when MTP
-  /// resolves on. `None` ⇒ no flag (llama.cpp's own default of 3). Launch-only,
-  /// persisted like `mtp`.
+  /// How many tokens to draft per speculation step, when MTP resolves on.
+  /// `None` ⇒ unset, leaving the serving backend on its own default. Launch-only,
+  /// persisted like `mtp`; each backend maps it onto its own flag.
   #[serde(default)]
-  pub spec_draft_n_max: Option<u32>,
-  /// Resolved MTP directive for *this* launch (what `compose` emits, and the
-  /// running-row truth `status` reports): `Some` ⇒ `--spec-type draft-mtp`
-  /// (+ `--model-draft` when a separate head). Computed server-side in
-  /// `compose_and_spawn` from `mtp` + capability ([`resolve_mtp_directive`]) and
-  /// re-resolved each launch. Additive on the wire: omitted when `None`, so
-  /// non-MTP launches stay byte-stable.
+  pub mtp_draft_n: Option<u32>,
+  /// Resolved MTP directive for *this* launch (what the serving backend turns
+  /// into argv, and the running-row truth `status` reports): `Some` ⇒ this launch
+  /// speculates (naming a separate draft head when one is used). Computed
+  /// server-side in `compose_and_spawn` from `mtp` + capability
+  /// ([`resolve_mtp_directive`]) and re-resolved each launch. Additive on the
+  /// wire: omitted when `None`, so non-MTP launches stay byte-stable.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub mtp_directive: Option<MtpDirective>,
 }
@@ -443,7 +444,7 @@ impl LaunchParams {
       server: None,
       backend_knobs: BTreeMap::new(),
       mtp: MtpEnable::default(),
-      spec_draft_n_max: None,
+      mtp_draft_n: None,
       mtp_directive: None,
     }
   }
@@ -713,14 +714,14 @@ mod tests {
   fn resolve_mtp_directive_auto_gates_on_capability() {
     let mut w = Vec::new();
     // Auto + embedded → on, no drafter.
-    let embedded = resolve_mtp_directive(MtpEnable::Auto, true, None, &[], &mut w);
+    let embedded = resolve_mtp_directive(MtpEnable::Auto, true, None, &mut w);
     assert_eq!(embedded, Some(MtpDirective { draft_model: None }));
     // Auto + separate head only → on, with drafter.
     let head = Some(PathBuf::from("/m/mtp-x.gguf"));
-    let separate = resolve_mtp_directive(MtpEnable::Auto, false, head.clone(), &[], &mut w);
+    let separate = resolve_mtp_directive(MtpEnable::Auto, false, head.clone(), &mut w);
     assert_eq!(separate, Some(MtpDirective { draft_model: head }));
     // Auto + not capable → off (no flag, no warning).
-    let incapable = resolve_mtp_directive(MtpEnable::Auto, false, None, &[], &mut w);
+    let incapable = resolve_mtp_directive(MtpEnable::Auto, false, None, &mut w);
     assert_eq!(incapable, None);
     assert!(w.is_empty());
   }
@@ -728,37 +729,32 @@ mod tests {
   #[test]
   fn resolve_mtp_directive_force_on_non_capable_warns_and_skips() {
     let mut w = Vec::new();
-    let d = resolve_mtp_directive(MtpEnable::On, false, None, &[], &mut w);
+    let d = resolve_mtp_directive(MtpEnable::On, false, None, &mut w);
     assert_eq!(d, None, "force-on a non-capable model must skip, not brick");
     assert_eq!(w.len(), 1, "and warn");
     assert!(w[0].contains("not MTP-capable"));
   }
 
   #[test]
-  fn resolve_mtp_directive_off_and_extras_spec_type_defer() {
+  fn resolve_mtp_directive_off_never_speculates() {
     let mut w = Vec::new();
-    // Off → never.
     assert_eq!(
-      resolve_mtp_directive(MtpEnable::Off, true, None, &[], &mut w),
-      None
-    );
-    // KD3: a user-driven --spec-type in extras defers entirely (even On+capable).
-    let extras = vec![
-      OsString::from("--spec-type"),
-      OsString::from("draft-simple"),
-    ];
-    assert_eq!(
-      resolve_mtp_directive(MtpEnable::On, true, None, &extras, &mut w),
-      None,
-      "a user --spec-type in extras wins; we emit none"
-    );
-    // Also the `=` form.
-    let eq = vec![OsString::from("--spec-type=eagle3")];
-    assert_eq!(
-      resolve_mtp_directive(MtpEnable::Auto, true, None, &eq, &mut w),
+      resolve_mtp_directive(MtpEnable::Off, true, None, &mut w),
       None
     );
     assert!(w.is_empty());
+  }
+
+  #[test]
+  fn extras_have_flag_matches_both_forms_and_nothing_else() {
+    // A backend passes its own flag; this only decides presence — space form,
+    // `=` form, case-insensitive, and no false hit on a value or a longer name.
+    let space = vec![OsString::from("--some-flag"), OsString::from("value")];
+    assert!(extras_have_flag(&space, "--some-flag"));
+    let eq = vec![OsString::from("--Some-Flag=value")];
+    assert!(extras_have_flag(&eq, "--some-flag"));
+    let unrelated = vec![OsString::from("--other"), OsString::from("--some-flag-ish")];
+    assert!(!extras_have_flag(&unrelated, "--some-flag"));
   }
 
   #[test]
@@ -776,13 +772,13 @@ mod tests {
     // Wire form is the lowercase label; a row without `mtp` loads as Auto.
     let mut p = base_params();
     p.mtp = MtpEnable::On;
-    p.spec_draft_n_max = Some(4);
+    p.mtp_draft_n = Some(4);
     let v = serde_json::to_value(&p).unwrap();
     assert_eq!(v["mtp"], "on");
-    assert_eq!(v["spec_draft_n_max"], 4);
+    assert_eq!(v["mtp_draft_n"], 4);
     let back: LaunchParams = serde_json::from_value(v).unwrap();
     assert_eq!(back.mtp, MtpEnable::On);
-    assert_eq!(back.spec_draft_n_max, Some(4));
+    assert_eq!(back.mtp_draft_n, Some(4));
     // Missing `mtp` → Auto (older rows).
     let mut v2 = serde_json::to_value(base_params()).unwrap();
     v2.as_object_mut().unwrap().remove("mtp");

@@ -252,7 +252,7 @@ pub(crate) fn compose(params: &LaunchParams, allocated_port: u16) -> Vec<OsStrin
       argv.push("--model-draft".into());
       argv.push(draft.clone().into());
     }
-    if let Some(n) = params.spec_draft_n_max {
+    if let Some(n) = params.mtp_draft_n {
       argv.push("--spec-draft-n-max".into());
       argv.push(n.to_string().into());
     }
@@ -511,7 +511,7 @@ mod tests {
     p.mtp_directive = Some(MtpDirective {
       draft_model: Some(PathBuf::from("/m/mtp-model.gguf")),
     });
-    p.spec_draft_n_max = Some(5);
+    p.mtp_draft_n = Some(5);
     let argv = strs(&compose(&p, 41100));
     let md = argv
       .iter()

@@ -79,6 +79,17 @@ use crate::launch::mode::LaunchMode;
 use crate::launch::native_knobs::NativeKnobDescriptor;
 use crate::launch::params::{BackendChoice, LaunchParams};
 
+/// A speculative-decoding acceptance figure a backend reported for a launch —
+/// the source for `status` `params.mtp.acceptance` / `draft_accepted` /
+/// `draft_generated`.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct DraftAcceptance {
+  /// Fraction of drafted tokens the target model accepted (0.0..=1.0).
+  pub rate: f32,
+  pub accepted: u64,
+  pub generated: u64,
+}
+
 /// How a backend manages the lifecycle of the models it runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lifecycle {
@@ -411,6 +422,38 @@ pub trait Backend {
     _timeout: std::time::Duration,
   ) -> crate::daemon::actuals::Actuals {
     crate::daemon::actuals::Actuals::default()
+  }
+
+  /// Whether `extras` already configures speculative decoding by hand, in which
+  /// case llamastash defers entirely and adds none of its own (KD3).
+  ///
+  /// Default `false`. Only the backend knows its own flag spelling — and
+  /// whether a second spec flag would stack rather than replace — so the
+  /// generic MTP resolution asks instead of matching an argv literal.
+  fn speculation_set_in_extras(&self, _extras: &[OsString]) -> bool {
+    false
+  }
+
+  /// Whether this launch actually dispatched with MTP (speculative decoding)
+  /// enabled — `status` `params.mtp.active`.
+  ///
+  /// Default `false`: a backend with no MTP path reports honestly rather than
+  /// the generic `status` path inferring "on" from the resolved directive.
+  /// Backends fold that directive into their own dispatch rule differently, so
+  /// only the owner knows what it launched with.
+  fn mtp_active(&self, _params: &LaunchParams) -> bool {
+    false
+  }
+
+  /// The latest draft-acceptance figure in `log_lines` (the recent server-log
+  /// tail), or `None` when this backend publishes no such telemetry or hasn't
+  /// printed one yet. Only called for a launch this backend reports as
+  /// [`Backend::mtp_active`], so the log tail is never read otherwise.
+  ///
+  /// Default `None` — acceptance is printed in a backend's own log format, so
+  /// the parse belongs with the backend.
+  fn draft_acceptance(&self, _log_lines: &[String]) -> Option<DraftAcceptance> {
+    None
   }
 
   /// The model ids a backend's `/v1/models` may advertise for one of its
@@ -938,6 +981,18 @@ impl Backend for Backends {
     timeout: std::time::Duration,
   ) -> crate::daemon::actuals::Actuals {
     for_each_backend!(self, b => b.fetch_actuals(port, timeout).await)
+  }
+
+  fn speculation_set_in_extras(&self, extras: &[OsString]) -> bool {
+    for_each_backend!(self, b => b.speculation_set_in_extras(extras))
+  }
+
+  fn mtp_active(&self, params: &LaunchParams) -> bool {
+    for_each_backend!(self, b => b.mtp_active(params))
+  }
+
+  fn draft_acceptance(&self, log_lines: &[String]) -> Option<DraftAcceptance> {
+    for_each_backend!(self, b => b.draft_acceptance(log_lines))
   }
 
   fn adoption_model_ids(&self) -> &'static [&'static str] {

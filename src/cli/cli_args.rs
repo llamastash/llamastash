@@ -430,10 +430,10 @@ pub struct StartArgs {
   /// capable), or `off`. Launch-only, no config-file entry.
   #[arg(long, value_name = "auto|on|off", value_parser = parse_mtp_enable)]
   pub mtp: Option<crate::launch::params::MtpEnable>,
-  /// MTP draft-token count → `--spec-draft-n-max`. Only takes effect when MTP
-  /// resolves on; unset uses llama.cpp's default (3).
+  /// How many tokens to draft per speculation step. Only takes effect when MTP
+  /// resolves on; unset leaves the serving backend on its own default.
   #[arg(long, value_name = "N")]
-  pub spec_draft_n_max: Option<u32>,
+  pub mtp_draft_n: Option<u32>,
 
   /// Emit JSON instead of human-readable success prose.
   /// Emit JSON instead of human-readable success prose. Stable

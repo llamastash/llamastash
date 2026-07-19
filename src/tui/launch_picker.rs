@@ -1972,7 +1972,7 @@ mod tests {
       ),
     ];
     s.field = PickerField::Server;
-    // Unset → the model's own backend (ds4) with its nine native knobs.
+    // Unset → the model's own backend with its native knob set.
     s.seed_native_descriptors();
     assert_eq!(s.active_backend_id(), "ds4");
     assert_eq!(s.native_descriptors.len(), 9);

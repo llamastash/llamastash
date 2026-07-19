@@ -563,7 +563,7 @@ pub(crate) type ResolvedModelInfo = (
   Option<u32>,
   Vec<String>,
   // Embedded MTP (nextn) draft-head layer count, `Some(n>0)` ⇒ the model can
-  // self-speculate via `--spec-type draft-mtp` with no separate drafter.
+  // self-speculate with no separate drafter.
   Option<u32>,
 );
 

@@ -104,15 +104,15 @@ pub(crate) struct StartParams {
   /// what the proxy's `StartParams::default()` auto-start path sends.
   #[serde(default)]
   pub(crate) selection: LaunchSelection,
-  /// MTP speculative-decoding intent (llama.cpp). `None` ⇒ inherit (default
-  /// preset / last_params) or fall to `Auto`; `Some(_)` is an explicit
+  /// MTP speculative-decoding intent. `None` ⇒ inherit (default preset /
+  /// last_params) or fall to `Auto`; `Some(_)` is an explicit
   /// `--mtp auto|on|off`. Launch-only, no config-file entry (KD2).
   #[serde(default)]
   pub(crate) mtp: Option<crate::launch::params::MtpEnable>,
-  /// MTP draft-token count → `--spec-draft-n-max`. `None` ⇒ inherit or
-  /// llama.cpp's default of 3.
+  /// Tokens to draft per speculation step. `None` ⇒ inherit, or leave the
+  /// serving backend on its own default.
   #[serde(default)]
-  pub(crate) spec_draft_n_max: Option<u32>,
+  pub(crate) mtp_draft_n: Option<u32>,
 }
 
 /// How a launch chose its parameters. See the resolver rule in
@@ -548,8 +548,8 @@ pub(crate) async fn compose_and_spawn(
       crate::discovery::scanner::find_mmproj(&parsed.model_path)
     }
   });
-  // MTP intent (llama.cpp) — same whole-value inheritance as extras: an
-  // explicit `--mtp` / `--spec-draft-n-max` wins verbatim; else a no-selection
+  // MTP intent — same whole-value inheritance as extras: an
+  // explicit `--mtp` / `--mtp-draft-n` wins verbatim; else a no-selection
   // launch inherits the default preset's value, then last_params'; else the
   // `MtpEnable::Auto` default. Launch-only, no config-file entry (KD2). The
   // effective *directive* (what argv to emit) is resolved below, once real
@@ -566,13 +566,13 @@ pub(crate) async fn compose_and_spawn(
       crate::launch::params::MtpEnable::default()
     }
   });
-  launch_params.spec_draft_n_max = parsed.spec_draft_n_max.or_else(|| {
+  launch_params.mtp_draft_n = parsed.mtp_draft_n.or_else(|| {
     if no_selection {
       effective_default
         .as_ref()
         .and_then(|e| e.default_preset())
-        .and_then(|np| np.params.spec_draft_n_max)
-        .or_else(|| last_params.as_ref().and_then(|p| p.spec_draft_n_max))
+        .and_then(|np| np.params.mtp_draft_n)
+        .or_else(|| last_params.as_ref().and_then(|p| p.mtp_draft_n))
     } else {
       None
     }
@@ -774,17 +774,17 @@ pub(crate) async fn compose_and_spawn(
   // Resolve the effective MTP directive (KD1 hard gate): fold the user's intent
   // with real capability — the embedded nextn head from the GGUF header, or a
   // separate `mtp-*.gguf` drafter on disk. A force-on non-capable model warns +
-  // skips; a user `--spec-type` in extras defers (KD3). Only in chat mode: MTP
-  // is a token-generation feature, so an embedding / rerank launch never
-  // speculates (mirrors how the projector-emit path is generic — the directive
-  // is set here, consumed only by the argv path that speaks `--spec-type`). The
-  // resolution names no backend.
-  launch_params.mtp_directive = if matches!(mode, LaunchMode::Chat) {
+  // skips. Only in chat mode: MTP is a token-generation feature, so an
+  // embedding / rerank launch never speculates. And the backend defers entirely
+  // when the user is already hand-driving speculation through extras (KD3) —
+  // asked, not matched here, so the resolution names no backend or flag.
+  let user_drives_speculation =
+    crate::backend::Backend::speculation_set_in_extras(&inference_backend, &launch_params.extras);
+  launch_params.mtp_directive = if matches!(mode, LaunchMode::Chat) && !user_drives_speculation {
     crate::launch::params::resolve_mtp_directive(
       launch_params.mtp,
       mtp_embedded.is_some(),
       crate::discovery::scanner::find_mtp_head(&parsed.model_path),
-      &launch_params.extras,
       &mut warnings,
     )
   } else {

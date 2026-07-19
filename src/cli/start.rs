@@ -78,8 +78,8 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
   if let Some(m) = args.mtp {
     params.mtp = Some(m);
   }
-  if let Some(n) = args.spec_draft_n_max {
-    params.spec_draft_n_max = Some(n);
+  if let Some(n) = args.mtp_draft_n {
+    params.mtp_draft_n = Some(n);
   }
   let (cli_knobs, cli_extras) = parse_cli_knobs(&args.knobs.tokens, &args.extra)?;
   // Layer per-invocation overrides onto the preset baseline instead of
@@ -364,7 +364,7 @@ struct PartialParams {
   knobs: TypedKnobs,
   extras: Vec<String>,
   mtp: Option<crate::launch::params::MtpEnable>,
-  spec_draft_n_max: Option<u32>,
+  mtp_draft_n: Option<u32>,
 }
 
 fn resolve_mode(
@@ -441,8 +441,8 @@ async fn fetch_preset_params(
     mtp: p
       .get("mtp")
       .and_then(|v| serde_json::from_value(v.clone()).ok()),
-    spec_draft_n_max: p
-      .get("spec_draft_n_max")
+    mtp_draft_n: p
+      .get("mtp_draft_n")
       .and_then(Value::as_u64)
       .map(|n| n as u32),
   })
@@ -525,8 +525,8 @@ fn build_payload(
   if let Some(m) = p.mtp {
     obj.insert("mtp".into(), Value::String(m.label().to_string()));
   }
-  if let Some(n) = p.spec_draft_n_max {
-    obj.insert("spec_draft_n_max".into(), Value::from(n));
+  if let Some(n) = p.mtp_draft_n {
+    obj.insert("mtp_draft_n".into(), Value::from(n));
   }
   Value::Object(obj)
 }
@@ -690,7 +690,7 @@ mod tests {
       knobs,
       extras: vec!["--rope-freq-base".into(), "10000".into()],
       mtp: None,
-      spec_draft_n_max: None,
+      mtp_draft_n: None,
     };
     let v = build_payload("/m/a.gguf", "chat", &p, None, None, "default");
     assert_eq!(v["model_path"], serde_json::json!("/m/a.gguf"));
@@ -719,7 +719,7 @@ mod tests {
       knobs: TypedKnobs::default(),
       extras: vec![],
       mtp: None,
-      spec_draft_n_max: None,
+      mtp_draft_n: None,
     };
     let v = build_payload("/m/a.gguf", "chat", &p, Some("llamacpp"), None, "explicit");
     assert_eq!(v["backend"], serde_json::json!("llamacpp"));
@@ -802,7 +802,7 @@ mod tests {
       backend: None,
       server: None,
       mtp: None,
-      spec_draft_n_max: None,
+      mtp_draft_n: None,
       json: false,
       wait: false,
     };
@@ -829,7 +829,7 @@ mod tests {
       backend: None,
       server: None,
       mtp: None,
-      spec_draft_n_max: None,
+      mtp_draft_n: None,
       json: false,
       wait: false,
     };
@@ -862,7 +862,7 @@ mod tests {
       backend: None,
       server: None,
       mtp: None,
-      spec_draft_n_max: None,
+      mtp_draft_n: None,
       json: false,
       wait: false,
     };
@@ -911,7 +911,7 @@ mod tests {
       backend: None,
       server: None,
       mtp: None,
-      spec_draft_n_max: None,
+      mtp_draft_n: None,
       json: false,
       wait: false,
     };

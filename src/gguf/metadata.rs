@@ -46,9 +46,8 @@ pub struct ModelMetadata {
   pub weights_bytes: Option<u64>,
   /// Embedded multi-token-prediction (MTP / NextN) draft-head layer count,
   /// read from `{arch}.nextn_predict_layers` (`LLM_KV_NEXTN_PREDICT_LAYERS`).
-  /// `Some(n>0)` means the file carries its own speculative draft head, so
-  /// llama.cpp's `--spec-type draft-mtp` can self-speculate with no separate
-  /// drafter (Qwen3.5/3.6, GLM-4.x, DeepSeek). `None` when the key is absent
+  /// `Some(n>0)` means the file carries its own speculative draft head and so
+  /// self-speculates with no separate drafter (Qwen3.5/3.6, GLM-4.x, DeepSeek). `None` when the key is absent
   /// or zero — the model is not embedded-MTP-capable. Orthogonal to a
   /// *separate* `mtp-*.gguf` head, which is a sibling-file property
   /// (`DiscoveredModel::mtp_head`), not a header one.
@@ -335,8 +334,8 @@ pub fn summarise(header: &GgufHeader) -> ModelMetadata {
       Some(bytes)
     }
   };
-  // Embedded MTP draft-head layer count. `> 0` ⇒ the model self-speculates
-  // via `--spec-type draft-mtp`; absent/zero ⇒ not embedded-MTP-capable.
+  // Embedded MTP draft-head layer count. `> 0` ⇒ the model carries its own
+  // draft head and self-speculates; absent/zero ⇒ not embedded-MTP-capable.
   let mtp = arch_key
     .and_then(|a| header.u64(&[format!("{a}.nextn_predict_layers")]))
     .filter(|n| *n > 0)

@@ -142,8 +142,8 @@ pub(crate) fn is_projector_companion(path: &Path) -> bool {
 
 /// Is this `.gguf` a **separate MTP draft-head** companion (e.g.
 /// `mtp-gemma-4.gguf`)? Like a projector, an MTP head is not launchable on
-/// its own — it pairs with a parent chat model as llama.cpp's `--model-draft`
-/// speculative drafter (the Gemma-4 shape; embedded-head models carry the
+/// its own — it pairs with a parent chat model as the speculative drafter
+/// the serving backend loads (the Gemma-4 shape; embedded-head models carry the
 /// draft layers inside the base file and ship no such sibling). Excluded from
 /// the launchable Models list exactly as projectors are, and paired via
 /// [`find_mtp_head`]. The `mtp` token must be delimited (prefix/suffix/infix)
@@ -408,7 +408,7 @@ fn detect_multimodal(model_path: &Path) -> Option<Multimodal> {
 }
 
 /// Find a **separate MTP draft-head** companion for `model_path` — the
-/// sibling GGUF that llama.cpp loads via `--model-draft` for speculative
+/// sibling GGUF the serving backend loads as the drafter for speculative
 /// decoding (the Gemma-4 shape). `None` when the model is embedded-MTP
 /// (draft layers inside the base file) or has no head sibling.
 ///
@@ -417,7 +417,7 @@ fn detect_multimodal(model_path: &Path) -> Option<Multimodal> {
 /// 1. an MTP companion whose quant-stripped base equals the model's wins;
 /// 2. else, a lone model + lone head in the directory pair regardless of name;
 /// 3. else, a single anonymous `mtp.gguf` catch-all is used; anything more
-///    ambiguous yields `None` (the user can pass `--model-draft`).
+///    ambiguous yields `None` (the user can pair a head explicitly).
 pub fn find_mtp_head(model_path: &Path) -> Option<PathBuf> {
   let parent = model_path.parent()?;
   let model_filename = model_path.file_name()?.to_str()?;
@@ -832,7 +832,7 @@ mod tests {
   #[test]
   fn collect_gguf_paths_drops_mtp_head_companions() {
     // A separate MTP draft head (`mtp-*.gguf`) pairs with a parent model as
-    // llama.cpp's `--model-draft` drafter — not launchable on its own, so it
+    // its speculative drafter — not launchable on its own, so it
     // must not appear as a selectable Models-list row (exactly like mmproj).
     let dir = temp_dir("mtp-exclude");
     fs::write(dir.join("gemma-4.gguf"), build_minimal_gguf("gemma4")).unwrap();
