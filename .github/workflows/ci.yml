@@ -145,7 +145,7 @@ jobs:
     needs: prepare
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.95
+      - uses: dtolnay/rust-toolchain@1.100
       - uses: Swatinem/rust-cache@v2
       - name: cargo check --locked
         run: cargo check --locked
