@@ -155,6 +155,28 @@ port_range:
   start: 41100
   end: 41300
 
+# ─── Daemon lifecycle ─────────────────────────────────────────────
+#
+# Controls daemon idle-shutdown and host-metrics sampling.
+#
+# Sources — CLI: (none) · Env: (none). Config-only.
+daemon:
+  # Seconds of inactivity (no running models) before the daemon
+  # auto-shuts down. `0` (default) disables the idle timer — the
+  # daemon runs until explicitly stopped via `daemon stop` / SIGINT.
+  # When > 0, a background monitor checks every 5 s; once the
+  # supervisor registry is empty for `idle_timeout_secs` the shutdown
+  # token fires and the process exits cleanly.  Useful on personal
+  # desktops where you forget to `daemon stop` after finishing work.
+  idle_timeout_secs: 0
+
+  # Interval in seconds for the host-metrics live-sampler tick
+  # (CPU%, RAM, GPU util/temp/VRAM). Factory `1` (1 Hz). Raising
+  # this reduces the frequency of `nvidia-smi` / `rocm-smi` calls
+  # at the cost of less responsive dashboard numbers. Clamped to
+  # `1..=60` at read time; `0` falls back to the factory.
+  probe_interval_secs: 1
+
 # Per-launch health-probe timeout in seconds. 120s suits a typical
 # 7B–13B model on local NVMe; raise to ~600 for 70B+ on slow disks
 # if you hit `health probe timeout (last status 503)` on legitimate

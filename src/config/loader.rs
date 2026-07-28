@@ -123,6 +123,10 @@ pub struct Config {
   /// all-invalid list falls back to the factory `[65, 100, 50, 35, 0]`.
   #[serde(default = "default_left_pane_ratios")]
   pub left_pane_ratios: Vec<u16>,
+  /// Daemon lifecycle and host-metrics configuration. Nested under
+  /// `daemon:` in `config.yaml`.
+  #[serde(default)]
+  pub daemon: DaemonConfig,
   /// Named launch presets, the single writable home for presets. Map
   /// keys are classified per-resolution against the live model catalog
   /// (see [`crate::launch::presets::classify_preset_key`]): a key that
@@ -140,6 +144,39 @@ pub struct Config {
 /// right-full. Also the fallback when a user override sanitizes to empty.
 pub fn default_left_pane_ratios() -> Vec<u16> {
   vec![65, 100, 50, 35, 0]
+}
+
+fn default_probe_interval_secs() -> u64 {
+  1
+}
+
+/// Daemon lifecycle and host-metrics configuration.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "snake_case")]
+pub struct DaemonConfig {
+  /// Seconds of inactivity (no running models) before the daemon
+  /// auto-shuts down. `0` (factory) disables the idle timer — the
+  /// daemon runs until explicitly stopped via `daemon stop` / SIGINT.
+  /// When > 0, a background monitor checks every 5 s; once the
+  /// supervisor registry is empty for `idle_timeout_secs` the shutdown
+  /// token fires and the process exits cleanly.
+  pub idle_timeout_secs: u64,
+  /// Interval in seconds for the host-metrics live-sampler tick
+  /// (CPU%, RAM, GPU util/temp/VRAM). Factory `1` (1 Hz). Raising
+  /// this reduces the frequency of `nvidia-smi` / `rocm-smi` calls
+  /// at the cost of less responsive dashboard numbers. Clamped to
+  /// `1..=60` at read time; `0` falls back to the factory.
+  #[serde(default = "default_probe_interval_secs")]
+  pub probe_interval_secs: u64,
+}
+
+impl Default for DaemonConfig {
+  fn default() -> Self {
+    Self {
+      idle_timeout_secs: 0,
+      probe_interval_secs: 1,
+    }
+  }
 }
 
 /// Sanitize a configured `left_pane_ratios` list: keep at most the first
@@ -922,6 +959,7 @@ impl Default for Config {
       ascii_glyphs: false,
       left_pane_ratios: default_left_pane_ratios(),
       presets: BTreeMap::new(),
+      daemon: DaemonConfig::default(),
     }
   }
 }
