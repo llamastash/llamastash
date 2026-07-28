@@ -92,9 +92,21 @@ pub fn classify_amd_memory(
 }
 
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+
+/// When `true`, the Vulkan fallback probe (`vulkaninfo -j` / `--summary`)
+/// is skipped entirely. Set via [`set_disable_vulkan_probe`]; the CLI
+/// daemon handler threads `config.gpu.disable_vulkan_probe` through.
+static DISABLE_VULKAN_PROBE: AtomicBool = AtomicBool::new(false);
+
+/// Set the global Vulkan probe disable flag. Safe to call once at daemon
+/// startup; the value is read by [`probe`] on every call.
+pub fn set_disable_vulkan_probe(v: bool) {
+  DISABLE_VULKAN_PROBE.store(v, Ordering::Relaxed);
+}
 
 /// Wall-clock budget for a single vendor probe. A wedged GPU driver
 /// (nvidia-smi hang, ROCm reset, locked Vulkan loader) would otherwise
@@ -605,9 +617,11 @@ pub fn probe() -> GpuInfo {
   if let Some(devs) = metal::probe_devices() {
     metal_devices = devs;
   }
-  // Vulkan fallback
-  if let Some(devs) = vulkan::probe_devices() {
-    unknown_devices = devs;
+  // Vulkan fallback (skipped when `config.gpu.disable_vulkan_probe` is set)
+  if !DISABLE_VULKAN_PROBE.load(Ordering::Relaxed) {
+    if let Some(devs) = vulkan::probe_devices() {
+      unknown_devices = devs;
+    }
   }
 
   let raw_total =

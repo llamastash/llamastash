@@ -256,10 +256,16 @@ pub fn spawn(shutdown: ShutdownToken, interval: Duration) -> SamplerHandles {
       // vanished since the last tick (hot-removed cards / drivers).
       components.refresh(true);
       ticks_since_full_reprobe += 1;
-      if ticks_since_full_reprobe >= FULL_REPROBE_TICKS {
+      if ticks_since_full_reprobe >= FULL_REPROBE_TICKS
+        && !matches!(info, GpuInfo::Unknown { .. })
+      {
         // Periodic full re-probe: catches hotplug (new GPU plugged
         // in), late driver load, and transitions from CpuOnly →
         // detected once the vendor tool becomes available.
+        // Unknown (Vulkan-only) hosts skip this — their GPU info is
+        // static and re-running `vulkaninfo` every minute only wastes
+        // a subprocess spawn + scatters VP_VULKANINFO_*.json profile
+        // dumps into cwd.
         info = probe_gpu_full().await;
         ticks_since_full_reprobe = 0;
       } else if let Some(refreshed) = refresh_active_gpu(info.clone()).await {

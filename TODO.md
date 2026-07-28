@@ -220,6 +220,7 @@ places.
 - [x] ~~The (model/server default) label for setting knobs should not wrap; cut off what doesn't fit and show `…`.~~ — Settings rows clip to the pane width with `…` (no `Wrap`); the running view and editable form now share one render path (`fmt::clip_line` is the shared primitive), so both truncate identically. (821c26b)
 - [x] ~~show a label (N) near the prest knob in settings to indicate how many presets are available for the current model. (N=0 if none)~~ — the Settings preset row renders `preset (N)` (count of effective named presets), `preset (0)` when none.
 - [ ] ds4 running rows report `resolved_ctx: null` in `status` even when an explicit `--ctx` passed through to `ds4-server` (llama.cpp rows surface the resolved value). Minor surfacing gap — the CTX column / running-header ctx stays blank for ds4. Surface the ds4 launch's effective ctx on the running snapshot. See [`src/ipc/status.rs`](src/ipc/status.rs).
+- [ ] `gpu.disable_vulkan_probe` config toggle landed (default `false`). When `true` the Vulkan fallback probe is skipped entirely via a global `AtomicBool` gate in `gpu::probe()`. The old VP_VULKANINFO_\*.json cwd pollution is also fixed by redirecting `vulkaninfo`'s cwd to `/tmp`. See [`src/gpu/vulkan.rs`](src/gpu/vulkan.rs), [`src/gpu/mod.rs`](src/gpu/mod.rs).
 
 ## R7 (v0.1.0 checklist)
 

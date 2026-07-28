@@ -122,6 +122,20 @@ disable_default_cache_paths:
 # Sources — CLI: --no-scan (global) · Env: LLAMASTASH_NO_SCAN=1.
 disable_scan: false
 
+# ─── GPU probe ────────────────────────────────────────────────────
+#
+# Controls which vendor tools the daemon spawns during initial and
+# periodic hardware detection.  By default the daemon probes every
+# backend: NVIDIA → AMD → Metal → Vulkan fallback, then CpuOnly.
+#
+# When a native probe (NVIDIA / AMD / Metal) already covers your GPU,
+# the Vulkan fallback is redundant — setting `disable_vulkan_probe`
+# to `true` stops it from spawning `vulkaninfo` at all.
+#
+# Sources — CLI: (none) · Env: (none). Config-only.
+gpu:
+  disable_vulkan_probe: false
+
 # ─── Daemon ───────────────────────────────────────────────────────
 #
 # Inclusive TCP port range the supervisor picks from when launching

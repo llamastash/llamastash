@@ -56,6 +56,10 @@ pub struct Config {
   pub disable_default_cache_paths: CachePathsConfig,
   pub port_range: PortRange,
   pub keybindings: BTreeMap<String, String>,
+  /// GPU probe configuration. Controls which vendor tools the daemon
+  /// spawns during initial and periodic hardware detection.
+  #[serde(default)]
+  pub gpu: GpuConfig,
   pub disable_scan: bool,
   /// Per-launch health-probe timeout in seconds. Defaults to 120 s,
   /// which is enough for the typical 7B–13B model on local NVMe but
@@ -863,6 +867,26 @@ pub enum DefaultLaunchMode {
   Inherited,
 }
 
+/// GPU probe configuration — which vendor tools the daemon spawns
+/// during initial and periodic hardware detection.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "snake_case")]
+pub struct GpuConfig {
+  /// When `true`, skip the Vulkan fallback probe (`vulkaninfo -j` /
+  /// `--summary`) entirely. Useful when a native NVIDIA/AMD/Metal probe
+  /// already covers all GPUs and you don't want `vulkaninfo` spawning
+  /// subprocesses at startup + every 60 s. Factory `false`.
+  pub disable_vulkan_probe: bool,
+}
+
+impl Default for GpuConfig {
+  fn default() -> Self {
+    Self {
+      disable_vulkan_probe: false,
+    }
+  }
+}
+
 impl Default for Config {
   fn default() -> Self {
     Self {
@@ -872,6 +896,7 @@ impl Default for Config {
       disable_default_cache_paths: CachePathsConfig::default(),
       port_range: PortRange::default(),
       keybindings: BTreeMap::new(),
+      gpu: GpuConfig::default(),
       disable_scan: false,
       probe_timeout_secs: 120,
       mouse_focus: false,
