@@ -872,17 +872,32 @@ pub enum DefaultLaunchMode {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "snake_case")]
 pub struct GpuConfig {
-  /// When `true`, skip the Vulkan fallback probe (`vulkaninfo -j` /
-  /// `--summary`) entirely. Useful when a native NVIDIA/AMD/Metal probe
-  /// already covers all GPUs and you don't want `vulkaninfo` spawning
-  /// subprocesses at startup + every 60 s. Factory `false`.
-  pub disable_vulkan_probe: bool,
+  /// When `true` (the default), the Vulkan fallback probe
+  /// (`vulkaninfo -j` / `--summary`) runs at startup and on periodic
+  /// re-probes. Set to `false` to skip it entirely — useful when a
+  /// native NVIDIA/AMD/Metal probe already covers all GPUs and you
+  /// don't want `vulkaninfo` spawning subprocesses. Factory `true`.
+  pub enable_vulkan_probe: bool,
+  /// How often (in seconds) the daemon re-runs the full vendor probe
+  /// chain to catch GPU hotplug, late driver loads, or CpuOnly →
+  /// detected transitions. `0` disables periodic re-probes entirely
+  /// (initial probe still runs at daemon start). CpuOnly and
+  /// Vulkan-only (`Unknown`) hosts skip re-probes even when this is
+  /// `> 0` — CpuOnly has nothing to refresh, and Vulkan device info
+  /// is static. Factory `60` (once a minute).
+  #[serde(default = "default_reprobe_interval_secs")]
+  pub reprobe_interval_secs: u64,
+}
+
+fn default_reprobe_interval_secs() -> u64 {
+  60
 }
 
 impl Default for GpuConfig {
   fn default() -> Self {
     Self {
-      disable_vulkan_probe: false,
+      enable_vulkan_probe: true,
+      reprobe_interval_secs: 60,
     }
   }
 }

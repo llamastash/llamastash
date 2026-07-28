@@ -688,9 +688,10 @@ pub(crate) fn build_options(
   .into_iter()
   .collect();
   opts.propagated_cli_args = propagated_cli_args(cli);
-  // GPU probe config: wire the Vulkan-probe disable flag so the daemon
-  // (and its host-metrics sampler) skip `vulkaninfo -j` when configured.
-  crate::gpu::set_disable_vulkan_probe(config.gpu.disable_vulkan_probe);
+  // GPU probe config: wire the Vulkan-probe enable flag so the daemon
+  // (and its host-metrics sampler) skip `vulkaninfo -j` when disabled.
+  crate::gpu::set_enable_vulkan_probe(config.gpu.enable_vulkan_probe);
+  opts.gpu_reprobe_interval_secs = config.gpu.reprobe_interval_secs;
   Ok(opts)
 }
 

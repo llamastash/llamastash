@@ -144,6 +144,9 @@ pub struct DaemonOptions {
   /// comment-safely. `None` disables write-through (tests / no config file)
   /// — mutations stay in-memory.
   pub config_path: Option<PathBuf>,
+  /// GPU full-reprobe interval in seconds (from `Config.gpu.reprobe_interval_secs`).
+  /// `0` disables periodic re-probes; `60` (default) re-probes once a minute.
+  pub gpu_reprobe_interval_secs: u64,
 }
 
 impl DaemonOptions {
@@ -202,6 +205,7 @@ impl DaemonOptions {
       force: false,
       presets: std::collections::BTreeMap::new(),
       config_path: None,
+      gpu_reprobe_interval_secs: 60,
     }
   }
 
@@ -233,6 +237,7 @@ impl DaemonOptions {
       force: false,
       presets: std::collections::BTreeMap::new(),
       config_path: None,
+      gpu_reprobe_interval_secs: 60,
     })
   }
 }
@@ -386,9 +391,13 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   // backend each tick for live util/temp/VRAM; sysinfo handles
   // host CPU% + RAM. The sampler also owns the live `GpuInfo` cell
   // so `status.gpu` follows hotplug instead of staying pinned to the
-  // boot snapshot.
-  let sampler =
-    crate::daemon::host_metrics::spawn(token.clone(), std::time::Duration::from_secs(1));
+  // boot snapshot. The re-probe interval is configurable via
+  // `gpu.reprobe_interval_secs` (0 disables periodic re-probes).
+  let sampler = crate::daemon::host_metrics::spawn(
+    token.clone(),
+    std::time::Duration::from_secs(1),
+    opts.gpu_reprobe_interval_secs,
+  );
 
   // 8. Wire the dispatcher context.
   let supervisors = SupervisorRegistry::new();

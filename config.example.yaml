@@ -129,12 +129,20 @@ disable_scan: false
 # backend: NVIDIA → AMD → Metal → Vulkan fallback, then CpuOnly.
 #
 # When a native probe (NVIDIA / AMD / Metal) already covers your GPU,
-# the Vulkan fallback is redundant — setting `disable_vulkan_probe`
-# to `true` stops it from spawning `vulkaninfo` at all.
+# the Vulkan fallback is redundant — setting `enable_vulkan_probe` to
+# `false` stops it from spawning `vulkaninfo` at all.
+#
+# `reprobe_interval_secs` controls how often (in seconds) the daemon
+# re-runs the full vendor chain to catch GPU hotplug, late driver
+# loads, or CpuOnly → detected transitions.  `0` disables periodic
+# re-probes entirely (the initial probe still runs at daemon start).
+# CpuOnly and Vulkan-only hosts skip re-probes even when this is
+# > 0 — they have no live metrics to refresh.
 #
 # Sources — CLI: (none) · Env: (none). Config-only.
 gpu:
-  disable_vulkan_probe: false
+  enable_vulkan_probe: true
+  reprobe_interval_secs: 60
 
 # ─── Daemon ───────────────────────────────────────────────────────
 #
