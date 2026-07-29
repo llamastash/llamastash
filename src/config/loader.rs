@@ -154,12 +154,13 @@ fn default_probe_interval_secs() -> u64 {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "snake_case")]
 pub struct DaemonConfig {
-  /// Seconds of inactivity (no running models) before the daemon
-  /// auto-shuts down. `0` (factory) disables the idle timer — the
-  /// daemon runs until explicitly stopped via `daemon stop` / SIGINT.
-  /// When > 0, a background monitor checks every 5 s; once the
-  /// supervisor registry is empty for `idle_timeout_secs` the shutdown
-  /// token fires and the process exits cleanly.
+  /// Seconds of inactivity (no running models AND no active IPC
+  /// connections) before the daemon auto-shuts down. `0` (factory)
+  /// disables the idle timer — the daemon runs until explicitly
+  /// stopped via `daemon stop` / SIGINT. When > 0, a background
+  /// monitor checks every 5 s; once both conditions hold for the
+  /// full duration, the shutdown token fires and the process exits
+  /// cleanly.
   pub idle_timeout_secs: u64,
   /// Interval in seconds for the host-metrics live-sampler tick
   /// (CPU%, RAM, GPU util/temp/VRAM). Factory `1` (1 Hz). Raising
@@ -921,7 +922,8 @@ pub struct GpuConfig {
   /// (initial probe still runs at daemon start). CpuOnly and
   /// Vulkan-only (`Unknown`) hosts skip re-probes even when this is
   /// `> 0` — CpuOnly has nothing to refresh, and Vulkan device info
-  /// is static. Factory `60` (once a minute).
+  /// is static. Clamped to `0..=u32::MAX` at read time. Factory
+  /// `60` (once a minute).
   #[serde(default = "default_reprobe_interval_secs")]
   pub reprobe_interval_secs: u64,
 }

@@ -217,6 +217,11 @@ pub fn spawn(
   interval: Duration,
   reprobe_interval_secs: u64,
 ) -> SamplerHandles {
+  // Defensive clamp: an interval of 0 would turn the sampler into a
+  // CPU-burning busy loop (tokio::time::sleep(Duration::ZERO) returns
+  // immediately). The CLI layer clamps to 1..=60, but programmatic
+  // callers may not.
+  let interval = std::cmp::max(interval, Duration::from_secs(1));
   let snapshot = Arc::new(RwLock::new(HostMetricsSnapshot {
     gpu_backend: HostMetricsSnapshot::UNINITIALIZED_BACKEND.into(),
     ..HostMetricsSnapshot::default()
@@ -281,6 +286,10 @@ pub fn spawn(
       } else if ticks_since_full_reprobe >= reprobe_ticks {
         // Reset counter even when skipped to avoid u32 overflow on
         // very long uptimes with reprobe_ticks > 0 but idle backend.
+        // Trade-off: if a GPU hotplugs during the skipped window,
+        // detection is delayed by one full interval rather than
+        // immediate. Acceptable for personal desktops where hotplug
+        // is rare.
         ticks_since_full_reprobe = 0;
       }
       if let Some(refreshed) = refresh_active_gpu(info.clone()).await {
@@ -851,6 +860,39 @@ mod tests {
     }
     panic!(
       "host-metrics sampler did not produce a snapshot within 5s; \
+       snapshot: {:?}",
+      handles.snapshot.read().await
+    );
+  }
+
+  #[tokio::test]
+  async fn spawn_with_zero_reprobe_interval_disables_periodic_reprobe() {
+    // When `reprobe_interval_secs = 0`, the sampler should still start
+    // and produce a snapshot (initial probe runs), but skip periodic
+    // full re-probes. Verify it boots and shuts down cleanly.
+    let token = ShutdownToken::new();
+    let handles = spawn(token.clone(), Duration::from_millis(50), 0);
+    // Poll until the initial probe populates the snapshot — same
+    // pattern as `spawn_updates_snapshot_after_first_tick`.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+      let read = handles.snapshot.read().await.clone();
+      if read.ram_total_bytes > 0 && read.gpu_backend != HostMetricsSnapshot::UNINITIALIZED_BACKEND
+      {
+        token.trigger();
+        // Wait for task to exit.
+        let exit_deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while Arc::strong_count(&handles.snapshot) > 1 && std::time::Instant::now() < exit_deadline
+        {
+          tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(Arc::strong_count(&handles.snapshot), 1);
+        return;
+      }
+      tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!(
+      "host-metrics sampler did not produce a snapshot within 5s with reprobe=0; \
        snapshot: {:?}",
       handles.snapshot.read().await
     );

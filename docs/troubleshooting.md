@@ -92,6 +92,14 @@ The toast prints the URL inline when every backend fails, so you can still paste
 
 **Fix:** the daemon was shut down or crashed. Restart it with `llamastash daemon start`. Running children survive daemon exit; you can re-attach to the same launch id once the daemon is back (orphan re-adoption verifies PID + port + `/v1/models` match).
 
+## Daemon shuts down unexpectedly when idle
+
+**Symptom:** the daemon exits on its own after you stop running models and close the TUI/CLI.
+
+**Cause:** `daemon.idle_timeout_secs` is set to a value > 0 in `config.yaml`. When enabled, a background monitor shuts down the daemon after the configured seconds with no running models AND no active IPC connections. This is opt-in (default `0` = never) and intended for personal desktops where you forget to `daemon stop`.
+
+**Fix:** set `daemon.idle_timeout_secs: 0` in `config.yaml` to disable the idle timer. See [`config.example.yaml`](../config.example.yaml) for the full config reference.
+
 ## "model already running" surprise
 
 **Symptom:** the TUI launch picker shows a "model is already running on port N" line.

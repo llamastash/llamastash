@@ -691,7 +691,7 @@ pub(crate) fn build_options(
   // GPU probe config: wire the Vulkan-probe enable flag so the daemon
   // (and its host-metrics sampler) skip `vulkaninfo -j` when disabled.
   crate::gpu::set_enable_vulkan_probe(config.gpu.enable_vulkan_probe);
-  opts.gpu_reprobe_interval_secs = config.gpu.reprobe_interval_secs;
+  opts.gpu_reprobe_interval_secs = config.gpu.reprobe_interval_secs.clamp(0, u32::MAX as u64);
   opts.idle_timeout_secs = config.daemon.idle_timeout_secs;
   opts.probe_interval_secs = config.daemon.probe_interval_secs.clamp(1, 60);
   Ok(opts)

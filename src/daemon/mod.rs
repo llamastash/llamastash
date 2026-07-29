@@ -147,8 +147,9 @@ pub struct DaemonOptions {
   /// GPU full-reprobe interval in seconds (from `Config.gpu.reprobe_interval_secs`).
   /// `0` disables periodic re-probes; `60` (default) re-probes once a minute.
   pub gpu_reprobe_interval_secs: u64,
-  /// Seconds of inactivity (no running models) before the daemon
-  /// auto-shuts down. `0` disables the idle timer.
+  /// Seconds of inactivity (no running models AND no active IPC
+  /// connections) before the daemon auto-shuts down. `0` disables
+  /// the idle timer.
   pub idle_timeout_secs: u64,
   /// Host-metrics sampler tick interval in seconds (factory 1 = 1 Hz).
   pub probe_interval_secs: u64,
@@ -408,14 +409,6 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
     opts.gpu_reprobe_interval_secs,
   );
 
-  // 7c. Idle auto-shutdown monitor. When `idle_timeout_secs > 0`,
-  // a background task polls the supervisor registry every 5 s; once
-  // it stays empty for the configured duration the shutdown token
-  // fires and the process exits cleanly. This saves power on
-  // personal desktops where the user forgets to `daemon stop`.
-  //
-  // (Spawned after §8 so ctx.supervisors is available.)
-
   // 8. Wire the dispatcher context.
   let supervisors = SupervisorRegistry::new();
   let persisted = PersistedState::new(state_after_sweep, Some(opts.state_dir.clone()));
@@ -509,9 +502,15 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
 
   // 8a-ii. Idle auto-shutdown monitor. When `idle_timeout_secs > 0`,
   // a background task polls the supervisor registry every 5 s; once
-  // it stays empty for the configured duration the shutdown token
-  // fires and the process exits cleanly. This saves power on
-  // personal desktops where the user forgets to `daemon stop`.
+  // it stays empty AND no IPC connections are active for the full
+  // duration, the shutdown token fires and the process exits cleanly.
+  // This saves power on personal desktops where the user forgets to
+  // `daemon stop`.
+  //
+  // The handle is intentionally unused: the task is cancelled
+  // implicitly when the runtime shuts down (SIGINT triggers the
+  // shutdown token, which exits the loop). The `_` prefix suppresses
+  // the unused-variable warning.
   let _idle_handle = if opts.idle_timeout_secs > 0 {
     let idle_supervisors = ctx.supervisors.clone();
     let idle_connections = ctx.active_connections.clone();

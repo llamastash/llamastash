@@ -4,12 +4,14 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 ## [Unreleased]
 
+### Added
+
 - `llamastash config` opens the active config file in `$EDITOR`.
 - `llamastash config bindings` prints every effective keybinding as YAML for copying between configs.
 - The launch picker's Device row uses the same `◀ ▶` single-stop style as other knobs — one GPU shown as `[x] ROCm0  ·  2 of 3`, `←/→` walk the cursor, `Space` toggles it (a high-priority `Space:choose` hint shows while the row is active), scoped to the selected server (unset = all GPUs); the read-only running view gains a `server` row showing which build served the model; the right-pane header badges every backend a model supports as separate chips (e.g. ` ds4 ` ` llamacpp `); the TUI model list's Backend column now renders after Mode and gains a Device column that reads `all` for a running all-GPU launch (the `llamastash list` CLI table keeps its leaner `NAME ARCH PARAMS QUANT CTX SIZE [BACKEND] STATUS` column set); and `doctor` gains a configured-servers advisory (warns on a missing `servers[].binary`, summarizes the rest).
 - New `gpu.enable_vulkan_probe` config toggle (default `true`). When `false` the daemon skips the Vulkan fallback probe (`vulkaninfo -j` / `--summary`) — no subprocess spawns at startup or during the periodic hotplug re-probe. Useful when a native NVIDIA/AMD/Metal probe already covers all GPUs. Config-only, no CLI/env surface.
 - New `gpu.reprobe_interval_secs` config key (default `60`). Controls how often (in seconds) the daemon re-runs the full vendor chain to catch GPU hotplug, late driver loads, or CpuOnly → detected transitions. `0` disables periodic re-probes entirely (initial probe still runs at daemon start). CpuOnly and Vulkan-only hosts skip re-probes even when `> 0` — they have no live metrics to refresh. Config-only, no CLI/env surface.
-- New `daemon.idle_timeout_secs` config key (default `0`). When > 0, the daemon auto-shuts down after the specified seconds with no running models. A background monitor checks every 5 s; once the supervisor registry is empty for the full duration, the shutdown token fires. Useful on personal desktops. Config-only, no CLI/env surface.
+- New `daemon.idle_timeout_secs` config key (default `0`). When > 0, the daemon auto-shuts down after the specified seconds with no running models AND no active IPC connections. A background monitor checks every 5 s; once both conditions hold for the full duration, the shutdown token fires. Useful on personal desktops. Config-only, no CLI/env surface.
 - New `daemon.probe_interval_secs` config key (default `1`). Controls the host-metrics live-sampler tick interval (CPU%, RAM, GPU util/temp/VRAM). Factory `1` (1 Hz). Raising this reduces the frequency of `nvidia-smi` / `rocm-smi` calls at the cost of less responsive dashboard numbers. Clamped to `1..=60`. Config-only, no CLI/env surface.
 
 ### Changed

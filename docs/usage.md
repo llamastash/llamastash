@@ -95,6 +95,14 @@ disable_default_cache_paths:
   ollama: false
   lm_studio: false
 
+gpu: # GPU probe tuning. Config-only; no CLI/env surface.
+  enable_vulkan_probe: true  # Skip Vulkan fallback probe (vulkaninfo) when false.
+  reprobe_interval_secs: 60  # Full vendor re-probe interval (0 = disabled).
+
+daemon: # Lifecycle + host-metrics sampling. Config-only.
+  idle_timeout_secs: 0      # Auto-shutdown after N idle seconds (0 = never).
+  probe_interval_secs: 1    # Host-metrics tick interval (1..=60, factory 1; 0 resets to 1).
+
 probe_timeout_secs: 120 # Per-launch health-probe deadline.
 
 mouse_focus: false # Opt into mouse capture for click-to-focus / click-to-tab. Default off keeps native terminal text selection.
