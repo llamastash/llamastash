@@ -1453,7 +1453,7 @@ impl App {
   }
 
   /// Whether the model at `path` is MTP-capable (embedded nextn head or a
-  /// separate `mtp-*.gguf` drafter), per discovery. Drives the `⚡` glyph the
+  /// separate `mtp-*.gguf` drafter), per discovery. Drives the `↯` glyph the
   /// right-pane header renders after the model title.
   pub fn mtp_capable_for(&self, path: &Path) -> bool {
     self
@@ -1615,7 +1615,7 @@ impl App {
         .and_then(|c| u32::try_from(c).ok());
       // Show the MTP row only when this model can actually do MTP (embedded
       // nextn head or a separate drafter sibling) — the same signal that lights
-      // the `⚡` badge. Backend-agnostic.
+      // the `↯` badge. Backend-agnostic.
       state.mtp_capable = self.mtp_capable_for(p);
       if let Some(last) = self.last_params.get(p) {
         state.prefer_port = last.port;
@@ -2206,7 +2206,7 @@ fn parse_list_models_row(row: &Value) -> Option<DiscoveredModel> {
 
 /// Map a wire [`CatalogRow`](crate::launch::resolve::CatalogRow) into the TUI's
 /// domain [`DiscoveredModel`]. MTP capability round-trips through a sentinel
-/// head path so `mtp_capable()` (and the `⚡` badge) light up client-side; the
+/// head path so `mtp_capable()` (and the `↯` badge) light up client-side; the
 /// daemon re-resolves the real head at launch — the client only needs the bit.
 fn discovered_from_catalog_row(cr: &crate::launch::resolve::CatalogRow) -> DiscoveredModel {
   use crate::discovery::ModelSource;
@@ -2619,7 +2619,7 @@ mod tests {
         "mtp": mtp,
       })
     };
-    // No mtp block → not capable (no ⚡).
+    // No mtp block → not capable (no ↯).
     assert!(!parse_list_models_row(&row(Value::Null))
       .expect("row parses")
       .mtp_capable());

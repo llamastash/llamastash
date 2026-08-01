@@ -548,7 +548,7 @@ fn render_header_name(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Pa
           palette.accent_style(),
         ));
       }
-      // `⚡` MTP after any modality glyphs when discovery found the model
+      // `↯` MTP after any modality glyphs when discovery found the model
       // MTP-capable (embedded nextn head or a separate drafter sibling) — see
       // `discovery::MTP_LEGEND` (also in the help overlay).
       if app.mtp_capable_for(&path) {

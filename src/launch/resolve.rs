@@ -91,7 +91,7 @@ pub struct CatalogRow {
   /// has no mmproj companion. Drives the TUI title glyph.
   pub multimodal: Option<Multimodal>,
   /// MTP speculative-decoding capability, or `None` when not capable. Drives
-  /// the TUI `⚡` badge + the launch picker's MTP row.
+  /// the TUI `↯` badge + the launch picker's MTP row.
   pub mtp: Option<MtpCapability>,
 }
 

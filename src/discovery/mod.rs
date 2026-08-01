@@ -110,7 +110,7 @@ impl DiscoveredModel {
 /// decoding, rendered after a model title (like the multimodal glyphs) when the
 /// model is MTP-capable. Single source of truth shared by the right-pane header
 /// and the help-overlay legend so the two never drift.
-pub const MTP_LEGEND: (char, &str) = ('⚡', "MTP speculative decoding");
+pub const MTP_LEGEND: (char, &str) = ('↯', "MTP speculative decoding");
 
 /// Multimodal modality a model's mmproj projector advertises. A
 /// projector can be vision-only, audio-only, or both (an "omni" model),
