@@ -57,6 +57,12 @@ struct Args {
   mode: Mode,
   health_delay_ms: u64,
   trap_sigterm: bool,
+  /// Set when launched with `--spec-type draft-mtp` (MTP speculative decoding).
+  /// Makes the fixture print a `draft acceptance = …` slot-timing line to
+  /// stderr at startup so the daemon's log ring buffer carries it, exactly like
+  /// a real llama-server after generation — the fixture the status
+  /// draft-acceptance scan asserts against.
+  spec_mtp: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,6 +116,7 @@ fn parse_args() -> Args {
   let mut mode = Mode::Chat;
   let mut health_delay_ms: u64 = 0;
   let mut trap_sigterm = false;
+  let mut spec_mtp = false;
   while let Some(arg) = args.next() {
     match arg.as_str() {
       "--host" => host = args.next().expect("--host needs value"),
@@ -121,6 +128,7 @@ fn parse_args() -> Args {
       "--fit-ctx" => fit_ctx = args.next().and_then(|v| v.parse().ok()),
       "--embeddings" => mode = Mode::Embedding,
       "--reranking" => mode = Mode::Rerank,
+      "--spec-type" => spec_mtp = args.next().as_deref() == Some("draft-mtp"),
       "--health-delay-ms" => {
         health_delay_ms = args.next().and_then(|v| v.parse().ok()).unwrap_or(0);
       }
@@ -140,6 +148,7 @@ fn parse_args() -> Args {
     mode,
     health_delay_ms,
     trap_sigterm,
+    spec_mtp,
   }
 }
 
@@ -182,6 +191,16 @@ async fn main() {
   // immediately rather than buffering.
   use std::io::Write;
   let _ = std::io::stdout().flush();
+
+  // MTP: emit a slot draft-acceptance line to stderr (captured by the daemon's
+  // log ring buffer) so the status draft-acceptance scan has a real line to
+  // find — same shape a real llama-server prints after generation.
+  if args.spec_mtp {
+    eprintln!(
+      "slot print_timing: id  0 | task 0 | draft acceptance = 0.75000 (  120 accepted /   160 generated ), mean len =  2.50"
+    );
+    let _ = std::io::stderr().flush();
+  }
 
   let started_at = Arc::new(Instant::now());
   let args = Arc::new(args);

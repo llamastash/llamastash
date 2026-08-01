@@ -125,7 +125,7 @@ impl Finding {
   }
 
   /// Construct a finding from a stable string `id` + verbatim `fix_hint` — the
-  /// path a backend uses to contribute a finding through [`Backend::doctor_findings`](crate::backend::Backend::doctor_findings)
+  /// path a backend uses to contribute a finding through [`crate::backend::Backend::doctor_findings`]
   /// without a [`FindingId`] variant. `safe_to_log` is unconditionally `true`,
   /// matching the v2 invariant that every finding is safe to paste publicly.
   pub fn from_parts(

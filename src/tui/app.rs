@@ -153,6 +153,9 @@ pub struct LastParamsRow {
   /// Server id (build/binary) the last launch used, when one was picked.
   /// Seeds the picker's Server row so a relaunch reuses the same build.
   pub server: Option<String>,
+  /// MTP intent from the last successful launch (`auto`/`on`/`off`). Seeds the
+  /// picker's MTP row so a returning user keeps their choice.
+  pub mtp: crate::launch::params::MtpEnable,
 }
 
 /// Snapshot of the daemon-side metadata the Daemon info panel
@@ -479,6 +482,9 @@ pub struct StartModelArgs {
   /// the daemon derives the binary (and, when `backend` is `Auto`, the backend)
   /// from it.
   pub server: Option<String>,
+  /// MTP speculative-decoding intent from the picker's `mtp` cycle row
+  /// (`auto`/`on`/`off`). Backend-agnostic — sent as the `mtp` start param.
+  pub mtp: crate::launch::params::MtpEnable,
 }
 
 /// The binary + compute-backend label a focused running model launched on
@@ -1121,6 +1127,11 @@ impl App {
           .get("server")
           .and_then(Value::as_str)
           .map(String::from);
+        let mtp = params
+          .get("mtp")
+          .and_then(Value::as_str)
+          .and_then(crate::launch::params::MtpEnable::from_token)
+          .unwrap_or_default();
         if recent.len() < RECENT_LIST_CAP {
           recent.push(path.clone());
         }
@@ -1134,6 +1145,7 @@ impl App {
             extras,
             port,
             server,
+            mtp,
           },
         );
       }
@@ -1440,6 +1452,18 @@ impl App {
       .and_then(|m| m.multimodal)
   }
 
+  /// Whether the model at `path` is MTP-capable (embedded nextn head or a
+  /// separate `mtp-*.gguf` drafter), per discovery. Drives the `↯` glyph the
+  /// right-pane header renders after the model title.
+  pub fn mtp_capable_for(&self, path: &Path) -> bool {
+    self
+      .models
+      .iter()
+      .find(|m| m.path == path)
+      .map(|m| m.mtp_capable())
+      .unwrap_or(false)
+  }
+
   /// Friendly display name with fallback. Prefers the discovery
   /// label, falls back to the path's file_stem. Centralised so every
   /// surface (toast, confirm dialog, header, daemon panel) renders
@@ -1589,8 +1613,14 @@ impl App {
         .and_then(|m| m.metadata.as_ref())
         .and_then(|md| md.native_ctx)
         .and_then(|c| u32::try_from(c).ok());
+      // Show the MTP row only when this model can actually do MTP (embedded
+      // nextn head or a separate drafter sibling) — the same signal that lights
+      // the `↯` badge. Backend-agnostic.
+      state.mtp_capable = self.mtp_capable_for(p);
       if let Some(last) = self.last_params.get(p) {
         state.prefer_port = last.port;
+        // A returning user keeps their last MTP choice (auto/on/off).
+        state.mtp = last.mtp;
         // returning user inherits the typed-knob deltas they
         // last shipped. The daemon persists only user-supplied
         // deltas (not the fully resolved set) so seeding straight
@@ -2164,89 +2194,73 @@ fn apply_filter(rows: &[ListRow], query: &str) -> Vec<ListRow> {
 }
 
 fn parse_list_models_row(row: &Value) -> Option<DiscoveredModel> {
+  // Deserialise the one shared `CatalogRow` wire shape, then map it into the
+  // TUI's `DiscoveredModel`. The JSON keys are read in exactly one place —
+  // `CatalogRow`'s serde impl — so this never drifts from the daemon.
+  let cr: crate::launch::resolve::CatalogRow = serde_json::from_value(row.clone()).ok()?;
+  if cr.path.is_empty() {
+    return None;
+  }
+  Some(discovered_from_catalog_row(&cr))
+}
+
+/// Map a wire [`CatalogRow`](crate::launch::resolve::CatalogRow) into the TUI's
+/// domain [`DiscoveredModel`]. MTP capability round-trips through a sentinel
+/// head path so `mtp_capable()` (and the `↯` badge) light up client-side; the
+/// daemon re-resolves the real head at launch — the client only needs the bit.
+fn discovered_from_catalog_row(cr: &crate::launch::resolve::CatalogRow) -> DiscoveredModel {
   use crate::discovery::ModelSource;
   use crate::gguf::metadata::{ModelMetadata, Quant};
 
-  let path = PathBuf::from(row.get("path")?.as_str()?);
-  let parent = PathBuf::from(row.get("parent")?.as_str()?);
-  let source = ModelSource::from_label(row.get("source").and_then(Value::as_str)?)
-    .unwrap_or(ModelSource::UserPath);
-  let metadata = row.get("metadata").and_then(|md| {
-    if md.is_null() {
-      None
-    } else {
-      Some(ModelMetadata {
-        arch: md.get("arch").and_then(Value::as_str).map(String::from),
-        total_parameters: md.get("total_parameters").and_then(Value::as_u64),
-        parameter_label: md
-          .get("parameter_label")
-          .and_then(Value::as_str)
-          .map(String::from),
-        quant: md
-          .get("quant")
-          .and_then(Value::as_str)
-          .map(parse_quant)
-          .unwrap_or_else(|| Quant::Unknown(0)),
-        native_ctx: md.get("native_ctx").and_then(Value::as_u64),
-        chat_template: None,
-        tokenizer_kind: md
-          .get("tokenizer_kind")
-          .and_then(Value::as_str)
-          .map(String::from),
-        reasoning_hint: false,
-        mode_hint: parse_mode_hint(md.get("mode_hint").and_then(Value::as_str)),
-        weights_bytes: md.get("weights_bytes").and_then(Value::as_u64),
-      })
-    }
+  let mtp_embedded = cr.mtp.and_then(|m| m.embedded_layers);
+  let mtp_head = cr
+    .mtp
+    .filter(|m| m.separate_head)
+    .map(|_| PathBuf::from("<separate-mtp-head>"));
+  // The daemon emits a `metadata` block iff a header parsed (and always sets
+  // `mode_hint` when it does), so these signals track "had a metadata block".
+  let has_metadata = cr.mode_hint.is_some()
+    || cr.arch.is_some()
+    || cr.quant.is_some()
+    || cr.native_ctx.is_some()
+    || cr.parameter_label.is_some()
+    || cr.weights_bytes.is_some()
+    || cr.total_parameters.is_some()
+    || cr.tokenizer_kind.is_some()
+    || cr.has_chat_template
+    || cr.has_reasoning_hint
+    || mtp_embedded.is_some();
+  let metadata = has_metadata.then(|| ModelMetadata {
+    arch: cr.arch.clone(),
+    total_parameters: cr.total_parameters,
+    parameter_label: cr.parameter_label.clone(),
+    quant: cr
+      .quant
+      .as_deref()
+      .map(parse_quant)
+      .unwrap_or(Quant::Unknown(0)),
+    native_ctx: cr.native_ctx,
+    chat_template: None,
+    tokenizer_kind: cr.tokenizer_kind.clone(),
+    reasoning_hint: cr.has_reasoning_hint,
+    mode_hint: parse_mode_hint(cr.mode_hint.as_deref()),
+    weights_bytes: cr.weights_bytes,
+    mtp: mtp_embedded,
   });
-  Some(DiscoveredModel {
-    path,
-    parent,
-    source,
+  DiscoveredModel {
+    path: PathBuf::from(&cr.path),
+    parent: PathBuf::from(&cr.parent),
+    source: ModelSource::from_label(&cr.source).unwrap_or(ModelSource::UserPath),
     metadata,
-    parse_error: row
-      .get("parse_error")
-      .and_then(Value::as_str)
-      .map(String::from),
-    split_siblings: row
-      .get("split_siblings")
-      .and_then(Value::as_array)
-      .map(|arr| {
-        arr
-          .iter()
-          .filter_map(|v| v.as_str().map(PathBuf::from))
-          .collect()
-      })
-      .unwrap_or_default(),
-    display_label: row
-      .get("display_label")
-      .and_then(Value::as_str)
-      .map(String::from),
-    multimodal: row.get("multimodal").and_then(parse_multimodal),
+    parse_error: cr.parse_error.clone(),
+    split_siblings: cr.split_siblings.iter().map(PathBuf::from).collect(),
+    display_label: cr.display_label.clone(),
+    multimodal: cr.multimodal,
     // Priority-ordered backends this model can run on (`ds4`, `llamacpp`, …).
     // Feeds the launch picker's Server row (filters the server catalog).
-    supported_backends: row
-      .get("supported_backends")
-      .and_then(Value::as_array)
-      .map(|arr| {
-        arr
-          .iter()
-          .filter_map(|v| v.as_str().map(String::from))
-          .collect()
-      })
-      .unwrap_or_default(),
-  })
-}
-
-fn parse_multimodal(v: &Value) -> Option<crate::discovery::Multimodal> {
-  if v.is_null() {
-    return None;
+    supported_backends: cr.supported_backends.clone(),
+    mtp_head,
   }
-  let flag = |key: &str| v.get(key).and_then(Value::as_bool).unwrap_or(false);
-  Some(crate::discovery::Multimodal {
-    vision: flag("vision"),
-    audio: flag("audio"),
-  })
 }
 
 fn parse_mode_hint(label: Option<&str>) -> crate::gguf::metadata::ModeHint {
@@ -2469,12 +2483,14 @@ mod tests {
         reasoning_hint: false,
         mode_hint: ModeHint::Chat,
         weights_bytes: Some(4_200_000_000),
+        mtp: None,
       }),
       parse_error: None,
       split_siblings: Vec::new(),
       display_label: None,
       multimodal: None,
       supported_backends: Vec::new(),
+      mtp_head: None,
     }
   }
 
@@ -2588,6 +2604,39 @@ mod tests {
         .multimodal,
       None
     );
+  }
+
+  #[test]
+  fn parse_list_models_row_reads_mtp_capability_for_the_badge() {
+    // A real MTP row always carries a metadata block (both come from the same
+    // header parse); the embedded count rides `metadata.mtp`.
+    let row = |mtp: Value| {
+      json!({
+        "path": "/m/a.gguf",
+        "parent": "/m",
+        "source": "user",
+        "metadata": { "arch": "qwen35", "quant": "Q4_K", "mode_hint": "chat" },
+        "mtp": mtp,
+      })
+    };
+    // No mtp block → not capable (no ↯).
+    assert!(!parse_list_models_row(&row(Value::Null))
+      .expect("row parses")
+      .mtp_capable());
+    // Embedded head → capable, embedded count surfaces.
+    let embedded = parse_list_models_row(&row(
+      json!({ "embedded_layers": 1, "separate_head": false }),
+    ))
+    .expect("row parses");
+    assert!(embedded.mtp_capable(), "embedded head lights the badge");
+    assert_eq!(embedded.metadata.and_then(|m| m.mtp), Some(1));
+    // Separate head only → capable via the sentinel head.
+    let separate = parse_list_models_row(&row(
+      json!({ "embedded_layers": null, "separate_head": true }),
+    ))
+    .expect("row parses");
+    assert!(separate.mtp_capable(), "separate head lights the badge");
+    assert!(separate.mtp_head.is_some());
   }
 
   #[test]
@@ -3173,6 +3222,7 @@ mod tests {
         extras: vec!["--rope-freq-base".into(), "10000".into()],
         port: Some(41105),
         server: None,
+        mtp: crate::launch::params::MtpEnable::default(),
       },
     );
     app.open_launch_picker();

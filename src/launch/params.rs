@@ -202,6 +202,136 @@ impl<'de> serde::Deserialize<'de> for BackendChoice {
   }
 }
 
+/// The user's intent for MTP (multi-token prediction) speculative decoding on a
+/// launch. A launch-level, launch-only choice (no `config.yaml` entry
+/// — KD2); persisted in `last_params` / presets like any launch choice. The
+/// resolved *directive* (what argv to emit) is [`MtpDirective`], computed
+/// server-side from this intent plus the model's real capability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MtpEnable {
+  /// Enable when the model is MTP-capable (embedded nextn head **or** a
+  /// separate `mtp-*.gguf` drafter sibling); emit nothing otherwise. Default.
+  #[default]
+  Auto,
+  /// Force on. If the model is not MTP-capable, warn and skip (never
+  /// emit-and-brick — turning speculation on for a non-MTP model is a hard
+  /// launch failure on the serving backend).
+  On,
+  /// Never enable MTP for this launch.
+  Off,
+}
+
+impl MtpEnable {
+  /// Stable lowercase label (`"auto"` / `"on"` / `"off"`) for CLI / status.
+  pub fn label(self) -> &'static str {
+    match self {
+      MtpEnable::Auto => "auto",
+      MtpEnable::On => "on",
+      MtpEnable::Off => "off",
+    }
+  }
+
+  /// Parse a CLI token into an intent; `None` for an unrecognised value so the
+  /// caller can surface a usage error.
+  pub fn from_token(s: &str) -> Option<MtpEnable> {
+    match s.to_ascii_lowercase().as_str() {
+      "auto" => Some(MtpEnable::Auto),
+      "on" | "true" | "1" => Some(MtpEnable::On),
+      "off" | "false" | "0" => Some(MtpEnable::Off),
+      _ => None,
+    }
+  }
+
+  /// Next stop on the TUI picker's cycle ring (`auto → on → off → auto`
+  /// forward, reversed backward). Backend-agnostic — the picker shows one MTP
+  /// row for any MTP-capable model, and each backend honors the resolved intent.
+  pub fn cycled(self, forward: bool) -> MtpEnable {
+    use MtpEnable::*;
+    if forward {
+      match self {
+        Auto => On,
+        On => Off,
+        Off => Auto,
+      }
+    } else {
+      match self {
+        Auto => Off,
+        On => Auto,
+        Off => On,
+      }
+    }
+  }
+}
+
+/// The resolved MTP directive for one launch — what `compose` emits, and the
+/// running-row truth `status` reports. Computed server-side in
+/// `compose_and_spawn` from [`MtpEnable`] + capability (see
+/// [`resolve_mtp_directive`]). Re-resolved each launch (a persisted value is
+/// overwritten), so it is additive on the wire: `Some` on a running MTP launch,
+/// omitted otherwise (byte-stable for non-MTP launches).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct MtpDirective {
+  /// Separate draft-head path the serving backend loads as the drafter; `None`
+  /// for an embedded head (the base file self-speculates, no separate drafter).
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub draft_model: Option<PathBuf>,
+}
+
+/// Resolve the effective MTP directive (KD1 hard gate): fold the user's
+/// [`MtpEnable`] intent with the model's real capability. `Some` ⇒ this launch
+/// speculates; `None` ⇒ it doesn't.
+///
+/// - `Off` ⇒ `None`. `Auto` ⇒ enable iff capable. `On` ⇒ enable if capable,
+///   else push a warning and return `None` (warn + skip, never emit-and-brick).
+/// - An embedded head needs no separate drafter; a separate head names one.
+///
+/// The KD3 deferral — a user already hand-driving speculation through `extras`
+/// — is decided by the serving backend ([`crate::backend::Backend::
+/// speculation_set_in_extras`]) before this is called, since only it knows its
+/// own flag spelling.
+pub fn resolve_mtp_directive(
+  intent: MtpEnable,
+  embedded_capable: bool,
+  separate_head: Option<PathBuf>,
+  warnings: &mut Vec<String>,
+) -> Option<MtpDirective> {
+  let directive = || MtpDirective {
+    // Embedded head wins (no separate drafter); else the on-disk head.
+    draft_model: if embedded_capable {
+      None
+    } else {
+      separate_head.clone()
+    },
+  };
+  let capable = embedded_capable || separate_head.is_some();
+  match intent {
+    MtpEnable::Off => None,
+    MtpEnable::Auto => capable.then(directive),
+    MtpEnable::On if capable => Some(directive()),
+    MtpEnable::On => {
+      warnings.push(
+        "MTP forced on (`--mtp on`) but this model is not MTP-capable \
+         (no embedded nextn head, no `mtp-*.gguf` drafter sibling) — skipping."
+          .to_string(),
+      );
+      None
+    }
+  }
+}
+
+/// Whether `extras` already carries the flag `head` (space or `=` form).
+///
+/// The flag spelling is the caller's — a backend passes its own — so this stays
+/// a parsing helper rather than knowledge of any one backend's argv.
+pub fn extras_have_flag(extras: &[OsString], head: &str) -> bool {
+  extras.iter().any(|e| {
+    let lossy = e.to_string_lossy();
+    let first = lossy.split('=').next().unwrap_or(&lossy);
+    first.eq_ignore_ascii_case(head)
+  })
+}
+
 /// All launch knobs the supervisor reads. Persisted under
 /// `last_params: HashMap<ModelIdentity, LaunchParams>` in `state.json`.
 ///
@@ -278,6 +408,25 @@ pub struct LaunchParams {
   /// persisted shape byte-stable when no native knob is set.
   #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
   pub backend_knobs: BTreeMap<String, KnobValue<String>>,
+  /// MTP (multi-token prediction) speculative-decoding intent for this launch.
+  /// Default [`MtpEnable::Auto`] (enable when the model is MTP-capable);
+  /// launch-only (no config-file entry — KD2), persisted here in `last_params`
+  /// like any launch choice. `#[serde(default)]` keeps older rows loading.
+  #[serde(default)]
+  pub mtp: MtpEnable,
+  /// How many tokens to draft per speculation step, when MTP resolves on.
+  /// `None` ⇒ unset, leaving the serving backend on its own default. Launch-only,
+  /// persisted like `mtp`; each backend maps it onto its own flag.
+  #[serde(default)]
+  pub mtp_draft_n: Option<u32>,
+  /// Resolved MTP directive for *this* launch (what the serving backend turns
+  /// into argv, and the running-row truth `status` reports): `Some` ⇒ this launch
+  /// speculates (naming a separate draft head when one is used). Computed
+  /// server-side in `compose_and_spawn` from `mtp` + capability
+  /// ([`resolve_mtp_directive`]) and re-resolved each launch. Additive on the
+  /// wire: omitted when `None`, so non-MTP launches stay byte-stable.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub mtp_directive: Option<MtpDirective>,
 }
 
 impl LaunchParams {
@@ -294,6 +443,9 @@ impl LaunchParams {
       backend: BackendChoice::default(),
       server: None,
       backend_knobs: BTreeMap::new(),
+      mtp: MtpEnable::default(),
+      mtp_draft_n: None,
+      mtp_directive: None,
     }
   }
 }
@@ -556,6 +708,82 @@ mod tests {
       serde_json::from_str::<BackendChoice>("\"ds4\"").unwrap(),
       BackendChoice::Explicit("ds4".into())
     );
+  }
+
+  #[test]
+  fn resolve_mtp_directive_auto_gates_on_capability() {
+    let mut w = Vec::new();
+    // Auto + embedded → on, no drafter.
+    let embedded = resolve_mtp_directive(MtpEnable::Auto, true, None, &mut w);
+    assert_eq!(embedded, Some(MtpDirective { draft_model: None }));
+    // Auto + separate head only → on, with drafter.
+    let head = Some(PathBuf::from("/m/mtp-x.gguf"));
+    let separate = resolve_mtp_directive(MtpEnable::Auto, false, head.clone(), &mut w);
+    assert_eq!(separate, Some(MtpDirective { draft_model: head }));
+    // Auto + not capable → off (no flag, no warning).
+    let incapable = resolve_mtp_directive(MtpEnable::Auto, false, None, &mut w);
+    assert_eq!(incapable, None);
+    assert!(w.is_empty());
+  }
+
+  #[test]
+  fn resolve_mtp_directive_force_on_non_capable_warns_and_skips() {
+    let mut w = Vec::new();
+    let d = resolve_mtp_directive(MtpEnable::On, false, None, &mut w);
+    assert_eq!(d, None, "force-on a non-capable model must skip, not brick");
+    assert_eq!(w.len(), 1, "and warn");
+    assert!(w[0].contains("not MTP-capable"));
+  }
+
+  #[test]
+  fn resolve_mtp_directive_off_never_speculates() {
+    let mut w = Vec::new();
+    assert_eq!(
+      resolve_mtp_directive(MtpEnable::Off, true, None, &mut w),
+      None
+    );
+    assert!(w.is_empty());
+  }
+
+  #[test]
+  fn extras_have_flag_matches_both_forms_and_nothing_else() {
+    // A backend passes its own flag; this only decides presence — space form,
+    // `=` form, case-insensitive, and no false hit on a value or a longer name.
+    let space = vec![OsString::from("--some-flag"), OsString::from("value")];
+    assert!(extras_have_flag(&space, "--some-flag"));
+    let eq = vec![OsString::from("--Some-Flag=value")];
+    assert!(extras_have_flag(&eq, "--some-flag"));
+    let unrelated = vec![OsString::from("--other"), OsString::from("--some-flag-ish")];
+    assert!(!extras_have_flag(&unrelated, "--some-flag"));
+  }
+
+  #[test]
+  fn mtp_enable_from_token_parses_aliases() {
+    assert_eq!(MtpEnable::from_token("auto"), Some(MtpEnable::Auto));
+    assert_eq!(MtpEnable::from_token("ON"), Some(MtpEnable::On));
+    assert_eq!(MtpEnable::from_token("off"), Some(MtpEnable::Off));
+    assert_eq!(MtpEnable::from_token("true"), Some(MtpEnable::On));
+    assert_eq!(MtpEnable::from_token("0"), Some(MtpEnable::Off));
+    assert_eq!(MtpEnable::from_token("nonsense"), None);
+  }
+
+  #[test]
+  fn mtp_serde_round_trips_and_defaults_auto() {
+    // Wire form is the lowercase label; a row without `mtp` loads as Auto.
+    let mut p = base_params();
+    p.mtp = MtpEnable::On;
+    p.mtp_draft_n = Some(4);
+    let v = serde_json::to_value(&p).unwrap();
+    assert_eq!(v["mtp"], "on");
+    assert_eq!(v["mtp_draft_n"], 4);
+    let back: LaunchParams = serde_json::from_value(v).unwrap();
+    assert_eq!(back.mtp, MtpEnable::On);
+    assert_eq!(back.mtp_draft_n, Some(4));
+    // Missing `mtp` → Auto (older rows).
+    let mut v2 = serde_json::to_value(base_params()).unwrap();
+    v2.as_object_mut().unwrap().remove("mtp");
+    let d: LaunchParams = serde_json::from_value(v2).unwrap();
+    assert_eq!(d.mtp, MtpEnable::Auto);
   }
 
   #[test]

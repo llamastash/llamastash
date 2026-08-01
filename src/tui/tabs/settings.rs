@@ -298,6 +298,26 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
         }
       }
 
+      // MTP enable row — shown only for an MTP-capable model, just above
+      // extras. A cycle-only tri-state (auto/on/off), honored by whichever
+      // backend runs the model.
+      if pv.field_visible(PickerField::Mtp) {
+        let mtp_focused = pv.field == PickerField::Mtp;
+        if mtp_focused {
+          focused_line = Some(lines.len() as u16);
+        }
+        lines.push(crate::tui::fmt::kv_row_focused(
+          "mtp",
+          pv.mtp_value_label().to_string(),
+          None,
+          mtp_focused,
+          // Cycle row: takes ←/→, not `e:edit`.
+          true,
+          palette,
+          show_source,
+        ));
+      }
+
       // Extras row — always the last field.
       let extras_focused = pv.field == PickerField::Extras;
       if extras_focused {
@@ -800,6 +820,7 @@ mod tests {
       display_label: None,
       multimodal: None,
       supported_backends: Vec::new(),
+      mtp_head: None,
     }
   }
 
@@ -829,6 +850,7 @@ mod tests {
         extras: vec!["--rope-freq-base".into(), "10000".into()],
         port: Some(41100),
         server: None,
+        mtp: Default::default(),
       },
     );
     app.list_cursor = 2;
@@ -965,6 +987,7 @@ mod tests {
           extras: vec![],
           port: Some(41100),
           server: None,
+          mtp: Default::default(),
         },
       );
       app.list_cursor = 2;

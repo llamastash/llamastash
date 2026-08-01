@@ -461,6 +461,13 @@ pub(crate) fn catalog_row_from_discovered(m: &DiscoveredModel) -> CatalogRow {
     total_parameters,
     backend: None,
     supported_backends: m.supported_backends.clone(),
+    multimodal: m.multimodal,
+    mtp: m
+      .mtp_capable()
+      .then(|| crate::launch::resolve::MtpCapability {
+        embedded_layers: m.metadata.as_ref().and_then(|md| md.mtp),
+        separate_head: m.mtp_head.is_some(),
+      }),
   }
 }
 
@@ -735,6 +742,7 @@ mod tests {
       display_label: None,
       multimodal: None,
       supported_backends: Vec::new(),
+      mtp_head: None,
       parse_error: None,
       split_siblings: vec![],
       metadata: Some(ModelMetadata {
@@ -743,6 +751,7 @@ mod tests {
         native_ctx: Some(2048),
         parameter_label: Some("0.5B".into()),
         weights_bytes: Some(100_000_000),
+        mtp: None,
         chat_template: None,
         tokenizer_kind: Some("bert".into()),
         total_parameters: Some(500_000_000),

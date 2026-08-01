@@ -444,6 +444,8 @@ mod tests {
       total_parameters: Some(80_000_000_000),
       backend: None,
       supported_backends: Vec::new(),
+      multimodal: None,
+      mtp: None,
     }
   }
 

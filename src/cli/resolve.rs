@@ -108,108 +108,15 @@ pub async fn fetch_catalog(client: &mut Client) -> Result<Vec<CatalogRow>, CliEx
     .and_then(Value::as_array)
     .cloned()
     .unwrap_or_default();
-  Ok(arr.into_iter().map(parse_catalog_row).collect())
-}
-
-fn parse_catalog_row(row: Value) -> CatalogRow {
-  let path = row
-    .get("path")
-    .and_then(Value::as_str)
-    .unwrap_or_default()
-    .to_string();
-  let parent = row
-    .get("parent")
-    .and_then(Value::as_str)
-    .unwrap_or_default()
-    .to_string();
-  let source = row
-    .get("source")
-    .and_then(Value::as_str)
-    .unwrap_or_default()
-    .to_string();
-  let metadata = row.get("metadata");
-  let parse_error = row
-    .get("parse_error")
-    .and_then(Value::as_str)
-    .map(str::to_string);
-  let model_id = row
-    .get("model_id")
-    .and_then(Value::as_str)
-    .map(str::to_string);
-  let backend = row
-    .get("backend")
-    .and_then(Value::as_str)
-    .map(str::to_string);
-  let supported_backends = row
-    .get("supported_backends")
-    .and_then(Value::as_array)
-    .map(|a| {
-      a.iter()
-        .filter_map(Value::as_str)
-        .map(str::to_string)
-        .collect()
-    })
-    .unwrap_or_default();
-  CatalogRow {
-    path,
-    model_id,
-    parent,
-    source,
-    backend,
-    supported_backends,
-    arch: metadata
-      .and_then(|m| m.get("arch"))
-      .and_then(Value::as_str)
-      .map(str::to_string),
-    quant: metadata
-      .and_then(|m| m.get("quant"))
-      .and_then(Value::as_str)
-      .map(str::to_string),
-    native_ctx: metadata
-      .and_then(|m| m.get("native_ctx"))
-      .and_then(Value::as_u64),
-    mode_hint: metadata
-      .and_then(|m| m.get("mode_hint"))
-      .and_then(Value::as_str)
-      .map(str::to_string),
-    parameter_label: metadata
-      .and_then(|m| m.get("parameter_label"))
-      .and_then(Value::as_str)
-      .map(str::to_string),
-    weights_bytes: metadata
-      .and_then(|m| m.get("weights_bytes"))
-      .and_then(Value::as_u64),
-    display_label: row
-      .get("display_label")
-      .and_then(Value::as_str)
-      .map(str::to_string),
-    parse_error,
-    split_siblings: row
-      .get("split_siblings")
-      .and_then(Value::as_array)
-      .map(|arr| {
-        arr
-          .iter()
-          .filter_map(|v| v.as_str().map(str::to_string))
-          .collect()
-      })
-      .unwrap_or_default(),
-    has_chat_template: metadata
-      .and_then(|m| m.get("has_chat_template"))
-      .and_then(Value::as_bool)
-      .unwrap_or(false),
-    has_reasoning_hint: metadata
-      .and_then(|m| m.get("has_reasoning_hint"))
-      .and_then(Value::as_bool)
-      .unwrap_or(false),
-    tokenizer_kind: metadata
-      .and_then(|m| m.get("tokenizer_kind"))
-      .and_then(Value::as_str)
-      .map(str::to_string),
-    total_parameters: metadata
-      .and_then(|m| m.get("total_parameters"))
-      .and_then(Value::as_u64),
-  }
+  // One shape, one parser: `CatalogRow`'s `Deserialize` is the mirror of the
+  // daemon's serializer. A row that can't be read degrades to skipped rather
+  // than aborting the whole list.
+  Ok(
+    arr
+      .into_iter()
+      .filter_map(|row| serde_json::from_value(row).ok())
+      .collect(),
+  )
 }
 
 /// Find a catalog row that matches `reference`. Disambiguation rules
@@ -648,6 +555,8 @@ mod tests {
       total_parameters: None,
       backend: None,
       supported_backends: Vec::new(),
+      multimodal: None,
+      mtp: None,
     }
   }
 

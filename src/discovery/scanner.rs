@@ -122,7 +122,7 @@ async fn walk_root(
 /// `llama.cpp`'s `convert_hf_to_gguf.py` and every published
 /// HuggingFace repo that ships a projector). Filtering on the name
 /// avoids paying the cost of a header re-read.
-fn is_projector_companion(path: &Path) -> bool {
+pub(crate) fn is_projector_companion(path: &Path) -> bool {
   path
     .file_name()
     .and_then(|n| n.to_str())
@@ -136,6 +136,32 @@ fn is_projector_companion(path: &Path) -> bool {
           || n.ends_with("-mmproj.gguf")
           || n.ends_with("_mmproj.gguf")
           || n == "mmproj.gguf")
+    })
+    .unwrap_or(false)
+}
+
+/// Is this `.gguf` a **separate MTP draft-head** companion (e.g.
+/// `mtp-gemma-4.gguf`)? Like a projector, an MTP head is not launchable on
+/// its own — it pairs with a parent chat model as the speculative drafter
+/// the serving backend loads (the Gemma-4 shape; embedded-head models carry the
+/// draft layers inside the base file and ship no such sibling). Excluded from
+/// the launchable Models list exactly as projectors are, and paired via
+/// [`find_mtp_head`]. The `mtp` token must be delimited (prefix/suffix/infix)
+/// so an ordinary model with "mtp" mid-word isn't misfiled as a head.
+pub(crate) fn is_mtp_companion(path: &Path) -> bool {
+  path
+    .file_name()
+    .and_then(|n| n.to_str())
+    .map(|n| {
+      let n = n.to_lowercase();
+      n.ends_with(".gguf")
+        && (n.starts_with("mtp-")
+          || n.starts_with("mtp_")
+          || n.contains(".mtp.")
+          || n.ends_with(".mtp.gguf")
+          || n.ends_with("-mtp.gguf")
+          || n.ends_with("_mtp.gguf")
+          || n == "mtp.gguf")
     })
     .unwrap_or(false)
 }
@@ -194,6 +220,35 @@ fn strip_mmproj_markers(name: &str) -> String {
   s = s.replace(".mmproj.", ".");
 
   if s == "mmproj" {
+    return "".to_string();
+  }
+
+  s
+}
+
+/// Strip `mtp` prefixes/suffixes to recover the base model name a separate
+/// MTP head pairs with. Mirrors [`strip_mmproj_markers`] with the `mtp` token.
+fn strip_mtp_markers(name: &str) -> String {
+  let Some(s) = name.strip_suffix(".gguf") else {
+    return name.to_lowercase();
+  };
+  let mut s = s.to_lowercase();
+
+  if let Some(rest) = s.strip_prefix("mtp-").or_else(|| s.strip_prefix("mtp_")) {
+    s = rest.to_string();
+  }
+
+  if let Some(rest) = s
+    .strip_suffix("-mtp")
+    .or_else(|| s.strip_suffix("_mtp"))
+    .or_else(|| s.strip_suffix(".mtp"))
+  {
+    s = rest.to_string();
+  }
+
+  s = s.replace(".mtp.", ".");
+
+  if s == "mtp" {
     return "".to_string();
   }
 
@@ -352,6 +407,80 @@ fn detect_multimodal(model_path: &Path) -> Option<Multimodal> {
   })
 }
 
+/// Find a **separate MTP draft-head** companion for `model_path` — the
+/// sibling GGUF the serving backend loads as the drafter for speculative
+/// decoding (the Gemma-4 shape). `None` when the model is embedded-MTP
+/// (draft layers inside the base file) or has no head sibling.
+///
+/// Mirrors [`find_mmproj`]'s three-rule resolution so head naming stays as
+/// forgiving as projector naming (repos label heads inconsistently):
+/// 1. an MTP companion whose quant-stripped base equals the model's wins;
+/// 2. else, a lone model + lone head in the directory pair regardless of name;
+/// 3. else, a single anonymous `mtp.gguf` catch-all is used; anything more
+///    ambiguous yields `None` (the user can pair a head explicitly).
+pub fn find_mtp_head(model_path: &Path) -> Option<PathBuf> {
+  let parent = model_path.parent()?;
+  let model_filename = model_path.file_name()?.to_str()?;
+  let model_stem = model_path.file_stem()?.to_str()?;
+  // A head file has no head of its own.
+  if is_mtp_companion(model_path) {
+    return None;
+  }
+
+  let model_base = canonical_base(model_stem);
+
+  let mut all_heads: Vec<PathBuf> = Vec::new();
+  let mut base_matches: Vec<PathBuf> = Vec::new();
+  let mut anonymous: Vec<PathBuf> = Vec::new();
+  // Count launchable model files (neither an MTP head nor a projector) so the
+  // single-head fallback only fires when this is the only model in the folder.
+  let mut model_file_count = 0usize;
+
+  for entry in std::fs::read_dir(parent).ok()?.flatten() {
+    let path = entry.path();
+    if !path.is_file() {
+      continue;
+    }
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+      continue;
+    };
+    if !name.to_lowercase().ends_with(".gguf") {
+      continue;
+    }
+    if !is_mtp_companion(&path) {
+      if !is_projector_companion(&path) {
+        model_file_count += 1;
+      }
+      continue;
+    }
+    if name == model_filename {
+      continue;
+    }
+    let head_base = canonical_base(&strip_mtp_markers(name));
+    if head_base.is_empty() {
+      anonymous.push(path.clone());
+    } else if head_base == model_base {
+      base_matches.push(path.clone());
+    }
+    all_heads.push(path);
+  }
+
+  // 1. Name match wins.
+  if !base_matches.is_empty() {
+    base_matches.sort();
+    return base_matches.into_iter().next();
+  }
+  // 2. Single model + single head → pair them regardless of name.
+  if model_file_count == 1 && all_heads.len() == 1 {
+    return all_heads.into_iter().next();
+  }
+  // 3. Lone anonymous catch-all, else ambiguous → give up.
+  if anonymous.len() == 1 {
+    return anonymous.into_iter().next();
+  }
+  None
+}
+
 /// Concurrency cap for [`walk_root`]'s per-file parse. Default to
 /// `num_cpus()`-flavoured but capped — too many parallel
 /// `spawn_blocking` calls land everything on the blocking pool
@@ -416,6 +545,7 @@ fn collect_gguf_paths(root: &Path, excludes: &[String]) -> Vec<PathBuf> {
         if p.extension().and_then(|s| s.to_str()) == Some("gguf")
           && entry.file_type().map(|t| t.is_file()).unwrap_or(false)
           && !is_projector_companion(p)
+          && !is_mtp_companion(p)
         {
           // Canonicalise before dedup so a real file and a symlink to
           // it collapse to a single row. Falling back to the raw path
@@ -501,20 +631,22 @@ async fn parse_into_model(
         display_label: None,
         multimodal: hit.multimodal,
         supported_backends: hit.supported_backends.clone(),
+        mtp_head: hit.mtp_head,
       };
     }
   }
 
   // On a cache miss, parse the model header and detect its mmproj
-  // modality together on one blocking-pool hop. Detection runs only
-  // here (not on warm cache hits) so periodic rescans don't repeat the
-  // sibling `read_dir` + projector header read.
+  // modality + separate MTP head together on one blocking-pool hop.
+  // Detection runs only here (not on warm cache hits) so periodic
+  // rescans don't repeat the sibling `read_dir`s.
   let path_for_parse = path.clone();
-  let (parsed, multimodal): (Result<_, GgufError>, Option<Multimodal>) =
+  let (parsed, multimodal, mtp_head): (Result<_, GgufError>, Option<Multimodal>, Option<PathBuf>) =
     tokio::task::spawn_blocking(move || {
       let parsed = read_path(&path_for_parse, HeaderReadOptions::default());
       let multimodal = detect_multimodal(&path_for_parse);
-      (parsed, multimodal)
+      let mtp_head = find_mtp_head(&path_for_parse);
+      (parsed, multimodal, mtp_head)
     })
     .await
     .unwrap_or_else(|join_err| {
@@ -522,6 +654,7 @@ async fn parse_into_model(
         Err(GgufError::Io(std::io::Error::other(format!(
           "parser task panicked: {join_err}"
         )))),
+        None,
         None,
       )
     });
@@ -534,12 +667,14 @@ async fn parse_into_model(
       parse_error: None,
       multimodal,
       supported_backends: crate::backend::supported_backends_for(&read.header),
+      mtp_head,
     },
     Err(e) => CachedParse {
       metadata: None,
       parse_error: Some(e.to_string()),
       multimodal,
       supported_backends: Vec::new(),
+      mtp_head,
     },
   };
   if let Some(c) = cache {
@@ -558,6 +693,7 @@ async fn parse_into_model(
     display_label: None,
     multimodal: cached.multimodal,
     supported_backends: cached.supported_backends.clone(),
+    mtp_head: cached.mtp_head,
   }
 }
 
@@ -690,6 +826,80 @@ mod tests {
       .collect();
     assert_eq!(paths.len(), 1, "expected only model.gguf, got {names:?}");
     assert!(names[0].ends_with("model.gguf"));
+    fs::remove_dir_all(&dir).ok();
+  }
+
+  #[test]
+  fn collect_gguf_paths_drops_mtp_head_companions() {
+    // A separate MTP draft head (`mtp-*.gguf`) pairs with a parent model as
+    // its speculative drafter — not launchable on its own, so it
+    // must not appear as a selectable Models-list row (exactly like mmproj).
+    let dir = temp_dir("mtp-exclude");
+    fs::write(dir.join("gemma-4.gguf"), build_minimal_gguf("gemma4")).unwrap();
+    fs::write(dir.join("mtp-gemma-4.gguf"), build_minimal_gguf("gemma4")).unwrap();
+    fs::write(dir.join("gemma-4-mtp.gguf"), build_minimal_gguf("gemma4")).unwrap();
+    fs::write(dir.join("mtp.gguf"), build_minimal_gguf("gemma4")).unwrap();
+    let paths = collect_gguf_paths(&dir, &[]);
+    let names: Vec<String> = paths
+      .iter()
+      .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+      .collect();
+    assert_eq!(paths.len(), 1, "expected only gemma-4.gguf, got {names:?}");
+    assert!(names[0].ends_with("gemma-4.gguf"));
+    fs::remove_dir_all(&dir).ok();
+  }
+
+  #[test]
+  fn is_mtp_companion_requires_delimited_token() {
+    // A model with "mtp" mid-word must not be misfiled as a head.
+    assert!(is_mtp_companion(Path::new("/m/mtp-gemma.gguf")));
+    assert!(is_mtp_companion(Path::new("/m/gemma-mtp.gguf")));
+    assert!(is_mtp_companion(Path::new("/m/gemma.mtp.gguf")));
+    assert!(is_mtp_companion(Path::new("/m/mtp.gguf")));
+    assert!(!is_mtp_companion(Path::new("/m/gptmtptron.gguf")));
+    assert!(!is_mtp_companion(Path::new("/m/gemma-4.gguf")));
+  }
+
+  #[test]
+  fn find_mtp_head_detects_and_pairs() {
+    let dir = temp_dir("mtp-find");
+    fs::write(dir.join("gemma-4.gguf"), build_minimal_gguf("gemma4")).unwrap();
+    fs::write(dir.join("mtp-gemma-4.gguf"), build_minimal_gguf("gemma4")).unwrap();
+    let found = find_mtp_head(&dir.join("gemma-4.gguf"));
+    assert_eq!(
+      found.and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())),
+      Some("mtp-gemma-4.gguf".to_string()),
+      "name-matched head must pair"
+    );
+    // A head file has no head of its own.
+    assert_eq!(find_mtp_head(&dir.join("mtp-gemma-4.gguf")), None);
+    fs::remove_dir_all(&dir).ok();
+  }
+
+  #[test]
+  fn find_mtp_head_none_when_absent() {
+    let dir = temp_dir("mtp-absent");
+    fs::write(dir.join("qwen35.gguf"), build_minimal_gguf("qwen35")).unwrap();
+    assert_eq!(find_mtp_head(&dir.join("qwen35.gguf")), None);
+    fs::remove_dir_all(&dir).ok();
+  }
+
+  #[test]
+  fn find_mtp_head_pairs_single_model_single_head_regardless_of_name() {
+    // Rule 2: one model + one anonymously-named head → pair them.
+    let dir = temp_dir("mtp-single");
+    fs::write(
+      dir.join("gemma-4-it-Q4_K_M.gguf"),
+      build_minimal_gguf("gemma4"),
+    )
+    .unwrap();
+    fs::write(dir.join("mtp-f16.gguf"), build_minimal_gguf("gemma4")).unwrap();
+    let found = find_mtp_head(&dir.join("gemma-4-it-Q4_K_M.gguf"));
+    assert_eq!(
+      found.and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())),
+      Some("mtp-f16.gguf".to_string()),
+      "single model + single head must pair regardless of name"
+    );
     fs::remove_dir_all(&dir).ok();
   }
 

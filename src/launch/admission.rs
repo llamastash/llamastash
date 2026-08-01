@@ -210,6 +210,7 @@ pub fn project_demand(
   effective_ctx: u32,
   backend: &str,
   weights_total_bytes: u64,
+  mtp_active: bool,
 ) -> u64 {
   let opts = EstimateOptions {
     ctx_len: effective_ctx as u64,
@@ -223,6 +224,24 @@ pub fn project_demand(
   weights_total_bytes
     .saturating_add(kv_bytes(header, arch, opts))
     .saturating_add(overhead_band_bytes(backend))
+    .saturating_add(mtp_band_bytes(weights_total_bytes, mtp_active))
+}
+
+/// A conservative memory band for MTP speculative decoding, so the local OOM
+/// gate isn't over-optimistic for a barely-fitting model. MTP adds the draft
+/// head's resident weights + its draft context/compute buffers; `--fit` owns
+/// GPU placement, but this local floor still under-projects without a band.
+///
+/// Calibrated from a measured idle delta of ~11% of weights (MTP on vs off on
+/// Qwen3.5-4B-MTP: +320 MiB on 2.7 GiB weights), rounded up to ~16.7%
+/// (`weights / 6`) to leave headroom for the active draft context under load.
+/// Zero when MTP is off. Saturating.
+fn mtp_band_bytes(weights_total_bytes: u64, mtp_active: bool) -> u64 {
+  if mtp_active {
+    weights_total_bytes / 6
+  } else {
+    0
+  }
 }
 
 #[cfg(test)]
@@ -389,11 +408,28 @@ mod tests {
       16384,
       HostMetricsSnapshot::BACKEND_AMD,
       53 * GIB,
+      false,
     );
     assert_eq!(
       demand,
       53 * GIB + band,
       "weights term is the shard-aware total, not the header's tensor sum"
+    );
+    // MTP active adds a conservative weights-fraction band (weights / 6) on
+    // top, so a barely-fitting model's OOM gate isn't over-optimistic.
+    let mtp_demand = project_demand(
+      &header,
+      None,
+      &knobs,
+      16384,
+      HostMetricsSnapshot::BACKEND_AMD,
+      53 * GIB,
+      true,
+    );
+    assert_eq!(
+      mtp_demand,
+      53 * GIB + band + (53 * GIB / 6),
+      "MTP-active demand adds the ~16.7% draft-head band"
     );
   }
 }

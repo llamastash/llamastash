@@ -240,6 +240,23 @@ pub(crate) fn compose(params: &LaunchParams, allocated_port: u16) -> Vec<OsStrin
     argv.push("--reasoning-format".into());
     argv.push("deepseek".into());
   }
+  // MTP speculative decoding — emitted BEFORE the ctx / `--fit-ctx` block so
+  // llama.cpp's `--fit` reserves the MTP draft context (KD6). The directive was
+  // resolved server-side (`compose_and_spawn` → `resolve_mtp_directive`) against
+  // the model's real capability and any user `--spec-type` in extras (KD1/KD3);
+  // `None` means "not MTP this launch" and emits nothing.
+  if let Some(mtp) = &params.mtp_directive {
+    argv.push("--spec-type".into());
+    argv.push("draft-mtp".into());
+    if let Some(ref draft) = mtp.draft_model {
+      argv.push("--model-draft".into());
+      argv.push(draft.clone().into());
+    }
+    if let Some(n) = params.mtp_draft_n {
+      argv.push("--spec-draft-n-max".into());
+      argv.push(n.to_string().into());
+    }
+  }
   // Context window: a pinned `ctx` emits `-c <N>` and suppresses
   // `--fit-ctx` (fit honors the pin). An unset `ctx` (Auto / Inherited)
   // emits `--fit-ctx <floor>` (floor from the config-derived `fit_ctx_floor`
@@ -303,6 +320,7 @@ pub(crate) fn compose(params: &LaunchParams, allocated_port: u16) -> Vec<OsStrin
 mod tests {
   use super::*;
   use crate::config::KnobValue;
+  use crate::launch::params::MtpDirective;
   use std::path::PathBuf;
 
   fn strs(args: &[OsString]) -> Vec<String> {
@@ -444,6 +462,67 @@ mod tests {
     assert_eq!(argv.iter().filter(|a| *a == "--jinja").count(), 1);
     let i = argv.iter().position(|a| a == "--reasoning-format").unwrap();
     assert_eq!(argv[i + 1], "deepseek");
+  }
+
+  // ---- MTP speculative decoding ----
+
+  #[test]
+  fn compose_emits_no_spec_type_when_directive_absent() {
+    // The common case: no MTP directive → no `--spec-type` on argv.
+    let p = base_params();
+    let argv = strs(&compose(&p, 41100));
+    assert!(!argv.iter().any(|a| a == "--spec-type"));
+    assert!(!argv.iter().any(|a| a == "--model-draft"));
+  }
+
+  #[test]
+  fn compose_emits_embedded_mtp_before_fit_ctx() {
+    // Embedded head (draft_model = None): `--spec-type draft-mtp`, no
+    // `--model-draft`, positioned before `--fit-ctx` (KD6).
+    let mut p = base_params();
+    p.backend_knobs
+      .insert("fit_ctx_floor".into(), KnobValue::Set("16384".into()));
+    p.mtp_directive = Some(MtpDirective { draft_model: None });
+    let argv = strs(&compose(&p, 41100));
+    let st = argv
+      .iter()
+      .position(|a| a == "--spec-type")
+      .expect("--spec-type");
+    assert_eq!(argv[st + 1], "draft-mtp");
+    assert!(
+      !argv.iter().any(|a| a == "--model-draft"),
+      "embedded head: no drafter"
+    );
+    let fit = argv
+      .iter()
+      .position(|a| a == "--fit-ctx")
+      .expect("--fit-ctx");
+    assert!(
+      st < fit,
+      "--spec-type must precede --fit-ctx (MTP-aware fit)"
+    );
+  }
+
+  #[test]
+  fn compose_emits_separate_head_and_draft_n_max() {
+    // Separate head: `--spec-type draft-mtp --model-draft <path>`, plus a
+    // configured `--spec-draft-n-max`.
+    let mut p = base_params();
+    p.mtp_directive = Some(MtpDirective {
+      draft_model: Some(PathBuf::from("/m/mtp-model.gguf")),
+    });
+    p.mtp_draft_n = Some(5);
+    let argv = strs(&compose(&p, 41100));
+    let md = argv
+      .iter()
+      .position(|a| a == "--model-draft")
+      .expect("--model-draft");
+    assert_eq!(argv[md + 1], "/m/mtp-model.gguf");
+    let n = argv
+      .iter()
+      .position(|a| a == "--spec-draft-n-max")
+      .expect("--spec-draft-n-max");
+    assert_eq!(argv[n + 1], "5");
   }
 
   #[test]

@@ -219,6 +219,12 @@ Or install `ds4-server` so compatible GGUFs route to ds4 instead. (On a b9840+ l
 
 **This is the design.** ds4-server has no embeddings/rerank endpoints. Launch the model on llama.cpp for those modes — a plain `--mode embedding` / `--mode rerank` launch of a ds4-compatible GGUF already routes to llama.cpp automatically. Reserve ds4 for chat/completions.
 
+## `--mtp on` didn't enable MTP (or a launch failed with "context type MTP requested")
+
+**Symptom:** you passed `--mtp on` but the launch warns "MTP forced on … but this model is not MTP-capable — skipping", or a hand-written `--spec-type draft-mtp` in the `-- <extras>` tail crashes the launch with `llama_init_from_model: context type MTP requested but model doesn't contain MTP layers`.
+
+**This is the gate working (or the lack of one).** MTP only works on a model that ships a draft head — an embedded one (`{arch}.nextn_predict_layers > 0`) or a separate `mtp-*.gguf` sibling. llamastash checks first: `--mtp on` on a non-capable model warns and skips rather than emitting the flag and bricking the launch. If you bypass llamastash and pass `--spec-type draft-mtp` yourself in `extras`, llama-server has no such guard and fails to load. Fix: use `--mtp auto` (the default) so llamastash only enables MTP when the model can actually do it, and let `pull` fetch the `mtp-*.gguf` head for separate-head models (`--all-companions` if the default one-per-kind missed it).
+
 ## Codex / Responses-API client can't reach a ds4 model
 
 **Symptom:** a client that speaks only the OpenAI Responses API (`POST /v1/responses`) — e.g. recent Codex CLI — can't drive a ds4 model through the proxy.

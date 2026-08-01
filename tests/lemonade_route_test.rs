@@ -80,6 +80,7 @@ fn lemonade_model(name: &str) -> DiscoveredModel {
     display_label: Some(name.to_string()),
     multimodal: None,
     supported_backends: Vec::new(),
+    mtp_head: None,
   }
 }
 

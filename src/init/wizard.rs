@@ -911,6 +911,9 @@ async fn run_models_step(
     revision,
     fallback_repos,
     quant_hint,
+    // The wizard grabs a model's companion (mmproj / MTP head) so it launches
+    // ready — one per kind (the default).
+    companions: crate::init::download::CompanionPolicy::OnePerKind,
   };
   let result = crate::init::download::run_for_init(&spec, fetch, &options).await?;
   // `resolved_repo_id` differs from `repo` when the synthetic-fallback

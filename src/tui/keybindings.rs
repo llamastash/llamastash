@@ -404,7 +404,7 @@ impl Binding {
   }
 
   /// Pasteable config spec for this chord — the inverse of
-  /// [`parse_key_spec`], using the same token vocabulary. This is what
+  /// `parse_key_spec`, using the same token vocabulary. This is what
   /// `llamastash config bindings` emits and what overrides parse back
   /// into, so the two must stay in lock-step.
   pub fn config_spec(&self) -> String {

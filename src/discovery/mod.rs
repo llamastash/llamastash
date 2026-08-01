@@ -77,6 +77,14 @@ pub struct DiscoveredModel {
   /// available one. Determined generically via
   /// [`crate::backend::supported_backends_for`], so this field names no backend.
   pub supported_backends: Vec<String>,
+  /// Path to a **separate MTP draft head** (`mtp-*.gguf` sibling) this model
+  /// pairs with as its speculative drafter, or `None` when the
+  /// model is embedded-MTP (draft layers in the base file) or has no head.
+  /// Resolved once at scan time (see [`scanner::find_mtp_head`]) and cached, so
+  /// the badge can predict MTP capability without a launch. Combined with
+  /// `metadata.mtp` (the embedded count), it yields the model's MTP capability:
+  /// `metadata.mtp.is_some() || mtp_head.is_some()`.
+  pub mtp_head: Option<PathBuf>,
 }
 
 impl DiscoveredModel {
@@ -87,6 +95,22 @@ impl DiscoveredModel {
     self.supported_backends.first().map(String::as_str)
   }
 }
+
+impl DiscoveredModel {
+  /// Whether this model can run MTP speculative decoding: either it carries an
+  /// embedded draft head (`metadata.mtp > 0`) or a separate head sibling was
+  /// found on disk. The single capability predicate the catalog JSON and the
+  /// TUI badge read.
+  pub fn mtp_capable(&self) -> bool {
+    self.metadata.as_ref().and_then(|m| m.mtp).is_some() || self.mtp_head.is_some()
+  }
+}
+
+/// Capability glyph + description for MTP (multi-token prediction) speculative
+/// decoding, rendered after a model title (like the multimodal glyphs) when the
+/// model is MTP-capable. Single source of truth shared by the right-pane header
+/// and the help-overlay legend so the two never drift.
+pub const MTP_LEGEND: (char, &str) = ('↯', "MTP speculative decoding");
 
 /// Multimodal modality a model's mmproj projector advertises. A
 /// projector can be vision-only, audio-only, or both (an "omni" model),

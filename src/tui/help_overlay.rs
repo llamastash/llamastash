@@ -257,6 +257,8 @@ fn legend_section() -> Section {
   for (glyph, desc) in crate::discovery::Multimodal::LEGEND {
     rows.push((glyph.to_string(), desc.to_string()));
   }
+  let (mtp_glyph, mtp_desc) = crate::discovery::MTP_LEGEND;
+  rows.push((mtp_glyph.to_string(), mtp_desc.to_string()));
   Section {
     title: "Legend",
     rows,

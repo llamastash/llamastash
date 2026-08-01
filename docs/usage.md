@@ -433,6 +433,40 @@ llamastash daemon status [--json]   # PID + uptime + connections + managed launc
 
 `daemon status --json` emits the raw `version` IPC response (the same `{name, version, protocol_version, pid, uptime_seconds, connections}` object an agent would get by hitting the UDS directly). The plain form is a human key/value block and is not a stable machine contract — agents should always use `--json`.
 
+## MTP speculative decoding
+
+**MTP (multi-token prediction)** speeds up decoding by letting the model guess several tokens ahead and verifying them in one forward pass — roughly a **2x decode speedup** at high draft acceptance. It is **output-equivalent** to normal decoding (the model still verifies every token), so it is safe to leave on.
+
+llamastash **auto-detects and enables it** for capable models. A model is MTP-capable when either:
+
+- it carries an **embedded** draft head (`{arch}.nextn_predict_layers > 0` — Qwen3.5/3.6, GLM-4.x, DeepSeek), or
+- a **separate** draft head sits next to it as a `mtp-*.gguf` sibling (the Gemma-4 shape).
+
+The `↯` glyph next to a model title (TUI) and the `mtp` block in `status` tell you whether MTP is capable and running: `enable` is your intent (auto/on/off), `active` is whether the serving backend actually dispatched with MTP, and `acceptance` is the latest draft-acceptance rate it reports (present once the model has served enough tokens; a backend that publishes no acceptance figures leaves it null).
+
+### Controlling it
+
+```bash
+llamastash start <model>                 # auto: MTP on when capable (default)
+llamastash start <model> --mtp off       # never use MTP for this launch
+llamastash start <model> --mtp on        # force on (warns + skips if not capable)
+llamastash start <model> --mtp-draft-n 5  # tokens drafted per step (backend default when unset)
+```
+
+`--mtp` is a **launch-only** setting (there is no `config.yaml` key for it); it persists in `last_params` and presets like any other launch choice. `--mtp-draft-n` works whichever backend serves the model. The TUI launch picker shows the same control as an `mtp` cycle row (auto/on/off), but only for MTP-capable models. Forcing it on a model that has no draft head **warns and skips** rather than failing the launch (emitting the flag blind is a hard server error). If you drive speculative decoding yourself through the `-- <extras>` tail, llamastash defers entirely and adds nothing.
+
+Under the hood, each backend maps this onto its own flags — the serving backend enables speculation with the resolved draft head (and `--mtp-draft-n` when set), emitted **before** the fit step so context reservation stays MTP-aware. **DeepSeek-V4 on the ds4 backend** uses ds4's own `mtp` / `mtp_draft` / `mtp_margin` native knobs, auto-pairing a sidecar found next to the model.
+
+### Getting the companion files
+
+`llamastash pull <repo>` now also fetches a model's companion siblings — the **mmproj** projector (multimodal) and any **MTP draft head** — so a pulled model arrives ready to launch:
+
+```bash
+llamastash pull owner/repo:model.gguf                 # base + one companion per kind (default)
+llamastash pull owner/repo:model.gguf --no-companions # base file only
+llamastash pull owner/repo:model.gguf --all-companions # every projector precision / head
+```
+
 ## ds4 backend
 
 > **⚠️ Experimental.** ds4 support is new and lightly road-tested (validated on a single Strix Halo / ROCm host). Its behaviour, config keys, and defaults may change between releases. llama.cpp is the stable default and runs DeepSeek-V4 too on a current build (**b9840+**), so ds4 is never required — if anything here misbehaves, force llama.cpp with `--backend llamacpp` or `backend.ds4.enabled: false`.
@@ -469,7 +503,7 @@ Routing is automatic and keys on a header-level compatibility predicate — arch
 
 ### ds4 native knobs
 
-ds4-server takes six backend-specific tunables that have no llama.cpp equivalent. Set them per-launch in the TUI launch picker or persist them in a preset; ds4 honors exactly one typed knob from the shared set — `ctx` (→ `--ctx`).
+ds4-server takes nine backend-specific tunables that have no llama.cpp equivalent. Set them per-launch in the TUI launch picker or persist them in a preset; ds4 honors exactly one typed knob from the shared set — `ctx` (→ `--ctx`).
 
 | Knob             | ds4-server flag      | What it does |
 | ---------------- | -------------------- | ------------ |
@@ -479,10 +513,11 @@ ds4-server takes six backend-specific tunables that have no llama.cpp equivalent
 | `kv_disk_dir`    | `--kv-disk-dir`      | Directory for ds4's persistent disk KV cache (see privacy note below) |
 | `kv_disk_space_mb` | `--kv-disk-space-mb` | Disk KV cache budget in MB (ds4 default 4096 when enabled) |
 | `ssd_streaming`  | `--ssd-streaming`    | Stream weights from disk (below-RAM-floor mode; skips the admission gate) |
+| `mtp`            | `--mtp`              | Path to the MTP draft-head sidecar (auto-paired from a sibling when unset; see [MTP speculative decoding](#mtp-speculative-decoding)) |
+| `mtp_draft`      | `--mtp-draft`        | Tokens drafted per step (also set by the neutral `--mtp-draft-n`) |
+| `mtp_margin`     | `--mtp-margin`       | Acceptance margin for the draft verifier |
 
 Any other ds4-server flag (`--kv-cache-*`, `--prefill-chunk`, …) rides the free-form extras tail after `--`, e.g. `start <model> -- --prefill-chunk 512`. The loopback/credential denylist still applies, extended for ds4 with `--cors` and `--dist-` — those are stripped/refused.
-
-> **Note on MTP:** DeepSeek-V4's MTP (speculative-decoding) sidecar GGUF exists on HuggingFace, but the `ds4-server` binary does not consume it (`--mtp` is a ds4-CLI-only flag). There is no MTP knob.
 
 ### Oversized models and below-floor hardware
 
@@ -642,8 +677,8 @@ Maintaining that `models` map by hand is the tedious part. Two ways to skip it:
 OpenAI-standard (`id` / `object` / `created` / `owned_by`) with **no
 capability field**, so nothing downstream can tell a chat model from an
 embedding or reranker off that endpoint alone. `list --json` *does* carry a
-per-model `mode_hint`, so generate the block from it and filter to just the
-chat models:
+per-model `mode_hint` (under the nested `metadata` block), so generate the block
+from it and filter to just the chat models:
 
 ```bash
 BASE="http://$(llamastash status --json | jq -r .proxy.listen)/v1"
@@ -653,10 +688,10 @@ llamastash list --json | jq --arg base "$BASE" '{
     name: "llamastash (local)",
     options: { baseURL: $base },
     models: ( .models
-      | map(select(.mode_hint == "chat"))
+      | map(select(.metadata.mode_hint == "chat"))
       | map({ (.name | sub("\\.gguf$"; "")):
               { name: (.name | sub("\\.gguf$"; "")),
-                limit: { context: .native_ctx } } })
+                limit: { context: .metadata.native_ctx } } })
       | add )
   }}}'
 ```
