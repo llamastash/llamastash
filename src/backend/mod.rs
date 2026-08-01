@@ -470,7 +470,7 @@ pub trait Backend {
   /// identity factor of the orphan sweep's three-factor confirmation (D-adopt).
   ///
   /// Default (llama.cpp): the `/v1/models` id matches the recorded path or its
-  /// basename ([`crate::daemon::orphans::models_endpoint_matches`]); `argv` is
+  /// basename (`crate::daemon::orphans::models_endpoint_matches`); `argv` is
   /// unused. ds4 overrides — it echoes a fixed alias, never the path, so it
   /// cross-checks `argv`'s `-m` against `recorded_path` **and** confirms the
   /// endpoint advertises a ds4 alias. Names no backend at the call site; the
