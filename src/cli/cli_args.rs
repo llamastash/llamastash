@@ -435,7 +435,6 @@ pub struct StartArgs {
   #[arg(long, value_name = "N")]
   pub mtp_draft_n: Option<u32>,
 
-  /// Emit JSON instead of human-readable success prose.
   /// Emit JSON instead of human-readable success prose. Stable
   /// shape: `{ "name", "launch_id", "port", "pid", "preset",
   /// "path" }`. With `--wait`, also carries `state` and `resolved_ctx`.

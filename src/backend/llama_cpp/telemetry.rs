@@ -3,7 +3,7 @@
 //!
 //! The `slot print_timing: … draft acceptance = <rate> ( <acc> accepted /
 //! <gen> generated )` line is llama-server's own format, so the parse lives
-//! with the backend (reached through [`crate::backend::Backend::mtp_runtime`])
+//! with the backend (reached through [`crate::backend::Backend::draft_acceptance`])
 //! and the generic `status` path carries no log-format knowledge.
 
 use crate::backend::DraftAcceptance;

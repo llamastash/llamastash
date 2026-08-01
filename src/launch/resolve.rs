@@ -200,7 +200,7 @@ impl CatalogRow {
         embedded_layers: m
           .get("embedded_layers")
           .and_then(Value::as_u64)
-          .map(|n| n as u32),
+          .and_then(|n| u32::try_from(n).ok()),
         separate_head: m
           .get("separate_head")
           .and_then(Value::as_bool)
