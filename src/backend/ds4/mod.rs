@@ -396,6 +396,19 @@ impl Ds4Backend {
     }
   }
 
+  /// Effective free memory when a launch of `weights_bytes` needs SSD
+  /// streaming to survive; `None` when residency fits or the host sampler has
+  /// no reading yet. Separate from the knob write so the MTP conflict can ask
+  /// "would streaming turn on?" before deciding which side of the pair yields.
+  async fn auto_stream_free_bytes(&self, ctx: &MethodContext, weights_bytes: u64) -> Option<u64> {
+    let snapshot = ctx.host_metrics.as_ref()?.read().await.clone();
+    if !crate::launch::admission::is_sampled(&snapshot) {
+      return None;
+    }
+    let free = crate::launch::admission::effective_free_bytes(&snapshot);
+    ds4_should_auto_stream(weights_bytes, free).then_some(free)
+  }
+
   /// Build the process-per-model launch spec directly (tests and the
   /// orchestrator's spawn arm both consume this).
   pub fn process_spec(
@@ -749,21 +762,67 @@ impl Backend for Ds4Backend {
     // see (~1.25× weights), so a full-residency spawn OOM-kills mid-load
     // (ds4-server sets its own oom_score_adj=1000) — disk-stream instead. A user
     // on/off wins; only the unset/Auto knob resolves here.
-    if matches!(
+    let stream_pinned_on = matches!(
+      params.backend_knobs.get("ssd_streaming"),
+      Some(crate::config::KnobValue::Set(v)) if v == "true"
+    );
+    let stream_pinned = matches!(
       params.backend_knobs.get("ssd_streaming"),
       Some(crate::config::KnobValue::Set(_))
-    ) {
-      return out;
-    }
-    let Some(host_slot) = ctx.host_metrics.as_ref() else {
-      return out;
+    );
+    // Free memory the auto path would stream against — `None` when the knob is
+    // pinned (nothing to resolve) or residency fits.
+    let auto_stream_free = if stream_pinned {
+      None
+    } else {
+      self.auto_stream_free_bytes(ctx, weights_bytes).await
     };
-    let snapshot = host_slot.read().await.clone();
-    if !crate::launch::admission::is_sampled(&snapshot) {
-      return out;
+
+    let head_paired = matches!(
+      params.backend_knobs.get("mtp"),
+      Some(crate::config::KnobValue::Set(v)) if !v.is_empty()
+    );
+    match mtp_stream_conflict(
+      head_paired,
+      out.auto_set.contains("mtp"),
+      stream_pinned_on,
+      auto_stream_free.is_some(),
+    ) {
+      MtpStreamConflict::None => {}
+      MtpStreamConflict::Refuse => {
+        out.refusal = Some(
+          "ds4 cannot stream from disk with an MTP draft head — `ssd_streaming: true` and \
+           `mtp` are mutually exclusive in ds4-server. Drop one: `--mtp off` to stream, or \
+           `ssd_streaming: false` to speculate at full residency."
+            .to_string(),
+        );
+        return out;
+      }
+      MtpStreamConflict::DropHead => {
+        params.backend_knobs.remove("mtp");
+        out.auto_set.remove("mtp");
+        if out.auto_set.remove("mtp_draft") {
+          params.backend_knobs.remove("mtp_draft");
+        }
+        out.warnings.push(
+          "ds4 cannot stream from disk with an MTP draft head — dropped the auto-paired \
+           sidecar so the launch can stream. Set `ssd_streaming: false` to speculate at \
+           full residency instead."
+            .to_string(),
+        );
+      }
+      MtpStreamConflict::KeepHeadSkipStream => {
+        out.warnings.push(
+          "ds4 cannot stream from disk with an MTP draft head — left SSD streaming off so \
+           the requested `mtp` head survives, so this launch needs full residency. Pass \
+           `--mtp off` if you would rather stream."
+            .to_string(),
+        );
+        return out;
+      }
     }
-    let free = crate::launch::admission::effective_free_bytes(&snapshot);
-    if ds4_should_auto_stream(weights_bytes, free) {
+
+    if let Some(free) = auto_stream_free {
       params.backend_knobs.insert(
         "ssd_streaming".to_string(),
         crate::config::KnobValue::Set("true".to_string()),
@@ -790,10 +849,10 @@ impl Backend for Ds4Backend {
     )
   }
 
-  // `draft_acceptance` stays on the default `None`: ds4-server's log shape for
-  // acceptance is unverified against the real binary, and a guessed format
-  // would surface as a permanent `null`, indistinguishable from "not printed
-  // one yet". Tracked in TODO.md.
+  // `draft_acceptance` stays on the default `None`: ds4-server publishes no
+  // acceptance figure. Its MTP counters are all behind debug env vars and print
+  // per decode step; the one cumulative rate belongs to DSpark and prints at
+  // session close. Verified against the ds4 sources, not a fixture.
 
   fn bypasses_admission(&self, params: &LaunchParams) -> bool {
     // Streaming weights from disk skips the hard OOM refusal (on-disk bytes ≠
@@ -894,6 +953,42 @@ fn ds4_resident_estimate(weights_total: u64) -> u64 {
 /// sampler.
 fn ds4_should_auto_stream(weights_total: u64, free: u64) -> bool {
   ds4_resident_estimate(weights_total) > free
+}
+
+/// How a launch reconciles SSD streaming with an MTP draft head.
+#[derive(Debug, PartialEq, Eq)]
+enum MtpStreamConflict {
+  /// The pair doesn't collide (no head, or streaming stays off).
+  None,
+  /// Both were chosen explicitly — the user reconciles them, not us.
+  Refuse,
+  /// We paired the head, so it yields to streaming.
+  DropHead,
+  /// The head is the user's and streaming was only our auto-resolve, so
+  /// streaming yields and the launch runs at full residency.
+  KeepHeadSkipStream,
+}
+
+/// Reconcile ds4's mutually exclusive `--ssd-streaming` / `--mtp` pair. ds4
+/// only rejects the combination after loading the full model, so an unresolved
+/// conflict costs a multi-minute load per attempt. Streaming is the survival
+/// knob (without it the launch OOM-kills), so whichever side of the pair
+/// llamastash chose itself is the side that yields. Pure so every branch is
+/// unit-testable without a live host sampler.
+fn mtp_stream_conflict(
+  head_paired: bool,
+  head_auto: bool,
+  stream_pinned_on: bool,
+  stream_auto: bool,
+) -> MtpStreamConflict {
+  if !head_paired || !(stream_pinned_on || stream_auto) {
+    return MtpStreamConflict::None;
+  }
+  match (head_auto, stream_pinned_on) {
+    (true, _) => MtpStreamConflict::DropHead,
+    (false, true) => MtpStreamConflict::Refuse,
+    (false, false) => MtpStreamConflict::KeepHeadSkipStream,
+  }
 }
 
 /// Whether `LLAMASTASH_DS4` is set to a truthy value — the env force that
@@ -1283,6 +1378,28 @@ mod tests {
     assert!(!ds4_should_auto_stream(gib(80), gib(100)));
     // A pathological weight total saturates instead of overflowing.
     assert!(ds4_should_auto_stream(u64::MAX, gib(100)));
+  }
+
+  #[test]
+  fn streaming_and_mtp_head_never_reach_ds4_together() {
+    use MtpStreamConflict::*;
+    // ds4-server exits on `--ssd-streaming` + `--mtp`, so no combination may
+    // leave both live.
+    // Our sidecar pairing yields to streaming, pinned or auto-resolved.
+    assert_eq!(mtp_stream_conflict(true, true, true, false), DropHead);
+    assert_eq!(mtp_stream_conflict(true, true, false, true), DropHead);
+    // The user asked for both: theirs to reconcile, refused before the load.
+    assert_eq!(mtp_stream_conflict(true, false, true, false), Refuse);
+    // Their head, our streaming → streaming yields (admission still gates).
+    assert_eq!(
+      mtp_stream_conflict(true, false, false, true),
+      KeepHeadSkipStream
+    );
+    // No collision: streaming off, or no head paired at all.
+    assert_eq!(mtp_stream_conflict(true, false, false, false), None);
+    assert_eq!(mtp_stream_conflict(true, true, false, false), None);
+    assert_eq!(mtp_stream_conflict(false, false, true, false), None);
+    assert_eq!(mtp_stream_conflict(false, false, false, true), None);
   }
 
   /// Spin up a tiny single-shot HTTP responder on an OS-assigned loopback port,
