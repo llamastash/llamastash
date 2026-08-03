@@ -331,6 +331,12 @@ pub struct NativeKnobResolution {
   pub auto_set: BTreeSet<String>,
   /// Advisories to surface (e.g. "enabled disk streaming: residency won't fit").
   pub warnings: Vec<String>,
+  /// Set when the resolved knob combination is one the engine rejects at
+  /// startup. The launch is refused pre-spawn instead of paying a multi-minute
+  /// model load for a process that exits — a backend can only detect this once
+  /// its Auto knobs have resolved, so the check rides here rather than in
+  /// [`Backend::refuses`], which sees only the model path.
+  pub refusal: Option<String>,
 }
 
 /// Dispatch is via the [`Backends`] enum (zero-cost, exhaustive) rather than

@@ -25,6 +25,7 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 ### Fixed
 
+- A ds4 launch no longer sets SSD streaming and an MTP draft head at the same time — ds4-server rejects that pair *after* loading the full model, so a doomed launch used to cost a multi-minute wait. llamastash now drops whichever of the two it picked itself, and refuses up front when both were set explicitly.
 - The proxy no longer starts a second `llama-server` for a model that is already loading ([#56](https://github.com/llamastash/llamastash/issues/56)). A request landing inside the load window now waits for the in-flight launch, whether it came from the proxy, the CLI, the TUI, or a boot restore, instead of spawning a duplicate that held VRAM until the idle sweep.
 - Proxy auto-start picks the launch mode from the endpoint that triggered it ([#56](https://github.com/llamastash/llamastash/issues/56)). A `/v1/rerank` call starts the model in rerank mode instead of inheriting the GGUF's `embedding` hint, which used to produce a server that answered 501 to the very request that started it. Recorded `last_params` mode is the next fallback, then the hint. A chat model is never forced into embedding or rerank mode.
 - `start --server <id>` now rejects an unknown server id (exit 64, listing the valid ids) instead of silently falling back to the default binary and recording the bogus value in `params.server`.

@@ -463,7 +463,9 @@ llamastash start <model> --mtp-draft-n 5  # tokens drafted per step (backend def
 
 `--mtp` is a **launch-only** setting (there is no `config.yaml` key for it); it persists in `last_params` and presets like any other launch choice. `--mtp-draft-n` works whichever backend serves the model. The TUI launch picker shows the same control as an `mtp` cycle row (auto/on/off), but only for MTP-capable models. Forcing it on a model that has no draft head **warns and skips** rather than failing the launch (emitting the flag blind is a hard server error). If you drive speculative decoding yourself through the `-- <extras>` tail, llamastash defers entirely and adds nothing.
 
-Under the hood, each backend maps this onto its own flags — the serving backend enables speculation with the resolved draft head (and `--mtp-draft-n` when set), emitted **before** the fit step so context reservation stays MTP-aware. **DeepSeek-V4 on the ds4 backend** uses ds4's own `mtp` / `mtp_draft` / `mtp_margin` native knobs, auto-pairing a sidecar found next to the model.
+Under the hood, each backend maps this onto its own flags — the serving backend enables speculation with the resolved draft head (and `--mtp-draft-n` when set), emitted **before** the fit step so context reservation stays MTP-aware. **DeepSeek-V4 on the ds4 backend** uses ds4's own `mtp` / `mtp_draft` / `mtp_margin` native knobs, auto-pairing a sidecar found next to the model. ds4 publishes no draft-acceptance figure, so `acceptance` stays null on a ds4 launch even while MTP is active.
+
+ds4 cannot stream weights from disk and speculate at the same time — `ssd_streaming` and an MTP draft head are mutually exclusive in ds4-server. llamastash reconciles them before launching: whichever of the two it enabled on your behalf gives way (an auto-paired sidecar is dropped so a memory-pressured launch can still stream; auto-streaming is skipped so a head you asked for survives), and it refuses the launch up front when you set both explicitly. Watch for the notice in either direction.
 
 ### Getting the companion files
 
@@ -520,7 +522,7 @@ ds4-server takes nine backend-specific tunables that have no llama.cpp equivalen
 | `threads`        | `--threads`          | CPU helper-thread count for host-side work |
 | `kv_disk_dir`    | `--kv-disk-dir`      | Directory for ds4's persistent disk KV cache (see privacy note below) |
 | `kv_disk_space_mb` | `--kv-disk-space-mb` | Disk KV cache budget in MB (ds4 default 4096 when enabled) |
-| `ssd_streaming`  | `--ssd-streaming`    | Stream weights from disk (below-RAM-floor mode; skips the admission gate) |
+| `ssd_streaming`  | `--ssd-streaming`    | Stream weights from disk (below-RAM-floor mode; skips the admission gate). Mutually exclusive with `mtp` |
 | `mtp`            | `--mtp`              | Path to the MTP draft-head sidecar (auto-paired from a sibling when unset; see [MTP speculative decoding](#mtp-speculative-decoding)) |
 | `mtp_draft`      | `--mtp-draft`        | Tokens drafted per step (also set by the neutral `--mtp-draft-n`) |
 | `mtp_margin`     | `--mtp-margin`       | Acceptance margin for the draft verifier |
@@ -530,6 +532,8 @@ Any other ds4-server flag (`--kv-cache-*`, `--prefill-chunk`, …) rides the fre
 ### Oversized models and below-floor hardware
 
 The DeepSeek-V4 GGUFs are 81–300+ GB; the practical RAM floor is roughly 128 GB on CUDA/ROCm and 96 GB on Metal. On a box below the floor, full residency out-of-memories. LlamaStash handles this for you: when a ds4 launch's resident estimate (~1.25× the weights, covering the expert cache + KV) exceeds free memory, it **auto-enables `ssd_streaming`** before spawn and prints a one-line notice (`ds4 needs ~N GiB resident but only M is free — enabled SSD streaming`). ds4-server then streams weights from disk under a bounded cache instead of OOM-killing mid-load. Set the **`ssd_streaming` native knob** yourself to force streaming on, or `ssd_streaming: false` to force full residency and skip the auto-enable. The knob is also the one launch where the pre-spawn admission gate is skipped (the on-disk size no longer maps to memory demand); this bypass keys on the native knob only — an extras-spelled `--ssd-streaming` still hits the admission gate. DeepSeek-V4's KV cache is modeled from the header (its two-tier compressed cache, ~0.5 GiB at 16k ctx and ~11 GiB at 1M for Flash), so the admission estimate is realistic at long context; the auto-streaming notice above is the memory signal to watch when residency is tight.
+
+Streaming rules out MTP speculation (ds4-server refuses the pair, and only after loading the whole model). When both would apply, llamastash drops whichever it enabled itself and says so; setting `ssd_streaming: true` and an `mtp` head together is refused before the load.
 
 ### The ds4 `/v1/models` menu
 

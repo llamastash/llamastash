@@ -823,6 +823,12 @@ pub(crate) async fn compose_and_spawn(
     log::warn!("{msg}");
   }
   warnings.extend(native_resolution.warnings);
+  // A knob combination the engine rejects at startup: refuse here rather than
+  // spawning a process that loads the weights and then exits.
+  if let Some(msg) = native_resolution.refusal {
+    ctx.supervisors.release_reserved_port(port).await;
+    return Err(ErrorObject::new(ErrorCode::InvalidParams, msg));
+  }
   let auto_set_knobs = native_resolution.auto_set;
   // Whether this launch skips the memory admission gate (streams from disk).
   let bypasses_admission = inference_backend.bypasses_admission(&launch_params);
