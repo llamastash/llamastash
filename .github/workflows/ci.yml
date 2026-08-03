@@ -105,7 +105,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@v2.85.5
         with:
           tool: nextest
       - name: cargo nextest run
@@ -145,7 +145,7 @@ jobs:
     needs: prepare
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.95
+      - uses: dtolnay/rust-toolchain@1.100
       - uses: Swatinem/rust-cache@v2
       - name: cargo check --locked
         run: cargo check --locked
