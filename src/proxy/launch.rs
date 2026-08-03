@@ -210,6 +210,16 @@ async fn drive_launch_as_leader(
 /// wait on rather than spawning alongside. `Stopping` / `Stopped` /
 /// `Error` entries are skipped — those are on their way out, so the
 /// request needs its own launch.
+///
+/// Matches on path alone, and ignores the running launch's mode, so
+/// this is the same predicate [`super::route::decide`] applies when it
+/// walks for a Ready supervisor. Tightening either here (full `ModelId`
+/// including the header hash, or a mode-compatibility gate) would make
+/// the load window behave differently from the Ready path: the request
+/// would spawn a second process for a file another supervisor already
+/// holds, then the identical request a second later would forward to
+/// that same supervisor. One supervisor per file is the invariant the
+/// whole proxy routes on.
 async fn attach_target(state: &Arc<ProxyState>, model_id: &ModelId) -> Option<ManagedModel> {
   for (_launch_id, model) in state.ctx.supervisors.snapshot().await {
     if model.id().path != model_id.path {
@@ -268,6 +278,11 @@ async fn await_ready(state: &Arc<ProxyState>, model: &ManagedModel) -> LaunchOut
 /// The mode a previous launch of this file recorded in `last_params` —
 /// the mode the user actually chose, which discovery's header-derived
 /// hint can't see (a BERT reranker reads as `embedding`).
+///
+/// Keyed on the full [`ModelId`] (path **and** header hash), matching
+/// how `compose_and_spawn` looks up the same entry for its last-used
+/// knob layer. A looser path-only match would hand a mode over from a
+/// record the knob resolver has already disowned as a different file.
 async fn last_used_mode(state: &Arc<ProxyState>, model_id: &ModelId) -> Option<LaunchMode> {
   state
     .ctx
@@ -276,12 +291,7 @@ async fn last_used_mode(state: &Arc<ProxyState>, model_id: &ModelId) -> Option<L
     .await
     .last_params
     .iter()
-    .find(|e| {
-      e.id
-        .as_gguf()
-        .map(|g| g.path == model_id.path)
-        .unwrap_or(false)
-    })
+    .find(|e| e.id.as_gguf() == Some(model_id))
     .map(|e| e.params.mode)
 }
 

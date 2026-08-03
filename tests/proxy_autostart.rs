@@ -57,12 +57,13 @@ fn allocate_port_range() -> PortRange {
 /// a single-port range would block the duplicate on port exhaustion
 /// and pass for the wrong reason.
 fn allocate_port_range_of(n: u16) -> PortRange {
+  assert!(n >= 1, "a launch pool needs at least one port");
   let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
   let port = listener.local_addr().unwrap().port();
   drop(listener);
   PortRange {
     start: port,
-    end: port + (n - 1),
+    end: port.saturating_add(n - 1),
   }
 }
 
@@ -409,6 +410,32 @@ async fn second_request_for_same_model_skips_relaunch() {
 /// Start a model through the IPC surface the way `llamastash start`
 /// does. Returns once the supervisor is registered — well before Ready,
 /// so the caller owns the load window.
+/// Poll until a `last_params` row carrying `mode` lands, or `budget`
+/// expires. The recorder runs in a background task off the supervisor's
+/// Loading → Ready transition, so it is never ready when `start_model`
+/// returns.
+async fn wait_for_last_params_mode(
+  ctx: &MethodContext,
+  mode: llamastash::launch::mode::LaunchMode,
+  budget: Duration,
+) -> bool {
+  let deadline = std::time::Instant::now() + budget;
+  while std::time::Instant::now() < deadline {
+    if ctx
+      .state
+      .snapshot()
+      .await
+      .last_params
+      .iter()
+      .any(|e| e.params.mode == mode)
+    {
+      return true;
+    }
+    sleep(Duration::from_millis(20)).await;
+  }
+  false
+}
+
 async fn ipc_start_model(ctx: &MethodContext, params: Value) {
   let req = llamastash::ipc::protocol::Request::new(1, "start_model", Some(params));
   let resp = llamastash::ipc::methods::dispatch_request(ctx, req).await;
@@ -512,6 +539,81 @@ async fn rerank_request_auto_starts_in_rerank_mode_not_embedding() {
     snap[0].1.mode(),
     llamastash::launch::mode::LaunchMode::Rerank,
     "auto-start must follow the endpoint, not the GGUF embedding hint"
+  );
+
+  stop_all(&ctx).await;
+  shutdown_listener(shutdown, listener_handle).await;
+  std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mode_less_endpoint_inherits_the_recorded_last_params_mode() {
+  // `/v1/chat/completions` implies no mode, so the recorded launch is
+  // the next signal. This also pins `last_used_mode`'s lookup to the
+  // same full-`ModelId` key `compose_and_spawn` uses for its last-used
+  // knob layer — a real launch writes the entry, the proxy must find it.
+  let dir = unique_temp("last-params-mode");
+  let log_dir = dir.join("logs");
+  std::fs::create_dir_all(&log_dir).unwrap();
+  let model_path = write_gguf(&dir, "bge-reranker.gguf", "bert");
+  let (state, ctx) = build_state(
+    vec![discovered_with_hint(
+      &model_path,
+      Some("bge-reranker"),
+      "bert",
+      ModeHint::Embedding,
+    )],
+    &log_dir,
+    allocate_port_range_of(2),
+  )
+  .await;
+  let (addr, shutdown, listener_handle) = spawn_listener(state).await;
+
+  // A manual `--mode rerank` launch records the user's real choice,
+  // then goes away. `last_params` is written by a background task on
+  // the Loading → Ready transition, so wait for the record rather than
+  // stopping the moment `start_model` returns.
+  ipc_start_model(
+    &ctx,
+    serde_json::json!({
+      "model_path": model_path.to_string_lossy(),
+      "mode": "rerank",
+    }),
+  )
+  .await;
+  assert!(
+    wait_for_last_params_mode(
+      &ctx,
+      llamastash::launch::mode::LaunchMode::Rerank,
+      Duration::from_secs(15)
+    )
+    .await,
+    "the manual launch must record mode=rerank in last_params"
+  );
+  stop_all(&ctx).await;
+
+  let body = r#"{"model":"bge-reranker","messages":[{"role":"user","content":"hi"}]}"#;
+  let (status, _h, _b) = http_post(addr, "/v1/chat/completions", body).await;
+  assert_eq!(status, 200);
+
+  let ready: Vec<_> = {
+    let snap = ctx.supervisors.snapshot().await;
+    let mut out = Vec::new();
+    for (_lid, m) in snap {
+      if matches!(
+        m.state().await,
+        llamastash::daemon::supervisor::ManagedState::Ready
+      ) {
+        out.push(m);
+      }
+    }
+    out
+  };
+  assert_eq!(ready.len(), 1, "one live supervisor from the auto-start");
+  assert_eq!(
+    ready[0].mode(),
+    llamastash::launch::mode::LaunchMode::Rerank,
+    "auto-start inherits the recorded mode over the GGUF embedding hint"
   );
 
   stop_all(&ctx).await;
