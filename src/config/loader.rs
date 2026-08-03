@@ -6,6 +6,7 @@ use std::{
   io::ErrorKind,
   net::{IpAddr, Ipv4Addr},
   path::{Path, PathBuf},
+  time::Duration,
 };
 
 use serde::{Deserialize, Serialize};
@@ -54,19 +55,18 @@ pub struct Config {
   pub custom_theme: Option<CustomThemeConfig>,
   pub model_paths: Vec<PathBuf>,
   pub disable_default_cache_paths: CachePathsConfig,
-  pub port_range: PortRange,
   pub keybindings: BTreeMap<String, String>,
-  /// GPU probe configuration. Controls which vendor tools the daemon
-  /// spawns during initial and periodic hardware detection.
+  /// GPU probe configuration, grouped under `gpu:`. Controls which
+  /// vendor tools the daemon spawns during initial and periodic
+  /// hardware detection.
   #[serde(default)]
   pub gpu: GpuConfig,
+  /// Daemon lifecycle configuration, grouped under `daemon:` — launch
+  /// port range, health-probe timeout, idle shutdown, and the
+  /// host-metrics sampler cadence.
+  #[serde(default)]
+  pub daemon: DaemonConfig,
   pub disable_scan: bool,
-  /// Per-launch health-probe timeout in seconds. Defaults to 120 s,
-  /// which is enough for the typical 7B–13B model on local NVMe but
-  /// can be tight for 70B+ on slow disks. Raise to e.g. 600 if you
-  /// hit `health probe timeout (last status 503)` for legitimate
-  /// loads.
-  pub probe_timeout_secs: u64,
   /// Opt into terminal mouse capture so a left-click can switch pane
   /// focus and pick a right-pane tab. Off by default: capturing the
   /// mouse pre-empts the terminal's native click-and-drag text
@@ -123,10 +123,6 @@ pub struct Config {
   /// all-invalid list falls back to the factory `[65, 100, 50, 35, 0]`.
   #[serde(default = "default_left_pane_ratios")]
   pub left_pane_ratios: Vec<u16>,
-  /// Daemon lifecycle and host-metrics configuration. Nested under
-  /// `daemon:` in `config.yaml`.
-  #[serde(default)]
-  pub daemon: DaemonConfig,
   /// Named launch presets, the single writable home for presets. Map
   /// keys are classified per-resolution against the live model catalog
   /// (see [`crate::launch::presets::classify_preset_key`]): a key that
@@ -146,36 +142,63 @@ pub fn default_left_pane_ratios() -> Vec<u16> {
   vec![65, 100, 50, 35, 0]
 }
 
-fn default_probe_interval_secs() -> u64 {
-  1
-}
+/// Bounds on [`DaemonConfig::metrics_interval_secs`]. Below 1 s the
+/// sampler spends more time spawning `nvidia-smi` than sleeping; above
+/// 60 s the host pane is stale enough to look broken.
+const METRICS_INTERVAL_SECS_RANGE: std::ops::RangeInclusive<u64> = 1..=60;
 
-/// Daemon lifecycle and host-metrics configuration.
+/// Daemon lifecycle configuration, grouped under `daemon:`.
+///
+/// The `*_secs` fields are the raw user-authored values; read them
+/// through the accessors ([`Self::metrics_interval`],
+/// [`Self::idle_timeout`]) so the clamp and the "0 disables" rule are
+/// applied identically everywhere.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "snake_case")]
 pub struct DaemonConfig {
-  /// Seconds of inactivity (no running models AND no active IPC
-  /// connections) before the daemon auto-shuts down. `0` (factory)
-  /// disables the idle timer — the daemon runs until explicitly
-  /// stopped via `daemon stop` / SIGINT. When > 0, a background
-  /// monitor checks every 5 s; once both conditions hold for the
-  /// full duration, the shutdown token fires and the process exits
-  /// cleanly.
+  /// Inclusive TCP port range the supervisor picks from when launching
+  /// a backend server.
+  pub port_range: PortRange,
+  /// Per-launch health-probe timeout in seconds. 120 s is enough for
+  /// the typical 7B–13B model on local NVMe but can be tight for 70B+
+  /// on slow disks. Raise to e.g. 600 if you hit `health probe timeout
+  /// (last status 503)` for legitimate loads.
+  pub probe_timeout_secs: u64,
+  /// Seconds of inactivity (no running models AND no attached clients)
+  /// before the daemon auto-shuts down. `0` (factory) disables the idle
+  /// timer — the daemon runs until explicitly stopped.
   pub idle_timeout_secs: u64,
-  /// Interval in seconds for the host-metrics live-sampler tick
-  /// (CPU%, RAM, GPU util/temp/VRAM). Factory `1` (1 Hz). Raising
-  /// this reduces the frequency of `nvidia-smi` / `rocm-smi` calls
-  /// at the cost of less responsive dashboard numbers. Clamped to
-  /// `1..=60` at read time; `0` falls back to the factory.
-  #[serde(default = "default_probe_interval_secs")]
-  pub probe_interval_secs: u64,
+  /// Host-metrics sampler cadence in seconds (CPU%, RAM, GPU
+  /// util/temp/VRAM). Factory `1` (1 Hz). Raising it reduces how often
+  /// `nvidia-smi` / `rocm-smi` are spawned, at the cost of a less
+  /// responsive host pane.
+  pub metrics_interval_secs: u64,
+}
+
+impl DaemonConfig {
+  /// Sampler cadence, clamped into [`METRICS_INTERVAL_SECS_RANGE`]. A
+  /// `0` would busy-loop the sampler, so it resolves to the 1 s floor
+  /// rather than disabling anything.
+  pub fn metrics_interval(&self) -> Duration {
+    Duration::from_secs(self.metrics_interval_secs.clamp(
+      *METRICS_INTERVAL_SECS_RANGE.start(),
+      *METRICS_INTERVAL_SECS_RANGE.end(),
+    ))
+  }
+
+  /// Idle-shutdown deadline, or `None` when the timer is disabled.
+  pub fn idle_timeout(&self) -> Option<Duration> {
+    (self.idle_timeout_secs > 0).then(|| Duration::from_secs(self.idle_timeout_secs))
+  }
 }
 
 impl Default for DaemonConfig {
   fn default() -> Self {
     Self {
+      port_range: PortRange::default(),
+      probe_timeout_secs: 120,
       idle_timeout_secs: 0,
-      probe_interval_secs: 1,
+      metrics_interval_secs: 1,
     }
   }
 }
@@ -907,29 +930,27 @@ pub enum DefaultLaunchMode {
 
 /// GPU probe configuration — which vendor tools the daemon spawns
 /// during initial and periodic hardware detection.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "snake_case")]
 pub struct GpuConfig {
   /// When `true` (the default), the Vulkan fallback probe
   /// (`vulkaninfo -j` / `--summary`) runs at startup and on periodic
   /// re-probes. Set to `false` to skip it entirely — useful when a
   /// native NVIDIA/AMD/Metal probe already covers all GPUs and you
-  /// don't want `vulkaninfo` spawning subprocesses. Factory `true`.
+  /// don't want `vulkaninfo` spawning subprocesses.
   pub enable_vulkan_probe: bool,
   /// How often (in seconds) the daemon re-runs the full vendor probe
-  /// chain to catch GPU hotplug, late driver loads, or CpuOnly →
-  /// detected transitions. `0` disables periodic re-probes entirely
-  /// (initial probe still runs at daemon start). CpuOnly and
-  /// Vulkan-only (`Unknown`) hosts skip re-probes even when this is
-  /// `> 0` — CpuOnly has nothing to refresh, and Vulkan device info
-  /// is static. Clamped to `0..=u32::MAX` at read time. Factory
-  /// `60` (once a minute).
-  #[serde(default = "default_reprobe_interval_secs")]
+  /// chain to catch GPU hotplug, a late driver load, or a CpuOnly →
+  /// detected transition. `0` disables periodic re-probes; the initial
+  /// probe at daemon start always runs. Factory `60`.
   pub reprobe_interval_secs: u64,
 }
 
-fn default_reprobe_interval_secs() -> u64 {
-  60
+impl GpuConfig {
+  /// Full re-probe period, or `None` when periodic re-probes are off.
+  pub fn reprobe_interval(&self) -> Option<Duration> {
+    (self.reprobe_interval_secs > 0).then(|| Duration::from_secs(self.reprobe_interval_secs))
+  }
 }
 
 impl Default for GpuConfig {
@@ -948,11 +969,10 @@ impl Default for Config {
       custom_theme: None,
       model_paths: Vec::new(),
       disable_default_cache_paths: CachePathsConfig::default(),
-      port_range: PortRange::default(),
       keybindings: BTreeMap::new(),
       gpu: GpuConfig::default(),
+      daemon: DaemonConfig::default(),
       disable_scan: false,
-      probe_timeout_secs: 120,
       mouse_focus: false,
       arch_defaults: BTreeMap::new(),
       proxy: ProxyConfig::default(),
@@ -961,7 +981,6 @@ impl Default for Config {
       ascii_glyphs: false,
       left_pane_ratios: default_left_pane_ratios(),
       presets: BTreeMap::new(),
-      daemon: DaemonConfig::default(),
     }
   }
 }
@@ -1549,9 +1568,10 @@ model_paths:
   - /mnt/storage/gguf
 disable_default_cache_paths:
   ollama: true
-port_range:
-  start: 50000
-  end: 50100
+daemon:
+  port_range:
+    start: 50000
+    end: 50100
 keybindings:
   quit: ctrl+q
 ",
@@ -1573,7 +1593,7 @@ keybindings:
     assert!(!loaded.config.disable_default_cache_paths.huggingface);
     assert!(!loaded.config.disable_default_cache_paths.lm_studio);
     assert_eq!(
-      loaded.config.port_range,
+      loaded.config.daemon.port_range,
       PortRange {
         start: 50000,
         end: 50100
@@ -1602,7 +1622,7 @@ keybindings:
   fn load_config_from_path_malformed_yaml_uses_defaults_with_warning() {
     let dir = temp_test_dir("malformed");
     let path = dir.join("config.yaml");
-    fs::write(&path, "theme: latte\nport_range: not-a-mapping").expect("write failed");
+    fs::write(&path, "theme: latte\ndaemon: not-a-mapping").expect("write failed");
 
     let loaded = load_config_from_path(&path);
 
@@ -1646,9 +1666,95 @@ keybindings:
 
     assert!(loaded.warning.is_none());
     assert_eq!(loaded.config.theme, ThemeName::GruvboxDark);
-    assert_eq!(loaded.config.port_range, PortRange::default());
+    assert_eq!(loaded.config.daemon.port_range, PortRange::default());
     assert!(loaded.config.model_paths.is_empty());
     fs::remove_dir_all(dir).expect("temp test dir should be removed");
+  }
+
+  #[test]
+  fn gpu_and_daemon_blocks_deserialize_from_yaml() {
+    let dir = temp_test_dir("gpu-daemon-blocks");
+    let path = dir.join("config.yaml");
+    fs::write(
+      &path,
+      r"
+gpu:
+  enable_vulkan_probe: false
+  reprobe_interval_secs: 300
+daemon:
+  port_range:
+    start: 42000
+    end: 42010
+  probe_timeout_secs: 600
+  idle_timeout_secs: 1800
+  metrics_interval_secs: 10
+",
+    )
+    .expect("config fixture should be written");
+
+    let cfg = load_config_from_path(&path).config;
+    assert!(!cfg.gpu.enable_vulkan_probe);
+    assert_eq!(cfg.gpu.reprobe_interval(), Some(Duration::from_secs(300)));
+    assert_eq!(cfg.daemon.port_range.start, 42000);
+    assert_eq!(cfg.daemon.probe_timeout_secs, 600);
+    assert_eq!(cfg.daemon.idle_timeout(), Some(Duration::from_secs(1800)));
+    assert_eq!(cfg.daemon.metrics_interval(), Duration::from_secs(10));
+    fs::remove_dir_all(dir).expect("temp test dir should be removed");
+  }
+
+  /// A partially-specified block keeps the factory value for every key
+  /// the user didn't write.
+  #[test]
+  fn a_partial_daemon_block_keeps_factory_values_for_the_rest() {
+    let dir = temp_test_dir("partial-daemon-block");
+    let path = dir.join("config.yaml");
+    fs::write(&path, "daemon:\n  idle_timeout_secs: 60\n").expect("write failed");
+
+    let cfg = load_config_from_path(&path).config;
+    assert_eq!(cfg.daemon.idle_timeout(), Some(Duration::from_secs(60)));
+    assert_eq!(cfg.daemon.port_range, PortRange::default());
+    assert_eq!(cfg.daemon.probe_timeout_secs, 120);
+    assert_eq!(cfg.daemon.metrics_interval(), Duration::from_secs(1));
+    fs::remove_dir_all(dir).expect("temp test dir should be removed");
+  }
+
+  #[test]
+  fn absent_gpu_and_daemon_blocks_fall_back_to_factory() {
+    let cfg = Config::default();
+    assert!(cfg.gpu.enable_vulkan_probe);
+    assert_eq!(cfg.gpu.reprobe_interval(), Some(Duration::from_secs(60)));
+    assert_eq!(cfg.daemon.idle_timeout(), None);
+    assert_eq!(cfg.daemon.metrics_interval(), Duration::from_secs(1));
+  }
+
+  #[test]
+  fn a_zero_reprobe_or_idle_value_disables_that_timer() {
+    let gpu = GpuConfig {
+      reprobe_interval_secs: 0,
+      ..Default::default()
+    };
+    assert_eq!(gpu.reprobe_interval(), None);
+    let daemon = DaemonConfig {
+      idle_timeout_secs: 0,
+      ..Default::default()
+    };
+    assert_eq!(daemon.idle_timeout(), None);
+  }
+
+  /// Unlike the two timers, `0` here is a reset rather than an off
+  /// switch — a zero-length tick would busy-loop the sampler.
+  #[test]
+  fn metrics_interval_clamps_into_range() {
+    let at_zero = DaemonConfig {
+      metrics_interval_secs: 0,
+      ..Default::default()
+    };
+    assert_eq!(at_zero.metrics_interval(), Duration::from_secs(1));
+    let too_slow = DaemonConfig {
+      metrics_interval_secs: u64::MAX,
+      ..Default::default()
+    };
+    assert_eq!(too_slow.metrics_interval(), Duration::from_secs(60));
   }
 
   #[test]
@@ -1656,7 +1762,7 @@ keybindings:
     let cfg = Config::default();
     assert_eq!(cfg.theme, ThemeName::Macchiato);
     assert_eq!(
-      cfg.port_range,
+      cfg.daemon.port_range,
       PortRange {
         start: 41100,
         end: 41300

@@ -49,6 +49,10 @@ pub async fn dispatch(mut cli: Cli, config: LoadedConfig) -> Result<i32> {
   // `colors::init`; downstream sites use `colors::*` helpers and
   // never re-derive whether colors are enabled.
   colors::init(cli.no_colors);
+  // Applied here rather than in the daemon wiring so every `gpu::probe`
+  // caller agrees — `init` and `doctor` probe hardware without ever
+  // building `DaemonOptions`.
+  crate::gpu::set_vulkan_probe_enabled(config.config.gpu.enable_vulkan_probe);
   let command = cli.command.take();
   if let Some(warning) = &config.warning {
     // A present-but-unparseable config (bad YAML, an unknown `[proxy]` key,

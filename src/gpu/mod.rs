@@ -97,16 +97,16 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-/// When `true` (the default), the Vulkan fallback probe (`vulkaninfo -j`
-/// / `--summary`) runs at startup and on periodic re-probes. Set to
-/// `false` to skip it entirely. Set via [`set_enable_vulkan_probe`]; the
-/// CLI daemon handler threads `config.gpu.enable_vulkan_probe` through.
-static ENABLE_VULKAN_PROBE: AtomicBool = AtomicBool::new(true);
+/// Gates the Vulkan fallback leg of [`probe`]. Process-global because
+/// `probe` is called from the daemon, `init`, `doctor`, and the UAT
+/// harness, none of which thread a config down — `cli::dispatch` applies
+/// `gpu.enable_vulkan_probe` once at startup so every caller agrees.
+static VULKAN_PROBE_ENABLED: AtomicBool = AtomicBool::new(true);
 
-/// Set the global Vulkan probe enable flag. Safe to call once at daemon
-/// startup; the value is read by [`probe`] on every call.
-pub fn set_enable_vulkan_probe(v: bool) {
-  ENABLE_VULKAN_PROBE.store(v, Ordering::Relaxed);
+/// Apply `gpu.enable_vulkan_probe`. Call once per process before any
+/// [`probe`]; the value is re-read on every probe.
+pub fn set_vulkan_probe_enabled(enabled: bool) {
+  VULKAN_PROBE_ENABLED.store(enabled, Ordering::Relaxed);
 }
 
 /// Wall-clock budget for a single vendor probe. A wedged GPU driver
@@ -619,7 +619,7 @@ pub fn probe() -> GpuInfo {
     metal_devices = devs;
   }
   // Vulkan fallback (skipped when `config.gpu.enable_vulkan_probe` is `false`)
-  if ENABLE_VULKAN_PROBE.load(Ordering::Relaxed) {
+  if VULKAN_PROBE_ENABLED.load(Ordering::Relaxed) {
     if let Some(devs) = vulkan::probe_devices() {
       unknown_devices = devs;
     }
@@ -857,6 +857,25 @@ fn devices_match(a: &[GpuDevice], b: &[GpuDevice]) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  /// The gate reads as "enabled", the opposite of the `disable_`-shaped
+  /// key it started life as — a flipped polarity here would silently
+  /// spawn `vulkaninfo` for everyone who opted out. Restores the flag so
+  /// concurrently-running tests that call [`probe`] are unaffected.
+  #[test]
+  fn vulkan_probe_gate_follows_the_enable_flag() {
+    static SERIALIZE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = SERIALIZE.lock().unwrap_or_else(|p| p.into_inner());
+    let restore = VULKAN_PROBE_ENABLED.load(Ordering::Relaxed);
+    assert!(restore, "the factory default must leave the probe enabled");
+
+    set_vulkan_probe_enabled(false);
+    assert!(!VULKAN_PROBE_ENABLED.load(Ordering::Relaxed));
+    set_vulkan_probe_enabled(true);
+    assert!(VULKAN_PROBE_ENABLED.load(Ordering::Relaxed));
+
+    set_vulkan_probe_enabled(restore);
+  }
 
   #[test]
   fn normalize_pci_canonicalizes_every_vendor_format() {

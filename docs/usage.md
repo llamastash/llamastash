@@ -63,10 +63,6 @@ custom_theme:
 model_paths: # Extra dirs to scan. Repeatable on the CLI as -p/--model-path.
   - /opt/llms
 
-port_range: # Default 41100..=41300. Inclusive.
-  start: 41100
-  end: 41300
-
 backend: # Per-engine config, one block per backend. llama.cpp is the
          # always-on default (no enable toggle); lemonade + ds4 are
          # optional, each default-on when its own binary resolves.
@@ -96,14 +92,16 @@ disable_default_cache_paths:
   lm_studio: false
 
 gpu: # GPU probe tuning. Config-only; no CLI/env surface.
-  enable_vulkan_probe: true  # Skip Vulkan fallback probe (vulkaninfo) when false.
-  reprobe_interval_secs: 60  # Full vendor re-probe interval (0 = disabled).
+  enable_vulkan_probe: true # Skip the vulkaninfo fallback probe when false.
+  reprobe_interval_secs: 60 # Full vendor re-probe period (0 = probe only at start).
 
-daemon: # Lifecycle + host-metrics sampling. Config-only.
-  idle_timeout_secs: 0      # Auto-shutdown after N idle seconds (0 = never).
-  probe_interval_secs: 1    # Host-metrics tick interval (1..=60, factory 1; 0 resets to 1).
-
-probe_timeout_secs: 120 # Per-launch health-probe deadline.
+daemon: # Launch ports, health probing, lifecycle. Config-only.
+  port_range: # Ports the supervisor picks from when launching a server.
+    start: 41100
+    end: 41300
+  probe_timeout_secs: 120 # Per-launch health-probe deadline.
+  idle_timeout_secs: 0 # Shut down after N idle seconds (0 = never).
+  metrics_interval_secs: 1 # Host-metrics tick (1..=60; 0 resets to 1).
 
 mouse_focus: false # Opt into mouse capture for click-to-focus / click-to-tab. Default off keeps native terminal text selection.
 

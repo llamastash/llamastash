@@ -294,9 +294,13 @@ Quick tour of the top-level keys:
 | `model_paths`                 | Extra directories to scan for `.gguf` files. Merged with `-p/--model-path` and `LLAMASTASH_MODEL_PATHS`.                                                                  |
 | `disable_default_cache_paths` | Per-bucket toggles (`huggingface`, `ollama`, `lm_studio`) for the auto-walked caches.                                                                                     |
 | `disable_scan`                | Skip filesystem scanning entirely. Same as `--no-scan` / `LLAMASTASH_NO_SCAN=1`.                                                                                          |
-| `port_range`                  | Inclusive `{start, end}` TCP range the supervisor picks from. Default `41100..=41300`.                                                                                    |
+| `daemon.port_range`           | Inclusive `{start, end}` TCP range the supervisor picks from. Default `41100..=41300`.                                                                                    |
+| `daemon.probe_timeout_secs`   | Health-probe deadline per launch. Default `120`. Bump for 70B+ on slow disks.                                                                                             |
+| `daemon.idle_timeout_secs`    | Shut the daemon down after N seconds with no running models and no client attached. Default `0` (never).                                                                  |
+| `daemon.metrics_interval_secs` | Host-metrics sampler cadence. Default `1` (1 Hz), clamped to `1..=60`. Raise it to spawn `nvidia-smi` / `rocm-smi` less often.                                           |
+| `gpu.enable_vulkan_probe`     | Run the `vulkaninfo` fallback probe. Default `true`; `false` skips it when a native NVIDIA/AMD/Metal probe already covers your GPUs.                                      |
+| `gpu.reprobe_interval_secs`   | How often to re-run the full vendor probe chain for hotplug / late driver loads. Default `60`; `0` probes only at daemon start.                                           |
 | `backend.llamacpp.servers`     | `llama-server` build/binary variants (`[{binary, name?}]`). First = default; each is a selectable "server". `--llama-server` / `LLAMASTASH_LLAMA_SERVER` set the first.   |
-| `probe_timeout_secs`          | Health-probe deadline per launch. Default `120`. Bump for 70B+ on slow disks.                                                                                             |
 | `keybindings`                 | Action-name → key-spec overrides. Kdash-style dialect (`ctrl+q`, `shift+tab`, `f1`, …).                                                                                   |
 
 Environment variables:

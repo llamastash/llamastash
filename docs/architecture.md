@@ -153,7 +153,7 @@ The discovery scanner emits one entry per canonical path — symlinks dedupe to 
 
 ## GPU detection
 
-The daemon runs a vendor probe chain at startup and again on a slow timer for hotplug. Whichever backend wins gets stamped onto `status.gpu` and drives the host-pane render plus the recommender's VRAM-fit math. Probes run in order; the first one to return non-empty wins.
+The daemon runs a vendor probe chain at startup and again on a slow timer (`gpu.reprobe_interval_secs`, default 60 s; `0` disables it) for hotplug and late driver loads. Whichever backend wins gets stamped onto `status.gpu` and drives the host-pane render plus the recommender's VRAM-fit math. Probes run in order; the first one to return non-empty wins. Step 5 is skipped entirely when `gpu.enable_vulkan_probe` is `false`.
 
 | Order | Backend | Source | Platforms | What you get |
 |---|---|---|---|---|
@@ -166,7 +166,7 @@ The daemon runs a vendor probe chain at startup and again on a slow timer for ho
 
 ### Per-tick refresh
 
-A separate cheap path (`refresh_active`) runs every 1 Hz on the host-metrics sampler. It only re-probes backends that have **live** fields to update (NVIDIA on every platform; AMD ROCm on Linux). DXGI-sourced AMD on Windows, Apple Metal, Unknown, and CpuOnly all return `None` so the sampler preserves the last snapshot and skips per-tick subprocess spawns entirely.
+A separate cheap path (`refresh_active`) runs on every host-metrics sampler tick (`daemon.metrics_interval_secs`, default 1 Hz). It only re-probes backends that have **live** fields to update (NVIDIA on every platform; AMD ROCm on Linux). DXGI-sourced AMD on Windows, Apple Metal, Unknown, and CpuOnly all return `None` so the sampler preserves the last snapshot and skips per-tick subprocess spawns entirely.
 
 ### DXGI shortcomings (Windows AMD / Intel)
 

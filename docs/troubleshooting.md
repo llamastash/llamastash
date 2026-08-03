@@ -62,9 +62,10 @@ The state directory defaults to `~/.local/state/llamastash/` on Linux, `~/Librar
 **Fix:** widen the range in your config or pin a specific port:
 
 ```yaml
-port_range:
-  start: 41100
-  end: 41500
+daemon:
+  port_range:
+    start: 41100
+    end: 41500
 ```
 
 ```bash
@@ -92,13 +93,21 @@ The toast prints the URL inline when every backend fails, so you can still paste
 
 **Fix:** the daemon was shut down or crashed. Restart it with `llamastash daemon start`. Running children survive daemon exit; you can re-attach to the same launch id once the daemon is back (orphan re-adoption verifies PID + port + `/v1/models` match).
 
-## Daemon shuts down unexpectedly when idle
+## Daemon shuts down on its own when idle
 
-**Symptom:** the daemon exits on its own after you stop running models and close the TUI/CLI.
+**Symptom:** the daemon exits after you stop every model and close the TUI/CLI.
 
-**Cause:** `daemon.idle_timeout_secs` is set to a value > 0 in `config.yaml`. When enabled, a background monitor shuts down the daemon after the configured seconds with no running models AND no active IPC connections. This is opt-in (default `0` = never) and intended for personal desktops where you forget to `daemon stop`.
+**Cause:** `daemon.idle_timeout_secs` is set above `0`. The daemon then shuts itself down once it has had no running models and no attached client for that long. A managed multiplexer's shared umbrella process doesn't count as a running model, so a host running one still idles out.
 
-**Fix:** set `daemon.idle_timeout_secs: 0` in `config.yaml` to disable the idle timer. See [`config.example.yaml`](../config.example.yaml) for the full config reference.
+**Fix:** set `daemon.idle_timeout_secs: 0` to disable the timer. Nothing is lost either way — the daemon respawns on demand the next time a client attaches.
+
+## GPU stays `cpu_only` after the driver loads
+
+**Symptom:** you started the daemon before the GPU driver was ready (fresh boot, a container that got its device mapped later), and `status.gpu` still reports `cpu_only` long after.
+
+**Cause:** `gpu.reprobe_interval_secs: 0` disables the periodic full re-probe, so the boot reading is the only one the daemon ever takes.
+
+**Fix:** set it back to `60` (the default), or restart the daemon once the driver is up.
 
 ## "model already running" surprise
 

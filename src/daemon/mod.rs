@@ -13,6 +13,7 @@ pub mod context;
 pub mod control_plane;
 pub mod discovery_task;
 pub mod host_metrics;
+mod idle;
 pub mod launch_service;
 pub mod lockfile;
 pub mod orphans;
@@ -144,15 +145,15 @@ pub struct DaemonOptions {
   /// comment-safely. `None` disables write-through (tests / no config file)
   /// — mutations stay in-memory.
   pub config_path: Option<PathBuf>,
-  /// GPU full-reprobe interval in seconds (from `Config.gpu.reprobe_interval_secs`).
-  /// `0` disables periodic re-probes; `60` (default) re-probes once a minute.
-  pub gpu_reprobe_interval_secs: u64,
-  /// Seconds of inactivity (no running models AND no active IPC
-  /// connections) before the daemon auto-shuts down. `0` disables
-  /// the idle timer.
-  pub idle_timeout_secs: u64,
-  /// Host-metrics sampler tick interval in seconds (factory 1 = 1 Hz).
-  pub probe_interval_secs: u64,
+  /// How often to re-run the full GPU vendor probe chain, or `None` to
+  /// probe only at startup. From [`crate::config::GpuConfig::reprobe_interval`].
+  pub gpu_reprobe_interval: Option<Duration>,
+  /// Idle-shutdown deadline, or `None` when the timer is off. From
+  /// [`crate::config::DaemonConfig::idle_timeout`].
+  pub idle_timeout: Option<Duration>,
+  /// Host-metrics sampler cadence. From
+  /// [`crate::config::DaemonConfig::metrics_interval`].
+  pub metrics_interval: Duration,
 }
 
 impl DaemonOptions {
@@ -211,9 +212,10 @@ impl DaemonOptions {
       force: false,
       presets: std::collections::BTreeMap::new(),
       config_path: None,
-      gpu_reprobe_interval_secs: 60,
-      idle_timeout_secs: 0,
-      probe_interval_secs: 1,
+      // Sourced from the config factory so the defaults are defined once.
+      gpu_reprobe_interval: crate::config::GpuConfig::default().reprobe_interval(),
+      idle_timeout: crate::config::DaemonConfig::default().idle_timeout(),
+      metrics_interval: crate::config::DaemonConfig::default().metrics_interval(),
     }
   }
 
@@ -245,9 +247,10 @@ impl DaemonOptions {
       force: false,
       presets: std::collections::BTreeMap::new(),
       config_path: None,
-      gpu_reprobe_interval_secs: 60,
-      idle_timeout_secs: 0,
-      probe_interval_secs: 1,
+      // Sourced from the config factory so the defaults are defined once.
+      gpu_reprobe_interval: crate::config::GpuConfig::default().reprobe_interval(),
+      idle_timeout: crate::config::DaemonConfig::default().idle_timeout(),
+      metrics_interval: crate::config::DaemonConfig::default().metrics_interval(),
     })
   }
 }
@@ -397,16 +400,15 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   // before the sampler's first tick lands.
   let initial_gpu = crate::gpu::probe();
 
-  // 7b. Host-metrics sampler (configurable Hz). Re-probes the active
-  // GPU backend each tick for live util/temp/VRAM; sysinfo handles
-  // host CPU% + RAM. The sampler also owns the live `GpuInfo` cell
-  // so `status.gpu` follows hotplug instead of staying pinned to the
-  // boot snapshot. The re-probe interval is configurable via
-  // `gpu.reprobe_interval_secs` (0 disables periodic re-probes).
+  // 7b. Host-metrics sampler. Re-probes the active GPU backend each
+  // tick for live util/temp/VRAM; sysinfo handles host CPU% + RAM. The
+  // sampler also owns the live `GpuInfo` cell so `status.gpu` follows
+  // hotplug instead of staying pinned to the boot snapshot. Cadence and
+  // full-reprobe period are config-driven.
   let sampler = crate::daemon::host_metrics::spawn(
     token.clone(),
-    std::time::Duration::from_secs(opts.probe_interval_secs),
-    opts.gpu_reprobe_interval_secs,
+    opts.metrics_interval,
+    opts.gpu_reprobe_interval,
   );
 
   // 8. Wire the dispatcher context.
@@ -500,54 +502,15 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
     crate::backend::Backend::supervise_at_boot(&backend, &ctx, &opts.log_dir, boot_probe_timeout);
   }
 
-  // 8a-ii. Idle auto-shutdown monitor. When `idle_timeout_secs > 0`,
-  // a background task polls the supervisor registry every 5 s; once
-  // it stays empty AND no IPC connections are active for the full
-  // duration, the shutdown token fires and the process exits cleanly.
-  // This saves power on personal desktops where the user forgets to
-  // `daemon stop`.
-  //
-  // The handle is intentionally unused: the task is cancelled
-  // implicitly when the runtime shuts down (SIGINT triggers the
-  // shutdown token, which exits the loop). The `_` prefix suppresses
-  // the unused-variable warning.
-  let _idle_handle = if opts.idle_timeout_secs > 0 {
-    let idle_supervisors = ctx.supervisors.clone();
-    let idle_connections = ctx.active_connections.clone();
-    let token = token.clone();
-    let timeout = std::time::Duration::from_secs(opts.idle_timeout_secs);
-    Some(tokio::spawn(async move {
-      let mut empty_since: Option<tokio::time::Instant> = None;
-      let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-      interval.tick().await; // first tick is immediate
-      loop {
-        interval.tick().await;
-        // Idle = no running models AND no active IPC connections.
-        // The TUI / CLI stay connected as clients; shutting down
-        // while they are attached would surface "daemon connecting".
-        let idle = idle_supervisors.is_empty().await
-          && idle_connections.load(std::sync::atomic::Ordering::Relaxed) == 0;
-        if idle {
-          match empty_since {
-            Some(start) if start.elapsed() >= timeout => {
-              log::info!(
-                "idle timeout ({}) reached with no running models and no clients; shutting down",
-                timeout.as_secs()
-              );
-              token.trigger();
-              return;
-            }
-            Some(_) => {}
-            None => empty_since = Some(tokio::time::Instant::now()),
-          }
-        } else {
-          empty_since = None;
-        }
-      }
-    }))
-  } else {
-    None
-  };
+  // 8a-ii. Idle auto-shutdown (opt-in via `daemon.idle_timeout_secs`).
+  if let Some(timeout) = opts.idle_timeout {
+    idle::spawn(
+      ctx.supervisors.clone(),
+      ctx.active_connections.clone(),
+      token.clone(),
+      timeout,
+    );
+  }
 
   // 8b. OpenAI-compat proxy listener. Spawned between the
   // host-metrics sampler (which the proxy doesn't depend on but

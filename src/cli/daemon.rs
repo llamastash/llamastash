@@ -566,8 +566,11 @@ pub(crate) fn build_options(
   // Additional `llama-server` servers (multi-backend installs) are resolved by
   // the llama.cpp backend's own `configured_servers` hook when the boot builds
   // the server catalog — no separate resolution here.
-  opts.port_range = config.port_range;
-  opts.probe_timeout_secs = Some(config.probe_timeout_secs);
+  opts.port_range = config.daemon.port_range;
+  opts.probe_timeout_secs = Some(config.daemon.probe_timeout_secs);
+  opts.idle_timeout = config.daemon.idle_timeout();
+  opts.metrics_interval = config.daemon.metrics_interval();
+  opts.gpu_reprobe_interval = config.gpu.reprobe_interval();
   opts.arch_defaults = config.arch_defaults.clone();
   // Config presets seed the daemon's in-memory store; `config_path` is where
   // preset writes land.
@@ -688,12 +691,6 @@ pub(crate) fn build_options(
   .into_iter()
   .collect();
   opts.propagated_cli_args = propagated_cli_args(cli);
-  // GPU probe config: wire the Vulkan-probe enable flag so the daemon
-  // (and its host-metrics sampler) skip `vulkaninfo -j` when disabled.
-  crate::gpu::set_enable_vulkan_probe(config.gpu.enable_vulkan_probe);
-  opts.gpu_reprobe_interval_secs = config.gpu.reprobe_interval_secs.clamp(0, u32::MAX as u64);
-  opts.idle_timeout_secs = config.daemon.idle_timeout_secs;
-  opts.probe_interval_secs = config.daemon.probe_interval_secs.clamp(1, 60);
   Ok(opts)
 }
 
@@ -1151,6 +1148,90 @@ mod tests {
     assert_eq!(opts.proxy.header_read_timeout_secs, 45);
     assert!(opts.proxy.enabled);
     assert!(!opts.proxy.ollama_compat);
+  }
+
+  #[test]
+  fn build_options_threads_the_daemon_and_gpu_blocks_into_daemon_options() {
+    let _env = crate::cli::test_lock::serialize();
+    let cli = parse_cli(&["daemon", "start"]);
+    let config = Config {
+      daemon: crate::config::DaemonConfig {
+        port_range: crate::config::PortRange {
+          start: 50000,
+          end: 50100,
+        },
+        probe_timeout_secs: 600,
+        idle_timeout_secs: 900,
+        metrics_interval_secs: 5,
+      },
+      gpu: crate::config::GpuConfig {
+        enable_vulkan_probe: false,
+        reprobe_interval_secs: 120,
+      },
+      ..Config::default()
+    };
+    let opts = build_options(
+      None, None, false, false, None, false, false, false, &cli, &config,
+    )
+    .expect("build_options");
+    assert_eq!(opts.port_range.start, 50000);
+    assert_eq!(opts.probe_timeout_secs, Some(600));
+    assert_eq!(opts.idle_timeout, Some(Duration::from_secs(900)));
+    assert_eq!(opts.metrics_interval, Duration::from_secs(5));
+    assert_eq!(opts.gpu_reprobe_interval, Some(Duration::from_secs(120)));
+  }
+
+  /// `0` means "off" for the two optional timers and "use the factory"
+  /// for the sampler cadence — the asymmetry is deliberate, since a
+  /// zero-second tick would busy-loop.
+  #[test]
+  fn build_options_resolves_zero_valued_daemon_and_gpu_keys() {
+    let _env = crate::cli::test_lock::serialize();
+    let cli = parse_cli(&["daemon", "start"]);
+    let config = Config {
+      daemon: crate::config::DaemonConfig {
+        idle_timeout_secs: 0,
+        metrics_interval_secs: 0,
+        ..Default::default()
+      },
+      gpu: crate::config::GpuConfig {
+        reprobe_interval_secs: 0,
+        ..Default::default()
+      },
+      ..Config::default()
+    };
+    let opts = build_options(
+      None, None, false, false, None, false, false, false, &cli, &config,
+    )
+    .expect("build_options");
+    assert_eq!(opts.idle_timeout, None, "0 disables the idle timer");
+    assert_eq!(
+      opts.gpu_reprobe_interval, None,
+      "0 disables periodic re-probes"
+    );
+    assert_eq!(
+      opts.metrics_interval,
+      Duration::from_secs(1),
+      "0 must not become a zero-length sampler tick"
+    );
+  }
+
+  #[test]
+  fn build_options_clamps_an_out_of_range_metrics_interval() {
+    let _env = crate::cli::test_lock::serialize();
+    let cli = parse_cli(&["daemon", "start"]);
+    let config = Config {
+      daemon: crate::config::DaemonConfig {
+        metrics_interval_secs: 9_000,
+        ..Default::default()
+      },
+      ..Config::default()
+    };
+    let opts = build_options(
+      None, None, false, false, None, false, false, false, &cli, &config,
+    )
+    .expect("build_options");
+    assert_eq!(opts.metrics_interval, Duration::from_secs(60));
   }
 
   #[test]

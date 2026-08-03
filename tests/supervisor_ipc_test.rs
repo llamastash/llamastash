@@ -257,7 +257,11 @@ async fn run_foreground_with_supervisors(
   let catalog = llamastash::discovery::ModelCatalog::new();
   let _discovery =
     llamastash::daemon::discovery_task::spawn(catalog.clone(), opts.discovery.clone());
-  let sampler = llamastash::daemon::host_metrics::spawn(token.clone(), Duration::from_secs(1), 60);
+  let sampler = llamastash::daemon::host_metrics::spawn(
+    token.clone(),
+    Duration::from_secs(1),
+    Some(Duration::from_secs(60)),
+  );
   let ctx = MethodContext::with_catalog(token.clone(), catalog)
     .with_supervisors(supervisors)
     .with_gpu(llamastash::gpu::GpuInfo::CpuOnly)
