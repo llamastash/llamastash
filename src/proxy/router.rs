@@ -252,7 +252,17 @@ async fn forward_request(state: Arc<ProxyState>, req: Request<Incoming>) -> Prox
       requested_model,
       resolved_row,
       arch,
-    } => route::handle_not_running(&state, inbound, requested_model, *resolved_row, arch).await,
+    } => {
+      route::handle_not_running(
+        &state,
+        inbound,
+        requested_model,
+        *resolved_row,
+        arch,
+        req_mode,
+      )
+      .await
+    }
     RouteDecision::NotFound { requested_model } => error_with_matches(
       StatusCode::NOT_FOUND,
       "model_not_found",

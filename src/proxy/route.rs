@@ -495,14 +495,19 @@ fn same_path(model_id_path: &std::path::Path, row_path: &str) -> bool {
 ///      will not match request semantics, and clients that care
 ///      should branch on the header). If no Ready candidate exists
 ///      → 503 `launch_failed` with the running list.
+///
+/// `endpoint_mode` carries the mode the requested endpoint implies so
+/// the auto-start composes an argv that can answer it (see
+/// [`launch::auto_start`]).
 pub(crate) async fn handle_not_running(
   state: &Arc<ProxyState>,
   inbound: super::forward::InboundRequest,
   requested_model: String,
   resolved_row: CatalogRow,
   requested_arch: Option<String>,
+  endpoint_mode: Option<crate::launch::mode::LaunchMode>,
 ) -> ProxyResponse {
-  let outcome = launch::auto_start(state, &resolved_row).await;
+  let outcome = launch::auto_start(state, &resolved_row, endpoint_mode).await;
   match outcome {
     LaunchOutcome::Ready { port, model_id } => {
       // Touch the MRU using the supervisor we just confirmed Ready.

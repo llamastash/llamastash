@@ -25,6 +25,8 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 ### Fixed
 
+- The proxy no longer starts a second `llama-server` for a model that is already loading ([#56](https://github.com/llamastash/llamastash/issues/56)). A request landing inside the load window now waits for the in-flight launch, whether it came from the proxy, the CLI, the TUI, or a boot restore, instead of spawning a duplicate that held VRAM until the idle sweep.
+- Proxy auto-start picks the launch mode from the endpoint that triggered it ([#56](https://github.com/llamastash/llamastash/issues/56)). A `/v1/rerank` call starts the model in rerank mode instead of inheriting the GGUF's `embedding` hint, which used to produce a server that answered 501 to the very request that started it. Recorded `last_params` mode is the next fallback, then the hint. A chat model is never forced into embedding or rerank mode.
 - `start --server <id>` now rejects an unknown server id (exit 64, listing the valid ids) instead of silently falling back to the default binary and recording the bogus value in `params.server`.
 - The launch picker's `main_gpu` row no longer offers a hardcoded `0-3` ring on hosts with fewer GPUs — it sizes to the actual device count. `split_mode` gains `tensor`.
 - Lemonade models no longer appear in the `/ui` chooser as web-UI-capable — they serve no browser UI, so the chooser lists them non-selectable. (`22fc76f`)
