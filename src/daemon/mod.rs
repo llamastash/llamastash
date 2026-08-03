@@ -144,6 +144,15 @@ pub struct DaemonOptions {
   /// comment-safely. `None` disables write-through (tests / no config file)
   /// — mutations stay in-memory.
   pub config_path: Option<PathBuf>,
+  /// GPU full-reprobe interval in seconds (from `Config.gpu.reprobe_interval_secs`).
+  /// `0` disables periodic re-probes; `60` (default) re-probes once a minute.
+  pub gpu_reprobe_interval_secs: u64,
+  /// Seconds of inactivity (no running models AND no active IPC
+  /// connections) before the daemon auto-shuts down. `0` disables
+  /// the idle timer.
+  pub idle_timeout_secs: u64,
+  /// Host-metrics sampler tick interval in seconds (factory 1 = 1 Hz).
+  pub probe_interval_secs: u64,
 }
 
 impl DaemonOptions {
@@ -202,6 +211,9 @@ impl DaemonOptions {
       force: false,
       presets: std::collections::BTreeMap::new(),
       config_path: None,
+      gpu_reprobe_interval_secs: 60,
+      idle_timeout_secs: 0,
+      probe_interval_secs: 1,
     }
   }
 
@@ -233,6 +245,9 @@ impl DaemonOptions {
       force: false,
       presets: std::collections::BTreeMap::new(),
       config_path: None,
+      gpu_reprobe_interval_secs: 60,
+      idle_timeout_secs: 0,
+      probe_interval_secs: 1,
     })
   }
 }
@@ -382,13 +397,17 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   // before the sampler's first tick lands.
   let initial_gpu = crate::gpu::probe();
 
-  // 7b. Host-metrics sampler (1 Hz). Re-probes the active GPU
-  // backend each tick for live util/temp/VRAM; sysinfo handles
+  // 7b. Host-metrics sampler (configurable Hz). Re-probes the active
+  // GPU backend each tick for live util/temp/VRAM; sysinfo handles
   // host CPU% + RAM. The sampler also owns the live `GpuInfo` cell
   // so `status.gpu` follows hotplug instead of staying pinned to the
-  // boot snapshot.
-  let sampler =
-    crate::daemon::host_metrics::spawn(token.clone(), std::time::Duration::from_secs(1));
+  // boot snapshot. The re-probe interval is configurable via
+  // `gpu.reprobe_interval_secs` (0 disables periodic re-probes).
+  let sampler = crate::daemon::host_metrics::spawn(
+    token.clone(),
+    std::time::Duration::from_secs(opts.probe_interval_secs),
+    opts.gpu_reprobe_interval_secs,
+  );
 
   // 8. Wire the dispatcher context.
   let supervisors = SupervisorRegistry::new();
@@ -480,6 +499,55 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   for backend in crate::backend::Backends::all() {
     crate::backend::Backend::supervise_at_boot(&backend, &ctx, &opts.log_dir, boot_probe_timeout);
   }
+
+  // 8a-ii. Idle auto-shutdown monitor. When `idle_timeout_secs > 0`,
+  // a background task polls the supervisor registry every 5 s; once
+  // it stays empty AND no IPC connections are active for the full
+  // duration, the shutdown token fires and the process exits cleanly.
+  // This saves power on personal desktops where the user forgets to
+  // `daemon stop`.
+  //
+  // The handle is intentionally unused: the task is cancelled
+  // implicitly when the runtime shuts down (SIGINT triggers the
+  // shutdown token, which exits the loop). The `_` prefix suppresses
+  // the unused-variable warning.
+  let _idle_handle = if opts.idle_timeout_secs > 0 {
+    let idle_supervisors = ctx.supervisors.clone();
+    let idle_connections = ctx.active_connections.clone();
+    let token = token.clone();
+    let timeout = std::time::Duration::from_secs(opts.idle_timeout_secs);
+    Some(tokio::spawn(async move {
+      let mut empty_since: Option<tokio::time::Instant> = None;
+      let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+      interval.tick().await; // first tick is immediate
+      loop {
+        interval.tick().await;
+        // Idle = no running models AND no active IPC connections.
+        // The TUI / CLI stay connected as clients; shutting down
+        // while they are attached would surface "daemon connecting".
+        let idle = idle_supervisors.is_empty().await
+          && idle_connections.load(std::sync::atomic::Ordering::Relaxed) == 0;
+        if idle {
+          match empty_since {
+            Some(start) if start.elapsed() >= timeout => {
+              log::info!(
+                "idle timeout ({}) reached with no running models and no clients; shutting down",
+                timeout.as_secs()
+              );
+              token.trigger();
+              return;
+            }
+            Some(_) => {}
+            None => empty_since = Some(tokio::time::Instant::now()),
+          }
+        } else {
+          empty_since = None;
+        }
+      }
+    }))
+  } else {
+    None
+  };
 
   // 8b. OpenAI-compat proxy listener. Spawned between the
   // host-metrics sampler (which the proxy doesn't depend on but

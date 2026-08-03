@@ -122,6 +122,29 @@ disable_default_cache_paths:
 # Sources — CLI: --no-scan (global) · Env: LLAMASTASH_NO_SCAN=1.
 disable_scan: false
 
+# ─── GPU probe ────────────────────────────────────────────────────
+#
+# Controls which vendor tools the daemon spawns during initial and
+# periodic hardware detection.  By default the daemon probes every
+# backend: NVIDIA → AMD → Metal → Vulkan fallback, then CpuOnly.
+#
+# When a native probe (NVIDIA / AMD / Metal) already covers your GPU,
+# the Vulkan fallback is redundant — setting `enable_vulkan_probe` to
+# `false` stops it from spawning `vulkaninfo` at all.
+#
+# `reprobe_interval_secs` controls how often (in seconds) the daemon
+# re-runs the full vendor chain to catch GPU hotplug, late driver
+# loads, or CpuOnly → detected transitions.  `0` disables periodic
+# re-probes entirely (the initial probe still runs at daemon start).
+# CpuOnly and Vulkan-only hosts skip re-probes even when this is
+# > 0 — they have no live metrics to refresh.  Clamped to
+# `0..=u32::MAX` at read time.
+#
+# Sources — CLI: (none) · Env: (none). Config-only.
+gpu:
+  enable_vulkan_probe: true
+  reprobe_interval_secs: 60
+
 # ─── Daemon ───────────────────────────────────────────────────────
 #
 # Inclusive TCP port range the supervisor picks from when launching
@@ -132,6 +155,31 @@ disable_scan: false
 port_range:
   start: 41100
   end: 41300
+
+# ─── Daemon lifecycle ─────────────────────────────────────────────
+#
+# Controls daemon idle-shutdown and host-metrics sampling.
+#
+# Sources — CLI: (none) · Env: (none). Config-only.
+daemon:
+  # Seconds of inactivity (no running models AND no active IPC
+  # connections) before the daemon auto-shuts down. `0` (default)
+  # disables the idle timer — the daemon runs until explicitly
+  # stopped via `daemon stop` / SIGINT. When > 0, a background
+  # monitor checks every 5 s; once both conditions hold for the
+  # full duration, the shutdown token fires and the process exits
+  # cleanly.  Useful on personal desktops where you forget to
+  # `daemon stop` after finishing work.
+  idle_timeout_secs: 0
+
+  # Interval in seconds for the host-metrics live-sampler tick
+  # (CPU%, RAM, GPU util/temp/VRAM). Factory `1` (1 Hz). Raising
+  # this reduces the frequency of `nvidia-smi` / `rocm-smi` calls
+  # at the cost of less responsive dashboard numbers. Clamped to
+  # `1..=60` at read time; `0` falls back to the factory (1 s).
+  # Note: unlike `reprobe_interval_secs` where `0` disables the
+  # feature entirely, `probe_interval_secs: 0` is a no-op reset.
+  probe_interval_secs: 1
 
 # Per-launch health-probe timeout in seconds. 120s suits a typical
 # 7B–13B model on local NVMe; raise to ~600 for 70B+ on slow disks

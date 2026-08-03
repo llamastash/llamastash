@@ -56,6 +56,10 @@ pub struct Config {
   pub disable_default_cache_paths: CachePathsConfig,
   pub port_range: PortRange,
   pub keybindings: BTreeMap<String, String>,
+  /// GPU probe configuration. Controls which vendor tools the daemon
+  /// spawns during initial and periodic hardware detection.
+  #[serde(default)]
+  pub gpu: GpuConfig,
   pub disable_scan: bool,
   /// Per-launch health-probe timeout in seconds. Defaults to 120 s,
   /// which is enough for the typical 7B–13B model on local NVMe but
@@ -119,6 +123,10 @@ pub struct Config {
   /// all-invalid list falls back to the factory `[65, 100, 50, 35, 0]`.
   #[serde(default = "default_left_pane_ratios")]
   pub left_pane_ratios: Vec<u16>,
+  /// Daemon lifecycle and host-metrics configuration. Nested under
+  /// `daemon:` in `config.yaml`.
+  #[serde(default)]
+  pub daemon: DaemonConfig,
   /// Named launch presets, the single writable home for presets. Map
   /// keys are classified per-resolution against the live model catalog
   /// (see [`crate::launch::presets::classify_preset_key`]): a key that
@@ -136,6 +144,40 @@ pub struct Config {
 /// right-full. Also the fallback when a user override sanitizes to empty.
 pub fn default_left_pane_ratios() -> Vec<u16> {
   vec![65, 100, 50, 35, 0]
+}
+
+fn default_probe_interval_secs() -> u64 {
+  1
+}
+
+/// Daemon lifecycle and host-metrics configuration.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "snake_case")]
+pub struct DaemonConfig {
+  /// Seconds of inactivity (no running models AND no active IPC
+  /// connections) before the daemon auto-shuts down. `0` (factory)
+  /// disables the idle timer — the daemon runs until explicitly
+  /// stopped via `daemon stop` / SIGINT. When > 0, a background
+  /// monitor checks every 5 s; once both conditions hold for the
+  /// full duration, the shutdown token fires and the process exits
+  /// cleanly.
+  pub idle_timeout_secs: u64,
+  /// Interval in seconds for the host-metrics live-sampler tick
+  /// (CPU%, RAM, GPU util/temp/VRAM). Factory `1` (1 Hz). Raising
+  /// this reduces the frequency of `nvidia-smi` / `rocm-smi` calls
+  /// at the cost of less responsive dashboard numbers. Clamped to
+  /// `1..=60` at read time; `0` falls back to the factory.
+  #[serde(default = "default_probe_interval_secs")]
+  pub probe_interval_secs: u64,
+}
+
+impl Default for DaemonConfig {
+  fn default() -> Self {
+    Self {
+      idle_timeout_secs: 0,
+      probe_interval_secs: 1,
+    }
+  }
 }
 
 /// Sanitize a configured `left_pane_ratios` list: keep at most the first
@@ -863,6 +905,42 @@ pub enum DefaultLaunchMode {
   Inherited,
 }
 
+/// GPU probe configuration — which vendor tools the daemon spawns
+/// during initial and periodic hardware detection.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "snake_case")]
+pub struct GpuConfig {
+  /// When `true` (the default), the Vulkan fallback probe
+  /// (`vulkaninfo -j` / `--summary`) runs at startup and on periodic
+  /// re-probes. Set to `false` to skip it entirely — useful when a
+  /// native NVIDIA/AMD/Metal probe already covers all GPUs and you
+  /// don't want `vulkaninfo` spawning subprocesses. Factory `true`.
+  pub enable_vulkan_probe: bool,
+  /// How often (in seconds) the daemon re-runs the full vendor probe
+  /// chain to catch GPU hotplug, late driver loads, or CpuOnly →
+  /// detected transitions. `0` disables periodic re-probes entirely
+  /// (initial probe still runs at daemon start). CpuOnly and
+  /// Vulkan-only (`Unknown`) hosts skip re-probes even when this is
+  /// `> 0` — CpuOnly has nothing to refresh, and Vulkan device info
+  /// is static. Clamped to `0..=u32::MAX` at read time. Factory
+  /// `60` (once a minute).
+  #[serde(default = "default_reprobe_interval_secs")]
+  pub reprobe_interval_secs: u64,
+}
+
+fn default_reprobe_interval_secs() -> u64 {
+  60
+}
+
+impl Default for GpuConfig {
+  fn default() -> Self {
+    Self {
+      enable_vulkan_probe: true,
+      reprobe_interval_secs: 60,
+    }
+  }
+}
+
 impl Default for Config {
   fn default() -> Self {
     Self {
@@ -872,6 +950,7 @@ impl Default for Config {
       disable_default_cache_paths: CachePathsConfig::default(),
       port_range: PortRange::default(),
       keybindings: BTreeMap::new(),
+      gpu: GpuConfig::default(),
       disable_scan: false,
       probe_timeout_secs: 120,
       mouse_focus: false,
@@ -882,6 +961,7 @@ impl Default for Config {
       ascii_glyphs: false,
       left_pane_ratios: default_left_pane_ratios(),
       presets: BTreeMap::new(),
+      daemon: DaemonConfig::default(),
     }
   }
 }

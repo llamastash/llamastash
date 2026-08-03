@@ -212,7 +212,16 @@ pub struct SamplerHandles {
   pub gpu: Arc<RwLock<GpuInfo>>,
 }
 
-pub fn spawn(shutdown: ShutdownToken, interval: Duration) -> SamplerHandles {
+pub fn spawn(
+  shutdown: ShutdownToken,
+  interval: Duration,
+  reprobe_interval_secs: u64,
+) -> SamplerHandles {
+  // Defensive clamp: an interval of 0 would turn the sampler into a
+  // CPU-burning busy loop (tokio::time::sleep(Duration::ZERO) returns
+  // immediately). The CLI layer clamps to 1..=60, but programmatic
+  // callers may not.
+  let interval = std::cmp::max(interval, Duration::from_secs(1));
   let snapshot = Arc::new(RwLock::new(HostMetricsSnapshot {
     gpu_backend: HostMetricsSnapshot::UNINITIALIZED_BACKEND.into(),
     ..HostMetricsSnapshot::default()
@@ -239,11 +248,14 @@ pub fn spawn(shutdown: ShutdownToken, interval: Duration) -> SamplerHandles {
     // Cache the detected GPU backend so we only spawn the matching
     // vendor tool each tick instead of running the full
     // nvidia→amd→metal→vulkan chain every second. Hotplug / late
-    // driver loads are caught by `FULL_REPROBE_TICKS` below.
+    // driver loads are caught by the periodic full re-probe below.
     let mut info = tokio::select! {
       _ = shutdown.wait_until_triggered() => return,
       result = probe_gpu_full() => result,
     };
+    // Convert seconds to ticks (1 Hz cadence). `0` disables periodic
+    // re-probes entirely — the initial probe still runs above.
+    let reprobe_ticks: u32 = reprobe_interval_secs as u32;
     let mut ticks_since_full_reprobe: u32 = 0;
     loop {
       tokio::select! {
@@ -256,13 +268,31 @@ pub fn spawn(shutdown: ShutdownToken, interval: Duration) -> SamplerHandles {
       // vanished since the last tick (hot-removed cards / drivers).
       components.refresh(true);
       ticks_since_full_reprobe += 1;
-      if ticks_since_full_reprobe >= FULL_REPROBE_TICKS {
-        // Periodic full re-probe: catches hotplug (new GPU plugged
-        // in), late driver load, and transitions from CpuOnly →
-        // detected once the vendor tool becomes available.
+      // Periodic full re-probe: catches hotplug (new GPU plugged
+      // in), late driver load, and transitions from CpuOnly →
+      // detected once the vendor tool becomes available.
+      //
+      // Skip conditions:
+      // - `reprobe_ticks == 0` → user disabled periodic re-probes.
+      // - `CpuOnly` → nothing to refresh; hotplug detection is the
+      //   only reason to re-probe, and it's rare on personal desktops.
+      // - `Unknown` (Vulkan-only) → device info is static; re-running
+      //   `vulkaninfo` every minute wastes a subprocess spawn.
+      let should_reprobe = reprobe_ticks > 0 && ticks_since_full_reprobe >= reprobe_ticks;
+      let is_idle_backend = matches!(info, GpuInfo::CpuOnly | GpuInfo::Unknown { .. });
+      if should_reprobe && !is_idle_backend {
         info = probe_gpu_full().await;
         ticks_since_full_reprobe = 0;
-      } else if let Some(refreshed) = refresh_active_gpu(info.clone()).await {
+      } else if ticks_since_full_reprobe >= reprobe_ticks {
+        // Reset counter even when skipped to avoid u32 overflow on
+        // very long uptimes with reprobe_ticks > 0 but idle backend.
+        // Trade-off: if a GPU hotplugs during the skipped window,
+        // detection is delayed by one full interval rather than
+        // immediate. Acceptable for personal desktops where hotplug
+        // is rare.
+        ticks_since_full_reprobe = 0;
+      }
+      if let Some(refreshed) = refresh_active_gpu(info.clone()).await {
         // Fast path: only the active vendor's tool is spawned. No-op
         // for backends without live metrics (CpuOnly, AppleMetal,
         // Unknown/Vulkan).
@@ -279,12 +309,6 @@ pub fn spawn(shutdown: ShutdownToken, interval: Duration) -> SamplerHandles {
   });
   SamplerHandles { snapshot, gpu }
 }
-
-/// How often to re-run the full vendor chain to catch hotplug /
-/// late driver loads. At the daemon's 1 Hz sampling cadence this is
-/// once a minute, which keeps a freshly-plugged-in GPU surfacing in
-/// the host pane within ~60 s while avoiding 86,400 spawns/day.
-const FULL_REPROBE_TICKS: u32 = 60;
 
 fn host_refresh_kind() -> RefreshKind {
   RefreshKind::nothing()
@@ -792,7 +816,7 @@ mod tests {
     // `wait_until_triggered` select arm would leave the task looping
     // forever and the strong count stuck at 2.
     let token = ShutdownToken::new();
-    let handles = spawn(token.clone(), Duration::from_millis(20));
+    let handles = spawn(token.clone(), Duration::from_millis(20), 60);
     // Give the task a moment to enter its loop and clone both Arcs.
     tokio::time::sleep(Duration::from_millis(30)).await;
     token.trigger();
@@ -821,7 +845,7 @@ mod tests {
   #[tokio::test]
   async fn spawn_updates_snapshot_after_first_tick() {
     let token = ShutdownToken::new();
-    let handles = spawn(token.clone(), Duration::from_millis(50));
+    let handles = spawn(token.clone(), Duration::from_millis(50), 60);
     // First tick lands after the initial GPU probe + `interval`. On
     // macOS the probe shells out to system_profiler which can take
     // 1-3s; allow 5s total headroom for CI and loaded machines.
@@ -836,6 +860,39 @@ mod tests {
     }
     panic!(
       "host-metrics sampler did not produce a snapshot within 5s; \
+       snapshot: {:?}",
+      handles.snapshot.read().await
+    );
+  }
+
+  #[tokio::test]
+  async fn spawn_with_zero_reprobe_interval_disables_periodic_reprobe() {
+    // When `reprobe_interval_secs = 0`, the sampler should still start
+    // and produce a snapshot (initial probe runs), but skip periodic
+    // full re-probes. Verify it boots and shuts down cleanly.
+    let token = ShutdownToken::new();
+    let handles = spawn(token.clone(), Duration::from_millis(50), 0);
+    // Poll until the initial probe populates the snapshot — same
+    // pattern as `spawn_updates_snapshot_after_first_tick`.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+      let read = handles.snapshot.read().await.clone();
+      if read.ram_total_bytes > 0 && read.gpu_backend != HostMetricsSnapshot::UNINITIALIZED_BACKEND
+      {
+        token.trigger();
+        // Wait for task to exit.
+        let exit_deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while Arc::strong_count(&handles.snapshot) > 1 && std::time::Instant::now() < exit_deadline
+        {
+          tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(Arc::strong_count(&handles.snapshot), 1);
+        return;
+      }
+      tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!(
+      "host-metrics sampler did not produce a snapshot within 5s with reprobe=0; \
        snapshot: {:?}",
       handles.snapshot.read().await
     );
