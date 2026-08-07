@@ -201,9 +201,10 @@ pub enum GpuInfo {
 /// How a device's unified-vs-discrete verdict was reached.
 /// Surfaced in the `doctor` hardware section so a misclassification is
 /// inspectable rather than silent. The serialized snake_case value
-/// (`apple_unified` / `explicit_dxgi_uma` / `carve_signature` /
-/// `discrete`) is the precise *method* and stays in `--json`; the human
-/// [`Self::label`] collapses it to the verdict + confidence.
+/// (`apple_unified` / `explicit_dxgi_uma` / `nvml_no_framebuffer` /
+/// `carve_signature` / `discrete`) is the precise *method* and stays in
+/// `--json`; the human [`Self::label`] collapses it to the verdict +
+/// confidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClassSource {
@@ -212,6 +213,11 @@ pub enum ClassSource {
   AppleUnified,
   /// Windows D3D12 `UMA` architecture flag — authoritative.
   ExplicitDxgiUma,
+  /// NVIDIA coherent-UMA parts (GB10 / Grace Blackwell, Jetson): NVML
+  /// reports the framebuffer columns as unsupported because CPU and GPU
+  /// share one physical pool. A discrete card always reports a size, so
+  /// the absence is itself the signal — authoritative.
+  NvmlNoFramebuffer,
   /// Linux amdgpu: no driver flag exists; classified unified by the
   /// VRAM carve-out signature (tiny dedicated VRAM + large GTT pool).
   CarveSignature,
@@ -228,7 +234,9 @@ impl ClassSource {
   /// serialized enum value.
   pub fn label(self) -> &'static str {
     match self {
-      ClassSource::AppleUnified | ClassSource::ExplicitDxgiUma => "unified",
+      ClassSource::AppleUnified | ClassSource::ExplicitDxgiUma | ClassSource::NvmlNoFramebuffer => {
+        "unified"
+      }
       ClassSource::CarveSignature => "unified, inferred",
       ClassSource::Discrete => "discrete",
     }
@@ -279,7 +287,8 @@ pub struct GpuDevice {
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub uma_shared_used_bytes: Option<u64>,
   /// How this device's unified-vs-discrete verdict was reached.
-  /// `None` on backends that don't classify (NVIDIA, Vulkan/unknown).
+  /// `None` on backends that don't classify (Vulkan/unknown, and NVIDIA
+  /// cards that report a normal framebuffer).
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub classification_source: Option<ClassSource>,
 }
