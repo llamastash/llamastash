@@ -8,7 +8,7 @@ use crate::cli::cli_args::{Cli, ListArgs};
 use crate::cli::client::connect_or_spawn;
 use crate::cli::exit_codes::CliResult;
 use crate::cli::output::{filter_rows, list_human, list_json, pretty_json};
-use crate::cli::resolve::{fetch_catalog, fetch_status, running_index};
+use crate::cli::resolve::{fetch_catalog, fetch_status, multi_device, running_index};
 use crate::config::Config;
 
 pub async fn handle(args: ListArgs, cli: &Cli, config: &Config) -> CliResult {
@@ -21,14 +21,14 @@ pub async fn handle(args: ListArgs, cli: &Cli, config: &Config) -> CliResult {
   // the catalog row. Best-effort: a daemon that fails to answer
   // `status` is treated as "nothing running" rather than erroring out
   // the list itself.
-  let running = match fetch_status(&mut client).await {
-    Ok(snap) => running_index(&snap.models),
-    Err(_) => Default::default(),
+  let (running, multi_dev) = match fetch_status(&mut client).await {
+    Ok(snap) => (running_index(&snap.models), multi_device(&snap.servers)),
+    Err(_) => (Default::default(), false),
   };
   if args.json {
     println!("{}", pretty_json(&list_json(&rows, &running)));
   } else {
-    print!("{}", list_human(&rows, &running));
+    print!("{}", list_human(&rows, &running, multi_dev));
   }
   Ok(())
 }
