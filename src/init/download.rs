@@ -501,9 +501,12 @@ pub(crate) fn select_files(
 /// Select companion siblings (mmproj projector + separate MTP draft head) to
 /// download alongside the chosen `base_files`, per `policy`. Companions are
 /// pattern-matched **within the same repo** (trust boundary — no cross-repo
-/// fetch) using the same predicates discovery uses on disk, so what `pull`
-/// fetches is exactly what `find_mmproj` / `find_mtp_head` locate later. One
-/// per kind by default (KD5); `All` keeps every variant; `None` fetches none.
+/// fetch). Selection is name-only: a remote listing carries no header, so the
+/// header check discovery applies on disk ([`crate::discovery::scanner::is_mtp_head_file`]) has nothing to
+/// read here. A head named like a quant (`…-MTP-Q4K-Q8_0-F32.gguf`) is missed
+/// and has to be pulled by filename; discovery still classifies it correctly
+/// once it lands. One per kind by default (KD5); `All` keeps every variant;
+/// `None` fetches none.
 /// Files already in `base_files` (e.g. an extension-only pull that swept them
 /// in) are excluded so nothing downloads twice.
 pub(crate) fn select_companions(

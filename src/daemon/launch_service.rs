@@ -784,7 +784,7 @@ pub(crate) async fn compose_and_spawn(
     crate::launch::params::resolve_mtp_directive(
       launch_params.mtp,
       mtp_embedded.is_some(),
-      crate::discovery::scanner::find_mtp_head(&parsed.model_path),
+      crate::discovery::scanner::find_mtp_head(&parsed.model_path, arch.as_deref()),
       &mut warnings,
     )
   } else {

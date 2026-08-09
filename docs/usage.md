@@ -448,7 +448,9 @@ llamastash daemon status [--json]   # PID + uptime + connections + managed launc
 llamastash **auto-detects and enables it** for capable models. A model is MTP-capable when either:
 
 - it carries an **embedded** draft head (`{arch}.nextn_predict_layers > 0` — Qwen3.5/3.6, GLM-4.x, DeepSeek), or
-- a **separate** draft head sits next to it as a `mtp-*.gguf` sibling (the Gemma-4 shape).
+- a **separate** draft head sits next to it (the Gemma-4 shape, `mtp-*.gguf`, or a head named like a quant such as DeepSeek-V4's `…-MTP-Q4K-Q8_0-F32.gguf`).
+
+Heads are identified by what is inside the file, not by its name, because the name is genuinely ambiguous: plenty of published *models* wear `-MTP-` to advertise embedded draft layers. A head is excluded from the model list and paired with the model it drafts for; a model that merely says MTP in its name stays launchable.
 
 The `↯` glyph next to a model title (TUI) and the `mtp` block in `status` tell you whether MTP is capable and running: `enable` is your intent (auto/on/off), `active` is whether the serving backend actually dispatched with MTP, and `acceptance` is the latest draft-acceptance rate it reports (present once the model has served enough tokens; a backend that publishes no acceptance figures leaves it null).
 
