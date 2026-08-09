@@ -140,6 +140,9 @@ pub fn is_ds4_alias(id: &str) -> bool {
   id.starts_with(DS4_ALIAS_PREFIX)
 }
 
+/// The one `general.architecture` ds4 serves.
+pub const DS4_ARCH: &str = "deepseek4";
+
 /// The **ds4-compatibility predicate** — the single routing signal (D-compat).
 ///
 /// A GGUF is ds4-compatible when its arch is `deepseek4` **and** its
@@ -159,7 +162,7 @@ pub fn is_ds4_alias(id: &str) -> bool {
 /// functions and can drift if ds4 adds quant kernels.
 pub fn ds4_compatible(header: &GgufHeader) -> bool {
   let arch = header.get("general.architecture").and_then(|v| v.as_str());
-  if arch != Some("deepseek4") {
+  if arch != Some(DS4_ARCH) {
     return false;
   }
   let mut saw_expert = false;
@@ -600,7 +603,7 @@ impl Backend for Ds4Backend {
   fn kv_bytes(&self, header: &GgufHeader, arch: Option<&str>, ctx_len: u64) -> Option<u64> {
     // The compressed-cache model, gated on the `deepseek4` arch exactly as the
     // pre-seam `if a == "deepseek4"` estimator branch was.
-    (arch == Some("deepseek4")).then(|| ds4_kv_bytes(header, ctx_len))
+    (arch == Some(DS4_ARCH)).then(|| ds4_kv_bytes(header, ctx_len))
   }
 
   fn auto_routes(&self, header: &GgufHeader) -> bool {
@@ -621,7 +624,7 @@ impl Backend for Ds4Backend {
     // any engine, and attempting it wastes a 100 GB+ load. Gated on the
     // `deepseek4` arch so an unrelated GGUF that merely matches the
     // `…-Layers00-30` filename pattern is never wrongly refused.
-    if arch != Some("deepseek4") {
+    if arch != Some(DS4_ARCH) {
       return None;
     }
     let name = path.file_name().and_then(|n| n.to_str())?;
@@ -727,7 +730,11 @@ impl Backend for Ds4Backend {
         Some(crate::config::KnobValue::Set(_))
       )
     {
-      if let Some(head) = crate::discovery::scanner::find_mtp_head(&params.model_path) {
+      // ds4 serves one arch, so the head lookup can key on it directly instead
+      // of re-reading the model header for a value already known here.
+      if let Some(head) =
+        crate::discovery::scanner::find_mtp_head(&params.model_path, Some(DS4_ARCH))
+      {
         log::info!("ds4: auto-paired MTP sidecar {}", head.display());
         params.backend_knobs.insert(
           "mtp".to_string(),
