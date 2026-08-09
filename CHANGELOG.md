@@ -4,6 +4,10 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 ## [Unreleased]
 
+## [0.1.0] — 2026-08-09
+
+This release regroups every backend and daemon config key under typed `backend:` / `daemon:` maps, turns each backend's binary into a list of selectable **servers** (one install can offer CUDA / ROCm / Vulkan launches side by side), and unifies the `list` / `show` JSON on one catalog-row shape. It also ships **MTP speculative decoding**, roughly a 2x decode speedup on capable models, on by default. Seven breaking changes, all config-, JSON- or table-shape only; there is no migration step (pre-1.0), so re-nest `config.yaml` against `config.example.yaml` and re-point any `list --json` / `awk -F\t` consumers.
+
 ### Added
 
 - `llamastash config` opens the active config file in `$EDITOR`.
@@ -12,8 +16,8 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 - **MTP (multi-token prediction) speculative decoding** ([#51](https://github.com/llamastash/llamastash/issues/51)). llamastash auto-detects MTP-capable GGUFs (embedded nextn head, or a separate `mtp-*.gguf` drafter sibling) and enables it by default. llama.cpp launches with `--spec-type draft-mtp` (+ `--model-draft` for a separate head), fit-aware. Roughly a 2x decode speedup at high draft acceptance, and output-equivalent to non-speculative decoding. Control it per launch with `--mtp auto|on|off` (no config-file entry) and `--mtp-draft-n N`, or the TUI launch picker's `mtp` cycle row (shown only for capable models); forcing it on a non-capable model warns and skips rather than failing the launch. A `↯` glyph marks MTP-capable models in the TUI, and `status` reports each launch's MTP state + live draft-acceptance rate. ds4 gains the same via its `--mtp`/`--mtp-draft`/`--mtp-margin` native knobs, auto-pairing a sidecar found next to the model. See `docs/usage.md#mtp-speculative-decoding`.
 - **`pull` fetches companion files.** A `pull` now also downloads the model's mmproj projector and MTP draft-head siblings from the same repo (one per kind by default, `--all-companions` for every variant, `--no-companions` to skip) — so a multimodal or speculative-decoding model arrives ready to launch instead of missing its companion.
 - ds4 gains five typed native knobs (9 → 14): the SSD-streaming tuning family `ssd_streaming_cache_experts` / `ssd_streaming_preload_experts` / `ssd_streaming_cold` (cap the resident expert set on below-floor launches instead of reaching for the extras tail) plus the `warm_weights` and `quality` bools.
-- GPU probe tuning: `gpu.enable_vulkan_probe` (default `true`) skips the `vulkaninfo` fallback when a native probe already covers your cards, and `gpu.reprobe_interval_secs` (default `60`, `0` to disable) sets how often the full vendor chain re-runs for hotplug / late driver loads. (#55)
-- Daemon lifecycle tuning: `daemon.idle_timeout_secs` (default `0` = never) shuts the daemon down after N seconds with no running models and no client attached, and `daemon.metrics_interval_secs` (default `1`) sets the host-metrics sampler cadence. (#55)
+- GPU probe tuning: `gpu.enable_vulkan_probe` (default `true`) skips the `vulkaninfo` fallback when a native probe already covers your cards, and `gpu.reprobe_interval_secs` (default `60`, `0` to disable) sets how often the full vendor chain re-runs for hotplug / late driver loads. ([#55](https://github.com/llamastash/llamastash/pull/55), thanks [@qo0u0op](https://github.com/qo0u0op))
+- Daemon lifecycle tuning: `daemon.idle_timeout_secs` (default `0` = never) shuts the daemon down after N seconds with no running models and no client attached, and `daemon.metrics_interval_secs` (default `1`) sets the host-metrics sampler cadence. ([#55](https://github.com/llamastash/llamastash/pull/55), thanks [@qo0u0op](https://github.com/qo0u0op))
 
 ### Changed
 
@@ -29,7 +33,9 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 - `Ctrl+D` deletes the whole model, not just one file. Split shards, the mmproj projector, the MTP draft head and the HuggingFace cache blob behind a snapshot symlink now go with it, and the confirm popup names them. A companion another model in the folder still pairs with is left alone. Deleting one quant out of a shared HF repo no longer takes the other quants with it — the whole `models--*` directory is only removed once it holds the last model.
 - An unusable `daemon.port_range` (inverted, or `start: 0`) is refused at `daemon start` naming the key, instead of booting fine and failing on the first launch with `port allocation failed`.
-- NVIDIA coherent-UMA GPUs (GB10 / DGX Spark, Jetson) are no longer dropped from detection ([#59](https://github.com/llamastash/llamastash/issues/59)) — `nvidia-smi` reports no framebuffer on these shared-pool parts and the probe used to discard the whole device, so `doctor` printed `GPU  CPU only` on a machine with a GB10 in it.
+- A config left on the old top-level `port_range` / `probe_timeout_secs` is now named on stderr at startup instead of being silently dropped, and the `gpu:` / `daemon:` blocks reject unknown keys so a typo in one of the new names is an error rather than an undetectable no-op.
+- A client whose daemon shuts down mid-request now exits `65` (`DAEMON_UNREACHABLE`) instead of `71` (`UNKNOWN`), because the closed connection reads as a plain request error that the old check missed.
+- NVIDIA coherent-UMA GPUs (GB10 / DGX Spark, Jetson) are no longer dropped from detection ([#59](https://github.com/llamastash/llamastash/issues/59), thanks [@BernardoGV](https://github.com/BernardoGV)) — `nvidia-smi` reports no framebuffer on these shared-pool parts and the probe used to discard the whole device, so `doctor` printed `GPU  CPU only` on a machine with a GB10 in it.
 - MTP draft heads are recognised by what is in the file, not by its name. A head named like a quant (DeepSeek-V4's `…-MTP-Q4K-Q8_0-F32.gguf`) used to be listed as a launchable model and never paired with the model it drafts for, so ds4 speculative decoding never engaged for the published head. Models that merely carry `-MTP-` in the name (`Qwen3.6-27B-MTP` and friends) stay launchable, and a head now pairs across every quant of its model rather than only a name-matched one.
 - A ds4 launch no longer sets SSD streaming and an MTP draft head at the same time — ds4-server rejects that pair _after_ loading the full model, so a doomed launch used to cost a multi-minute wait. llamastash now drops whichever of the two it picked itself, and refuses up front when both were set explicitly.
 - The proxy no longer starts a second `llama-server` for a model that is already loading ([#56](https://github.com/llamastash/llamastash/issues/56)). A request landing inside the load window now waits for the in-flight launch, whether it came from the proxy, the CLI, the TUI, or a boot restore, instead of spawning a duplicate that held VRAM until the idle sweep.
@@ -42,6 +48,14 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 ### Security
 
 - The proxy's fail-closed LAN backstop now treats a blank/whitespace `proxy.api_key` as no key (matching `ProxyAuth`), so a whitespace-only key can never leave the LAN listener keyless. Defense-in-depth — production paths already normalize the key before this point.
+
+### Contributors
+
+Thanks to everyone who shipped code in this release:
+
+- [@qo0u0op](https://github.com/qo0u0op): GPU probe tuning, daemon idle shutdown, configurable sampler cadence ([#55](https://github.com/llamastash/llamastash/pull/55))
+- [@BernardoGV](https://github.com/BernardoGV): keep coherent-UMA NVIDIA GPUs (GB10 / DGX Spark, Jetson) in detection ([#60](https://github.com/llamastash/llamastash/pull/60))
+- [@deepu105](https://github.com/deepu105): everything else
 
 ## [0.0.6] — 2026-07-13
 
