@@ -27,8 +27,8 @@ pub fn row_path(v: &Value) -> Option<&str> {
 
 /// Render `list_models` rows as a padded table on TTY, or
 /// tab-separated rows when colors are disabled (piped / `--no-colors` /
-/// `NO_COLOR`). Columns: NAME, ARCH, PARAMS, QUANT, CTX, SIZE, MODE,
-/// [BACKEND], STATUS, [DEVICE].
+/// `NO_COLOR`). Columns: `NAME ARCH PARAMS QUANT CTX SIZE MODE [BACKEND]
+/// STATUS [DEVICE]` — the bracketed two are conditional (see below).
 ///
 /// SIZE displays the GGUF weights footprint (matches the TUI list
 /// pane's SIZE column) — PATH was dropped because the canonical paths
@@ -108,15 +108,7 @@ pub fn list_human(
       let status = running_status_cell(running.get(&r.path));
       let mut cells = vec![r.name(), arch, params, quant, ctx, size, mode];
       if show_backend {
-        // All supported backends, priority-ordered (`ds4|llamacpp`); the table
-        // formatter clips if it overflows. Falls back to the single primary
-        // badge, then `?`.
-        let backend_cell = if !r.supported_backends.is_empty() {
-          r.supported_backends.join("|")
-        } else {
-          crate::tui::fmt::list_cell(r.backend.as_deref(), "?")
-        };
-        cells.push(backend_cell);
+        cells.push(backend_badge(r, "?"));
       }
       cells.push(status);
       if multi_device {
@@ -158,6 +150,31 @@ fn running_status_cell(row: Option<&RunningRow>) -> String {
   format!("{glyph} {state_label} {port_part}")
 }
 
+/// Backend badge for a catalog row: every backend that can serve it,
+/// priority-ordered (`ds4|llamacpp`), else the daemon's single tag, else
+/// `placeholder`. Shared by the `list` BACKEND column and `show`'s header
+/// row so the two surfaces can never name different backends for one model.
+/// The table formatter clips the cell if it overflows.
+pub(crate) fn backend_badge(row: &CatalogRow, placeholder: &str) -> String {
+  if !row.supported_backends.is_empty() {
+    return row.supported_backends.join("|");
+  }
+  crate::tui::fmt::list_cell(row.backend.as_deref(), placeholder)
+}
+
+/// The explicit `--device` selector a running launch was dispatched with,
+/// or `None` when it took the backend's default placement. One reader for
+/// the `knobs.device` wire path, shared by the DEVICE cell and the
+/// `list --json` per-row `status` object.
+fn device_selector(row: &RunningRow) -> Option<&str> {
+  row
+    .params
+    .as_ref()
+    .and_then(|p| p.get("knobs"))
+    .and_then(|k| k.get("device"))
+    .and_then(Value::as_str)
+}
+
 /// Render the DEVICE cell, mirroring the TUI list pane's
 /// `column_value(ColumnId::Device)`: an explicit `--device` selector
 /// renders verbatim; a *running* row on the device-selecting default
@@ -168,13 +185,7 @@ fn device_cell(row: Option<&RunningRow>) -> String {
   let Some(r) = row else {
     return "?".into();
   };
-  let explicit = r
-    .params
-    .as_ref()
-    .and_then(|p| p.get("knobs"))
-    .and_then(|k| k.get("device"))
-    .and_then(Value::as_str);
-  match explicit {
+  match device_selector(r) {
     Some(d) => d.to_string(),
     None
       if r
@@ -232,12 +243,15 @@ pub fn list_json(rows: &[CatalogRow], running: &HashMap<String, RunningRow>) -> 
       let mut row = serde_json::to_value(r).unwrap_or_else(|_| serde_json::json!({}));
       // `status` is a small nested object so agents can pin
       // `models[i].status.state` / `.port`. Absent (not `null`) when the
-      // model has no live supervisor.
+      // model has no live supervisor. `device` carries the raw selector
+      // (`null` when the launch took the backend default) so an agent reads
+      // the same fact the human table's DEVICE column renders as `all`.
       if let Some(live) = running.get(&r.path) {
         row["status"] = serde_json::json!({
           "state": live.state,
           "port": live.port,
           "launch_id": live.launch_id,
+          "device": device_selector(live),
         });
       }
       row
@@ -1006,6 +1020,60 @@ mod tests {
   fn list_json_empty_catalog_returns_empty_models_array() {
     let v = list_json(&[], &HashMap::new());
     assert_eq!(v, serde_json::json!({"models": []}));
+  }
+
+  #[test]
+  fn list_json_status_carries_the_device_selector() {
+    // The human table's DEVICE column must not be readable only by humans:
+    // an agent gets the raw selector here (`null` when the launch took the
+    // backend default, which the table renders as `all`).
+    let rows = vec![row("qwen", "qwen2", "Q4_K", 8192)];
+    let path = "/m/qwen.gguf";
+
+    let mut pinned = running("L1", "ready", 41100, path);
+    pinned.params = Some(serde_json::json!({"knobs": {"device": "ROCm0"}}));
+    let mut idx = HashMap::new();
+    idx.insert(path.to_string(), pinned);
+    assert_eq!(
+      list_json(&rows, &idx)["models"][0]["status"]["device"],
+      serde_json::json!("ROCm0")
+    );
+
+    let mut all_gpu = HashMap::new();
+    all_gpu.insert(path.to_string(), running("L1", "ready", 41100, path));
+    assert_eq!(
+      list_json(&rows, &all_gpu)["models"][0]["status"]["device"],
+      Value::Null,
+      "no override serialises as null, not the human `all`"
+    );
+
+    // No supervisor → no `status` object at all (unchanged).
+    assert!(list_json(&rows, &HashMap::new())["models"][0]
+      .get("status")
+      .is_none());
+  }
+
+  #[test]
+  fn backend_badge_is_the_one_rule_both_surfaces_render() {
+    // `list`'s BACKEND column and `show`'s header row share this helper, so a
+    // ds4-compatible file can never read `ds4|llamacpp` on one surface and
+    // `llamacpp` on the other.
+    let mut multi = row("ds", "deepseek4", "IQ2_XXS", 8192);
+    multi.supported_backends = vec!["ds4".into(), "llamacpp".into()];
+    multi.backend = Some("llamacpp".into());
+    assert_eq!(backend_badge(&multi, "?"), "ds4|llamacpp");
+
+    // Untagged by the daemon → the caller's placeholder, not a guess from
+    // the row's `source`.
+    let mut untagged = row("qwen", "qwen2", "Q4_K", 8192);
+    untagged.supported_backends = Vec::new();
+    untagged.backend = None;
+    assert_eq!(backend_badge(&untagged, "?"), "?");
+    assert_eq!(backend_badge(&untagged, "—"), "—");
+
+    // Only a primary tag → that tag.
+    untagged.backend = Some("lemonade".into());
+    assert_eq!(backend_badge(&untagged, "?"), "lemonade");
   }
 
   #[test]

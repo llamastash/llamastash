@@ -23,6 +23,12 @@ use crate::discovery::shard_sizes::{self, ShardSize};
 use crate::init::detection::fmt_bytes;
 use crate::launch::defaults_table;
 
+/// Stand-in for an absent value in `show`'s human sections. `list` uses `?`
+/// ("unknown metadata") because its cells are catalog facts; `show` renders
+/// whole sections that legitimately have nothing to say, so it reads as a
+/// dash. One constant so every row uses the same glyph.
+const DASH_PLACEHOLDER: &str = "—";
+
 pub async fn handle(args: ShowArgs, cli: &Cli, config: &Config) -> CliResult {
   // Every CLI command must support `--json`. Errors flow through the
   // same machinery: when `--json` is set, a CliExit lands on stdout
@@ -240,13 +246,12 @@ fn render_human(row: &CatalogRow, shards: &[ShardSize], total_bytes: u64, env: &
   }
   header.push(("parent", row.parent.clone()));
   header.push(("source", row.source.clone()));
-  // Prefer the daemon-resolved backend tag; rows it didn't tag keep the
-  // source-derived badge (mirrors the `list` table fallback).
-  let backend_badge = row
-    .backend
-    .clone()
-    .unwrap_or_else(|| crate::cli::output::backend_for_source(&row.source).to_string());
-  header.push(("backend", backend_badge));
+  // Same badge the `list` BACKEND column renders, so a ds4-compatible file
+  // reads `ds4|llamacpp` on both surfaces instead of a source-derived guess.
+  header.push((
+    "backend",
+    crate::cli::output::backend_badge(row, DASH_PLACEHOLDER),
+  ));
   if let Some(id) = &row.model_id {
     header.push(("model_id", id.clone()));
   }
@@ -261,33 +266,51 @@ fn render_human(row: &CatalogRow, shards: &[ShardSize], total_bytes: u64, env: &
   out.push('\n');
   out.push_str(&section_header("metadata", None));
   out.push_str(&kv_block(&[
-    ("arch", row.arch.as_deref().unwrap_or("—").to_string()),
-    ("quant", row.quant.as_deref().unwrap_or("—").to_string()),
+    (
+      "arch",
+      row.arch.as_deref().unwrap_or(DASH_PLACEHOLDER).to_string(),
+    ),
+    (
+      "quant",
+      row.quant.as_deref().unwrap_or(DASH_PLACEHOLDER).to_string(),
+    ),
     (
       "native_ctx",
       row
         .native_ctx
         .map(|n| n.to_string())
-        .unwrap_or_else(|| "—".into()),
+        .unwrap_or_else(|| DASH_PLACEHOLDER.into()),
     ),
     (
       "mode_hint",
-      row.mode_hint.as_deref().unwrap_or("—").to_string(),
+      row
+        .mode_hint
+        .as_deref()
+        .unwrap_or(DASH_PLACEHOLDER)
+        .to_string(),
     ),
     (
       "parameter_label",
-      row.parameter_label.as_deref().unwrap_or("—").to_string(),
+      row
+        .parameter_label
+        .as_deref()
+        .unwrap_or(DASH_PLACEHOLDER)
+        .to_string(),
     ),
     (
       "tokenizer_kind",
-      row.tokenizer_kind.as_deref().unwrap_or("—").to_string(),
+      row
+        .tokenizer_kind
+        .as_deref()
+        .unwrap_or(DASH_PLACEHOLDER)
+        .to_string(),
     ),
     (
       "weights_bytes",
       row
         .weights_bytes
         .map(fmt_bytes)
-        .unwrap_or_else(|| "—".into()),
+        .unwrap_or_else(|| DASH_PLACEHOLDER.into()),
     ),
     (
       "has_chat_template",
@@ -336,7 +359,7 @@ fn render_human(row: &CatalogRow, shards: &[ShardSize], total_bytes: u64, env: &
         format!("{n} {}", colors::dim("(clamped to fit-ctx floor)"))
       }
       Some(Value::Number(n)) => n.to_string(),
-      _ => "—".into(),
+      _ => DASH_PLACEHOLDER.into(),
     };
     out.push_str(&kv_block(&[
       ("state", fmt_field(running.get("state"))),
@@ -385,51 +408,50 @@ fn render_human(row: &CatalogRow, shards: &[ShardSize], total_bytes: u64, env: &
   out
 }
 
-/// Human label for the multimodal capability block: `vision + audio`,
-/// `vision`, `audio`; `—` when the model has no projector companion.
-fn multimodal_label(row: &CatalogRow) -> String {
-  match &row.multimodal {
-    Some(mm) => {
-      let mut parts: Vec<&str> = Vec::new();
-      if mm.vision {
-        parts.push("vision");
-      }
-      if mm.audio {
-        parts.push("audio");
-      }
-      if parts.is_empty() {
-        "—".into()
-      } else {
-        parts.join(" + ")
-      }
-    }
-    None => "—".into(),
+/// Join the facets of a capability block into one cell, or the dash when
+/// the model carries none. Shared by every capability label so an absent
+/// capability and an empty one read identically.
+fn facets_or_dash(parts: Vec<String>) -> String {
+  if parts.is_empty() {
+    DASH_PLACEHOLDER.into()
+  } else {
+    parts.join(" + ")
   }
 }
 
-/// Human label for the MTP capability block: `embedded (N layers)` /
-/// `separate head` (joined when both); `—` when not MTP-capable.
-fn mtp_label(row: &CatalogRow) -> String {
-  match &row.mtp {
-    Some(m) => {
-      let mut parts: Vec<String> = Vec::new();
-      if let Some(n) = m.embedded_layers {
-        parts.push(format!(
-          "embedded ({n} layer{})",
-          if n == 1 { "" } else { "s" }
-        ));
-      }
-      if m.separate_head {
-        parts.push("separate head".into());
-      }
-      if parts.is_empty() {
-        "—".into()
-      } else {
-        parts.join(" + ")
-      }
-    }
-    None => "—".into(),
+/// Human label for the multimodal capability block: `vision + audio`,
+/// `vision`, `audio`; the dash when the model has no projector companion.
+fn multimodal_label(row: &CatalogRow) -> String {
+  let Some(mm) = &row.multimodal else {
+    return DASH_PLACEHOLDER.into();
+  };
+  let mut parts: Vec<String> = Vec::new();
+  if mm.vision {
+    parts.push("vision".into());
   }
+  if mm.audio {
+    parts.push("audio".into());
+  }
+  facets_or_dash(parts)
+}
+
+/// Human label for the MTP capability block: `embedded (N layers)` /
+/// `separate head` (joined when both); the dash when not MTP-capable.
+fn mtp_label(row: &CatalogRow) -> String {
+  let Some(m) = &row.mtp else {
+    return DASH_PLACEHOLDER.into();
+  };
+  let mut parts: Vec<String> = Vec::new();
+  if let Some(n) = m.embedded_layers {
+    parts.push(format!(
+      "embedded ({n} layer{})",
+      if n == 1 { "" } else { "s" }
+    ));
+  }
+  if m.separate_head {
+    parts.push("separate head".into());
+  }
+  facets_or_dash(parts)
 }
 
 /// `kv_block` over owned `(String, String)` rows. The shared helper
@@ -443,7 +465,7 @@ fn kv_block_owned(rows: &[(String, String)]) -> String {
 
 fn fmt_field(v: Option<&Value>) -> String {
   match v {
-    Some(Value::Null) | None => "—".into(),
+    Some(Value::Null) | None => DASH_PLACEHOLDER.into(),
     Some(Value::String(s)) => s.clone(),
     Some(other) => other.to_string(),
   }
@@ -451,7 +473,7 @@ fn fmt_field(v: Option<&Value>) -> String {
 
 fn knobs_one_line(value: Option<&Value>) -> String {
   let Some(Value::Object(map)) = value else {
-    return "—".into();
+    return DASH_PLACEHOLDER.into();
   };
   let mut pairs: Vec<String> = map
     .iter()
@@ -463,7 +485,7 @@ fn knobs_one_line(value: Option<&Value>) -> String {
     .collect();
   pairs.sort();
   if pairs.is_empty() {
-    "—".into()
+    DASH_PLACEHOLDER.into()
   } else {
     pairs.join(", ")
   }

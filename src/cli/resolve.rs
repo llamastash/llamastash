@@ -554,6 +554,53 @@ fn single_or_error(matches: Vec<&RunningRow>, reference: &str) -> Result<Running
 mod tests {
   use super::*;
 
+  /// `status.servers` shaped as the daemon emits it, one entry per
+  /// `(id, device-count)` pair.
+  fn servers(entries: &[(&str, usize)]) -> Value {
+    let rows: Vec<Value> = entries
+      .iter()
+      .map(|(id, n)| {
+        let devices: Vec<Value> = (0..*n)
+          .map(|i| serde_json::json!({"selector": format!("ROCm{i}")}))
+          .collect();
+        serde_json::json!({"id": id, "backend_id": "llamacpp", "devices": devices})
+      })
+      .collect();
+    Value::Array(rows)
+  }
+
+  #[test]
+  fn multi_device_needs_one_server_with_more_than_one_device() {
+    assert!(multi_device(&servers(&[("llamacpp-rocm", 2)])));
+    assert!(!multi_device(&servers(&[("llamacpp-rocm", 1)])));
+    assert!(!multi_device(&servers(&[("llamacpp-rocm", 0)])));
+    // Two single-device builds of the same card is a *server* choice, not a
+    // device one — it must not trip the gate (mirrors `App::multi_device`).
+    assert!(!multi_device(&servers(&[
+      ("llamacpp-rocm", 1),
+      ("llamacpp-vulkan", 1)
+    ])));
+    // One multi-device server among single-device ones still counts.
+    assert!(multi_device(&servers(&[
+      ("llamacpp-rocm", 1),
+      ("llamacpp-vulkan", 3)
+    ])));
+  }
+
+  #[test]
+  fn multi_device_reads_a_missing_or_malformed_field_as_single_device() {
+    // A daemon that predates `status.servers`, or any non-array shape, must
+    // degrade to "hide the column" rather than panic or claim multi-GPU.
+    assert!(!multi_device(&Value::Null));
+    assert!(!multi_device(&serde_json::json!({})));
+    assert!(!multi_device(&Value::Array(vec![])));
+    // A server row with no `devices` key at all.
+    assert!(!multi_device(&serde_json::json!([{"id": "ds4"}])));
+    assert!(!multi_device(
+      &serde_json::json!([{"id": "ds4", "devices": null}])
+    ));
+  }
+
   fn row(path: &str, parent: &str) -> CatalogRow {
     CatalogRow {
       path: path.to_string(),
