@@ -13,13 +13,17 @@
 
 [![Follow Deepu K Sasidharan on Bluesky](https://img.shields.io/badge/Bluesky-Follow%20deepu105-1185fe?logo=bluesky&logoColor=white)](https://bsky.app/profile/deepu105.bsky.social)
 
-![Logo](https://raw.githubusercontent.com/llamastash/llamastash/main/assets/logo-h.jpg)
+<p align="center">
+  <img src="https://raw.githubusercontent.com/llamastash/llamastash/main/assets/logo-h.jpg" alt="Logo" width="50%">
+</p>
 
 **Zero-overhead, terminal-native local-LLM launcher.**
 
 A fast TUI **and** CLI with init wizard for launching local LLMs. One Rust binary that's a TUI, a CLI, a daemon, and an OpenAI-compatible proxy. [llama.cpp](https://github.com/ggml-org/llama.cpp) is the direct, zero-overhead default backend (vs raw `llama-server`), plus [Lemonade](https://github.com/lemonade-sdk/lemonade) for NPU / multi-engine inference and [ds4](https://github.com/antirez/ds4) for DeepSeek-V4. See [benchmarks](docs/benchmarks.md).
 
 ![TUI Gif](https://raw.githubusercontent.com/llamastash/llamastash/main/assets/tui.gif)
+
+![TUI](https://raw.githubusercontent.com/llamastash/llamastash/main/assets/tui_3.png)
 
 ## Contents
 
@@ -278,7 +282,6 @@ Same backend (Vulkan b9440 / `vulkan-avx2@2.18.0`), same GGUF bytes. raw `llama-
 
 ![Init](https://raw.githubusercontent.com/llamastash/llamastash/main/assets/init.gif)
 
-![TUI 1](https://raw.githubusercontent.com/llamastash/llamastash/main/assets/tui_3.png)
 ![TUI 2](https://raw.githubusercontent.com/llamastash/llamastash/main/assets/tui_2.png)
 
 ## Configuration

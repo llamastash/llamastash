@@ -18,6 +18,7 @@ Read the relevant doc before non-trivial work in that area; don't re-derive from
 | Pre-implementation findings | `docs/spikes/*.md` |
 | Everything still open | `TODO.md` |
 | Real-hardware UAT | `docs/testing/hardware-uat.md` |
+| Built-in `(arch, gpu_backend)` defaults table | `src/launch/AGENTS.md` (loads when working under `src/launch/`) |
 
 v1's nine Implementation Units (1 scaffold, 2 daemon/IPC, 3 GGUF, 4 discovery, 5 launch/supervisor, 6 TUI shell, 7 right-pane tabs, 8 CLI, 9 release) are defined in `docs/plans/2026-05-13-001-feat-llamatui-v1-launcher-plan.md`. Identify the unit before a non-trivial change; commit subjects use `feat(unit5):` / `fix(unit3):`.
 
@@ -86,17 +87,6 @@ Clients read `$XDG_STATE_HOME/llamastash/runtime.json` (mode `0600`) for the con
 
 ## Architecture in one breath
 
-```
-TUI / CLI ──HTTP+Bearer──► Control plane (127.0.0.1:11436, loopback, bearer token)
-OpenCode / Pi / SDK ──HTTP──► Proxy listener (127.0.0.1:11435, loopback)
-                          │
-                          ├── Discovery (scan + watch + caches)
-                          ├── GGUF parser (metadata + identity)
-                          ├── Process supervisor (spawn / probe / stop)
-                          ├── Resource monitor (RAM/VRAM/CPU)
-                          └── Persisted state (favorites / last-params / running)
-```
-
 JSON-RPC 2.0 over `POST /rpc`; `src/ipc/methods.rs` is the dispatch table, `src/daemon/control_plane.rs` the hyper service in front of it. Lifecycle, model identity, persistence shape, backend internals, and the full `status` response shape live in `docs/architecture.md`.
 
 ## Adding a backend (keep it leak-free)
@@ -125,14 +115,6 @@ Deliberate omissions, not gaps. Don't "fix" these without a decision.
 - **Exit codes** follow `<sysexits.h>` numerically with project-specific meanings — pin against `src/cli/exit_codes.rs` (table in `docs/usage.md § Exit codes`), not the libc constants. `doctor` always exits `0`.
 - **Single binary, three roles.** TUI, CLI, and daemon are all `llamastash`; the daemon spawns on demand when a client finds no socket.
 - **Five hard-coded themes**, Catppuccin Macchiato by default. No dynamic loading.
-
-## Built-in defaults table
-
-The static `(arch, gpu_backend) → TypedKnobs` table is `src/launch/defaults_table.rs`. When `data/benchmark-snapshot.json` gains a recommender pick, audit coverage:
-
-- No `n_gpu_layers` is pinned anywhere — offload placement is delegated to llama-server's `--fit` (a layer-less `n_gpu_layers` seeds `Auto` and emits no `-ngl`). Archs missing from `COVERED_ARCHS` fall through to the empty `*` row.
-- `FLASH_ATTN_ELIGIBLE` is opt-in only; extend it when measurement confirms an arch is clean on NVIDIA / Apple Metal. AMD/HIP coverage is uneven — leave it to `config.yaml arch_defaults`.
-- Folklore-only flags (`mlock`, `no_mmap`, KV-cache quant types) stay unset until measurement supports them.
 
 ## Protected artifacts
 
