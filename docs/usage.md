@@ -513,7 +513,7 @@ Routing is automatic and keys on a header-level compatibility predicate — arch
 
 ### ds4 native knobs
 
-ds4-server takes nine backend-specific tunables that have no llama.cpp equivalent. Set them per-launch in the TUI launch picker or persist them in a preset; ds4 honors exactly one typed knob from the shared set — `ctx` (→ `--ctx`).
+ds4-server takes fourteen backend-specific tunables that have no llama.cpp equivalent. Set them per-launch in the TUI launch picker or persist them in a preset; ds4 honors exactly one typed knob from the shared set — `ctx` (→ `--ctx`).
 
 | Knob             | ds4-server flag      | What it does |
 | ---------------- | -------------------- | ------------ |
@@ -523,6 +523,11 @@ ds4-server takes nine backend-specific tunables that have no llama.cpp equivalen
 | `kv_disk_dir`    | `--kv-disk-dir`      | Directory for ds4's persistent disk KV cache (see privacy note below) |
 | `kv_disk_space_mb` | `--kv-disk-space-mb` | Disk KV cache budget in MB (ds4 default 4096 when enabled) |
 | `ssd_streaming`  | `--ssd-streaming`    | Stream weights from disk (below-RAM-floor mode; skips the admission gate). Mutually exclusive with `mtp` |
+| `ssd_streaming_cache_experts` | `--ssd-streaming-cache-experts` | SSD streaming: resident routed-expert cap — exact count `N` or routed memory budget `NGB` (ds4 auto: 80% of the working set) |
+| `ssd_streaming_preload_experts` | `--ssd-streaming-preload-experts` | SSD streaming: upfront popularity preload count (DeepSeek auto-seeds when unset) |
+| `ssd_streaming_cold` | `--ssd-streaming-cold` | SSD streaming: skip the default popularity-based expert-cache preload |
+| `warm_weights`   | `--warm-weights`     | Touch mapped tensor pages at startup to reduce first-use stalls |
+| `quality`        | `--quality`          | Prefer exact kernels where faster approximate paths exist |
 | `mtp`            | `--mtp`              | Path to the MTP draft-head sidecar (auto-paired from a sibling when unset; see [MTP speculative decoding](#mtp-speculative-decoding)) |
 | `mtp_draft`      | `--mtp-draft`        | Tokens drafted per step (also set by the neutral `--mtp-draft-n`) |
 | `mtp_margin`     | `--mtp-margin`       | Acceptance margin for the draft verifier |

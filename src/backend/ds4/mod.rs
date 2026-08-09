@@ -270,12 +270,12 @@ fn is_routed_expert_tensor(name: &str) -> bool {
   name.contains("_exps")
 }
 
-/// ds4's native-knob descriptor table — 9 tunables that have no llama.cpp IR
+/// ds4's native-knob descriptor table — 14 tunables that have no llama.cpp IR
 /// slot. Ids are stable persistence keys; label/description drive the
 /// launch-picker rows. Only flags the real `ds4-server` binary accepts
-/// (verified via `--help runtime`, 2026-07-10 build): the MTP trio
-/// (`--mtp`/`--mtp-draft`/`--mtp-margin`) is included; `--quality` is
-/// ds4-CLI-only and deliberately excluded.
+/// (verified via `--help runtime`, 2026-08-05 build): the MTP trio
+/// (`--mtp`/`--mtp-draft`/`--mtp-margin`), the SSD-streaming tuning family,
+/// and the `--warm-weights` / `--quality` bools are included.
 pub const DS4_NATIVE_KNOBS: &[NativeKnobDescriptor] = &[
   NativeKnobDescriptor {
     id: "power",
@@ -314,6 +314,36 @@ pub const DS4_NATIVE_KNOBS: &[NativeKnobDescriptor] = &[
     kind: NativeKnobKind::Bool,
   },
   NativeKnobDescriptor {
+    id: "ssd_streaming_cache_experts",
+    label: "SSD cache cap",
+    description: "SSD streaming: resident routed-expert cap — exact count N or routed memory budget NGB (ds4 auto: 80% of the working set)",
+    kind: NativeKnobKind::FreeText,
+  },
+  NativeKnobDescriptor {
+    id: "ssd_streaming_preload_experts",
+    label: "SSD preload",
+    description: "SSD streaming: upfront popularity preload count (DeepSeek auto-seeds when unset)",
+    kind: NativeKnobKind::FreeText,
+  },
+  NativeKnobDescriptor {
+    id: "ssd_streaming_cold",
+    label: "SSD cold start",
+    description: "SSD streaming: skip the default popularity-based expert-cache preload",
+    kind: NativeKnobKind::Bool,
+  },
+  NativeKnobDescriptor {
+    id: "warm_weights",
+    label: "Warm weights",
+    description: "touch mapped tensor pages at startup to reduce first-use stalls",
+    kind: NativeKnobKind::Bool,
+  },
+  NativeKnobDescriptor {
+    id: "quality",
+    label: "Exact kernels",
+    description: "prefer exact kernels where faster approximate paths exist",
+    kind: NativeKnobKind::Bool,
+  },
+  NativeKnobDescriptor {
     id: "mtp",
     label: "MTP sidecar",
     description: "path to the MTP draft-head GGUF (auto-paired from a sibling when unset)",
@@ -321,7 +351,7 @@ pub const DS4_NATIVE_KNOBS: &[NativeKnobDescriptor] = &[
   },
   NativeKnobDescriptor {
     id: "mtp_draft",
-    label: "MTP draft tokens",
+    label: "MTP draft",
     description: "max autoregressive MTP draft tokens (ds4 default 1)",
     kind: NativeKnobKind::FreeText,
   },
@@ -342,6 +372,17 @@ const DS4_FLAG_MAP: &[(&str, &str)] = &[
   ("kv_disk_dir", "--kv-disk-dir"),
   ("kv_disk_space_mb", "--kv-disk-space-mb"),
   ("ssd_streaming", "--ssd-streaming"),
+  (
+    "ssd_streaming_cache_experts",
+    "--ssd-streaming-cache-experts",
+  ),
+  (
+    "ssd_streaming_preload_experts",
+    "--ssd-streaming-preload-experts",
+  ),
+  ("ssd_streaming_cold", "--ssd-streaming-cold"),
+  ("warm_weights", "--warm-weights"),
+  ("quality", "--quality"),
   ("mtp", "--mtp"),
   ("mtp_draft", "--mtp-draft"),
   ("mtp_margin", "--mtp-margin"),
@@ -1218,13 +1259,13 @@ mod tests {
     let descs = b.native_knobs();
     assert_eq!(
       descs.len(),
-      9,
-      "ds4 exposes 9 native knobs (6 base + the MTP trio; no quality)"
+      14,
+      "ds4 exposes 14 native knobs (6 base + 3 ssd-streaming tuning + warm_weights/quality + the MTP trio)"
     );
     let mut ids: Vec<&str> = descs.iter().map(|d| d.id).collect();
     ids.sort();
     ids.dedup();
-    assert_eq!(ids.len(), 9, "ids are unique persistence keys");
+    assert_eq!(ids.len(), 14, "ids are unique persistence keys");
     for d in descs {
       assert!(!d.label.is_empty(), "{} has a label", d.id);
       assert!(!d.description.is_empty(), "{} has a description", d.id);
@@ -1233,6 +1274,34 @@ mod tests {
         DS4_FLAG_MAP.iter().any(|(id, _)| *id == d.id),
         "{} has a flag mapping",
         d.id
+      );
+    }
+  }
+
+  #[test]
+  fn argv_emits_ssd_streaming_tuning_and_quality_knobs() {
+    let p = params_with(
+      None,
+      &[
+        ("ssd_streaming", "true"),
+        ("ssd_streaming_cache_experts", "8GB"),
+        ("ssd_streaming_preload_experts", "64"),
+        ("ssd_streaming_cold", "true"),
+        ("warm_weights", "true"),
+        ("quality", "true"),
+      ],
+    );
+    let a = argv_strings(&p, 8000);
+    assert!(a
+      .windows(2)
+      .any(|w| w == ["--ssd-streaming-cache-experts", "8GB"]));
+    assert!(a
+      .windows(2)
+      .any(|w| w == ["--ssd-streaming-preload-experts", "64"]));
+    for bare in ["--ssd-streaming-cold", "--warm-weights", "--quality"] {
+      assert!(
+        a.contains(&bare.to_string()),
+        "{bare} emitted as a bare flag"
       );
     }
   }

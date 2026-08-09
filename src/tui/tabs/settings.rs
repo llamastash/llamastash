@@ -940,7 +940,7 @@ mod tests {
       .map(|s| s.content.as_ref())
       .collect::<Vec<_>>()
       .join(" ");
-    // The six ds4 native knobs render with their recorded values…
+    // The ds4 native knobs render with their recorded values…
     assert!(text.contains("ds4 native"), "{text}");
     assert!(
       text.contains("SSD streaming") && text.contains("true"),
