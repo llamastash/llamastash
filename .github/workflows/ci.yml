@@ -145,7 +145,12 @@ jobs:
     needs: prepare
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.100
+      # The action's ref tag doubles as the toolchain version, so a
+      # Dependabot bump ("@1.95" -> "@1.100") installs a nonexistent
+      # release and 404s. Pin the toolchain explicitly; the ref floats.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.95"
       - uses: Swatinem/rust-cache@v2
       - name: cargo check --locked
         run: cargo check --locked
