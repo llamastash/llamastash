@@ -521,12 +521,14 @@ pub enum ConfirmAction {
   /// `Ctrl+R:restart daemon` — shuts the daemon down and re-spawns
   /// a fresh one. All managed launches are stopped in the process.
   RestartDaemon,
-  /// `Ctrl+D:delete` — remove a non-running model from disk.
-  /// `path` is the GGUF (or split-shard launch file); the deleter
-  /// walks the HF snapshot dir up to the cache root when the file
-  /// is symlinked into `~/.cache/huggingface`, so a confirmed
-  /// delete reclaims the blob bytes too.
-  DeleteModel { path: PathBuf, display_name: String },
+  /// `Ctrl+D:delete` — remove a non-running model from disk. The plan
+  /// (shards, mmproj projector, MTP draft head, HF cache blobs) is
+  /// resolved when the key is pressed so the popup can name what goes
+  /// and the confirm handler does no fresh discovery.
+  DeleteModel {
+    plan: Box<crate::tui::delete::DeletePlan>,
+    display_name: String,
+  },
   /// `Ctrl+X:cancel download` — abort the currently-active HF
   /// download. The queue stays intact; the next queued pull is
   /// promoted on confirm. `friendly_name` is what the popup renders

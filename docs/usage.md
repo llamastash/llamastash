@@ -983,8 +983,24 @@ These are the defaults. Override any binding via the `keybindings:` block in `co
 | `Ctrl+S`                                      | Stop the focused running launch (any nav focus; opens a confirmation popup)                                                                                                                              |
 | `Ctrl+R`                                      | Restart the daemon (any nav focus; opens a confirmation popup)                                                                                                                                           |
 | `Ctrl+K`                                      | Kill the daemon entirely (List focus; opens a confirmation popup)                                                                                                                                        |
-| `Ctrl+D`                                      | Delete the focused model from disk (idle rows only: `NotLaunched` / `Stopped` — opens a confirmation popup; HF-cache models remove the entire `models--<owner>--<repo>` directory to reclaim blob bytes) |
+| `Ctrl+D`                                      | Delete the focused model from disk (idle rows only: `NotLaunched` / `Stopped` — opens a confirmation popup naming every file that goes). See [Deleting a model](#deleting-a-model).                       |
 | `Ctrl+X`                                      | Cancel the currently-active HF download (any focus; opens a confirmation popup; queued pulls stay in line — press again on the next promoted pull)                                                       |
+
+### Deleting a model
+
+`Ctrl+D` on an idle Models row removes the model *and everything on disk that belongs only to it*. Unlinking just the launch path would leave shards and companions behind, so the confirmation popup names the full set before you commit:
+
+| Also removed                            | When                                                                                                                                                     |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Shards 2..N of a split GGUF             | Always — a `*-00001-of-000NN.gguf` row owns its whole set.                                                                                                |
+| The `mmproj-*.gguf` projector           | Only when no other model in the folder pairs with it. A shared projector stays.                                                                            |
+| The separate `mtp-*.gguf` draft head    | Same rule as the projector.                                                                                                                               |
+| The HuggingFace cache blob behind a file | When the file is a snapshot symlink into its own repo's `blobs/`. Without this the bytes stay and the delete frees nothing.                               |
+| The whole `models--<owner>--<repo>` dir | Only when the row is the **last** model in that repo — then every revision, ref and blob goes. A repo holding a second quant takes the per-file path instead, so the survivor keeps its bytes. |
+
+An HF-shaped tree that is *not* under the configured cache root (an rsynced backup, a restored archive) never gets the recursive removal — it falls back to per-file unlinking.
+
+Refusals: a running, loading or errored launch (stop it first), and Lemonade registry models (delete those through Lemonade — there is no local GGUF).
 
 ### Mouse focus (opt-in)
 

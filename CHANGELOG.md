@@ -24,6 +24,7 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 ### Fixed
 
+- `Ctrl+D` deletes the whole model, not just one file. Split shards, the mmproj projector, the MTP draft head and the HuggingFace cache blob behind a snapshot symlink now go with it, and the confirm popup names them. A companion another model in the folder still pairs with is left alone. Deleting one quant out of a shared HF repo no longer takes the other quants with it — the whole `models--*` directory is only removed once it holds the last model.
 - An unusable `daemon.port_range` (inverted, or `start: 0`) is refused at `daemon start` naming the key, instead of booting fine and failing on the first launch with `port allocation failed`.
 - NVIDIA coherent-UMA GPUs (GB10 / DGX Spark, Jetson) are no longer dropped from detection ([#59](https://github.com/llamastash/llamastash/issues/59)) — `nvidia-smi` reports no framebuffer on these shared-pool parts and the probe used to discard the whole device, so `doctor` printed `GPU  CPU only` on a machine with a GB10 in it.
 - MTP draft heads are recognised by what is in the file, not by its name. A head named like a quant (DeepSeek-V4's `…-MTP-Q4K-Q8_0-F32.gguf`) used to be listed as a launchable model and never paired with the model it drafts for, so ds4 speculative decoding never engaged for the published head. Models that merely carry `-MTP-` in the name (`Qwen3.6-27B-MTP` and friends) stay launchable, and a head now pairs across every quant of its model rather than only a name-matched one.

@@ -10,6 +10,7 @@
 
 pub mod app;
 pub mod confirm_overlay;
+pub mod delete;
 pub mod download_strip;
 pub mod events;
 pub mod filter;
