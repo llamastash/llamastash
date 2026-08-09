@@ -165,6 +165,26 @@ pub fn running_index(rows: &[RunningRow]) -> std::collections::HashMap<String, R
   out
 }
 
+/// Multi-device gate for the `list` DEVICE column — mirrors the TUI's
+/// `App::multi_device`: true when **some single server** offers more than
+/// one device (a launch targets one server's devices, so cross-build
+/// selector variety must not trip this). `servers` is the verbatim
+/// `status.servers` wire value; anything else (older daemon, missing
+/// field) reads as single-device.
+pub fn multi_device(servers: &Value) -> bool {
+  servers
+    .as_array()
+    .map(|ss| {
+      ss.iter().any(|s| {
+        s.get("devices")
+          .and_then(Value::as_array)
+          .map(|d| d.len() > 1)
+          .unwrap_or(false)
+      })
+    })
+    .unwrap_or(false)
+}
+
 /// Fetch the supervisor + external snapshot via `status`.
 pub async fn fetch_status(client: &mut Client) -> Result<StatusSnapshot, CliExit> {
   let body = client

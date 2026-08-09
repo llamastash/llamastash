@@ -295,8 +295,27 @@ Print every discovered model.
 llamastash list [--json] [--filter <PATTERN>]
 ```
 
-- `--json` emits a stable JSON array; pin agents against this.
+- `--json` emits a stable JSON array; pin agents against this. Rows are byte-identical to the IPC `list_models` rows — one shared catalog-row shape with a nested `metadata` block and the `multimodal` / `mtp` capability blocks.
 - `--filter` is a case-insensitive substring matched against name, path, arch, and quant.
+
+The table columns are `NAME ARCH PARAMS QUANT CTX SIZE MODE [BACKEND] STATUS [DEVICE]` — the same columns as the TUI Models list. `MODE` shows the catalog's mode hint (`chat` / `embedding` / `rerank`). `BACKEND` appears only when some model is served by more than one backend (or a non-default one); `DEVICE` appears only on multi-GPU hosts and reads `all` for a running launch that targets every GPU (no `--device`), the explicit selector when pinned, and `?` otherwise — matching the TUI's Device column. When piped, the same columns print as tab-separated rows.
+
+### `llamastash show <model-ref>`
+
+Everything LlamaStash knows about one model: catalog row, GGUF metadata, on-disk size (per shard), the yaml + built-in arch defaults a launch would resolve, last-used launch params, and live running state.
+
+```
+llamastash show <model-ref> [--json]
+```
+
+`--json` builds on the **same catalog-row shape as `list --json`** (nested `metadata`, `multimodal`, `mtp`, `supported_backends`, `split_siblings`; `model_id` omitted when unset) and layers four show-only sections on top:
+
+- `size` — `weights_bytes`, `shard_count`, `on_disk_total_bytes`, and a per-shard `shards` breakdown.
+- `arch_defaults` — the `yaml` and `builtin` knob sets for this (arch, GPU backend) pair.
+- `last_params` — the params of the last successful launch (`null` when never launched).
+- `running` — live supervisor info (`launch_id`, `state`, `port`, `resolved_ctx`, `ctx_clamped`), or `null`.
+
+The human output shows the same content as aligned key/value sections, including `multimodal` (`vision + audio`) and `mtp` (`embedded (N layers)` / `separate head`) rows under `metadata`.
 
 ### `llamastash start <model-ref>`
 

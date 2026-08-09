@@ -27,12 +27,23 @@ pub fn row_path(v: &Value) -> Option<&str> {
 
 /// Render `list_models` rows as a padded table on TTY, or
 /// tab-separated rows when colors are disabled (piped / `--no-colors` /
-/// `NO_COLOR`). Columns: NAME, ARCH, PARAMS, QUANT, CTX, SIZE, STATUS.
+/// `NO_COLOR`). Columns: NAME, ARCH, PARAMS, QUANT, CTX, SIZE, MODE,
+/// [BACKEND], STATUS, [DEVICE].
 ///
 /// SIZE displays the GGUF weights footprint (matches the TUI list
 /// pane's SIZE column) — PATH was dropped because the canonical paths
 /// dominated line width on real caches. `--json` still carries `path`
 /// for agent consumers.
+///
+/// MODE shows the catalog row's `mode_hint` (`chat` / `embedding` /
+/// `rerank`), matching the TUI list's Mode column.
+///
+/// DEVICE appears only when `multi_device` is set (some single server
+/// offers more than one device — the CLI mirror of the TUI's
+/// `App::multi_device` gate). Cell semantics mirror the TUI's
+/// `column_value`: an explicit `--device` selector renders verbatim,
+/// `all` for a running row on the device-selecting default backend
+/// with no override, and the `?` placeholder otherwise.
 ///
 /// STATUS shows the live supervisor state when one exists for the
 /// row's path: a TUI-shared glyph (`● ready`, `◐ loading`, …) followed
@@ -42,7 +53,11 @@ pub fn row_path(v: &Value) -> Option<&str> {
 ///
 /// Footer line `(N models)` is appended on TTY only — the piped form
 /// stays byte-stable for `awk -F\t` / `column -t` pipelines.
-pub fn list_human(rows: &[CatalogRow], running: &HashMap<String, RunningRow>) -> String {
+pub fn list_human(
+  rows: &[CatalogRow],
+  running: &HashMap<String, RunningRow>,
+  multi_device: bool,
+) -> String {
   use crate::cli::{colors, format};
   if rows.is_empty() {
     return format!("{}\n", colors::dim("(no models discovered)"));
@@ -62,11 +77,14 @@ pub fn list_human(rows: &[CatalogRow], running: &HashMap<String, RunningRow>) ->
         .as_deref()
         .is_some_and(|b| b != crate::backend::DEFAULT_BACKEND_ID)
   });
-  let mut header: Vec<&str> = vec!["NAME", "ARCH", "PARAMS", "QUANT", "CTX", "SIZE"];
+  let mut header: Vec<&str> = vec!["NAME", "ARCH", "PARAMS", "QUANT", "CTX", "SIZE", "MODE"];
   if show_backend {
     header.push("BACKEND");
   }
   header.push("STATUS");
+  if multi_device {
+    header.push("DEVICE");
+  }
   let body: Vec<Vec<String>> = rows
     .iter()
     .map(|r| {
@@ -86,8 +104,9 @@ pub fn list_human(rows: &[CatalogRow], running: &HashMap<String, RunningRow>) ->
       // `weights_bytes` may predate a binary upgrade that fixed the
       // split-shard aggregation). One `stat` per row is cheap.
       let size = display_size(r);
+      let mode = crate::tui::fmt::list_cell(r.mode_hint.as_deref(), "?");
       let status = running_status_cell(running.get(&r.path));
-      let mut cells = vec![r.name(), arch, params, quant, ctx, size];
+      let mut cells = vec![r.name(), arch, params, quant, ctx, size, mode];
       if show_backend {
         // All supported backends, priority-ordered (`ds4|llamacpp`); the table
         // formatter clips if it overflows. Falls back to the single primary
@@ -100,6 +119,9 @@ pub fn list_human(rows: &[CatalogRow], running: &HashMap<String, RunningRow>) ->
         cells.push(backend_cell);
       }
       cells.push(status);
+      if multi_device {
+        cells.push(device_cell(running.get(&r.path)));
+      }
       cells
     })
     .collect();
@@ -134,6 +156,37 @@ fn running_status_cell(row: Option<&RunningRow>) -> String {
     port_part
   };
   format!("{glyph} {state_label} {port_part}")
+}
+
+/// Render the DEVICE cell, mirroring the TUI list pane's
+/// `column_value(ColumnId::Device)`: an explicit `--device` selector
+/// renders verbatim; a *running* row on the device-selecting default
+/// backend with no override targets every GPU (llama.cpp's default), so
+/// it reads `all` instead of a blank; anything else (not running, or a
+/// device-less backend) gets the CLI table's `?` placeholder.
+fn device_cell(row: Option<&RunningRow>) -> String {
+  let Some(r) = row else {
+    return "?".into();
+  };
+  let explicit = r
+    .params
+    .as_ref()
+    .and_then(|p| p.get("knobs"))
+    .and_then(|k| k.get("device"))
+    .and_then(Value::as_str);
+  match explicit {
+    Some(d) => d.to_string(),
+    None
+      if r
+        .backend
+        .as_deref()
+        .unwrap_or(crate::backend::DEFAULT_BACKEND_ID)
+        == crate::backend::DEFAULT_BACKEND_ID =>
+    {
+      "all".into()
+    }
+    None => "?".into(),
+  }
 }
 
 /// SIZE column for one row. Tries the shared shard-sizes util first
@@ -751,10 +804,103 @@ mod tests {
     // produced so awk/cut/column pipelines don't drift.
     let _g = ColorGuard::set(false);
     let rows = vec![row("qwen", "qwen2", "Q4_K", 8192)];
-    let s = list_human(&rows, &HashMap::new());
+    let s = list_human(&rows, &HashMap::new(), false);
     assert_eq!(
       s,
-      "NAME\tARCH\tPARAMS\tQUANT\tCTX\tSIZE\tSTATUS\nqwen.gguf\tqwen2\t7B\tQ4_K\t8192\t3.9G\t\n"
+      "NAME\tARCH\tPARAMS\tQUANT\tCTX\tSIZE\tMODE\tSTATUS\nqwen.gguf\tqwen2\t7B\tQ4_K\t8192\t3.9G\tchat\t\n"
+    );
+  }
+
+  #[test]
+  fn list_human_mode_column_always_present() {
+    let _g = ColorGuard::set(false);
+    let mut embed = row("bge", "bert", "F16", 512);
+    embed.mode_hint = Some("embedding".to_string());
+    let modes = list_human(
+      &[row("qwen", "qwen2", "Q4_K", 8192), embed],
+      &HashMap::new(),
+      false,
+    );
+    assert!(
+      modes.contains("MODE\tSTATUS"),
+      "MODE header missing: {modes:?}"
+    );
+    assert!(
+      modes.contains("\tchat\t"),
+      "chat mode cell missing: {modes:?}"
+    );
+    assert!(
+      modes.contains("\tembedding\t"),
+      "embedding mode cell missing: {modes:?}"
+    );
+    // A row with no mode hint renders the same `?` placeholder as the
+    // other unknown-metadata cells.
+    let mut bare = row("raw", "qwen2", "Q4_K", 8192);
+    bare.mode_hint = None;
+    let placeholder = list_human(&[bare], &HashMap::new(), false);
+    assert!(
+      placeholder.contains("\t?\t"),
+      "mode placeholder missing: {placeholder:?}"
+    );
+  }
+
+  #[test]
+  fn list_human_device_column_gated_on_multi_device() {
+    let _g = ColorGuard::set(false);
+    let rows = vec![row("qwen", "qwen2", "Q4_K", 8192)];
+    let single = list_human(&rows, &HashMap::new(), false);
+    assert!(
+      !single.contains("DEVICE"),
+      "single-device host hides the column: {single:?}"
+    );
+    let multi = list_human(&rows, &HashMap::new(), true);
+    assert!(
+      multi.contains("MODE\tSTATUS\tDEVICE"),
+      "multi-device host shows the column after STATUS: {multi:?}"
+    );
+    // An idle row renders the `?` placeholder.
+    assert!(
+      multi.contains("\t?\n"),
+      "idle row renders the placeholder: {multi:?}"
+    );
+  }
+
+  #[test]
+  fn list_human_device_cell_mirrors_tui_semantics() {
+    let _g = ColorGuard::set(false);
+    let rows = vec![row("qwen", "qwen2", "Q4_K", 8192)];
+    let path = "/m/qwen.gguf";
+
+    // Explicit `--device` selector renders verbatim.
+    let mut explicit = running("L1", "ready", 41100, path);
+    explicit.params = Some(serde_json::json!({"knobs": {"device": "ROCm0"}}));
+    let mut explicit_idx = HashMap::new();
+    explicit_idx.insert(path.to_string(), explicit);
+    let explicit_out = list_human(&rows, &explicit_idx, true);
+    assert!(
+      explicit_out.contains("\tROCm0\n"),
+      "explicit selector missing: {explicit_out:?}"
+    );
+
+    // Running on the default backend with no override → `all`.
+    let plain = running("L1", "ready", 41100, path);
+    let mut plain_idx = HashMap::new();
+    plain_idx.insert(path.to_string(), plain);
+    let plain_out = list_human(&rows, &plain_idx, true);
+    assert!(
+      plain_out.contains("\tall\n"),
+      "default-backend row must read `all`: {plain_out:?}"
+    );
+
+    // Running on a device-less (non-default) backend with no override → `?`.
+    let mut other = running("L1", "ready", 41100, path);
+    other.backend = Some("lemonade".to_string());
+    let mut other_idx = HashMap::new();
+    other_idx.insert(path.to_string(), other);
+    let other_out = list_human(&rows, &other_idx, true);
+    assert!(
+      other_out.contains("\t?\n"),
+      "device-less backend renders the placeholder: {other_out:?}"
     );
   }
 
@@ -764,7 +910,7 @@ mod tests {
     // All-`llamacpp` (or no prediction) → no BACKEND column, old shape intact.
     let mut llama = row("qwen", "qwen2", "Q4_K", 8192);
     llama.backend = Some("llamacpp".to_string());
-    let single = list_human(std::slice::from_ref(&llama), &HashMap::new());
+    let single = list_human(std::slice::from_ref(&llama), &HashMap::new(), false);
     assert!(
       !single.contains("BACKEND"),
       "single-backend host hides the column: {single:?}"
@@ -772,7 +918,7 @@ mod tests {
     // A non-`llamacpp` prediction flips it on.
     let mut ds4 = row("deepseek", "deepseek4", "Q2_K", 4096);
     ds4.backend = Some("ds4".to_string());
-    let multi = list_human(&[llama, ds4], &HashMap::new());
+    let multi = list_human(&[llama, ds4], &HashMap::new(), false);
     assert!(
       multi.contains("BACKEND"),
       "multi-backend host shows the column"
@@ -787,7 +933,7 @@ mod tests {
       row("qwen", "qwen2", "Q4_K", 8192),
       row("phi", "phi3", "Q5_K", 4096),
     ];
-    let s = list_human(&rows, &HashMap::new());
+    let s = list_human(&rows, &HashMap::new(), false);
     let plain = console::strip_ansi_codes(&s);
     assert!(plain.starts_with("NAME"), "header missing: {plain:?}");
     assert!(
@@ -804,7 +950,7 @@ mod tests {
     // bytes either way.
     for enabled in [true, false] {
       let _g = ColorGuard::set(enabled);
-      let s = list_human(&[], &HashMap::new());
+      let s = list_human(&[], &HashMap::new(), false);
       assert!(console::strip_ansi_codes(&s).contains("no models"));
     }
   }
