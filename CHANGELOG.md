@@ -24,6 +24,7 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 ### Fixed
 
+- An unusable `daemon.port_range` (inverted, or `start: 0`) is refused at `daemon start` naming the key, instead of booting fine and failing on the first launch with `port allocation failed`.
 - `start --server <id>` now rejects an unknown server id (exit 64, listing the valid ids) instead of silently falling back to the default binary and recording the bogus value in `params.server`.
 - The launch picker's `main_gpu` row no longer offers a hardcoded `0-3` ring on hosts with fewer GPUs — it sizes to the actual device count. `split_mode` gains `tensor`.
 - Lemonade models no longer appear in the `/ui` chooser as web-UI-capable — they serve no browser UI, so the chooser lists them non-selectable. (`22fc76f`)

@@ -16,8 +16,9 @@ pub use crate::backend::lemonade::LemonadeConfig;
 pub use crate::backend::llama_cpp::LlamaCppConfig;
 pub use crate::backend::BackendConfig;
 pub use loader::{
-  config_path, config_path_from, load_config, load_config_from_path, validate_scan_settings,
-  CachePathsConfig, Config, ConfigPresetBlock, DaemonConfig, DefaultLaunchMode, GpuConfig,
-  KnobSlotMut, KnobSlotRef, KnobValue, KnobValueOpt, LoadedConfig, PortRange, PresetBody,
-  ProxyConfig, ScanSettingsError, TypedKnobs, DEFAULT_FIT_CTX_FLOOR, MAX_CTX_TOKENS,
+  config_path, config_path_from, load_config, load_config_from_path, validate_port_range,
+  validate_scan_settings, CachePathsConfig, Config, ConfigPresetBlock, DaemonConfig,
+  DefaultLaunchMode, GpuConfig, KnobSlotMut, KnobSlotRef, KnobValue, KnobValueOpt, LoadedConfig,
+  PortRange, PortRangeError, PresetBody, ProxyConfig, ScanSettingsError, TypedKnobs,
+  DEFAULT_FIT_CTX_FLOOR, MAX_CTX_TOKENS,
 };

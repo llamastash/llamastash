@@ -1214,6 +1214,51 @@ impl std::fmt::Display for ScanSettingsError {
 
 impl std::error::Error for ScanSettingsError {}
 
+/// Validate that `daemon.port_range` can yield a port. An inverted or
+/// zero-start range binds nothing, so every launch would fail — but the
+/// allocator is the only thing that checks, and it doesn't run until the
+/// first `start`. Without this the daemon comes up healthy and the typo
+/// surfaces much later as a launch failure that names no config key.
+pub fn validate_port_range(range: &PortRange) -> Result<(), PortRangeError> {
+  if range.start == 0 {
+    return Err(PortRangeError::ZeroStart);
+  }
+  if range.end < range.start {
+    return Err(PortRangeError::Inverted {
+      start: range.start,
+      end: range.end,
+    });
+  }
+  Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PortRangeError {
+  ZeroStart,
+  Inverted { start: u16, end: u16 },
+}
+
+impl std::fmt::Display for PortRangeError {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      Self::ZeroStart => write!(
+        f,
+        "`daemon.port_range.start` is 0, which is not a bindable port — \
+         set it to the first port llamastash may launch a model on \
+         (factory: 41100)."
+      ),
+      Self::Inverted { start, end } => write!(
+        f,
+        "`daemon.port_range` is inverted: start {start} is above end {end}, \
+         so no port can be allocated. Swap them, or use the factory range \
+         41100-41300."
+      ),
+    }
+  }
+}
+
+impl std::error::Error for PortRangeError {}
+
 #[cfg(test)]
 mod tests {
   use std::{
@@ -1705,6 +1750,53 @@ keybindings:
     assert_eq!(loaded.config.daemon.port_range, PortRange::default());
     assert!(loaded.config.model_paths.is_empty());
     fs::remove_dir_all(dir).expect("temp test dir should be removed");
+  }
+
+  #[test]
+  fn validate_port_range_accepts_usable_ranges() {
+    assert!(validate_port_range(&PortRange::default()).is_ok());
+    // A one-port range is legitimate — pinning every launch to one port.
+    assert!(validate_port_range(&PortRange {
+      start: 41100,
+      end: 41100
+    })
+    .is_ok());
+    assert!(validate_port_range(&PortRange {
+      start: 1,
+      end: u16::MAX
+    })
+    .is_ok());
+  }
+
+  /// The allocator rejects these, but not until the first launch — by
+  /// which point nothing points back at `config.yaml`.
+  #[test]
+  fn validate_port_range_rejects_an_inverted_range() {
+    let err = validate_port_range(&PortRange {
+      start: 46000,
+      end: 45000,
+    })
+    .expect_err("an inverted range allocates nothing");
+    assert_eq!(
+      err,
+      PortRangeError::Inverted {
+        start: 46000,
+        end: 45000
+      }
+    );
+    let msg = err.to_string();
+    assert!(
+      msg.contains("daemon.port_range"),
+      "the message must name the config key, got: {msg}"
+    );
+  }
+
+  #[test]
+  fn validate_port_range_rejects_a_zero_start() {
+    let err = validate_port_range(&PortRange { start: 0, end: 0 })
+      .expect_err("port 0 is not bindable as a range start");
+    assert_eq!(err, PortRangeError::ZeroStart);
+    assert!(err.to_string().contains("daemon.port_range.start"));
   }
 
   /// The top-level parse tolerates unknown keys, so a moved key would

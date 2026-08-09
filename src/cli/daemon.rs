@@ -526,8 +526,7 @@ pub(crate) fn build_options(
   // Refuse to start with discovery completely off and no user-supplied
   // paths. Without this the daemon would come up healthy, the catalog
   // would stay empty forever, and the user would see "no models found"
-  // with no signal that it's a config dead-end. Errors propagate as
-  // CONFIG_ERROR exits via the CLI dispatcher.
+  // with no signal that it's a config dead-end.
   crate::config::validate_scan_settings(
     cli.no_scan || env_no_scan_v || config.disable_scan,
     &cli.model_paths,
@@ -535,6 +534,12 @@ pub(crate) fn build_options(
     &config.model_paths,
   )
   .map_err(anyhow::Error::from)?;
+
+  // Same posture for the launch port range: the allocator is the only
+  // thing that rejects an inverted / zero-start range, and it doesn't run
+  // until the first `start` — so without this the daemon boots healthy and
+  // the typo resurfaces later as a launch failure naming no config key.
+  crate::config::validate_port_range(&config.daemon.port_range).map_err(anyhow::Error::from)?;
 
   let mut opts = DaemonOptions::from_defaults()?;
   if let Some(p) = state_dir {

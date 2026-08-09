@@ -72,6 +72,21 @@ daemon:
 llamastash start <ref> --port 41250
 ```
 
+## Daemon refuses to start: port range inverted
+
+**Symptom:** `llamastash daemon start` exits without starting, saying `daemon.port_range` is inverted or that `start` is 0.
+
+**Cause:** `daemon.port_range.start` is above `end` (or is `0`), so no port can ever be allocated and every launch would fail. The daemon refuses at startup rather than coming up healthy and failing on your first `start`.
+
+**Fix:** swap the two values, or drop back to the factory range:
+
+```yaml
+daemon:
+  port_range:
+    start: 41100
+    end: 41300
+```
+
 ## Wayland clipboard yank does nothing
 
 **Symptom:** `y` / `Y` / `p` in the TUI flashes a toast but the system clipboard stays empty (Wayland sessions are the usual culprit).
