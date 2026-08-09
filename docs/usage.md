@@ -295,10 +295,16 @@ Print every discovered model.
 llamastash list [--json] [--filter <PATTERN>]
 ```
 
-- `--json` emits a stable JSON array; pin agents against this. Rows are byte-identical to the IPC `list_models` rows — one shared catalog-row shape with a nested `metadata` block and the `multimodal` / `mtp` capability blocks.
+- `--json` emits a stable JSON array; pin agents against this. Rows are byte-identical to the IPC `list_models` rows — a single `CatalogRow` serde impl (`src/launch/resolve.rs`) is the only definition of the wire shape, serialized by the daemon and deserialized by both CLI and TUI.
 - `--filter` is a case-insensitive substring matched against name, path, arch, and quant.
 
-The table columns are `NAME ARCH PARAMS QUANT CTX SIZE MODE [BACKEND] STATUS [DEVICE]` — the same columns as the TUI Models list. `MODE` shows the catalog's mode hint (`chat` / `embedding` / `rerank`). `BACKEND` appears only when some model is served by more than one backend (or a non-default one); `DEVICE` appears only on multi-GPU hosts and reads `all` for a running launch that targets every GPU (no `--device`), the explicit selector when pinned, and `?` otherwise — matching the TUI's Device column. When piped, the same columns print as tab-separated rows.
+Row shape:
+
+- Top level: `name`, `path`, `parent`, `source`, `backend`, `supported_backends`, `split_siblings`, `parse_error`, `display_label`, plus `model_id` only when set and a CLI-only `status` object on a running row (`state`, `port`, `launch_id`, `device` — the raw `--device` selector, `null` when the launch took the backend default, which the table's DEVICE column renders as `all`).
+- `metadata` — GGUF-derived: `arch`, `quant`, `native_ctx`, `mode_hint`, `parameter_label`, `weights_bytes`, `total_parameters`, `tokenizer_kind`, `has_chat_template`, `has_reasoning_hint`. (These are **not** top-level keys; read `has_reasoning_hint`, there is no `reasoning_hint` alias.)
+- `mtp` — `{embedded_layers, separate_head}`; `multimodal` — `{vision, audio}`.
+
+The table columns are `NAME ARCH PARAMS QUANT CTX SIZE MODE [BACKEND] STATUS [DEVICE]` — the same columns as the TUI Models list, with `DEVICE` gated on the same "some single server offers more than one device" rule the TUI uses (`cli::resolve::multi_device`). `MODE` shows the catalog's mode hint (`chat` / `embedding` / `rerank`). `BACKEND` appears only when some model is served by more than one backend (or a non-default one); `DEVICE` appears only on multi-GPU hosts and reads `all` for a running launch that targets every GPU (no `--device`), the explicit selector when pinned, and `?` otherwise — matching the TUI's Device column. When piped, the same columns print as tab-separated rows.
 
 ### `llamastash show <model-ref>`
 
@@ -308,7 +314,7 @@ Everything LlamaStash knows about one model: catalog row, GGUF metadata, on-disk
 llamastash show <model-ref> [--json]
 ```
 
-`--json` builds on the **same catalog-row shape as `list --json`** (nested `metadata`, `multimodal`, `mtp`, `supported_backends`, `split_siblings`; `model_id` omitted when unset) and layers four show-only sections on top:
+`--json` builds on the **same catalog-row shape as `list --json`** (nested `metadata`, `multimodal`, `mtp`, `supported_backends`, `split_siblings`; `model_id` omitted when unset). The envelope **is** the serialized `CatalogRow` with four show-only sections layered on top (`src/cli/show.rs::assemble_envelope`) — never a second hand-built projection:
 
 - `size` — `weights_bytes`, `shard_count`, `on_disk_total_bytes`, and a per-shard `shards` breakdown.
 - `arch_defaults` — the `yaml` and `builtin` knob sets for this (arch, GPU backend) pair.
@@ -922,7 +928,7 @@ Non-interactive contract: when stdout isn't a terminal and `--recommended` is no
 
 ### `llamastash doctor`
 
-Read-only diagnostic (its one write is the memory-drift baseline refresh). Re-runs hardware detection, diffs against `_init_snapshot.json`, and emits findings with stable ids agents can branch on: `binary_missing`, `binary_digest_drift` (skipped on brew installs — routine `brew upgrade` legitimately rotates the digest), `hardware_drift`, `memory_drift`, `gtt_hint`, `snapshot_stale`, `config_mode_drift`, `remote_snapshot_unreachable`, plus two configured-server advisories — `server_binary_missing` (Warning: a `backend.<id>.servers[].binary` path no longer resolves) and `servers_configured` (Info: a summary of the resolvable servers and their device counts; silent when no `servers:` are configured). When the local benchmark snapshot looks stale, `doctor` probes the latest remote (the same one the recommender prefers) before judging `snapshot_stale`, so it only fires when no fresher snapshot is actually reachable; `LLAMASTASH_OFFLINE` skips that probe.
+Read-only diagnostic (its one write is the memory-drift baseline refresh). Re-runs hardware detection, diffs against `_init_snapshot.json`, and emits findings with stable ids agents can branch on: `binary_missing`, `binary_digest_drift` (skipped on brew installs — routine `brew upgrade` legitimately rotates the digest), `hardware_drift`, `memory_drift`, `gtt_hint`, `snapshot_stale`, `config_mode_drift`, `remote_snapshot_unreachable`, plus two configured-server advisories — `server_binary_missing` (Warning: a `backend.<id>.servers[].binary` path no longer resolves) and `servers_configured` (Info: a summary of the resolvable servers and their device counts; silent when no `servers:` are configured) — and two info-tier ds4 advisories that both honor the `LLAMASTASH_DS4` force: `ds4_unavailable` (the binary is absent but a compatible model is present — those still run on llama.cpp; the `fix_hint` carries the clone/`make` recipe, the `backend.ds4.servers` key, and a pointer to [ds4 backend](#ds4-backend); this is the only finding that scans discovery) and `ds4_disabled` (the binary is installed but `backend.ds4.enabled: false` and no force — `fix_hint` says re-enable, no scan). All of these ids are additive, so `schema_version` stays `2`; readers refuse only versions above their max. When the local benchmark snapshot looks stale, `doctor` probes the latest remote (the same one the recommender prefers) before judging `snapshot_stale`, so it only fires when no fresher snapshot is actually reachable; `LLAMASTASH_OFFLINE` skips that probe.
 
 ```
 llamastash doctor [--json]
