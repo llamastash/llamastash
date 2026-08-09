@@ -299,6 +299,7 @@ fn build_cli(model_dir: &Path, command: Command) -> (Cli, LoadedConfig) {
       ..Config::default()
     },
     warning: None,
+    relocated_keys: Vec::new(),
   };
   (cli, config)
 }

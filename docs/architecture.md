@@ -145,6 +145,27 @@ Per-launch logs are tee'd to a 10 MB × 5-file rotating log on disk and a 4K-lin
 
 A failed factor drops the entry from the running snapshot. Unmanaged `llama-server` processes the daemon doesn't own surface read-only in `status.external` — kernel threads are de-duplicated, so a multi-threaded child counts once, not once per thread.
 
+## Daemon idle shutdown
+
+Off by default. With `daemon.idle_timeout_secs` above `0`, a poller
+(`src/daemon/idle.rs`) shuts the daemon down once nothing has needed it
+for that long — the walk-away case where a laptop stays awake because
+nobody ran `daemon stop`.
+
+"Needed it" is a last-activity clock, not a snapshot: the control-plane
+and proxy accept loops both stamp it at connection open and close, so a
+one-shot CLI call or an agent request that lands between two polls still
+counts. A launch keeps the daemon up only while it is live — a crashed or
+stopped child is a terminal registry row, not work — and a managed
+multiplexer's shared umbrella never counts, since the daemon starts that
+one itself.
+
+Children survive daemon exit as always, and the next client attach
+respawns the daemon. The exception worth knowing: the OpenAI-compat proxy
+dies with it and nothing external respawns it, so an agent pointed at the
+proxy URL sees a dead port until something re-attaches. Proxy traffic
+counts as activity precisely so that doesn't happen mid-session.
+
 ## Model identity
 
 `(canonical absolute path, BLAKE3 of GGUF header bytes)`. The header is small (up to ~1 MB); hashing it gives an identity that survives renames but doesn't fingerprint the whole weight file.

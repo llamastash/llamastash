@@ -154,7 +154,7 @@ const METRICS_INTERVAL_SECS_RANGE: std::ops::RangeInclusive<u64> = 1..=60;
 /// [`Self::idle_timeout`]) so the clamp and the "0 disables" rule are
 /// applied identically everywhere.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, rename_all = "snake_case")]
+#[serde(default, rename_all = "snake_case", deny_unknown_fields)]
 pub struct DaemonConfig {
   /// Inclusive TCP port range the supervisor picks from when launching
   /// a backend server.
@@ -931,7 +931,7 @@ pub enum DefaultLaunchMode {
 /// GPU probe configuration — which vendor tools the daemon spawns
 /// during initial and periodic hardware detection.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, rename_all = "snake_case")]
+#[serde(default, rename_all = "snake_case", deny_unknown_fields)]
 pub struct GpuConfig {
   /// When `true` (the default), the Vulkan fallback probe
   /// (`vulkaninfo -j` / `--summary`) runs at startup and on periodic
@@ -1018,6 +1018,10 @@ impl Default for PortRange {
 pub struct LoadedConfig {
   pub config: Config,
   pub warning: Option<String>,
+  /// Legacy top-level keys that have moved under a nested block, as
+  /// `(old_path, new_path)`. Non-fatal — the config still loads, but the
+  /// old key does nothing, so the CLI says so once at startup.
+  pub relocated_keys: Vec<(&'static str, &'static str)>,
 }
 
 /// Resolve which config file to load, given an optional CLI override, an
@@ -1051,11 +1055,38 @@ pub fn config_path(cli_override: Option<PathBuf>) -> Option<PathBuf> {
   )
 }
 
+/// Top-level keys that moved into a nested block, and where they went.
+///
+/// The top-level `Config` tolerates unknown keys on purpose (forward
+/// compat), which means a moved key is silently ignored and the user
+/// quietly loses the setting. Naming them keeps a breaking rename from
+/// being invisible.
+const RELOCATED_KEYS: &[(&str, &str)] = &[
+  ("port_range", "daemon.port_range"),
+  ("probe_timeout_secs", "daemon.probe_timeout_secs"),
+];
+
+/// Legacy top-level keys still present in `contents`, as `(old, new)`.
+fn relocated_keys(contents: &str) -> Vec<(&'static str, &'static str)> {
+  let Ok(doc) = yaml_serde::from_str::<yaml_serde::Value>(contents) else {
+    return Vec::new();
+  };
+  let Some(map) = doc.as_mapping() else {
+    return Vec::new();
+  };
+  RELOCATED_KEYS
+    .iter()
+    .filter(|(old, _)| map.contains_key(yaml_serde::Value::String((*old).to_string())))
+    .copied()
+    .collect()
+}
+
 fn parse_config(contents: &str, path: &Path) -> LoadedConfig {
   match yaml_serde::from_str::<Config>(contents) {
     Ok(config) => LoadedConfig {
       config,
       warning: None,
+      relocated_keys: relocated_keys(contents),
     },
     Err(error) => LoadedConfig {
       config: Config::default(),
@@ -1064,6 +1095,7 @@ fn parse_config(contents: &str, path: &Path) -> LoadedConfig {
         path.display(),
         error
       )),
+      relocated_keys: Vec::new(),
     },
   }
 }
@@ -1090,6 +1122,7 @@ pub fn load_config_from_path(path: &Path) -> LoadedConfig {
             "config path {} is not a regular file (named pipe, device, or directory)",
             path.display()
           )),
+          relocated_keys: Vec::new(),
         };
       }
       if meta.len() > MAX_CONFIG_BYTES {
@@ -1101,6 +1134,7 @@ pub fn load_config_from_path(path: &Path) -> LoadedConfig {
             meta.len(),
             MAX_CONFIG_BYTES
           )),
+          relocated_keys: Vec::new(),
         };
       }
     }
@@ -1115,6 +1149,7 @@ pub fn load_config_from_path(path: &Path) -> LoadedConfig {
           path.display(),
           error
         )),
+        relocated_keys: Vec::new(),
       };
     }
   }
@@ -1128,6 +1163,7 @@ pub fn load_config_from_path(path: &Path) -> LoadedConfig {
         path.display(),
         error
       )),
+      relocated_keys: Vec::new(),
     },
   }
 }
@@ -1669,6 +1705,75 @@ keybindings:
     assert_eq!(loaded.config.daemon.port_range, PortRange::default());
     assert!(loaded.config.model_paths.is_empty());
     fs::remove_dir_all(dir).expect("temp test dir should be removed");
+  }
+
+  /// The top-level parse tolerates unknown keys, so a moved key would
+  /// otherwise be dropped in silence and the user would just lose the
+  /// setting.
+  #[test]
+  fn a_legacy_top_level_key_is_reported_as_relocated() {
+    let dir = temp_test_dir("relocated-keys");
+    let path = dir.join("config.yaml");
+    fs::write(
+      &path,
+      "theme: latte\nport_range:\n  start: 46000\n  end: 46100\nprobe_timeout_secs: 600\n",
+    )
+    .expect("write failed");
+
+    let loaded = load_config_from_path(&path);
+    assert!(loaded.warning.is_none(), "a moved key must not be fatal");
+    assert_eq!(
+      loaded.relocated_keys,
+      vec![
+        ("port_range", "daemon.port_range"),
+        ("probe_timeout_secs", "daemon.probe_timeout_secs"),
+      ]
+    );
+    // Still ignored, as the forward-compat contract says — the point is
+    // that the user is told.
+    assert_eq!(loaded.config.daemon.port_range, PortRange::default());
+    assert_eq!(loaded.config.theme, ThemeName::Latte);
+    fs::remove_dir_all(dir).expect("temp test dir should be removed");
+  }
+
+  #[test]
+  fn a_config_using_the_new_nesting_reports_nothing_relocated() {
+    let dir = temp_test_dir("no-relocated-keys");
+    let path = dir.join("config.yaml");
+    fs::write(
+      &path,
+      "daemon:\n  port_range:\n    start: 46000\n    end: 46100\n",
+    )
+    .expect("write failed");
+
+    let loaded = load_config_from_path(&path);
+    assert!(loaded.relocated_keys.is_empty());
+    assert_eq!(loaded.config.daemon.port_range.start, 46000);
+    fs::remove_dir_all(dir).expect("temp test dir should be removed");
+  }
+
+  /// These blocks are brand-new key names, so a typo is otherwise an
+  /// undetectable no-op. Matches the `proxy:` posture.
+  #[test]
+  fn a_typo_inside_the_gpu_or_daemon_block_is_rejected() {
+    for body in [
+      "gpu:\n  enable_vulcan_probe: false\n",
+      "daemon:\n  idle_timout_secs: 60\n",
+    ] {
+      let dir = temp_test_dir("block-typo");
+      let path = dir.join("config.yaml");
+      fs::write(&path, body).expect("write failed");
+
+      let loaded = load_config_from_path(&path);
+      let warning = loaded
+        .warning
+        .unwrap_or_else(|| panic!("a typo in {body:?} must be rejected, not ignored"));
+      assert!(
+        warning.contains("unknown field"),
+        "warning should name the unknown field, got: {warning}"
+      );
+      fs::remove_dir_all(dir).expect("temp test dir should be removed");
+    }
   }
 
   #[test]

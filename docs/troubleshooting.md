@@ -97,9 +97,11 @@ The toast prints the URL inline when every backend fails, so you can still paste
 
 **Symptom:** the daemon exits after you stop every model and close the TUI/CLI.
 
-**Cause:** `daemon.idle_timeout_secs` is set above `0`. The daemon then shuts itself down once it has had no running models and no attached client for that long. A managed multiplexer's shared umbrella process doesn't count as a running model, so a host running one still idles out.
+**Cause:** `daemon.idle_timeout_secs` is set above `0`. The daemon shuts itself down once nothing has needed it for that long — no live model, and no CLI, TUI, or proxy traffic. A managed multiplexer's shared umbrella doesn't count as a running model, so a host running one still idles out.
 
-**Fix:** set `daemon.idle_timeout_secs: 0` to disable the timer. Nothing is lost either way — the daemon respawns on demand the next time a client attaches.
+**Fix:** set `daemon.idle_timeout_secs: 0` to disable the timer.
+
+The CLI and TUI respawn the daemon on the next attach, so for them this costs a restart, not your state. The proxy is the one thing that does not come back on its own: an agent pointed at `http://127.0.0.1:11435` gets a refused connection until something re-attaches. Leave the timer off if you keep agents pointed at the proxy across long idle gaps.
 
 ## GPU stays `cpu_only` after the driver loads
 

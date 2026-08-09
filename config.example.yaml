@@ -143,6 +143,9 @@ gpu:
   # daemon start always runs. Raise it (or zero it) if you don't hot-
   # plug GPUs and want fewer `nvidia-smi` / `vulkaninfo` spawns —
   # `status.gpu` then stays on the boot reading until a restart.
+  # The check runs on a sampler tick, so `daemon.metrics_interval_secs`
+  # is the effective floor: setting this below it just re-probes every
+  # tick.
   reprobe_interval_secs: 60
 
 # ─── Daemon ───────────────────────────────────────────────────────
