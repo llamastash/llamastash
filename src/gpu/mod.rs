@@ -353,7 +353,8 @@ impl GpuInfo {
       Self::Multi { devices } | Self::Nvidia { devices } | Self::Amd { devices } => {
         // Prefer a unified verdict when any device reports one (a UMA
         // APU paired with a discrete card budgets as unified). A real GPU
-        // with no unified marker (e.g. NVIDIA, which doesn't classify) is
+        // with no unified marker (e.g. a discrete NVIDIA card, which
+        // reports a normal framebuffer and stays unclassified) is
         // discrete — fall back to that verdict rather than `None`.
         devices
           .iter()

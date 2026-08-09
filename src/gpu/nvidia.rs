@@ -113,9 +113,12 @@ pub(crate) fn parse(stdout: &str) -> Vec<GpuDevice> {
 }
 
 /// `nvidia-smi` renders an unavailable column as a bracketed marker
-/// (`[N/A]`, `[Not Supported]`) rather than omitting it.
+/// rather than omitting it. Matches only the two markers it is known
+/// to emit (`[N/A]`, `[Not Supported]`) — any other bracketed value
+/// (e.g. a permissions error) is treated as a malformed row, not as
+/// evidence of a coherent-UMA part.
 fn is_unsupported_marker(raw: &str) -> bool {
-  raw.trim().starts_with('[')
+  matches!(raw.trim(), "[N/A]" | "[Not Supported]")
 }
 
 /// Fill memory for coherent-UMA devices from the system pool, which is
@@ -290,6 +293,14 @@ mod tests {
     // Only the bracketed markers mean "unsupported". Genuine junk is
     // still a malformed row and must not be promoted to a UMA device.
     assert!(parse("NVIDIA RTX, banana, 100, 50, 60\n").is_empty());
+  }
+
+  #[test]
+  fn unknown_bracketed_marker_in_the_memory_column_still_drops_the_row() {
+    // Only `[N/A]` / `[Not Supported]` mean "no framebuffer". Any other
+    // bracketed value (a permissions error, a future driver message) is
+    // not evidence of a coherent-UMA part and must not be promoted.
+    assert!(parse("NVIDIA RTX, [Insufficient Permissions], 100, 50, 60\n").is_empty());
   }
 
   #[test]

@@ -14,7 +14,7 @@ Quick reference for the common ways LlamaStash can refuse to do what you want, w
 
 **Fixes per backend:**
 
-- **NVIDIA:** confirm `nvidia-smi` works. LlamaStash uses `nvml-wrapper`; if NVML isn't installed (driver-only install), the daemon falls back to CPU-only. Install the NVML library that ships with your CUDA toolkit.
+- **NVIDIA:** confirm `nvidia-smi` is on `PATH` and answers — LlamaStash probes `nvidia-smi --query-gpu=… --format=csv` (a subprocess, not the NVML library), so a working driver install is enough. Run `nvidia-smi` manually; if it fails or is missing, the daemon falls back to CPU-only. On coherent-UMA parts (GB10 / DGX Spark, Jetson) the memory columns read `[N/A]` — that's expected, and the GPU is sized from the system pool instead.
 - **AMD:** on Linux, LlamaStash reads `/sys/class/drm/card*/device/mem_info_*` (a stable kernel interface) and falls back to `rocm-smi --showmeminfo vram gtt --json`. Make sure the `amdgpu` driver is bound; if sysfs is unreadable, keep `rocm-smi` on `PATH`. `doctor` surfaces a probe failure rather than silently degrading to CPU-only.
 - **Apple Silicon:** LlamaStash parses `system_profiler SPDisplaysDataType -json`. If this is empty, the macOS install is unusual — try the command manually and file an issue with the output.
 - **Intel macOS:** there is no Metal support to detect; LlamaStash falls back to CPU-only and that's correct.
