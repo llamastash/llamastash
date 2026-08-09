@@ -176,7 +176,7 @@ pub struct DaemonConfig {
 }
 
 impl DaemonConfig {
-  /// Sampler cadence, clamped into [`METRICS_INTERVAL_SECS_RANGE`]. A
+  /// Sampler cadence, clamped into `METRICS_INTERVAL_SECS_RANGE`. A
   /// `0` would busy-loop the sampler, so it resolves to the 1 s floor
   /// rather than disabling anything.
   pub fn metrics_interval(&self) -> Duration {
