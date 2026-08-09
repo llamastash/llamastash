@@ -4,69 +4,133 @@
 //! nothing to do for the configured span, so a forgotten `daemon stop`
 //! doesn't keep a laptop awake. Disabled by default.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::task::JoinHandle;
 
-use super::registry::{LaunchId, SupervisorRegistry};
+use super::registry::SupervisorRegistry;
 use super::shutdown::ShutdownToken;
+use super::supervisor::ManagedState;
 
 /// Ceiling on how often idleness is sampled. Coarse on purpose: this
 /// decides when to *stop* doing nothing, so polling harder costs more
-/// than the precision is worth. A timeout shorter than this polls at the
-/// timeout instead, so a small `idle_timeout_secs` isn't rounded up to
-/// two full poll periods.
+/// than the precision is worth. A timeout below this polls at the
+/// timeout instead.
 const MAX_POLL: Duration = Duration::from_secs(5);
 
-/// Is the daemon doing nothing a user would miss?
+/// Last-touched clock shared by every surface a user reaches the daemon
+/// through.
 ///
-/// Two signals: no servable model running, and no client attached. The
-/// TUI and CLI hold control-plane connections while they're open, so a
-/// user watching the dashboard keeps the daemon alive even with every
-/// model stopped.
+/// Polling a connection *gauge* only sees clients attached at the
+/// sampling instant, which misses the common shapes entirely: one-shot
+/// CLI calls open and close between two polls, and proxy requests never
+/// touch the control plane at all. Each surface stamps this instead, so
+/// "idle" means *nothing has happened since* rather than *nothing is
+/// happening right now*.
 ///
-/// Infra launches — a managed multiplexer's shared umbrella, which the
-/// daemon brings up itself at boot — don't count as work. They'd
-/// otherwise pin the daemon awake forever on any host running one.
-fn is_idle(launches: &[LaunchId], connections: &AtomicUsize) -> bool {
-  connections.load(Ordering::Relaxed) == 0 && launches.iter().all(crate::backend::is_infra_launch)
+/// Cheap to clone (one `Arc`); stores millis from a per-process base so
+/// a read is a relaxed atomic load.
+#[derive(Clone, Debug)]
+pub struct Activity {
+  base: Instant,
+  last_millis: Arc<AtomicU64>,
 }
 
-/// Poll for idleness and trigger `token` once it has held for `timeout`.
+impl Activity {
+  pub fn new() -> Self {
+    Self {
+      base: Instant::now(),
+      last_millis: Arc::new(AtomicU64::new(0)),
+    }
+  }
+
+  /// Record that something reached the daemon. Called on every
+  /// control-plane and proxy connection, at open and at close, so both
+  /// long-lived and one-shot clients register.
+  pub fn mark(&self) {
+    let now = self.base.elapsed().as_millis() as u64;
+    self.last_millis.fetch_max(now, Ordering::Relaxed);
+  }
+
+  /// How long since the last [`Self::mark`].
+  pub fn idle_for(&self) -> Duration {
+    let last = self.last_millis.load(Ordering::Relaxed);
+    self
+      .base
+      .elapsed()
+      .saturating_sub(Duration::from_millis(last))
+  }
+}
+
+impl Default for Activity {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
+/// Is the daemon holding work a user would miss right now?
+///
+/// A launch counts only while it is *live*. A child that crashed or was
+/// stopped leaves a terminal-state entry in the registry, and treating
+/// that as work would pin the daemon awake forever — the opposite of
+/// what a walk-away timeout is for.
+///
+/// Infra launches — a managed multiplexer's shared umbrella, which the
+/// daemon brings up itself at boot — never count: they'd otherwise pin
+/// every host running one.
+async fn is_busy(supervisors: &SupervisorRegistry, connections: &AtomicUsize) -> bool {
+  if connections.load(Ordering::Relaxed) > 0 {
+    return true;
+  }
+  for (id, model) in supervisors.snapshot().await {
+    if crate::backend::is_infra_launch(&id) {
+      continue;
+    }
+    if !matches!(
+      model.state().await,
+      ManagedState::Stopped | ManagedState::Error { .. }
+    ) {
+      return true;
+    }
+  }
+  false
+}
+
+/// Poll for idleness and trigger `token` once nothing has touched the
+/// daemon for `timeout`.
 ///
 /// The returned handle is not awaited by the daemon: the task exits on
 /// its own after triggering, and is dropped with the runtime otherwise.
 pub(super) fn spawn(
   supervisors: SupervisorRegistry,
   connections: Arc<AtomicUsize>,
+  activity: Activity,
   token: ShutdownToken,
   timeout: Duration,
 ) -> JoinHandle<()> {
   let poll = MAX_POLL.min(timeout);
   tokio::spawn(async move {
-    let mut idle_since: Option<tokio::time::Instant> = None;
     loop {
       tokio::select! {
         _ = token.wait_until_triggered() => return,
         _ = tokio::time::sleep(poll) => {}
       }
-      if !is_idle(&supervisors.launch_ids().await, &connections) {
-        idle_since = None;
+      // Ongoing work keeps the clock stamped, so the countdown always
+      // runs from the last moment the daemon had something to do —
+      // never from the poll that first noticed.
+      if is_busy(&supervisors, &connections).await {
+        activity.mark();
         continue;
       }
-      match idle_since {
-        Some(since) if since.elapsed() >= timeout => {
-          log::info!(
-            "idle for {}s with no running models and no clients attached; shutting down",
-            timeout.as_secs()
-          );
-          token.trigger();
-          return;
-        }
-        Some(_) => {}
-        None => idle_since = Some(tokio::time::Instant::now()),
+      if activity.idle_for() >= timeout {
+        log::info!(
+          "idle for {}s with no running models and no client or proxy traffic; shutting down",
+          timeout.as_secs()
+        );
+        token.trigger();
+        return;
       }
     }
   })
@@ -75,6 +139,8 @@ pub(super) fn spawn(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::daemon::registry::LaunchId;
+  use crate::daemon::supervisor::test_support;
 
   /// Resolved the way [`crate::backend::umbrella_owner`] does, so the
   /// test names no backend.
@@ -85,41 +151,91 @@ mod tests {
       .expect("a managed-multiplexer backend exposing an umbrella launch id")
   }
 
-  fn no_clients() -> AtomicUsize {
-    AtomicUsize::new(0)
+  fn idle_inputs() -> (SupervisorRegistry, Arc<AtomicUsize>) {
+    (SupervisorRegistry::new(), Arc::new(AtomicUsize::new(0)))
   }
 
-  #[test]
-  fn nothing_running_and_no_clients_is_idle() {
-    assert!(is_idle(&[], &no_clients()));
+  #[tokio::test]
+  async fn nothing_running_and_no_clients_is_not_busy() {
+    let (supervisors, connections) = idle_inputs();
+    assert!(!is_busy(&supervisors, &connections).await);
   }
 
-  #[test]
-  fn an_attached_client_is_not_idle() {
-    assert!(!is_idle(&[], &AtomicUsize::new(1)));
-  }
-
-  #[test]
-  fn a_running_model_is_not_idle() {
-    assert!(!is_idle(&[LaunchId("L1".into())], &no_clients()));
+  #[tokio::test]
+  async fn an_attached_client_is_busy() {
+    let (supervisors, connections) = idle_inputs();
+    connections.store(1, Ordering::Relaxed);
+    assert!(is_busy(&supervisors, &connections).await);
   }
 
   /// The shared umbrella is daemon-owned infra, not user work — a host
-  /// running one must still be able to idle out. Regression: keying on
-  /// a bare "registry is empty" check never idles on such a host.
-  #[test]
-  fn an_infra_umbrella_alone_is_still_idle() {
+  /// running one must still idle out. Regression: a bare "registry is
+  /// empty" check never idles on such a host.
+  #[tokio::test]
+  async fn an_infra_umbrella_alone_is_not_busy() {
+    let (supervisors, connections) = idle_inputs();
     let umbrella = umbrella_id();
     assert!(crate::backend::is_infra_launch(&umbrella));
-    assert!(is_idle(&[umbrella], &no_clients()));
+    supervisors
+      .insert(umbrella, test_support::in_state(ManagedState::Ready))
+      .await;
+    assert!(!is_busy(&supervisors, &connections).await);
+  }
+
+  #[tokio::test]
+  async fn a_live_model_is_busy() {
+    let (supervisors, connections) = idle_inputs();
+    supervisors
+      .insert(
+        LaunchId("L1".into()),
+        test_support::in_state(ManagedState::Ready),
+      )
+      .await;
+    assert!(is_busy(&supervisors, &connections).await);
+  }
+
+  /// Regression: a child that crashed or was stopped leaves a
+  /// terminal-state row in the registry. Counting it as work pinned the
+  /// daemon awake forever — exactly the walk-away case the timeout is
+  /// for.
+  #[tokio::test]
+  async fn a_terminal_state_launch_is_not_busy() {
+    for state in [
+      ManagedState::Stopped,
+      ManagedState::Error {
+        cause: "child exited".into(),
+      },
+    ] {
+      let (supervisors, connections) = idle_inputs();
+      supervisors
+        .insert(LaunchId("L1".into()), test_support::in_state(state.clone()))
+        .await;
+      assert!(
+        !is_busy(&supervisors, &connections).await,
+        "a {state:?} launch must not count as work"
+      );
+    }
+  }
+
+  #[tokio::test]
+  async fn a_stopping_launch_is_still_busy() {
+    let (supervisors, connections) = idle_inputs();
+    supervisors
+      .insert(
+        LaunchId("L1".into()),
+        test_support::in_state(ManagedState::Stopping),
+      )
+      .await;
+    assert!(is_busy(&supervisors, &connections).await);
   }
 
   #[test]
-  fn an_infra_umbrella_alongside_a_real_model_is_not_idle() {
-    assert!(!is_idle(
-      &[umbrella_id(), LaunchId("L1".into())],
-      &no_clients()
-    ));
+  fn a_mark_resets_the_idle_clock() {
+    let activity = Activity::new();
+    std::thread::sleep(Duration::from_millis(30));
+    assert!(activity.idle_for() >= Duration::from_millis(25));
+    activity.mark();
+    assert!(activity.idle_for() < Duration::from_millis(25));
   }
 
   /// `spawn` polls at `min(MAX_POLL, timeout)`, so a short timeout keeps
@@ -128,10 +244,12 @@ mod tests {
 
   #[tokio::test]
   async fn triggers_shutdown_once_idle_outlasts_the_timeout() {
+    let (supervisors, connections) = idle_inputs();
     let token = ShutdownToken::new();
     let handle = spawn(
-      SupervisorRegistry::new(),
-      Arc::new(AtomicUsize::new(0)),
+      supervisors,
+      connections,
+      Activity::new(),
       token.clone(),
       TICK,
     );
@@ -144,10 +262,12 @@ mod tests {
 
   #[tokio::test]
   async fn does_not_trigger_before_the_timeout_elapses() {
+    let (supervisors, connections) = idle_inputs();
     let token = ShutdownToken::new();
     let handle = spawn(
-      SupervisorRegistry::new(),
-      Arc::new(AtomicUsize::new(0)),
+      supervisors,
+      connections,
+      Activity::new(),
       token.clone(),
       Duration::from_secs(3600),
     );
@@ -156,14 +276,15 @@ mod tests {
     handle.abort();
   }
 
-  /// A client attached the whole time must keep the daemon alive — the
-  /// countdown restarts on every non-idle poll.
   #[tokio::test]
   async fn an_attached_client_keeps_the_daemon_alive() {
+    let (supervisors, connections) = idle_inputs();
+    connections.store(1, Ordering::Relaxed);
     let token = ShutdownToken::new();
     let handle = spawn(
-      SupervisorRegistry::new(),
-      Arc::new(AtomicUsize::new(1)),
+      supervisors,
+      connections,
+      Activity::new(),
       token.clone(),
       TICK,
     );
@@ -172,13 +293,62 @@ mod tests {
     handle.abort();
   }
 
+  /// A live model keeps the daemon alive even with nothing attached.
+  #[tokio::test]
+  async fn a_running_model_keeps_the_daemon_alive() {
+    let (supervisors, connections) = idle_inputs();
+    supervisors
+      .insert(
+        LaunchId("L1".into()),
+        test_support::in_state(ManagedState::Ready),
+      )
+      .await;
+    let token = ShutdownToken::new();
+    let handle = spawn(
+      supervisors,
+      connections,
+      Activity::new(),
+      token.clone(),
+      TICK,
+    );
+    tokio::time::sleep(TICK * 10).await;
+    assert!(!token.is_triggered());
+    handle.abort();
+  }
+
+  /// Regression: sampling a connection *gauge* missed one-shot CLI calls
+  /// and all proxy traffic, so a daemon under continuous use shut down.
+  /// Traffic between polls now keeps it alive.
+  #[tokio::test]
+  async fn traffic_between_polls_keeps_the_daemon_alive() {
+    let (supervisors, connections) = idle_inputs();
+    let activity = Activity::new();
+    let token = ShutdownToken::new();
+    let handle = spawn(
+      supervisors,
+      connections,
+      activity.clone(),
+      token.clone(),
+      TICK * 3,
+    );
+    // Never attached at a poll instant — only stamped in between.
+    for _ in 0..12 {
+      tokio::time::sleep(TICK).await;
+      activity.mark();
+    }
+    assert!(!token.is_triggered());
+    handle.abort();
+  }
+
   /// The poller must not outlive a shutdown it didn't cause.
   #[tokio::test]
   async fn exits_when_the_daemon_shuts_down_for_another_reason() {
+    let (supervisors, connections) = idle_inputs();
     let token = ShutdownToken::new();
     let handle = spawn(
-      SupervisorRegistry::new(),
-      Arc::new(AtomicUsize::new(0)),
+      supervisors,
+      connections,
+      Activity::new(),
       token.clone(),
       Duration::from_secs(3600),
     );

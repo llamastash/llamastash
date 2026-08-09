@@ -13,7 +13,7 @@ pub mod context;
 pub mod control_plane;
 pub mod discovery_task;
 pub mod host_metrics;
-mod idle;
+pub mod idle;
 pub mod launch_service;
 pub mod lockfile;
 pub mod orphans;
@@ -507,6 +507,7 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
     idle::spawn(
       ctx.supervisors.clone(),
       ctx.active_connections.clone(),
+      ctx.activity.clone(),
       token.clone(),
       timeout,
     );
