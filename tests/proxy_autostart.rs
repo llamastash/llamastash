@@ -58,6 +58,30 @@ fn allocate_port_range() -> PortRange {
   }
 }
 
+/// A launch-pool range with room for several supervisors. Tests that
+/// must prove the proxy did *not* start a second process need the
+/// slack: a range sized to exactly one launch blocks the duplicate on
+/// port exhaustion and passes for the wrong reason.
+///
+/// The window has to be genuinely wide, not `start + 1`. macOS hands
+/// out ephemeral ports sequentially, so the port right above the one we
+/// just probed goes to whichever parallel test binds next, leaving the
+/// pool a port short and the second launch failing allocation. Same
+/// shape as `allocate_port_range_pair` in `cli_integration_test.rs`.
+fn allocate_wide_port_range() -> PortRange {
+  let l1 = std::net::TcpListener::bind("127.0.0.1:0").expect("bind 1");
+  let l2 = std::net::TcpListener::bind("127.0.0.1:0").expect("bind 2");
+  let p1 = l1.local_addr().unwrap().port();
+  let p2 = l2.local_addr().unwrap().port();
+  drop(l1);
+  drop(l2);
+  let lo = p1.min(p2);
+  PortRange {
+    start: lo,
+    end: lo.saturating_add(31),
+  }
+}
+
 /// Write a synthetic GGUF with the requested architecture under
 /// `dir`, return its canonical absolute path.
 fn write_gguf(dir: &Path, name: &str, arch: &str) -> PathBuf {
@@ -83,12 +107,24 @@ fn fake_metadata(arch: &str) -> ModelMetadata {
 }
 
 fn discovered(path: &Path, display_label: Option<&str>, arch: &str) -> DiscoveredModel {
+  discovered_with_hint(path, display_label, arch, ModeHint::Chat)
+}
+
+fn discovered_with_hint(
+  path: &Path,
+  display_label: Option<&str>,
+  arch: &str,
+  mode_hint: ModeHint,
+) -> DiscoveredModel {
   let parent = path.parent().expect("parent").to_path_buf();
   DiscoveredModel {
     path: path.to_path_buf(),
     parent,
     source: ModelSource::UserPath,
-    metadata: Some(fake_metadata(arch)),
+    metadata: Some(ModelMetadata {
+      mode_hint,
+      ..fake_metadata(arch)
+    }),
     parse_error: None,
     split_siblings: Vec::new(),
     display_label: display_label.map(str::to_string),
@@ -377,6 +413,256 @@ async fn second_request_for_same_model_skips_relaunch() {
   assert_eq!(
     after_first, after_second,
     "second request must reuse the running supervisor; got {after_first} -> {after_second}"
+  );
+
+  stop_all(&ctx).await;
+  shutdown_listener(shutdown, listener_handle).await;
+  std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- Regression (#56): a Loading launch must be attached to, not duplicated -
+
+/// Start a model through the IPC surface the way `llamastash start`
+/// does. Returns once the supervisor is registered — well before Ready,
+/// so the caller owns the load window.
+/// Poll until a `last_params` row carrying `mode` lands, or `budget`
+/// expires. The recorder runs in a background task off the supervisor's
+/// Loading → Ready transition, so it is never ready when `start_model`
+/// returns.
+async fn wait_for_last_params_mode(
+  ctx: &MethodContext,
+  mode: llamastash::launch::mode::LaunchMode,
+  budget: Duration,
+) -> bool {
+  let deadline = std::time::Instant::now() + budget;
+  while std::time::Instant::now() < deadline {
+    if ctx
+      .state
+      .snapshot()
+      .await
+      .last_params
+      .iter()
+      .any(|e| e.params.mode == mode)
+    {
+      return true;
+    }
+    sleep(Duration::from_millis(20)).await;
+  }
+  false
+}
+
+async fn ipc_start_model(ctx: &MethodContext, params: Value) {
+  let req = llamastash::ipc::protocol::Request::new(1, "start_model", Some(params));
+  let resp = llamastash::ipc::methods::dispatch_request(ctx, req).await;
+  assert!(
+    resp.error.is_none(),
+    "start_model must succeed: {:?}",
+    resp.error
+  );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn request_during_load_window_attaches_instead_of_duplicating() {
+  // A supervisor started elsewhere (CLI / TUI / boot restore) is still
+  // Loading when a proxy request for the same model arrives. The proxy
+  // must wait on that launch — starting a second `llama-server` on the
+  // same GGUF wastes a full copy of the weights in VRAM until the
+  // idle-TTL sweep evicts it half an hour later.
+  let dir = unique_temp("attach");
+  let log_dir = dir.join("logs");
+  std::fs::create_dir_all(&log_dir).unwrap();
+  let model_path = write_gguf(&dir, "qwen3.gguf", "qwen3");
+  let (state, ctx) = build_state(
+    vec![discovered(&model_path, Some("qwen3"), "qwen3")],
+    &log_dir,
+    // Room for two supervisors, so a duplicate launch would actually
+    // succeed if the attach didn't happen.
+    allocate_wide_port_range(),
+  )
+  .await;
+  let (addr, shutdown, listener_handle) = spawn_listener(Arc::clone(&state)).await;
+
+  // `--health-delay-ms` keeps /health at 503 so the supervisor sits in
+  // Loading for the whole window the proxy request lands in.
+  ipc_start_model(
+    &ctx,
+    serde_json::json!({
+      "model_path": model_path.to_string_lossy(),
+      "extras": ["--health-delay-ms", "1500"],
+    }),
+  )
+  .await;
+  use llamastash::daemon::supervisor::ManagedState;
+  let pre = ctx.supervisors.snapshot().await;
+  assert_eq!(pre.len(), 1, "the CLI-shaped launch registered");
+  assert!(
+    !matches!(pre[0].1.state().await, ManagedState::Ready),
+    "supervisor must still be loading when the proxy request lands"
+  );
+
+  let body = r#"{"model":"qwen3","messages":[{"role":"user","content":"hi"}]}"#;
+  let (status, _h, _b) = http_post(addr, "/v1/chat/completions", body).await;
+  assert_eq!(
+    status, 200,
+    "request waits out the load window and forwards"
+  );
+
+  let after = ctx.supervisors.snapshot().await;
+  assert_eq!(
+    after.len(),
+    1,
+    "proxy must attach to the in-flight launch, not start a second one"
+  );
+
+  stop_all(&ctx).await;
+  shutdown_listener(shutdown, listener_handle).await;
+  std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- Regression (#56): /v1/rerank auto-start must launch in rerank mode -
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rerank_request_auto_starts_in_rerank_mode_not_embedding() {
+  // A BERT reranker's GGUF header reads as `embedding`, so the hint
+  // alone produced a supervisor launched with `--embeddings` — one that
+  // answers 501 to the very `/v1/rerank` call that started it. The
+  // endpoint is the stronger signal and must win.
+  let dir = unique_temp("rerank-mode");
+  let log_dir = dir.join("logs");
+  std::fs::create_dir_all(&log_dir).unwrap();
+  let model_path = write_gguf(&dir, "bge-reranker.gguf", "bert");
+  let (state, ctx) = build_state(
+    vec![discovered_with_hint(
+      &model_path,
+      Some("bge-reranker"),
+      "bert",
+      ModeHint::Embedding,
+    )],
+    &log_dir,
+    allocate_port_range(),
+  )
+  .await;
+  let (addr, shutdown, listener_handle) = spawn_listener(state).await;
+
+  let body = r#"{"model":"bge-reranker","query":"ping","documents":["a"]}"#;
+  let (status, _h, _b) = http_post(addr, "/v1/rerank", body).await;
+  assert_eq!(status, 200, "rerank request is served by the auto-start");
+
+  let snap = ctx.supervisors.snapshot().await;
+  assert_eq!(snap.len(), 1);
+  assert_eq!(
+    snap[0].1.mode(),
+    llamastash::launch::mode::LaunchMode::Rerank,
+    "auto-start must follow the endpoint, not the GGUF embedding hint"
+  );
+
+  stop_all(&ctx).await;
+  shutdown_listener(shutdown, listener_handle).await;
+  std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mode_less_endpoint_inherits_the_recorded_last_params_mode() {
+  // `/v1/chat/completions` implies no mode, so the recorded launch is
+  // the next signal. This also pins `last_used_mode`'s lookup to the
+  // same full-`ModelId` key `compose_and_spawn` uses for its last-used
+  // knob layer — a real launch writes the entry, the proxy must find it.
+  let dir = unique_temp("last-params-mode");
+  let log_dir = dir.join("logs");
+  std::fs::create_dir_all(&log_dir).unwrap();
+  let model_path = write_gguf(&dir, "bge-reranker.gguf", "bert");
+  let (state, ctx) = build_state(
+    vec![discovered_with_hint(
+      &model_path,
+      Some("bge-reranker"),
+      "bert",
+      ModeHint::Embedding,
+    )],
+    &log_dir,
+    allocate_wide_port_range(),
+  )
+  .await;
+  let (addr, shutdown, listener_handle) = spawn_listener(state).await;
+
+  // A manual `--mode rerank` launch records the user's real choice,
+  // then goes away. `last_params` is written by a background task on
+  // the Loading → Ready transition, so wait for the record rather than
+  // stopping the moment `start_model` returns.
+  ipc_start_model(
+    &ctx,
+    serde_json::json!({
+      "model_path": model_path.to_string_lossy(),
+      "mode": "rerank",
+    }),
+  )
+  .await;
+  assert!(
+    wait_for_last_params_mode(
+      &ctx,
+      llamastash::launch::mode::LaunchMode::Rerank,
+      Duration::from_secs(15)
+    )
+    .await,
+    "the manual launch must record mode=rerank in last_params"
+  );
+  stop_all(&ctx).await;
+
+  let body = r#"{"model":"bge-reranker","messages":[{"role":"user","content":"hi"}]}"#;
+  let (status, _h, _b) = http_post(addr, "/v1/chat/completions", body).await;
+  assert_eq!(status, 200);
+
+  let ready: Vec<_> = {
+    let snap = ctx.supervisors.snapshot().await;
+    let mut out = Vec::new();
+    for (_lid, m) in snap {
+      if matches!(
+        m.state().await,
+        llamastash::daemon::supervisor::ManagedState::Ready
+      ) {
+        out.push(m);
+      }
+    }
+    out
+  };
+  assert_eq!(ready.len(), 1, "one live supervisor from the auto-start");
+  assert_eq!(
+    ready[0].mode(),
+    llamastash::launch::mode::LaunchMode::Rerank,
+    "auto-start inherits the recorded mode over the GGUF embedding hint"
+  );
+
+  stop_all(&ctx).await;
+  shutdown_listener(shutdown, listener_handle).await;
+  std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn embeddings_request_does_not_force_a_chat_model_into_embedding_mode() {
+  // The mirror-image guard: `--embeddings` makes llama-server refuse
+  // chat completions for the supervisor's whole life, so an embeddings
+  // request must not be able to lock a chat model out of chat.
+  let dir = unique_temp("chat-mode");
+  let log_dir = dir.join("logs");
+  std::fs::create_dir_all(&log_dir).unwrap();
+  let model_path = write_gguf(&dir, "qwen3.gguf", "qwen3");
+  let (state, ctx) = build_state(
+    vec![discovered(&model_path, Some("qwen3"), "qwen3")],
+    &log_dir,
+    allocate_port_range(),
+  )
+  .await;
+  let (addr, shutdown, listener_handle) = spawn_listener(state).await;
+
+  let body = r#"{"model":"qwen3","input":"ping"}"#;
+  let (status, _h, _b) = http_post(addr, "/v1/embeddings", body).await;
+  assert_eq!(status, 200);
+
+  let snap = ctx.supervisors.snapshot().await;
+  assert_eq!(snap.len(), 1);
+  assert_eq!(
+    snap[0].1.mode(),
+    llamastash::launch::mode::LaunchMode::Chat,
+    "a chat-hinted model keeps chat mode"
   );
 
   stop_all(&ctx).await;

@@ -8,16 +8,21 @@
 //! paths can't drift apart.
 //!
 //! The flow:
-//!   1. Build a default [`StartParams`] from the resolved catalog
-//!      row (just the path; mode defaults to Chat, no port
-//!      preference, no caller knobs — `compose_and_spawn` then
-//!      replays the same `last_params → arch_defaults → built-in`
-//!      cascade the IPC handler does).
-//!   2. Acquire single-flight rights via
+//!   1. Acquire single-flight rights via
 //!      [`crate::proxy::coalesce::Coalesce::acquire`]. Leaders run
-//!      `compose_and_spawn`; followers `.wait()` and receive the
-//!      leader's outcome directly from the slot (no re-snapshot).
-//!   3. Poll [`crate::daemon::supervisor::ManagedModel::state`] at
+//!      the launch; followers `.wait()` and receive the leader's
+//!      outcome directly from the slot (no re-snapshot).
+//!   2. Leaders first look for a supervisor already serving this file
+//!      ([`attach_target`]) and attach to it instead of spawning —
+//!      the coalesce map only covers proxy-driven launches, so a
+//!      CLI/TUI launch still in `Loading` would otherwise get a
+//!      duplicate `llama-server` on the same GGUF.
+//!   3. Otherwise build [`StartParams`] from the resolved catalog row
+//!      (path + resolved launch mode, no port preference, no caller
+//!      knobs — `compose_and_spawn` then replays the same
+//!      `last_params → arch_defaults → built-in` cascade the IPC
+//!      handler does) and spawn.
+//!   4. Poll [`crate::daemon::supervisor::ManagedModel::state`] at
 //!      100 ms cadence until it reaches `Ready` (forward) or
 //!      `Error{cause}` (fallback). No client-facing timeout — per
 //!      the locked Key Decision "Hard supervisor Error only; wait
@@ -29,8 +34,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::daemon::launch_service::{compose_and_spawn, LaunchModeWire, StartParams};
-use crate::daemon::supervisor::ManagedState;
+use crate::daemon::supervisor::{ManagedModel, ManagedState};
 use crate::gguf::identity::ModelId;
+use crate::launch::mode::LaunchMode;
 use crate::launch::resolve::CatalogRow;
 
 use super::coalesce::{AcquireOutcome, SharedOutcome};
@@ -75,10 +81,18 @@ impl From<LaunchOutcome> for SharedOutcome {
 /// supervisor reaches `Error{cause}` before Ready, or if a follower
 /// observed the leader's launch failure.
 ///
+/// `endpoint_mode` is the mode the requested endpoint implies
+/// (`/v1/embeddings` → embedding, `/v1/rerank` → rerank, `None` for
+/// the chat-shaped routes) — see [`resolve_auto_start_mode`].
+///
 /// The proxy must hold `Arc<ProxyState>` for the duration so the
 /// coalesce + supervisor handles stay alive across the await
 /// points.
-pub(crate) async fn auto_start(state: &Arc<ProxyState>, resolved: &CatalogRow) -> LaunchOutcome {
+pub(crate) async fn auto_start(
+  state: &Arc<ProxyState>,
+  resolved: &CatalogRow,
+  endpoint_mode: Option<LaunchMode>,
+) -> LaunchOutcome {
   // Compute the canonical ModelId from the resolved row. We read
   // the header here rather than trusting any in-process cache so
   // the single-flight key matches what `compose_and_spawn` will
@@ -115,7 +129,7 @@ pub(crate) async fn auto_start(state: &Arc<ProxyState>, resolved: &CatalogRow) -
   // the leader finishes (or wake to `None` on cancellation).
   match state.coalesce.acquire(model_id.clone()).await {
     AcquireOutcome::Leader(leader) => {
-      let outcome = drive_launch_as_leader(state, resolved, model_id.clone()).await;
+      let outcome = drive_launch_as_leader(state, resolved, &model_id, endpoint_mode).await;
       // Record outcome against the failure tracker before publishing
       // to followers so a follower that wakes up immediately and asks
       // `over_limit` sees a coherent count.
@@ -139,26 +153,34 @@ pub(crate) async fn auto_start(state: &Arc<ProxyState>, resolved: &CatalogRow) -
   }
 }
 
-/// Run [`compose_and_spawn`], then poll `state()` at 100 ms until
-/// the supervisor reaches `Ready` or `Error`. Pulled out so the
-/// leader arm of [`auto_start`] reads top-to-bottom without nesting.
+/// Attach to an in-flight launch when one exists, else run
+/// [`compose_and_spawn`]; either way wait for `Ready` via
+/// [`await_ready`]. Pulled out so the leader arm of [`auto_start`]
+/// reads top-to-bottom without nesting.
 async fn drive_launch_as_leader(
   state: &Arc<ProxyState>,
   resolved: &CatalogRow,
-  model_id: ModelId,
+  model_id: &ModelId,
+  endpoint_mode: Option<LaunchMode>,
 ) -> LaunchOutcome {
-  // Mode is read from the catalog row's GGUF-derived mode_hint so
-  // `compose_and_spawn` composes the right argv (`--embeddings` for
-  // embedding-only models, `--rerank` for rerank models). Without
-  // this the proxy auto-start path defaulted every model to chat
-  // mode and embedding requests against a nomic/jina/etc model
-  // came back 501 (`This server does not support embeddings`) even
-  // though `llamastash start <model>` worked fine. `Unknown` /
-  // missing hint leaves `mode = None` so `compose_and_spawn`'s
-  // chat default still applies.
+  // A launch for this file may already be underway from another
+  // surface — CLI `start`, the TUI, a boot-time restore — and the
+  // coalesce map only covers proxy-driven launches. Attach to it
+  // instead of spawning a second `llama-server` on the same GGUF,
+  // which would hold its own weights in VRAM until the idle sweep.
+  // Ready is included so a supervisor that came up between `decide`
+  // and here is reused too.
+  if let Some(existing) = attach_target(state, model_id).await {
+    return await_ready(state, &existing).await;
+  }
+
   let params = StartParams {
     model_path: std::path::PathBuf::from(&resolved.path),
-    mode: launch_mode_from_hint(resolved.mode_hint.as_deref()),
+    mode: resolve_auto_start_mode(
+      resolved.mode_hint.as_deref(),
+      endpoint_mode,
+      last_used_mode(state, model_id).await,
+    ),
     ..StartParams::default()
   };
   let started = match compose_and_spawn(
@@ -181,20 +203,55 @@ async fn drive_launch_as_leader(
     log::warn!("proxy auto-start: {w}");
   }
 
-  // Poll the supervisor state machine. 100 ms cadence per the Key
-  // Decision; no client-facing timeout — only `Error{cause}` and
-  // `Stopping` trigger fallback (Loading waits indefinitely).
+  await_ready(state, &started.model).await
+}
+
+/// A supervisor already serving `model_id`'s file that this request can
+/// wait on rather than spawning alongside. `Stopping` / `Stopped` /
+/// `Error` entries are skipped — those are on their way out, so the
+/// request needs its own launch.
+///
+/// Matches on path alone, and ignores the running launch's mode, so
+/// this is the same predicate [`super::route::decide`] applies when it
+/// walks for a Ready supervisor. Tightening either here (full `ModelId`
+/// including the header hash, or a mode-compatibility gate) would make
+/// the load window behave differently from the Ready path: the request
+/// would spawn a second process for a file another supervisor already
+/// holds, then the identical request a second later would forward to
+/// that same supervisor. One supervisor per file is the invariant the
+/// whole proxy routes on.
+async fn attach_target(state: &Arc<ProxyState>, model_id: &ModelId) -> Option<ManagedModel> {
+  for (_launch_id, model) in state.ctx.supervisors.snapshot().await {
+    if model.id().path != model_id.path {
+      continue;
+    }
+    if matches!(
+      model.state().await,
+      ManagedState::Launching | ManagedState::Loading | ManagedState::Ready
+    ) {
+      return Some(model);
+    }
+  }
+  None
+}
+
+/// Poll the supervisor state machine at 100 ms cadence until it
+/// reaches `Ready` or a terminal state. No client-facing timeout —
+/// only `Error{cause}` and `Stopping` trigger fallback (Loading waits
+/// indefinitely), per the locked Key Decision.
+async fn await_ready(state: &Arc<ProxyState>, model: &ManagedModel) -> LaunchOutcome {
   loop {
-    match started.model.state().await {
+    match model.state().await {
       ManagedState::Ready => {
         // Stamp the MRU now so the freshly-auto-started supervisor
         // has a starting `last_request_at`. Without this its idle
         // timer would only begin when the first proxy forward
         // touched the MRU — and a loaded-but-never-queried model
         // would sit forever with `None` and confuse the sweeper.
+        let model_id = model.id().clone();
         state.mru.touch(&model_id).await;
         return LaunchOutcome::Ready {
-          port: started.port,
+          port: model.port(),
           model_id,
         };
       }
@@ -216,6 +273,58 @@ async fn drive_launch_as_leader(
       }
     }
   }
+}
+
+/// The mode a previous launch of this file recorded in `last_params` —
+/// the mode the user actually chose, which discovery's header-derived
+/// hint can't see (a BERT reranker reads as `embedding`).
+///
+/// Keyed on the full [`ModelId`] (path **and** header hash), matching
+/// how `compose_and_spawn` looks up the same entry for its last-used
+/// knob layer. A looser path-only match would hand a mode over from a
+/// record the knob resolver has already disowned as a different file.
+async fn last_used_mode(state: &Arc<ProxyState>, model_id: &ModelId) -> Option<LaunchMode> {
+  state
+    .ctx
+    .state
+    .snapshot()
+    .await
+    .last_params
+    .iter()
+    .find(|e| e.id.as_gguf() == Some(model_id))
+    .map(|e| e.params.mode)
+}
+
+/// Launch mode for an auto-start: the endpoint that triggered it wins,
+/// then the recorded `last_params` mode, then the GGUF hint.
+///
+/// A non-chat mode is only ever adopted for a model the hint did *not*
+/// classify as chat: `--embeddings` / `--reranking` make llama-server
+/// refuse `/v1/chat/completions` for the supervisor's whole lifetime,
+/// so an embeddings request must not be able to lock a chat model out
+/// of chat. Within the embedding family the two upper tiers matter —
+/// a BERT reranker hints `embedding`, and launching it that way yields
+/// a supervisor that answers 501 to the very `/v1/rerank` call that
+/// started it.
+///
+/// `None` (unknown / absent hint, no better signal) leaves the chat
+/// default to `compose_and_spawn`.
+fn resolve_auto_start_mode(
+  hint: Option<&str>,
+  endpoint_mode: Option<LaunchMode>,
+  last_used: Option<LaunchMode>,
+) -> Option<LaunchModeWire> {
+  let hint_mode = launch_mode_from_hint(hint);
+  if !matches!(hint_mode, Some(LaunchModeWire::Chat)) {
+    for m in [endpoint_mode, last_used].into_iter().flatten() {
+      match m {
+        LaunchMode::Embedding => return Some(LaunchModeWire::Embedding),
+        LaunchMode::Rerank => return Some(LaunchModeWire::Rerank),
+        LaunchMode::Chat => {}
+      }
+    }
+  }
+  hint_mode
 }
 
 /// Map a catalog row's GGUF-derived `mode_hint` string onto the launch
@@ -296,6 +405,66 @@ mod tests {
     assert!(launch_mode_from_hint(None).is_none());
     assert!(launch_mode_from_hint(Some("")).is_none());
     assert!(launch_mode_from_hint(Some("unknown")).is_none());
+  }
+
+  #[test]
+  fn endpoint_mode_beats_an_embedding_hint_for_a_reranker() {
+    // The reported #56 shape: a BERT reranker hints `embedding`, so the
+    // hint alone launched a supervisor that 501s on `/v1/rerank`.
+    assert!(matches!(
+      resolve_auto_start_mode(Some("embedding"), Some(LaunchMode::Rerank), None),
+      Some(LaunchModeWire::Rerank)
+    ));
+  }
+
+  #[test]
+  fn last_used_mode_beats_the_hint_when_the_endpoint_is_mode_less() {
+    // `/v1/chat/completions` implies no mode; the recorded launch does.
+    assert!(matches!(
+      resolve_auto_start_mode(Some("embedding"), None, Some(LaunchMode::Rerank)),
+      Some(LaunchModeWire::Rerank)
+    ));
+  }
+
+  #[test]
+  fn endpoint_mode_outranks_last_used() {
+    assert!(matches!(
+      resolve_auto_start_mode(
+        Some("embedding"),
+        Some(LaunchMode::Embedding),
+        Some(LaunchMode::Rerank)
+      ),
+      Some(LaunchModeWire::Embedding)
+    ));
+  }
+
+  #[test]
+  fn a_chat_model_is_never_forced_into_a_non_chat_mode() {
+    // `--embeddings` makes llama-server refuse chat for the rest of the
+    // supervisor's life, so an embeddings request must not lock a chat
+    // model out of chat.
+    assert!(matches!(
+      resolve_auto_start_mode(Some("chat"), Some(LaunchMode::Embedding), None),
+      Some(LaunchModeWire::Chat)
+    ));
+    assert!(matches!(
+      resolve_auto_start_mode(Some("chat"), None, Some(LaunchMode::Rerank)),
+      Some(LaunchModeWire::Chat)
+    ));
+  }
+
+  #[test]
+  fn hint_stands_when_nothing_better_is_known() {
+    assert!(matches!(
+      resolve_auto_start_mode(Some("embedding"), None, None),
+      Some(LaunchModeWire::Embedding)
+    ));
+    assert!(resolve_auto_start_mode(None, None, None).is_none());
+    // An unclassified model still adopts the endpoint's mode.
+    assert!(matches!(
+      resolve_auto_start_mode(None, Some(LaunchMode::Embedding), None),
+      Some(LaunchModeWire::Embedding)
+    ));
   }
 
   #[test]
