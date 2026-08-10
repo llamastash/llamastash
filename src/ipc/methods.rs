@@ -883,6 +883,16 @@ fn launch_params_row(p: &LaunchParams) -> Value {
       row["backend_knobs"] = v;
     }
   }
+  // MTP intent, additive like the native knobs: omitted at its `Auto` default so
+  // non-MTP rows stay byte-stable. The CLI reads this back off `presets_show` to
+  // rebuild a preset's launch params, so leaving it out silently disarmed every
+  // `mtp:` a preset declared.
+  if !p.mtp.is_auto() {
+    row["mtp"] = Value::String(p.mtp.label().to_string());
+  }
+  if let Some(n) = p.mtp_draft_n {
+    row["mtp_draft_n"] = Value::from(n);
+  }
   row
 }
 
