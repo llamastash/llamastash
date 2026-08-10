@@ -23,6 +23,12 @@ use crate::discovery::shard_sizes::{self, ShardSize};
 use crate::init::detection::fmt_bytes;
 use crate::launch::defaults_table;
 
+/// Stand-in for an absent value in `show`'s human sections. `list` uses `?`
+/// ("unknown metadata") because its cells are catalog facts; `show` renders
+/// whole sections that legitimately have nothing to say, so it reads as a
+/// dash. One constant so every row uses the same glyph.
+const DASH_PLACEHOLDER: &str = "—";
+
 pub async fn handle(args: ShowArgs, cli: &Cli, config: &Config) -> CliResult {
   // Every CLI command must support `--json`. Errors flow through the
   // same machinery: when `--json` is set, a CliExit lands on stdout
@@ -165,41 +171,22 @@ async fn build_view(args: &ShowArgs, cli: &Cli, config: &Config) -> Result<ShowV
     })
     .collect();
 
-  let envelope = json!({
-    "name": row.name(),
-    "path": row.path,
-    "parent": row.parent,
-    "source": row.source,
-    // Backend that serves this model (R14 badge), derived from the source.
-    "backend": crate::cli::output::backend_for_source(&row.source),
-    "model_id": row.model_id,
-    "display_label": row.display_label,
-    "parse_error": row.parse_error,
-    "metadata": {
-      "arch": row.arch,
-      "quant": row.quant,
-      "native_ctx": row.native_ctx,
-      "mode_hint": row.mode_hint,
-      "parameter_label": row.parameter_label,
-      "total_parameters": row.total_parameters,
-      "tokenizer_kind": row.tokenizer_kind,
-      "has_chat_template": row.has_chat_template,
-      "has_reasoning_hint": row.has_reasoning_hint,
-    },
-    "size": {
+  let envelope = assemble_envelope(
+    &row,
+    json!({
       "weights_bytes": row.weights_bytes,
       "shard_count": shards.len(),
       "on_disk_total_bytes": total_bytes,
       "shards": shards_json,
-    },
-    "arch_defaults": {
+    }),
+    json!({
       "gpu_backend": format!("{backend:?}"),
       "yaml": yaml_arch_defaults,
       "builtin": builtin_arch_defaults,
-    },
-    "last_params": last_params,
-    "running": running,
-  });
+    }),
+    last_params,
+    running,
+  );
 
   Ok(ShowView {
     row,
@@ -207,6 +194,27 @@ async fn build_view(args: &ShowArgs, cli: &Cli, config: &Config) -> Result<ShowV
     total_bytes,
     envelope,
   })
+}
+
+/// The `show --json` envelope is the shared catalog-row wire shape
+/// ([`CatalogRow`]'s serde impl, the same bytes `list --json` and IPC
+/// `list_models` emit) with the show-only sections layered on top. No
+/// second, hand-listed projection: capability fields (`multimodal`,
+/// `mtp`, `supported_backends`, `split_siblings`, the nested
+/// `metadata` block) track the catalog row by construction.
+fn assemble_envelope(
+  row: &CatalogRow,
+  size: Value,
+  arch_defaults: Value,
+  last_params: Option<Value>,
+  running: Option<Value>,
+) -> Value {
+  let mut envelope = serde_json::to_value(row).unwrap_or_else(|_| json!({}));
+  envelope["size"] = size;
+  envelope["arch_defaults"] = arch_defaults;
+  envelope["last_params"] = last_params.unwrap_or(Value::Null);
+  envelope["running"] = running.unwrap_or(Value::Null);
+  envelope
 }
 
 /// Per-shard `(path, bytes)` breakdown for the resolved row. Always
@@ -238,9 +246,11 @@ fn render_human(row: &CatalogRow, shards: &[ShardSize], total_bytes: u64, env: &
   }
   header.push(("parent", row.parent.clone()));
   header.push(("source", row.source.clone()));
+  // Same badge the `list` BACKEND column renders, so a ds4-compatible file
+  // reads `ds4|llamacpp` on both surfaces instead of a source-derived guess.
   header.push((
     "backend",
-    crate::cli::output::backend_for_source(&row.source).to_string(),
+    crate::cli::output::backend_badge(row, DASH_PLACEHOLDER),
   ));
   if let Some(id) = &row.model_id {
     header.push(("model_id", id.clone()));
@@ -256,26 +266,51 @@ fn render_human(row: &CatalogRow, shards: &[ShardSize], total_bytes: u64, env: &
   out.push('\n');
   out.push_str(&section_header("metadata", None));
   out.push_str(&kv_block(&[
-    ("arch", row.arch.as_deref().unwrap_or("—").to_string()),
-    ("quant", row.quant.as_deref().unwrap_or("—").to_string()),
+    (
+      "arch",
+      row.arch.as_deref().unwrap_or(DASH_PLACEHOLDER).to_string(),
+    ),
+    (
+      "quant",
+      row.quant.as_deref().unwrap_or(DASH_PLACEHOLDER).to_string(),
+    ),
     (
       "native_ctx",
       row
         .native_ctx
         .map(|n| n.to_string())
-        .unwrap_or_else(|| "—".into()),
+        .unwrap_or_else(|| DASH_PLACEHOLDER.into()),
     ),
     (
       "mode_hint",
-      row.mode_hint.as_deref().unwrap_or("—").to_string(),
+      row
+        .mode_hint
+        .as_deref()
+        .unwrap_or(DASH_PLACEHOLDER)
+        .to_string(),
     ),
     (
       "parameter_label",
-      row.parameter_label.as_deref().unwrap_or("—").to_string(),
+      row
+        .parameter_label
+        .as_deref()
+        .unwrap_or(DASH_PLACEHOLDER)
+        .to_string(),
     ),
     (
       "tokenizer_kind",
-      row.tokenizer_kind.as_deref().unwrap_or("—").to_string(),
+      row
+        .tokenizer_kind
+        .as_deref()
+        .unwrap_or(DASH_PLACEHOLDER)
+        .to_string(),
+    ),
+    (
+      "weights_bytes",
+      row
+        .weights_bytes
+        .map(fmt_bytes)
+        .unwrap_or_else(|| DASH_PLACEHOLDER.into()),
     ),
     (
       "has_chat_template",
@@ -285,6 +320,8 @@ fn render_human(row: &CatalogRow, shards: &[ShardSize], total_bytes: u64, env: &
       "has_reasoning_hint",
       if row.has_reasoning_hint { "yes" } else { "no" }.to_string(),
     ),
+    ("multimodal", multimodal_label(row)),
+    ("mtp", mtp_label(row)),
   ]));
 
   out.push('\n');
@@ -322,7 +359,7 @@ fn render_human(row: &CatalogRow, shards: &[ShardSize], total_bytes: u64, env: &
         format!("{n} {}", colors::dim("(clamped to fit-ctx floor)"))
       }
       Some(Value::Number(n)) => n.to_string(),
-      _ => "—".into(),
+      _ => DASH_PLACEHOLDER.into(),
     };
     out.push_str(&kv_block(&[
       ("state", fmt_field(running.get("state"))),
@@ -371,6 +408,52 @@ fn render_human(row: &CatalogRow, shards: &[ShardSize], total_bytes: u64, env: &
   out
 }
 
+/// Join the facets of a capability block into one cell, or the dash when
+/// the model carries none. Shared by every capability label so an absent
+/// capability and an empty one read identically.
+fn facets_or_dash(parts: Vec<String>) -> String {
+  if parts.is_empty() {
+    DASH_PLACEHOLDER.into()
+  } else {
+    parts.join(" + ")
+  }
+}
+
+/// Human label for the multimodal capability block: `vision + audio`,
+/// `vision`, `audio`; the dash when the model has no projector companion.
+fn multimodal_label(row: &CatalogRow) -> String {
+  let Some(mm) = &row.multimodal else {
+    return DASH_PLACEHOLDER.into();
+  };
+  let mut parts: Vec<String> = Vec::new();
+  if mm.vision {
+    parts.push("vision".into());
+  }
+  if mm.audio {
+    parts.push("audio".into());
+  }
+  facets_or_dash(parts)
+}
+
+/// Human label for the MTP capability block: `embedded (N layers)` /
+/// `separate head` (joined when both); the dash when not MTP-capable.
+fn mtp_label(row: &CatalogRow) -> String {
+  let Some(m) = &row.mtp else {
+    return DASH_PLACEHOLDER.into();
+  };
+  let mut parts: Vec<String> = Vec::new();
+  if let Some(n) = m.embedded_layers {
+    parts.push(format!(
+      "embedded ({n} layer{})",
+      if n == 1 { "" } else { "s" }
+    ));
+  }
+  if m.separate_head {
+    parts.push("separate head".into());
+  }
+  facets_or_dash(parts)
+}
+
 /// `kv_block` over owned `(String, String)` rows. The shared helper
 /// takes `&[(&str, String)]`; the per-shard rows below build their
 /// labels at runtime (`shard 1`, `shard 2`, …), so we borrow each
@@ -382,7 +465,7 @@ fn kv_block_owned(rows: &[(String, String)]) -> String {
 
 fn fmt_field(v: Option<&Value>) -> String {
   match v {
-    Some(Value::Null) | None => "—".into(),
+    Some(Value::Null) | None => DASH_PLACEHOLDER.into(),
     Some(Value::String(s)) => s.clone(),
     Some(other) => other.to_string(),
   }
@@ -390,7 +473,7 @@ fn fmt_field(v: Option<&Value>) -> String {
 
 fn knobs_one_line(value: Option<&Value>) -> String {
   let Some(Value::Object(map)) = value else {
-    return "—".into();
+    return DASH_PLACEHOLDER.into();
   };
   let mut pairs: Vec<String> = map
     .iter()
@@ -402,7 +485,7 @@ fn knobs_one_line(value: Option<&Value>) -> String {
     .collect();
   pairs.sort();
   if pairs.is_empty() {
-    "—".into()
+    DASH_PLACEHOLDER.into()
   } else {
     pairs.join(", ")
   }
@@ -421,6 +504,8 @@ fn render_shard_path(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::discovery::Multimodal;
+  use crate::launch::resolve::MtpCapability;
   use serde_json::json;
 
   fn fake_row(path: &str) -> CatalogRow {
@@ -444,6 +529,8 @@ mod tests {
       total_parameters: Some(80_000_000_000),
       backend: None,
       supported_backends: Vec::new(),
+      multimodal: None,
+      mtp: None,
     }
   }
 
@@ -601,6 +688,97 @@ mod tests {
     assert_eq!(fmt_bytes(1024), "1 KiB");
     assert!(fmt_bytes(2 * 1024 * 1024).starts_with("2.0 MiB"));
     assert!(fmt_bytes(3 * 1024 * 1024 * 1024).starts_with("3.0 GiB"));
+  }
+
+  #[test]
+  fn assemble_envelope_reuses_the_shared_catalog_row_shape() {
+    // Regression guard for the second-serializer bug: every key the shared
+    // `CatalogRow` wire shape emits must land in the `show --json` envelope
+    // byte-identically, so capability fields (multimodal / mtp /
+    // supported_backends / split_siblings) can never lag `list --json` again.
+    let mut row = fake_row("/m/x.gguf");
+    row.supported_backends = vec!["ds4".into(), "llamacpp".into()];
+    row.multimodal = Some(Multimodal {
+      vision: true,
+      audio: false,
+    });
+    row.mtp = Some(MtpCapability {
+      embedded_layers: Some(1),
+      separate_head: false,
+    });
+    let shared = serde_json::to_value(&row).unwrap();
+    let envelope = assemble_envelope(
+      &row,
+      json!({"weights_bytes": row.weights_bytes, "shard_count": 3}),
+      json!({"gpu_backend": "CpuOnly", "yaml": null, "builtin": {}}),
+      None,
+      None,
+    );
+    for (key, value) in shared.as_object().unwrap() {
+      assert_eq!(
+        envelope.get(key),
+        Some(value),
+        "shared key `{key}` diverged between the show envelope and the catalog row"
+      );
+    }
+    assert_eq!(
+      envelope.get("multimodal"),
+      Some(&json!({"vision": true, "audio": false}))
+    );
+    assert_eq!(
+      envelope.get("mtp"),
+      Some(&json!({"embedded_layers": 1, "separate_head": false}))
+    );
+    assert_eq!(
+      envelope.get("supported_backends"),
+      Some(&json!(["ds4", "llamacpp"]))
+    );
+    // Show-only sections layer on top.
+    for key in ["size", "arch_defaults", "last_params", "running"] {
+      assert!(envelope.get(key).is_some(), "missing show section {key}");
+    }
+  }
+
+  #[test]
+  fn assemble_envelope_omits_model_id_when_unset() {
+    // The shared serializer drops `model_id` rather than emitting null;
+    // the show envelope must not resurrect the key.
+    let mut row = fake_row("/m/x.gguf");
+    row.model_id = None;
+    let envelope = assemble_envelope(&row, json!({}), json!({}), None, None);
+    assert!(
+      envelope.get("model_id").is_none(),
+      "model_id must be omitted when unset: {envelope}"
+    );
+  }
+
+  #[test]
+  fn render_human_metadata_lists_multimodal_and_mtp() {
+    let mut row = fake_row("/m/x.gguf");
+    row.multimodal = Some(Multimodal {
+      vision: true,
+      audio: true,
+    });
+    row.mtp = Some(MtpCapability {
+      embedded_layers: Some(2),
+      separate_head: true,
+    });
+    let shards = shard_breakdown(&row);
+    let envelope = json!({
+      "size": { "on_disk_total_bytes": 0 },
+      "arch_defaults": { "gpu_backend": "CpuOnly", "yaml": null, "builtin": {} },
+      "last_params": null,
+    });
+    let rendered =
+      console::strip_ansi_codes(&render_human(&row, &shards, 0, &envelope)).into_owned();
+    assert!(
+      rendered.contains("vision + audio"),
+      "multimodal row missing:\n{rendered}"
+    );
+    assert!(
+      rendered.contains("embedded (2 layers) + separate head"),
+      "mtp row missing:\n{rendered}"
+    );
   }
 
   #[test]

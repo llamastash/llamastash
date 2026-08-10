@@ -307,10 +307,16 @@ pub async fn serve_with_options(
             let conn_state = Arc::clone(&state);
             let conn_tracker = Arc::clone(&tracker);
             conn_tracker.active.fetch_add(1, Ordering::SeqCst);
+            // Proxy traffic never touches the control plane, so without
+            // this an agent hammering /v1/chat/completions still reads
+            // as an idle daemon. Stamped at both ends of the connection.
+            let activity = conn_state.ctx.activity.clone();
+            activity.mark();
             let task_tracker = Arc::clone(&conn_tracker);
             let header_read_timeout = options.header_read_timeout;
             let handle = tokio::spawn(async move {
               serve_connection(stream, conn_state, header_read_timeout).await;
+              activity.mark();
               task_tracker.active.fetch_sub(1, Ordering::SeqCst);
             });
             push_handle(&conn_tracker, handle);

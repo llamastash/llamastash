@@ -108,108 +108,15 @@ pub async fn fetch_catalog(client: &mut Client) -> Result<Vec<CatalogRow>, CliEx
     .and_then(Value::as_array)
     .cloned()
     .unwrap_or_default();
-  Ok(arr.into_iter().map(parse_catalog_row).collect())
-}
-
-fn parse_catalog_row(row: Value) -> CatalogRow {
-  let path = row
-    .get("path")
-    .and_then(Value::as_str)
-    .unwrap_or_default()
-    .to_string();
-  let parent = row
-    .get("parent")
-    .and_then(Value::as_str)
-    .unwrap_or_default()
-    .to_string();
-  let source = row
-    .get("source")
-    .and_then(Value::as_str)
-    .unwrap_or_default()
-    .to_string();
-  let metadata = row.get("metadata");
-  let parse_error = row
-    .get("parse_error")
-    .and_then(Value::as_str)
-    .map(str::to_string);
-  let model_id = row
-    .get("model_id")
-    .and_then(Value::as_str)
-    .map(str::to_string);
-  let backend = row
-    .get("backend")
-    .and_then(Value::as_str)
-    .map(str::to_string);
-  let supported_backends = row
-    .get("supported_backends")
-    .and_then(Value::as_array)
-    .map(|a| {
-      a.iter()
-        .filter_map(Value::as_str)
-        .map(str::to_string)
-        .collect()
-    })
-    .unwrap_or_default();
-  CatalogRow {
-    path,
-    model_id,
-    parent,
-    source,
-    backend,
-    supported_backends,
-    arch: metadata
-      .and_then(|m| m.get("arch"))
-      .and_then(Value::as_str)
-      .map(str::to_string),
-    quant: metadata
-      .and_then(|m| m.get("quant"))
-      .and_then(Value::as_str)
-      .map(str::to_string),
-    native_ctx: metadata
-      .and_then(|m| m.get("native_ctx"))
-      .and_then(Value::as_u64),
-    mode_hint: metadata
-      .and_then(|m| m.get("mode_hint"))
-      .and_then(Value::as_str)
-      .map(str::to_string),
-    parameter_label: metadata
-      .and_then(|m| m.get("parameter_label"))
-      .and_then(Value::as_str)
-      .map(str::to_string),
-    weights_bytes: metadata
-      .and_then(|m| m.get("weights_bytes"))
-      .and_then(Value::as_u64),
-    display_label: row
-      .get("display_label")
-      .and_then(Value::as_str)
-      .map(str::to_string),
-    parse_error,
-    split_siblings: row
-      .get("split_siblings")
-      .and_then(Value::as_array)
-      .map(|arr| {
-        arr
-          .iter()
-          .filter_map(|v| v.as_str().map(str::to_string))
-          .collect()
-      })
-      .unwrap_or_default(),
-    has_chat_template: metadata
-      .and_then(|m| m.get("has_chat_template"))
-      .and_then(Value::as_bool)
-      .unwrap_or(false),
-    has_reasoning_hint: metadata
-      .and_then(|m| m.get("has_reasoning_hint"))
-      .and_then(Value::as_bool)
-      .unwrap_or(false),
-    tokenizer_kind: metadata
-      .and_then(|m| m.get("tokenizer_kind"))
-      .and_then(Value::as_str)
-      .map(str::to_string),
-    total_parameters: metadata
-      .and_then(|m| m.get("total_parameters"))
-      .and_then(Value::as_u64),
-  }
+  // One shape, one parser: `CatalogRow`'s `Deserialize` is the mirror of the
+  // daemon's serializer. A row that can't be read degrades to skipped rather
+  // than aborting the whole list.
+  Ok(
+    arr
+      .into_iter()
+      .filter_map(|row| serde_json::from_value(row).ok())
+      .collect(),
+  )
 }
 
 /// Find a catalog row that matches `reference`. Disambiguation rules
@@ -256,6 +163,26 @@ pub fn running_index(rows: &[RunningRow]) -> std::collections::HashMap<String, R
     out.entry(r.model_path.clone()).or_insert_with(|| r.clone());
   }
   out
+}
+
+/// Multi-device gate for the `list` DEVICE column — mirrors the TUI's
+/// `App::multi_device`: true when **some single server** offers more than
+/// one device (a launch targets one server's devices, so cross-build
+/// selector variety must not trip this). `servers` is the verbatim
+/// `status.servers` wire value; anything else (older daemon, missing
+/// field) reads as single-device.
+pub fn multi_device(servers: &Value) -> bool {
+  servers
+    .as_array()
+    .map(|ss| {
+      ss.iter().any(|s| {
+        s.get("devices")
+          .and_then(Value::as_array)
+          .map(|d| d.len() > 1)
+          .unwrap_or(false)
+      })
+    })
+    .unwrap_or(false)
 }
 
 /// Fetch the supervisor + external snapshot via `status`.
@@ -627,6 +554,53 @@ fn single_or_error(matches: Vec<&RunningRow>, reference: &str) -> Result<Running
 mod tests {
   use super::*;
 
+  /// `status.servers` shaped as the daemon emits it, one entry per
+  /// `(id, device-count)` pair.
+  fn servers(entries: &[(&str, usize)]) -> Value {
+    let rows: Vec<Value> = entries
+      .iter()
+      .map(|(id, n)| {
+        let devices: Vec<Value> = (0..*n)
+          .map(|i| serde_json::json!({"selector": format!("ROCm{i}")}))
+          .collect();
+        serde_json::json!({"id": id, "backend_id": "llamacpp", "devices": devices})
+      })
+      .collect();
+    Value::Array(rows)
+  }
+
+  #[test]
+  fn multi_device_needs_one_server_with_more_than_one_device() {
+    assert!(multi_device(&servers(&[("llamacpp-rocm", 2)])));
+    assert!(!multi_device(&servers(&[("llamacpp-rocm", 1)])));
+    assert!(!multi_device(&servers(&[("llamacpp-rocm", 0)])));
+    // Two single-device builds of the same card is a *server* choice, not a
+    // device one — it must not trip the gate (mirrors `App::multi_device`).
+    assert!(!multi_device(&servers(&[
+      ("llamacpp-rocm", 1),
+      ("llamacpp-vulkan", 1)
+    ])));
+    // One multi-device server among single-device ones still counts.
+    assert!(multi_device(&servers(&[
+      ("llamacpp-rocm", 1),
+      ("llamacpp-vulkan", 3)
+    ])));
+  }
+
+  #[test]
+  fn multi_device_reads_a_missing_or_malformed_field_as_single_device() {
+    // A daemon that predates `status.servers`, or any non-array shape, must
+    // degrade to "hide the column" rather than panic or claim multi-GPU.
+    assert!(!multi_device(&Value::Null));
+    assert!(!multi_device(&serde_json::json!({})));
+    assert!(!multi_device(&Value::Array(vec![])));
+    // A server row with no `devices` key at all.
+    assert!(!multi_device(&serde_json::json!([{"id": "ds4"}])));
+    assert!(!multi_device(
+      &serde_json::json!([{"id": "ds4", "devices": null}])
+    ));
+  }
+
   fn row(path: &str, parent: &str) -> CatalogRow {
     CatalogRow {
       path: path.to_string(),
@@ -648,6 +622,8 @@ mod tests {
       total_parameters: None,
       backend: None,
       supported_backends: Vec::new(),
+      multimodal: None,
+      mtp: None,
     }
   }
 

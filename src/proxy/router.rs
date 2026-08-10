@@ -252,7 +252,17 @@ async fn forward_request(state: Arc<ProxyState>, req: Request<Incoming>) -> Prox
       requested_model,
       resolved_row,
       arch,
-    } => route::handle_not_running(&state, inbound, requested_model, *resolved_row, arch).await,
+    } => {
+      route::handle_not_running(
+        &state,
+        inbound,
+        requested_model,
+        *resolved_row,
+        arch,
+        req_mode,
+      )
+      .await
+    }
     RouteDecision::NotFound { requested_model } => error_with_matches(
       StatusCode::NOT_FOUND,
       "model_not_found",
@@ -801,6 +811,7 @@ mod tests {
       display_label: None,
       multimodal: None,
       supported_backends: Vec::new(),
+      mtp_head: None,
       parse_error: None,
       split_siblings: vec![],
       metadata: Some(ModelMetadata {
@@ -810,6 +821,7 @@ mod tests {
         native_ctx: Some(4096),
         parameter_label: Some("7B".into()),
         weights_bytes: Some(100),
+        mtp: None,
         chat_template: None,
         tokenizer_kind: Some("llama".into()),
         total_parameters: Some(7_000_000_000),

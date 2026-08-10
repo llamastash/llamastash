@@ -114,16 +114,9 @@ fn describe(action: &ConfirmAction) -> (&'static str, String) {
         plural = if *active_instances == 1 { "" } else { "s" }
       ),
     ),
-    ConfirmAction::DeleteModel { display_name, .. } => (
-      "Delete model",
-      format!(
-        "Delete `{display_name}` from disk?\n\n\
-         If the file lives in the HuggingFace cache (`~/.cache/huggingface/hub/\
-         models--<owner>--<repo>/snapshots/<rev>/<file>`), the entire repo \
-         directory — every revision, every shard, every blob — is removed to \
-         reclaim cache space. Otherwise just the single GGUF file is unlinked."
-      ),
-    ),
+    ConfirmAction::DeleteModel { plan, display_name } => {
+      ("Delete model", plan.describe(display_name))
+    }
     ConfirmAction::CancelDownload { friendly_name, .. } => (
       "Cancel download",
       format!(
@@ -174,7 +167,7 @@ mod tests {
       ConfirmAction::KillDaemon,
       ConfirmAction::RestartDaemon,
       ConfirmAction::DeleteModel {
-        path: "/m/x.gguf".into(),
+        plan: Box::new(crate::tui::delete::DeletePlan::single("/m/x.gguf")),
         display_name: "x".into(),
       },
       ConfirmAction::CancelDownload {
@@ -204,6 +197,7 @@ mod tests {
         selection: "explicit",
         backend_knobs: Default::default(),
         server: None,
+        mtp: Default::default(),
       }),
     };
     assert_eq!(dup.severity(), ConfirmSeverity::Neutral);

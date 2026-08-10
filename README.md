@@ -13,13 +13,17 @@
 
 [![Follow Deepu K Sasidharan on Bluesky](https://img.shields.io/badge/Bluesky-Follow%20deepu105-1185fe?logo=bluesky&logoColor=white)](https://bsky.app/profile/deepu105.bsky.social)
 
-![Logo](https://raw.githubusercontent.com/llamastash/llamastash/main/assets/logo-h.jpg)
+<p align="center">
+  <img src="https://raw.githubusercontent.com/llamastash/llamastash/main/assets/logo-h.jpg" alt="Logo" width="50%">
+</p>
 
 **Zero-overhead, terminal-native local-LLM launcher.**
 
 A fast TUI **and** CLI with init wizard for launching local LLMs. One Rust binary that's a TUI, a CLI, a daemon, and an OpenAI-compatible proxy. [llama.cpp](https://github.com/ggml-org/llama.cpp) is the direct, zero-overhead default backend (vs raw `llama-server`), plus [Lemonade](https://github.com/lemonade-sdk/lemonade) for NPU / multi-engine inference and [ds4](https://github.com/antirez/ds4) for DeepSeek-V4. See [benchmarks](docs/benchmarks.md).
 
 ![TUI Gif](https://raw.githubusercontent.com/llamastash/llamastash/main/assets/tui.gif)
+
+![TUI](https://raw.githubusercontent.com/llamastash/llamastash/main/assets/tui_3.png)
 
 ## Contents
 
@@ -160,6 +164,7 @@ Full detail per feature in [`FEATURES.md`](FEATURES.md) — including trade-offs
 - [Auto-scans HuggingFace, Ollama, and LM Studio caches](FEATURES.md#auto-scans-huggingface-ollama-and-lm-studio-caches), plus user paths.
 - [Rich GGUF intelligence](FEATURES.md#rich-gguf-intelligence) — architecture, params, quant, native context, chat template, KV-cache-aware memory estimates.
 - [Multimodal projector detection](FEATURES.md#multimodal-projector-detection) — auto-pairs an mmproj GGUF beside a model, loads it with `--mmproj`, flags vision (`◉`) / audio (`♪`) in the TUI.
+- [MTP speculative decoding](docs/usage.md#mtp-speculative-decoding) — auto-detects MTP-capable GGUFs (embedded or separate `mtp-*.gguf` head) and enables `--spec-type draft-mtp` by default for ~2x decode with no quality loss; `--mtp auto\|on\|off`, a `↯` TUI badge, live draft-acceptance in `status`. `pull` fetches the mmproj / MTP-head companions too.
 - [Smart deduplication](FEATURES.md#smart-deduplication) — symlinks collapsed, split GGUFs unified, Ollama blobs named.
 - [Live filesystem watching](FEATURES.md#live-filesystem-watching) — new GGUFs appear without a restart.
 
@@ -277,7 +282,6 @@ Same backend (Vulkan b9440 / `vulkan-avx2@2.18.0`), same GGUF bytes. raw `llama-
 
 ![Init](https://raw.githubusercontent.com/llamastash/llamastash/main/assets/init.gif)
 
-![TUI 1](https://raw.githubusercontent.com/llamastash/llamastash/main/assets/tui_3.png)
 ![TUI 2](https://raw.githubusercontent.com/llamastash/llamastash/main/assets/tui_2.png)
 
 ## Configuration
@@ -293,9 +297,13 @@ Quick tour of the top-level keys:
 | `model_paths`                 | Extra directories to scan for `.gguf` files. Merged with `-p/--model-path` and `LLAMASTASH_MODEL_PATHS`.                                                                  |
 | `disable_default_cache_paths` | Per-bucket toggles (`huggingface`, `ollama`, `lm_studio`) for the auto-walked caches.                                                                                     |
 | `disable_scan`                | Skip filesystem scanning entirely. Same as `--no-scan` / `LLAMASTASH_NO_SCAN=1`.                                                                                          |
-| `port_range`                  | Inclusive `{start, end}` TCP range the supervisor picks from. Default `41100..=41300`.                                                                                    |
+| `daemon.port_range`           | Inclusive `{start, end}` TCP range the supervisor picks from. Default `41100..=41300`.                                                                                    |
+| `daemon.probe_timeout_secs`   | Health-probe deadline per launch. Default `120`. Bump for 70B+ on slow disks.                                                                                             |
+| `daemon.idle_timeout_secs`    | Shut the daemon down after N seconds with no running models and no client attached. Default `0` (never).                                                                  |
+| `daemon.metrics_interval_secs` | Host-metrics sampler cadence. Default `1` (1 Hz), clamped to `1..=60`. Raise it to spawn `nvidia-smi` / `rocm-smi` less often.                                           |
+| `gpu.enable_vulkan_probe`     | Run the `vulkaninfo` fallback probe. Default `true`; `false` skips it when a native NVIDIA/AMD/Metal probe already covers your GPUs.                                      |
+| `gpu.reprobe_interval_secs`   | How often to re-run the full vendor probe chain for hotplug / late driver loads. Default `60`; `0` probes only at daemon start.                                           |
 | `backend.llamacpp.servers`     | `llama-server` build/binary variants (`[{binary, name?}]`). First = default; each is a selectable "server". `--llama-server` / `LLAMASTASH_LLAMA_SERVER` set the first.   |
-| `probe_timeout_secs`          | Health-probe deadline per launch. Default `120`. Bump for 70B+ on slow disks.                                                                                             |
 | `keybindings`                 | Action-name → key-spec overrides. Kdash-style dialect (`ctrl+q`, `shift+tab`, `f1`, …).                                                                                   |
 
 Environment variables:

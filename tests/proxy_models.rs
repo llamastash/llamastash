@@ -142,6 +142,7 @@ fn fake_metadata(arch: &str) -> ModelMetadata {
     reasoning_hint: false,
     mode_hint: ModeHint::Chat,
     weights_bytes: Some(4_000_000_000),
+    mtp: None,
   }
 }
 
@@ -158,6 +159,7 @@ fn make_model(path: &str, display_label: Option<&str>) -> DiscoveredModel {
     display_label: display_label.map(str::to_string),
     multimodal: None,
     supported_backends: Vec::new(),
+    mtp_head: None,
   }
 }
 
@@ -245,6 +247,7 @@ async fn parse_error_row_still_appears_with_file_stem_id() {
     display_label: None,
     multimodal: None,
     supported_backends: Vec::new(),
+    mtp_head: None,
   };
   let state = proxy_state_with_models(vec![bad]).await;
   let (addr, shutdown, listener_handle) = spawn_listener_with_state(state).await;

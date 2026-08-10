@@ -74,6 +74,13 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
   if let Some(r) = args.reasoning {
     params.reasoning = Some(matches!(r, ReasoningFlag::On));
   }
+  // MTP overrides layer over any preset baseline, like `--ctx` / `--reasoning`.
+  if let Some(m) = args.mtp {
+    params.mtp = Some(m);
+  }
+  if let Some(n) = args.mtp_draft_n {
+    params.mtp_draft_n = Some(n);
+  }
   let (cli_knobs, cli_extras) = parse_cli_knobs(&args.knobs.tokens, &args.extra)?;
   // Layer per-invocation overrides onto the preset baseline instead of
   // replacing it — a CLI `--threads` must not wipe a preset's other
@@ -344,6 +351,8 @@ fn direct_catalog_row(path: PathBuf, mode: CliLaunchMode) -> CatalogRow {
     total_parameters: None,
     backend: None,
     supported_backends: Vec::new(),
+    multimodal: None,
+    mtp: None,
   }
 }
 
@@ -354,6 +363,13 @@ struct PartialParams {
   reasoning: Option<bool>,
   knobs: TypedKnobs,
   extras: Vec<String>,
+  /// Backend-native knobs (ds4's `--mtp` / `--ssd-streaming` / `--dspark`).
+  /// Carried verbatim from the preset: the daemon layers typed knobs but
+  /// takes these as a whole map, so dropping them here silently disarmed
+  /// every preset that tuned a native knob.
+  backend_knobs: std::collections::BTreeMap<String, KnobValue<String>>,
+  mtp: Option<crate::launch::params::MtpEnable>,
+  mtp_draft_n: Option<u32>,
 }
 
 fn resolve_mode(
@@ -421,12 +437,24 @@ async fn fetch_preset_params(
         .collect()
     })
     .unwrap_or_default();
+  let backend_knobs = p
+    .get("backend_knobs")
+    .and_then(|v| serde_json::from_value(v.clone()).ok())
+    .unwrap_or_default();
   Ok(PartialParams {
     ctx: p.get("ctx").and_then(Value::as_u64).map(|n| n as u32),
     port: p.get("port").and_then(Value::as_u64).map(|n| n as u16),
     reasoning: p.get("reasoning").and_then(Value::as_bool),
     knobs,
     extras,
+    backend_knobs,
+    mtp: p
+      .get("mtp")
+      .and_then(|v| serde_json::from_value(v.clone()).ok()),
+    mtp_draft_n: p
+      .get("mtp_draft_n")
+      .and_then(Value::as_u64)
+      .map(|n| n as u32),
   })
 }
 
@@ -496,11 +524,25 @@ fn build_payload(
       serde_json::to_value(&p.knobs).expect("TypedKnobs serialises cleanly"),
     );
   }
+  if !p.backend_knobs.is_empty() {
+    obj.insert(
+      "backend_knobs".into(),
+      serde_json::to_value(&p.backend_knobs).expect("KnobValue map serialises cleanly"),
+    );
+  }
   if !p.extras.is_empty() {
     obj.insert(
       "extras".into(),
       Value::Array(p.extras.iter().cloned().map(Value::String).collect()),
     );
+  }
+  // MTP intent + draft-token count. Omitted when unset so the daemon inherits
+  // (default preset / last_params) and falls to `Auto`.
+  if let Some(m) = p.mtp {
+    obj.insert("mtp".into(), Value::String(m.label().to_string()));
+  }
+  if let Some(n) = p.mtp_draft_n {
+    obj.insert("mtp_draft_n".into(), Value::from(n));
   }
   Value::Object(obj)
 }
@@ -622,6 +664,8 @@ mod tests {
       total_parameters: None,
       backend: None,
       supported_backends: Vec::new(),
+      multimodal: None,
+      mtp: None,
     }
   }
 
@@ -661,6 +705,7 @@ mod tests {
       reasoning: Some(true),
       knobs,
       extras: vec!["--rope-freq-base".into(), "10000".into()],
+      ..PartialParams::default()
     };
     let v = build_payload("/m/a.gguf", "chat", &p, None, None, "default");
     assert_eq!(v["model_path"], serde_json::json!("/m/a.gguf"));
@@ -682,16 +727,52 @@ mod tests {
 
   #[test]
   fn build_payload_includes_backend_override_when_set() {
-    let p = PartialParams {
-      ctx: None,
-      port: None,
-      reasoning: None,
-      knobs: TypedKnobs::default(),
-      extras: vec![],
-    };
+    let p = PartialParams::default();
     let v = build_payload("/m/a.gguf", "chat", &p, Some("llamacpp"), None, "explicit");
     assert_eq!(v["backend"], serde_json::json!("llamacpp"));
     assert_eq!(v["selection"], serde_json::json!("explicit"));
+  }
+
+  #[test]
+  fn build_payload_carries_preset_backend_knobs() {
+    // A preset's native knobs used to stop here: `PartialParams` had no slot
+    // for them, so `--preset X` silently launched without the `--mtp` /
+    // `--ssd-streaming` it pinned.
+    let mut backend_knobs = std::collections::BTreeMap::new();
+    backend_knobs.insert(
+      "mtp".to_string(),
+      KnobValue::Set("/m/dspark-support.gguf".to_string()),
+    );
+    backend_knobs.insert(
+      "ssd_streaming".to_string(),
+      KnobValue::Set("false".to_string()),
+    );
+    let p = PartialParams {
+      backend_knobs,
+      ..PartialParams::default()
+    };
+    let v = build_payload("/m/a.gguf", "chat", &p, None, None, "explicit");
+    assert_eq!(
+      v["backend_knobs"]["mtp"],
+      serde_json::json!("/m/dspark-support.gguf")
+    );
+    assert_eq!(
+      v["backend_knobs"]["ssd_streaming"],
+      serde_json::json!("false")
+    );
+  }
+
+  #[test]
+  fn build_payload_omits_empty_backend_knobs() {
+    let v = build_payload(
+      "/m/a.gguf",
+      "chat",
+      &PartialParams::default(),
+      None,
+      None,
+      "default",
+    );
+    assert!(v.get("backend_knobs").is_none());
   }
 
   fn osvec(args: &[&str]) -> Vec<OsString> {
@@ -769,6 +850,8 @@ mod tests {
       extra: vec![],
       backend: None,
       server: None,
+      mtp: None,
+      mtp_draft_n: None,
       json: false,
       wait: false,
     };
@@ -794,6 +877,8 @@ mod tests {
       extra: vec![],
       backend: None,
       server: None,
+      mtp: None,
+      mtp_draft_n: None,
       json: false,
       wait: false,
     };
@@ -825,6 +910,8 @@ mod tests {
       extra: vec![],
       backend: None,
       server: None,
+      mtp: None,
+      mtp_draft_n: None,
       json: false,
       wait: false,
     };
@@ -858,6 +945,8 @@ mod tests {
       total_parameters: None,
       backend: None,
       supported_backends: Vec::new(),
+      multimodal: None,
+      mtp: None,
     };
     let args = StartArgs {
       model: Some(path.display().to_string()),
@@ -870,6 +959,8 @@ mod tests {
       extra: vec![],
       backend: None,
       server: None,
+      mtp: None,
+      mtp_draft_n: None,
       json: false,
       wait: false,
     };

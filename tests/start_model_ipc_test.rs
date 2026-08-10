@@ -307,28 +307,48 @@ async fn start_model_drives_supervisor_status_logs_stop_and_last_params() {
   std::fs::remove_dir_all(&model_dir).ok();
 }
 
+/// How many times [`prefer_port_fallback_once`] may lose the race for its
+/// preferred port before the test gives up and asserts.
+const PREFER_PORT_ATTEMPTS: usize = 5;
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prefer_port_falls_back_to_range_allocator_when_busy() {
-  // `prefer_port` is the soft preference the TUI uses to honour the
-  // user's previous binding. When the requested port is already
-  // taken by another launch, the daemon must auto-allocate from the
-  // configured range instead of refusing the launch — that's the
-  // "Daemon picks any free port, update memory" behaviour the user
-  // confirmed during planning. We force the collision by reusing
-  // the first launch's port as the second launch's preference.
+  for attempt in 1..=PREFER_PORT_ATTEMPTS {
+    if prefer_port_fallback_once(attempt == PREFER_PORT_ATTEMPTS).await {
+      return;
+    }
+  }
+}
+
+/// One attempt at the `prefer_port` collision scenario.
+///
+/// `prefer_port` is the soft preference the TUI uses to honour the
+/// user's previous binding. When the requested port is already
+/// taken by another launch, the daemon must auto-allocate from the
+/// configured range instead of refusing the launch — that's the
+/// "Daemon picks any free port, update memory" behaviour the user
+/// confirmed during planning. We force the collision by reusing
+/// the first launch's port as the second launch's preference.
+///
+/// The preferred port is only ours between the probe releasing it and the
+/// daemon binding it, so a loaded CI runner can take it in between and push
+/// the first launch onto the fallback path. That is the box losing a port,
+/// not a regression, so return `false` and let the caller retry. `strict`
+/// (the final attempt) asserts instead of retrying.
+async fn prefer_port_fallback_once(strict: bool) -> bool {
   let state = unique_temp("prefer-port");
   let model_dir = unique_temp("prefer-port-models");
   let model_path = model_dir.join("m.gguf");
   std::fs::write(&model_path, build_minimal_gguf("llama")).unwrap();
   let model_path_canon = llamastash::util::paths::canonicalize(&model_path).unwrap();
 
-  // Two-port range so the fallback has somewhere to land.
+  // Two-port range so the fallback has somewhere to land. Both probes stay
+  // bound until the daemon is accepting, so the steal window is only the
+  // gap between the drop below and the daemon's own bind.
   let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
   let p0 = probe.local_addr().unwrap().port();
-  drop(probe);
   let probe2 = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
   let p1 = probe2.local_addr().unwrap().port();
-  drop(probe2);
   let (lo, hi) = if p0 < p1 { (p0, p1) } else { (p1, p0) };
   let range = PortRange { start: lo, end: hi };
 
@@ -342,6 +362,9 @@ async fn prefer_port_falls_back_to_range_allocator_when_busy() {
   wait_for_socket(&socket).await;
   let mut client = Client::connect(&socket).await.expect("connect");
 
+  drop(probe);
+  drop(probe2);
+
   // First launch — prefer the low port; daemon should bind it.
   let first = client
     .call(
@@ -354,6 +377,13 @@ async fn prefer_port_falls_back_to_range_allocator_when_busy() {
     )
     .await
     .expect("start_model 1");
+  if !strict && first["port"].as_u64() != Some(lo as u64) {
+    let _ = client.call("shutdown", None).await;
+    let _ = timeout(Duration::from_secs(3), daemon).await;
+    std::fs::remove_dir_all(&state).ok();
+    std::fs::remove_dir_all(&model_dir).ok();
+    return false;
+  }
   assert_eq!(
     first["port"].as_u64(),
     Some(lo as u64),
@@ -392,6 +422,7 @@ async fn prefer_port_falls_back_to_range_allocator_when_busy() {
   let _ = timeout(Duration::from_secs(3), daemon).await;
   std::fs::remove_dir_all(&state).ok();
   std::fs::remove_dir_all(&model_dir).ok();
+  true
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

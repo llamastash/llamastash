@@ -39,6 +39,10 @@ pub struct MethodContext {
   /// Live connection count. Maintained by the accept loop; surfaced via
   /// `version` so `daemon status` can show it without a separate method.
   pub active_connections: Arc<AtomicUsize>,
+  /// Last time anything reached the daemon, over any surface. Stamped
+  /// by the control-plane and proxy accept loops; read only by the
+  /// opt-in idle-shutdown poller.
+  pub activity: crate::daemon::idle::Activity,
   /// Catalog of currently-discovered models. Populated by the daemon's
   /// discovery task; read by the `list_models` handler. Cheap to clone
   /// (`Arc<RwLock<…>>`).
@@ -214,6 +218,7 @@ impl MethodContext {
       started_at: Instant::now(),
       shutdown,
       active_connections: Arc::new(AtomicUsize::new(0)),
+      activity: crate::daemon::idle::Activity::new(),
       catalog,
       supervisors: SupervisorRegistry::new(),
       gpu: Arc::new(GpuInfo::CpuOnly),

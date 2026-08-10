@@ -92,6 +92,12 @@ impl SupervisorRegistry {
       .collect()
   }
 
+  /// Just the launch ids, for callers that classify launches without
+  /// touching the models (e.g. the idle-shutdown poller).
+  pub async fn launch_ids(&self) -> Vec<LaunchId> {
+    self.inner.read().await.keys().cloned().collect()
+  }
+
   pub async fn len(&self) -> usize {
     self.inner.read().await.len()
   }

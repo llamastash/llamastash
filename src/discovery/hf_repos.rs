@@ -237,6 +237,8 @@ pub fn config_to_metadata(summary: &ConfigSummary, repo_id: &str) -> ModelMetada
     mode_hint,
     // The leaf sums `*.safetensors` file sizes for the SIZE column.
     weights_bytes: None,
+    // Embedded-MTP is a GGUF header key; `config.json` has no equivalent.
+    mtp: None,
   }
 }
 

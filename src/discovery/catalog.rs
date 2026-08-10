@@ -18,6 +18,7 @@ use tokio::sync::RwLock;
 
 use crate::discovery::DiscoveredModel;
 use crate::gguf::metadata::ModeHint;
+use crate::launch::resolve::{CatalogRow, MtpCapability};
 
 /// Shared, cheap-to-clone catalog of every model discovery has seen.
 #[derive(Debug, Clone, Default)]
@@ -70,70 +71,62 @@ impl ModelCatalog {
 
   /// Serialise the catalog into the JSON shape `list_models` returns.
   /// Pulled out of the dispatcher so it can be unit-tested with
-  /// hand-built fixtures.
+  /// hand-built fixtures. The wire shape lives entirely in `CatalogRow`'s
+  /// serde impl — this only maps `DiscoveredModel` → `CatalogRow`.
   pub async fn to_list_response(&self, available_routed: &BTreeSet<String>) -> Value {
     let snap = self.snapshot().await;
-    let rows: Vec<Value> = snap
+    let rows: Vec<CatalogRow> = snap
       .iter()
-      .map(|m| model_row(m, available_routed))
+      .map(|m| catalog_row(m, available_routed))
       .collect();
     json!({ "models": rows })
   }
 }
 
-/// JSON projection of a single [`DiscoveredModel`] for the
-/// `list_models` response. Stable shape — agents pin against this.
-///
-/// `has_reasoning_hint` is the canonical name for the boolean
-/// presence indicator (P2-17). The legacy `reasoning_hint` field
-/// is still emitted for backwards compatibility with any caller
-/// that pinned against the original name; a future v2 release
-/// will drop it.
-fn model_row(m: &DiscoveredModel, available_routed: &BTreeSet<String>) -> Value {
-  json!({
-    "path": m.path,
-    "parent": m.parent,
-    "source": m.source.label(),
-    // Primary backend badge (R14 / R13 routing): the highest-priority supported
-    // backend that is available, else the source's default. Reads the
-    // precomputed supported list, so this names no backend.
-    "backend": m
-      .supported_backends
+/// Map one `DiscoveredModel` into the transport-agnostic [`CatalogRow`]. All
+/// JSON shaping lives in `CatalogRow`'s serde impl (the single definition of
+/// the `list_models` wire shape, which agents pin against); this is the only
+/// `DiscoveredModel` → row projection in the tree.
+fn catalog_row(m: &DiscoveredModel, available_routed: &BTreeSet<String>) -> CatalogRow {
+  let md = m.metadata.as_ref();
+  // Primary backend badge (R14 / R13 routing): the highest-priority supported
+  // backend that is available, else the source's default. Names no backend.
+  let backend = m
+    .supported_backends
+    .iter()
+    .find(|rb| available_routed.contains(*rb))
+    .cloned()
+    .unwrap_or_else(|| m.source.backend_id().to_string());
+  CatalogRow {
+    path: m.path.to_string_lossy().into_owned(),
+    model_id: None,
+    parent: m.parent.to_string_lossy().into_owned(),
+    source: m.source.label().to_string(),
+    arch: md.and_then(|d| d.arch.clone()),
+    quant: md.map(|d| d.quant.label().to_string()),
+    native_ctx: md.and_then(|d| d.native_ctx),
+    mode_hint: md.map(|d| mode_hint_label(d.mode_hint).to_string()),
+    parameter_label: md.and_then(|d| d.parameter_label.clone()),
+    weights_bytes: md.and_then(|d| d.weights_bytes),
+    display_label: m.display_label.clone(),
+    parse_error: m.parse_error.clone(),
+    split_siblings: m
+      .split_siblings
       .iter()
-      .find(|rb| available_routed.contains(*rb))
-      .map(String::as_str)
-      .unwrap_or_else(|| m.source.backend_id()),
-    // Every backend that can serve this model, priority-ordered (first =
-    // default). The `list` "backend" column + right-pane badges render all.
-    "supported_backends": m.supported_backends,
-    "split_siblings": m.split_siblings,
-    "metadata": m.metadata.as_ref().map(|md| {
-      json!({
-        "arch": md.arch,
-        "total_parameters": md.total_parameters,
-        "parameter_label": md.parameter_label,
-        "quant": md.quant.label(),
-        "native_ctx": md.native_ctx,
-        "tokenizer_kind": md.tokenizer_kind,
-        "mode_hint": mode_hint_label(md.mode_hint),
-        "has_reasoning_hint": md.reasoning_hint,
-        // Deprecated alias — kept until v2 to avoid breaking pinned
-        // parsers. Same value as `has_reasoning_hint`.
-        "reasoning_hint": md.reasoning_hint,
-        "has_chat_template": md.chat_template.is_some(),
-        "weights_bytes": md.weights_bytes,
-      })
+      .map(|p| p.to_string_lossy().into_owned())
+      .collect(),
+    has_chat_template: md.map(|d| d.chat_template.is_some()).unwrap_or(false),
+    has_reasoning_hint: md.map(|d| d.reasoning_hint).unwrap_or(false),
+    tokenizer_kind: md.and_then(|d| d.tokenizer_kind.clone()),
+    total_parameters: md.and_then(|d| d.total_parameters),
+    backend: Some(backend),
+    supported_backends: m.supported_backends.clone(),
+    multimodal: m.multimodal,
+    mtp: m.mtp_capable().then(|| MtpCapability {
+      embedded_layers: md.and_then(|d| d.mtp),
+      separate_head: m.mtp_head.is_some(),
     }),
-    "parse_error": m.parse_error,
-    "display_label": m.display_label,
-    // Multimodal projector capability (vision / audio), or null when the
-    // model has no mmproj companion. Additive — the TUI renders a glyph
-    // after the model title from this field.
-    "multimodal": m.multimodal.map(|mm| json!({
-      "vision": mm.vision,
-      "audio": mm.audio,
-    })),
-  })
+  }
 }
 
 fn mode_hint_label(h: ModeHint) -> &'static str {
@@ -169,13 +162,21 @@ mod tests {
         reasoning_hint: false,
         mode_hint: ModeHint::Chat,
         weights_bytes: Some(4_000_000_000),
+        mtp: None,
       }),
       parse_error: None,
       split_siblings: Vec::new(),
       display_label: None,
       multimodal: None,
       supported_backends: Vec::new(),
+      mtp_head: None,
     }
+  }
+
+  /// The `list_models` wire `Value` for one model — via the real
+  /// `catalog_row` → `CatalogRow` serde path the daemon uses.
+  fn row_json(m: &DiscoveredModel, available_routed: &BTreeSet<String>) -> Value {
+    serde_json::to_value(catalog_row(m, available_routed)).unwrap()
   }
 
   #[test]
@@ -184,7 +185,7 @@ mod tests {
     // R13 routing tag. GGUF JSON is otherwise unchanged (additive field). A
     // backend-registry source adds its own tag.
     let none = BTreeSet::new();
-    let gguf = model_row(&fake_model("/m/a.gguf", ModelSource::UserPath), &none);
+    let gguf = row_json(&fake_model("/m/a.gguf", ModelSource::UserPath), &none);
     assert_eq!(gguf["backend"], "llamacpp");
     assert_eq!(gguf["path"], "/m/a.gguf");
     // A model that supports some backend reports *that* backend when it is in
@@ -194,15 +195,41 @@ mod tests {
     let mut routed = fake_model("/m/a.gguf", ModelSource::UserPath);
     routed.supported_backends = vec!["some-engine".to_string(), "llamacpp".to_string()];
     let available = BTreeSet::from(["some-engine".to_string()]);
-    assert_eq!(model_row(&routed, &available)["backend"], "some-engine");
+    assert_eq!(row_json(&routed, &available)["backend"], "some-engine");
     // The full supported list is emitted for the column / badges.
     assert_eq!(
-      model_row(&routed, &available)["supported_backends"],
+      row_json(&routed, &available)["supported_backends"],
       json!(["some-engine", "llamacpp"])
     );
     // ...but the badge is not "some-engine" when it's unavailable — falls back
     // to the source default.
-    assert_eq!(model_row(&routed, &none)["backend"], "llamacpp");
+    assert_eq!(row_json(&routed, &none)["backend"], "llamacpp");
+  }
+
+  #[test]
+  fn model_row_mtp_block_reflects_capability() {
+    let none = BTreeSet::new();
+    // Not MTP-capable → `mtp` is null.
+    let plain = row_json(&fake_model("/m/a.gguf", ModelSource::UserPath), &none);
+    assert!(
+      plain["mtp"].is_null(),
+      "non-capable model omits the mtp block"
+    );
+
+    // Embedded head (metadata.mtp = Some(n)) → embedded_layers set, no head.
+    let mut embedded = fake_model("/m/a.gguf", ModelSource::UserPath);
+    embedded.metadata.as_mut().unwrap().mtp = Some(1);
+    let embedded_row = row_json(&embedded, &none);
+    assert_eq!(embedded_row["mtp"]["embedded_layers"], 1);
+    assert_eq!(embedded_row["mtp"]["separate_head"], false);
+
+    // Separate head only (no embedded) → embedded_layers null, head true.
+    let mut sep = fake_model("/m/a.gguf", ModelSource::UserPath);
+    sep.metadata.as_mut().unwrap().mtp = None;
+    sep.mtp_head = Some(PathBuf::from("/m/mtp-a.gguf"));
+    let sep_row = row_json(&sep, &none);
+    assert!(sep_row["mtp"]["embedded_layers"].is_null());
+    assert_eq!(sep_row["mtp"]["separate_head"], true);
   }
 
   #[tokio::test]
@@ -284,7 +311,7 @@ mod tests {
     assert_eq!(meta["arch"], json!("llama"));
     assert_eq!(meta["quant"], json!("Q4_K"));
     assert_eq!(meta["mode_hint"], json!("chat"));
-    assert_eq!(meta["reasoning_hint"], json!(true));
+    assert_eq!(meta["has_reasoning_hint"], json!(true));
     assert_eq!(meta["has_chat_template"], json!(true));
     assert_eq!(meta["parameter_label"], json!("7B"));
     assert!(row["parse_error"].is_null());
@@ -304,6 +331,7 @@ mod tests {
       display_label: None,
       multimodal: None,
       supported_backends: Vec::new(),
+      mtp_head: None,
     };
     cat.upsert(m).await;
     let v = cat.to_list_response(&BTreeSet::new()).await;

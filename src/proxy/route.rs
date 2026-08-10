@@ -461,6 +461,13 @@ pub(crate) fn catalog_row_from_discovered(m: &DiscoveredModel) -> CatalogRow {
     total_parameters,
     backend: None,
     supported_backends: m.supported_backends.clone(),
+    multimodal: m.multimodal,
+    mtp: m
+      .mtp_capable()
+      .then(|| crate::launch::resolve::MtpCapability {
+        embedded_layers: m.metadata.as_ref().and_then(|md| md.mtp),
+        separate_head: m.mtp_head.is_some(),
+      }),
   }
 }
 
@@ -488,14 +495,19 @@ fn same_path(model_id_path: &std::path::Path, row_path: &str) -> bool {
 ///      will not match request semantics, and clients that care
 ///      should branch on the header). If no Ready candidate exists
 ///      → 503 `launch_failed` with the running list.
+///
+/// `endpoint_mode` carries the mode the requested endpoint implies so
+/// the auto-start composes an argv that can answer it (see
+/// [`launch::auto_start`]).
 pub(crate) async fn handle_not_running(
   state: &Arc<ProxyState>,
   inbound: super::forward::InboundRequest,
   requested_model: String,
   resolved_row: CatalogRow,
   requested_arch: Option<String>,
+  endpoint_mode: Option<crate::launch::mode::LaunchMode>,
 ) -> ProxyResponse {
-  let outcome = launch::auto_start(state, &resolved_row).await;
+  let outcome = launch::auto_start(state, &resolved_row, endpoint_mode).await;
   match outcome {
     LaunchOutcome::Ready { port, model_id } => {
       // Touch the MRU using the supervisor we just confirmed Ready.
@@ -735,6 +747,7 @@ mod tests {
       display_label: None,
       multimodal: None,
       supported_backends: Vec::new(),
+      mtp_head: None,
       parse_error: None,
       split_siblings: vec![],
       metadata: Some(ModelMetadata {
@@ -744,6 +757,7 @@ mod tests {
         native_ctx: Some(2048),
         parameter_label: Some("0.5B".into()),
         weights_bytes: Some(100_000_000),
+        mtp: None,
         chat_template: None,
         tokenizer_kind: Some("bert".into()),
         total_parameters: Some(500_000_000),

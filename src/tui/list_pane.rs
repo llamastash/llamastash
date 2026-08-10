@@ -1212,12 +1212,14 @@ mod tests {
         reasoning_hint: false,
         mode_hint: ModeHint::Chat,
         weights_bytes: Some(4_200_000_000),
+        mtp: None,
       }),
       parse_error: None,
       split_siblings: Vec::new(),
       display_label: None,
       multimodal: None,
       supported_backends: Vec::new(),
+      mtp_head: None,
     }
   }
 

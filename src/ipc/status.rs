@@ -44,6 +44,36 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
     // `params` so an agent can reproduce the launch without a
     // separate `last_params_list` call.
     let params = model.params();
+    let running_snap = running.iter().find(|r| r.port == model.port());
+    // The backend this launch *resolved* to, stamped on the running snapshot
+    // at spawn — the honest signal (respects an explicit backend override on a
+    // compatible file), not the routing prediction.
+    // A managed-multiplexer umbrella row keys deterministically on its own
+    // backend id: the umbrella shares its port with every delegated model's
+    // snapshot, so matching by port would pick an arbitrary snapshot (or the
+    // default-backend fallback when none is resident) and the reported backend
+    // would flip-flop between calls. Resolved via the registry so no backend is
+    // named here.
+    let owner = crate::backend::Backends::all()
+      .into_iter()
+      .find(|b| b.umbrella_launch_id().as_ref() == Some(&launch_id))
+      .or_else(|| {
+        let id = running_snap.map(|r| r.resolved_backend.as_str())?;
+        crate::backend::Backends::all()
+          .into_iter()
+          .find(|b| b.id() == id)
+      })
+      .unwrap_or_else(crate::backend::default_backend);
+    let resolved_backend = owner.id().to_string();
+    // MTP telemetry comes from the owning backend: whether it dispatched with
+    // MTP, and — only then — the acceptance figure it prints in its own log
+    // format. Read-only over the existing log ring buffer (no new sampler).
+    let mtp_active = owner.mtp_active(params);
+    let mtp_acceptance = if mtp_active {
+      owner.draft_acceptance(&model.tail(200).await)
+    } else {
+      None
+    };
     let params_json = json!({
       "model_path": params.model_path,
       "mode": model.mode().label(),
@@ -62,30 +92,23 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
         .iter()
         .map(|s| s.to_string_lossy().into_owned())
         .collect::<Vec<_>>(),
+      // MTP (speculative decoding) state for this launch: `enable` is the
+      // intent (auto/on/off), `active` is whether the owning backend actually
+      // dispatched with MTP, and `acceptance` is the latest draft-acceptance
+      // rate it reported (null until printed, or on a backend that publishes
+      // none). Additive.
+      "mtp": {
+        "enable": params.mtp.label(),
+        "active": mtp_active,
+        "acceptance": mtp_acceptance.map(|a| a.rate),
+        "draft_accepted": mtp_acceptance.map(|a| a.accepted),
+        "draft_generated": mtp_acceptance.map(|a| a.generated),
+      },
     });
     let latest = model.latest_resource().await;
     let latest_rss_bytes = latest.as_ref().map(|r| r.rss_bytes);
     let latest_cpu_pct = latest.as_ref().map(|r| r.cpu_percent);
-    let running_snap = running.iter().find(|r| r.port == model.port());
     let actuals = running_snap.map(|r| r.actuals);
-    // The backend this launch *resolved* to, stamped on the running snapshot
-    // at spawn — the honest signal (respects an explicit `--backend llamacpp`
-    // on a compatible file), not the `list_models` ds4 badge prediction.
-    // A managed-multiplexer umbrella row keys deterministically on its own
-    // backend id: the umbrella shares its port with every delegated model's
-    // snapshot, so matching by port would pick an arbitrary snapshot (or the
-    // default-backend fallback when none is resident) and the reported backend
-    // would flip-flop between calls. Resolved via the registry so no backend is
-    // named here.
-    let resolved_backend = crate::backend::Backends::all()
-      .iter()
-      .find(|b| b.umbrella_launch_id().as_ref() == Some(&launch_id))
-      .map(|b| b.id().to_string())
-      .unwrap_or_else(|| {
-        running_snap
-          .map(|r| r.resolved_backend.clone())
-          .unwrap_or_else(|| crate::backend::DEFAULT_BACKEND_ID.to_string())
-      });
     let resolved_ctx = actuals.and_then(|a| a.resolved_ctx);
     let ctx_clamped = actuals.map(|a| a.ctx_clamped).unwrap_or(false);
     let (preset_count, preset_default) = super::methods::preset_hint(
@@ -171,6 +194,14 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
         path: running_snap.params.model_path.clone(),
         header_blake3: [0u8; 32],
       };
+      // Same `params.mtp` shape as a managed row, so a delegated model's row is
+      // shape-identical. `active` comes from the owning backend; acceptance is
+      // null for a delegated model (it shares the umbrella's log, so per-model
+      // draft figures aren't separable). Owner resolved via the registry.
+      let owner = crate::backend::Backends::all()
+        .into_iter()
+        .find(|b| b.id() == running_snap.resolved_backend)
+        .unwrap_or_else(crate::backend::default_backend);
       let params_json = json!({
         "model_path": running_snap.params.model_path,
         "mode": running_snap.params.mode.label(),
@@ -184,6 +215,13 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
           .iter()
           .map(|s| s.to_string_lossy().into_owned())
           .collect::<Vec<_>>(),
+        "mtp": {
+          "enable": running_snap.params.mtp.label(),
+          "active": owner.mtp_active(&running_snap.params),
+          "acceptance": Value::Null,
+          "draft_accepted": Value::Null,
+          "draft_generated": Value::Null,
+        },
       });
       let (preset_count, preset_default) = super::methods::preset_hint(
         &running_snap.params.model_path.display().to_string(),

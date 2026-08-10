@@ -231,6 +231,27 @@ pub struct DownloadOptions {
   /// lmstudio-community each pick different stems). Case-insensitive
   /// substring match against `.gguf` siblings.
   pub quant_hint: Option<String>,
+  /// Whether to also fetch companion siblings (mmproj projector, MTP draft
+  /// head) alongside the selected base file(s). Default [`CompanionPolicy::OnePerKind`]
+  /// so a pulled multimodal / MTP model arrives complete (closes the standing
+  /// mmproj gap — M7). `--no-companions` sets `None`; `--all-companions` sets `All`.
+  pub companions: CompanionPolicy,
+}
+
+/// How many companion siblings (mmproj projector / MTP draft head) `pull`
+/// fetches alongside the base model (KD5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CompanionPolicy {
+  /// Fetch no companions (`--no-companions`) — base file(s) only.
+  None,
+  /// Fetch one per kind — the default. Repos ship several projector precisions
+  /// (`mmproj-F16/BF16/F32`) and may ship several heads; a launch uses one, so
+  /// grab the most-compatible (tie-broken by shortest name) of each kind.
+  #[default]
+  OnePerKind,
+  /// Fetch every companion variant (`--all-companions`) — useful when a user
+  /// wants to keep multiple projector precisions on disk.
+  All,
 }
 
 impl std::fmt::Debug for DownloadOptions {
@@ -242,6 +263,7 @@ impl std::fmt::Debug for DownloadOptions {
       .field("revision", &self.revision)
       .field("fallback_repos", &self.fallback_repos)
       .field("quant_hint", &self.quant_hint)
+      .field("companions", &self.companions)
       .finish()
   }
 }
@@ -530,6 +552,75 @@ fn is_pytorch_full_weight(path: &str) -> bool {
   let base = path.rsplit('/').next().unwrap_or(path);
   (base.starts_with("pytorch_model") && base.ends_with(".bin"))
     || (base.starts_with("consolidated") && base.ends_with(".pth"))
+}
+
+/// Select companion siblings (mmproj projector + separate MTP draft head) to
+/// download alongside the chosen `base_files`, per `policy`. Companions are
+/// pattern-matched **within the same repo** (trust boundary — no cross-repo
+/// fetch). Selection is name-only: a remote listing carries no header, so the
+/// header check discovery applies on disk ([`crate::discovery::scanner::is_mtp_head_file`]) has nothing to
+/// read here. A head named like a quant (`…-MTP-Q4K-Q8_0-F32.gguf`) is missed
+/// and has to be pulled by filename; discovery still classifies it correctly
+/// once it lands. One per kind by default (KD5); `All` keeps every variant;
+/// `None` fetches none.
+/// Files already in `base_files` (e.g. an extension-only pull that swept them
+/// in) are excluded so nothing downloads twice.
+pub(crate) fn select_companions(
+  all_files: &[String],
+  base_files: &[String],
+  policy: CompanionPolicy,
+) -> Vec<String> {
+  if policy == CompanionPolicy::None {
+    return Vec::new();
+  }
+  let is_base = |f: &String| base_files.iter().any(|b| b == f);
+  let of_kind = |pred: fn(&Path) -> bool| -> Vec<&String> {
+    all_files
+      .iter()
+      .filter(|f| !is_base(f) && pred(Path::new(f)))
+      .collect()
+  };
+  let projectors = of_kind(crate::discovery::scanner::is_projector_companion);
+  let heads = of_kind(crate::discovery::scanner::is_mtp_companion);
+  let mut out: Vec<String> = match policy {
+    CompanionPolicy::All => projectors.into_iter().chain(heads).cloned().collect(),
+    CompanionPolicy::OnePerKind => pick_one_companion(&projectors)
+      .into_iter()
+      .chain(pick_one_companion(&heads))
+      .collect(),
+    CompanionPolicy::None => Vec::new(),
+  };
+  out.sort();
+  out.dedup();
+  out
+}
+
+/// Pick the single most-compatible companion from `candidates`: prefer a common
+/// default precision (`f16` > `bf16` > `f32` > other), tie-broken by the
+/// shortest name (the plain form over `-variant` suffixes), then alphabetical.
+fn pick_one_companion(candidates: &[&String]) -> Option<String> {
+  fn precision_rank(name: &str) -> u8 {
+    let l = name.to_ascii_lowercase();
+    // `bf16` also contains `f16`, so test it first.
+    if l.contains("bf16") {
+      1
+    } else if l.contains("f16") {
+      0
+    } else if l.contains("f32") {
+      2
+    } else {
+      3
+    }
+  }
+  candidates
+    .iter()
+    .min_by(|a, b| {
+      precision_rank(a)
+        .cmp(&precision_rank(b))
+        .then(a.len().cmp(&b.len()))
+        .then(a.cmp(b))
+    })
+    .map(|s| (*s).clone())
 }
 
 fn expand_shards(name: &str, all_files: &[String]) -> Vec<String> {
@@ -848,8 +939,22 @@ pub async fn download_repo(
   // at safetensors-only org repos), probes each fallback for a
   // quant-matching `.gguf` and uses the first that resolves. The
   // resolved spec replaces `spec` for the rest of the function.
-  let (resolved_spec, resolved_revision, info, filtered) =
+  let (resolved_spec, resolved_revision, info, mut filtered) =
     resolve_repo(spec, &api, options).await?;
+  // Companion siblings (mmproj projector, MTP draft head) for the selected base
+  // file(s) — same-repo name-pattern only (trust boundary), one per kind by
+  // default (KD5). Closes the standing gap where `pull` fetched a multimodal /
+  // separate-head model without its companion. Extended onto the download set so
+  // the size/precheck/download loop below covers them uniformly.
+  let all_repo_files: Vec<String> = info.siblings.iter().map(|s| s.rfilename.clone()).collect();
+  let companions = select_companions(&all_repo_files, &filtered, options.companions);
+  if !companions.is_empty() {
+    log::info!(
+      "pull: adding {} companion file(s): {companions:?}",
+      companions.len()
+    );
+    filtered.extend(companions);
+  }
   let repo = build_repo_handle(&api, &resolved_spec.repo_id, resolved_revision.as_deref());
 
   // hf-hub's RepoInfo doesn't expose per-file size, so we HEAD each
@@ -964,7 +1069,20 @@ pub async fn run(args: PullArgs, _cli: &Cli, _config: &Config) -> CliResult {
     crate::init::fetch::FetchClientConfig::default(),
   )
   .map_err(|e| CliExit::prefix(PULL_FAILED, "pull: fetch client", e))?;
-  match download_repo(&spec, &fetch, &DownloadOptions::default()).await {
+  // Companion policy: one-per-kind by default, `--no-companions` / `--all-companions`
+  // override (clap already rejects passing both).
+  let companions = if args.no_companions {
+    CompanionPolicy::None
+  } else if args.all_companions {
+    CompanionPolicy::All
+  } else {
+    CompanionPolicy::OnePerKind
+  };
+  let options = DownloadOptions {
+    companions,
+    ..DownloadOptions::default()
+  };
+  match download_repo(&spec, &fetch, &options).await {
     Ok(result) => {
       if args.json {
         let body = serde_json::json!({
@@ -1598,6 +1716,75 @@ mod tests {
     };
     let err = download_repo(&spec, &fetch, &opts).await.unwrap_err();
     assert!(matches!(err, DownloadError::Offline));
+  }
+
+  #[test]
+  fn select_companions_one_per_kind_picks_mmproj_and_head() {
+    // A repo with a base model + several projector precisions + an MTP head.
+    let all = vec![
+      "gemma-4-it-Q4_K_M.gguf".to_string(),
+      "mmproj-F16.gguf".to_string(),
+      "mmproj-BF16.gguf".to_string(),
+      "mmproj-F32.gguf".to_string(),
+      "mtp-gemma-4.gguf".to_string(),
+    ];
+    let base = vec!["gemma-4-it-Q4_K_M.gguf".to_string()];
+    let picked = select_companions(&all, &base, CompanionPolicy::OnePerKind);
+    // One projector (F16 preferred) + one head.
+    assert_eq!(
+      picked,
+      vec![
+        "mmproj-F16.gguf".to_string(),
+        "mtp-gemma-4.gguf".to_string()
+      ]
+    );
+  }
+
+  #[test]
+  fn select_companions_all_takes_every_variant() {
+    let all = vec![
+      "model-Q4_K_M.gguf".to_string(),
+      "mmproj-F16.gguf".to_string(),
+      "mmproj-BF16.gguf".to_string(),
+    ];
+    let base = vec!["model-Q4_K_M.gguf".to_string()];
+    let picked = select_companions(&all, &base, CompanionPolicy::All);
+    assert_eq!(
+      picked,
+      vec![
+        "mmproj-BF16.gguf".to_string(),
+        "mmproj-F16.gguf".to_string()
+      ]
+    );
+  }
+
+  #[test]
+  fn select_companions_none_and_no_companions_present() {
+    let all = vec![
+      "model-Q4_K_M.gguf".to_string(),
+      "mmproj-F16.gguf".to_string(),
+    ];
+    let base = vec!["model-Q4_K_M.gguf".to_string()];
+    // Policy None → nothing.
+    assert!(select_companions(&all, &base, CompanionPolicy::None).is_empty());
+    // A base-only repo (no companions) → nothing even under OnePerKind.
+    let plain = vec!["model-Q4_K_M.gguf".to_string()];
+    assert!(select_companions(&plain, &base, CompanionPolicy::OnePerKind).is_empty());
+  }
+
+  #[test]
+  fn select_companions_excludes_files_already_in_base() {
+    // An extension-only pull already swept the projector into base; it must not
+    // be selected again (no double download).
+    let all = vec![
+      "model-Q4_K_M.gguf".to_string(),
+      "mmproj-F16.gguf".to_string(),
+    ];
+    let base = vec![
+      "model-Q4_K_M.gguf".to_string(),
+      "mmproj-F16.gguf".to_string(),
+    ];
+    assert!(select_companions(&all, &base, CompanionPolicy::OnePerKind).is_empty());
   }
 
   #[test]

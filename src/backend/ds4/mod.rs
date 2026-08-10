@@ -16,13 +16,13 @@
 //! never a refusal (an older llama.cpp than b9840 rejects the file with
 //! `unknown model architecture: 'deepseek4'`).
 //!
-//! Facts verified against a real ds4 build (`ds4-server --help`, master
-//! 2026-06-17) and the published q2 Flash header:
+//! Facts verified against a real ds4 build (`ds4-server --help`, 2026-07-10):
 //! - readiness: `ds4_engine_open` loads the model *before* `listen_on`, so a
 //!   `GET /v1/models` 200 means the weights are resident (see [`readiness`]);
 //! - flags: ds4-server has `--power`/`--tokens`/`--threads`/`--kv-disk-*`/
-//!   `--ssd-streaming` but **not** `--quality` or `--mtp` (those are ds4-CLI
-//!   only), so the native-knob table is 6 entries, not 8.
+//!   `--ssd-streaming` plus the MTP trio `--mtp`/`--mtp-draft`/`--mtp-margin`
+//!   (confirmed under `--help runtime`), so the native-knob table is 9 entries.
+//!   `--quality` is ds4-CLI-only and excluded.
 
 use std::path::{Path, PathBuf};
 
@@ -140,6 +140,24 @@ pub fn is_ds4_alias(id: &str) -> bool {
   id.starts_with(DS4_ALIAS_PREFIX)
 }
 
+/// The one `general.architecture` ds4 serves.
+pub const DS4_ARCH: &str = "deepseek4";
+
+/// Arch the DSpark support GGUF declares. Not the `_mtp_support` shape the
+/// generic head lookup derives, so pairing it needs the arch spelled out.
+const DSPARK_ARCH: &str = "deepseek4-dspark";
+
+/// Is DSpark switched on for this launch? `--dspark` and `--dspark-strict`
+/// both load the support model, so either one needs a paired `--mtp` file.
+fn dspark_on(params: &LaunchParams) -> bool {
+  ["dspark", "dspark_strict"].iter().any(|k| {
+    matches!(
+      params.backend_knobs.get(*k),
+      Some(crate::config::KnobValue::Set(v)) if v == "true"
+    )
+  })
+}
+
 /// The **ds4-compatibility predicate** — the single routing signal (D-compat).
 ///
 /// A GGUF is ds4-compatible when its arch is `deepseek4` **and** its
@@ -159,7 +177,7 @@ pub fn is_ds4_alias(id: &str) -> bool {
 /// functions and can drift if ds4 adds quant kernels.
 pub fn ds4_compatible(header: &GgufHeader) -> bool {
   let arch = header.get("general.architecture").and_then(|v| v.as_str());
-  if arch != Some("deepseek4") {
+  if arch != Some(DS4_ARCH) {
     return false;
   }
   let mut saw_expert = false;
@@ -267,11 +285,12 @@ fn is_routed_expert_tensor(name: &str) -> bool {
   name.contains("_exps")
 }
 
-/// ds4's native-knob descriptor table (D3) — 6 tunables that have no
-/// llama.cpp IR slot. Ids are stable persistence keys; label/description
-/// drive the launch-picker rows. Only flags the real `ds4-server` binary
-/// accepts (verified via `--help`): `--quality` / `--mtp` are ds4-CLI-only
-/// and deliberately excluded.
+/// ds4's native-knob descriptor table — 14 tunables that have no llama.cpp IR
+/// slot. Ids are stable persistence keys; label/description drive the
+/// launch-picker rows. Only flags the real `ds4-server` binary accepts
+/// (verified via `--help runtime`, 2026-08-05 build): the MTP trio
+/// (`--mtp`/`--mtp-draft`/`--mtp-margin`), the SSD-streaming tuning family,
+/// and the `--warm-weights` / `--quality` bools are included.
 pub const DS4_NATIVE_KNOBS: &[NativeKnobDescriptor] = &[
   NativeKnobDescriptor {
     id: "power",
@@ -309,6 +328,72 @@ pub const DS4_NATIVE_KNOBS: &[NativeKnobDescriptor] = &[
     description: "stream weights from disk (below-RAM-floor mode; skips the admission gate)",
     kind: NativeKnobKind::Bool,
   },
+  NativeKnobDescriptor {
+    id: "ssd_streaming_cache_experts",
+    label: "SSD cache cap",
+    description: "SSD streaming: resident routed-expert cap — exact count N or routed memory budget NGB (ds4 auto: 80% of the working set)",
+    kind: NativeKnobKind::FreeText,
+  },
+  NativeKnobDescriptor {
+    id: "ssd_streaming_preload_experts",
+    label: "SSD preload",
+    description: "SSD streaming: upfront popularity preload count (DeepSeek auto-seeds when unset)",
+    kind: NativeKnobKind::FreeText,
+  },
+  NativeKnobDescriptor {
+    id: "ssd_streaming_cold",
+    label: "SSD cold start",
+    description: "SSD streaming: skip the default popularity-based expert-cache preload",
+    kind: NativeKnobKind::Bool,
+  },
+  NativeKnobDescriptor {
+    id: "warm_weights",
+    label: "Warm weights",
+    description: "touch mapped tensor pages at startup to reduce first-use stalls",
+    kind: NativeKnobKind::Bool,
+  },
+  NativeKnobDescriptor {
+    id: "quality",
+    label: "Exact kernels",
+    description: "prefer exact kernels where faster approximate paths exist",
+    kind: NativeKnobKind::Bool,
+  },
+  NativeKnobDescriptor {
+    id: "mtp",
+    label: "MTP sidecar",
+    description: "path to the MTP draft-head GGUF (auto-paired from a sibling when unset)",
+    kind: NativeKnobKind::FreeText,
+  },
+  NativeKnobDescriptor {
+    id: "mtp_draft",
+    label: "MTP draft",
+    description: "max autoregressive MTP draft tokens (ds4 default 1)",
+    kind: NativeKnobKind::FreeText,
+  },
+  NativeKnobDescriptor {
+    id: "mtp_margin",
+    label: "MTP margin",
+    description: "verifier confidence margin for fast MTP acceptance (ds4 default 3)",
+    kind: NativeKnobKind::FreeText,
+  },
+  NativeKnobDescriptor {
+    id: "dspark",
+    label: "DSpark",
+    description: "block speculative decoding off the DSpark support GGUF in `mtp` (greedy only)",
+    kind: NativeKnobKind::Bool,
+  },
+  NativeKnobDescriptor {
+    id: "dspark_confidence",
+    label: "DSpark confidence",
+    description: "prune proposals below this confidence, 0..1 (ds4 default 0.7; 0 = fixed blocks)",
+    kind: NativeKnobKind::FreeText,
+  },
+  NativeKnobDescriptor {
+    id: "dspark_strict",
+    label: "DSpark strict",
+    description: "load the DSpark support model but keep target-only decode (comparison baseline)",
+    kind: NativeKnobKind::Bool,
+  },
 ];
 
 /// `id → ds4-server flag head` mapping consumed by
@@ -320,6 +405,23 @@ const DS4_FLAG_MAP: &[(&str, &str)] = &[
   ("kv_disk_dir", "--kv-disk-dir"),
   ("kv_disk_space_mb", "--kv-disk-space-mb"),
   ("ssd_streaming", "--ssd-streaming"),
+  (
+    "ssd_streaming_cache_experts",
+    "--ssd-streaming-cache-experts",
+  ),
+  (
+    "ssd_streaming_preload_experts",
+    "--ssd-streaming-preload-experts",
+  ),
+  ("ssd_streaming_cold", "--ssd-streaming-cold"),
+  ("warm_weights", "--warm-weights"),
+  ("quality", "--quality"),
+  ("mtp", "--mtp"),
+  ("mtp_draft", "--mtp-draft"),
+  ("mtp_margin", "--mtp-margin"),
+  ("dspark", "--dspark"),
+  ("dspark_confidence", "--dspark-confidence"),
+  ("dspark_strict", "--dspark-strict"),
 ];
 
 /// Resolve the `ds4-server` binary: an explicit `ds4.binary` config path
@@ -372,6 +474,19 @@ impl Ds4Backend {
     Self {
       capabilities: KnobCapability::of(&[KnobField::Ctx]),
     }
+  }
+
+  /// Effective free memory when a launch of `weights_bytes` needs SSD
+  /// streaming to survive; `None` when residency fits or the host sampler has
+  /// no reading yet. Separate from the knob write so the MTP conflict can ask
+  /// "would streaming turn on?" before deciding which side of the pair yields.
+  async fn auto_stream_free_bytes(&self, ctx: &MethodContext, weights_bytes: u64) -> Option<u64> {
+    let snapshot = ctx.host_metrics.as_ref()?.read().await.clone();
+    if !crate::launch::admission::is_sampled(&snapshot) {
+      return None;
+    }
+    let free = crate::launch::admission::effective_free_bytes(&snapshot);
+    ds4_should_auto_stream(weights_bytes, free).then_some(free)
   }
 
   /// Build the process-per-model launch spec directly (tests and the
@@ -565,7 +680,7 @@ impl Backend for Ds4Backend {
   fn kv_bytes(&self, header: &GgufHeader, arch: Option<&str>, ctx_len: u64) -> Option<u64> {
     // The compressed-cache model, gated on the `deepseek4` arch exactly as the
     // pre-seam `if a == "deepseek4"` estimator branch was.
-    (arch == Some("deepseek4")).then(|| ds4_kv_bytes(header, ctx_len))
+    (arch == Some(DS4_ARCH)).then(|| ds4_kv_bytes(header, ctx_len))
   }
 
   fn auto_routes(&self, header: &GgufHeader) -> bool {
@@ -586,7 +701,7 @@ impl Backend for Ds4Backend {
     // any engine, and attempting it wastes a 100 GB+ load. Gated on the
     // `deepseek4` arch so an unrelated GGUF that merely matches the
     // `…-Layers00-30` filename pattern is never wrongly refused.
-    if arch != Some("deepseek4") {
+    if arch != Some(DS4_ARCH) {
       return None;
     }
     let name = path.file_name().and_then(|n| n.to_str())?;
@@ -677,27 +792,147 @@ impl Backend for Ds4Backend {
     params: &mut LaunchParams,
     weights_bytes: u64,
   ) -> NativeKnobResolution {
+    let mut out = NativeKnobResolution::default();
+    // MTP auto-pair (KD7): an unset `mtp` knob resolves to a separate MTP
+    // draft-head sidecar found next to the model (the same sibling detection
+    // discovery uses on disk), paired as `--mtp <path>`. A user-set value wins.
+    // Honors the backend-agnostic MTP intent — `mtp: off` (from `--mtp off` or
+    // the picker's MTP row) skips auto-pairing entirely, so the one MTP switch
+    // governs every backend. Independent of host metrics, so it runs before the
+    // streaming gate; the auto-set key is stripped from `last_params` so it
+    // re-resolves each launch.
+    if !matches!(params.mtp, crate::launch::params::MtpEnable::Off)
+      && !matches!(
+        params.backend_knobs.get("mtp"),
+        Some(crate::config::KnobValue::Set(_))
+      )
+    {
+      // ds4 serves one arch, so the head lookup can key on it directly instead
+      // of re-reading the model header for a value already known here. With
+      // `dspark` on, the DSpark support GGUF is the only head that will do —
+      // it occupies the same `--mtp` slot but declares its own arch, and ds4
+      // refuses `--dspark` without a file.
+      let head = if dspark_on(params) {
+        crate::discovery::scanner::find_draft_head(&params.model_path, Some(DSPARK_ARCH))
+      } else {
+        crate::discovery::scanner::find_mtp_head(&params.model_path, Some(DS4_ARCH))
+      };
+      if let Some(head) = head {
+        log::info!("ds4: auto-paired MTP sidecar {}", head.display());
+        params.backend_knobs.insert(
+          "mtp".to_string(),
+          crate::config::KnobValue::Set(head.display().to_string()),
+        );
+        out.auto_set.insert("mtp".to_string());
+      }
+    }
+    // `--dspark` without `--mtp` is a hard ds4-server refusal, and it only
+    // surfaces after the multi-minute model load. Catch it here instead: no
+    // support file resolved means the DSpark knobs come back off.
+    if dspark_on(params)
+      && !matches!(
+        params.backend_knobs.get("mtp"),
+        Some(crate::config::KnobValue::Set(v)) if !v.is_empty()
+      )
+    {
+      for k in ["dspark", "dspark_confidence", "dspark_strict"] {
+        params.backend_knobs.remove(k);
+        out.auto_set.remove(k);
+      }
+      out.warnings.push(
+        "ds4 needs the DSpark support GGUF to speculate — none found next to the model, so \
+         DSpark is off for this launch. Download it (`DeepSeek-V4-Flash-DSpark-support-*.gguf`, \
+         checkpoint-matched) or point `mtp` at it."
+          .to_string(),
+      );
+    }
+    // The neutral per-step draft count maps onto ds4's own draft flag, so the
+    // one `--mtp-draft-n` works whichever backend serves the model. Only when a
+    // head is actually paired (the flag is meaningless without one) and the
+    // native knob wasn't set directly, which wins.
+    if let Some(n) = params.mtp_draft_n {
+      let head_paired = matches!(
+        params.backend_knobs.get("mtp"),
+        Some(crate::config::KnobValue::Set(_))
+      );
+      let knob_set_directly = matches!(
+        params.backend_knobs.get("mtp_draft"),
+        Some(crate::config::KnobValue::Set(_))
+      );
+      if head_paired && !knob_set_directly {
+        params.backend_knobs.insert(
+          "mtp_draft".to_string(),
+          crate::config::KnobValue::Set(n.to_string()),
+        );
+        out.auto_set.insert("mtp_draft".to_string());
+      }
+    }
     // `ssd_streaming` Auto → on when residency won't fit. ds4 holds the full
     // model plus a cached-expert/KV working set the deepseek4 demand model can't
     // see (~1.25× weights), so a full-residency spawn OOM-kills mid-load
     // (ds4-server sets its own oom_score_adj=1000) — disk-stream instead. A user
     // on/off wins; only the unset/Auto knob resolves here.
-    let mut out = NativeKnobResolution::default();
-    if matches!(
+    let stream_pinned_on = matches!(
+      params.backend_knobs.get("ssd_streaming"),
+      Some(crate::config::KnobValue::Set(v)) if v == "true"
+    );
+    let stream_pinned = matches!(
       params.backend_knobs.get("ssd_streaming"),
       Some(crate::config::KnobValue::Set(_))
-    ) {
-      return out;
-    }
-    let Some(host_slot) = ctx.host_metrics.as_ref() else {
-      return out;
+    );
+    // Free memory the auto path would stream against — `None` when the knob is
+    // pinned (nothing to resolve) or residency fits.
+    let auto_stream_free = if stream_pinned {
+      None
+    } else {
+      self.auto_stream_free_bytes(ctx, weights_bytes).await
     };
-    let snapshot = host_slot.read().await.clone();
-    if !crate::launch::admission::is_sampled(&snapshot) {
-      return out;
+
+    let head_paired = matches!(
+      params.backend_knobs.get("mtp"),
+      Some(crate::config::KnobValue::Set(v)) if !v.is_empty()
+    );
+    match mtp_stream_conflict(
+      head_paired,
+      out.auto_set.contains("mtp"),
+      stream_pinned_on,
+      auto_stream_free.is_some(),
+    ) {
+      MtpStreamConflict::None => {}
+      MtpStreamConflict::Refuse => {
+        out.refusal = Some(
+          "ds4 cannot stream from disk with an MTP draft head — `ssd_streaming: true` and \
+           `mtp` are mutually exclusive in ds4-server. Drop one: `--mtp off` to stream, or \
+           `ssd_streaming: false` to speculate at full residency."
+            .to_string(),
+        );
+        return out;
+      }
+      MtpStreamConflict::DropHead => {
+        params.backend_knobs.remove("mtp");
+        out.auto_set.remove("mtp");
+        if out.auto_set.remove("mtp_draft") {
+          params.backend_knobs.remove("mtp_draft");
+        }
+        out.warnings.push(
+          "ds4 cannot stream from disk with an MTP draft head — dropped the auto-paired \
+           sidecar so the launch can stream. Set `ssd_streaming: false` to speculate at \
+           full residency instead."
+            .to_string(),
+        );
+      }
+      MtpStreamConflict::KeepHeadSkipStream => {
+        out.warnings.push(
+          "ds4 cannot stream from disk with an MTP draft head — left SSD streaming off so \
+           the requested `mtp` head survives, so this launch needs full residency. Pass \
+           `--mtp off` if you would rather stream."
+            .to_string(),
+        );
+        return out;
+      }
     }
-    let free = crate::launch::admission::effective_free_bytes(&snapshot);
-    if ds4_should_auto_stream(weights_bytes, free) {
+
+    if let Some(free) = auto_stream_free {
       params.backend_knobs.insert(
         "ssd_streaming".to_string(),
         crate::config::KnobValue::Set("true".to_string()),
@@ -713,6 +948,21 @@ impl Backend for Ds4Backend {
     }
     out
   }
+
+  fn mtp_active(&self, params: &LaunchParams) -> bool {
+    // ds4 speculates only when a draft head was paired into `--mtp` (auto from
+    // a sidecar, or user-set) — an embedded nextn head alone does nothing here,
+    // so the generic MTP directive is not the signal.
+    matches!(
+      params.backend_knobs.get("mtp"),
+      Some(crate::config::KnobValue::Set(v)) if !v.is_empty()
+    )
+  }
+
+  // `draft_acceptance` stays on the default `None`: ds4-server publishes no
+  // acceptance figure. Its MTP counters are all behind debug env vars and print
+  // per decode step; the one cumulative rate belongs to DSpark and prints at
+  // session close. Verified against the ds4 sources, not a fixture.
 
   fn bypasses_admission(&self, params: &LaunchParams) -> bool {
     // Streaming weights from disk skips the hard OOM refusal (on-disk bytes ≠
@@ -813,6 +1063,42 @@ fn ds4_resident_estimate(weights_total: u64) -> u64 {
 /// sampler.
 fn ds4_should_auto_stream(weights_total: u64, free: u64) -> bool {
   ds4_resident_estimate(weights_total) > free
+}
+
+/// How a launch reconciles SSD streaming with an MTP draft head.
+#[derive(Debug, PartialEq, Eq)]
+enum MtpStreamConflict {
+  /// The pair doesn't collide (no head, or streaming stays off).
+  None,
+  /// Both were chosen explicitly — the user reconciles them, not us.
+  Refuse,
+  /// We paired the head, so it yields to streaming.
+  DropHead,
+  /// The head is the user's and streaming was only our auto-resolve, so
+  /// streaming yields and the launch runs at full residency.
+  KeepHeadSkipStream,
+}
+
+/// Reconcile ds4's mutually exclusive `--ssd-streaming` / `--mtp` pair. ds4
+/// only rejects the combination after loading the full model, so an unresolved
+/// conflict costs a multi-minute load per attempt. Streaming is the survival
+/// knob (without it the launch OOM-kills), so whichever side of the pair
+/// llamastash chose itself is the side that yields. Pure so every branch is
+/// unit-testable without a live host sampler.
+fn mtp_stream_conflict(
+  head_paired: bool,
+  head_auto: bool,
+  stream_pinned_on: bool,
+  stream_auto: bool,
+) -> MtpStreamConflict {
+  if !head_paired || !(stream_pinned_on || stream_auto) {
+    return MtpStreamConflict::None;
+  }
+  match (head_auto, stream_pinned_on) {
+    (true, _) => MtpStreamConflict::DropHead,
+    (false, true) => MtpStreamConflict::Refuse,
+    (false, false) => MtpStreamConflict::KeepHeadSkipStream,
+  }
 }
 
 /// Whether `LLAMASTASH_DS4` is set to a truthy value — the env force that
@@ -1035,13 +1321,13 @@ mod tests {
     let descs = b.native_knobs();
     assert_eq!(
       descs.len(),
-      6,
-      "ds4 exposes 6 native knobs (no quality/mtp)"
+      17,
+      "ds4 exposes 17 native knobs (6 base + 3 ssd-streaming tuning + warm_weights/quality + the MTP trio + the DSpark trio)"
     );
     let mut ids: Vec<&str> = descs.iter().map(|d| d.id).collect();
     ids.sort();
     ids.dedup();
-    assert_eq!(ids.len(), 6, "ids are unique persistence keys");
+    assert_eq!(ids.len(), 17, "ids are unique persistence keys");
     for d in descs {
       assert!(!d.label.is_empty(), "{} has a label", d.id);
       assert!(!d.description.is_empty(), "{} has a description", d.id);
@@ -1052,6 +1338,76 @@ mod tests {
         d.id
       );
     }
+  }
+
+  #[test]
+  fn argv_emits_ssd_streaming_tuning_and_quality_knobs() {
+    let p = params_with(
+      None,
+      &[
+        ("ssd_streaming", "true"),
+        ("ssd_streaming_cache_experts", "8GB"),
+        ("ssd_streaming_preload_experts", "64"),
+        ("ssd_streaming_cold", "true"),
+        ("warm_weights", "true"),
+        ("quality", "true"),
+      ],
+    );
+    let a = argv_strings(&p, 8000);
+    assert!(a
+      .windows(2)
+      .any(|w| w == ["--ssd-streaming-cache-experts", "8GB"]));
+    assert!(a
+      .windows(2)
+      .any(|w| w == ["--ssd-streaming-preload-experts", "64"]));
+    for bare in ["--ssd-streaming-cold", "--warm-weights", "--quality"] {
+      assert!(
+        a.contains(&bare.to_string()),
+        "{bare} emitted as a bare flag"
+      );
+    }
+  }
+
+  #[test]
+  fn argv_emits_mtp_native_knobs() {
+    // The MTP trio rides the native-knob channel → ds4-server flags.
+    let p = params_with(
+      None,
+      &[
+        ("mtp", "/m/DeepSeek-V4-Flash-mtp.gguf"),
+        ("mtp_draft", "3"),
+        ("mtp_margin", "2.5"),
+      ],
+    );
+    let a = argv_strings(&p, 41100);
+    assert!(a
+      .windows(2)
+      .any(|w| w == ["--mtp", "/m/DeepSeek-V4-Flash-mtp.gguf"]));
+    assert!(a.windows(2).any(|w| w == ["--mtp-draft", "3"]));
+    assert!(a.windows(2).any(|w| w == ["--mtp-margin", "2.5"]));
+  }
+
+  #[test]
+  fn mtp_active_keys_on_the_paired_head_not_the_generic_directive() {
+    let b = Ds4Backend::new();
+    // A capable model resolves the generic directive on, but ds4 only
+    // speculates once a head is paired into `--mtp` — reporting `active` off
+    // the directive would claim MTP on a launch that never got a draft head.
+    let mut p = params_with(None, &[]);
+    p.mtp_directive = Some(crate::launch::params::MtpDirective { draft_model: None });
+    assert!(!b.mtp_active(&p), "no paired head → not speculating");
+
+    let paired = params_with(None, &[("mtp", "/m/DeepSeek-V4-Flash-mtp.gguf")]);
+    assert!(b.mtp_active(&paired), "paired head → speculating");
+  }
+
+  #[test]
+  fn draft_acceptance_is_unreported_rather_than_guessed() {
+    // ds4-server's acceptance log shape is unverified, so it must report
+    // nothing instead of parsing another backend's format against its log.
+    let b = Ds4Backend::new();
+    let lines = vec!["draft acceptance = 0.65217 ( 105 accepted / 161 generated )".to_string()];
+    assert!(b.draft_acceptance(&lines).is_none());
   }
 
   #[test]
@@ -1160,6 +1516,61 @@ mod tests {
     assert!(!ds4_should_auto_stream(gib(80), gib(100)));
     // A pathological weight total saturates instead of overflowing.
     assert!(ds4_should_auto_stream(u64::MAX, gib(100)));
+  }
+
+  #[test]
+  fn streaming_and_mtp_head_never_reach_ds4_together() {
+    use MtpStreamConflict::*;
+    // ds4-server exits on `--ssd-streaming` + `--mtp`, so no combination may
+    // leave both live.
+    // Our sidecar pairing yields to streaming, pinned or auto-resolved.
+    assert_eq!(mtp_stream_conflict(true, true, true, false), DropHead);
+    assert_eq!(mtp_stream_conflict(true, true, false, true), DropHead);
+    // The user asked for both: theirs to reconcile, refused before the load.
+    assert_eq!(mtp_stream_conflict(true, false, true, false), Refuse);
+    // Their head, our streaming → streaming yields (admission still gates).
+    assert_eq!(
+      mtp_stream_conflict(true, false, false, true),
+      KeepHeadSkipStream
+    );
+    // No collision: streaming off, or no head paired at all.
+    assert_eq!(mtp_stream_conflict(true, false, false, false), None);
+    assert_eq!(mtp_stream_conflict(true, true, false, false), None);
+    assert_eq!(mtp_stream_conflict(false, false, true, false), None);
+    assert_eq!(mtp_stream_conflict(false, false, false, true), None);
+  }
+
+  #[test]
+  fn dspark_on_reads_either_switch() {
+    let mut p = LaunchParams::new(PathBuf::from("/m/a.gguf"), LaunchMode::Chat);
+    assert!(!dspark_on(&p));
+    p.backend_knobs
+      .insert("dspark".into(), KnobValue::Set("false".into()));
+    assert!(!dspark_on(&p), "an off switch is not on");
+    p.backend_knobs
+      .insert("dspark".into(), KnobValue::Set("true".into()));
+    assert!(dspark_on(&p));
+    // `--dspark-strict` loads the support model too, so it needs a head just
+    // the same.
+    p.backend_knobs.remove("dspark");
+    p.backend_knobs
+      .insert("dspark_strict".into(), KnobValue::Set("true".into()));
+    assert!(dspark_on(&p));
+  }
+
+  #[test]
+  fn dspark_knobs_translate_to_ds4_flags() {
+    let mut p = LaunchParams::new(PathBuf::from("/m/a.gguf"), LaunchMode::Chat);
+    p.backend_knobs
+      .insert("mtp".into(), KnobValue::Set("/m/support.gguf".into()));
+    p.backend_knobs
+      .insert("dspark".into(), KnobValue::Set("true".into()));
+    p.backend_knobs
+      .insert("dspark_confidence".into(), KnobValue::Set("0.5".into()));
+    let a = argv_strings(&p, 8000);
+    assert!(a.windows(2).any(|w| w == ["--mtp", "/m/support.gguf"]));
+    assert!(a.iter().any(|s| s == "--dspark"));
+    assert!(a.windows(2).any(|w| w == ["--dspark-confidence", "0.5"]));
   }
 
   /// Spin up a tiny single-shot HTTP responder on an OS-assigned loopback port,

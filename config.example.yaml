@@ -122,24 +122,67 @@ disable_default_cache_paths:
 # Sources — CLI: --no-scan (global) · Env: LLAMASTASH_NO_SCAN=1.
 disable_scan: false
 
+# ─── GPU probe ────────────────────────────────────────────────────
+#
+# Controls which vendor tools the daemon spawns during initial and
+# periodic hardware detection. By default it probes every backend:
+# NVIDIA → AMD → Metal → Vulkan fallback, then CpuOnly.
+#
+# Sources — CLI: (none) · Env: (none). Config-only.
+gpu:
+  # When a native probe (NVIDIA / AMD / Metal) already covers your
+  # GPU, the Vulkan fallback is redundant — `false` stops llamastash
+  # from spawning `vulkaninfo` at all. Applies to every command that
+  # detects hardware (the daemon, `init`, `doctor`), not just the
+  # daemon. Leave it on if `llamastash doctor` reports no GPU.
+  enable_vulkan_probe: true
+
+  # How often (in seconds) to re-run the full vendor chain, to catch
+  # GPU hotplug, a late driver load, or a CpuOnly → detected
+  # transition. `0` disables periodic re-probes; the initial probe at
+  # daemon start always runs. Raise it (or zero it) if you don't hot-
+  # plug GPUs and want fewer `nvidia-smi` / `vulkaninfo` spawns —
+  # `status.gpu` then stays on the boot reading until a restart.
+  # The check runs on a sampler tick, so `daemon.metrics_interval_secs`
+  # is the effective floor: setting this below it just re-probes every
+  # tick.
+  reprobe_interval_secs: 60
+
 # ─── Daemon ───────────────────────────────────────────────────────
 #
-# Inclusive TCP port range the supervisor picks from when launching
-# `llama-server`. Defaults: 41100..=41300. Tighten this if other
-# tooling on the box owns adjacent ports.
+# Launch port range, health probing, idle shutdown, and how often the
+# host stats are sampled.
 #
 # Sources — CLI: (none) · Env: (none). Config-only.
-port_range:
-  start: 41100
-  end: 41300
+daemon:
+  # Inclusive TCP port range the supervisor picks from when launching
+  # a backend server. Tighten it if other tooling on the box owns
+  # adjacent ports.
+  port_range:
+    start: 41100
+    end: 41300
 
-# Per-launch health-probe timeout in seconds. 120s suits a typical
-# 7B–13B model on local NVMe; raise to ~600 for 70B+ on slow disks
-# if you hit `health probe timeout (last status 503)` on legitimate
-# loads.
-#
-# Sources — CLI: (none) · Env: (none). Config-only.
-probe_timeout_secs: 120
+  # Per-launch health-probe timeout in seconds. 120 s suits a typical
+  # 7B–13B model on local NVMe; raise to ~600 for 70B+ on slow disks
+  # if you hit `health probe timeout (last status 503)` on legitimate
+  # loads.
+  probe_timeout_secs: 120
+
+  # Seconds with no running models and no attached client (TUI / CLI)
+  # before the daemon shuts itself down. `0` (default) disables the
+  # idle timer — the daemon runs until explicitly stopped via
+  # `daemon stop` / SIGINT. Useful on a laptop where you forget to
+  # stop it. The daemon respawns on demand the next time a client
+  # attaches, so this costs a restart, not your state.
+  idle_timeout_secs: 0
+
+  # Host-metrics sampler cadence in seconds (CPU%, RAM, GPU
+  # util/temp/VRAM). Raising it reduces how often `nvidia-smi` /
+  # `rocm-smi` are spawned, at the cost of a less responsive host
+  # pane. Clamped to `1..=60`; unlike the two timers above, `0` here
+  # is a reset to the factory `1`, not an off switch — a zero-second
+  # tick would spin the sampler.
+  metrics_interval_secs: 1
 
 # ─── Auto-fit launch behaviour ────────────────────────────────────
 #

@@ -52,6 +52,14 @@ pub struct ModelMetadata {
   /// 80B model as ~half its real footprint in `list`, `show`, and
   /// the recommender's VRAM-fit predicate.
   pub weights_bytes: Option<u64>,
+  /// Embedded multi-token-prediction (MTP / NextN) draft-head layer count,
+  /// read from `{arch}.nextn_predict_layers` (`LLM_KV_NEXTN_PREDICT_LAYERS`).
+  /// `Some(n>0)` means the file carries its own speculative draft head and so
+  /// self-speculates with no separate drafter (Qwen3.5/3.6, GLM-4.x, DeepSeek). `None` when the key is absent
+  /// or zero — the model is not embedded-MTP-capable. Orthogonal to a
+  /// *separate* `mtp-*.gguf` head, which is a sibling-file property
+  /// (`DiscoveredModel::mtp_head`), not a header one.
+  pub mtp: Option<u32>,
 }
 
 /// GGML tensor quantisation tag the GGUF advertises. `Unknown(u32)` carries
@@ -334,6 +342,12 @@ pub fn summarise(header: &GgufHeader) -> ModelMetadata {
       Some(bytes)
     }
   };
+  // Embedded MTP draft-head layer count. `> 0` ⇒ the model carries its own
+  // draft head and self-speculates; absent/zero ⇒ not embedded-MTP-capable.
+  let mtp = arch_key
+    .and_then(|a| header.u64(&[format!("{a}.nextn_predict_layers")]))
+    .filter(|n| *n > 0)
+    .map(|n| n as u32);
 
   ModelMetadata {
     arch: arch_raw,
@@ -348,6 +362,7 @@ pub fn summarise(header: &GgufHeader) -> ModelMetadata {
     reasoning_hint,
     mode_hint,
     weights_bytes,
+    mtp,
   }
 }
 
@@ -670,6 +685,36 @@ mod tests {
       .build();
     let m = parse(bytes);
     assert_eq!(m.mode_hint, ModeHint::Unknown);
+  }
+
+  #[test]
+  fn mtp_reads_nextn_predict_layers_when_positive() {
+    // Embedded MTP head: `{arch}.nextn_predict_layers > 0` ⇒ Some(n).
+    let bytes = FixtureBuilder::new()
+      .with_arch("qwen35")
+      .with_kv("qwen35.nextn_predict_layers", GgufValue::U64(1))
+      .build();
+    let m = parse(bytes);
+    assert_eq!(
+      m.mtp,
+      Some(1),
+      "positive nextn layer count surfaces as Some"
+    );
+  }
+
+  #[test]
+  fn mtp_none_when_key_absent_or_zero() {
+    // Absent key ⇒ None.
+    let none = parse(FixtureBuilder::new().with_arch("llama").build());
+    assert_eq!(none.mtp, None, "no nextn key ⇒ not embedded-MTP-capable");
+    // Explicit zero ⇒ None (a non-MTP checkpoint that still writes the key).
+    let zero = parse(
+      FixtureBuilder::new()
+        .with_arch("qwen35")
+        .with_kv("qwen35.nextn_predict_layers", GgufValue::U64(0))
+        .build(),
+    );
+    assert_eq!(zero.mtp, None, "zero layers ⇒ not capable");
   }
 
   #[test]

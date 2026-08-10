@@ -13,6 +13,7 @@ pub mod context;
 pub mod control_plane;
 pub mod discovery_task;
 pub mod host_metrics;
+pub mod idle;
 pub mod launch_service;
 pub mod lockfile;
 pub mod orphans;
@@ -144,6 +145,15 @@ pub struct DaemonOptions {
   /// comment-safely. `None` disables write-through (tests / no config file)
   /// — mutations stay in-memory.
   pub config_path: Option<PathBuf>,
+  /// How often to re-run the full GPU vendor probe chain, or `None` to
+  /// probe only at startup. From [`crate::config::GpuConfig::reprobe_interval`].
+  pub gpu_reprobe_interval: Option<Duration>,
+  /// Idle-shutdown deadline, or `None` when the timer is off. From
+  /// [`crate::config::DaemonConfig::idle_timeout`].
+  pub idle_timeout: Option<Duration>,
+  /// Host-metrics sampler cadence. From
+  /// [`crate::config::DaemonConfig::metrics_interval`].
+  pub metrics_interval: Duration,
 }
 
 impl DaemonOptions {
@@ -202,6 +212,10 @@ impl DaemonOptions {
       force: false,
       presets: std::collections::BTreeMap::new(),
       config_path: None,
+      // Sourced from the config factory so the defaults are defined once.
+      gpu_reprobe_interval: crate::config::GpuConfig::default().reprobe_interval(),
+      idle_timeout: crate::config::DaemonConfig::default().idle_timeout(),
+      metrics_interval: crate::config::DaemonConfig::default().metrics_interval(),
     }
   }
 
@@ -233,6 +247,10 @@ impl DaemonOptions {
       force: false,
       presets: std::collections::BTreeMap::new(),
       config_path: None,
+      // Sourced from the config factory so the defaults are defined once.
+      gpu_reprobe_interval: crate::config::GpuConfig::default().reprobe_interval(),
+      idle_timeout: crate::config::DaemonConfig::default().idle_timeout(),
+      metrics_interval: crate::config::DaemonConfig::default().metrics_interval(),
     })
   }
 }
@@ -382,13 +400,16 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   // before the sampler's first tick lands.
   let initial_gpu = crate::gpu::probe();
 
-  // 7b. Host-metrics sampler (1 Hz). Re-probes the active GPU
-  // backend each tick for live util/temp/VRAM; sysinfo handles
-  // host CPU% + RAM. The sampler also owns the live `GpuInfo` cell
-  // so `status.gpu` follows hotplug instead of staying pinned to the
-  // boot snapshot.
-  let sampler =
-    crate::daemon::host_metrics::spawn(token.clone(), std::time::Duration::from_secs(1));
+  // 7b. Host-metrics sampler. Re-probes the active GPU backend each
+  // tick for live util/temp/VRAM; sysinfo handles host CPU% + RAM. The
+  // sampler also owns the live `GpuInfo` cell so `status.gpu` follows
+  // hotplug instead of staying pinned to the boot snapshot. Cadence and
+  // full-reprobe period are config-driven.
+  let sampler = crate::daemon::host_metrics::spawn(
+    token.clone(),
+    opts.metrics_interval,
+    opts.gpu_reprobe_interval,
+  );
 
   // 8. Wire the dispatcher context.
   let supervisors = SupervisorRegistry::new();
@@ -479,6 +500,17 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   let boot_probe_timeout = opts.probe_timeout_secs.map(std::time::Duration::from_secs);
   for backend in crate::backend::Backends::all() {
     crate::backend::Backend::supervise_at_boot(&backend, &ctx, &opts.log_dir, boot_probe_timeout);
+  }
+
+  // 8a-ii. Idle auto-shutdown (opt-in via `daemon.idle_timeout_secs`).
+  if let Some(timeout) = opts.idle_timeout {
+    idle::spawn(
+      ctx.supervisors.clone(),
+      ctx.active_connections.clone(),
+      ctx.activity.clone(),
+      token.clone(),
+      timeout,
+    );
   }
 
   // 8b. OpenAI-compat proxy listener. Spawned between the

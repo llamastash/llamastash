@@ -526,8 +526,7 @@ pub(crate) fn build_options(
   // Refuse to start with discovery completely off and no user-supplied
   // paths. Without this the daemon would come up healthy, the catalog
   // would stay empty forever, and the user would see "no models found"
-  // with no signal that it's a config dead-end. Errors propagate as
-  // CONFIG_ERROR exits via the CLI dispatcher.
+  // with no signal that it's a config dead-end.
   crate::config::validate_scan_settings(
     cli.no_scan || env_no_scan_v || config.disable_scan,
     &cli.model_paths,
@@ -535,6 +534,12 @@ pub(crate) fn build_options(
     &config.model_paths,
   )
   .map_err(anyhow::Error::from)?;
+
+  // Same posture for the launch port range: the allocator is the only
+  // thing that rejects an inverted / zero-start range, and it doesn't run
+  // until the first `start` — so without this the daemon boots healthy and
+  // the typo resurfaces later as a launch failure naming no config key.
+  crate::config::validate_port_range(&config.daemon.port_range).map_err(anyhow::Error::from)?;
 
   let mut opts = DaemonOptions::from_defaults()?;
   if let Some(p) = state_dir {
@@ -566,8 +571,11 @@ pub(crate) fn build_options(
   // Additional `llama-server` servers (multi-backend installs) are resolved by
   // the llama.cpp backend's own `configured_servers` hook when the boot builds
   // the server catalog — no separate resolution here.
-  opts.port_range = config.port_range;
-  opts.probe_timeout_secs = Some(config.probe_timeout_secs);
+  opts.port_range = config.daemon.port_range;
+  opts.probe_timeout_secs = Some(config.daemon.probe_timeout_secs);
+  opts.idle_timeout = config.daemon.idle_timeout();
+  opts.metrics_interval = config.daemon.metrics_interval();
+  opts.gpu_reprobe_interval = config.gpu.reprobe_interval();
   opts.arch_defaults = config.arch_defaults.clone();
   // Config presets seed the daemon's in-memory store; `config_path` is where
   // preset writes land.
@@ -1145,6 +1153,90 @@ mod tests {
     assert_eq!(opts.proxy.header_read_timeout_secs, 45);
     assert!(opts.proxy.enabled);
     assert!(!opts.proxy.ollama_compat);
+  }
+
+  #[test]
+  fn build_options_threads_the_daemon_and_gpu_blocks_into_daemon_options() {
+    let _env = crate::cli::test_lock::serialize();
+    let cli = parse_cli(&["daemon", "start"]);
+    let config = Config {
+      daemon: crate::config::DaemonConfig {
+        port_range: crate::config::PortRange {
+          start: 50000,
+          end: 50100,
+        },
+        probe_timeout_secs: 600,
+        idle_timeout_secs: 900,
+        metrics_interval_secs: 5,
+      },
+      gpu: crate::config::GpuConfig {
+        enable_vulkan_probe: false,
+        reprobe_interval_secs: 120,
+      },
+      ..Config::default()
+    };
+    let opts = build_options(
+      None, None, false, false, None, false, false, false, &cli, &config,
+    )
+    .expect("build_options");
+    assert_eq!(opts.port_range.start, 50000);
+    assert_eq!(opts.probe_timeout_secs, Some(600));
+    assert_eq!(opts.idle_timeout, Some(Duration::from_secs(900)));
+    assert_eq!(opts.metrics_interval, Duration::from_secs(5));
+    assert_eq!(opts.gpu_reprobe_interval, Some(Duration::from_secs(120)));
+  }
+
+  /// `0` means "off" for the two optional timers and "use the factory"
+  /// for the sampler cadence — the asymmetry is deliberate, since a
+  /// zero-second tick would busy-loop.
+  #[test]
+  fn build_options_resolves_zero_valued_daemon_and_gpu_keys() {
+    let _env = crate::cli::test_lock::serialize();
+    let cli = parse_cli(&["daemon", "start"]);
+    let config = Config {
+      daemon: crate::config::DaemonConfig {
+        idle_timeout_secs: 0,
+        metrics_interval_secs: 0,
+        ..Default::default()
+      },
+      gpu: crate::config::GpuConfig {
+        reprobe_interval_secs: 0,
+        ..Default::default()
+      },
+      ..Config::default()
+    };
+    let opts = build_options(
+      None, None, false, false, None, false, false, false, &cli, &config,
+    )
+    .expect("build_options");
+    assert_eq!(opts.idle_timeout, None, "0 disables the idle timer");
+    assert_eq!(
+      opts.gpu_reprobe_interval, None,
+      "0 disables periodic re-probes"
+    );
+    assert_eq!(
+      opts.metrics_interval,
+      Duration::from_secs(1),
+      "0 must not become a zero-length sampler tick"
+    );
+  }
+
+  #[test]
+  fn build_options_clamps_an_out_of_range_metrics_interval() {
+    let _env = crate::cli::test_lock::serialize();
+    let cli = parse_cli(&["daemon", "start"]);
+    let config = Config {
+      daemon: crate::config::DaemonConfig {
+        metrics_interval_secs: 9_000,
+        ..Default::default()
+      },
+      ..Config::default()
+    };
+    let opts = build_options(
+      None, None, false, false, None, false, false, false, &cli, &config,
+    )
+    .expect("build_options");
+    assert_eq!(opts.metrics_interval, Duration::from_secs(60));
   }
 
   #[test]

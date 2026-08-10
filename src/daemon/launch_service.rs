@@ -104,6 +104,15 @@ pub(crate) struct StartParams {
   /// what the proxy's `StartParams::default()` auto-start path sends.
   #[serde(default)]
   pub(crate) selection: LaunchSelection,
+  /// MTP speculative-decoding intent. `None` ⇒ inherit (default preset /
+  /// last_params) or fall to `Auto`; `Some(_)` is an explicit
+  /// `--mtp auto|on|off`. Launch-only, no config-file entry (KD2).
+  #[serde(default)]
+  pub(crate) mtp: Option<crate::launch::params::MtpEnable>,
+  /// Tokens to draft per speculation step. `None` ⇒ inherit, or leave the
+  /// serving backend on its own default.
+  #[serde(default)]
+  pub(crate) mtp_draft_n: Option<u32>,
 }
 
 /// How a launch chose its parameters. See the resolver rule in
@@ -235,11 +244,12 @@ pub(crate) async fn compose_and_spawn(
   // backend rather than crashing on the missing GGUF. Every other path is a local
   // GGUF: one header read yields both the canonical id and the arch. Names no
   // backend — the synthetic-path recognition is registry-driven.
-  let (id, arch, native_ctx, supported_backends, identity): (
+  let (id, arch, native_ctx, supported_backends, mtp_embedded, identity): (
     ModelId,
     Option<String>,
     Option<u32>,
     Vec<String>,
+    Option<u32>,
     ModelIdentity,
   ) = match crate::backend::synthetic_identity_for_path(&parsed.model_path) {
     Some((identity, _backend_id)) => {
@@ -251,13 +261,20 @@ pub(crate) async fn compose_and_spawn(
         path: parsed.model_path.clone(),
         header_blake3: [0u8; 32],
       };
-      (synthetic, None, None, Vec::new(), identity)
+      (synthetic, None, None, Vec::new(), None, identity)
     }
     None => {
-      let (id, arch, native_ctx, supported_backends) =
+      let (id, arch, native_ctx, supported_backends, mtp_embedded) =
         resolve_model_id_and_arch(&parsed.model_path)?;
       let identity: ModelIdentity = id.clone().into();
-      (id, arch, native_ctx, supported_backends, identity)
+      (
+        id,
+        arch,
+        native_ctx,
+        supported_backends,
+        mtp_embedded,
+        identity,
+      )
     }
   };
 
@@ -505,9 +522,15 @@ pub(crate) async fn compose_and_spawn(
   launch_params.backend_knobs = if !parsed.backend_knobs.is_empty() {
     parsed.backend_knobs.clone()
   } else if no_selection {
-    last_params
+    // Same precedence as `extras` above: the default preset's native knobs
+    // outrank last_params, so a `default:` preset that pins `--mtp` /
+    // `--ssd-streaming` survives a plain `start`.
+    effective_default
       .as_ref()
-      .map(|p| p.backend_knobs.clone())
+      .and_then(|e| e.default_preset())
+      .map(|np| np.params.backend_knobs.clone())
+      .filter(|k| !k.is_empty())
+      .or_else(|| last_params.as_ref().map(|p| p.backend_knobs.clone()))
       .unwrap_or_default()
   } else {
     std::collections::BTreeMap::new()
@@ -529,6 +552,35 @@ pub(crate) async fn compose_and_spawn(
       None
     } else {
       crate::discovery::scanner::find_mmproj(&parsed.model_path)
+    }
+  });
+  // MTP intent — same whole-value inheritance as extras: an
+  // explicit `--mtp` / `--mtp-draft-n` wins verbatim; else a no-selection
+  // launch inherits the default preset's value, then last_params'; else the
+  // `MtpEnable::Auto` default. Launch-only, no config-file entry (KD2). The
+  // effective *directive* (what argv to emit) is resolved below, once real
+  // capability is known.
+  launch_params.mtp = parsed.mtp.unwrap_or_else(|| {
+    if no_selection {
+      effective_default
+        .as_ref()
+        .and_then(|e| e.default_preset())
+        .map(|np| np.params.mtp)
+        .or_else(|| last_params.as_ref().map(|p| p.mtp))
+        .unwrap_or_default()
+    } else {
+      crate::launch::params::MtpEnable::default()
+    }
+  });
+  launch_params.mtp_draft_n = parsed.mtp_draft_n.or_else(|| {
+    if no_selection {
+      effective_default
+        .as_ref()
+        .and_then(|e| e.default_preset())
+        .and_then(|np| np.params.mtp_draft_n)
+        .or_else(|| last_params.as_ref().and_then(|p| p.mtp_draft_n))
+    } else {
+      None
     }
   });
 
@@ -725,6 +777,25 @@ pub(crate) async fn compose_and_spawn(
   // Non-fatal advisories accumulated across composition, surfaced on the
   // `StartedLaunch` (CLI human output / TUI toast).
   let mut warnings: Vec<String> = Vec::new();
+  // Resolve the effective MTP directive (KD1 hard gate): fold the user's intent
+  // with real capability — the embedded nextn head from the GGUF header, or a
+  // separate `mtp-*.gguf` drafter on disk. A force-on non-capable model warns +
+  // skips. Only in chat mode: MTP is a token-generation feature, so an
+  // embedding / rerank launch never speculates. And the backend defers entirely
+  // when the user is already hand-driving speculation through extras (KD3) —
+  // asked, not matched here, so the resolution names no backend or flag.
+  let user_drives_speculation =
+    crate::backend::Backend::speculation_set_in_extras(&inference_backend, &launch_params.extras);
+  launch_params.mtp_directive = if matches!(mode, LaunchMode::Chat) && !user_drives_speculation {
+    crate::launch::params::resolve_mtp_directive(
+      launch_params.mtp,
+      mtp_embedded.is_some(),
+      crate::discovery::scanner::find_mtp_head(&parsed.model_path, arch.as_deref()),
+      &mut warnings,
+    )
+  } else {
+    None
+  };
   // Dropped-knob surfacing (R6): typed knobs the user set that the resolved
   // backend can't honor are silently dropped from argv — tell the user which.
   // ds4 honors only `Ctx`, so a `--flash-attn` on a ds4-routed model warns.
@@ -758,6 +829,12 @@ pub(crate) async fn compose_and_spawn(
     log::warn!("{msg}");
   }
   warnings.extend(native_resolution.warnings);
+  // A knob combination the engine rejects at startup: refuse here rather than
+  // spawning a process that loads the weights and then exits.
+  if let Some(msg) = native_resolution.refusal {
+    ctx.supervisors.release_reserved_port(port).await;
+    return Err(ErrorObject::new(ErrorCode::InvalidParams, msg));
+  }
   let auto_set_knobs = native_resolution.auto_set;
   // Whether this launch skips the memory admission gate (streams from disk).
   let bypasses_admission = inference_backend.bypasses_admission(&launch_params);
@@ -850,6 +927,7 @@ pub(crate) async fn spawn_supervised(
         let knobs = launch_params.knobs.clone();
         let arch_owned = arch.clone();
         let weights_total = total_weight_bytes;
+        let mtp_active = launch_params.mtp_directive.is_some();
         let demand = tokio::task::spawn_blocking(move || {
           let header = read_gguf_header(&model_path, HeaderReadOptions::default())
             .ok()?
@@ -861,6 +939,7 @@ pub(crate) async fn spawn_supervised(
             effective_ctx,
             &gpu_backend,
             weights_total,
+            mtp_active,
           ))
         })
         .await

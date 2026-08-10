@@ -1029,6 +1029,41 @@ impl RingBuffer {
   }
 }
 
+/// Construct a [`ManagedModel`] without spawning a child, for tests that
+/// need registry contents rather than a live process. Lives outside
+/// `mod tests` so sibling daemon modules can use it too.
+#[cfg(test)]
+pub(crate) mod test_support {
+  use super::*;
+
+  /// A model parked in `state`, on a fixed path and port.
+  pub(crate) fn in_state(state: ManagedState) -> ManagedModel {
+    let id = ModelId {
+      path: PathBuf::from("/test/m.gguf"),
+      header_blake3: [0u8; 32],
+    };
+    let params = LaunchParams::new(id.path.clone(), LaunchMode::Chat);
+    ManagedModel {
+      inner: Arc::new(ManagedInner {
+        id,
+        port: 41100,
+        mode: LaunchMode::Chat,
+        params,
+        log_path: PathBuf::from("/tmp/llamastash-test.log"),
+        ready_at: RwLock::new(None),
+        state: RwLock::new(state),
+        pid: RwLock::new(None),
+        ring: Mutex::new(RingBuffer::with_capacity(16)),
+        child: Mutex::new(None),
+        latest_resource: RwLock::new(None),
+        actuals: RwLock::new(crate::daemon::actuals::Actuals::default()),
+        origin: LaunchOrigin::Manual,
+        inflight: std::sync::atomic::AtomicU64::new(0),
+      }),
+    }
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -1109,28 +1144,7 @@ mod tests {
   }
 
   fn test_model(initial: ManagedState) -> ManagedModel {
-    let id = ModelId {
-      path: PathBuf::from("/test/m.gguf"),
-      header_blake3: [0u8; 32],
-    };
-    let params = LaunchParams::new(id.path.clone(), LaunchMode::Chat);
-    let inner = Arc::new(ManagedInner {
-      id,
-      port: 41100,
-      mode: LaunchMode::Chat,
-      params,
-      log_path: PathBuf::from("/tmp/llamastash-test.log"),
-      ready_at: RwLock::new(None),
-      state: RwLock::new(initial),
-      pid: RwLock::new(None),
-      ring: Mutex::new(RingBuffer::with_capacity(16)),
-      child: Mutex::new(None),
-      latest_resource: RwLock::new(None),
-      actuals: RwLock::new(crate::daemon::actuals::Actuals::default()),
-      origin: LaunchOrigin::Manual,
-      inflight: std::sync::atomic::AtomicU64::new(0),
-    });
-    ManagedModel { inner }
+    test_support::in_state(initial)
   }
 
   #[test]

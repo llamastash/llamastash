@@ -155,6 +155,7 @@ fn fake_metadata(arch: &str, mode: ModeHint) -> ModelMetadata {
     reasoning_hint: false,
     mode_hint: mode,
     weights_bytes: Some(4_200_000_000),
+    mtp: None,
   }
 }
 
@@ -176,6 +177,7 @@ fn make_model(
     display_label: display_label.map(str::to_string),
     multimodal: None,
     supported_backends: Vec::new(),
+    mtp_head: None,
   }
 }
 
@@ -192,6 +194,7 @@ fn make_parse_error_model(path: &str) -> DiscoveredModel {
     display_label: None,
     multimodal: None,
     supported_backends: Vec::new(),
+    mtp_head: None,
   }
 }
 

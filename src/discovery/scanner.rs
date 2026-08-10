@@ -122,7 +122,7 @@ async fn walk_root(
 /// `llama.cpp`'s `convert_hf_to_gguf.py` and every published
 /// HuggingFace repo that ships a projector). Filtering on the name
 /// avoids paying the cost of a header re-read.
-fn is_projector_companion(path: &Path) -> bool {
+pub(crate) fn is_projector_companion(path: &Path) -> bool {
   path
     .file_name()
     .and_then(|n| n.to_str())
@@ -138,6 +138,115 @@ fn is_projector_companion(path: &Path) -> bool {
           || n == "mmproj.gguf")
     })
     .unwrap_or(false)
+}
+
+/// Is this `.gguf` a **separate MTP draft-head** companion (e.g.
+/// `mtp-gemma-4.gguf`)? Like a projector, an MTP head is not launchable on
+/// its own — it pairs with a parent chat model as the speculative drafter
+/// the serving backend loads (the Gemma-4 shape; embedded-head models carry the
+/// draft layers inside the base file and ship no such sibling). Excluded from
+/// the launchable Models list exactly as projectors are, and paired via
+/// [`find_mtp_head`].
+///
+/// Name-only, so it costs no I/O — but it recognises just the shapes no real
+/// model uses (an `mtp` prefix, or `mtp` as the whole stem). A trailing
+/// `-MTP-<quant>` says nothing on its own: published *models* wear it to
+/// advertise embedded draft layers (`DeepSeek-V4-Pro-Qwen3.5-4B-MTP-Q2_K.gguf`)
+/// and so do published *heads* (`DeepSeek-V4-Flash-MTP-Q4K-Q8_0-F32.gguf`).
+/// Those go to [`is_mtp_head_file`], which asks the header.
+pub(crate) fn is_mtp_companion(path: &Path) -> bool {
+  path
+    .file_name()
+    .and_then(|n| n.to_str())
+    .map(|n| {
+      let n = n.to_lowercase();
+      n.ends_with(".gguf")
+        && (n.starts_with("mtp-")
+          || n.starts_with("mtp_")
+          || n.contains(".mtp.")
+          || n.ends_with(".mtp.gguf")
+          || n.ends_with("-mtp.gguf")
+          || n.ends_with("_mtp.gguf")
+          || n == "mtp.gguf")
+    })
+    .unwrap_or(false)
+}
+
+/// Does the filename carry a delimited draft-head token at all? The cheap gate
+/// in front of [`is_mtp_head_file`]'s header read: heads are published *as*
+/// draft files, so a name with neither token never earns the extra open.
+///
+/// `dspark` rides here too — DeepSeek's DSpark support file drafts through the
+/// same `--mtp` slot and its header is already head-shaped (`mtp.*` tensors,
+/// no tokenizer), but it spells none of that in its name
+/// (`DeepSeek-V4-Flash-DSpark-support-0731.gguf`). Without this it scanned as a
+/// launchable, tokenizer-less model.
+fn name_mentions_mtp(path: &Path) -> bool {
+  static RE_MTP: OnceLock<Regex> = OnceLock::new();
+  let re = RE_MTP.get_or_init(|| Regex::new(r"(?:^|[-._])(?:mtp|dspark)(?:$|[-._])").unwrap());
+  path
+    .file_stem()
+    .and_then(|n| n.to_str())
+    .map(|n| re.is_match(&n.to_lowercase()))
+    .unwrap_or(false)
+}
+
+/// Does this GGUF's **header** say it is a draft head?
+///
+/// Covers the shape a name cannot resolve: the DeepSeek-V4 head, which carries
+/// only `mtp.*` tensors and no tokenizer (not a standalone model, which is
+/// exactly what makes it unlaunchable) and declares its own
+/// `general.architecture` of `deepseek4_mtp_support`.
+///
+/// The Gemma-4 head is a different animal and is **not** matched here: it is a
+/// 4-layer model in its own right (`gemma4-assistant` arch, its own tokenizer,
+/// ordinary `blk.*` + `nextn.*` tensors), indistinguishable by header from a
+/// small standalone model. Publishers name that one `mtp-*.gguf`, so
+/// [`is_mtp_companion`] claims it first and this never has to guess.
+///
+/// A header that won't parse reads as "not a head": misfiling a real model as
+/// a companion hides it from the catalog, the worse of the two failures.
+fn header_says_mtp_head(path: &Path) -> bool {
+  let Ok(read) = read_path(path, HeaderReadOptions::default()) else {
+    return false;
+  };
+  is_mtp_head_header(&read.header)
+}
+
+/// The header-shape predicate behind [`header_says_mtp_head`], split out so it
+/// can be exercised against a built fixture without a file on disk.
+pub(crate) fn is_mtp_head_header(header: &crate::gguf::header::GgufHeader) -> bool {
+  if header
+    .string(&["general.architecture"])
+    .is_some_and(|a| a.ends_with(MTP_ARCH_SUFFIX))
+  {
+    return true;
+  }
+  let has_tokenizer = header.string(&["tokenizer.ggml.model"]).is_some();
+  !has_tokenizer
+    && !header.tensors.is_empty()
+    && header
+      .tensors
+      .iter()
+      .all(|t| t.name.starts_with(MTP_TENSOR_PREFIX))
+}
+
+/// Architecture suffix a draft head declares instead of the parent's arch
+/// (`deepseek4` → `deepseek4_mtp_support`). Also the pairing key: strip it and
+/// what remains is the arch of the model the head drafts for.
+const MTP_ARCH_SUFFIX: &str = "_mtp_support";
+
+/// Tensor namespace a draft head's weights live under.
+const MTP_TENSOR_PREFIX: &str = "mtp.";
+
+/// Is this `.gguf` an MTP draft head, by name where the name is conclusive and
+/// by header where it isn't? The header read is gated on the name mentioning
+/// `mtp` at all, so an ordinary catalog costs no extra opens.
+pub(crate) fn is_mtp_head_file(path: &Path) -> bool {
+  if is_mtp_companion(path) {
+    return true;
+  }
+  name_mentions_mtp(path) && header_says_mtp_head(path)
 }
 
 const QUANT_PATTERN: &str = r"(?:^|[-._])(bf16|f16|f32|mxfp4_moe|iq[1-8](_?s|_?xs|_?xxs|_?m|_?nl|_?nl_xl)?|q[1-8](_?[01])?(_?k)?(_?[sml]|_?xl)?)\b";
@@ -194,6 +303,35 @@ fn strip_mmproj_markers(name: &str) -> String {
   s = s.replace(".mmproj.", ".");
 
   if s == "mmproj" {
+    return "".to_string();
+  }
+
+  s
+}
+
+/// Strip `mtp` prefixes/suffixes to recover the base model name a separate
+/// MTP head pairs with. Mirrors [`strip_mmproj_markers`] with the `mtp` token.
+fn strip_mtp_markers(name: &str) -> String {
+  let Some(s) = name.strip_suffix(".gguf") else {
+    return name.to_lowercase();
+  };
+  let mut s = s.to_lowercase();
+
+  if let Some(rest) = s.strip_prefix("mtp-").or_else(|| s.strip_prefix("mtp_")) {
+    s = rest.to_string();
+  }
+
+  if let Some(rest) = s
+    .strip_suffix("-mtp")
+    .or_else(|| s.strip_suffix("_mtp"))
+    .or_else(|| s.strip_suffix(".mtp"))
+  {
+    s = rest.to_string();
+  }
+
+  s = s.replace(".mtp.", ".");
+
+  if s == "mtp" {
     return "".to_string();
   }
 
@@ -352,6 +490,113 @@ fn detect_multimodal(model_path: &Path) -> Option<Multimodal> {
   })
 }
 
+/// Find a **separate MTP draft-head** companion for `model_path` — the
+/// sibling GGUF the serving backend loads as the drafter for speculative
+/// decoding (the Gemma-4 shape). `None` when the model is embedded-MTP
+/// (draft layers inside the base file) or has no head sibling.
+///
+/// Resolution order — the header rule first, then [`find_mmproj`]'s three name
+/// rules so head naming stays as forgiving as projector naming (repos label
+/// heads inconsistently):
+/// 0. a head declaring `<model arch>_mtp_support` wins outright — quant-blind,
+///    so it still pairs in a folder holding several quants of the same model;
+/// 1. else an MTP head whose quant-stripped base equals the model's;
+/// 2. else, a lone model + lone head in the directory pair regardless of name;
+/// 3. else, a single anonymous `mtp.gguf` catch-all is used; anything more
+///    ambiguous yields `None` (the user can pair a head explicitly).
+pub fn find_mtp_head(model_path: &Path, model_arch: Option<&str>) -> Option<PathBuf> {
+  // The arch a head must declare to draft for this model (`deepseek4` →
+  // `deepseek4_mtp_support`).
+  let head_arch = model_arch.map(|a| format!("{a}{MTP_ARCH_SUFFIX}"));
+  find_draft_head(model_path, head_arch.as_deref())
+}
+
+/// [`find_mtp_head`] with the head architecture supplied verbatim instead of
+/// derived from the model's. Lets a backend pair a head whose arch is not the
+/// `<model arch>_mtp_support` shape — DSpark's support GGUF declares
+/// `deepseek4-dspark` yet drafts for `deepseek4` through the same slot.
+pub fn find_draft_head(model_path: &Path, head_arch: Option<&str>) -> Option<PathBuf> {
+  let parent = model_path.parent()?;
+  let model_filename = model_path.file_name()?.to_str()?;
+  let model_stem = model_path.file_stem()?.to_str()?;
+  // A head file has no head of its own.
+  if is_mtp_head_file(model_path) {
+    return None;
+  }
+
+  let model_base = canonical_base(model_stem);
+
+  let mut all_heads: Vec<PathBuf> = Vec::new();
+  let mut arch_matches: Vec<PathBuf> = Vec::new();
+  let mut base_matches: Vec<PathBuf> = Vec::new();
+  let mut anonymous: Vec<PathBuf> = Vec::new();
+  // Count launchable model files (neither an MTP head nor a projector) so the
+  // single-head fallback only fires when this is the only model in the folder.
+  let mut model_file_count = 0usize;
+
+  for entry in std::fs::read_dir(parent).ok()?.flatten() {
+    let path = entry.path();
+    if !path.is_file() {
+      continue;
+    }
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+      continue;
+    };
+    if !name.to_lowercase().ends_with(".gguf") {
+      continue;
+    }
+    if !is_mtp_head_file(&path) {
+      if !is_projector_companion(&path) {
+        model_file_count += 1;
+      }
+      continue;
+    }
+    if name == model_filename {
+      continue;
+    }
+    if let Some(want) = head_arch {
+      if read_path(&path, HeaderReadOptions::default())
+        .ok()
+        .and_then(|r| {
+          r.header
+            .string(&["general.architecture"])
+            .map(str::to_string)
+        })
+        .is_some_and(|a| a == want)
+      {
+        arch_matches.push(path.clone());
+      }
+    }
+    let head_base = canonical_base(&strip_mtp_markers(name));
+    if head_base.is_empty() {
+      anonymous.push(path.clone());
+    } else if head_base == model_base {
+      base_matches.push(path.clone());
+    }
+    all_heads.push(path);
+  }
+
+  // 0. Arch match wins: the head declares which arch it drafts for.
+  if !arch_matches.is_empty() {
+    arch_matches.sort();
+    return arch_matches.into_iter().next();
+  }
+  // 1. Name match next.
+  if !base_matches.is_empty() {
+    base_matches.sort();
+    return base_matches.into_iter().next();
+  }
+  // 2. Single model + single head → pair them regardless of name.
+  if model_file_count == 1 && all_heads.len() == 1 {
+    return all_heads.into_iter().next();
+  }
+  // 3. Lone anonymous catch-all, else ambiguous → give up.
+  if anonymous.len() == 1 {
+    return anonymous.into_iter().next();
+  }
+  None
+}
+
 /// Concurrency cap for [`walk_root`]'s per-file parse. Default to
 /// `num_cpus()`-flavoured but capped — too many parallel
 /// `spawn_blocking` calls land everything on the blocking pool
@@ -416,6 +661,7 @@ fn collect_gguf_paths(root: &Path, excludes: &[String]) -> Vec<PathBuf> {
         if p.extension().and_then(|s| s.to_str()) == Some("gguf")
           && entry.file_type().map(|t| t.is_file()).unwrap_or(false)
           && !is_projector_companion(p)
+          && !is_mtp_head_file(p)
         {
           // Canonicalise before dedup so a real file and a symlink to
           // it collapse to a single row. Falling back to the raw path
@@ -501,20 +747,29 @@ async fn parse_into_model(
         display_label: None,
         multimodal: hit.multimodal,
         supported_backends: hit.supported_backends.clone(),
+        mtp_head: hit.mtp_head,
       };
     }
   }
 
   // On a cache miss, parse the model header and detect its mmproj
-  // modality together on one blocking-pool hop. Detection runs only
-  // here (not on warm cache hits) so periodic rescans don't repeat the
-  // sibling `read_dir` + projector header read.
+  // modality + separate MTP head together on one blocking-pool hop.
+  // Detection runs only here (not on warm cache hits) so periodic
+  // rescans don't repeat the sibling `read_dir`s.
   let path_for_parse = path.clone();
-  let (parsed, multimodal): (Result<_, GgufError>, Option<Multimodal>) =
+  let (parsed, multimodal, mtp_head): (Result<_, GgufError>, Option<Multimodal>, Option<PathBuf>) =
     tokio::task::spawn_blocking(move || {
       let parsed = read_path(&path_for_parse, HeaderReadOptions::default());
       let multimodal = detect_multimodal(&path_for_parse);
-      (parsed, multimodal)
+      // Pairing keys on the model's own arch, so the head lookup reads it off
+      // the parse we already did rather than opening the file twice.
+      let arch = parsed.as_ref().ok().and_then(|r| {
+        r.header
+          .string(&["general.architecture"])
+          .map(str::to_string)
+      });
+      let mtp_head = find_mtp_head(&path_for_parse, arch.as_deref());
+      (parsed, multimodal, mtp_head)
     })
     .await
     .unwrap_or_else(|join_err| {
@@ -522,6 +777,7 @@ async fn parse_into_model(
         Err(GgufError::Io(std::io::Error::other(format!(
           "parser task panicked: {join_err}"
         )))),
+        None,
         None,
       )
     });
@@ -534,12 +790,14 @@ async fn parse_into_model(
       parse_error: None,
       multimodal,
       supported_backends: crate::backend::supported_backends_for(&read.header),
+      mtp_head,
     },
     Err(e) => CachedParse {
       metadata: None,
       parse_error: Some(e.to_string()),
       multimodal,
       supported_backends: Vec::new(),
+      mtp_head,
     },
   };
   if let Some(c) = cache {
@@ -558,6 +816,7 @@ async fn parse_into_model(
     display_label: None,
     multimodal: cached.multimodal,
     supported_backends: cached.supported_backends.clone(),
+    mtp_head: cached.mtp_head,
   }
 }
 
@@ -690,6 +949,213 @@ mod tests {
       .collect();
     assert_eq!(paths.len(), 1, "expected only model.gguf, got {names:?}");
     assert!(names[0].ends_with("model.gguf"));
+    fs::remove_dir_all(&dir).ok();
+  }
+
+  #[test]
+  fn collect_gguf_paths_drops_mtp_head_companions() {
+    // A separate MTP draft head (`mtp-*.gguf`) pairs with a parent model as
+    // its speculative drafter — not launchable on its own, so it
+    // must not appear as a selectable Models-list row (exactly like mmproj).
+    let dir = temp_dir("mtp-exclude");
+    fs::write(dir.join("gemma-4.gguf"), build_minimal_gguf("gemma4")).unwrap();
+    fs::write(dir.join("mtp-gemma-4.gguf"), build_minimal_gguf("gemma4")).unwrap();
+    fs::write(dir.join("gemma-4-mtp.gguf"), build_minimal_gguf("gemma4")).unwrap();
+    fs::write(dir.join("mtp.gguf"), build_minimal_gguf("gemma4")).unwrap();
+    let paths = collect_gguf_paths(&dir, &[]);
+    let names: Vec<String> = paths
+      .iter()
+      .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+      .collect();
+    assert_eq!(paths.len(), 1, "expected only gemma-4.gguf, got {names:?}");
+    assert!(names[0].ends_with("gemma-4.gguf"));
+    fs::remove_dir_all(&dir).ok();
+  }
+
+  #[test]
+  fn is_mtp_companion_requires_delimited_token() {
+    // A model with "mtp" mid-word must not be misfiled as a head.
+    assert!(is_mtp_companion(Path::new("/m/mtp-gemma.gguf")));
+    assert!(is_mtp_companion(Path::new("/m/gemma-mtp.gguf")));
+    assert!(is_mtp_companion(Path::new("/m/gemma.mtp.gguf")));
+    assert!(is_mtp_companion(Path::new("/m/mtp.gguf")));
+    assert!(!is_mtp_companion(Path::new("/m/gptmtptron.gguf")));
+    assert!(!is_mtp_companion(Path::new("/m/gemma-4.gguf")));
+  }
+
+  #[test]
+  fn find_mtp_head_detects_and_pairs() {
+    let dir = temp_dir("mtp-find");
+    fs::write(dir.join("gemma-4.gguf"), build_minimal_gguf("gemma4")).unwrap();
+    fs::write(dir.join("mtp-gemma-4.gguf"), build_minimal_gguf("gemma4")).unwrap();
+    let found = find_mtp_head(&dir.join("gemma-4.gguf"), Some("gemma4"));
+    assert_eq!(
+      found.and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())),
+      Some("mtp-gemma-4.gguf".to_string()),
+      "name-matched head must pair"
+    );
+    // A head file has no head of its own.
+    assert_eq!(
+      find_mtp_head(&dir.join("mtp-gemma-4.gguf"), Some("gemma4")),
+      None
+    );
+    fs::remove_dir_all(&dir).ok();
+  }
+
+  /// A draft head shaped like antirez's published DeepSeek-V4 head: its own
+  /// `_mtp_support` arch, `mtp.0.*` tensors, and no tokenizer.
+  fn build_mtp_head_gguf(parent_arch: &str) -> Vec<u8> {
+    use crate::gguf::test_fixtures::FixtureBuilder;
+    FixtureBuilder::new()
+      .with_arch(&format!("{parent_arch}{MTP_ARCH_SUFFIX}"))
+      .with_tensor("mtp.0.hc_head_fn.weight", &[16384, 4], 0)
+      .with_tensor("mtp.0.attn_q_a.weight", &[4096, 1024], 12)
+      .build()
+  }
+
+  #[test]
+  fn dspark_support_file_is_a_head_not_a_launchable_model() {
+    // antirez's DSpark support GGUF: head-shaped header (`mtp.*` tensors, no
+    // tokenizer) but its own `deepseek4-dspark` arch and no `mtp` token in the
+    // name, so the old name gate skipped the header read and it scanned as a
+    // standalone, tokenizer-less model.
+    let dir = temp_dir("dspark-class");
+    let support = dir.join("DeepSeek-V4-Flash-DSpark-support-0731.gguf");
+    let model = dir.join("DeepSeek-V4-Flash-IQ2XXS-chat-v2-imatrix-0731.gguf");
+    fs::write(
+      &support,
+      crate::gguf::test_fixtures::FixtureBuilder::new()
+        .with_arch("deepseek4-dspark")
+        .with_tensor("mtp.0.attn_q_a.weight", &[4096, 1024], 12)
+        .with_tensor("mtp.0.attn_norm.weight", &[4096], 0)
+        .build(),
+    )
+    .unwrap();
+    fs::write(&model, build_minimal_gguf("deepseek4")).unwrap();
+
+    assert!(
+      !is_mtp_companion(&support),
+      "the name carries no mtp token — only the header is conclusive"
+    );
+    assert!(
+      is_mtp_head_file(&support),
+      "DSpark support must classify as a draft head, not a launchable model"
+    );
+    // Pairs through the explicit-arch lookup: it declares `deepseek4-dspark`,
+    // not the `deepseek4_mtp_support` shape `find_mtp_head` derives.
+    assert_eq!(
+      find_draft_head(&model, Some("deepseek4-dspark"))
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())),
+      Some("DeepSeek-V4-Flash-DSpark-support-0731.gguf".to_string())
+    );
+    fs::remove_dir_all(&dir).ok();
+  }
+
+  #[test]
+  fn mtp_head_is_classified_by_header_not_by_name() {
+    // The published pair that name matching cannot separate: both wear
+    // `-MTP-<quant>`, one is a head, the other a full model advertising
+    // embedded draft layers.
+    let dir = temp_dir("mtp-header-class");
+    let head = dir.join("DeepSeek-V4-Flash-MTP-Q4K-Q8_0-F32.gguf");
+    let model = dir.join("DeepSeek-V4-Pro-Qwen3.5-4B-MTP-Q2_K.gguf");
+    fs::write(&head, build_mtp_head_gguf("deepseek4")).unwrap();
+    fs::write(&model, build_minimal_gguf("qwen35")).unwrap();
+
+    assert!(
+      !is_mtp_companion(&head),
+      "name alone cannot tell them apart"
+    );
+    assert!(is_mtp_head_file(&head), "header must classify the head");
+    assert!(
+      !is_mtp_head_file(&model),
+      "a model advertising embedded MTP must stay launchable"
+    );
+
+    let listed = collect_gguf_paths(&dir, &[]);
+    assert_eq!(listed.len(), 1, "head excluded, model kept: {listed:?}");
+    assert!(listed[0].ends_with("DeepSeek-V4-Pro-Qwen3.5-4B-MTP-Q2_K.gguf"));
+    fs::remove_dir_all(&dir).ok();
+  }
+
+  #[test]
+  fn mtp_head_header_shape_without_the_arch_marker() {
+    use crate::gguf::header::read_reader;
+    use crate::gguf::test_fixtures::FixtureBuilder;
+    // No `_mtp_support` arch: mtp-only tensors and no tokenizer still say head.
+    let bare = FixtureBuilder::new()
+      .with_arch("gemma4")
+      .with_tensor("mtp.0.attn_norm.weight", &[24], 0)
+      .build();
+    let bare_read = read_reader(&bare[..], HeaderReadOptions::default()).unwrap();
+    assert!(is_mtp_head_header(&bare_read.header));
+
+    // A real model carries a tokenizer and non-`mtp.` tensors.
+    let model = FixtureBuilder::new()
+      .with_arch("gemma4")
+      .with_tokenizer_model("gpt2")
+      .with_tensor("blk.0.attn_q.weight", &[4096, 4096], 12)
+      .build();
+    let model_read = read_reader(&model[..], HeaderReadOptions::default()).unwrap();
+    assert!(!is_mtp_head_header(&model_read.header));
+  }
+
+  #[test]
+  fn find_mtp_head_pairs_on_arch_across_quants() {
+    // Several quants of one model plus one head: the quant-stripped name match
+    // fails (the head's base is its own), so the `_mtp_support` arch pairs it.
+    let dir = temp_dir("mtp-arch-pair");
+    let a = dir.join("DeepSeek-V4-Flash-IQ2XXS-chat-v2-imatrix.gguf");
+    let b = dir.join("DeepSeek-V4-Flash-Q4KExperts-chat-v2.gguf");
+    fs::write(&a, build_minimal_gguf("deepseek4")).unwrap();
+    fs::write(&b, build_minimal_gguf("deepseek4")).unwrap();
+    fs::write(
+      dir.join("DeepSeek-V4-Flash-MTP-Q4K-Q8_0-F32.gguf"),
+      build_mtp_head_gguf("deepseek4"),
+    )
+    .unwrap();
+
+    for model in [&a, &b] {
+      let found = find_mtp_head(model, Some("deepseek4"));
+      assert_eq!(
+        found.and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())),
+        Some("DeepSeek-V4-Flash-MTP-Q4K-Q8_0-F32.gguf".to_string()),
+        "arch match must pair {} regardless of quant",
+        model.display()
+      );
+    }
+    // A head drafting for another arch must not pair.
+    assert_eq!(find_mtp_head(&a, Some("qwen35")), None);
+    fs::remove_dir_all(&dir).ok();
+  }
+
+  #[test]
+  fn find_mtp_head_none_when_absent() {
+    let dir = temp_dir("mtp-absent");
+    fs::write(dir.join("qwen35.gguf"), build_minimal_gguf("qwen35")).unwrap();
+    assert_eq!(
+      find_mtp_head(&dir.join("qwen35.gguf"), Some("qwen35")),
+      None
+    );
+    fs::remove_dir_all(&dir).ok();
+  }
+
+  #[test]
+  fn find_mtp_head_pairs_single_model_single_head_regardless_of_name() {
+    // Rule 2: one model + one anonymously-named head → pair them.
+    let dir = temp_dir("mtp-single");
+    fs::write(
+      dir.join("gemma-4-it-Q4_K_M.gguf"),
+      build_minimal_gguf("gemma4"),
+    )
+    .unwrap();
+    fs::write(dir.join("mtp-f16.gguf"), build_minimal_gguf("gemma4")).unwrap();
+    let found = find_mtp_head(&dir.join("gemma-4-it-Q4_K_M.gguf"), Some("gemma4"));
+    assert_eq!(
+      found.and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())),
+      Some("mtp-f16.gguf".to_string()),
+      "single model + single head must pair regardless of name"
+    );
     fs::remove_dir_all(&dir).ok();
   }
 

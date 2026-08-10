@@ -425,6 +425,16 @@ pub struct StartArgs {
   /// build with no device pin.
   #[arg(long)]
   pub server: Option<String>,
+  /// MTP (multi-token prediction) speculative decoding: `auto` (default —
+  /// enable when the model is MTP-capable), `on` (force; warns + skips if not
+  /// capable), or `off`. Launch-only, no config-file entry.
+  #[arg(long, value_name = "auto|on|off", value_parser = parse_mtp_enable)]
+  pub mtp: Option<crate::launch::params::MtpEnable>,
+  /// How many tokens to draft per speculation step. Only takes effect when MTP
+  /// resolves on; unset leaves the serving backend on its own default.
+  #[arg(long, value_name = "N")]
+  pub mtp_draft_n: Option<u32>,
+
   /// Emit JSON instead of human-readable success prose. Stable
   /// shape: `{ "name", "launch_id", "port", "pid", "preset",
   /// "path" }`. With `--wait`, also carries `state` and `resolved_ctx`.
@@ -456,6 +466,13 @@ fn parse_backend_id(s: &str) -> Result<String, String> {
       valid.join(", ")
     ))
   }
+}
+
+/// Parse a `--mtp <auto|on|off>` value into an [`MtpEnable`]. A bad value is a
+/// clap usage error (exit 64).
+fn parse_mtp_enable(s: &str) -> Result<crate::launch::params::MtpEnable, String> {
+  crate::launch::params::MtpEnable::from_token(s)
+    .ok_or_else(|| format!("invalid --mtp value `{s}`; expected auto, on, or off"))
 }
 
 #[derive(Args, Debug)]
@@ -602,6 +619,16 @@ pub struct PullArgs {
   /// (69) up-front; honored for parity with `init --offline`.
   #[arg(long, env = "LLAMASTASH_OFFLINE")]
   pub offline: bool,
+  /// Do not fetch companion files (mmproj projector, MTP draft head)
+  /// alongside the model. By default `pull` grabs one companion per kind so a
+  /// multimodal / speculative-decoding model arrives ready to launch.
+  #[arg(long, conflicts_with = "all_companions")]
+  pub no_companions: bool,
+  /// Fetch **every** companion variant (all projector precisions / all draft
+  /// heads), not just one per kind. Useful to keep multiple mmproj precisions
+  /// on disk.
+  #[arg(long)]
+  pub all_companions: bool,
 }
 
 #[derive(Args, Debug)]

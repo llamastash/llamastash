@@ -27,6 +27,7 @@ pub fn probe_devices() -> Option<Vec<GpuDevice>> {
   // Fallback: parse --summary for device names and vendorID:deviceID.
   let mut cmd = Command::new("vulkaninfo");
   cmd.arg("--summary");
+  cmd.current_dir(std::env::temp_dir());
   let output = super::run_with_timeout(cmd)?;
   if !output.status.success() {
     return None;
@@ -70,6 +71,7 @@ pub(crate) fn is_software_rasterizer(name: &str) -> bool {
 fn probe_json() -> Option<Vec<GpuDevice>> {
   let mut cmd = Command::new("vulkaninfo");
   cmd.arg("-j");
+  cmd.current_dir(std::env::temp_dir());
   let output = super::run_with_timeout(cmd)?;
   if !output.status.success() {
     return None;

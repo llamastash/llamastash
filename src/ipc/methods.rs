@@ -550,14 +550,22 @@ async fn start_model_handler(
 }
 
 pub(crate) fn resolve_model_id(path: &std::path::Path) -> Result<ModelId, ErrorObject> {
-  let (id, _, _, _) = resolve_model_id_and_arch(path)?;
+  let (id, _, _, _, _) = resolve_model_id_and_arch(path)?;
   Ok(id)
 }
 
 /// Header-derived launch inputs from one GGUF read: `(model id, architecture,
 /// trained ctx window, routed-backend tag)`. The routed-backend tag is the
 /// registry's verdict for this header (`None` = the default process backend).
-pub(crate) type ResolvedModelInfo = (ModelId, Option<String>, Option<u32>, Vec<String>);
+pub(crate) type ResolvedModelInfo = (
+  ModelId,
+  Option<String>,
+  Option<u32>,
+  Vec<String>,
+  // Embedded MTP (nextn) draft-head layer count, `Some(n>0)` ⇒ the model can
+  // self-speculate with no separate drafter.
+  Option<u32>,
+);
 
 /// One-pass GGUF header read that returns both the canonical model id
 /// and the architecture string. The launch path calls this so the
@@ -584,7 +592,13 @@ pub(crate) fn resolve_model_id_and_arch(
   // The backends that can serve this model, priority-ordered — computed from the
   // same header read the selection seam consults. Names no backend.
   let supported_backends = crate::backend::supported_backends_for(&header.header);
-  Ok((id, summary.arch, native_ctx, supported_backends))
+  Ok((
+    id,
+    summary.arch,
+    native_ctx,
+    supported_backends,
+    summary.mtp,
+  ))
 }
 
 /// Project the daemon's catalog into the lean rows preset-key
@@ -628,7 +642,7 @@ async fn model_key_arch_rows(
       crate::util::paths::path_basename(model_path),
       resolve_model_id_and_arch(model_path)
         .ok()
-        .and_then(|(_, a, _, _)| a),
+        .and_then(|(_, a, _, _, _)| a),
     ),
   };
   (key, arch, rows)
@@ -1091,12 +1105,14 @@ mod tests {
           reasoning_hint: false,
           mode_hint: ModeHint::Chat,
           weights_bytes: Some(4_000_000_000),
+          mtp: None,
         }),
         parse_error: None,
         split_siblings: Vec::new(),
         display_label: None,
         multimodal: None,
         supported_backends: Vec::new(),
+        mtp_head: None,
       })
       .await;
 

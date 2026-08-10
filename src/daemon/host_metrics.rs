@@ -2,7 +2,8 @@
 //!
 //! Distinct from [`super::resources`], which is per-PID and attached
 //! to each supervised launch. This sampler is a daemon-wide singleton
-//! that runs at 1 Hz, capturing the host's system-wide CPU%, RAM, and
+//! that runs at a configurable cadence (`daemon.metrics_interval_secs`,
+//! factory 1 Hz), capturing the host's system-wide CPU%, RAM, and
 //! (when a GPU backend is available) GPU utilization, temperature,
 //! and VRAM aggregates.
 //!
@@ -212,7 +213,43 @@ pub struct SamplerHandles {
   pub gpu: Arc<RwLock<GpuInfo>>,
 }
 
-pub fn spawn(shutdown: ShutdownToken, interval: Duration) -> SamplerHandles {
+/// Floor on the sampler tick. `config.daemon.metrics_interval_secs`
+/// already clamps to `1..=60 s`; this only stops a direct caller
+/// passing `Duration::ZERO` and busy-looping the task, so it sits well
+/// below the config floor to leave sub-second intervals usable in tests.
+const MIN_TICK: Duration = Duration::from_millis(1);
+
+/// Counts full vendor re-probes so tests can assert the re-probe period
+/// tracks wall-clock rather than the tick count.
+#[cfg(test)]
+static FULL_REPROBES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Serialises the tests that read [`FULL_REPROBES`] — it is one global
+/// counter and the test harness runs them concurrently.
+#[cfg(test)]
+static REPROBE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Is a full vendor re-probe due, given how long it's been since the
+/// last one?
+///
+/// Keyed on elapsed wall-clock, never on a tick count: the tick cadence
+/// is user-configurable (`daemon.metrics_interval_secs`), so counting
+/// ticks would silently scale the re-probe period by it. `None` means
+/// the user disabled periodic re-probes.
+fn due_for_reprobe(since_last: Duration, every: Option<Duration>) -> bool {
+  every.is_some_and(|every| since_last >= every)
+}
+
+/// Spawn the host-metrics sampler.
+///
+/// `interval` is the tick cadence; `reprobe` is how often to re-run the
+/// full vendor probe chain, or `None` to only probe once at startup.
+pub fn spawn(
+  shutdown: ShutdownToken,
+  interval: Duration,
+  reprobe: Option<Duration>,
+) -> SamplerHandles {
+  let interval = interval.max(MIN_TICK);
   let snapshot = Arc::new(RwLock::new(HostMetricsSnapshot {
     gpu_backend: HostMetricsSnapshot::UNINITIALIZED_BACKEND.into(),
     ..HostMetricsSnapshot::default()
@@ -239,12 +276,15 @@ pub fn spawn(shutdown: ShutdownToken, interval: Duration) -> SamplerHandles {
     // Cache the detected GPU backend so we only spawn the matching
     // vendor tool each tick instead of running the full
     // nvidia→amd→metal→vulkan chain every second. Hotplug / late
-    // driver loads are caught by `FULL_REPROBE_TICKS` below.
+    // driver loads are caught by the periodic full re-probe below.
     let mut info = tokio::select! {
       _ = shutdown.wait_until_triggered() => return,
       result = probe_gpu_full() => result,
     };
-    let mut ticks_since_full_reprobe: u32 = 0;
+    // Elapsed-time based, not tick-counted: the tick cadence is user
+    // configurable, so counting ticks would scale the re-probe period
+    // by `metrics_interval_secs`.
+    let mut last_full_probe = tokio::time::Instant::now();
     loop {
       tokio::select! {
         _ = shutdown.wait_until_triggered() => return,
@@ -255,14 +295,19 @@ pub fn spawn(shutdown: ShutdownToken, interval: Duration) -> SamplerHandles {
       // `refresh(true)` updates values and prunes sensors that
       // vanished since the last tick (hot-removed cards / drivers).
       components.refresh(true);
-      ticks_since_full_reprobe += 1;
-      if ticks_since_full_reprobe >= FULL_REPROBE_TICKS {
-        // Periodic full re-probe: catches hotplug (new GPU plugged
-        // in), late driver load, and transitions from CpuOnly →
-        // detected once the vendor tool becomes available.
+      // Periodic full re-probe: catches hotplug, a late driver load,
+      // and CpuOnly → detected once the vendor tool appears. Users who
+      // don't want the spawns set `gpu.reprobe_interval_secs: 0`; there
+      // is deliberately no extra per-backend skip, since every backend
+      // (CpuOnly included) can transition.
+      let now = tokio::time::Instant::now();
+      if due_for_reprobe(now.duration_since(last_full_probe), reprobe) {
+        last_full_probe = now;
         info = probe_gpu_full().await;
-        ticks_since_full_reprobe = 0;
-      } else if let Some(refreshed) = refresh_active_gpu(info.clone()).await {
+        #[cfg(test)]
+        FULL_REPROBES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+      }
+      if let Some(refreshed) = refresh_active_gpu(info.clone()).await {
         // Fast path: only the active vendor's tool is spawned. No-op
         // for backends without live metrics (CpuOnly, AppleMetal,
         // Unknown/Vulkan).
@@ -279,12 +324,6 @@ pub fn spawn(shutdown: ShutdownToken, interval: Duration) -> SamplerHandles {
   });
   SamplerHandles { snapshot, gpu }
 }
-
-/// How often to re-run the full vendor chain to catch hotplug /
-/// late driver loads. At the daemon's 1 Hz sampling cadence this is
-/// once a minute, which keeps a freshly-plugged-in GPU surfacing in
-/// the host pane within ~60 s while avoiding 86,400 spawns/day.
-const FULL_REPROBE_TICKS: u32 = 60;
 
 fn host_refresh_kind() -> RefreshKind {
   RefreshKind::nothing()
@@ -792,7 +831,11 @@ mod tests {
     // `wait_until_triggered` select arm would leave the task looping
     // forever and the strong count stuck at 2.
     let token = ShutdownToken::new();
-    let handles = spawn(token.clone(), Duration::from_millis(20));
+    let handles = spawn(
+      token.clone(),
+      Duration::from_millis(20),
+      Some(Duration::from_secs(60)),
+    );
     // Give the task a moment to enter its loop and clone both Arcs.
     tokio::time::sleep(Duration::from_millis(30)).await;
     token.trigger();
@@ -821,7 +864,11 @@ mod tests {
   #[tokio::test]
   async fn spawn_updates_snapshot_after_first_tick() {
     let token = ShutdownToken::new();
-    let handles = spawn(token.clone(), Duration::from_millis(50));
+    let handles = spawn(
+      token.clone(),
+      Duration::from_millis(50),
+      Some(Duration::from_secs(60)),
+    );
     // First tick lands after the initial GPU probe + `interval`. On
     // macOS the probe shells out to system_profiler which can take
     // 1-3s; allow 5s total headroom for CI and loaded machines.
@@ -839,5 +886,86 @@ mod tests {
        snapshot: {:?}",
       handles.snapshot.read().await
     );
+  }
+
+  /// Run the sampler for `run_for` and report how many full vendor
+  /// re-probes it performed. Serialised by [`REPROBE_TEST_LOCK`] because
+  /// [`FULL_REPROBES`] is process-global.
+  async fn count_reprobes(
+    interval: Duration,
+    reprobe: Option<Duration>,
+    run_for: Duration,
+  ) -> usize {
+    let _guard = REPROBE_TEST_LOCK.lock().await;
+    FULL_REPROBES.store(0, std::sync::atomic::Ordering::Relaxed);
+    let token = ShutdownToken::new();
+    let _handles = spawn(token.clone(), interval, reprobe);
+    tokio::time::sleep(run_for).await;
+    token.trigger();
+    FULL_REPROBES.load(std::sync::atomic::Ordering::Relaxed)
+  }
+
+  #[tokio::test]
+  async fn a_zero_reprobe_interval_disables_periodic_reprobes() {
+    let count = count_reprobes(Duration::from_millis(10), None, Duration::from_millis(400)).await;
+    assert_eq!(
+      count, 0,
+      "reprobe_interval_secs: 0 must skip every periodic full probe"
+    );
+  }
+
+  /// Regression: the re-probe period was once counted in sampler ticks,
+  /// so raising `metrics_interval_secs` silently multiplied it. The
+  /// decision must read elapsed wall-clock and nothing else — asserted
+  /// on the pure helper because a real `probe_gpu_full` costs hundreds
+  /// of ms (seconds on macOS), which makes counting live probes a race.
+  #[test]
+  fn reprobe_is_due_purely_on_elapsed_wall_clock() {
+    let every = Some(Duration::from_secs(60));
+    assert!(!due_for_reprobe(Duration::ZERO, every));
+    assert!(!due_for_reprobe(Duration::from_secs(59), every));
+    assert!(due_for_reprobe(Duration::from_secs(60), every));
+    assert!(due_for_reprobe(Duration::from_secs(600), every));
+  }
+
+  #[test]
+  fn no_reprobe_period_is_never_due() {
+    for since in [Duration::ZERO, Duration::from_secs(86_400)] {
+      assert!(!due_for_reprobe(since, None));
+    }
+  }
+
+  /// The period is independent of the tick cadence: at a 10 s tick a
+  /// 60 s period is still 60 s, not 600 s.
+  #[test]
+  fn reprobe_period_does_not_scale_with_the_tick_cadence() {
+    let every = Some(Duration::from_secs(60));
+    let slow_tick = Duration::from_secs(10);
+    let ticks_until_due = (1..)
+      .find(|n| due_for_reprobe(slow_tick * *n, every))
+      .expect("a re-probe must eventually come due");
+    assert_eq!(
+      slow_tick * ticks_until_due,
+      Duration::from_secs(60),
+      "re-probe came due after the wrong amount of wall-clock time"
+    );
+  }
+
+  /// A `Duration::ZERO` tick would busy-loop the task; [`MIN_TICK`]
+  /// floors it. The config layer clamps to 1 s, so this only guards
+  /// direct callers.
+  #[tokio::test]
+  async fn a_zero_interval_does_not_busy_loop() {
+    let token = ShutdownToken::new();
+    let handles = spawn(token.clone(), Duration::ZERO, None);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    token.trigger();
+    for _ in 0..100 {
+      if Arc::strong_count(&handles.snapshot) == 1 {
+        return;
+      }
+      tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("sampler with a zero interval never released its Arc after shutdown");
   }
 }

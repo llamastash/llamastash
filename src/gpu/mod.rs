@@ -92,9 +92,22 @@ pub fn classify_amd_memory(
 }
 
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+
+/// Gates the Vulkan fallback leg of [`probe`]. Process-global because
+/// `probe` is called from the daemon, `init`, `doctor`, and the UAT
+/// harness, none of which thread a config down — `cli::dispatch` applies
+/// `gpu.enable_vulkan_probe` once at startup so every caller agrees.
+static VULKAN_PROBE_ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// Apply `gpu.enable_vulkan_probe`. Call once per process before any
+/// [`probe`]; the value is re-read on every probe.
+pub fn set_vulkan_probe_enabled(enabled: bool) {
+  VULKAN_PROBE_ENABLED.store(enabled, Ordering::Relaxed);
+}
 
 /// Wall-clock budget for a single vendor probe. A wedged GPU driver
 /// (nvidia-smi hang, ROCm reset, locked Vulkan loader) would otherwise
@@ -188,9 +201,10 @@ pub enum GpuInfo {
 /// How a device's unified-vs-discrete verdict was reached.
 /// Surfaced in the `doctor` hardware section so a misclassification is
 /// inspectable rather than silent. The serialized snake_case value
-/// (`apple_unified` / `explicit_dxgi_uma` / `carve_signature` /
-/// `discrete`) is the precise *method* and stays in `--json`; the human
-/// [`Self::label`] collapses it to the verdict + confidence.
+/// (`apple_unified` / `explicit_dxgi_uma` / `nvml_no_framebuffer` /
+/// `carve_signature` / `discrete`) is the precise *method* and stays in
+/// `--json`; the human [`Self::label`] collapses it to the verdict +
+/// confidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClassSource {
@@ -199,6 +213,11 @@ pub enum ClassSource {
   AppleUnified,
   /// Windows D3D12 `UMA` architecture flag — authoritative.
   ExplicitDxgiUma,
+  /// NVIDIA coherent-UMA parts (GB10 / Grace Blackwell, Jetson): NVML
+  /// reports the framebuffer columns as unsupported because CPU and GPU
+  /// share one physical pool. A discrete card always reports a size, so
+  /// the absence is itself the signal — authoritative.
+  NvmlNoFramebuffer,
   /// Linux amdgpu: no driver flag exists; classified unified by the
   /// VRAM carve-out signature (tiny dedicated VRAM + large GTT pool).
   CarveSignature,
@@ -215,7 +234,9 @@ impl ClassSource {
   /// serialized enum value.
   pub fn label(self) -> &'static str {
     match self {
-      ClassSource::AppleUnified | ClassSource::ExplicitDxgiUma => "unified",
+      ClassSource::AppleUnified | ClassSource::ExplicitDxgiUma | ClassSource::NvmlNoFramebuffer => {
+        "unified"
+      }
       ClassSource::CarveSignature => "unified, inferred",
       ClassSource::Discrete => "discrete",
     }
@@ -266,7 +287,8 @@ pub struct GpuDevice {
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub uma_shared_used_bytes: Option<u64>,
   /// How this device's unified-vs-discrete verdict was reached.
-  /// `None` on backends that don't classify (NVIDIA, Vulkan/unknown).
+  /// `None` on backends that don't classify (Vulkan/unknown, and NVIDIA
+  /// cards that report a normal framebuffer).
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub classification_source: Option<ClassSource>,
 }
@@ -331,7 +353,8 @@ impl GpuInfo {
       Self::Multi { devices } | Self::Nvidia { devices } | Self::Amd { devices } => {
         // Prefer a unified verdict when any device reports one (a UMA
         // APU paired with a discrete card budgets as unified). A real GPU
-        // with no unified marker (e.g. NVIDIA, which doesn't classify) is
+        // with no unified marker (e.g. a discrete NVIDIA card, which
+        // reports a normal framebuffer and stays unclassified) is
         // discrete — fall back to that verdict rather than `None`.
         devices
           .iter()
@@ -605,9 +628,11 @@ pub fn probe() -> GpuInfo {
   if let Some(devs) = metal::probe_devices() {
     metal_devices = devs;
   }
-  // Vulkan fallback
-  if let Some(devs) = vulkan::probe_devices() {
-    unknown_devices = devs;
+  // Vulkan fallback (skipped when `config.gpu.enable_vulkan_probe` is `false`)
+  if VULKAN_PROBE_ENABLED.load(Ordering::Relaxed) {
+    if let Some(devs) = vulkan::probe_devices() {
+      unknown_devices = devs;
+    }
   }
 
   let raw_total =
@@ -842,6 +867,25 @@ fn devices_match(a: &[GpuDevice], b: &[GpuDevice]) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  /// The gate reads as "enabled", the opposite of the `disable_`-shaped
+  /// key it started life as — a flipped polarity here would silently
+  /// spawn `vulkaninfo` for everyone who opted out. Restores the flag so
+  /// concurrently-running tests that call [`probe`] are unaffected.
+  #[test]
+  fn vulkan_probe_gate_follows_the_enable_flag() {
+    static SERIALIZE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = SERIALIZE.lock().unwrap_or_else(|p| p.into_inner());
+    let restore = VULKAN_PROBE_ENABLED.load(Ordering::Relaxed);
+    assert!(restore, "the factory default must leave the probe enabled");
+
+    set_vulkan_probe_enabled(false);
+    assert!(!VULKAN_PROBE_ENABLED.load(Ordering::Relaxed));
+    set_vulkan_probe_enabled(true);
+    assert!(VULKAN_PROBE_ENABLED.load(Ordering::Relaxed));
+
+    set_vulkan_probe_enabled(restore);
+  }
 
   #[test]
   fn normalize_pci_canonicalizes_every_vendor_format() {

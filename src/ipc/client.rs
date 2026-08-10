@@ -64,6 +64,20 @@ pub enum ClientError {
   Timeout(Duration),
 }
 
+/// Did the send fail before the daemon produced any response?
+///
+/// `is_connect` alone only covers a failure to *establish* the
+/// connection. A daemon shutting down mid-request — the idle-timeout
+/// window — or a stale pooled keep-alive it already closed surfaces as
+/// hyper's "connection closed before message completed", with no
+/// `io::Error` anywhere in the source chain. Both mean the caller never
+/// got an answer, so both must read as "daemon unreachable" instead of
+/// flapping the exit code between 65 and 71 on timing. A failure *after*
+/// a response arrived stays [`ClientError::Transport`].
+fn never_reached_daemon(e: &reqwest::Error) -> bool {
+  e.is_connect() || e.is_request()
+}
+
 /// JSON-RPC client. Holds a pooled `reqwest::Client` plus the resolved
 /// control-plane URL. Cheap to drop and reconnect. Cloning would
 /// duplicate the pool, so we discourage it — share via a wrapping
@@ -158,7 +172,7 @@ impl Client {
       match tokio::time::timeout(deadline, self.http.post(&url).body(body).send()).await {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => {
-          if e.is_connect() {
+          if never_reached_daemon(&e) {
             return Err(ClientError::Connect(e.to_string()));
           }
           return Err(ClientError::Transport(e.to_string()));
@@ -286,5 +300,33 @@ mod tests {
       }
       _ => panic!("expected Connect error, got {err:?}"),
     }
+  }
+
+  /// A daemon that shuts down mid-request (the idle-timeout window) or a
+  /// stale pooled keep-alive both surface as a request error wrapping an
+  /// io kind, not as `is_connect`. Both must read as "unreachable" so
+  /// the exit code doesn't flap between 65 and 71 on timing.
+  #[tokio::test]
+  async fn a_connection_closed_mid_request_reports_connect_not_transport() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    // Accept, then drop without answering — the client sees the peer
+    // close after the connection was established.
+    std::thread::spawn(move || {
+      if let Ok((stream, _)) = listener.accept() {
+        drop(stream);
+      }
+    });
+
+    let mut client =
+      Client::with_url_and_token(&format!("http://127.0.0.1:{port}"), "t").expect("client");
+    let err = client
+      .call("version", None)
+      .await
+      .expect_err("a closed connection must not succeed");
+    assert!(
+      matches!(err, ClientError::Connect(_)),
+      "expected Connect, got {err:?}"
+    );
   }
 }

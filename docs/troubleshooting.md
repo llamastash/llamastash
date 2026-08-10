@@ -14,7 +14,7 @@ Quick reference for the common ways LlamaStash can refuse to do what you want, w
 
 **Fixes per backend:**
 
-- **NVIDIA:** confirm `nvidia-smi` works. LlamaStash uses `nvml-wrapper`; if NVML isn't installed (driver-only install), the daemon falls back to CPU-only. Install the NVML library that ships with your CUDA toolkit.
+- **NVIDIA:** confirm `nvidia-smi` is on `PATH` and answers — LlamaStash probes `nvidia-smi --query-gpu=… --format=csv` (a subprocess, not the NVML library), so a working driver install is enough. Run `nvidia-smi` manually; if it fails or is missing, the daemon falls back to CPU-only. On coherent-UMA parts (GB10 / DGX Spark, Jetson) the memory columns read `[N/A]` — that's expected, and the GPU is sized from the system pool instead.
 - **AMD:** on Linux, LlamaStash reads `/sys/class/drm/card*/device/mem_info_*` (a stable kernel interface) and falls back to `rocm-smi --showmeminfo vram gtt --json`. Make sure the `amdgpu` driver is bound; if sysfs is unreadable, keep `rocm-smi` on `PATH`. `doctor` surfaces a probe failure rather than silently degrading to CPU-only.
 - **Apple Silicon:** LlamaStash parses `system_profiler SPDisplaysDataType -json`. If this is empty, the macOS install is unusual — try the command manually and file an issue with the output.
 - **Intel macOS:** there is no Metal support to detect; LlamaStash falls back to CPU-only and that's correct.
@@ -62,13 +62,29 @@ The state directory defaults to `~/.local/state/llamastash/` on Linux, `~/Librar
 **Fix:** widen the range in your config or pin a specific port:
 
 ```yaml
-port_range:
-  start: 41100
-  end: 41500
+daemon:
+  port_range:
+    start: 41100
+    end: 41500
 ```
 
 ```bash
 llamastash start <ref> --port 41250
+```
+
+## Daemon refuses to start: port range inverted
+
+**Symptom:** `llamastash daemon start` exits without starting, saying `daemon.port_range` is inverted or that `start` is 0.
+
+**Cause:** `daemon.port_range.start` is above `end` (or is `0`), so no port can ever be allocated and every launch would fail. The daemon refuses at startup rather than coming up healthy and failing on your first `start`.
+
+**Fix:** swap the two values, or drop back to the factory range:
+
+```yaml
+daemon:
+  port_range:
+    start: 41100
+    end: 41300
 ```
 
 ## Wayland clipboard yank does nothing
@@ -91,6 +107,24 @@ The toast prints the URL inline when every backend fails, so you can still paste
 **Symptom:** `LlamaStash logs <id> -f` exits `65` mid-stream.
 
 **Fix:** the daemon was shut down or crashed. Restart it with `llamastash daemon start`. Running children survive daemon exit; you can re-attach to the same launch id once the daemon is back (orphan re-adoption verifies PID + port + `/v1/models` match).
+
+## Daemon shuts down on its own when idle
+
+**Symptom:** the daemon exits after you stop every model and close the TUI/CLI.
+
+**Cause:** `daemon.idle_timeout_secs` is set above `0`. The daemon shuts itself down once nothing has needed it for that long — no live model, and no CLI, TUI, or proxy traffic. A managed multiplexer's shared umbrella doesn't count as a running model, so a host running one still idles out.
+
+**Fix:** set `daemon.idle_timeout_secs: 0` to disable the timer.
+
+The CLI and TUI respawn the daemon on the next attach, so for them this costs a restart, not your state. The proxy is the one thing that does not come back on its own: an agent pointed at `http://127.0.0.1:11435` gets a refused connection until something re-attaches. Leave the timer off if you keep agents pointed at the proxy across long idle gaps.
+
+## GPU stays `cpu_only` after the driver loads
+
+**Symptom:** you started the daemon before the GPU driver was ready (fresh boot, a container that got its device mapped later), and `status.gpu` still reports `cpu_only` long after.
+
+**Cause:** `gpu.reprobe_interval_secs: 0` disables the periodic full re-probe, so the boot reading is the only one the daemon ever takes.
+
+**Fix:** set it back to `60` (the default), or restart the daemon once the driver is up.
 
 ## "model already running" surprise
 
@@ -218,6 +252,12 @@ Or install `ds4-server` so compatible GGUFs route to ds4 instead. (On a b9840+ l
 **Symptom:** a `POST /v1/embeddings` or `/v1/rerank` request that resolves to a running ds4 model returns a JSON error ("the ds4 backend serves chat/completions only, not embeddings or rerank").
 
 **This is the design.** ds4-server has no embeddings/rerank endpoints. Launch the model on llama.cpp for those modes — a plain `--mode embedding` / `--mode rerank` launch of a ds4-compatible GGUF already routes to llama.cpp automatically. Reserve ds4 for chat/completions.
+
+## `--mtp on` didn't enable MTP (or a launch failed with "context type MTP requested")
+
+**Symptom:** you passed `--mtp on` but the launch warns "MTP forced on … but this model is not MTP-capable — skipping", or a hand-written `--spec-type draft-mtp` in the `-- <extras>` tail crashes the launch with `llama_init_from_model: context type MTP requested but model doesn't contain MTP layers`.
+
+**This is the gate working (or the lack of one).** MTP only works on a model that ships a draft head — an embedded one (`{arch}.nextn_predict_layers > 0`) or a separate `mtp-*.gguf` sibling. llamastash checks first: `--mtp on` on a non-capable model warns and skips rather than emitting the flag and bricking the launch. If you bypass llamastash and pass `--spec-type draft-mtp` yourself in `extras`, llama-server has no such guard and fails to load. Fix: use `--mtp auto` (the default) so llamastash only enables MTP when the model can actually do it, and let `pull` fetch the `mtp-*.gguf` head for separate-head models (`--all-companions` if the default one-per-kind missed it).
 
 ## Codex / Responses-API client can't reach a ds4 model
 

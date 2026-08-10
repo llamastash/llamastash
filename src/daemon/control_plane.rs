@@ -183,9 +183,14 @@ pub async fn serve(
             // server.
             let counter = ctx.active_connections.clone();
             counter.fetch_add(1, Ordering::SeqCst);
+            // Stamped at both ends so a one-shot CLI call that opens and
+            // closes between two idle polls still registers as activity.
+            let activity = ctx.activity.clone();
+            activity.mark();
             let task_tracker = Arc::clone(&conn_tracker);
             let handle = tokio::spawn(async move {
               serve_connection(stream, conn_token, conn_ctx).await;
+              activity.mark();
               counter.fetch_sub(1, Ordering::SeqCst);
               task_tracker.active.fetch_sub(1, Ordering::SeqCst);
             });

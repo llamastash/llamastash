@@ -15,6 +15,7 @@
 mod actuals;
 mod compose;
 pub mod list_devices;
+mod telemetry;
 
 use compose::compose;
 pub use list_devices::{parse_list_devices, probe_devices, BinaryDevice};
@@ -372,6 +373,24 @@ impl Backend for LlamaCppBackend {
     // The llama-server-specific `/props` fetch + `n_ctx` parse.
     actuals::fetch_props_actuals(port, timeout).await
   }
+
+  fn speculation_set_in_extras(&self, extras: &[std::ffi::OsString]) -> bool {
+    // llama-server *appends* spec types rather than replacing, so emitting ours
+    // on top of a hand-passed `--spec-type` would leave two configured.
+    crate::launch::params::extras_have_flag(extras, "--spec-type")
+  }
+
+  fn mtp_active(&self, params: &LaunchParams) -> bool {
+    // Live exactly when `compose` emitted `--spec-type draft-mtp`, which it
+    // keys on the resolved directive.
+    params.mtp_directive.is_some()
+  }
+
+  fn draft_acceptance(&self, log_lines: &[String]) -> Option<crate::backend::DraftAcceptance> {
+    // Printed on the slot timing line, so it stays `None` until the model has
+    // served enough tokens for one.
+    telemetry::latest_draft_acceptance(log_lines)
+  }
 }
 
 // The cross-backend dispatch enum (`Backends`) lives in the parent module
@@ -386,6 +405,39 @@ mod tests {
   use crate::launch::flag_aliases::knob_specs;
   use crate::launch::mode::LaunchMode;
   use std::ffi::OsString;
+
+  #[test]
+  fn speculation_set_in_extras_defers_to_a_hand_passed_spec_type() {
+    // KD3: llama-server appends spec types rather than replacing, so a user
+    // driving `--spec-type` themselves must stop llamastash adding a second.
+    let b = LlamaCppBackend::new();
+    let space = vec![
+      OsString::from("--spec-type"),
+      OsString::from("draft-simple"),
+    ];
+    assert!(b.speculation_set_in_extras(&space));
+    assert!(b.speculation_set_in_extras(&[OsString::from("--spec-type=eagle3")]));
+    assert!(!b.speculation_set_in_extras(&[OsString::from("--flash-attn")]));
+    assert!(!b.speculation_set_in_extras(&[]));
+  }
+
+  #[test]
+  fn mtp_active_and_acceptance_report_what_this_backend_dispatched() {
+    let b = LlamaCppBackend::new();
+    let mut p = LaunchParams::new(PathBuf::from("/m/x.gguf"), LaunchMode::Chat);
+    assert!(!b.mtp_active(&p), "no directive → not speculating");
+    p.mtp_directive = Some(crate::launch::params::MtpDirective { draft_model: None });
+    assert!(b.mtp_active(&p), "directive → speculating");
+
+    let lines = vec![
+      "slot print_timing: draft acceptance = 0.65217 ( 105 accepted / 161 generated )".to_string(),
+    ];
+    let got = b
+      .draft_acceptance(&lines)
+      .expect("parses its own log format");
+    assert_eq!((got.accepted, got.generated), (105, 161));
+    assert!(b.draft_acceptance(&[]).is_none());
+  }
 
   fn spec_of(plan: LaunchPlan) -> ProcessLaunchSpec {
     match plan {

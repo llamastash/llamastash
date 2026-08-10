@@ -473,9 +473,9 @@ fn open_focused_inline_edit(app: &mut App) {
       picker.extras_input.set_text(joined);
       picker.extras_input.enter_edit();
     }
-    // Filtered out by the `is_editable` guard above (Preset / Server are
+    // Filtered out by the `is_editable` guard above (Preset / Server / Mtp are
     // cycle-only).
-    PickerField::Preset | PickerField::Server => {}
+    PickerField::Preset | PickerField::Server | PickerField::Mtp => {}
   }
 }
 
@@ -520,7 +520,7 @@ fn commit_inline_edit(app: &mut App) -> bool {
       }
       // Empty buffer clears a native row back to inherited.
       PickerField::NativeKnob(i) => picker.set_native_text(i, ""),
-      PickerField::Preset | PickerField::Server | PickerField::Extras => {}
+      PickerField::Preset | PickerField::Server | PickerField::Mtp | PickerField::Extras => {}
     }
     picker.inline_edit.close();
     return true;
@@ -615,8 +615,8 @@ fn commit_inline_edit(app: &mut App) -> bool {
       Ok(())
     }
     PickerField::Extras => Ok(()),
-    // Preset / Server are cycle-only — never open an inline edit to commit.
-    PickerField::Preset | PickerField::Server => Ok(()),
+    // Preset / Server / Mtp are cycle-only — never open an inline edit to commit.
+    PickerField::Preset | PickerField::Server | PickerField::Mtp => Ok(()),
   };
   match result {
     Ok(()) => {
@@ -1310,7 +1310,8 @@ fn apply_delete_model(app: &mut App) {
     return;
   }
   let display_name = app.display_name_for(&path);
-  app.confirm_dialog = Some(ConfirmAction::DeleteModel { path, display_name });
+  let plan = Box::new(crate::tui::delete::plan_for_path(&path, &app.models));
+  app.confirm_dialog = Some(ConfirmAction::DeleteModel { plan, display_name });
 }
 
 /// Returns the toast message describing why a delete must refuse on
@@ -1348,91 +1349,6 @@ fn delete_refusal_reason(app: &App) -> Option<&'static str> {
     return Some("model is open in an external process — close it first");
   }
   None
-}
-
-/// Perform the actual file removal. Walks the path's parent chain
-/// up to the HF cache root so symlinked snapshot files take the
-/// underlying blob with them — otherwise the cache fills up with
-/// orphan blobs after every "delete". Non-HF paths just unlink the
-/// single file. Returns a human-readable summary suitable for a
-/// toast.
-///
-/// Thin wrapper over [`delete_model_with_cache_root`] that resolves
-/// the live `hf_cache_dir()` — tests pass their own root to exercise
-/// the cache-gate without touching env vars.
-fn delete_model_on_disk(path: &std::path::Path) -> Result<String, std::io::Error> {
-  let cache_root = crate::init::download::hf_cache_dir().ok();
-  delete_model_with_cache_root(path, cache_root.as_deref())
-}
-
-/// Worker for [`delete_model_on_disk`] parameterised on the HF cache
-/// root. Treats `path` as part of the HF cache only when *both* the
-/// directory shape (`models--*/snapshots/<rev>/`) matches *and* the
-/// resolved repo dir lives under `cache_root`. Anything else — a
-/// `models--*` layout outside the cache root (manually rsynced
-/// backup, restored archive, surprise Docker volume), a plain user
-/// path, or a `cache_root = None` build — falls through to a
-/// single-file unlink so a confirmed delete can't recursively rm-rf
-/// an unrelated directory tree.
-fn delete_model_with_cache_root(
-  path: &std::path::Path,
-  cache_root: Option<&std::path::Path>,
-) -> Result<String, std::io::Error> {
-  use std::fs;
-  if let Some(repo_dir) = hf_repo_dir_for_snapshot_path(path, cache_root) {
-    fs::remove_dir_all(&repo_dir)?;
-    return Ok(format!(
-      "deleted HF cache for {}",
-      repo_dir.file_name().and_then(|n| n.to_str()).unwrap_or("?")
-    ));
-  }
-  // Plain GGUF on a user path (or HF-shaped path outside the cache
-  // root) — just unlink the single file.
-  fs::remove_file(path)?;
-  Ok(format!(
-    "deleted {}",
-    path.file_name().and_then(|n| n.to_str()).unwrap_or("file")
-  ))
-}
-
-/// Return the `models--<owner>--<repo>` directory the given snapshot
-/// path lives under, but only when the directory shape matches the
-/// HF cache layout *and* the resolved repo dir is inside `cache_root`.
-/// Returns `None` for anything else, including HF-shaped layouts
-/// outside the cache root — those get a single-file unlink in
-/// `delete_model_with_cache_root` rather than a recursive removal.
-/// Carved out as a pure helper so tests can pin the gate without
-/// constructing the rest of the dispatch chain.
-fn hf_repo_dir_for_snapshot_path(
-  path: &std::path::Path,
-  cache_root: Option<&std::path::Path>,
-) -> Option<std::path::PathBuf> {
-  let snapshot_dir = path.parent()?;
-  let snapshots_root = snapshot_dir.parent()?;
-  if snapshots_root.file_name().and_then(|n| n.to_str()) != Some("snapshots") {
-    return None;
-  }
-  let repo_dir = snapshots_root.parent()?;
-  let is_hf_repo = repo_dir
-    .file_name()
-    .and_then(|n| n.to_str())
-    .is_some_and(|n| n.starts_with("models--"));
-  if !is_hf_repo {
-    return None;
-  }
-  // Refuse to treat a `models--*/snapshots/*/file` layout as an HF
-  // cache when the resolved repo dir is *not* inside the configured
-  // HF cache root. Falling through to single-file unlink is the
-  // conservative behaviour for unfamiliar layouts.
-  let cache_root = cache_root?;
-  let cache_root_canonical = cache_root
-    .canonicalize()
-    .unwrap_or_else(|_| cache_root.to_path_buf());
-  let candidate = repo_dir.canonicalize().unwrap_or_else(|_| repo_dir.into());
-  if !candidate.starts_with(&cache_root_canonical) {
-    return None;
-  }
-  Some(candidate)
 }
 
 /// Route a key to the open save-preset dialog. Name stage: typing edits
@@ -1547,20 +1463,28 @@ fn apply_confirmed(app: &mut App, action: ConfirmAction, writer: Option<&mpsc::S
         "daemon restart unavailable — no writer attached".into(),
       );
     }
-    ConfirmAction::DeleteModel { path, display_name } => match delete_model_on_disk(&path) {
-      Ok(_summary) => {
-        // Drop the row from the cached model list so the next render
-        // doesn't flash a stale entry. A real refresh re-discovers on
-        // the next tick and will catch any siblings (e.g. split-shard
-        // members that lived in the same HF snapshot).
-        app.models.retain(|m| m.path != path);
-        if app.list_cursor >= app.models.len() {
-          app.list_cursor = app.models.len().saturating_sub(1);
+    ConfirmAction::DeleteModel { plan, display_name } => {
+      match crate::tui::delete::execute(&plan) {
+        Ok(_summary) => {
+          // Drop every row the plan removed from the cached model list so
+          // the next render doesn't flash a stale entry — a whole-repo
+          // delete takes other revisions of the same repo with it. A real
+          // refresh re-discovers on the next tick.
+          app.models.retain(|m| {
+            m.path != plan.primary
+              && plan
+                .hf_repo_dir
+                .as_ref()
+                .is_none_or(|repo| !m.path.starts_with(repo))
+          });
+          if app.list_cursor >= app.models.len() {
+            app.list_cursor = app.models.len().saturating_sub(1);
+          }
+          app.show_toast(format!("deleted {display_name}"));
         }
-        app.show_toast(format!("deleted {display_name}"));
+        Err(e) => app.show_error_toast(format!("delete failed: {e}")),
       }
-      Err(e) => app.show_error_toast(format!("delete failed: {e}")),
-    },
+    }
     ConfirmAction::CancelDownload { .. } => {
       use crate::tui::download_strip::CancelOutcome;
       match app.download_strip.cancel_active() {
@@ -1948,6 +1872,7 @@ fn apply_launch_submit(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) 
     // Chosen server build (or `None` for the priority default). The daemon
     // derives the binary — and, when `backend` is `Auto`, the backend — from it.
     server: picker.selected_server.clone(),
+    mtp: picker.mtp,
   });
 
   if active_instances > 0 {
@@ -2283,6 +2208,7 @@ fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
         selection,
         backend_knobs,
         server,
+        mtp,
       } = *args;
       let mode_str = mode.map(|m| match m {
         crate::launch::mode::LaunchMode::Chat => "chat",
@@ -2309,6 +2235,8 @@ fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
           "backend_knobs": backend_knobs,
           // Chosen server build id; daemon ignores `null` / stale ids.
           "server": server,
+          // MTP intent from the picker's cycle row (auto/on/off).
+          "mtp": mtp.label(),
         }),
       )
     }
@@ -2901,113 +2829,6 @@ mod tests {
   }
 
   #[test]
-  fn delete_model_unlinks_user_path_file() {
-    use std::io::Write;
-    let dir = std::env::temp_dir().join(format!("llamastash-delete-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&dir);
-    let path = dir.join("victim.gguf");
-    {
-      let mut f = std::fs::File::create(&path).unwrap();
-      writeln!(f, "fake gguf").unwrap();
-    }
-    assert!(path.exists());
-    let summary = delete_model_on_disk(&path).expect("delete must succeed");
-    assert!(summary.contains("victim.gguf"), "got `{summary}`");
-    assert!(!path.exists(), "user-path file must be unlinked");
-    let _ = std::fs::remove_dir_all(&dir);
-  }
-
-  #[test]
-  fn delete_model_removes_full_hf_repo_dir_when_under_cache_root() {
-    // Mimic the HF cache layout the deleter is supposed to recognise:
-    //   <cache_root>/models--owner--repo/
-    //     blobs/<sha>
-    //     snapshots/main/file.gguf -> ../../blobs/<sha>
-    // The cache-root gate is explicit here so we don't rely on the
-    // ambient `HF_HOME` env var (which would race other tests).
-    let cache_root =
-      std::env::temp_dir().join(format!("llamastash-delete-hf-cache-{}", std::process::id()));
-    let repo_dir = cache_root.join("models--owner--repo");
-    let blobs = repo_dir.join("blobs");
-    let snap = repo_dir.join("snapshots").join("main");
-    std::fs::create_dir_all(&blobs).unwrap();
-    std::fs::create_dir_all(&snap).unwrap();
-    std::fs::write(blobs.join("sha"), b"blob").unwrap();
-    let symlink_target = snap.join("file.gguf");
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(blobs.join("sha"), &symlink_target).unwrap();
-    #[cfg(not(unix))]
-    std::fs::write(&symlink_target, b"blob").unwrap();
-    assert!(symlink_target.exists());
-    let summary = delete_model_with_cache_root(&symlink_target, Some(&cache_root))
-      .expect("delete must succeed");
-    assert!(summary.contains("HF cache"), "got `{summary}`");
-    assert!(!repo_dir.exists(), "the whole repo dir should be gone");
-    let _ = std::fs::remove_dir_all(&cache_root);
-  }
-
-  #[test]
-  fn delete_model_only_unlinks_when_hf_layout_lives_outside_cache_root() {
-    // Same `models--owner--repo/snapshots/main/file.gguf` shape but
-    // *not* under the configured HF cache root (think rsynced backup
-    // or restored archive). The deleter must refuse to recursively
-    // remove that tree and instead only unlink the single file.
-    let outside =
-      std::env::temp_dir().join(format!("llamastash-delete-outside-{}", std::process::id()));
-    let repo_dir = outside.join("models--owner--repo");
-    let snap = repo_dir.join("snapshots").join("main");
-    std::fs::create_dir_all(&snap).unwrap();
-    let file = snap.join("file.gguf");
-    std::fs::write(&file, b"weights").unwrap();
-    let other = snap.join("other.gguf");
-    std::fs::write(&other, b"other").unwrap();
-    // Point the cache root somewhere unrelated; the deleter must
-    // fall through to single-file unlink.
-    let unrelated_cache = std::env::temp_dir().join("llamastash-unrelated-cache");
-    let _ = std::fs::create_dir_all(&unrelated_cache);
-    let summary =
-      delete_model_with_cache_root(&file, Some(&unrelated_cache)).expect("delete must succeed");
-    assert!(
-      !summary.contains("HF cache"),
-      "non-cache HF-shaped layout must not be treated as HF cache: `{summary}`"
-    );
-    assert!(!file.exists(), "the target file should be unlinked");
-    assert!(
-      other.exists(),
-      "sibling file in the same snapshot dir must NOT have been removed"
-    );
-    assert!(
-      repo_dir.exists(),
-      "the repo dir itself must NOT have been removed"
-    );
-    let _ = std::fs::remove_dir_all(&outside);
-    let _ = std::fs::remove_dir_all(&unrelated_cache);
-  }
-
-  #[test]
-  fn delete_model_with_no_cache_root_only_unlinks() {
-    // Defense in depth: when `hf_cache_dir()` returns an error (HOME
-    // unresolvable, exotic build target), the deleter must still
-    // safely unlink a single file rather than recursing.
-    let dir =
-      std::env::temp_dir().join(format!("llamastash-delete-no-cache-{}", std::process::id()));
-    let repo_dir = dir.join("models--owner--repo");
-    let snap = repo_dir.join("snapshots").join("main");
-    std::fs::create_dir_all(&snap).unwrap();
-    let file = snap.join("file.gguf");
-    std::fs::write(&file, b"weights").unwrap();
-    let summary =
-      delete_model_with_cache_root(&file, None).expect("no-cache-root delete must succeed");
-    assert!(!summary.contains("HF cache"), "got `{summary}`");
-    assert!(!file.exists());
-    assert!(
-      repo_dir.exists(),
-      "with no cache root we must NOT remove the repo dir"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-  }
-
-  #[test]
   fn ctrl_d_on_error_managed_model_refuses_with_toast() {
     use crate::tui::app::ManagedRow;
     use crate::tui::status_icons::SurfaceState;
@@ -3454,6 +3275,7 @@ mod tests {
       display_label: None,
       multimodal: None,
       supported_backends: Vec::new(),
+      mtp_head: None,
     }];
     app.list_cursor = 2;
     let original_focus = app.focus;
@@ -3643,6 +3465,7 @@ mod tests {
         display_label: None,
         multimodal: None,
         supported_backends: Vec::new(),
+        mtp_head: None,
       })
       .collect();
     app.focus = Focus::List;
@@ -3829,12 +3652,14 @@ mod tests {
         reasoning_hint: false,
         mode_hint: ModeHint::Chat,
         weights_bytes: None,
+        mtp: None,
       }),
       parse_error: None,
       split_siblings: Vec::new(),
       display_label: None,
       multimodal: None,
       supported_backends: Vec::new(),
+      mtp_head: None,
     }];
     app.go_top();
     // Open picker and tweak ctx + reasoning so we can assert they
@@ -3897,12 +3722,14 @@ mod tests {
         reasoning_hint: false,
         mode_hint: ModeHint::Chat,
         weights_bytes: None,
+        mtp: None,
       }),
       parse_error: None,
       split_siblings: Vec::new(),
       display_label: None,
       multimodal: None,
       supported_backends: Vec::new(),
+      mtp_head: None,
     }];
     app.go_top();
     let (tx, mut rx) = mpsc::channel::<WriterCmd>(8);
@@ -3948,12 +3775,14 @@ mod tests {
         reasoning_hint: false,
         mode_hint: ModeHint::Chat,
         weights_bytes: None,
+        mtp: None,
       }),
       parse_error: None,
       split_siblings: Vec::new(),
       display_label: None,
       multimodal: None,
       supported_backends: Vec::new(),
+      mtp_head: None,
     }
   }
 

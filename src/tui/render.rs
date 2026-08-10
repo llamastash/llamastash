@@ -1151,6 +1151,7 @@ mod tests {
       display_label: None,
       multimodal: None,
       supported_backends: Vec::new(),
+      mtp_head: None,
     }];
     focused_app.go_top();
     let deletable_hints = build_models_hints(&focused_app, FilterChipMode::Inactive, false, true);

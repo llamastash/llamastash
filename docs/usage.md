@@ -63,10 +63,6 @@ custom_theme:
 model_paths: # Extra dirs to scan. Repeatable on the CLI as -p/--model-path.
   - /opt/llms
 
-port_range: # Default 41100..=41300. Inclusive.
-  start: 41100
-  end: 41300
-
 backend: # Per-engine config, one block per backend. llama.cpp is the
          # always-on default (no enable toggle); lemonade + ds4 are
          # optional, each default-on when its own binary resolves.
@@ -95,7 +91,17 @@ disable_default_cache_paths:
   ollama: false
   lm_studio: false
 
-probe_timeout_secs: 120 # Per-launch health-probe deadline.
+gpu: # GPU probe tuning. Config-only; no CLI/env surface.
+  enable_vulkan_probe: true # Skip the vulkaninfo fallback probe when false.
+  reprobe_interval_secs: 60 # Full vendor re-probe period (0 = probe only at start).
+
+daemon: # Launch ports, health probing, lifecycle. Config-only.
+  port_range: # Ports the supervisor picks from when launching a server.
+    start: 41100
+    end: 41300
+  probe_timeout_secs: 120 # Per-launch health-probe deadline.
+  idle_timeout_secs: 0 # Shut down after N idle seconds (0 = never).
+  metrics_interval_secs: 1 # Host-metrics tick (1..=60; 0 resets to 1).
 
 mouse_focus: false # Opt into mouse capture for click-to-focus / click-to-tab. Default off keeps native terminal text selection.
 
@@ -289,8 +295,33 @@ Print every discovered model.
 llamastash list [--json] [--filter <PATTERN>]
 ```
 
-- `--json` emits a stable JSON array; pin agents against this.
+- `--json` emits a stable JSON array; pin agents against this. Rows are byte-identical to the IPC `list_models` rows — a single `CatalogRow` serde impl (`src/launch/resolve.rs`) is the only definition of the wire shape, serialized by the daemon and deserialized by both CLI and TUI.
 - `--filter` is a case-insensitive substring matched against name, path, arch, and quant.
+
+Row shape:
+
+- Top level: `name`, `path`, `parent`, `source`, `backend`, `supported_backends`, `split_siblings`, `parse_error`, `display_label`, plus `model_id` only when set and a CLI-only `status` object on a running row (`state`, `port`, `launch_id`, `device` — the raw `--device` selector, `null` when the launch took the backend default, which the table's DEVICE column renders as `all`).
+- `metadata` — GGUF-derived: `arch`, `quant`, `native_ctx`, `mode_hint`, `parameter_label`, `weights_bytes`, `total_parameters`, `tokenizer_kind`, `has_chat_template`, `has_reasoning_hint`. (These are **not** top-level keys; read `has_reasoning_hint`, there is no `reasoning_hint` alias.)
+- `mtp` — `{embedded_layers, separate_head}`; `multimodal` — `{vision, audio}`.
+
+The table columns are `NAME ARCH PARAMS QUANT CTX SIZE MODE [BACKEND] STATUS [DEVICE]` — the same columns as the TUI Models list, with `DEVICE` gated on the same "some single server offers more than one device" rule the TUI uses (`cli::resolve::multi_device`). `MODE` shows the catalog's mode hint (`chat` / `embedding` / `rerank`). `BACKEND` appears only when some model is served by more than one backend (or a non-default one); `DEVICE` appears only on multi-GPU hosts and reads `all` for a running launch that targets every GPU (no `--device`), the explicit selector when pinned, and `?` otherwise — matching the TUI's Device column. When piped, the same columns print as tab-separated rows.
+
+### `llamastash show <model-ref>`
+
+Everything LlamaStash knows about one model: catalog row, GGUF metadata, on-disk size (per shard), the yaml + built-in arch defaults a launch would resolve, last-used launch params, and live running state.
+
+```
+llamastash show <model-ref> [--json]
+```
+
+`--json` builds on the **same catalog-row shape as `list --json`** (nested `metadata`, `multimodal`, `mtp`, `supported_backends`, `split_siblings`; `model_id` omitted when unset). The envelope **is** the serialized `CatalogRow` with four show-only sections layered on top (`src/cli/show.rs::assemble_envelope`) — never a second hand-built projection:
+
+- `size` — `weights_bytes`, `shard_count`, `on_disk_total_bytes`, and a per-shard `shards` breakdown.
+- `arch_defaults` — the `yaml` and `builtin` knob sets for this (arch, GPU backend) pair.
+- `last_params` — the params of the last successful launch (`null` when never launched).
+- `running` — live supervisor info (`launch_id`, `state`, `port`, `resolved_ctx`, `ctx_clamped`), or `null`.
+
+The human output shows the same content as aligned key/value sections, including `multimodal` (`vision + audio`) and `mtp` (`embedded (N layers)` / `separate head`) rows under `metadata`.
 
 ### `llamastash start <model-ref>`
 
@@ -419,7 +450,7 @@ llamastash last-params [<ref>] [--json]
 
 `--json` wraps rows in `{"last_params": [...]}`. Exit `64` if `<ref>` resolves to a model with no recorded params yet — launch it once to populate.
 
-Each row's `params` object may carry an additive `backend_knobs` map (per-backend native tunables, keyed by descriptor id) — omitted when empty, so it is absent for every model today (no shipping backend declares native knobs). The same field rides the `start_model` IPC request body, also omitted when empty. See [`docs/architecture.md` § Backend-neutral substrate seams](architecture.md).
+Each row's `params` object may carry an additive `backend_knobs` map (per-backend native tunables, keyed by descriptor id) — omitted when empty, so it is absent for llama.cpp and Lemonade rows and present on ds4 ones (see [ds4 native knobs](#ds4-native-knobs)). The same field rides the `start_model` IPC request body, also omitted when empty. See [`docs/architecture.md` § Backend-neutral substrate seams](architecture.md).
 
 ### `llamastash daemon`
 
@@ -434,6 +465,66 @@ llamastash daemon status [--json]   # PID + uptime + connections + managed launc
 `daemon stop` calls the IPC `shutdown` RPC, then waits (up to 10 s) for the daemon process to actually exit before printing `daemon: stopped` — so `daemon stop && daemon start` never races the dying daemon's lockfile or its managed `lemond` umbrella. If teardown outlives the wait it falls back to `daemon: shutdown requested (still exiting, pid N)`. When `runtime.json` is missing (the IPC channel can't be opened because a stale daemon from an older version is holding the lockfile) pass `--force` (or `-f`) to fall back to a `SIGTERM` on the PID recorded in `daemon.pid`. The CLI auto-detects this state on every command and prints the exact `kill` / `--force` invocation needed.
 
 `daemon status --json` emits the raw `version` IPC response (the same `{name, version, protocol_version, pid, uptime_seconds, connections}` object an agent would get by hitting the UDS directly). The plain form is a human key/value block and is not a stable machine contract — agents should always use `--json`.
+
+## MTP speculative decoding
+
+**MTP (multi-token prediction)** speeds up decoding by letting the model guess several tokens ahead and verifying them in one forward pass — roughly a **2x decode speedup** at high draft acceptance. It is **output-equivalent** to normal decoding (the model still verifies every token), so it is safe to leave on.
+
+llamastash **auto-detects and enables it** for capable models. A model is MTP-capable when either:
+
+- it carries an **embedded** draft head (`{arch}.nextn_predict_layers > 0` — Qwen3.5/3.6, GLM-4.x, DeepSeek), or
+- a **separate** draft head sits next to it (the Gemma-4 shape, `mtp-*.gguf`, or a head named like a quant such as DeepSeek-V4's `…-MTP-Q4K-Q8_0-F32.gguf`).
+
+Heads are identified by what is inside the file, not by its name, because the name is genuinely ambiguous: plenty of published *models* wear `-MTP-` to advertise embedded draft layers. A head is excluded from the model list and paired with the model it drafts for; a model that merely says MTP in its name stays launchable.
+
+The `↯` glyph next to a model title (TUI) and the `mtp` block in `status` tell you whether MTP is capable and running: `enable` is your intent (auto/on/off), `active` is whether the serving backend actually dispatched with MTP, and `acceptance` is the latest draft-acceptance rate it reports (present once the model has served enough tokens; a backend that publishes no acceptance figures leaves it null).
+
+### Controlling it
+
+```bash
+llamastash start <model>                 # auto: MTP on when capable (default)
+llamastash start <model> --mtp off       # never use MTP for this launch
+llamastash start <model> --mtp on        # force on (warns + skips if not capable)
+llamastash start <model> --mtp-draft-n 5  # tokens drafted per step (backend default when unset)
+```
+
+`--mtp` is a **launch-only** setting (there is no `config.yaml` key for it); it persists in `last_params` and presets like any other launch choice. `--mtp-draft-n` works whichever backend serves the model. The TUI launch picker shows the same control as an `mtp` cycle row (auto/on/off), but only for MTP-capable models. Forcing it on a model that has no draft head **warns and skips** rather than failing the launch (emitting the flag blind is a hard server error). If you drive speculative decoding yourself through the `-- <extras>` tail, llamastash defers entirely and adds nothing.
+
+Under the hood, each backend maps this onto its own flags — the serving backend enables speculation with the resolved draft head (and `--mtp-draft-n` when set), emitted **before** the fit step so context reservation stays MTP-aware. **DeepSeek-V4 on the ds4 backend** uses ds4's own `mtp` / `mtp_draft` / `mtp_margin` native knobs, auto-pairing a sidecar found next to the model. ds4 publishes no draft-acceptance figure, so `acceptance` stays null on a ds4 launch even while MTP is active.
+
+ds4 cannot stream weights from disk and speculate at the same time — `ssd_streaming` and an MTP draft head are mutually exclusive in ds4-server. llamastash reconciles them before launching: whichever of the two it enabled on your behalf gives way (an auto-paired sidecar is dropped so a memory-pressured launch can still stream; auto-streaming is skipped so a head you asked for survives), and it refuses the launch up front when you set both explicitly. Watch for the notice in either direction.
+
+#### DSpark speculative decoding
+
+DSpark is ds4's second speculative engine for DeepSeek-V4 Flash: a support model that reads the target's hidden states and proposes up to five tokens per step, which the Flash model then verifies. It replaces the one-stage MTP head for that run rather than stacking with it, and it rides the same `mtp` knob — `mtp` points at the support GGUF, `dspark` turns the runtime on.
+
+```yaml
+presets:
+  DeepSeek-V4-Flash-...-0731.gguf:
+    entries:
+      dspark:
+        backend_knobs:
+          dspark: "true"
+          ssd_streaming: "false"   # streaming and a draft head are exclusive
+```
+
+Leave `mtp` unset and llamastash auto-pairs the support GGUF sitting beside the model (it declares its own `deepseek4-dspark` architecture, so it is matched by header, not by filename). With `dspark` on and no support file resolvable, the DSpark knobs are dropped with a notice instead of handing ds4-server a `--dspark` it will reject after the full weight load.
+
+**Measure before you trust it.** DSpark is experimental, and on current ds4 builds it is often a net decode *loss* even at high acceptance. The per-accepted-token replay ds4 runs to preserve greedy identity can cancel the whole speculative saving (upstream ds4 issues [#695](https://github.com/antirez/ds4/issues/695), [#731](https://github.com/antirez/ds4/issues/731), [#733](https://github.com/antirez/ds4/issues/733) report this on Metal and M3 Ultra at 70-83% acceptance; measured here on ROCm/gfx1151 at 80% acceptance, 13.7 t/s falls to 7.0 t/s). ds4 also emits no acceptance figure through its API, so llamastash cannot surface one. Check it yourself with `DS4_DSPARK_STATS=1` on the ds4 binary (counters flush on clean exit) or `DS4_DSPARK_PROBE=1` for per-cycle stage status.
+
+**Not every ds4 build implements it.** DSpark needs two GPU kernels that some backends stub out. On ROCm they returned failure until [ds4#761](https://github.com/antirez/ds4/pull/761), so DSpark loaded, logged `DSpark target-hidden capture enabled`, and then proposed nothing all session with no warning. A run showing `proposed=0` / `accept_rate=0.00%` in the stats above means the kernels are missing, not that the model is unsuited.
+
+Three further constraints come from ds4 itself, not llamastash: the support file is **checkpoint-specific** (a Flash 0731 support model pairs only with a Flash 0731 model, never an older one), decoding must be **greedy** — sampled requests ignore proposals — and DeepSeek-V4 PRO is unsupported. Speedup is workload-dependent: predictable continuations like code benefit most, while low-yield prompts can come out no faster or slightly slower, since drafting and verification are not free. ds4 publishes its acceptance counters only behind debug env vars, so llamastash reports no DSpark acceptance figure.
+
+### Getting the companion files
+
+`llamastash pull <repo>` now also fetches a model's companion siblings — the **mmproj** projector (multimodal) and any **MTP draft head** — so a pulled model arrives ready to launch:
+
+```bash
+llamastash pull owner/repo:model.gguf                 # base + one companion per kind (default)
+llamastash pull owner/repo:model.gguf --no-companions # base file only
+llamastash pull owner/repo:model.gguf --all-companions # every projector precision / head
+```
 
 ## ds4 backend
 
@@ -471,7 +562,7 @@ Routing is automatic and keys on a header-level compatibility predicate — arch
 
 ### ds4 native knobs
 
-ds4-server takes six backend-specific tunables that have no llama.cpp equivalent. Set them per-launch in the TUI launch picker or persist them in a preset; ds4 honors exactly one typed knob from the shared set — `ctx` (→ `--ctx`).
+ds4-server takes fourteen backend-specific tunables that have no llama.cpp equivalent. Set them per-launch in the TUI launch picker or persist them in a preset; ds4 honors exactly one typed knob from the shared set — `ctx` (→ `--ctx`).
 
 | Knob             | ds4-server flag      | What it does |
 | ---------------- | -------------------- | ------------ |
@@ -480,15 +571,26 @@ ds4-server takes six backend-specific tunables that have no llama.cpp equivalent
 | `threads`        | `--threads`          | CPU helper-thread count for host-side work |
 | `kv_disk_dir`    | `--kv-disk-dir`      | Directory for ds4's persistent disk KV cache (see privacy note below) |
 | `kv_disk_space_mb` | `--kv-disk-space-mb` | Disk KV cache budget in MB (ds4 default 4096 when enabled) |
-| `ssd_streaming`  | `--ssd-streaming`    | Stream weights from disk (below-RAM-floor mode; skips the admission gate) |
+| `ssd_streaming`  | `--ssd-streaming`    | Stream weights from disk (below-RAM-floor mode; skips the admission gate). Mutually exclusive with `mtp` |
+| `ssd_streaming_cache_experts` | `--ssd-streaming-cache-experts` | SSD streaming: resident routed-expert cap — exact count `N` or routed memory budget `NGB` (ds4 auto: 80% of the working set) |
+| `ssd_streaming_preload_experts` | `--ssd-streaming-preload-experts` | SSD streaming: upfront popularity preload count (DeepSeek auto-seeds when unset) |
+| `ssd_streaming_cold` | `--ssd-streaming-cold` | SSD streaming: skip the default popularity-based expert-cache preload |
+| `warm_weights`   | `--warm-weights`     | Touch mapped tensor pages at startup to reduce first-use stalls |
+| `quality`        | `--quality`          | Prefer exact kernels where faster approximate paths exist |
+| `mtp`            | `--mtp`              | Path to the MTP draft-head sidecar (auto-paired from a sibling when unset; see [MTP speculative decoding](#mtp-speculative-decoding)) |
+| `mtp_draft`      | `--mtp-draft`        | Tokens drafted per step (also set by the neutral `--mtp-draft-n`) |
+| `mtp_margin`     | `--mtp-margin`       | Acceptance margin for the draft verifier |
+| `dspark`         | `--dspark`           | DSpark block speculation off the support GGUF in `mtp` (greedy decoding only; see [DSpark](#dspark-speculative-decoding)) |
+| `dspark_confidence` | `--dspark-confidence` | Prune proposals below this confidence, `0`–`1` (ds4 default `0.7`; `0` forces fixed five-token blocks) |
+| `dspark_strict`  | `--dspark-strict`    | Load the DSpark support model but keep target-only decode — the comparison baseline |
 
 Any other ds4-server flag (`--kv-cache-*`, `--prefill-chunk`, …) rides the free-form extras tail after `--`, e.g. `start <model> -- --prefill-chunk 512`. The loopback/credential denylist still applies, extended for ds4 with `--cors` and `--dist-` — those are stripped/refused.
-
-> **Note on MTP:** DeepSeek-V4's MTP (speculative-decoding) sidecar GGUF exists on HuggingFace, but the `ds4-server` binary does not consume it (`--mtp` is a ds4-CLI-only flag). There is no MTP knob.
 
 ### Oversized models and below-floor hardware
 
 The DeepSeek-V4 GGUFs are 81–300+ GB; the practical RAM floor is roughly 128 GB on CUDA/ROCm and 96 GB on Metal. On a box below the floor, full residency out-of-memories. LlamaStash handles this for you: when a ds4 launch's resident estimate (~1.25× the weights, covering the expert cache + KV) exceeds free memory, it **auto-enables `ssd_streaming`** before spawn and prints a one-line notice (`ds4 needs ~N GiB resident but only M is free — enabled SSD streaming`). ds4-server then streams weights from disk under a bounded cache instead of OOM-killing mid-load. Set the **`ssd_streaming` native knob** yourself to force streaming on, or `ssd_streaming: false` to force full residency and skip the auto-enable. The knob is also the one launch where the pre-spawn admission gate is skipped (the on-disk size no longer maps to memory demand); this bypass keys on the native knob only — an extras-spelled `--ssd-streaming` still hits the admission gate. DeepSeek-V4's KV cache is modeled from the header (its two-tier compressed cache, ~0.5 GiB at 16k ctx and ~11 GiB at 1M for Flash), so the admission estimate is realistic at long context; the auto-streaming notice above is the memory signal to watch when residency is tight.
+
+Streaming rules out MTP speculation (ds4-server refuses the pair, and only after loading the whole model). When both would apply, llamastash drops whichever it enabled itself and says so; setting `ssd_streaming: true` and an `mtp` head together is refused before the load.
 
 ### The ds4 `/v1/models` menu
 
@@ -504,7 +606,7 @@ The daemon binds a single OpenAI-compatible HTTP proxy on `127.0.0.1:11435` (def
 
 The installable Agent Skills bundle for this flow lives under [`skills/llamastash/`](https://github.com/llamastash/llamastash/tree/main/skills/llamastash). Claude Code, OpenClaw, OpenCode, and similar harnesses can install it by copying that directory into their configured skills path.
 
-The proxy resolves `body.model` against the same fuzzy matcher `llamastash start <ref>` uses, forwards the request byte-for-byte to the matching `llama-server` child, and streams the response back. If the named model isn't running, the proxy auto-starts it (replaying `last_params`, else `arch_defaults`). If the launch fails and another model is already Ready, the proxy falls back to it and stamps `x-llamastash-served-by` + `x-llamastash-fallback-reason: launch_failed` headers on the response. Substitution is observable; no extra round-trip is needed to discover what served the request. The full mechanism — coalesced launches, family-MRU fallback selection, scope boundaries — is documented in [`docs/plans/2026-05-21-001-feat-proxy-router-plan.md`](https://github.com/llamastash/llamastash/blob/main/docs/plans/2026-05-21-001-feat-proxy-router-plan.md).
+The proxy resolves `body.model` against the same fuzzy matcher `llamastash start <ref>` uses, forwards the request byte-for-byte to the matching `llama-server` child, and streams the response back. If the named model isn't running, the proxy auto-starts it (replaying `last_params`, else `arch_defaults`). A model that is already *loading* is waited on rather than started again, no matter which surface launched it, so a request arriving mid-load never yields a second copy of the same model. The launch mode follows the endpoint that triggered it (`/v1/embeddings` starts the model in embedding mode, `/v1/rerank` in rerank mode), then the recorded `last_params` mode, then the GGUF's own hint; a model whose hint says `chat` is never started in embedding or rerank mode, since that would lock it out of chat completions for its whole lifetime. If the launch fails and another model is already Ready, the proxy falls back to it and stamps `x-llamastash-served-by` + `x-llamastash-fallback-reason: launch_failed` headers on the response. Substitution is observable; no extra round-trip is needed to discover what served the request. The full mechanism — coalesced launches, family-MRU fallback selection, scope boundaries — is documented in [`docs/plans/2026-05-21-001-feat-proxy-router-plan.md`](https://github.com/llamastash/llamastash/blob/main/docs/plans/2026-05-21-001-feat-proxy-router-plan.md).
 
 Routes served: `/v1/models`, `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/rerank`, the OpenAI `/v1/responses` (+ `/v1/responses/input_tokens`), and the Anthropic `/v1/messages` + `/v1/messages/count_tokens`.
 
@@ -644,8 +746,8 @@ Maintaining that `models` map by hand is the tedious part. Two ways to skip it:
 OpenAI-standard (`id` / `object` / `created` / `owned_by`) with **no
 capability field**, so nothing downstream can tell a chat model from an
 embedding or reranker off that endpoint alone. `list --json` *does* carry a
-per-model `mode_hint`, so generate the block from it and filter to just the
-chat models:
+per-model `mode_hint` (under the nested `metadata` block), so generate the block
+from it and filter to just the chat models:
 
 ```bash
 BASE="http://$(llamastash status --json | jq -r .proxy.listen)/v1"
@@ -655,10 +757,10 @@ llamastash list --json | jq --arg base "$BASE" '{
     name: "llamastash (local)",
     options: { baseURL: $base },
     models: ( .models
-      | map(select(.mode_hint == "chat"))
+      | map(select(.metadata.mode_hint == "chat"))
       | map({ (.name | sub("\\.gguf$"; "")):
               { name: (.name | sub("\\.gguf$"; "")),
-                limit: { context: .native_ctx } } })
+                limit: { context: .metadata.native_ctx } } })
       | add )
   }}}'
 ```
@@ -853,7 +955,7 @@ Non-interactive contract: when stdout isn't a terminal and `--recommended` is no
 
 ### `llamastash doctor`
 
-Read-only diagnostic (its one write is the memory-drift baseline refresh). Re-runs hardware detection, diffs against `_init_snapshot.json`, and emits findings with stable ids agents can branch on: `binary_missing`, `binary_digest_drift` (skipped on brew installs — routine `brew upgrade` legitimately rotates the digest), `hardware_drift`, `memory_drift`, `gtt_hint`, `snapshot_stale`, `config_mode_drift`, `remote_snapshot_unreachable`, plus two configured-server advisories — `server_binary_missing` (Warning: a `backend.<id>.servers[].binary` path no longer resolves) and `servers_configured` (Info: a summary of the resolvable servers and their device counts; silent when no `servers:` are configured). When the local benchmark snapshot looks stale, `doctor` probes the latest remote (the same one the recommender prefers) before judging `snapshot_stale`, so it only fires when no fresher snapshot is actually reachable; `LLAMASTASH_OFFLINE` skips that probe.
+Read-only diagnostic (its one write is the memory-drift baseline refresh). Re-runs hardware detection, diffs against `_init_snapshot.json`, and emits findings with stable ids agents can branch on: `binary_missing`, `binary_digest_drift` (skipped on brew installs — routine `brew upgrade` legitimately rotates the digest), `hardware_drift`, `memory_drift`, `gtt_hint`, `snapshot_stale`, `config_mode_drift`, `remote_snapshot_unreachable`, plus two configured-server advisories — `server_binary_missing` (Warning: a `backend.<id>.servers[].binary` path no longer resolves) and `servers_configured` (Info: a summary of the resolvable servers and their device counts; silent when no `servers:` are configured) — and two info-tier ds4 advisories that both honor the `LLAMASTASH_DS4` force: `ds4_unavailable` (the binary is absent but a compatible model is present — those still run on llama.cpp; the `fix_hint` carries the clone/`make` recipe, the `backend.ds4.servers` key, and a pointer to [ds4 backend](#ds4-backend); this is the only finding that scans discovery) and `ds4_disabled` (the binary is installed but `backend.ds4.enabled: false` and no force — `fix_hint` says re-enable, no scan). All of these ids are additive, so `schema_version` stays `2`; readers refuse only versions above their max. When the local benchmark snapshot looks stale, `doctor` probes the latest remote (the same one the recommender prefers) before judging `snapshot_stale`, so it only fires when no fresher snapshot is actually reachable; `LLAMASTASH_OFFLINE` skips that probe.
 
 ```
 llamastash doctor [--json]
@@ -938,8 +1040,24 @@ These are the defaults. Override any binding via the `keybindings:` block in `co
 | `Ctrl+S`                                      | Stop the focused running launch (any nav focus; opens a confirmation popup)                                                                                                                              |
 | `Ctrl+R`                                      | Restart the daemon (any nav focus; opens a confirmation popup)                                                                                                                                           |
 | `Ctrl+K`                                      | Kill the daemon entirely (List focus; opens a confirmation popup)                                                                                                                                        |
-| `Ctrl+D`                                      | Delete the focused model from disk (idle rows only: `NotLaunched` / `Stopped` — opens a confirmation popup; HF-cache models remove the entire `models--<owner>--<repo>` directory to reclaim blob bytes) |
+| `Ctrl+D`                                      | Delete the focused model from disk (idle rows only: `NotLaunched` / `Stopped` — opens a confirmation popup naming every file that goes). See [Deleting a model](#deleting-a-model).                       |
 | `Ctrl+X`                                      | Cancel the currently-active HF download (any focus; opens a confirmation popup; queued pulls stay in line — press again on the next promoted pull)                                                       |
+
+### Deleting a model
+
+`Ctrl+D` on an idle Models row removes the model *and everything on disk that belongs only to it*. Unlinking just the launch path would leave shards and companions behind, so the confirmation popup names the full set before you commit:
+
+| Also removed                            | When                                                                                                                                                     |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Shards 2..N of a split GGUF             | Always — a `*-00001-of-000NN.gguf` row owns its whole set.                                                                                                |
+| The `mmproj-*.gguf` projector           | Only when no other model in the folder pairs with it. A shared projector stays.                                                                            |
+| The separate `mtp-*.gguf` draft head    | Same rule as the projector.                                                                                                                               |
+| The HuggingFace cache blob behind a file | When the file is a snapshot symlink into its own repo's `blobs/`. Without this the bytes stay and the delete frees nothing.                               |
+| The whole `models--<owner>--<repo>` dir | Only when the row is the **last** model in that repo — then every revision, ref and blob goes. A repo holding a second quant takes the per-file path instead, so the survivor keeps its bytes. |
+
+An HF-shaped tree that is *not* under the configured cache root (an rsynced backup, a restored archive) never gets the recursive removal — it falls back to per-file unlinking.
+
+Refusals: a running, loading or errored launch (stop it first), and Lemonade registry models (delete those through Lemonade — there is no local GGUF).
 
 ### Mouse focus (opt-in)
 

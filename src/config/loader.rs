@@ -6,6 +6,7 @@ use std::{
   io::ErrorKind,
   net::{IpAddr, Ipv4Addr},
   path::{Path, PathBuf},
+  time::Duration,
 };
 
 use serde::{Deserialize, Serialize};
@@ -54,15 +55,18 @@ pub struct Config {
   pub custom_theme: Option<CustomThemeConfig>,
   pub model_paths: Vec<PathBuf>,
   pub disable_default_cache_paths: CachePathsConfig,
-  pub port_range: PortRange,
   pub keybindings: BTreeMap<String, String>,
+  /// GPU probe configuration, grouped under `gpu:`. Controls which
+  /// vendor tools the daemon spawns during initial and periodic
+  /// hardware detection.
+  #[serde(default)]
+  pub gpu: GpuConfig,
+  /// Daemon lifecycle configuration, grouped under `daemon:` — launch
+  /// port range, health-probe timeout, idle shutdown, and the
+  /// host-metrics sampler cadence.
+  #[serde(default)]
+  pub daemon: DaemonConfig,
   pub disable_scan: bool,
-  /// Per-launch health-probe timeout in seconds. Defaults to 120 s,
-  /// which is enough for the typical 7B–13B model on local NVMe but
-  /// can be tight for 70B+ on slow disks. Raise to e.g. 600 if you
-  /// hit `health probe timeout (last status 503)` for legitimate
-  /// loads.
-  pub probe_timeout_secs: u64,
   /// Opt into terminal mouse capture so a left-click can switch pane
   /// focus and pick a right-pane tab. Off by default: capturing the
   /// mouse pre-empts the terminal's native click-and-drag text
@@ -136,6 +140,67 @@ pub struct Config {
 /// right-full. Also the fallback when a user override sanitizes to empty.
 pub fn default_left_pane_ratios() -> Vec<u16> {
   vec![65, 100, 50, 35, 0]
+}
+
+/// Bounds on [`DaemonConfig::metrics_interval_secs`]. Below 1 s the
+/// sampler spends more time spawning `nvidia-smi` than sleeping; above
+/// 60 s the host pane is stale enough to look broken.
+const METRICS_INTERVAL_SECS_RANGE: std::ops::RangeInclusive<u64> = 1..=60;
+
+/// Daemon lifecycle configuration, grouped under `daemon:`.
+///
+/// The `*_secs` fields are the raw user-authored values; read them
+/// through the accessors ([`Self::metrics_interval`],
+/// [`Self::idle_timeout`]) so the clamp and the "0 disables" rule are
+/// applied identically everywhere.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "snake_case", deny_unknown_fields)]
+pub struct DaemonConfig {
+  /// Inclusive TCP port range the supervisor picks from when launching
+  /// a backend server.
+  pub port_range: PortRange,
+  /// Per-launch health-probe timeout in seconds. 120 s is enough for
+  /// the typical 7B–13B model on local NVMe but can be tight for 70B+
+  /// on slow disks. Raise to e.g. 600 if you hit `health probe timeout
+  /// (last status 503)` for legitimate loads.
+  pub probe_timeout_secs: u64,
+  /// Seconds of inactivity (no running models AND no attached clients)
+  /// before the daemon auto-shuts down. `0` (factory) disables the idle
+  /// timer — the daemon runs until explicitly stopped.
+  pub idle_timeout_secs: u64,
+  /// Host-metrics sampler cadence in seconds (CPU%, RAM, GPU
+  /// util/temp/VRAM). Factory `1` (1 Hz). Raising it reduces how often
+  /// `nvidia-smi` / `rocm-smi` are spawned, at the cost of a less
+  /// responsive host pane.
+  pub metrics_interval_secs: u64,
+}
+
+impl DaemonConfig {
+  /// Sampler cadence, clamped into `METRICS_INTERVAL_SECS_RANGE`. A
+  /// `0` would busy-loop the sampler, so it resolves to the 1 s floor
+  /// rather than disabling anything.
+  pub fn metrics_interval(&self) -> Duration {
+    Duration::from_secs(self.metrics_interval_secs.clamp(
+      *METRICS_INTERVAL_SECS_RANGE.start(),
+      *METRICS_INTERVAL_SECS_RANGE.end(),
+    ))
+  }
+
+  /// Idle-shutdown deadline, or `None` when the timer is disabled.
+  pub fn idle_timeout(&self) -> Option<Duration> {
+    (self.idle_timeout_secs > 0).then(|| Duration::from_secs(self.idle_timeout_secs))
+  }
+}
+
+impl Default for DaemonConfig {
+  fn default() -> Self {
+    Self {
+      port_range: PortRange::default(),
+      probe_timeout_secs: 120,
+      idle_timeout_secs: 0,
+      metrics_interval_secs: 1,
+    }
+  }
 }
 
 /// Sanitize a configured `left_pane_ratios` list: keep at most the first
@@ -863,6 +928,40 @@ pub enum DefaultLaunchMode {
   Inherited,
 }
 
+/// GPU probe configuration — which vendor tools the daemon spawns
+/// during initial and periodic hardware detection.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "snake_case", deny_unknown_fields)]
+pub struct GpuConfig {
+  /// When `true` (the default), the Vulkan fallback probe
+  /// (`vulkaninfo -j` / `--summary`) runs at startup and on periodic
+  /// re-probes. Set to `false` to skip it entirely — useful when a
+  /// native NVIDIA/AMD/Metal probe already covers all GPUs and you
+  /// don't want `vulkaninfo` spawning subprocesses.
+  pub enable_vulkan_probe: bool,
+  /// How often (in seconds) the daemon re-runs the full vendor probe
+  /// chain to catch GPU hotplug, a late driver load, or a CpuOnly →
+  /// detected transition. `0` disables periodic re-probes; the initial
+  /// probe at daemon start always runs. Factory `60`.
+  pub reprobe_interval_secs: u64,
+}
+
+impl GpuConfig {
+  /// Full re-probe period, or `None` when periodic re-probes are off.
+  pub fn reprobe_interval(&self) -> Option<Duration> {
+    (self.reprobe_interval_secs > 0).then(|| Duration::from_secs(self.reprobe_interval_secs))
+  }
+}
+
+impl Default for GpuConfig {
+  fn default() -> Self {
+    Self {
+      enable_vulkan_probe: true,
+      reprobe_interval_secs: 60,
+    }
+  }
+}
+
 impl Default for Config {
   fn default() -> Self {
     Self {
@@ -870,10 +969,10 @@ impl Default for Config {
       custom_theme: None,
       model_paths: Vec::new(),
       disable_default_cache_paths: CachePathsConfig::default(),
-      port_range: PortRange::default(),
       keybindings: BTreeMap::new(),
+      gpu: GpuConfig::default(),
+      daemon: DaemonConfig::default(),
       disable_scan: false,
-      probe_timeout_secs: 120,
       mouse_focus: false,
       arch_defaults: BTreeMap::new(),
       proxy: ProxyConfig::default(),
@@ -919,6 +1018,10 @@ impl Default for PortRange {
 pub struct LoadedConfig {
   pub config: Config,
   pub warning: Option<String>,
+  /// Legacy top-level keys that have moved under a nested block, as
+  /// `(old_path, new_path)`. Non-fatal — the config still loads, but the
+  /// old key does nothing, so the CLI says so once at startup.
+  pub relocated_keys: Vec<(&'static str, &'static str)>,
 }
 
 /// Resolve which config file to load, given an optional CLI override, an
@@ -952,11 +1055,38 @@ pub fn config_path(cli_override: Option<PathBuf>) -> Option<PathBuf> {
   )
 }
 
+/// Top-level keys that moved into a nested block, and where they went.
+///
+/// The top-level `Config` tolerates unknown keys on purpose (forward
+/// compat), which means a moved key is silently ignored and the user
+/// quietly loses the setting. Naming them keeps a breaking rename from
+/// being invisible.
+const RELOCATED_KEYS: &[(&str, &str)] = &[
+  ("port_range", "daemon.port_range"),
+  ("probe_timeout_secs", "daemon.probe_timeout_secs"),
+];
+
+/// Legacy top-level keys still present in `contents`, as `(old, new)`.
+fn relocated_keys(contents: &str) -> Vec<(&'static str, &'static str)> {
+  let Ok(doc) = yaml_serde::from_str::<yaml_serde::Value>(contents) else {
+    return Vec::new();
+  };
+  let Some(map) = doc.as_mapping() else {
+    return Vec::new();
+  };
+  RELOCATED_KEYS
+    .iter()
+    .filter(|(old, _)| map.contains_key(yaml_serde::Value::String((*old).to_string())))
+    .copied()
+    .collect()
+}
+
 fn parse_config(contents: &str, path: &Path) -> LoadedConfig {
   match yaml_serde::from_str::<Config>(contents) {
     Ok(config) => LoadedConfig {
       config,
       warning: None,
+      relocated_keys: relocated_keys(contents),
     },
     Err(error) => LoadedConfig {
       config: Config::default(),
@@ -965,6 +1095,7 @@ fn parse_config(contents: &str, path: &Path) -> LoadedConfig {
         path.display(),
         error
       )),
+      relocated_keys: Vec::new(),
     },
   }
 }
@@ -991,6 +1122,7 @@ pub fn load_config_from_path(path: &Path) -> LoadedConfig {
             "config path {} is not a regular file (named pipe, device, or directory)",
             path.display()
           )),
+          relocated_keys: Vec::new(),
         };
       }
       if meta.len() > MAX_CONFIG_BYTES {
@@ -1002,6 +1134,7 @@ pub fn load_config_from_path(path: &Path) -> LoadedConfig {
             meta.len(),
             MAX_CONFIG_BYTES
           )),
+          relocated_keys: Vec::new(),
         };
       }
     }
@@ -1016,6 +1149,7 @@ pub fn load_config_from_path(path: &Path) -> LoadedConfig {
           path.display(),
           error
         )),
+        relocated_keys: Vec::new(),
       };
     }
   }
@@ -1029,6 +1163,7 @@ pub fn load_config_from_path(path: &Path) -> LoadedConfig {
         path.display(),
         error
       )),
+      relocated_keys: Vec::new(),
     },
   }
 }
@@ -1078,6 +1213,51 @@ impl std::fmt::Display for ScanSettingsError {
 }
 
 impl std::error::Error for ScanSettingsError {}
+
+/// Validate that `daemon.port_range` can yield a port. An inverted or
+/// zero-start range binds nothing, so every launch would fail — but the
+/// allocator is the only thing that checks, and it doesn't run until the
+/// first `start`. Without this the daemon comes up healthy and the typo
+/// surfaces much later as a launch failure that names no config key.
+pub fn validate_port_range(range: &PortRange) -> Result<(), PortRangeError> {
+  if range.start == 0 {
+    return Err(PortRangeError::ZeroStart);
+  }
+  if range.end < range.start {
+    return Err(PortRangeError::Inverted {
+      start: range.start,
+      end: range.end,
+    });
+  }
+  Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PortRangeError {
+  ZeroStart,
+  Inverted { start: u16, end: u16 },
+}
+
+impl std::fmt::Display for PortRangeError {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      Self::ZeroStart => write!(
+        f,
+        "`daemon.port_range.start` is 0, which is not a bindable port — \
+         set it to the first port llamastash may launch a model on \
+         (factory: 41100)."
+      ),
+      Self::Inverted { start, end } => write!(
+        f,
+        "`daemon.port_range` is inverted: start {start} is above end {end}, \
+         so no port can be allocated. Swap them, or use the factory range \
+         41100-41300."
+      ),
+    }
+  }
+}
+
+impl std::error::Error for PortRangeError {}
 
 #[cfg(test)]
 mod tests {
@@ -1469,9 +1649,10 @@ model_paths:
   - /mnt/storage/gguf
 disable_default_cache_paths:
   ollama: true
-port_range:
-  start: 50000
-  end: 50100
+daemon:
+  port_range:
+    start: 50000
+    end: 50100
 keybindings:
   quit: ctrl+q
 ",
@@ -1493,7 +1674,7 @@ keybindings:
     assert!(!loaded.config.disable_default_cache_paths.huggingface);
     assert!(!loaded.config.disable_default_cache_paths.lm_studio);
     assert_eq!(
-      loaded.config.port_range,
+      loaded.config.daemon.port_range,
       PortRange {
         start: 50000,
         end: 50100
@@ -1522,7 +1703,7 @@ keybindings:
   fn load_config_from_path_malformed_yaml_uses_defaults_with_warning() {
     let dir = temp_test_dir("malformed");
     let path = dir.join("config.yaml");
-    fs::write(&path, "theme: latte\nport_range: not-a-mapping").expect("write failed");
+    fs::write(&path, "theme: latte\ndaemon: not-a-mapping").expect("write failed");
 
     let loaded = load_config_from_path(&path);
 
@@ -1566,9 +1747,211 @@ keybindings:
 
     assert!(loaded.warning.is_none());
     assert_eq!(loaded.config.theme, ThemeName::GruvboxDark);
-    assert_eq!(loaded.config.port_range, PortRange::default());
+    assert_eq!(loaded.config.daemon.port_range, PortRange::default());
     assert!(loaded.config.model_paths.is_empty());
     fs::remove_dir_all(dir).expect("temp test dir should be removed");
+  }
+
+  #[test]
+  fn validate_port_range_accepts_usable_ranges() {
+    assert!(validate_port_range(&PortRange::default()).is_ok());
+    // A one-port range is legitimate — pinning every launch to one port.
+    assert!(validate_port_range(&PortRange {
+      start: 41100,
+      end: 41100
+    })
+    .is_ok());
+    assert!(validate_port_range(&PortRange {
+      start: 1,
+      end: u16::MAX
+    })
+    .is_ok());
+  }
+
+  /// The allocator rejects these, but not until the first launch — by
+  /// which point nothing points back at `config.yaml`.
+  #[test]
+  fn validate_port_range_rejects_an_inverted_range() {
+    let err = validate_port_range(&PortRange {
+      start: 46000,
+      end: 45000,
+    })
+    .expect_err("an inverted range allocates nothing");
+    assert_eq!(
+      err,
+      PortRangeError::Inverted {
+        start: 46000,
+        end: 45000
+      }
+    );
+    let msg = err.to_string();
+    assert!(
+      msg.contains("daemon.port_range"),
+      "the message must name the config key, got: {msg}"
+    );
+  }
+
+  #[test]
+  fn validate_port_range_rejects_a_zero_start() {
+    let err = validate_port_range(&PortRange { start: 0, end: 0 })
+      .expect_err("port 0 is not bindable as a range start");
+    assert_eq!(err, PortRangeError::ZeroStart);
+    assert!(err.to_string().contains("daemon.port_range.start"));
+  }
+
+  /// The top-level parse tolerates unknown keys, so a moved key would
+  /// otherwise be dropped in silence and the user would just lose the
+  /// setting.
+  #[test]
+  fn a_legacy_top_level_key_is_reported_as_relocated() {
+    let dir = temp_test_dir("relocated-keys");
+    let path = dir.join("config.yaml");
+    fs::write(
+      &path,
+      "theme: latte\nport_range:\n  start: 46000\n  end: 46100\nprobe_timeout_secs: 600\n",
+    )
+    .expect("write failed");
+
+    let loaded = load_config_from_path(&path);
+    assert!(loaded.warning.is_none(), "a moved key must not be fatal");
+    assert_eq!(
+      loaded.relocated_keys,
+      vec![
+        ("port_range", "daemon.port_range"),
+        ("probe_timeout_secs", "daemon.probe_timeout_secs"),
+      ]
+    );
+    // Still ignored, as the forward-compat contract says — the point is
+    // that the user is told.
+    assert_eq!(loaded.config.daemon.port_range, PortRange::default());
+    assert_eq!(loaded.config.theme, ThemeName::Latte);
+    fs::remove_dir_all(dir).expect("temp test dir should be removed");
+  }
+
+  #[test]
+  fn a_config_using_the_new_nesting_reports_nothing_relocated() {
+    let dir = temp_test_dir("no-relocated-keys");
+    let path = dir.join("config.yaml");
+    fs::write(
+      &path,
+      "daemon:\n  port_range:\n    start: 46000\n    end: 46100\n",
+    )
+    .expect("write failed");
+
+    let loaded = load_config_from_path(&path);
+    assert!(loaded.relocated_keys.is_empty());
+    assert_eq!(loaded.config.daemon.port_range.start, 46000);
+    fs::remove_dir_all(dir).expect("temp test dir should be removed");
+  }
+
+  /// These blocks are brand-new key names, so a typo is otherwise an
+  /// undetectable no-op. Matches the `proxy:` posture.
+  #[test]
+  fn a_typo_inside_the_gpu_or_daemon_block_is_rejected() {
+    for body in [
+      "gpu:\n  enable_vulcan_probe: false\n",
+      "daemon:\n  idle_timout_secs: 60\n",
+    ] {
+      let dir = temp_test_dir("block-typo");
+      let path = dir.join("config.yaml");
+      fs::write(&path, body).expect("write failed");
+
+      let loaded = load_config_from_path(&path);
+      let warning = loaded
+        .warning
+        .unwrap_or_else(|| panic!("a typo in {body:?} must be rejected, not ignored"));
+      assert!(
+        warning.contains("unknown field"),
+        "warning should name the unknown field, got: {warning}"
+      );
+      fs::remove_dir_all(dir).expect("temp test dir should be removed");
+    }
+  }
+
+  #[test]
+  fn gpu_and_daemon_blocks_deserialize_from_yaml() {
+    let dir = temp_test_dir("gpu-daemon-blocks");
+    let path = dir.join("config.yaml");
+    fs::write(
+      &path,
+      r"
+gpu:
+  enable_vulkan_probe: false
+  reprobe_interval_secs: 300
+daemon:
+  port_range:
+    start: 42000
+    end: 42010
+  probe_timeout_secs: 600
+  idle_timeout_secs: 1800
+  metrics_interval_secs: 10
+",
+    )
+    .expect("config fixture should be written");
+
+    let cfg = load_config_from_path(&path).config;
+    assert!(!cfg.gpu.enable_vulkan_probe);
+    assert_eq!(cfg.gpu.reprobe_interval(), Some(Duration::from_secs(300)));
+    assert_eq!(cfg.daemon.port_range.start, 42000);
+    assert_eq!(cfg.daemon.probe_timeout_secs, 600);
+    assert_eq!(cfg.daemon.idle_timeout(), Some(Duration::from_secs(1800)));
+    assert_eq!(cfg.daemon.metrics_interval(), Duration::from_secs(10));
+    fs::remove_dir_all(dir).expect("temp test dir should be removed");
+  }
+
+  /// A partially-specified block keeps the factory value for every key
+  /// the user didn't write.
+  #[test]
+  fn a_partial_daemon_block_keeps_factory_values_for_the_rest() {
+    let dir = temp_test_dir("partial-daemon-block");
+    let path = dir.join("config.yaml");
+    fs::write(&path, "daemon:\n  idle_timeout_secs: 60\n").expect("write failed");
+
+    let cfg = load_config_from_path(&path).config;
+    assert_eq!(cfg.daemon.idle_timeout(), Some(Duration::from_secs(60)));
+    assert_eq!(cfg.daemon.port_range, PortRange::default());
+    assert_eq!(cfg.daemon.probe_timeout_secs, 120);
+    assert_eq!(cfg.daemon.metrics_interval(), Duration::from_secs(1));
+    fs::remove_dir_all(dir).expect("temp test dir should be removed");
+  }
+
+  #[test]
+  fn absent_gpu_and_daemon_blocks_fall_back_to_factory() {
+    let cfg = Config::default();
+    assert!(cfg.gpu.enable_vulkan_probe);
+    assert_eq!(cfg.gpu.reprobe_interval(), Some(Duration::from_secs(60)));
+    assert_eq!(cfg.daemon.idle_timeout(), None);
+    assert_eq!(cfg.daemon.metrics_interval(), Duration::from_secs(1));
+  }
+
+  #[test]
+  fn a_zero_reprobe_or_idle_value_disables_that_timer() {
+    let gpu = GpuConfig {
+      reprobe_interval_secs: 0,
+      ..Default::default()
+    };
+    assert_eq!(gpu.reprobe_interval(), None);
+    let daemon = DaemonConfig {
+      idle_timeout_secs: 0,
+      ..Default::default()
+    };
+    assert_eq!(daemon.idle_timeout(), None);
+  }
+
+  /// Unlike the two timers, `0` here is a reset rather than an off
+  /// switch — a zero-length tick would busy-loop the sampler.
+  #[test]
+  fn metrics_interval_clamps_into_range() {
+    let at_zero = DaemonConfig {
+      metrics_interval_secs: 0,
+      ..Default::default()
+    };
+    assert_eq!(at_zero.metrics_interval(), Duration::from_secs(1));
+    let too_slow = DaemonConfig {
+      metrics_interval_secs: u64::MAX,
+      ..Default::default()
+    };
+    assert_eq!(too_slow.metrics_interval(), Duration::from_secs(60));
   }
 
   #[test]
@@ -1576,7 +1959,7 @@ keybindings:
     let cfg = Config::default();
     assert_eq!(cfg.theme, ThemeName::Macchiato);
     assert_eq!(
-      cfg.port_range,
+      cfg.daemon.port_range,
       PortRange {
         start: 41100,
         end: 41300

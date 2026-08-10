@@ -69,6 +69,7 @@ fn row_for(entry: &ModelEntry) -> DiscoveredModel {
       reasoning_hint: false,
       mode_hint: mode_hint_from_labels(&entry.labels),
       weights_bytes: entry.size.map(|gb| (gb * 1e9) as u64),
+      mtp: None,
     }),
     parse_error: None,
     split_siblings: Vec::new(),
@@ -76,11 +77,11 @@ fn row_for(entry: &ModelEntry) -> DiscoveredModel {
     // Lemonade serves registry models by name, not local GGUFs — there's no
     // companion projector to detect, so no multimodal signal.
     multimodal: None,
-    // A registry model runs on Lemonade and nowhere else — it's not a local
-    // GGUF, so no other backend can serve it. Recording that here keeps the
-    // launch picker's server row scoped to Lemonade's own server(s) instead of
-    // falling back to the whole host catalog.
+    // Registry-served, not a local GGUF — never ds4-routable, and it runs on
+    // Lemonade and nowhere else, so scope the launch picker's server row to
+    // Lemonade's own server(s) instead of the whole host catalog.
     supported_backends: vec![crate::backend::lemonade::LEMONADE_BACKEND_ID.to_string()],
+    mtp_head: None,
   }
 }
 

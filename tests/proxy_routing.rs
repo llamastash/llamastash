@@ -77,6 +77,7 @@ fn fake_metadata(arch: &str) -> ModelMetadata {
     reasoning_hint: false,
     mode_hint: ModeHint::Chat,
     weights_bytes: Some(4_000_000_000),
+    mtp: None,
   }
 }
 
@@ -93,6 +94,7 @@ fn discovered(path: &str, display_label: Option<&str>, arch: &str) -> Discovered
     display_label: display_label.map(str::to_string),
     multimodal: None,
     supported_backends: Vec::new(),
+    mtp_head: None,
   }
 }
 
