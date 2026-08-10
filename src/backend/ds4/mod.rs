@@ -143,6 +143,21 @@ pub fn is_ds4_alias(id: &str) -> bool {
 /// The one `general.architecture` ds4 serves.
 pub const DS4_ARCH: &str = "deepseek4";
 
+/// Arch the DSpark support GGUF declares. Not the `_mtp_support` shape the
+/// generic head lookup derives, so pairing it needs the arch spelled out.
+const DSPARK_ARCH: &str = "deepseek4-dspark";
+
+/// Is DSpark switched on for this launch? `--dspark` and `--dspark-strict`
+/// both load the support model, so either one needs a paired `--mtp` file.
+fn dspark_on(params: &LaunchParams) -> bool {
+  ["dspark", "dspark_strict"].iter().any(|k| {
+    matches!(
+      params.backend_knobs.get(*k),
+      Some(crate::config::KnobValue::Set(v)) if v == "true"
+    )
+  })
+}
+
 /// The **ds4-compatibility predicate** — the single routing signal (D-compat).
 ///
 /// A GGUF is ds4-compatible when its arch is `deepseek4` **and** its
@@ -361,6 +376,24 @@ pub const DS4_NATIVE_KNOBS: &[NativeKnobDescriptor] = &[
     description: "verifier confidence margin for fast MTP acceptance (ds4 default 3)",
     kind: NativeKnobKind::FreeText,
   },
+  NativeKnobDescriptor {
+    id: "dspark",
+    label: "DSpark",
+    description: "block speculative decoding off the DSpark support GGUF in `mtp` (greedy only)",
+    kind: NativeKnobKind::Bool,
+  },
+  NativeKnobDescriptor {
+    id: "dspark_confidence",
+    label: "DSpark confidence",
+    description: "prune proposals below this confidence, 0..1 (ds4 default 0.7; 0 = fixed blocks)",
+    kind: NativeKnobKind::FreeText,
+  },
+  NativeKnobDescriptor {
+    id: "dspark_strict",
+    label: "DSpark strict",
+    description: "load the DSpark support model but keep target-only decode (comparison baseline)",
+    kind: NativeKnobKind::Bool,
+  },
 ];
 
 /// `id → ds4-server flag head` mapping consumed by
@@ -386,6 +419,9 @@ const DS4_FLAG_MAP: &[(&str, &str)] = &[
   ("mtp", "--mtp"),
   ("mtp_draft", "--mtp-draft"),
   ("mtp_margin", "--mtp-margin"),
+  ("dspark", "--dspark"),
+  ("dspark_confidence", "--dspark-confidence"),
+  ("dspark_strict", "--dspark-strict"),
 ];
 
 /// Resolve the `ds4-server` binary: an explicit `ds4.binary` config path
@@ -772,10 +808,16 @@ impl Backend for Ds4Backend {
       )
     {
       // ds4 serves one arch, so the head lookup can key on it directly instead
-      // of re-reading the model header for a value already known here.
-      if let Some(head) =
+      // of re-reading the model header for a value already known here. With
+      // `dspark` on, the DSpark support GGUF is the only head that will do —
+      // it occupies the same `--mtp` slot but declares its own arch, and ds4
+      // refuses `--dspark` without a file.
+      let head = if dspark_on(params) {
+        crate::discovery::scanner::find_draft_head(&params.model_path, Some(DSPARK_ARCH))
+      } else {
         crate::discovery::scanner::find_mtp_head(&params.model_path, Some(DS4_ARCH))
-      {
+      };
+      if let Some(head) = head {
         log::info!("ds4: auto-paired MTP sidecar {}", head.display());
         params.backend_knobs.insert(
           "mtp".to_string(),
@@ -783,6 +825,26 @@ impl Backend for Ds4Backend {
         );
         out.auto_set.insert("mtp".to_string());
       }
+    }
+    // `--dspark` without `--mtp` is a hard ds4-server refusal, and it only
+    // surfaces after the multi-minute model load. Catch it here instead: no
+    // support file resolved means the DSpark knobs come back off.
+    if dspark_on(params)
+      && !matches!(
+        params.backend_knobs.get("mtp"),
+        Some(crate::config::KnobValue::Set(v)) if !v.is_empty()
+      )
+    {
+      for k in ["dspark", "dspark_confidence", "dspark_strict"] {
+        params.backend_knobs.remove(k);
+        out.auto_set.remove(k);
+      }
+      out.warnings.push(
+        "ds4 needs the DSpark support GGUF to speculate — none found next to the model, so \
+         DSpark is off for this launch. Download it (`DeepSeek-V4-Flash-DSpark-support-*.gguf`, \
+         checkpoint-matched) or point `mtp` at it."
+          .to_string(),
+      );
     }
     // The neutral per-step draft count maps onto ds4's own draft flag, so the
     // one `--mtp-draft-n` works whichever backend serves the model. Only when a
@@ -1259,13 +1321,13 @@ mod tests {
     let descs = b.native_knobs();
     assert_eq!(
       descs.len(),
-      14,
-      "ds4 exposes 14 native knobs (6 base + 3 ssd-streaming tuning + warm_weights/quality + the MTP trio)"
+      17,
+      "ds4 exposes 17 native knobs (6 base + 3 ssd-streaming tuning + warm_weights/quality + the MTP trio + the DSpark trio)"
     );
     let mut ids: Vec<&str> = descs.iter().map(|d| d.id).collect();
     ids.sort();
     ids.dedup();
-    assert_eq!(ids.len(), 14, "ids are unique persistence keys");
+    assert_eq!(ids.len(), 17, "ids are unique persistence keys");
     for d in descs {
       assert!(!d.label.is_empty(), "{} has a label", d.id);
       assert!(!d.description.is_empty(), "{} has a description", d.id);
@@ -1476,6 +1538,39 @@ mod tests {
     assert_eq!(mtp_stream_conflict(true, true, false, false), None);
     assert_eq!(mtp_stream_conflict(false, false, true, false), None);
     assert_eq!(mtp_stream_conflict(false, false, false, true), None);
+  }
+
+  #[test]
+  fn dspark_on_reads_either_switch() {
+    let mut p = LaunchParams::new(PathBuf::from("/m/a.gguf"), LaunchMode::Chat);
+    assert!(!dspark_on(&p));
+    p.backend_knobs
+      .insert("dspark".into(), KnobValue::Set("false".into()));
+    assert!(!dspark_on(&p), "an off switch is not on");
+    p.backend_knobs
+      .insert("dspark".into(), KnobValue::Set("true".into()));
+    assert!(dspark_on(&p));
+    // `--dspark-strict` loads the support model too, so it needs a head just
+    // the same.
+    p.backend_knobs.remove("dspark");
+    p.backend_knobs
+      .insert("dspark_strict".into(), KnobValue::Set("true".into()));
+    assert!(dspark_on(&p));
+  }
+
+  #[test]
+  fn dspark_knobs_translate_to_ds4_flags() {
+    let mut p = LaunchParams::new(PathBuf::from("/m/a.gguf"), LaunchMode::Chat);
+    p.backend_knobs
+      .insert("mtp".into(), KnobValue::Set("/m/support.gguf".into()));
+    p.backend_knobs
+      .insert("dspark".into(), KnobValue::Set("true".into()));
+    p.backend_knobs
+      .insert("dspark_confidence".into(), KnobValue::Set("0.5".into()));
+    let a = argv_strings(&p, 8000);
+    assert!(a.windows(2).any(|w| w == ["--mtp", "/m/support.gguf"]));
+    assert!(a.iter().any(|s| s == "--dspark"));
+    assert!(a.windows(2).any(|w| w == ["--dspark-confidence", "0.5"]));
   }
 
   /// Spin up a tiny single-shot HTTP responder on an OS-assigned loopback port,

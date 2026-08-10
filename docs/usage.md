@@ -492,6 +492,26 @@ Under the hood, each backend maps this onto its own flags — the serving backen
 
 ds4 cannot stream weights from disk and speculate at the same time — `ssd_streaming` and an MTP draft head are mutually exclusive in ds4-server. llamastash reconciles them before launching: whichever of the two it enabled on your behalf gives way (an auto-paired sidecar is dropped so a memory-pressured launch can still stream; auto-streaming is skipped so a head you asked for survives), and it refuses the launch up front when you set both explicitly. Watch for the notice in either direction.
 
+#### DSpark speculative decoding
+
+DSpark is ds4's second speculative engine for DeepSeek-V4 Flash: a support model that reads the target's hidden states and proposes up to five tokens per step, which the Flash model then verifies. It replaces the one-stage MTP head for that run rather than stacking with it, and it rides the same `mtp` knob — `mtp` points at the support GGUF, `dspark` turns the runtime on.
+
+```yaml
+presets:
+  DeepSeek-V4-Flash-...-0731.gguf:
+    entries:
+      dspark:
+        backend_knobs:
+          dspark: "true"
+          ssd_streaming: "false"   # streaming and a draft head are exclusive
+```
+
+Leave `mtp` unset and llamastash auto-pairs the support GGUF sitting beside the model (it declares its own `deepseek4-dspark` architecture, so it is matched by header, not by filename). With `dspark` on and no support file resolvable, the DSpark knobs are dropped with a notice instead of handing ds4-server a `--dspark` it will reject after the full weight load.
+
+**Backend support is not universal.** DSpark's proposer needs a non-causal attention op that ds4 implements for Metal and CUDA; on ROCm (verified on gfx1151 / Radeon 8060S, ds4 build 2026-08-09) it fails every cycle — `noncausal_attn=failed`, `proposed=0`, `accept_rate=0.00%` — so DSpark costs a little overhead and returns nothing. ds4-server prints no warning in that case; confirm with `DS4_DSPARK_STATS=1` (acceptance flushes on clean exit) or `DS4_DSPARK_PROBE=1` (per-cycle stage status) before trusting a speedup.
+
+Three further constraints come from ds4 itself, not llamastash: the support file is **checkpoint-specific** (a Flash 0731 support model pairs only with a Flash 0731 model, never an older one), decoding must be **greedy** — sampled requests ignore proposals — and DeepSeek-V4 PRO is unsupported. Speedup is workload-dependent: predictable continuations like code benefit most, while low-yield prompts can come out no faster or slightly slower, since drafting and verification are not free. ds4 publishes its acceptance counters only behind debug env vars, so llamastash reports no DSpark acceptance figure.
+
 ### Getting the companion files
 
 `llamastash pull <repo>` now also fetches a model's companion siblings — the **mmproj** projector (multimodal) and any **MTP draft head** — so a pulled model arrives ready to launch:
@@ -556,6 +576,9 @@ ds4-server takes fourteen backend-specific tunables that have no llama.cpp equiv
 | `mtp`            | `--mtp`              | Path to the MTP draft-head sidecar (auto-paired from a sibling when unset; see [MTP speculative decoding](#mtp-speculative-decoding)) |
 | `mtp_draft`      | `--mtp-draft`        | Tokens drafted per step (also set by the neutral `--mtp-draft-n`) |
 | `mtp_margin`     | `--mtp-margin`       | Acceptance margin for the draft verifier |
+| `dspark`         | `--dspark`           | DSpark block speculation off the support GGUF in `mtp` (greedy decoding only; see [DSpark](#dspark-speculative-decoding)) |
+| `dspark_confidence` | `--dspark-confidence` | Prune proposals below this confidence, `0`–`1` (ds4 default `0.7`; `0` forces fixed five-token blocks) |
+| `dspark_strict`  | `--dspark-strict`    | Load the DSpark support model but keep target-only decode — the comparison baseline |
 
 Any other ds4-server flag (`--kv-cache-*`, `--prefill-chunk`, …) rides the free-form extras tail after `--`, e.g. `start <model> -- --prefill-chunk 512`. The loopback/credential denylist still applies, extended for ds4 with `--cors` and `--dist-` — those are stripped/refused.
 

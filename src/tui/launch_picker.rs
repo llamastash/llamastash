@@ -1975,7 +1975,7 @@ mod tests {
     // Unset → the model's own backend with its native knob set.
     s.seed_native_descriptors();
     assert_eq!(s.active_backend_id(), "ds4");
-    assert_eq!(s.native_descriptors.len(), 14);
+    assert_eq!(s.native_descriptors.len(), 17);
     // Pick the llamacpp server → knob set swaps to llama.cpp (no native rows).
     s.selected_server = Some("llamacpp-rocm".into());
     s.seed_native_descriptors();
@@ -2311,8 +2311,8 @@ mod tests {
     s.seed_native_descriptors();
     assert_eq!(
       s.native_descriptors.len(),
-      14,
-      "ds4 must surface its fourteen native knobs (6 base + 3 ssd-streaming tuning + warm_weights/quality + the MTP trio)"
+      17,
+      "ds4 must surface its seventeen native knobs (6 base + 3 ssd-streaming tuning + warm_weights/quality + the MTP trio + the DSpark trio)"
     );
   }
 

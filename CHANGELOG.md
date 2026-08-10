@@ -4,9 +4,13 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 ## [Unreleased]
 
+### Added
+
+- **DSpark speculative decoding on ds4.** Three new ds4 native knobs (14 → 17) — `dspark`, `dspark_confidence`, `dspark_strict` — drive DeepSeek's DSpark support model through ds4-server's `--mtp` slot. The support GGUF auto-pairs from a sibling by header (it declares its own `deepseek4-dspark` arch), and turning DSpark on with no support file resolvable drops the knobs with a notice instead of letting ds4-server refuse the launch after a full weight load. See `docs/usage.md#dspark-speculative-decoding`.
+
 ### Fixed
 
-- **A preset's `backend_knobs` were dropped at launch.** `--preset <name>` carried the entry's `ctx` and `extras` but silently discarded its native knobs, so a preset pinning ds4's `mtp` / `ssd_streaming` launched without them — and the auto-resolver then overrode the very value the preset had set. Presets now carry native knobs through, and a model's `default:` preset contributes them ahead of `last_params`.
+- **A DSpark support GGUF scanned as a launchable model.** Draft-head detection gated its header read on an `mtp` token in the filename, which DeepSeek's DSpark support file does not carry, so a tokenizer-less support file appeared in `list` as a startable model.
 
 ## [0.1.0] — 2026-08-09
 

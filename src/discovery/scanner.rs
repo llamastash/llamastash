@@ -172,12 +172,18 @@ pub(crate) fn is_mtp_companion(path: &Path) -> bool {
     .unwrap_or(false)
 }
 
-/// Does the filename carry a delimited `mtp` token at all? The cheap gate in
-/// front of [`is_mtp_head_file`]'s header read: heads are published *as* MTP
-/// files, so a name with no `mtp` in it never earns the extra open.
+/// Does the filename carry a delimited draft-head token at all? The cheap gate
+/// in front of [`is_mtp_head_file`]'s header read: heads are published *as*
+/// draft files, so a name with neither token never earns the extra open.
+///
+/// `dspark` rides here too — DeepSeek's DSpark support file drafts through the
+/// same `--mtp` slot and its header is already head-shaped (`mtp.*` tensors,
+/// no tokenizer), but it spells none of that in its name
+/// (`DeepSeek-V4-Flash-DSpark-support-0731.gguf`). Without this it scanned as a
+/// launchable, tokenizer-less model.
 fn name_mentions_mtp(path: &Path) -> bool {
   static RE_MTP: OnceLock<Regex> = OnceLock::new();
-  let re = RE_MTP.get_or_init(|| Regex::new(r"(?:^|[-._])mtp(?:$|[-._])").unwrap());
+  let re = RE_MTP.get_or_init(|| Regex::new(r"(?:^|[-._])(?:mtp|dspark)(?:$|[-._])").unwrap());
   path
     .file_stem()
     .and_then(|n| n.to_str())
@@ -499,6 +505,17 @@ fn detect_multimodal(model_path: &Path) -> Option<Multimodal> {
 /// 3. else, a single anonymous `mtp.gguf` catch-all is used; anything more
 ///    ambiguous yields `None` (the user can pair a head explicitly).
 pub fn find_mtp_head(model_path: &Path, model_arch: Option<&str>) -> Option<PathBuf> {
+  // The arch a head must declare to draft for this model (`deepseek4` →
+  // `deepseek4_mtp_support`).
+  let head_arch = model_arch.map(|a| format!("{a}{MTP_ARCH_SUFFIX}"));
+  find_draft_head(model_path, head_arch.as_deref())
+}
+
+/// [`find_mtp_head`] with the head architecture supplied verbatim instead of
+/// derived from the model's. Lets a backend pair a head whose arch is not the
+/// `<model arch>_mtp_support` shape — DSpark's support GGUF declares
+/// `deepseek4-dspark` yet drafts for `deepseek4` through the same slot.
+pub fn find_draft_head(model_path: &Path, head_arch: Option<&str>) -> Option<PathBuf> {
   let parent = model_path.parent()?;
   let model_filename = model_path.file_name()?.to_str()?;
   let model_stem = model_path.file_stem()?.to_str()?;
@@ -508,9 +525,6 @@ pub fn find_mtp_head(model_path: &Path, model_arch: Option<&str>) -> Option<Path
   }
 
   let model_base = canonical_base(model_stem);
-  // The arch a head must declare to draft for this model (`deepseek4` →
-  // `deepseek4_mtp_support`).
-  let head_arch = model_arch.map(|a| format!("{a}{MTP_ARCH_SUFFIX}"));
 
   let mut all_heads: Vec<PathBuf> = Vec::new();
   let mut arch_matches: Vec<PathBuf> = Vec::new();
@@ -540,7 +554,7 @@ pub fn find_mtp_head(model_path: &Path, model_arch: Option<&str>) -> Option<Path
     if name == model_filename {
       continue;
     }
-    if let Some(want) = head_arch.as_deref() {
+    if let Some(want) = head_arch {
       if read_path(&path, HeaderReadOptions::default())
         .ok()
         .and_then(|r| {
@@ -997,6 +1011,44 @@ mod tests {
       .with_tensor("mtp.0.hc_head_fn.weight", &[16384, 4], 0)
       .with_tensor("mtp.0.attn_q_a.weight", &[4096, 1024], 12)
       .build()
+  }
+
+  #[test]
+  fn dspark_support_file_is_a_head_not_a_launchable_model() {
+    // antirez's DSpark support GGUF: head-shaped header (`mtp.*` tensors, no
+    // tokenizer) but its own `deepseek4-dspark` arch and no `mtp` token in the
+    // name, so the old name gate skipped the header read and it scanned as a
+    // standalone, tokenizer-less model.
+    let dir = temp_dir("dspark-class");
+    let support = dir.join("DeepSeek-V4-Flash-DSpark-support-0731.gguf");
+    let model = dir.join("DeepSeek-V4-Flash-IQ2XXS-chat-v2-imatrix-0731.gguf");
+    fs::write(
+      &support,
+      crate::gguf::test_fixtures::FixtureBuilder::new()
+        .with_arch("deepseek4-dspark")
+        .with_tensor("mtp.0.attn_q_a.weight", &[4096, 1024], 12)
+        .with_tensor("mtp.0.attn_norm.weight", &[4096], 0)
+        .build(),
+    )
+    .unwrap();
+    fs::write(&model, build_minimal_gguf("deepseek4")).unwrap();
+
+    assert!(
+      !is_mtp_companion(&support),
+      "the name carries no mtp token — only the header is conclusive"
+    );
+    assert!(
+      is_mtp_head_file(&support),
+      "DSpark support must classify as a draft head, not a launchable model"
+    );
+    // Pairs through the explicit-arch lookup: it declares `deepseek4-dspark`,
+    // not the `deepseek4_mtp_support` shape `find_mtp_head` derives.
+    assert_eq!(
+      find_draft_head(&model, Some("deepseek4-dspark"))
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())),
+      Some("DeepSeek-V4-Flash-DSpark-support-0731.gguf".to_string())
+    );
+    fs::remove_dir_all(&dir).ok();
   }
 
   #[test]
