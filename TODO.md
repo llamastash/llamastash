@@ -264,7 +264,7 @@ places.
 - [x] ~~**Type more ds4 native knobs (currently 9 + ctx: 6 base + the MTP trio; ds4-server exposes ~30 launch flags).**~~ — **done (2026-08-09):** typed the ssd-streaming tuning family (`ssd_streaming_cache_experts` `N|NGB`, `ssd_streaming_preload_experts`, `ssd_streaming_cold`) + the `warm_weights` / `quality` bools — 9 → 14 knobs, verified against the real `ds4-server --help runtime` (2026-08-05 build, b030961). `--kv-cache-*` / `--dir-steering-*` / `--prefill-chunk` / `--tool-memory-max-ids` / diagnostics stay on extras as planned.
 - [x] ~~**F-01 / §25.2 / §25.3**: surface `multimodal` (and `split_siblings`) on the CLI `list --json` + `show --json`, and render the TUI vision glyph (additive, agent-facing).~~ — **done 2026-08-09:** `list --json` was already unified onto the shared `CatalogRow` serializer (`9d0ddef`); `show --json` now builds its envelope from the same serialized row (`src/cli/show.rs::assemble_envelope`), so both surfaces carry `multimodal` / `mtp` / `split_siblings` / `supported_backends`. The TUI vision glyph was never broken — the UAT frame focused the wrong row (see the findings doc).
 - [x] ~~**F-11 (CLI parity)**: add MODE/DEVICE columns to the `llamastash list` table to match the TUI Models list.~~ — **done 2026-08-09:** the table is now `NAME ARCH PARAMS QUANT CTX SIZE MODE [BACKEND] STATUS [DEVICE]`; DEVICE is gated on multi-device (`cli::resolve::multi_device`, same rule as the TUI) with the TUI's `all` / explicit-selector / `?` cell semantics. Breaking TSV shape change, noted in CHANGELOG.
-- [ ] simplify Agents.md
+- [x] simplify Agents.md
 
 ## General Roadmap
 

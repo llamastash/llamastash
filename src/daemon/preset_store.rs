@@ -120,6 +120,7 @@ mod tests {
       },
       extras: None,
       backend_knobs: Default::default(),
+      ..PresetBody::default()
     }
   }
 

@@ -709,6 +709,10 @@ struct PresetsSaveParams {
   backend_knobs: std::collections::BTreeMap<String, crate::config::KnobValue<String>>,
   #[serde(default)]
   extras: Vec<String>,
+  #[serde(default)]
+  mtp: crate::launch::params::MtpEnable,
+  #[serde(default)]
+  mtp_draft_n: Option<u32>,
 }
 
 async fn presets_save_handler(
@@ -737,6 +741,10 @@ async fn presets_save_handler(
   // Carry the native (ds4) knobs into the preset — a ds4 launch's `--power` /
   // `--ssd-streaming` are save-able, not just apply-able.
   lp.backend_knobs = parsed.backend_knobs;
+  // KD2 scoped MTP to "launch / TUI / preset"; the save path used to drop it,
+  // so a preset could never pin speculation on or off.
+  lp.mtp = parsed.mtp;
+  lp.mtp_draft_n = parsed.mtp_draft_n;
   lp.extras = parsed.extras.into_iter().map(OsString::from).collect();
   let body = preset_body_from_launch_params(&lp);
 

@@ -785,6 +785,7 @@ fn preset_block(default: Option<&str>, name: &str, ctx: u32, extras: &[&str]) ->
       },
       extras: (!extras.is_empty()).then(|| extras.iter().map(|s| s.to_string()).collect()),
       backend_knobs: Default::default(),
+      ..PresetBody::default()
     },
   );
   ConfigPresetBlock {

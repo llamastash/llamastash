@@ -223,6 +223,14 @@ pub enum MtpEnable {
 }
 
 impl MtpEnable {
+  /// Serde skip-predicate: the default state writes nothing, so a preset that
+  /// never set MTP keeps its previous bytes in `config.yaml`.
+  pub fn is_auto(&self) -> bool {
+    matches!(self, MtpEnable::Auto)
+  }
+}
+
+impl MtpEnable {
   /// Stable lowercase label (`"auto"` / `"on"` / `"off"`) for CLI / status.
   pub fn label(self) -> &'static str {
     match self {

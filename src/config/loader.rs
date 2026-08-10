@@ -910,6 +910,17 @@ pub struct PresetBody {
   /// `config.yaml`.
   #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
   pub backend_knobs: BTreeMap<String, KnobValue<String>>,
+  /// MTP intent (KD2's tri-state, not a `KnobValue`). Skipped when `Auto` so a
+  /// preset that never touched MTP stays byte-stable in `config.yaml`.
+  #[serde(
+    default,
+    skip_serializing_if = "crate::launch::params::MtpEnable::is_auto"
+  )]
+  pub mtp: crate::launch::params::MtpEnable,
+  /// Draft tokens per speculation step; `None` leaves the backend on its own
+  /// default. Rides with `mtp` because the two are only meaningful together.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub mtp_draft_n: Option<u32>,
 }
 
 /// How a knob *no layer supplied a value for* is seeded at launch
@@ -1316,6 +1327,7 @@ mod tests {
       },
       extras: None,
       backend_knobs: Default::default(),
+      ..PresetBody::default()
     };
     let value = serde_json::to_value(&body).unwrap();
     let obj = value.as_object().unwrap();

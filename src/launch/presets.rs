@@ -95,6 +95,8 @@ pub fn preset_body_from_launch_params(params: &LaunchParams) -> PresetBody {
     knobs,
     extras: (!extras.is_empty()).then_some(extras),
     backend_knobs: params.backend_knobs.clone(),
+    mtp: params.mtp,
+    mtp_draft_n: params.mtp_draft_n,
   }
 }
 
@@ -127,6 +129,8 @@ pub fn materialize_preset(name: &str, body: &PresetBody, model_path: PathBuf) ->
     .map(OsString::from)
     .collect();
   params.backend_knobs = body.backend_knobs.clone();
+  params.mtp = body.mtp;
+  params.mtp_draft_n = body.mtp_draft_n;
   NamedPreset {
     name: name.to_string(),
     params,
@@ -377,6 +381,7 @@ mod tests {
       },
       extras: None,
       backend_knobs: Default::default(),
+      ..PresetBody::default()
     }
   }
 
@@ -392,6 +397,7 @@ mod tests {
       },
       extras: Some(vec!["--rope-freq-base".into(), "10000".into()]),
       backend_knobs: Default::default(),
+      ..PresetBody::default()
     };
     let np = materialize_preset("p", &body, PathBuf::from("/m/a.gguf"));
     // ctx/reasoning landed on the LaunchParams siblings, out of the knobs.
@@ -421,6 +427,7 @@ mod tests {
       },
       extras: None,
       backend_knobs: Default::default(),
+      ..PresetBody::default()
     };
     let np = materialize_preset("p", &body, PathBuf::from("/m/a.gguf"));
     assert!(!np.params.reasoning);
@@ -429,6 +436,35 @@ mod tests {
     let back = preset_body_from_launch_params(&np.params);
     assert_eq!(back.mode, None);
     assert_eq!(back.knobs.reasoning, None);
+  }
+
+  #[test]
+  fn mtp_round_trips_through_a_preset_body() {
+    // KD2 scopes MTP to "launch / TUI / preset". The preset half was missing:
+    // PresetBody had no mtp field, so `mtp: off` in config.yaml was parsed,
+    // stored, materialised and then silently dropped at launch.
+    let mut lp = LaunchParams::new(PathBuf::from("/m/a.gguf"), LaunchMode::Chat);
+    lp.mtp = crate::launch::params::MtpEnable::Off;
+    lp.mtp_draft_n = Some(4);
+    let body = preset_body_from_launch_params(&lp);
+    assert_eq!(body.mtp, crate::launch::params::MtpEnable::Off);
+    assert_eq!(body.mtp_draft_n, Some(4));
+    let np = materialize_preset("p", &body, PathBuf::from("/m/a.gguf"));
+    assert_eq!(np.params.mtp, crate::launch::params::MtpEnable::Off);
+    assert_eq!(np.params.mtp_draft_n, Some(4));
+  }
+
+  #[test]
+  fn an_untouched_mtp_preset_stays_byte_stable() {
+    // Auto is the default, so a preset that never mentioned MTP must not grow
+    // an `mtp:` key in config.yaml on rewrite.
+    let lp = LaunchParams::new(PathBuf::from("/m/a.gguf"), LaunchMode::Chat);
+    let body = preset_body_from_launch_params(&lp);
+    let yaml = serde_json::to_string(&body).expect("preset body serialises");
+    assert!(
+      !yaml.contains("mtp"),
+      "unset MTP must not serialise, got {yaml}"
+    );
   }
 
   #[test]
@@ -441,6 +477,7 @@ mod tests {
       },
       extras: None,
       backend_knobs: Default::default(),
+      ..PresetBody::default()
     };
     let np = materialize_preset("p", &body, PathBuf::from("/m/a.gguf"));
     assert_eq!(np.params.ctx, None, "Auto ctx never pins the -c sibling");
