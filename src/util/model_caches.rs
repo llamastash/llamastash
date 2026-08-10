@@ -79,6 +79,40 @@ pub fn huggingface_primary_hub_dir(home: Option<&Path>) -> Option<PathBuf> {
   huggingface_hub_dirs(home).into_iter().next()
 }
 
+/// Encode a repo id into its HF hub cache folder name: `owner/name` →
+/// `models--owner--name`. Matches `huggingface_hub` and `hf-hub`'s
+/// `Repo::folder_name`. Inverse of [`repo_id_from_cache_dir`].
+pub fn repo_folder_name(repo_id: &str) -> String {
+  format!("models--{}", repo_id.replace('/', "--"))
+}
+
+/// Decode an HF hub cache folder name back into its repo id:
+/// `models--owner--name` → `owner/name`. Inverse of [`repo_folder_name`].
+///
+/// HF replaces the single `/` in a repo id with `--`, so the owner is the
+/// segment before the first `--` and the name is the rest verbatim (preserving
+/// any `--` the repo name itself contains). Returns `None` for anything that
+/// isn't a `models--` dir or that decodes to an empty owner / name.
+///
+/// The decoded id is a catalog key a backend turns back into a path
+/// (`<scheme>://<repo-id>`), so path-traversal shapes a crafted cache dir name
+/// (`models--..--passwd`) could mint are rejected — a real HF owner / repo
+/// never contains a separator or `..`.
+pub fn repo_id_from_cache_dir(dir_name: &str) -> Option<String> {
+  let rest = dir_name.strip_prefix("models--")?;
+  let (owner, repo) = rest.split_once("--")?;
+  if owner.is_empty() || repo.is_empty() {
+    return None;
+  }
+  if [owner, repo]
+    .iter()
+    .any(|s| s.contains('/') || s.contains('\\') || s.contains(".."))
+  {
+    return None;
+  }
+  Some(format!("{owner}/{repo}"))
+}
+
 /// Ollama models directories in priority order. `OLLAMA_MODELS`
 /// (verbatim) → `$HOME/.ollama/models` → `/usr/share/ollama/.ollama/
 /// models` (Linux only). The env-set path comes first so an explicit
@@ -164,6 +198,51 @@ mod tests {
     "HF_HOME",
     "XDG_CACHE_HOME",
   ];
+
+  #[test]
+  fn repo_folder_name_matches_huggingface_hub_convention() {
+    assert_eq!(
+      repo_folder_name("Qwen/Qwen2.5-7B"),
+      "models--Qwen--Qwen2.5-7B"
+    );
+    assert_eq!(
+      repo_folder_name("bartowski/Llama-3.2-3B-Instruct-GGUF"),
+      "models--bartowski--Llama-3.2-3B-Instruct-GGUF"
+    );
+  }
+
+  #[test]
+  fn repo_id_from_cache_dir_preserves_double_dash_in_repo_name() {
+    // A repo name that itself contains `--` keeps it (split on first `--`).
+    assert_eq!(
+      repo_id_from_cache_dir("models--org--foo--bar"),
+      Some("org/foo--bar".to_string())
+    );
+    assert_eq!(repo_id_from_cache_dir("not-a-models-dir"), None);
+    assert_eq!(repo_id_from_cache_dir("models--onlyowner"), None);
+    // Empty owner / empty repo segment → None.
+    assert_eq!(repo_id_from_cache_dir("models----repo"), None);
+    assert_eq!(repo_id_from_cache_dir("models--org--"), None);
+  }
+
+  #[test]
+  fn repo_id_from_cache_dir_rejects_path_traversal_shapes() {
+    // A crafted cache dir name must not mint a traversal-shaped repo_id (the
+    // catalog key a backend turns back into a path).
+    assert_eq!(repo_id_from_cache_dir("models--..--passwd"), None);
+    assert_eq!(repo_id_from_cache_dir("models--org--..--etc"), None);
+  }
+
+  #[test]
+  fn repo_folder_name_round_trips_through_decode() {
+    // The encode/decode pair are inverses, so a save→scan cycle can't drift.
+    for repo_id in ["Qwen/Qwen2.5-7B", "org/foo--bar", "mlx-community/Repo"] {
+      assert_eq!(
+        repo_id_from_cache_dir(&repo_folder_name(repo_id)).as_deref(),
+        Some(repo_id)
+      );
+    }
+  }
 
   #[test]
   fn huggingface_priority_hf_hub_cache_first() {

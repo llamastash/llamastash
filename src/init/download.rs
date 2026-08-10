@@ -410,12 +410,6 @@ pub fn hf_cache_dir() -> Result<PathBuf, DownloadError> {
     .ok_or(DownloadError::NoCacheDir)
 }
 
-/// Compute the cache folder name for a repo (matches `huggingface_hub`
-/// and hf-hub's `Repo::folder_name`).
-pub fn repo_folder_name(repo_id: &str) -> String {
-  format!("models--{}", repo_id.replace('/', "--"))
-}
-
 /// Resolve the HF endpoint, refusing any `HF_ENDPOINT` override that
 /// is not HTTPS on an allowlisted host. Returning `Err` here aborts
 /// `build_api` before the bearer token is handed to hf-hub's
@@ -494,8 +488,70 @@ pub(crate) fn select_files(
       .filter(|p| p.ends_with(ext))
       .cloned()
       .collect(),
-    (None, None) => all_files.to_vec(),
+    // Whole-repo pull (`pull owner/repo`): keep everything, but don't
+    // double-download a safetensors repo's weights in two formats.
+    (None, None) => prefer_safetensors(all_files.to_vec()),
   }
+}
+
+/// Drop the duplicate PyTorch **full-model** weight files from a whole-repo
+/// file list **when a full-weight safetensors twin is present**, so a
+/// safetensors snapshot pull doesn't fetch the same weights twice. Only the
+/// canonical full-model dumps are dropped — `pytorch_model[-NNNNN-of-MMMMM].bin`
+/// (HF transformers) and `consolidated[.NN].pth` (Llama original). Component
+/// `.bin`/`.pth` siblings (e.g. a `vision_model.bin` with no safetensors twin)
+/// and all configs / tokenizers are kept, so the snapshot stays loadable.
+///
+/// The drop only fires when the repo ships the *full* model in safetensors
+/// ([`has_full_safetensors`]). A repo whose real weights are PyTorch but that
+/// also ships a lone *component* `.safetensors` (an adapter, an embedding
+/// shard) keeps its `.bin` dumps, so the worst case is a redundant download,
+/// never a missing weight. A no-op when there's no full safetensors twin
+/// (PyTorch-only and GGUF pulls are unchanged).
+fn prefer_safetensors(files: Vec<String>) -> Vec<String> {
+  if !has_full_safetensors(&files) {
+    return files;
+  }
+  files
+    .into_iter()
+    .filter(|f| !is_pytorch_full_weight(f))
+    .collect()
+}
+
+/// Whether `files` includes a **full-weight** safetensors model: the single
+/// `model.safetensors`, a `*.safetensors.index.json` shard index, or a sharded
+/// `model-NNNNN-of-MMMMM.safetensors` member. A lone component `.safetensors`
+/// (`adapter.safetensors`, `vision_model.safetensors`) does not count, so it
+/// never triggers dropping the PyTorch weights that are actually the model.
+fn has_full_safetensors(files: &[String]) -> bool {
+  files.iter().any(|f| {
+    let base = f.rsplit('/').next().unwrap_or(f);
+    base == "model.safetensors"
+      || base.ends_with(".safetensors.index.json")
+      || is_safetensors_shard(base)
+  })
+}
+
+/// Whether `base` is a sharded full-weight safetensors member named
+/// `model-NNNNN-of-MMMMM.safetensors`.
+fn is_safetensors_shard(base: &str) -> bool {
+  let Some(mid) = base
+    .strip_prefix("model-")
+    .and_then(|s| s.strip_suffix(".safetensors"))
+  else {
+    return false;
+  };
+  is_shard_index(mid)
+}
+
+/// Whether `path`'s basename is a canonical PyTorch full-model weight dump —
+/// the format a safetensors repo duplicates. Deliberately narrow: a
+/// non-standard `*.bin` / `*.pth` (a component weight) is left alone, so the
+/// worst case is a redundant download, never a missing weight.
+fn is_pytorch_full_weight(path: &str) -> bool {
+  let base = path.rsplit('/').next().unwrap_or(path);
+  (base.starts_with("pytorch_model") && base.ends_with(".bin"))
+    || (base.starts_with("consolidated") && base.ends_with(".pth"))
 }
 
 /// Select companion siblings (mmproj projector + separate MTP draft head) to
@@ -1278,18 +1334,6 @@ mod tests {
   }
 
   #[test]
-  fn repo_folder_name_matches_huggingface_hub_convention() {
-    assert_eq!(
-      repo_folder_name("Qwen/Qwen2.5-7B"),
-      "models--Qwen--Qwen2.5-7B"
-    );
-    assert_eq!(
-      repo_folder_name("bartowski/Llama-3.2-3B-Instruct-GGUF"),
-      "models--bartowski--Llama-3.2-3B-Instruct-GGUF"
-    );
-  }
-
-  #[test]
   fn file_url_format_matches_resolve_endpoint() {
     let url = file_url(
       DEFAULT_HF_ENDPOINT,
@@ -1432,6 +1476,139 @@ mod tests {
     let files = vec!["completely-different.gguf".to_string()];
     let picked = select_files(&files, Some("missing.gguf"), Some(".gguf"));
     assert!(picked.is_empty());
+  }
+
+  #[test]
+  fn whole_repo_prefers_safetensors_over_pytorch_duplicates() {
+    // A mixed repo shipping both formats: the safetensors win, the PyTorch
+    // weights are dropped, and configs / tokenizers are kept.
+    let files = vec![
+      "config.json".to_string(),
+      "tokenizer.json".to_string(),
+      "tokenizer_config.json".to_string(),
+      "model.safetensors".to_string(),
+      "pytorch_model.bin".to_string(),
+      "pytorch_model-00001-of-00002.bin".to_string(),
+      "consolidated.00.pth".to_string(),
+    ];
+    let picked = select_files(&files, None, None);
+    assert!(picked.contains(&"model.safetensors".to_string()));
+    assert!(picked.contains(&"config.json".to_string()));
+    assert!(picked.contains(&"tokenizer.json".to_string()));
+    assert!(picked.contains(&"tokenizer_config.json".to_string()));
+    assert!(
+      !picked.iter().any(|f| f.ends_with(".bin")),
+      "no PyTorch .bin"
+    );
+    assert!(!picked.iter().any(|f| f.ends_with(".pth")), "no .pth");
+  }
+
+  #[test]
+  fn whole_repo_keeps_non_duplicate_component_bin_weights() {
+    // A `vision_model.bin` component with no safetensors twin must survive —
+    // only the canonical full-model PyTorch dump is a duplicate to drop.
+    let files = vec![
+      "config.json".to_string(),
+      "model.safetensors".to_string(),
+      "pytorch_model.bin".to_string(), // duplicate of the safetensors → drop
+      "vision_model.bin".to_string(),  // component, no twin → keep
+      "draft.pth".to_string(),         // non-canonical .pth → keep
+    ];
+    let picked = select_files(&files, None, None);
+    assert!(picked.contains(&"model.safetensors".to_string()));
+    assert!(
+      !picked.contains(&"pytorch_model.bin".to_string()),
+      "full dump dropped"
+    );
+    assert!(
+      picked.contains(&"vision_model.bin".to_string()),
+      "component kept"
+    );
+    assert!(
+      picked.contains(&"draft.pth".to_string()),
+      "non-canonical .pth kept"
+    );
+  }
+
+  #[test]
+  fn whole_repo_partial_safetensors_keeps_pytorch_weights() {
+    // The repo's real weights are PyTorch; the only safetensors is a lone
+    // component (an adapter), not a full-model twin. Dropping the `.bin` here
+    // would leave an unloadable snapshot, so the `.bin` must survive.
+    let files = vec![
+      "config.json".to_string(),
+      "pytorch_model.bin".to_string(),
+      "adapter.safetensors".to_string(),
+    ];
+    let picked = select_files(&files, None, None);
+    assert!(
+      picked.contains(&"pytorch_model.bin".to_string()),
+      "real PyTorch weights kept when no full safetensors twin"
+    );
+    assert!(picked.contains(&"adapter.safetensors".to_string()));
+    assert_eq!(picked.len(), 3, "no file dropped");
+  }
+
+  #[test]
+  fn whole_repo_sharded_safetensors_keeps_index_and_drops_pytorch_shards() {
+    let files = vec![
+      "config.json".to_string(),
+      "model.safetensors.index.json".to_string(),
+      "model-00001-of-00002.safetensors".to_string(),
+      "model-00002-of-00002.safetensors".to_string(),
+      "pytorch_model-00001-of-00002.bin".to_string(),
+      "pytorch_model-00002-of-00002.bin".to_string(),
+    ];
+    let picked = select_files(&files, None, None);
+    assert!(
+      picked.contains(&"model.safetensors.index.json".to_string()),
+      "index kept"
+    );
+    assert!(picked.contains(&"model-00001-of-00002.safetensors".to_string()));
+    assert!(
+      !picked.iter().any(|f| f.ends_with(".bin")),
+      "pytorch shards dropped"
+    );
+  }
+
+  #[test]
+  fn whole_repo_safetensors_only_is_a_no_op() {
+    let files = vec![
+      "config.json".to_string(),
+      "model-00001-of-00002.safetensors".to_string(),
+      "model-00002-of-00002.safetensors".to_string(),
+    ];
+    let picked = select_files(&files, None, None);
+    assert_eq!(picked, files, "no .bin/.pth to drop → unchanged");
+  }
+
+  #[test]
+  fn whole_repo_pytorch_only_keeps_bin_weights() {
+    // No safetensors present → the `.bin` IS the weights, so keep it.
+    let files = vec!["config.json".to_string(), "pytorch_model.bin".to_string()];
+    let picked = select_files(&files, None, None);
+    assert_eq!(picked, files);
+  }
+
+  #[test]
+  fn whole_repo_gguf_pull_unchanged() {
+    // GGUF whole-repo pull: no safetensors, so the filter is a no-op.
+    let files = vec!["README.md".to_string(), "model-Q4_K_M.gguf".to_string()];
+    let picked = select_files(&files, None, None);
+    assert_eq!(picked, files);
+  }
+
+  #[test]
+  fn pinned_gguf_pull_skips_the_safetensors_filter() {
+    // `pull owner/repo:file.gguf` takes the pinned arm, not the whole-repo
+    // arm, so the prefer-safetensors dedup never runs.
+    let files = vec![
+      "model.safetensors".to_string(),
+      "pytorch_model.bin".to_string(),
+      "model-Q4_K_M.gguf".to_string(),
+    ];
+    let picked = select_files(&files, Some("model-Q4_K_M.gguf"), Some(".gguf"));
+    assert_eq!(picked, vec!["model-Q4_K_M.gguf"]);
   }
 
   #[test]

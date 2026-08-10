@@ -62,6 +62,7 @@ fn row_for(entry: &ModelEntry) -> DiscoveredModel {
       parameter_label: None,
       // No GGUF header to read a quant tag from.
       quant: Quant::Unknown(0),
+      quant_label: None,
       native_ctx: None,
       chat_template: None,
       tokenizer_kind: None,

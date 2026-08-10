@@ -1205,6 +1205,7 @@ mod tests {
         total_parameters: Some(7_000_000_000),
         parameter_label: Some("7B".into()),
         quant: Quant::Q4_K,
+        quant_label: None,
         native_ctx: Some(8192),
         chat_template: None,
         tokenizer_kind: None,

@@ -323,6 +323,7 @@ mod tests {
       total_parameters: None,
       parameter_label: None,
       quant: Quant::Unknown(0),
+      quant_label: None,
       native_ctx: None,
       chat_template: None,
       tokenizer_kind: None,
