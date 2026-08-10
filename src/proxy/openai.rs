@@ -32,8 +32,8 @@ pub struct ModelObject {
   /// timestamp on `DiscoveredModel`, and inventing one from file
   /// mtime would churn agent caches every time the user re-touches
   /// the file. `0` is the conventional "unknown / not meaningful"
-  /// value seen across other OpenAI-compat servers (Ollama, vLLM
-  /// historically) so clients tolerate it.
+  /// value seen across other OpenAI-compat servers, so clients
+  /// tolerate it.
   pub created: u64,
   /// Owner label. Hard-coded to `"llamastash"` — there is no
   /// per-model owner concept in v1.

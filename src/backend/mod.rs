@@ -48,6 +48,7 @@ pub mod identity;
 pub mod lemonade;
 pub mod llama_cpp;
 pub mod server;
+pub mod vllm;
 
 pub use server::{
   build_server_catalog, config_server_catalog, missing_configured_servers, Device, Server,
@@ -71,6 +72,7 @@ use crate::backend::ds4::Ds4Backend;
 use crate::backend::identity::ModelIdentity;
 use crate::backend::lemonade::LemonadeBackend;
 use crate::backend::llama_cpp::LlamaCppBackend;
+use crate::backend::vllm::VllmBackend;
 use crate::daemon::context::MethodContext;
 use crate::daemon::probe::ProbeOptions;
 use crate::gguf::header::GgufHeader;
@@ -856,6 +858,7 @@ pub struct BackendConfig {
   pub llamacpp: crate::backend::llama_cpp::LlamaCppConfig,
   pub lemonade: crate::backend::lemonade::LemonadeConfig,
   pub ds4: crate::backend::ds4::Ds4Config,
+  pub vllm: crate::backend::vllm::VllmConfig,
 }
 
 /// Zero-cost, exhaustive dispatch over the available backends.
@@ -872,6 +875,8 @@ pub enum Backends {
   Lemonade(LemonadeBackend),
   /// ds4 (DwarfStar) — direct process-per-model for DeepSeek V4 GGUFs.
   Ds4(Ds4Backend),
+  /// vLLM — direct process-per-model for safetensors HF repos.
+  Vllm(VllmBackend),
 }
 
 /// Forward a [`Backend`] call to whichever [`Backends`] variant is active.
@@ -888,6 +893,7 @@ macro_rules! for_each_backend {
       Backends::LlamaCpp($b) => $body,
       Backends::Lemonade($b) => $body,
       Backends::Ds4($b) => $body,
+      Backends::Vllm($b) => $body,
     }
   };
 }
@@ -905,6 +911,7 @@ impl Backends {
       Backends::LlamaCpp(LlamaCppBackend::new()),
       Backends::Lemonade(LemonadeBackend::new()),
       Backends::Ds4(Ds4Backend::new()),
+      Backends::Vllm(VllmBackend::new()),
     ]
   }
 }
@@ -1562,7 +1569,7 @@ mod tests {
     // construction (one `all()` line), which is what makes it surface in
     // `status` / `doctor` / `--backend` without editing those sites.
     let ids: Vec<&str> = Backends::all().iter().map(|b| b.id()).collect();
-    assert_eq!(ids, vec!["llamacpp", "lemonade", "ds4"]);
+    assert_eq!(ids, vec!["llamacpp", "lemonade", "ds4", "vllm"]);
     // Forwarding through the macro reaches each variant's real lifecycle.
     let by_id: std::collections::BTreeMap<&str, Lifecycle> = Backends::all()
       .iter()
@@ -1571,6 +1578,7 @@ mod tests {
     assert_eq!(by_id["llamacpp"], Lifecycle::ProcessPerModel);
     assert_eq!(by_id["lemonade"], Lifecycle::ManagedMultiplexer);
     assert_eq!(by_id["ds4"], Lifecycle::ProcessPerModel);
+    assert_eq!(by_id["vllm"], Lifecycle::ProcessPerModel);
   }
 
   fn ds4_header() -> GgufHeader {
