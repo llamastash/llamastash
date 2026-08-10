@@ -21,6 +21,7 @@ use super::{
 use crate::daemon::context::MethodContext;
 use crate::daemon::probe::ProbeOptions;
 use crate::launch::flag_aliases::KnobField;
+use crate::launch::native_knobs::{translate, NativeKnobDescriptor, NativeKnobKind};
 use crate::launch::params::LaunchParams;
 
 /// Stable backend id. The only place this string is authored.
@@ -59,6 +60,98 @@ impl VllmConfig {
 /// out under `test-fixtures` so tests never auto-discover a host `vllm`.
 #[cfg(not(feature = "test-fixtures"))]
 const VLLM_BIN: &str = "vllm";
+
+/// Extras heads refused on top of the shared loopback/credential denylist.
+///
+/// `--host` / `--api-key` / `--allowed-origins` / `--ssl-*` would undo the
+/// loopback-only, same-UID posture. `--allowed-local-media-path` opens an
+/// arbitrary filesystem read surface to any proxy client. The parallel and
+/// distributed heads reach for multi-process and Ray execution, which is
+/// outside what the supervisor can own or reap.
+pub const VLLM_FORBIDDEN_EXTRA_HEADS: &[&str] = &[
+  "--api-key",
+  "--allowed-origins",
+  "--allowed-local-media-path",
+  "--pipeline-parallel-size",
+  "--data-parallel",
+  "--distributed-executor-backend",
+  "--ray",
+];
+
+/// vLLM's tunables, on the per-backend native-knob channel.
+///
+/// Every flag here was checked against a live `vllm serve --help=all`
+/// (0.19.1, 238 flags) rather than the docs. The long tail stays on `extras`
+/// — this set is the part worth a picker row. Note vLLM has **no**
+/// `--swap-space`; CPU offload moved to its own config group.
+pub const VLLM_NATIVE_KNOBS: &[NativeKnobDescriptor] = &[
+  NativeKnobDescriptor {
+    id: "gpu_memory_utilization",
+    label: "GPU memory frac",
+    description: "fraction of GPU memory vLLM may claim, 0.0-1.0 (vLLM default 0.9)",
+    kind: NativeKnobKind::FreeText,
+  },
+  NativeKnobDescriptor {
+    id: "max_num_seqs",
+    label: "Max sequences",
+    description: "ceiling on concurrently batched sequences",
+    kind: NativeKnobKind::FreeText,
+  },
+  NativeKnobDescriptor {
+    id: "tensor_parallel_size",
+    label: "Tensor parallel",
+    description: "GPUs to shard the model across on this host",
+    kind: NativeKnobKind::FreeText,
+  },
+  NativeKnobDescriptor {
+    id: "dtype",
+    label: "Weight dtype",
+    description: "weight/activation dtype",
+    kind: NativeKnobKind::Cycle {
+      presets: &["auto", "half", "bfloat16", "float16", "float32"],
+    },
+  },
+  NativeKnobDescriptor {
+    id: "kv_cache_dtype",
+    label: "KV cache dtype",
+    description: "KV cache dtype; the fp8 stops trade accuracy for cache headroom",
+    kind: NativeKnobKind::Cycle {
+      presets: &["auto", "fp8", "fp8_e5m2", "fp8_e4m3"],
+    },
+  },
+  NativeKnobDescriptor {
+    id: "quantization",
+    label: "Quantization",
+    description: "quantization method; leave unset to read it from the repo config",
+    kind: NativeKnobKind::Cycle {
+      presets: &["awq", "gptq", "fp8", "bitsandbytes"],
+    },
+  },
+  NativeKnobDescriptor {
+    id: "enforce_eager",
+    label: "Eager mode",
+    description: "skip graph capture — faster startup, lower steady-state throughput",
+    kind: NativeKnobKind::Bool,
+  },
+  NativeKnobDescriptor {
+    id: "trust_remote_code",
+    label: "Trust remote code",
+    description: "execute custom model code shipped in the repo (only for repos you trust)",
+    kind: NativeKnobKind::Bool,
+  },
+];
+
+/// Native-knob id → `vllm serve` flag.
+const VLLM_KNOB_FLAGS: &[(&str, &str)] = &[
+  ("gpu_memory_utilization", "--gpu-memory-utilization"),
+  ("max_num_seqs", "--max-num-seqs"),
+  ("tensor_parallel_size", "--tensor-parallel-size"),
+  ("dtype", "--dtype"),
+  ("kv_cache_dtype", "--kv-cache-dtype"),
+  ("quantization", "--quantization"),
+  ("enforce_eager", "--enforce-eager"),
+  ("trust_remote_code", "--trust-remote-code"),
+];
 
 /// Resolve the launcher **by filesystem existence only — never by running it.**
 ///
@@ -115,6 +208,14 @@ impl Backend for VllmBackend {
 
   fn capabilities(&self) -> &KnobCapability {
     &self.capabilities
+  }
+
+  fn native_knobs(&self) -> &'static [NativeKnobDescriptor] {
+    VLLM_NATIVE_KNOBS
+  }
+
+  fn forbidden_extra_heads(&self) -> &'static [&'static str] {
+    VLLM_FORBIDDEN_EXTRA_HEADS
   }
 
   fn accelerators(&self) -> AcceleratorSupport {
@@ -262,6 +363,12 @@ fn vllm_argv(params: &LaunchParams, port: u16) -> Vec<std::ffi::OsString> {
     argv.push("--max-model-len".into());
     argv.push(ctx.to_string().into());
   }
+  argv.extend(translate(
+    VLLM_NATIVE_KNOBS,
+    VLLM_KNOB_FLAGS,
+    &params.backend_knobs,
+    VLLM_FORBIDDEN_EXTRA_HEADS,
+  ));
   argv
 }
 
@@ -333,6 +440,141 @@ mod tests {
       "availability probing must not spawn the binary"
     );
     let _ = std::fs::remove_dir_all(&dir);
+  }
+
+  fn params(model: &str) -> LaunchParams {
+    LaunchParams::new(PathBuf::from(model), crate::launch::mode::LaunchMode::Chat)
+  }
+
+  fn argv_strings(p: &LaunchParams, port: u16) -> Vec<String> {
+    vllm_argv(p, port)
+      .into_iter()
+      .map(|s| s.to_string_lossy().into_owned())
+      .collect()
+  }
+
+  fn set(p: &mut LaunchParams, id: &str, value: &str) {
+    p.backend_knobs.insert(
+      id.to_string(),
+      crate::config::KnobValue::Set(value.to_string()),
+    );
+  }
+
+  #[test]
+  fn minimal_argv_is_path_served_name_loopback_and_port() {
+    let p = params("/c/models--o--n/snapshots/rev");
+    assert_eq!(
+      argv_strings(&p, 41100),
+      vec![
+        "serve",
+        "/c/models--o--n/snapshots/rev",
+        "--served-model-name",
+        "o/n",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "41100",
+      ]
+    );
+  }
+
+  #[test]
+  fn ctx_renders_max_model_len_and_no_knob_duplicates_it() {
+    let mut p = params("/c/models--o--n/snapshots/rev");
+    p.ctx = Some(8192);
+    let argv = argv_strings(&p, 1);
+    assert_eq!(argv.iter().filter(|a| *a == "--max-model-len").count(), 1);
+    let i = argv.iter().position(|a| a == "--max-model-len").unwrap();
+    assert_eq!(argv[i + 1], "8192");
+  }
+
+  #[test]
+  fn every_native_knob_renders_its_verified_flag() {
+    for (id, flag) in VLLM_KNOB_FLAGS {
+      let mut p = params("/c/models--o--n/snapshots/rev");
+      let is_bool = VLLM_NATIVE_KNOBS
+        .iter()
+        .find(|d| &d.id == id)
+        .expect("every flag-mapped id has a descriptor")
+        .is_bool();
+      set(&mut p, id, if is_bool { "true" } else { "7" });
+      let argv = argv_strings(&p, 1);
+      assert!(argv.contains(&flag.to_string()), "{id} did not emit {flag}");
+      if is_bool {
+        assert!(
+          !argv.contains(&"true".to_string()),
+          "{id} is a bool and must emit a bare flag"
+        );
+      }
+    }
+  }
+
+  #[test]
+  fn every_descriptor_has_a_flag_mapping() {
+    // A descriptor with no mapping renders a picker row that silently does
+    // nothing — the failure mode `translate` cannot report.
+    for d in VLLM_NATIVE_KNOBS {
+      assert!(
+        VLLM_KNOB_FLAGS.iter().any(|(id, _)| *id == d.id),
+        "native knob `{}` has no flag mapping",
+        d.id
+      );
+    }
+  }
+
+  #[test]
+  fn unset_knobs_emit_nothing() {
+    let p = params("/c/models--o--n/snapshots/rev");
+    let argv = argv_strings(&p, 1);
+    for (_, flag) in VLLM_KNOB_FLAGS {
+      assert!(
+        !argv.contains(&flag.to_string()),
+        "{flag} leaked when unset"
+      );
+    }
+  }
+
+  #[test]
+  fn a_false_bool_emits_nothing() {
+    let mut p = params("/c/models--o--n/snapshots/rev");
+    set(&mut p, "enforce_eager", "false");
+    assert!(!argv_strings(&p, 1).contains(&"--enforce-eager".to_string()));
+  }
+
+  /// The knob channel must not become a way to smuggle a LAN bind or a
+  /// credential in through a value.
+  #[test]
+  fn knob_values_cannot_smuggle_a_forbidden_head() {
+    for smuggle in ["--host 0.0.0.0", "--host=0.0.0.0", "--api-key=hunter2"] {
+      let mut p = params("/c/models--o--n/snapshots/rev");
+      set(&mut p, "dtype", smuggle);
+      let argv = argv_strings(&p, 1).join(" ");
+      assert!(
+        !argv.contains("0.0.0.0") && !argv.contains("hunter2"),
+        "`{smuggle}` survived into argv: {argv}"
+      );
+    }
+  }
+
+  #[test]
+  fn served_name_falls_back_to_the_directory_when_not_in_a_cache_repo() {
+    assert_eq!(served_model_name(Path::new("/models/my-model")), "my-model");
+  }
+
+  #[test]
+  fn readiness_requires_the_served_name_not_just_a_200() {
+    match readiness("o/n") {
+      Readiness::HttpPollModelId {
+        path,
+        ready_status,
+        expect_model_ids,
+      } => {
+        assert_eq!(path, "/v1/models");
+        assert_eq!(ready_status, 200);
+        assert_eq!(expect_model_ids, vec!["o/n".to_string()]);
+      }
+      other => panic!("expected a model-id poll, got {other:?}"),
+    }
   }
 
   #[test]
