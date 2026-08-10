@@ -2241,6 +2241,9 @@ fn discovered_from_catalog_row(cr: &crate::launch::resolve::CatalogRow) -> Disco
       .as_deref()
       .map(parse_quant)
       .unwrap_or(Quant::Unknown(0)),
+    // Not on the `CatalogRow` wire yet — no backend populates it. Mirrors the
+    // other non-round-tripped fields (chat_template).
+    quant_label: None,
     native_ctx: cr.native_ctx,
     chat_template: None,
     tokenizer_kind: cr.tokenizer_kind.clone(),
@@ -2479,6 +2482,7 @@ mod tests {
         total_parameters: Some(7_000_000_000),
         parameter_label: Some("7B".into()),
         quant: Quant::Q4_K,
+        quant_label: None,
         native_ctx: Some(8192),
         chat_template: None,
         tokenizer_kind: None,
