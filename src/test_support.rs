@@ -31,6 +31,32 @@ pub fn unique_temp_dir(prefix: &str, label: &str) -> PathBuf {
   dir
 }
 
+/// A launch-pool port range for a test daemon.
+///
+/// Probes a batch of ephemeral ports at once and spans the lowest to the
+/// highest. The batch is the point: an ephemeral port is only ours until the
+/// probe listener drops, and the daemon does not bind it until several
+/// milliseconds later, so under a 40-way parallel test run another process
+/// routinely takes it in between. A range sized to exactly one port has
+/// nowhere to fall back and the launch dies with "no free port in N-N";
+/// a spread gives `ports::allocate` (which walks the range linearly) somewhere
+/// to land.
+pub fn allocate_port_range(probes: usize) -> crate::config::loader::PortRange {
+  let listeners: Vec<_> = (0..probes.max(1))
+    .map(|_| std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral"))
+    .collect();
+  let mut ports: Vec<u16> = listeners
+    .iter()
+    .map(|l| l.local_addr().expect("local_addr").port())
+    .collect();
+  ports.sort_unstable();
+  drop(listeners);
+  crate::config::loader::PortRange {
+    start: ports[0],
+    end: ports[ports.len() - 1],
+  }
+}
+
 /// Best-effort **synchronous** daemon shutdown, for test `Drop` guards (Drop
 /// runs during unwind and can't drive an async client). Hand-rolls an
 /// HTTP/1.0 `POST /rpc` carrying the JSON-RPC `shutdown` envelope against the

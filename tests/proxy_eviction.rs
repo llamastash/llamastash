@@ -52,11 +52,7 @@ fn allocate_port() -> u16 {
 }
 
 fn allocate_port_range() -> PortRange {
-  let port = allocate_port();
-  PortRange {
-    start: port,
-    end: port,
-  }
+  llamastash::test_support::allocate_port_range(8)
 }
 
 async fn wait_for_ready(model: &ManagedModel) {

@@ -50,16 +50,7 @@ async fn wait_for_socket(path: &Path) {
 }
 
 fn allocate_port_range() -> PortRange {
-  // Pick a fresh ephemeral port and use it as both ends of the
-  // range so the daemon hands it to the fake server. Avoids
-  // colliding with the production default (`41100..=41300`).
-  let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
-  let port = listener.local_addr().unwrap().port();
-  drop(listener);
-  PortRange {
-    start: port,
-    end: port,
-  }
+  llamastash::test_support::allocate_port_range(8)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

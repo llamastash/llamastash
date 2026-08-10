@@ -56,23 +56,7 @@ async fn wait_for_socket(path: &std::path::Path) {
 }
 
 fn allocate_port_range() -> PortRange {
-  // Bind a small batch of ephemerals so the daemon has fallback ports
-  // when a parallel chat test orphans its fake_llama_server child on
-  // macOS. The drop-listener probe in `ports::allocate` walks the
-  // range linearly, so the first free slot wins.
-  let listeners: Vec<_> = (0..8)
-    .map(|_| std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral"))
-    .collect();
-  let mut ports: Vec<u16> = listeners
-    .iter()
-    .map(|l| l.local_addr().unwrap().port())
-    .collect();
-  ports.sort();
-  drop(listeners);
-  PortRange {
-    start: ports[0],
-    end: ports[ports.len() - 1],
-  }
+  llamastash::test_support::allocate_port_range(8)
 }
 
 /// Holds the daemon task + socket and, on drop, cleanly shuts the daemon down

@@ -60,11 +60,7 @@ fn allocate_port() -> u16 {
 }
 
 fn allocate_port_range() -> PortRange {
-  let port = allocate_port();
-  PortRange {
-    start: port,
-    end: port,
-  }
+  llamastash::test_support::allocate_port_range(8)
 }
 
 fn write_gguf(dir: &Path, name: &str, arch: &str) -> PathBuf {

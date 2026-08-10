@@ -86,13 +86,7 @@ async fn wait_for_socket(path: &Path) {
 }
 
 fn allocate_port_range() -> PortRange {
-  let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
-  let port = listener.local_addr().unwrap().port();
-  drop(listener);
-  PortRange {
-    start: port,
-    end: port,
-  }
+  llamastash::test_support::allocate_port_range(8)
 }
 
 /// A wider range so a duplicate-launch test can grab two ports.
