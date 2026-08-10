@@ -11,6 +11,8 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 ### Fixed
 
 - **A DSpark support GGUF scanned as a launchable model.** Draft-head detection gated its header read on an `mtp` token in the filename, which DeepSeek's DSpark support file does not carry, so a tokenizer-less support file appeared in `list` as a startable model.
+- **A preset's `backend_knobs` were dropped at launch.** `--preset <name>` applied the entry's `ctx` and `extras` but discarded its native knobs, so a preset pinning ds4's `mtp` / `ssd_streaming` launched without them and the auto-resolver then overrode the value the preset had set. A model's `default:` preset now contributes them ahead of `last_params` too.
+- **Presets could not carry the MTP setting.** `mtp` / `mtp_draft_n` were missing from the preset body, the save payload and the launch-params wire row, so `mtp: on` / `mtp: off` under a preset entry was parsed, stored and then silently ignored at launch. Pinning MTP **off** now works, which matters on models where speculation costs more than it saves.
 
 ## [0.1.0] — 2026-08-09
 
