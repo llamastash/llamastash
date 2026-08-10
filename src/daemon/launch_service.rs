@@ -522,9 +522,15 @@ pub(crate) async fn compose_and_spawn(
   launch_params.backend_knobs = if !parsed.backend_knobs.is_empty() {
     parsed.backend_knobs.clone()
   } else if no_selection {
-    last_params
+    // Same precedence as `extras` above: the default preset's native knobs
+    // outrank last_params, so a `default:` preset that pins `--mtp` /
+    // `--ssd-streaming` survives a plain `start`.
+    effective_default
       .as_ref()
-      .map(|p| p.backend_knobs.clone())
+      .and_then(|e| e.default_preset())
+      .map(|np| np.params.backend_knobs.clone())
+      .filter(|k| !k.is_empty())
+      .or_else(|| last_params.as_ref().map(|p| p.backend_knobs.clone()))
       .unwrap_or_default()
   } else {
     std::collections::BTreeMap::new()

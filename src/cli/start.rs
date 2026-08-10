@@ -363,6 +363,11 @@ struct PartialParams {
   reasoning: Option<bool>,
   knobs: TypedKnobs,
   extras: Vec<String>,
+  /// Backend-native knobs (ds4's `--mtp` / `--ssd-streaming` / `--dspark`).
+  /// Carried verbatim from the preset: the daemon layers typed knobs but
+  /// takes these as a whole map, so dropping them here silently disarmed
+  /// every preset that tuned a native knob.
+  backend_knobs: std::collections::BTreeMap<String, KnobValue<String>>,
   mtp: Option<crate::launch::params::MtpEnable>,
   mtp_draft_n: Option<u32>,
 }
@@ -432,12 +437,17 @@ async fn fetch_preset_params(
         .collect()
     })
     .unwrap_or_default();
+  let backend_knobs = p
+    .get("backend_knobs")
+    .and_then(|v| serde_json::from_value(v.clone()).ok())
+    .unwrap_or_default();
   Ok(PartialParams {
     ctx: p.get("ctx").and_then(Value::as_u64).map(|n| n as u32),
     port: p.get("port").and_then(Value::as_u64).map(|n| n as u16),
     reasoning: p.get("reasoning").and_then(Value::as_bool),
     knobs,
     extras,
+    backend_knobs,
     mtp: p
       .get("mtp")
       .and_then(|v| serde_json::from_value(v.clone()).ok()),
@@ -512,6 +522,12 @@ fn build_payload(
     obj.insert(
       "knobs".into(),
       serde_json::to_value(&p.knobs).expect("TypedKnobs serialises cleanly"),
+    );
+  }
+  if !p.backend_knobs.is_empty() {
+    obj.insert(
+      "backend_knobs".into(),
+      serde_json::to_value(&p.backend_knobs).expect("KnobValue map serialises cleanly"),
     );
   }
   if !p.extras.is_empty() {
@@ -689,8 +705,7 @@ mod tests {
       reasoning: Some(true),
       knobs,
       extras: vec!["--rope-freq-base".into(), "10000".into()],
-      mtp: None,
-      mtp_draft_n: None,
+      ..PartialParams::default()
     };
     let v = build_payload("/m/a.gguf", "chat", &p, None, None, "default");
     assert_eq!(v["model_path"], serde_json::json!("/m/a.gguf"));
@@ -712,18 +727,52 @@ mod tests {
 
   #[test]
   fn build_payload_includes_backend_override_when_set() {
-    let p = PartialParams {
-      ctx: None,
-      port: None,
-      reasoning: None,
-      knobs: TypedKnobs::default(),
-      extras: vec![],
-      mtp: None,
-      mtp_draft_n: None,
-    };
+    let p = PartialParams::default();
     let v = build_payload("/m/a.gguf", "chat", &p, Some("llamacpp"), None, "explicit");
     assert_eq!(v["backend"], serde_json::json!("llamacpp"));
     assert_eq!(v["selection"], serde_json::json!("explicit"));
+  }
+
+  #[test]
+  fn build_payload_carries_preset_backend_knobs() {
+    // A preset's native knobs used to stop here: `PartialParams` had no slot
+    // for them, so `--preset X` silently launched without the `--mtp` /
+    // `--ssd-streaming` it pinned.
+    let mut backend_knobs = std::collections::BTreeMap::new();
+    backend_knobs.insert(
+      "mtp".to_string(),
+      KnobValue::Set("/m/dspark-support.gguf".to_string()),
+    );
+    backend_knobs.insert(
+      "ssd_streaming".to_string(),
+      KnobValue::Set("false".to_string()),
+    );
+    let p = PartialParams {
+      backend_knobs,
+      ..PartialParams::default()
+    };
+    let v = build_payload("/m/a.gguf", "chat", &p, None, None, "explicit");
+    assert_eq!(
+      v["backend_knobs"]["mtp"],
+      serde_json::json!("/m/dspark-support.gguf")
+    );
+    assert_eq!(
+      v["backend_knobs"]["ssd_streaming"],
+      serde_json::json!("false")
+    );
+  }
+
+  #[test]
+  fn build_payload_omits_empty_backend_knobs() {
+    let v = build_payload(
+      "/m/a.gguf",
+      "chat",
+      &PartialParams::default(),
+      None,
+      None,
+      "default",
+    );
+    assert!(v.get("backend_knobs").is_none());
   }
 
   fn osvec(args: &[&str]) -> Vec<OsString> {
