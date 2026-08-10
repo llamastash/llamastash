@@ -27,7 +27,7 @@ set -u
 
 WORK=$1; OUT=$2
 BIN=target/debug/llamastash
-DS4_BIN=${DS4_SERVER_BIN:-/mnt/work/ds4-build/ds4-server}
+DS4_BIN=${DS4_SERVER_BIN:-$HOME/Workspace/llms/ds4/ds4-server}
 HUB=${HF_HOME:-$HOME/.cache/huggingface}/hub/models--antirez--deepseek-v4-gguf/snapshots
 
 OLD=$(ls "$HUB"/*/DeepSeek-V4-Flash-IQ2XXS-*-chat-v2-imatrix.gguf 2>/dev/null | head -1)
