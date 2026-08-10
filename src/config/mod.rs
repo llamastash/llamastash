@@ -14,6 +14,7 @@ pub mod yaml_edit;
 pub use crate::backend::ds4::Ds4Config;
 pub use crate::backend::lemonade::LemonadeConfig;
 pub use crate::backend::llama_cpp::LlamaCppConfig;
+pub use crate::backend::vllm::VllmConfig;
 pub use crate::backend::BackendConfig;
 pub use loader::{
   config_path, config_path_from, load_config, load_config_from_path, validate_port_range,

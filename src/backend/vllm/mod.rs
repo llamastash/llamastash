@@ -214,6 +214,41 @@ impl Backend for VllmBackend {
     VLLM_NATIVE_KNOBS
   }
 
+  fn enabled_in_config(
+    &self,
+    config: &super::BackendConfig,
+    force: &std::collections::BTreeMap<String, bool>,
+  ) -> bool {
+    config
+      .vllm
+      .intends_enabled(force.get(VLLM_BACKEND_ID).copied().unwrap_or(false))
+      && resolve_vllm_binary(config.vllm.primary_binary()).is_some()
+  }
+
+  fn projects_hf_repos(&self) -> bool {
+    true
+  }
+
+  fn synthetic_identity(&self, path: &Path) -> Option<ModelIdentity> {
+    // Claims the launch path before the orchestrator tries to read a GGUF
+    // header — a safetensors snapshot is a directory, and the header read
+    // would fail with EISDIR. The same hook a registry backend uses for its
+    // file-less `<scheme>://<name>` paths; here the path is real, it just
+    // isn't a single weight file.
+    discovery::is_safetensors_snapshot(path).then(|| self.identify(path, &[]))
+  }
+
+  fn project_hf_repos(
+    &self,
+    candidates: &[crate::discovery::hf_repos::HfRepoCandidate],
+  ) -> Vec<crate::discovery::DiscoveredModel> {
+    candidates
+      .iter()
+      .filter(|c| discovery::eligible(c))
+      .map(|c| discovery::project(c, VLLM_BACKEND_ID))
+      .collect()
+  }
+
   fn forbidden_extra_heads(&self) -> &'static [&'static str] {
     VLLM_FORBIDDEN_EXTRA_HEADS
   }
@@ -287,7 +322,26 @@ impl Backend for VllmBackend {
   }
 
   fn process_marker(&self) -> Option<&'static str> {
-    Some("vllm")
+    Some(VLLM_BACKEND_ID)
+  }
+
+  fn resolve_launch_binary(
+    &self,
+    ctx: &MethodContext,
+    _default_binary: PathBuf,
+    port: u16,
+  ) -> Result<(PathBuf, u16), String> {
+    // The default binary is the device-owning llama.cpp server; vLLM has to
+    // spawn its own launcher on the reserved pool port.
+    match resolve_vllm_binary(ctx.backend.vllm.primary_binary()) {
+      Some(bin) => Ok((bin, port)),
+      None => Err(
+        "vLLM backend selected but no `vllm` launcher found; set \
+         `backend.vllm.servers[0].binary` or put `vllm` on PATH \
+         (see docs/vllm-setup.md)"
+          .to_string(),
+      ),
+    }
   }
 
   fn prepare_launch(
@@ -337,10 +391,13 @@ pub fn served_model_name(model_path: &Path) -> String {
 
 /// The vLLM readiness contract.
 ///
-/// `/v1/models` returning 200 **with the served name in the body**. A bare
-/// health check flips too early: vLLM binds its port before the engine has
-/// finished profiling and building the KV cache, a window measured at 10-27 s
-/// on a 0.5B and far longer on real models.
+/// `/v1/models` returning 200 **with the served name in the body**, not a
+/// bare status check. Two reasons, both observed on a real 0.19.1 server:
+/// the unready window is long (engine init — profiling plus KV-cache build —
+/// measured at 10-27 s on a 0.5B and longer on real models), and the reserved
+/// port sits idle across it, so a status-only probe could be answered by
+/// whatever else grabbed the port meanwhile. Matching the served name is what
+/// makes the 200 ours.
 pub fn readiness(served_name: &str) -> Readiness {
   Readiness::HttpPollModelId {
     path: "/v1/models".to_string(),

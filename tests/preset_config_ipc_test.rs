@@ -65,6 +65,7 @@ async fn spawn_daemon(
     scan: ScanOptions::default(),
     watcher: fast_watcher(),
     lemonade_port: None,
+    hf_repo_projectors: Vec::new(),
   };
   let socket = opts.state_dir.clone();
   let handle = tokio::spawn(async move { run_foreground(opts).await });

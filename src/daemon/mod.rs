@@ -315,6 +315,17 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   if opts.lemonade_available() {
     discovery_opts.lemonade_port = Some(opts.backend.lemonade.port);
   }
+  // Safetensors / HF-repo discovery, generically over whichever backends are
+  // available and project rows from the shared enumerator. An install with
+  // none enabled contributes an empty list, so the walk never runs and the
+  // catalog is unchanged.
+  discovery_opts.hf_repo_projectors = crate::backend::Backends::all()
+    .into_iter()
+    .filter(|b| {
+      crate::backend::Backend::projects_hf_repos(b)
+        && crate::backend::Backend::enabled_in_config(b, &opts.backend, &opts.backend_force)
+    })
+    .collect();
   let _discovery = discovery_task::spawn(catalog.clone(), discovery_opts);
 
   // 5. Persisted state — favorites, last_params, running.

@@ -85,3 +85,224 @@ fn backend_is_registered_in_the_enum_and_the_registry() {
     "missing the Backends::all() line"
   );
 }
+
+// ---------------------------------------------------------------------------
+// Fixture-backed lifecycle, driven through the production daemon.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "test-fixtures")]
+mod lifecycle {
+  use std::path::PathBuf;
+  use std::time::Duration;
+
+  use llamastash::backend::{BackendConfig, ServerConfig};
+  use llamastash::config::{PortRange, VllmConfig};
+  use llamastash::daemon::{run_foreground, DaemonOptions};
+  use llamastash::ipc::Client;
+  use serde_json::{json, Value};
+
+  fn fake_llama_binary() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_fake_llama_server"))
+  }
+
+  fn fake_vllm_binary() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_fake_vllm_server"))
+  }
+
+  fn unique_temp(label: &str) -> PathBuf {
+    llamastash::test_support::unique_temp_dir("ls-vllm", label)
+  }
+
+  fn allocate_port_range() -> PortRange {
+    llamastash::test_support::allocate_port_range(8)
+  }
+
+  /// A safetensors snapshot laid out the way the HF cache does, so the
+  /// discovery leaf's repo-id recovery and the backend's served-name
+  /// derivation both have something real to read.
+  fn seed_repo(root: &std::path::Path, repo: &str) -> PathBuf {
+    let snapshot = root
+      .join(format!("models--{}", repo.replace('/', "--")))
+      .join("snapshots/rev0");
+    std::fs::create_dir_all(&snapshot).unwrap();
+    std::fs::write(
+      snapshot.join("config.json"),
+      br#"{"model_type":"qwen2","max_position_embeddings":4096,"hidden_size":8,"num_hidden_layers":2}"#,
+    )
+    .unwrap();
+    std::fs::write(snapshot.join("model.safetensors"), vec![0u8; 64]).unwrap();
+    snapshot
+  }
+
+  async fn wait_for_socket(path: &std::path::Path) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+      if std::time::Instant::now() > deadline {
+        panic!("daemon socket never appeared: {}", path.display());
+      }
+      if Client::connect(path).await.is_ok() {
+        return;
+      }
+      tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+  }
+
+  async fn wait_settled(client: &mut Client) -> Value {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+      let status = client.call("status", None).await.expect("status");
+      if let Some(row) = status
+        .get("models")
+        .and_then(|m| m.as_array())
+        .and_then(|a| a.first())
+      {
+        let state = row
+          .get("state")
+          .and_then(|s| s.get("state"))
+          .and_then(Value::as_str)
+          .unwrap_or("");
+        if state == "ready" || state == "error" {
+          return row.clone();
+        }
+      }
+      if std::time::Instant::now() > deadline {
+        let status = client.call("status", None).await.expect("status");
+        panic!("launch never settled; status={status}");
+      }
+      tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+  }
+
+  fn row_state(row: &Value) -> &str {
+    row
+      .get("state")
+      .and_then(|s| s.get("state"))
+      .and_then(Value::as_str)
+      .unwrap_or("")
+  }
+
+  fn opts_with_vllm(state: PathBuf, delay_args: &[&str]) -> DaemonOptions {
+    let base = DaemonOptions::rooted_at(state);
+    let mut binary = fake_vllm_binary();
+    // The fixture takes its extra switches through the same argv the backend
+    // builds, so a wrapper script is the only way to inject them. Keep it
+    // simple: when no extra args are needed, use the fixture directly.
+    if !delay_args.is_empty() {
+      binary = wrapper_for(&base.state_dir, &fake_vllm_binary(), delay_args);
+    }
+    DaemonOptions {
+      binary: Some(fake_llama_binary()),
+      port_range: allocate_port_range(),
+      backend: BackendConfig {
+        vllm: VllmConfig {
+          enabled: Some(true),
+          servers: vec![ServerConfig { binary, name: None }],
+        },
+        ..base.backend.clone()
+      },
+      ..base
+    }
+  }
+
+  /// A shell shim that appends fixture-only switches to whatever argv
+  /// llamastash builds — the same shape a user needs on a host where vLLM
+  /// only exists inside a container.
+  fn wrapper_for(dir: &std::path::Path, real: &std::path::Path, extra: &[&str]) -> PathBuf {
+    std::fs::create_dir_all(dir).unwrap();
+    let path = dir.join("vllm-wrapper.sh");
+    std::fs::write(
+      &path,
+      format!(
+        "#!/bin/sh\nexec {} \"$@\" {}\n",
+        real.display(),
+        extra.join(" ")
+      ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+      use std::os::unix::fs::PermissionsExt;
+      std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    path
+  }
+
+  #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+  async fn safetensors_repo_is_discovered_launched_and_stopped() {
+    let state = unique_temp("happy");
+    let cache = unique_temp("happy-cache");
+    let snapshot = seed_repo(&cache, "Qwen/Qwen2.5-0.5B-Instruct");
+
+    let opts = opts_with_vllm(state.clone(), &[]);
+    let socket = opts.state_dir.clone();
+    let daemon = tokio::spawn(async move { run_foreground(opts).await });
+    wait_for_socket(&socket).await;
+    let mut client = Client::connect(&socket).await.expect("connect");
+
+    let start = client
+      .call(
+        "start_model",
+        Some(json!({ "model_path": snapshot.to_string_lossy() })),
+      )
+      .await
+      .expect("start_model");
+    assert!(start.get("port").is_some(), "no port in {start}");
+
+    let row = wait_settled(&mut client).await;
+    assert_eq!(row_state(&row), "ready", "row: {row}");
+    assert_eq!(
+      row.get("backend").and_then(Value::as_str),
+      Some("vllm"),
+      "the running row must report the real resolved backend"
+    );
+
+    let launch_id = row.get("launch_id").and_then(Value::as_str).unwrap();
+    client
+      .call("stop_model", Some(json!({ "launch_id": launch_id })))
+      .await
+      .expect("stop_model");
+
+    let _ = client.call("shutdown", None).await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), daemon).await;
+    let _ = std::fs::remove_dir_all(&state);
+    let _ = std::fs::remove_dir_all(&cache);
+  }
+
+  /// The readiness contract: a server that binds its port immediately but
+  /// serves an empty `/v1/models` until the engine finishes must **not** be
+  /// called ready early. This is the case a bare status check gets wrong.
+  #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+  async fn early_bind_with_empty_model_list_is_not_ready_yet() {
+    let state = unique_temp("earlybind");
+    let cache = unique_temp("earlybind-cache");
+    let snapshot = seed_repo(&cache, "Qwen/Qwen2.5-0.5B-Instruct");
+
+    let opts = opts_with_vllm(state.clone(), &["--bind-early", "--load-delay-ms", "1500"]);
+    let socket = opts.state_dir.clone();
+    let daemon = tokio::spawn(async move { run_foreground(opts).await });
+    wait_for_socket(&socket).await;
+    let mut client = Client::connect(&socket).await.expect("connect");
+
+    let began = std::time::Instant::now();
+    client
+      .call(
+        "start_model",
+        Some(json!({ "model_path": snapshot.to_string_lossy() })),
+      )
+      .await
+      .expect("start_model");
+    let row = wait_settled(&mut client).await;
+
+    assert_eq!(row_state(&row), "ready", "row: {row}");
+    assert!(
+      began.elapsed() >= Duration::from_millis(1400),
+      "readiness flipped after {:?} — the probe accepted an empty model list",
+      began.elapsed()
+    );
+
+    let _ = client.call("shutdown", None).await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), daemon).await;
+    let _ = std::fs::remove_dir_all(&state);
+    let _ = std::fs::remove_dir_all(&cache);
+  }
+}

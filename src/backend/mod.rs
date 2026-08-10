@@ -501,6 +501,42 @@ pub trait Backend {
   /// claiming backend's id as the model's `routed_backend`, and the `list`
   /// badge / launch routing read that — so a new special-routing backend needs
   /// only override this, with no discovery edit.
+  /// Config-only enablement, for boot decisions taken before the full
+  /// [`MethodContext`] exists (the discovery task is spawned first). Same
+  /// predicate as [`Backend::available`], reading only what `DaemonOptions`
+  /// already has. Default `false` — a backend opts in alongside
+  /// [`Backend::projects_hf_repos`].
+  fn enabled_in_config(
+    &self,
+    _config: &BackendConfig,
+    _force: &std::collections::BTreeMap<String, bool>,
+  ) -> bool {
+    false
+  }
+
+  /// Whether this backend projects rows from the shared safetensors / HF-repo
+  /// enumerator. Read *before* the walk so an install with no such backend
+  /// enabled skips it entirely rather than walking the cache and discarding
+  /// the result.
+  fn projects_hf_repos(&self) -> bool {
+    false
+  }
+
+  /// Catalog rows this backend contributes from the shared safetensors /
+  /// HF-repo enumerator, given every non-GGUF candidate the walk found.
+  ///
+  /// Default: none. A backend that serves safetensors repos overrides this
+  /// with its eligibility predicate plus a projection — that pair is the whole
+  /// leaf, and it keeps the discovery task free of any backend name. The
+  /// enumerator runs once per rescan and the candidates are shared, so a
+  /// second safetensors engine costs one more override, not another walk.
+  fn project_hf_repos(
+    &self,
+    _candidates: &[crate::discovery::hf_repos::HfRepoCandidate],
+  ) -> Vec<crate::discovery::DiscoveredModel> {
+    Vec::new()
+  }
+
   fn auto_routes(&self, _header: &GgufHeader) -> bool {
     false
   }
@@ -1028,6 +1064,25 @@ impl Backend for Backends {
 
   fn auto_routes(&self, header: &GgufHeader) -> bool {
     for_each_backend!(self, b => b.auto_routes(header))
+  }
+
+  fn enabled_in_config(
+    &self,
+    config: &BackendConfig,
+    force: &std::collections::BTreeMap<String, bool>,
+  ) -> bool {
+    for_each_backend!(self, b => b.enabled_in_config(config, force))
+  }
+
+  fn projects_hf_repos(&self) -> bool {
+    for_each_backend!(self, b => b.projects_hf_repos())
+  }
+
+  fn project_hf_repos(
+    &self,
+    candidates: &[crate::discovery::hf_repos::HfRepoCandidate],
+  ) -> Vec<crate::discovery::DiscoveredModel> {
+    for_each_backend!(self, b => b.project_hf_repos(candidates))
   }
 
   fn serves_mode(&self, mode: LaunchMode) -> bool {

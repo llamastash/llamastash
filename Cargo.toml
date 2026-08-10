@@ -305,6 +305,18 @@ bench = false
 test = false
 doc = false
 
+# Fake `vllm` launcher for the vLLM backend integration tests — mirrors the
+# slow engine-init window and the served-model-name contract readiness keys
+# on. Spawned via `CARGO_BIN_EXE_fake_vllm_server`; injected as
+# `backend.vllm.servers[0].binary` per-test.
+[[bin]]
+name = "fake_vllm_server"
+path = "tests/fixtures/fake_vllm_server.rs"
+required-features = ["test-fixtures"]
+bench = false
+test = false
+doc = false
+
 # Local-only git hooks installed at first `cargo test` (or any
 # build that resolves dev-dependencies). The hook bodies live in
 # `.cargo-husky/hooks/`; pre-commit reformats + lints and pre-push

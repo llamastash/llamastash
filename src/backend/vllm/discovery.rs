@@ -87,6 +87,28 @@ fn repo_dir_of(snapshot: &Path) -> Option<&Path> {
   snapshots.parent()
 }
 
+/// Whether `path` is a directory holding safetensors weights and no GGUF —
+/// the on-disk shape this backend serves, checked without the cache-layout
+/// assumptions [`eligible`] gets for free from the enumerator.
+pub fn is_safetensors_snapshot(path: &Path) -> bool {
+  if !path.is_dir() {
+    return false;
+  }
+  let Ok(entries) = std::fs::read_dir(path) else {
+    return false;
+  };
+  let mut safetensors = false;
+  for entry in entries.flatten() {
+    match entry.path().extension().and_then(|e| e.to_str()) {
+      // A GGUF anywhere in the directory means the GGUF scanner owns it.
+      Some("gguf") => return false,
+      Some("safetensors") => safetensors = true,
+      _ => {}
+    }
+  }
+  safetensors
+}
+
 /// The `owner/name` repo id for a snapshot directory, recovered from the
 /// enclosing `models--owner--name` cache directory.
 pub fn repo_id_for_snapshot(snapshot: &Path) -> Option<String> {

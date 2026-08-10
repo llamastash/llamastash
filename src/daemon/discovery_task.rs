@@ -36,6 +36,12 @@ pub struct DiscoveryOptions {
   /// rows (R11, list-only). `None` (the default, and whenever the Lemonade
   /// backend is disabled) skips it entirely — no `lemond` contact.
   pub lemonade_port: Option<u16>,
+  /// Backends that project rows from the shared safetensors / HF-repo
+  /// enumerator. Empty (the default) skips the walk entirely, so a install
+  /// with no safetensors-capable backend enabled pays nothing and its catalog
+  /// stays byte-identical. The daemon fills this with whichever backends are
+  /// available; this module never names one.
+  pub hf_repo_projectors: Vec<crate::backend::Backends>,
 }
 
 impl DiscoveryOptions {
@@ -54,6 +60,7 @@ impl DiscoveryOptions {
       scan,
       watcher: WatcherOptions::default(),
       lemonade_port: None,
+      hf_repo_projectors: Vec::new(),
     }
   }
 }
@@ -159,6 +166,19 @@ async fn full_rescan(catalog: &ModelCatalog, opts: &DiscoveryOptions) {
     new_models.extend(crate::backend::lemonade::discovery::enumerate(port).await);
   }
 
+  // Safetensors / HF-repo rows. One walk, shared across every projecting
+  // backend, and skipped outright when none is enabled.
+  if !opts.hf_repo_projectors.is_empty() {
+    let candidates =
+      crate::discovery::hf_repos::enumerate_hf_cache(crate::util::paths::home_dir().as_deref());
+    for backend in &opts.hf_repo_projectors {
+      new_models.extend(crate::backend::Backend::project_hf_repos(
+        backend,
+        &candidates,
+      ));
+    }
+  }
+
   catalog.replace_all(new_models).await;
 }
 
@@ -225,6 +245,7 @@ mod tests {
       scan: ScanOptions::default(),
       watcher: fast_watcher(),
       lemonade_port: None,
+      hf_repo_projectors: Vec::new(),
     };
     let _task = spawn(catalog.clone(), opts);
 
@@ -256,6 +277,7 @@ mod tests {
       scan: ScanOptions::default(),
       watcher: fast_watcher(),
       lemonade_port: None,
+      hf_repo_projectors: Vec::new(),
     };
     let _task = spawn(catalog.clone(), opts);
 

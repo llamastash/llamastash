@@ -428,6 +428,7 @@ async fn end_to_end_proxy_models_matches_discovery_catalog() {
         channel_capacity: 16,
       },
       lemonade_port: None,
+      hf_repo_projectors: Vec::new(),
     },
     proxy: ProxyConfig {
       enabled: true,
