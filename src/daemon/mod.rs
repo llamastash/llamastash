@@ -876,6 +876,16 @@ pub fn start_detached_with_exe(opts: DaemonOptions, exe: PathBuf) -> Result<Star
   {
     cmd.arg("--ds4");
   }
+  // Same for vLLM: `--vllm` overrides a config `enabled: false`, and neither
+  // the flag nor the env var survives the detach on its own.
+  if opts
+    .backend_force
+    .get(crate::backend::vllm::VLLM_BACKEND_ID)
+    .copied()
+    .unwrap_or(false)
+  {
+    cmd.arg("--vllm");
+  }
   // Carry `--force` through so the foreground child skips the same backend
   // precheck the parent already waived; without it the child re-runs the gate
   // and exits, defeating the whole point of `--force`.
@@ -1016,6 +1026,16 @@ pub fn start_detached_with_exe(opts: DaemonOptions, exe: PathBuf) -> Result<Star
     .unwrap_or(false)
   {
     cmd.arg("--ds4");
+  }
+  // Same for vLLM: `--vllm` overrides a config `enabled: false`, and neither
+  // the flag nor the env var survives the detach on its own.
+  if opts
+    .backend_force
+    .get(crate::backend::vllm::VLLM_BACKEND_ID)
+    .copied()
+    .unwrap_or(false)
+  {
+    cmd.arg("--vllm");
   }
   // Carry `--force` through so the foreground child skips the same backend
   // precheck the parent already waived.

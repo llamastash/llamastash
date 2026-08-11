@@ -517,6 +517,37 @@ backend:
       - binary: /opt/ds4/ds4-server
         name: rocm
 
+  # vLLM — serves safetensors HuggingFace repos (the non-GGUF half of your
+  # cache), so it sits alongside llama.cpp rather than competing for the
+  # same files. You supply the launcher; llamastash never installs it.
+  # Zero footprint when it's absent. See docs/vllm-setup.md.
+  vllm:
+    # Force the backend on or off. Tri-state — leave unset (commented,
+    # the shown default) for auto: on whenever a `vllm` launcher resolves;
+    # `true` to force on; `false` to force off even when present.
+    #
+    # Sources — CLI: daemon start --vllm (force on) ·
+    #           Env: LLAMASTASH_VLLM=1 (force on).
+    # (The flag and env only force on; `false` here still wins as an
+    # explicit off.)
+    enabled: true
+
+    # The `vllm` launcher (single-entry `servers` list). Leave empty to
+    # fall back to a `vllm` found on `$PATH`.
+    #
+    # Detection is a **filesystem check only** — llamastash never runs the
+    # binary to probe it, because vLLM builds its argument parser through a
+    # device probe and fails outright (`Failed to infer device type`) on a
+    # host with no usable accelerator. So the path just has to exist.
+    #
+    # Where vLLM only ships as a container (ROCm today), point this at a
+    # small wrapper script that execs `docker run …` — the recipe is in
+    # docs/vllm-setup.md.
+    #
+    # Sources — CLI: (none) · Env: (none). Config-only.
+    servers:
+      - binary: /usr/local/bin/vllm
+
 # ─── Keybindings ──────────────────────────────────────────────────
 #
 # Override the default keymap. Each entry maps an action name

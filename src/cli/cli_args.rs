@@ -329,6 +329,13 @@ pub enum DaemonAction {
     /// it and point `ds4.binary` at it (see `docs/usage.md`).
     #[arg(long)]
     ds4: bool,
+    /// Force-enable the vLLM backend for safetensors HF repos, overriding
+    /// `backend.vllm.enabled: false`. vLLM is otherwise **on by default**
+    /// whenever a `vllm` launcher is found (on `PATH` or via
+    /// `backend.vllm.servers`). OR-ed with `LLAMASTASH_VLLM=1`. llamastash
+    /// never installs vLLM (see `docs/vllm-setup.md`).
+    #[arg(long)]
+    vllm: bool,
     /// Start the daemon even if an *indicated* backend can't initialize —
     /// the `llama-server` binary isn't found, or the Lemonade umbrella port
     /// is already taken / `lemond` is missing. Without this, `daemon start`
@@ -1753,6 +1760,7 @@ mod tests {
         insecure_no_auth,
         lemonade,
         ds4,
+        vllm,
         force,
       })) => {
         assert!(!foreground);
@@ -1764,6 +1772,7 @@ mod tests {
         assert!(!insecure_no_auth);
         assert!(!lemonade);
         assert!(!ds4);
+        assert!(!vllm);
         assert!(!force);
       }
       other => panic!("expected daemon start, got {other:?}"),

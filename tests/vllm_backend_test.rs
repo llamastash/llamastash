@@ -15,6 +15,13 @@ const ALLOWED: &[&str] = &[
   "src/backend/mod.rs",
   "src/config/mod.rs",
   "src/config/loader.rs",
+  // The daemon force-flag is user-facing CLI surface, so it names the backend
+  // by design — the same sanctioned exception `--lemonade` / `--ds4` carry.
+  // `daemon/mod.rs` is on the list for one reason only: re-appending that same
+  // flag across the detached re-exec, which it already does for the others.
+  "src/cli/cli_args.rs",
+  "src/cli/daemon.rs",
+  "src/daemon/mod.rs",
 ];
 
 fn repo_root() -> PathBuf {
@@ -305,4 +312,22 @@ mod lifecycle {
     let _ = std::fs::remove_dir_all(&state);
     let _ = std::fs::remove_dir_all(&cache);
   }
+}
+
+/// The detached `daemon start` re-exec must re-append `--vllm`, or a
+/// `--vllm` that overrides a config `enabled: false` is silently lost in the
+/// child. Caught in E2E after the unit tests passed: `LLAMASTASH_VLLM=1`
+/// worked (env survives exec) while the flag did not. Both re-exec sites
+/// carry it, which is why this asserts on the count.
+#[test]
+fn force_flag_is_re_appended_on_both_detached_re_execs() {
+  let daemon = std::fs::read_to_string(repo_root().join("src/daemon/mod.rs")).unwrap();
+  let flag = concat!("--v", "llm");
+  let sites = daemon.matches(&format!("cmd.arg(\"{flag}\")")).count();
+  let ds4_sites = daemon.matches(r#"cmd.arg("--ds4")"#).count();
+  assert_eq!(
+    sites, ds4_sites,
+    "the force flag must ride every re-exec path the other detected backends do"
+  );
+  assert!(sites >= 2, "expected both re-exec sites, found {sites}");
 }
