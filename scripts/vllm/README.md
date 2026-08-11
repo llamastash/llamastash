@@ -7,6 +7,12 @@ from docs: what the real flag surface is, whether the GPU is visible, and how
 the server behaves at startup. Used to verify the facts the vLLM backend is
 built on — see `docs/plans/2026-08-10-001-feat-vllm-backend-plan.md`.
 
+> **Warning — this allocates system RAM on an APU.** On unified-memory hosts
+> the GPU has no separate pool, so `--gpu-memory-utilization` spends DRAM. The
+> `serve` mode caps it, but check `free -g` before and during a run, and do not
+> leave one unattended: an uncapped vLLM on a 121 GB Strix Halo box has frozen
+> the machine outright.
+
 ```bash
 scripts/vllm/probe.sh version   # vllm + torch versions, GPU visibility
 scripts/vllm/probe.sh help      # `vllm serve --help` (needs the GPU devices)

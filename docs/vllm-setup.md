@@ -128,8 +128,19 @@ denylist.
   plus KV-cache build) took 10-27 s on a 0.5B and runs far longer on real
   models. Readiness waits for `/v1/models` to advertise the model, not just for
   the port to answer.
-- **Unified-memory hosts see the whole pool.** On Strix Halo, vLLM profiled
-  101.9 GiB of KV cache rather than the 4 GiB dedicated VRAM carve-out.
+- **On unified-memory hosts, `gpu_memory_utilization` spends your system RAM.**
+  This is the sharpest edge here. On an APU (Strix Halo / Ryzen AI Max and
+  friends) there is no separate VRAM pool — the GPU allocates out of the same
+  DRAM your OS is using. vLLM's default is `0.9`, and it will take it: on a
+  121 GB box it profiled 101.9 GiB of KV cache and drove the machine into
+  swap-less RAM exhaustion, freezing it until the process was killed. The
+  small `mem_info_vram_total` carve-out you may see (4 GiB) is **not** a
+  ceiling and will not save you.
+
+  Set `gpu_memory_utilization` explicitly on these machines. Size it to the
+  model plus the context you actually want, not to the pool — a 0.5B at 2k
+  context is comfortable well under `0.15`. Discrete-GPU hosts are unaffected;
+  there the fraction applies to real VRAM.
 - **The model name is the repo id.** LlamaStash passes `--served-model-name`, so
   `/v1/models` and your requests use `owner/name`, not the cache path.
 - **No GGUF on vLLM.** A GGUF binds llama.cpp (or ds4). vLLM claims safetensors

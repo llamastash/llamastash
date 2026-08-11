@@ -620,6 +620,8 @@ Three behaviours differ from the GGUF backends and are worth knowing:
 
 `--ctx` maps to `--max-model-len`. Eight vLLM-specific tunables are native knobs (`gpu_memory_utilization`, `max_num_seqs`, `tensor_parallel_size`, `dtype`, `kv_cache_dtype`, `quantization`, `enforce_eager`, `trust_remote_code`); the rest of vLLM's ~240 flags ride the `-- <extras>` tail, minus a denylist that keeps the launch loopback-only and reapable.
 
+**On unified-memory hosts (APUs), set `gpu_memory_utilization` before launching.** GPU memory is system RAM there, and vLLM's default of `0.9` will claim most of it — enough to exhaust RAM and freeze the machine. See [vLLM setup](vllm-setup.md#notes-and-limitations).
+
 Known gaps: `resolved_ctx` reads null on a running vLLM row (the field comes from a llama.cpp-only `/props` fetch), the `QUANT` cell is empty for safetensors rows, multi-GPU device selection is not wired, and vLLM launches skip the pre-spawn memory admission gate.
 
 ## Proxy (OpenAI-compatible listener)

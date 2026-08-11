@@ -35,12 +35,15 @@ case "${1:-serve}" in
     docker run -it "${common_args[@]}" --entrypoint bash "$IMAGE" "$@"
     ;;
   serve)
+    # On a unified-memory host --gpu-memory-utilization spends system RAM, not
+    # VRAM. vLLM's default of 0.9 has frozen a 121 GB box outright; 0.15 is
+    # plenty for a small probe model.
     shift
     docker run "${common_args[@]}" --name vllm-probe -p "127.0.0.1:${PORT}:8000" \
       --entrypoint vllm "$IMAGE" serve "$MODEL" \
       --host 0.0.0.0 --port 8000 \
       --max-model-len 2048 \
-      --gpu-memory-utilization 0.85 \
+      --gpu-memory-utilization 0.15 \
       --enforce-eager \
       "$@"
     ;;
