@@ -426,6 +426,30 @@ fn vllm_argv(params: &LaunchParams, port: u16) -> Vec<std::ffi::OsString> {
     &params.backend_knobs,
     VLLM_FORBIDDEN_EXTRA_HEADS,
   ));
+  // The `-- <extras>` tail carries the ~230 flags that have no typed knob.
+  // `compose_and_spawn` already refused a banned head with a clear error;
+  // this strip is the belt-and-suspenders that guarantees none reaches the
+  // launcher even if some path skipped the fail-fast.
+  let mut skip_value = false;
+  for e in &params.extras {
+    let lossy = e.to_string_lossy();
+    // Drop the value token that belonged to a flag we just stripped. Without
+    // this the space-separated form leaves `0.0.0.0` dangling in argv, which
+    // vLLM reads as a stray positional and refuses the launch over.
+    if skip_value {
+      skip_value = false;
+      if !lossy.starts_with('-') {
+        continue;
+      }
+    }
+    let head = lossy.split('=').next().unwrap_or(&lossy);
+    if crate::launch::params::is_forbidden_head_ext(head, VLLM_FORBIDDEN_EXTRA_HEADS) {
+      log::warn!("vllm_argv: stripping forbidden extra {head:?}");
+      skip_value = !lossy.contains('=');
+      continue;
+    }
+    argv.push(e.clone());
+  }
   argv
 }
 
@@ -610,6 +634,38 @@ mod tests {
         !argv.contains("0.0.0.0") && !argv.contains("hunter2"),
         "`{smuggle}` survived into argv: {argv}"
       );
+    }
+  }
+
+  #[test]
+  fn extras_reach_argv_after_the_knobs() {
+    let mut p = params("/c/models--o--n/snapshots/rev");
+    p.extras = vec!["--max-num-batched-tokens".into(), "8192".into()];
+    let argv = argv_strings(&p, 1);
+    assert!(
+      argv
+        .windows(2)
+        .any(|w| w[0] == "--max-num-batched-tokens" && w[1] == "8192"),
+      "the documented extras tail must reach argv: {argv:?}"
+    );
+  }
+
+  #[test]
+  fn a_forbidden_extra_is_stripped_from_argv_in_both_spellings() {
+    for smuggle in [
+      vec!["--host".to_string(), "0.0.0.0".to_string()],
+      vec!["--host=0.0.0.0".to_string()],
+      vec!["--api-key=hunter2".to_string()],
+    ] {
+      let mut p = params("/c/models--o--n/snapshots/rev");
+      p.extras = smuggle.iter().map(Into::into).collect();
+      let argv = argv_strings(&p, 1).join(" ");
+      assert!(
+        !argv.contains("0.0.0.0") && !argv.contains("hunter2"),
+        "`{smuggle:?}` survived into argv: {argv}"
+      );
+      // The loopback host we set ourselves must still be there.
+      assert!(argv.contains("--host 127.0.0.1"));
     }
   }
 

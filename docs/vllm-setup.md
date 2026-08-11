@@ -46,17 +46,26 @@ point `servers[0].binary` at that. Save as `~/bin/vllm`, `chmod +x`:
 #!/usr/bin/env bash
 set -euo pipefail
 IMAGE="rocm/vllm:rocm7.13.0_gfx1151_ubuntu24.04_py3.13_pytorch_2.10.0_vllm_0.19.1"
+# Hardcode the cache dir — do NOT read $HF_HOME here. LlamaStash strips
+# HF_HOME (along with HF_TOKEN) from every backend child, so under `set -u`
+# the wrapper would abort before docker ever runs.
+HF_DIR="/home/you/.cache/huggingface"
 exec docker run --rm --network host \
   --device /dev/kfd --device /dev/dri \
   --group-add "$(getent group render | cut -d: -f3)" \
   --group-add "$(getent group video  | cut -d: -f3)" \
   --ipc host --shm-size 8g --security-opt seccomp=unconfined \
-  -v "$HF_HOME:$HF_HOME" -e "HF_HOME=$HF_HOME" \
+  -v "$HF_DIR:$HF_DIR" -e "HF_HOME=$HF_DIR" \
   --entrypoint vllm "$IMAGE" "$@"
 ```
 
-Three things in there are load-bearing:
+Four things in there are load-bearing:
 
+- **The cache path is hardcoded, not read from `$HF_HOME`.** LlamaStash strips
+  `HF_HOME`, `HF_TOKEN`, `HUGGING_FACE_HUB_TOKEN` and `HF_ENDPOINT` from every
+  backend child as a credential-hygiene measure, so the variable is guaranteed
+  absent inside the wrapper. Set it explicitly and re-export it into the
+  container.
 - **`--group-add` must be numeric.** The image has no `render` / `video` group
   entries by name, so `--group-add render` fails with
   `unable to find group render`.
