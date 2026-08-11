@@ -600,6 +600,28 @@ ds4-server advertises a **static two-entry list** on `/v1/models` — both `deep
 
 `--kv-disk-dir` is ds4's own persistent cache, reused across restarts. LlamaStash never subdir-mangles or cleans it — it is entirely ds4-owned state. It durably holds conversation-derived data under ds4's own permissions (umask) at exactly the path you type, without any of LlamaStash's `0600` state-file hygiene. **Point it at a private, user-owned directory.**
 
+## vLLM backend
+
+**Experimental.** vLLM serves **safetensors HuggingFace repos** — the non-GGUF half of your cache. A GGUF still binds llama.cpp (or ds4); vLLM claims repos the GGUF scanner does not. Setup, the ROCm container recipe, and the full knob table are in **[vLLM setup](vllm-setup.md)**.
+
+Enable/disable follows the same tri-state as the other detected backends: unset means on-when-found, `backend.vllm.enabled: false` forces off, and `daemon start --vllm` / `LLAMASTASH_VLLM=1` force on over it.
+
+```bash
+llamastash status --json | jq '.backends[] | select(.id == "vllm")'
+llamastash list                       # safetensors rows show BACKEND=vllm
+llamastash start owner/repo --ctx 4096
+```
+
+Three behaviours differ from the GGUF backends and are worth knowing:
+
+- **A vLLM row's path is a directory**, not a weight file — the resolved HF snapshot. `list` shows the repo id as the name, since the directory basename is an opaque revision hash.
+- **Detection never runs the binary.** vLLM builds its argument parser through a device probe and fails with `Failed to infer device type` on a host with no usable accelerator, so LlamaStash checks only that the configured path exists. That is also why a container wrapper script works as the `binary`.
+- **Startup is slow and readiness waits for it.** Engine init (memory profiling plus KV-cache build) ran 10-27 s on a 0.5B and takes longer on real models. Readiness requires `/v1/models` to advertise the model, not just an answering port.
+
+`--ctx` maps to `--max-model-len`. Eight vLLM-specific tunables are native knobs (`gpu_memory_utilization`, `max_num_seqs`, `tensor_parallel_size`, `dtype`, `kv_cache_dtype`, `quantization`, `enforce_eager`, `trust_remote_code`); the rest of vLLM's ~240 flags ride the `-- <extras>` tail, minus a denylist that keeps the launch loopback-only and reapable.
+
+Known gaps: `resolved_ctx` reads null on a running vLLM row (the field comes from a llama.cpp-only `/props` fetch), the `QUANT` cell is empty for safetensors rows, multi-GPU device selection is not wired, and vLLM launches skip the pre-spawn memory admission gate.
+
 ## Proxy (OpenAI-compatible listener)
 
 The daemon binds a single OpenAI-compatible HTTP proxy on `127.0.0.1:11435` (default mode) so any agent that speaks the OpenAI REST shape — OpenCode, Pi (pi.dev), the OpenAI SDKs, Cline, llm-cli — can talk to every discovered model through one stable URL. The default port is `11435` (one above Ollama's `11434`) so llamastash co-exists with an installed Ollama daemon without a collision. If the base port is taken the listener walks up to `11440` and binds the first free slot — the actual address is reported via `llamastash status` / the TUI Daemon pane under `proxy.listen`.

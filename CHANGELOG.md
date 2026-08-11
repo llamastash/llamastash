@@ -6,6 +6,7 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 ### Added
 
+- **vLLM backend (experimental).** Safetensors HuggingFace repos now appear in the catalog and launch through `vllm serve`, alongside llama.cpp for GGUF. Default-on when a `vllm` launcher resolves, `--vllm` / `LLAMASTASH_VLLM=1` to force. Eight native knobs plus `--ctx` → `--max-model-len`. Partially closes [#36](https://github.com/llamastash/llamastash/issues/36) — SGLang is still open. See `docs/vllm-setup.md`.
 - **DSpark speculative decoding on ds4.** Three new ds4 native knobs (14 → 17) — `dspark`, `dspark_confidence`, `dspark_strict` — drive DeepSeek's DSpark support model through ds4-server's `--mtp` slot. The support GGUF auto-pairs from a sibling by header (it declares its own `deepseek4-dspark` arch), and turning DSpark on with no support file resolvable drops the knobs with a notice instead of letting ds4-server refuse the launch after a full weight load. See `docs/usage.md#dspark-speculative-decoding`.
 
 ### Fixed
