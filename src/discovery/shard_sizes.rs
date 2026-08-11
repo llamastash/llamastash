@@ -50,7 +50,12 @@ pub fn per_shard(primary: &Path, siblings: &[PathBuf]) -> Vec<ShardSize> {
 }
 
 fn stat_one(path: &Path) -> ShardSize {
-  let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+  // A whole-directory row (a safetensors snapshot) has no meaningful `len()` —
+  // the inode size is ~4 KiB, which would otherwise beat the real weights
+  // total the caller falls back to. Report 0 so the fallback wins.
+  let bytes = std::fs::metadata(path)
+    .map(|m| if m.is_dir() { 0 } else { m.len() })
+    .unwrap_or(0);
   ShardSize {
     path: path.to_path_buf(),
     bytes,
@@ -59,6 +64,16 @@ fn stat_one(path: &Path) -> ShardSize {
 
 #[cfg(test)]
 mod tests {
+  /// A directory row must not report its inode size. The SIZE column falls
+  /// back to the summed weights, and ~4 KiB would silently beat it.
+  #[test]
+  fn a_directory_primary_contributes_zero_not_its_inode_size() {
+    let dir = crate::util::test_temp::unique_temp_dir("shard-dir");
+    std::fs::write(dir.join("model.safetensors"), vec![0u8; 1024]).unwrap();
+    assert_eq!(on_disk_total(&dir, &[]), 0);
+    let _ = std::fs::remove_dir_all(&dir);
+  }
+
   use super::*;
 
   #[test]
