@@ -6,9 +6,9 @@
 │VRAM ██┌ HuggingFace — Search · e:edit · ↑/↓:row · ⏎:open · o:sort · n/p:page · Esc:close ────────────────────┐ ◡◡ ██ │
 │backend│ search: qwen                                                                                         │████▀  │
 └───────│ sort: ↓ downloads  ·  page 1                                                                         │───────┘
-┌ Models│   repo                                  params    size  task                                         │───────┐
-│   Name│ ▌ Qwen/Qwen3-7B-GGUF                      7.6B    5.3G  text-generation   ↓ 1.2M                     │       │
-│▶ Runni│   bartowski/Qwen3-4B-GGUF                   4B    2.7G  text-generation   ↓ 987.7K                   │       │
+┌ Models│   repo                                  fmt   params    size  task                                   │───────┐
+│   Name│ ▌ Qwen/Qwen3-7B-GGUF                    GGUF    7.6B    5.3G  text-generation   ↓ 1.2M               │       │
+│▶ Runni│   bartowski/Qwen3-4B-GGUF               GGUF      4B    2.7G  text-generation   ↓ 987.7K             │       │
 │ ● qwen│                                                                                                      │       │
 │★ Favor│                                                                                                      │       │
 │ ★ mist│                                                                                                      │M · 31 │

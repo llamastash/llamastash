@@ -67,7 +67,55 @@ pub struct HfSearchResult {
   pub gguf: Option<HfGgufMeta>,
 }
 
+/// Which weight formats a search should return.
+///
+/// The search used to pin `filter=gguf` unconditionally, so a safetensors-only
+/// repo could not be found — and therefore could not be pulled — no matter
+/// which backends were installed. Verified against the live API: the two
+/// filters AND rather than OR (asking for both returns only repos publishing
+/// both), so widening means dropping the filter, not adding one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WeightFormatFilter {
+  /// GGUF repos only — the right scope when nothing can serve safetensors.
+  GgufOnly,
+  /// No format filter. Rows carry [`HfSearchResult::weight_format`] so the
+  /// user can tell them apart.
+  Any,
+}
+
+/// The weight format a search row publishes, from the repo's library tags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WeightFormat {
+  Gguf,
+  Safetensors,
+  /// Both, or neither recognised.
+  Other,
+}
+
+impl WeightFormat {
+  /// Short column label.
+  pub fn label(self) -> &'static str {
+    match self {
+      WeightFormat::Gguf => "GGUF",
+      WeightFormat::Safetensors => "SFTN",
+      WeightFormat::Other => "-",
+    }
+  }
+}
+
 impl HfSearchResult {
+  /// The repo's weight format, read from its library tags. A repo publishing
+  /// both is `Other` — the file picker is where that choice gets made.
+  pub fn weight_format(&self) -> WeightFormat {
+    let gguf = self.tags.iter().any(|t| t == "gguf");
+    let safetensors = self.tags.iter().any(|t| t == "safetensors");
+    match (gguf, safetensors) {
+      (true, false) => WeightFormat::Gguf,
+      (false, true) => WeightFormat::Safetensors,
+      _ => WeightFormat::Other,
+    }
+  }
+
   /// Approximate download size (bytes) for the repo, when the `gguf`
   /// expand surfaced it. This is the size of the single representative
   /// GGUF file HF parsed for the repo — not the sum of every quant —
@@ -219,12 +267,13 @@ pub async fn search(
   query: &str,
   sort: HfSortKey,
   cursor: Option<&str>,
+  formats: WeightFormatFilter,
 ) -> Result<HfSearchPage, FetchError> {
   if fetch.is_offline() {
     return Err(FetchError::Offline);
   }
   let endpoint = endpoint_or_default();
-  let url = build_search_url(&endpoint, query, sort, cursor)?;
+  let url = build_search_url(&endpoint, query, sort, cursor, formats)?;
   let (results, headers) = fetch
     .get_json_with_headers::<Vec<HfSearchResult>>(url.as_str(), SEARCH_BODY_CAP)
     .await?;
@@ -248,13 +297,16 @@ fn build_search_url(
   query: &str,
   sort: HfSortKey,
   cursor: Option<&str>,
+  formats: WeightFormatFilter,
 ) -> Result<reqwest::Url, FetchError> {
   let mut url = reqwest::Url::parse(&format!("{endpoint}/api/models"))
     .map_err(|e| FetchError::Transport(format!("URL parse: {e}")))?;
   {
     let mut pairs = url.query_pairs_mut();
     pairs.append_pair("search", query);
-    pairs.append_pair("filter", "gguf");
+    if formats == WeightFormatFilter::GgufOnly {
+      pairs.append_pair("filter", "gguf");
+    }
     pairs.append_pair("sort", sort.as_query_token());
     pairs.append_pair("limit", &SEARCH_LIMIT.to_string());
     // `expand[]` narrows the payload to *only* the listed fields, so
@@ -580,7 +632,14 @@ mod tests {
   #[tokio::test]
   async fn search_returns_offline_when_fetch_client_is_offline() {
     let fetch = FetchClient::offline();
-    let r = search(&fetch, "qwen", HfSortKey::Downloads, None).await;
+    let r = search(
+      &fetch,
+      "qwen",
+      HfSortKey::Downloads,
+      None,
+      WeightFormatFilter::GgufOnly,
+    )
+    .await;
     assert!(matches!(r, Err(FetchError::Offline)), "got {r:?}");
   }
 
@@ -674,6 +733,62 @@ mod tests {
     );
   }
 
+  /// The GGUF pin is what made a safetensors repo unfindable, so dropping it
+  /// under `Any` is the whole fix. Verified against the live API that the two
+  /// format filters AND rather than OR, so there is no both-formats filter to
+  /// ask for — omitting it is the only way to see both.
+  #[test]
+  fn the_format_filter_is_omitted_when_any_format_is_wanted() {
+    let gguf = build_search_url(
+      "https://huggingface.co",
+      "qwen",
+      HfSortKey::Downloads,
+      None,
+      WeightFormatFilter::GgufOnly,
+    )
+    .expect("build url");
+    assert!(gguf.query().unwrap_or("").contains("filter=gguf"));
+
+    let any = build_search_url(
+      "https://huggingface.co",
+      "qwen",
+      HfSortKey::Downloads,
+      None,
+      WeightFormatFilter::Any,
+    )
+    .expect("build url");
+    let q = any.query().unwrap_or("");
+    assert!(
+      !q.contains("filter="),
+      "no format filter may be pinned: {q}"
+    );
+    assert!(q.contains("search=qwen"), "the query itself survives: {q}");
+  }
+
+  #[test]
+  fn weight_format_reads_the_library_tags() {
+    let row = |tags: &[&str]| HfSearchResult {
+      repo_id: "o/n".into(),
+      downloads: None,
+      likes: None,
+      last_modified: None,
+      pipeline_tag: None,
+      tags: tags.iter().map(|s| s.to_string()).collect(),
+      gguf: None,
+    };
+    assert_eq!(row(&["gguf"]).weight_format(), WeightFormat::Gguf);
+    assert_eq!(
+      row(&["safetensors", "transformers"]).weight_format(),
+      WeightFormat::Safetensors
+    );
+    // Both published, or neither recognised: the file picker decides.
+    assert_eq!(
+      row(&["gguf", "safetensors"]).weight_format(),
+      WeightFormat::Other
+    );
+    assert_eq!(row(&["onnx"]).weight_format(), WeightFormat::Other);
+  }
+
   #[test]
   fn build_search_url_includes_search_for_non_trending_sorts() {
     for sort in [
@@ -681,7 +796,14 @@ mod tests {
       HfSortKey::Likes,
       HfSortKey::RecentlyUpdated,
     ] {
-      let url = build_search_url("https://huggingface.co", "qwen", sort, None).expect("build url");
+      let url = build_search_url(
+        "https://huggingface.co",
+        "qwen",
+        sort,
+        None,
+        WeightFormatFilter::GgufOnly,
+      )
+      .expect("build url");
       let q = url.query().unwrap_or("");
       assert!(
         q.contains("search=qwen"),
@@ -704,7 +826,14 @@ mod tests {
       HfSortKey::RecentlyUpdated,
       HfSortKey::Trending,
     ] {
-      let url = build_search_url("https://huggingface.co", "qwen", sort, None).expect("build url");
+      let url = build_search_url(
+        "https://huggingface.co",
+        "qwen",
+        sort,
+        None,
+        WeightFormatFilter::GgufOnly,
+      )
+      .expect("build url");
       let q = url.query().unwrap_or("");
       assert!(q.contains("search=qwen"), "{sort:?} must carry search: {q}");
       assert!(q.contains("filter=gguf"), "{sort:?} must carry filter: {q}");

@@ -16,11 +16,11 @@ const ALLOWED: &[&str] = &[
   "src/config/mod.rs",
   // The daemon force-flag is user-facing CLI surface, so it names the backend
   // by design — the same sanctioned exception `--lemonade` / `--ds4` carry.
-  // `daemon/mod.rs` is on the list for one reason only: re-appending that same
-  // flag across the detached re-exec, which it already does for the others.
+  // `daemon/mod.rs` used to be here too, for re-appending that flag across the
+  // detached re-exec; it derives the flags from the force map now and names
+  // nothing.
   "src/cli/cli_args.rs",
   "src/cli/daemon.rs",
-  "src/daemon/mod.rs",
 ];
 
 fn repo_root() -> PathBuf {

@@ -483,7 +483,19 @@ fn spawn_hf_search(
   };
   tokio::spawn(async move {
     let fetch_client = build_tui_fetch_client(offline);
-    let evt = match hf_api::search(&fetch_client, &query, sort, cursor.as_deref()).await {
+    // Unfiltered: the search pinned `filter=gguf`, so a safetensors repo could
+    // not be found and therefore could not be pulled at all. Rows carry a
+    // FORMAT column instead, which is the honest answer -- a repo is worth
+    // downloading whether or not a backend that serves it is installed today.
+    let evt = match hf_api::search(
+      &fetch_client,
+      &query,
+      sort,
+      cursor.as_deref(),
+      hf_api::WeightFormatFilter::Any,
+    )
+    .await
+    {
       Ok(page) => crate::tui::hf_dialog::HfDialogEvent::SearchResults { seq, page },
       Err(e) => crate::tui::hf_dialog::HfDialogEvent::SearchFailed { seq, error: e },
     };

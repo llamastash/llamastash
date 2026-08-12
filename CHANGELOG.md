@@ -9,6 +9,8 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 - **vLLM backend (experimental).** Safetensors HuggingFace repos now appear in the catalog and launch through `vllm serve`, alongside llama.cpp for GGUF. Default-on when a `vllm` launcher resolves, `--vllm` / `LLAMASTASH_VLLM=1` to force. Nine native knobs plus `--ctx` → `--max-model-len`. On unified-memory hosts the KV cache is capped from live free memory, since vLLM's default sizes it against the whole pool and can exhaust system RAM. Partially closes [#36](https://github.com/llamastash/llamastash/issues/36) — SGLang is still open. See `docs/vllm-setup.md`.
 - **DSpark speculative decoding on ds4.** Three new ds4 native knobs (14 → 17) — `dspark`, `dspark_confidence`, `dspark_strict` — drive DeepSeek's DSpark support model through ds4-server's `--mtp` slot. The support GGUF auto-pairs from a sibling by header (it declares its own `deepseek4-dspark` arch), and turning DSpark on with no support file resolvable drops the knobs with a notice instead of letting ds4-server refuse the launch after a full weight load. See `docs/usage.md#dspark-speculative-decoding`.
 
+- **Safetensors repos are findable in the HuggingFace pull browser.** The search pinned a GGUF-only filter, so a safetensors repo could not be found and therefore could not be pulled. Results now carry a `fmt` column (`GGUF` / `SFTN`) so the two are distinguishable.
+
 ### Fixed
 
 - **A nested GGUF could be destroyed by deleting a different model.** A repo shipping safetensors plus a GGUF in a quant subdirectory yielded two catalog rows; deleting one removed the whole cache repo, behind a prompt saying it was the last model in it.

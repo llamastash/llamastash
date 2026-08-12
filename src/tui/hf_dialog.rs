@@ -915,6 +915,7 @@ fn render_search_row(
       format!("{:<36}  ", crate::tui::fmt::truncate_end(&r.repo_id, 36)),
       style,
     ),
+    Span::styled(format!("{:<4}  ", r.weight_format().label()), style),
     Span::styled(format!("{params:>6}  "), style),
     Span::styled(format!("{size:>6}  "), style),
     Span::styled(
@@ -937,6 +938,7 @@ fn render_search_header(sort: HfSortKey, palette: &Palette) -> Line<'static> {
       format!("  {:<36}  ", "repo"),
       col_style(sort == HfSortKey::RepoName),
     ),
+    Span::styled(format!("{:<4}  ", "fmt"), label),
     Span::styled(
       format!("{:>6}  ", "params"),
       col_style(sort == HfSortKey::ParamSize),

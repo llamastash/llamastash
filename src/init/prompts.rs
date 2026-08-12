@@ -731,7 +731,17 @@ enum SearchPick {
 async fn search_and_pick(fetch: &FetchClient) -> Result<Option<String>, CliExit> {
   let mut query = prompt_search_query(None).await?;
   loop {
-    let results = match hf_api::search(fetch, &query, HfSortKey::Downloads, None).await {
+    // The wizard is bootstrapping a first model for the default backend, so
+    // GGUF is the right scope here even though the TUI browser is wider.
+    let results = match hf_api::search(
+      fetch,
+      &query,
+      HfSortKey::Downloads,
+      None,
+      hf_api::WeightFormatFilter::GgufOnly,
+    )
+    .await
+    {
       Ok(page) => page.results,
       Err(err) => {
         note_search_error(&err).await?;
