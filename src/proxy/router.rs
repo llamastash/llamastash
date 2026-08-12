@@ -573,7 +573,7 @@ fn ollama_details_from_metadata(meta: Option<&ModelMetadata>) -> ModelDetails {
         family,
         families,
         parameter_size: m.parameter_label.clone().unwrap_or_default(),
-        quantization_level: m.quant.label().to_string(),
+        quantization_level: m.quant_display(),
       }
     }
     None => ollama_details_unknown(),
@@ -658,7 +658,7 @@ fn build_model_info(
     if let Some(tok) = &meta.tokenizer_kind {
       map.insert("tokenizer.ggml.model".into(), json!(tok));
     }
-    map.insert("general.quantization".into(), json!(meta.quant.label()));
+    map.insert("general.quantization".into(), json!(meta.quant_display()));
   }
   map
 }

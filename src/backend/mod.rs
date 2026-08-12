@@ -646,6 +646,22 @@ pub trait Backend {
     NativeKnobResolution::default()
   }
 
+  /// Bytes this launch will hold beyond its weights, for a model with no GGUF
+  /// header to project demand from.
+  ///
+  /// Only the backend can answer: the figure lives in its own native knobs,
+  /// and the knobs are its own vocabulary. Called with post-headroom free
+  /// bytes so a backend expressing its budget as a *fraction of the pool* can
+  /// turn that into bytes. `None` means "no projection possible", which leaves
+  /// the admission gate disengaged — return a figure wherever one can be
+  /// derived, because a silent skip is how an oversized launch reaches spawn.
+  ///
+  /// Default `None`: a GGUF backend projects from its header instead and never
+  /// reaches this path.
+  fn projected_cache_bytes(&self, _params: &LaunchParams, _free_bytes: u64) -> Option<u64> {
+    None
+  }
+
   /// Whether this launch bypasses the pre-spawn memory admission gate — a
   /// backend that streams weights from disk (bounded residency) skips the hard
   /// OOM refusal. Default `false`. Read on the *resolved* params (after
@@ -1133,6 +1149,10 @@ impl Backend for Backends {
 
   fn bypasses_admission(&self, params: &LaunchParams) -> bool {
     for_each_backend!(self, b => b.bypasses_admission(params))
+  }
+
+  fn projected_cache_bytes(&self, params: &LaunchParams, free_bytes: u64) -> Option<u64> {
+    for_each_backend!(self, b => b.projected_cache_bytes(params, free_bytes))
   }
 
   fn installed(&self, ctx: &MethodContext) -> bool {

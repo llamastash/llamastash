@@ -195,13 +195,26 @@ pub(crate) fn served_model_ids(body: &[u8]) -> Option<Vec<String>> {
 /// field other than `id` (a backend reading its resolved context window, say).
 pub(crate) fn served_model_entries(body: &[u8]) -> Option<Vec<serde_json::Value>> {
   let text = std::str::from_utf8(body).ok()?;
-  // Decode the first JSON value and ignore whatever follows it: a captured
-  // response carries headers in front, and may be truncated at the read cap or
-  // carry chunked-encoding trailers. A strict `from_str` rejects all three.
+  // Skip the response headers, then decode the first JSON value and ignore
+  // whatever follows it (chunked-encoding trailers, a second document).
   let start = text.find('{')?;
   let mut de = serde_json::Deserializer::from_str(&text[start..]);
-  let value = <serde_json::Value as serde::Deserialize>::deserialize(&mut de).ok()?;
-  Some(value.get("data")?.as_array()?.clone())
+  if let Ok(value) = <serde_json::Value as serde::Deserialize>::deserialize(&mut de) {
+    return Some(value.get("data")?.as_array()?.clone());
+  }
+  // Truncated at the read cap: the object never closes, so a strict decode
+  // fails outright and every id is lost — a server advertising enough models
+  // would then never reach Ready, with nothing pointing at the cap. Recover
+  // the entries that did arrive by decoding the `data` array element-wise.
+  let data_at = text[start..].find("\"data\"")? + start;
+  let arr_at = text[data_at..].find('[')? + data_at + 1;
+  let mut stream =
+    serde_json::Deserializer::from_str(&text[arr_at..]).into_iter::<serde_json::Value>();
+  let mut out = Vec::new();
+  while let Some(Ok(v)) = stream.next() {
+    out.push(v);
+  }
+  (!out.is_empty()).then_some(out)
 }
 
 /// One probe attempt that also captures the response body (for the model-id

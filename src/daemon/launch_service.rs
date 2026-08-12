@@ -264,6 +264,20 @@ pub(crate) async fn compose_and_spawn(
       (synthetic, None, None, Vec::new(), None, identity)
     }
     None => {
+      // A path some backend *would* claim, but that backend is disabled or
+      // absent. Say so: falling through hands a directory to the GGUF header
+      // reader, and the user gets a raw EISDIR instead of a reason.
+      if let Some((_, backend_id)) = crate::backend::synthetic_identity_for_path(&parsed.model_path)
+      {
+        return Err(ErrorObject::new(
+          ErrorCode::InvalidParams,
+          format!(
+            "`{}` is served by the `{backend_id}` backend, which is not \
+             available — enable it in config or install its launcher",
+            parsed.model_path.display()
+          ),
+        ));
+      }
       let (id, arch, native_ctx, supported_backends, mtp_embedded) =
         resolve_model_id_and_arch(&parsed.model_path)?;
       let identity: ModelIdentity = id.clone().into();
@@ -960,14 +974,35 @@ pub(crate) async fn spawn_supervised(
           .flatten()
         } else {
           // No header, so no per-layer KV estimate. Weights are known from the
-          // catalog, and the cache is whatever budget the backend resolved for
-          // itself (its `resolve_native_knobs` ran above) — an unbounded one
-          // means we cannot project, so stay out of the way rather than guess.
-          crate::launch::admission::resolved_cache_bytes(&launch_params).map(|cache| {
+          // catalog; only the backend can price the rest, since the figure
+          // lives in its own knob vocabulary and may be a pool fraction rather
+          // than a byte count.
+          // A launch by absolute path from outside the scan roots has no
+          // catalog size, and stat gives 0 for a directory. Measure it rather
+          // than waving the launch through: a silent bypass of a memory guard
+          // is the worst of the available options.
+          let weights_total = if weights_total > 0 {
             weights_total
-              .saturating_add(cache)
-              .saturating_add(crate::launch::headroom::overhead_band_bytes(&gpu_backend))
-          })
+          } else {
+            let measured = crate::launch::admission::dir_weight_bytes(&model_path);
+            if measured == 0 {
+              log::warn!(
+                "admission: no weight size for {} — gate cannot engage",
+                model_path.display()
+              );
+            }
+            measured
+          };
+          crate::backend::Backends::all()
+            .into_iter()
+            .find(|b| crate::backend::Backend::id(b) == resolved_backend_id)
+            .and_then(|b| crate::backend::Backend::projected_cache_bytes(&b, &launch_params, free))
+            .filter(|_| weights_total > 0)
+            .map(|cache| {
+              weights_total
+                .saturating_add(cache)
+                .saturating_add(crate::launch::headroom::overhead_band_bytes(&gpu_backend))
+            })
         };
         if let Some(demand) = demand {
           if let Err(refusal) = ctx.admission.try_admit(u64::from(port), demand, free) {

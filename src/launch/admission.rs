@@ -141,32 +141,9 @@ pub fn is_sampled(snap: &HostMetricsSnapshot) -> bool {
   snap.gpu_backend != HostMetricsSnapshot::UNINITIALIZED_BACKEND
 }
 
-/// Post-headroom free bytes across the budget pool(s). Discrete hosts
-/// sum post-headroom VRAM free + post-headroom system-RAM free.
-///
-/// The cache budget a backend resolved for itself, in bytes, for a launch with
-/// no GGUF header to project from.
-///
-/// Reads the backend's own native knob rather than re-deriving a size: the
-/// knob is the exact figure the launcher will be given, so admission and the
-/// child agree by construction. `None` when no cache knob is set — the budget
-/// is then unbounded from here and a projection would be invention, so the
-/// caller stays out of the way. Matches any knob id ending in
-/// `cache_memory_bytes`, which keeps this site backend-neutral.
-pub fn resolved_cache_bytes(params: &crate::launch::params::LaunchParams) -> Option<u64> {
-  params
-    .backend_knobs
-    .iter()
-    .find(|(id, _)| id.ends_with("cache_memory_bytes"))
-    .and_then(|(_, v)| match v {
-      crate::config::KnobValue::Set(s) => parse_size_bytes(s),
-      _ => None,
-    })
-}
-
 /// Parse a byte count that may carry a `K`/`M`/`G` suffix (the spelling a
 /// launcher's own size flags accept), or a plain integer.
-fn parse_size_bytes(raw: &str) -> Option<u64> {
+pub fn parse_size_bytes(raw: &str) -> Option<u64> {
   let s = raw.trim();
   let (digits, mult) = match s.chars().last()? {
     'k' | 'K' => (&s[..s.len() - 1], 1024),
@@ -177,6 +154,28 @@ fn parse_size_bytes(raw: &str) -> Option<u64> {
   digits.trim().parse::<u64>().ok()?.checked_mul(mult)
 }
 
+/// On-disk bytes of a directory-shaped model: every regular file directly
+/// inside it, symlinks followed (the HF cache stores weights as links into
+/// `blobs/`). Zero when `dir` is not a readable directory.
+///
+/// The fallback when the catalog has no size — a launch by absolute path from
+/// outside the configured scan roots — because `stat` on a directory reports
+/// its inode size, not its contents.
+pub fn dir_weight_bytes(dir: &std::path::Path) -> u64 {
+  let Ok(entries) = std::fs::read_dir(dir) else {
+    return 0;
+  };
+  entries
+    .flatten()
+    .filter_map(|e| std::fs::metadata(e.path()).ok())
+    .filter(|m| m.is_file())
+    .map(|m| m.len())
+    .fold(0u64, u64::saturating_add)
+}
+
+/// Post-headroom free bytes across the budget pool(s). Discrete hosts
+/// sum post-headroom VRAM free + post-headroom system-RAM free.
+///
 /// UMA hosts budget the **GPU pool**, not all of system RAM. On an
 /// AMD/Intel integrated APU the GPU can only allocate within the amdgpu
 /// GTT cap (carve-out + GTT), which on a default-config box is roughly
@@ -346,33 +345,13 @@ mod tests {
   }
 
   #[test]
-  fn resolved_cache_bytes_reads_the_backend_cache_knob() {
-    use crate::launch::mode::LaunchMode;
-    let mut p = crate::launch::params::LaunchParams::new("/m".into(), LaunchMode::Chat);
-    assert_eq!(
-      resolved_cache_bytes(&p),
-      None,
-      "no cache knob means no projection — guessing would be invention"
-    );
-
-    for (raw, want) in [
-      ("2147483648", 2147483648u64),
-      ("2G", 2 * 1024 * 1024 * 1024),
-      ("512M", 512 * 1024 * 1024),
-      (" 8g ", 8 * 1024 * 1024 * 1024),
-    ] {
-      p.backend_knobs.insert(
-        "kv_cache_memory_bytes".to_string(),
-        crate::config::KnobValue::Set(raw.to_string()),
-      );
-      assert_eq!(resolved_cache_bytes(&p), Some(want), "parsing {raw:?}");
-    }
-
-    p.backend_knobs.insert(
-      "kv_cache_memory_bytes".to_string(),
-      crate::config::KnobValue::Set("not-a-size".to_string()),
-    );
-    assert_eq!(resolved_cache_bytes(&p), None, "garbage must not project");
+  fn parse_size_bytes_accepts_the_suffixes_a_launcher_flag_takes() {
+    assert_eq!(parse_size_bytes("2147483648"), Some(2147483648));
+    assert_eq!(parse_size_bytes("2G"), Some(2 * 1024 * 1024 * 1024));
+    assert_eq!(parse_size_bytes("512M"), Some(512 * 1024 * 1024));
+    assert_eq!(parse_size_bytes(" 8g "), Some(8 * 1024 * 1024 * 1024));
+    assert_eq!(parse_size_bytes("not-a-size"), None);
+    assert_eq!(parse_size_bytes(""), None);
   }
 
   fn snap(backend: &str, unified: bool, ram_total: u64, ram_used: u64) -> HostMetricsSnapshot {

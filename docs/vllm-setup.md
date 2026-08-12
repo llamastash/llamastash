@@ -138,9 +138,9 @@ picker or saved in a preset:
 vLLM has ~240 flags; the rest ride the `-- <extras>` tail. A handful are
 refused there because they would undo the loopback-only posture or spawn
 processes the supervisor cannot reap: `--api-key`, `--allowed-origins`,
-`--allowed-local-media-path`, `--pipeline-parallel-size`, `--data-parallel`,
-`--distributed-executor-backend`, `--ray`, plus the shared `--host` / `--ssl-*`
-denylist.
+`--allowed-local-media-path`, `--pipeline-parallel-size`, the
+`--data-parallel-*` family, and `--distributed-executor-backend` (which is how
+Ray is selected), plus the shared `--host` / `--ssl-*` denylist.
 
 ## Notes and limitations
 

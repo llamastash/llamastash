@@ -662,12 +662,6 @@ fn group_header(title: &str, palette: &Palette) -> Line<'static> {
   ))
 }
 
-/// Label column width. Must clear the longest native-knob label any backend
-/// registers (`Trust remote code` / `DSpark confidence`, both 17) plus a
-/// separating space — at 16 those two ran straight into their value with no
-/// gap (`Trust remote codeinherited`).
-const LABEL_W: usize = 18;
-
 /// Pane width at/above which a knob row has room for its `(source)` chip.
 /// In wide mode the right pane is only ~35% of the terminal, so the gate
 /// trips well below 50 cols. Shared by both Settings views.
@@ -688,7 +682,10 @@ fn inline_edit_row(label: &str, buffer: &str, focused: bool, palette: &Palette) 
     .add_modifier(Modifier::BOLD);
   Line::from(vec![
     Span::styled(
-      format!("{marker}{label:<width$}", width = LABEL_W),
+      format!(
+        "{marker}{label:<width$}",
+        width = crate::tui::fmt::kv_label_width()
+      ),
       label_style,
     ),
     Span::styled("[ ".to_string(), palette.muted_style()),

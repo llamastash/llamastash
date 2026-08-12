@@ -406,7 +406,7 @@ pub(crate) fn catalog_row_from_discovered(m: &DiscoveredModel) -> CatalogRow {
   let path = m.path.to_string_lossy().into_owned();
   let parent = m.parent.to_string_lossy().into_owned();
   let arch = m.metadata.as_ref().and_then(|md| md.arch.clone());
-  let quant = m.metadata.as_ref().map(|md| md.quant.label().to_string());
+  let quant = m.metadata.as_ref().map(|md| md.quant_display());
   let native_ctx = m.metadata.as_ref().and_then(|md| md.native_ctx);
   let parameter_label = m
     .metadata

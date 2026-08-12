@@ -609,11 +609,10 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
     };
     match outcome {
       ProbeOutcome::Ready => {
-        // For fit-governed launches, read what `--fit` resolved before
-        // declaring Ready: the gate needs it, and stashing it on the
-        // model lets the `last_params` recorder reuse it instead of
-        // fetching the actuals a second time. Best-effort — a failed fetch
-        // yields empty actuals and the gate simply can't fire.
+        // Read what the backend resolved before declaring Ready: a fit gate
+        // needs it, and stashing it on the model lets the `last_params`
+        // recorder reuse it instead of fetching a second time. Best-effort —
+        // a failed fetch yields empty actuals and the gate simply can't fire.
         // Unconditional, not just for fit-governed launches: `resolved_ctx` is
         // reported on every running row, and gating the fetch on the gate left
         // it permanently null for any backend that builds no gate. The default

@@ -199,16 +199,28 @@ pub fn execute(plan: &DeletePlan) -> io::Result<String> {
     ));
   }
 
-  // A directory primary only ever deletes through the whole-repo arm above.
-  // Falling through would hand `remove_file` a directory (EISDIR, reported as
-  // an opaque failure), and "recursively delete whatever this row points at"
-  // is not a decision to make implicitly.
+  // A directory primary cannot go through `remove_file` (EISDIR, surfaced as
+  // an opaque failure). Two ways to get here, and they are not the same
+  // situation — saying the wrong one sent users looking for a sibling model
+  // that does not exist.
   if plan.primary.is_dir() {
-    return Err(io::Error::other(format!(
-      "{} is a directory and is not the only model in its cache repo — \
-       refusing to delete it",
-      plan.primary.display()
-    )));
+    if plan.in_hf_cache {
+      return Err(io::Error::other(format!(
+        "{} is not the only model in its cache repo — refusing to delete it",
+        plan.primary.display()
+      )));
+    }
+    // Outside the resolved cache root: nothing else shares this directory, so
+    // removing it is exactly what the user asked for.
+    fs::remove_dir_all(&plan.primary)?;
+    return Ok(format!(
+      "deleted {}",
+      plan
+        .primary
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("model")
+    ));
   }
 
   let files = plan.files();
@@ -736,23 +748,56 @@ mod tests {
     let _ = fs::remove_dir_all(&cache_root);
   }
 
+  /// Outside the resolved cache root nothing else shares the directory, so
+  /// the delete is exactly what the user asked for. This used to refuse with
+  /// "is not the only model in its cache repo" — a false reason that left the
+  /// row with no route to removal at all.
   #[test]
-  fn execute_refuses_a_directory_primary_outside_the_repo_arm() {
-    let root = tempdir("dir-row-refuse");
+  fn a_directory_outside_the_cache_root_is_deleted() {
+    let root = tempdir("dir-row-outside-cache");
     let snapshot = root.join("snapshots/rev");
     fs::create_dir_all(&snapshot).unwrap();
     fs::write(snapshot.join("model.safetensors"), b"w").unwrap();
 
-    let err = execute(&DeletePlan::single(&snapshot)).expect_err("must refuse");
+    let msg = execute(&DeletePlan::single(&snapshot)).expect("must delete");
+    assert!(msg.contains("deleted"), "got `{msg}`");
+    assert!(!snapshot.exists(), "the directory must be gone");
+    let _ = fs::remove_dir_all(&root);
+  }
+
+  /// Inside the cache with a sibling still listed, the repo arm is withheld
+  /// and the refusal must state *that* reason.
+  #[test]
+  fn a_shared_cache_repo_directory_is_refused_with_the_real_reason() {
+    let cache_root = tempdir("dir-row-shared-refuse");
+    let repo = cache_root.join("models--o--r");
+    let snapshot = repo.join("snapshots/rev");
+    fs::create_dir_all(&snapshot).unwrap();
+    fs::write(snapshot.join("model.safetensors"), b"w").unwrap();
+    let sibling = repo.join("snapshots/rev2/other.gguf");
+    fs::create_dir_all(sibling.parent().unwrap()).unwrap();
+    fs::write(&sibling, b"g").unwrap();
+
+    let target = model(&snapshot);
+    let catalog = vec![target.clone(), model(&sibling)];
+    let p = plan(&target, &catalog, Some(&cache_root));
+    assert_eq!(
+      p.hf_repo_dir, None,
+      "a sibling survives, so no repo removal"
+    );
+
+    let err = execute(&p).expect_err("must refuse");
     assert!(
-      err.to_string().contains("is a directory"),
-      "got `{err}`; the refusal has to name the reason"
+      err
+        .to_string()
+        .contains("not the only model in its cache repo"),
+      "got `{err}`"
     );
     assert!(
       snapshot.exists(),
       "nothing may be removed on the refusal path"
     );
-    let _ = fs::remove_dir_all(&root);
+    let _ = fs::remove_dir_all(&cache_root);
   }
 
   fn symlink_or_copy(target: &Path, link: &Path) {

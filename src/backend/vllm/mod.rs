@@ -73,9 +73,12 @@ pub const VLLM_FORBIDDEN_EXTRA_HEADS: &[&str] = &[
   "--allowed-origins",
   "--allowed-local-media-path",
   "--pipeline-parallel-size",
-  "--data-parallel",
+  // Trailing dash: only prefix entries prefix-match, and the family is spelled
+  // `--data-parallel-size` / `-rank` / `-address` / `-backend`. Without it only
+  // a bare `--data-parallel`, which is not a real flag, was refused.
+  "--data-parallel-",
+  // Ray is selected through this, not through a `--ray` flag.
   "--distributed-executor-backend",
-  "--ray",
 ];
 
 /// vLLM's tunables, on the per-backend native-knob channel.
@@ -271,9 +274,13 @@ impl Backend for VllmBackend {
     // A safetensors snapshot has no GGUF header to hash, so the `Gguf`
     // identity does not apply. The repo id is the stable name: a re-pull
     // moves the snapshot revision directory but keeps the repo.
+    // Exactly the name the launcher will advertise. These derivations used to
+    // differ outside the cache layout, so the identity said `/models/x` while
+    // `--served-model-name` said `x`, and the chat path -- which sends the
+    // identity -- 404'd against a server that validates the field.
     ModelIdentity::Backend(BackendModelId {
       backend: VLLM_BACKEND_ID.to_string(),
-      name: discovery::repo_id_for_snapshot(path).unwrap_or_else(|| path.display().to_string()),
+      name: served_model_name(path),
     })
   }
 
@@ -355,6 +362,21 @@ impl Backend for VllmBackend {
     }
   }
 
+  fn projected_cache_bytes(&self, params: &LaunchParams, free_bytes: u64) -> Option<u64> {
+    // The byte cap is exact — it is the figure the launcher is handed.
+    if let Some(bytes) = knob_bytes(params, "kv_cache_memory_bytes") {
+      return Some(bytes);
+    }
+    // A fraction is of the whole pool, not of what is free, and vLLM fills
+    // whatever it is given. Project the same way vLLM spends it so the gate
+    // sees the real demand rather than nothing at all.
+    if let Some(frac) = knob_f64(params, "gpu_memory_utilization") {
+      let frac = frac.clamp(0.0, 1.0);
+      return Some((free_bytes as f64 * frac) as u64);
+    }
+    None
+  }
+
   async fn adoption_matches(
     &self,
     recorded_path: &Path,
@@ -410,6 +432,11 @@ impl Backend for VllmBackend {
     weights_bytes: u64,
   ) -> super::NativeKnobResolution {
     let mut out = super::NativeKnobResolution::default();
+    // Only an explicit byte cap opts out. A user-set *fraction* used to bail
+    // here too, which left the knob unset AND the admission gate with no
+    // figure to project from — so the one configuration that has frozen this
+    // hardware got neither guard. The fraction is honoured (we insert
+    // nothing), and `projected_cache_bytes` turns it into a demand below.
     if user_set(params, "kv_cache_memory_bytes") || user_set(params, "gpu_memory_utilization") {
       return out;
     }
@@ -452,6 +479,22 @@ impl Backend for VllmBackend {
     );
     out.auto_set.insert("kv_cache_memory_bytes".to_string());
     out
+  }
+}
+
+/// A knob's value parsed as a byte count (`8G`, `512M`, or a plain integer).
+fn knob_bytes(params: &LaunchParams, id: &str) -> Option<u64> {
+  match params.backend_knobs.get(id) {
+    Some(crate::config::KnobValue::Set(s)) => crate::launch::admission::parse_size_bytes(s),
+    _ => None,
+  }
+}
+
+/// A knob's value parsed as a fraction.
+fn knob_f64(params: &LaunchParams, id: &str) -> Option<f64> {
+  match params.backend_knobs.get(id) {
+    Some(crate::config::KnobValue::Set(s)) => s.trim().parse().ok(),
+    _ => None,
   }
 }
 
@@ -920,6 +963,60 @@ mod tests {
       .position(|a| a == "--kv-cache-memory-bytes")
       .expect("the cap must reach argv");
     assert_eq!(argv[i + 1], "2147483648");
+  }
+
+  /// R1-1: a user-set fraction is a real configuration, not a reason to
+  /// disengage the admission gate. It used to return early from knob
+  /// resolution *and* leave the gate with nothing to project, so the one
+  /// setting that has frozen this hardware got neither guard.
+  #[test]
+  fn a_user_fraction_still_yields_a_demand_projection() {
+    const GB: u64 = 1024 * 1024 * 1024;
+    let b = VllmBackend::new();
+    let mut p = params("/c/models--o--n/snapshots/rev");
+
+    assert_eq!(b.projected_cache_bytes(&p, 100 * GB), None, "nothing set");
+
+    set(&mut p, "gpu_memory_utilization", "0.9");
+    assert_eq!(
+      b.projected_cache_bytes(&p, 100 * GB),
+      Some(90 * GB),
+      "a fraction of the pool is a projectable demand"
+    );
+
+    // An explicit byte cap is exact and wins.
+    set(&mut p, "kv_cache_memory_bytes", "2G");
+    assert_eq!(b.projected_cache_bytes(&p, 100 * GB), Some(2 * GB));
+  }
+
+  /// R1-3: the family is spelled `--data-parallel-size` / `-rank` / …, so a
+  /// denylist entry without the trailing dash refused only a flag that does
+  /// not exist.
+  #[test]
+  fn the_data_parallel_family_is_refused_not_just_a_bare_flag() {
+    for smuggle in [
+      "--data-parallel-size",
+      "--data-parallel-rank",
+      "--data-parallel-address",
+    ] {
+      let mut p = params("/c/models--o--n/snapshots/rev");
+      p.extras = vec![smuggle.into(), "2".into()];
+      let argv = argv_strings(&p, 1).join(" ");
+      assert!(!argv.contains(smuggle), "`{smuggle}` survived: {argv}");
+    }
+  }
+
+  /// R1-4: one derivation, so the identity the chat path sends is the name
+  /// the launcher registered.
+  #[test]
+  fn identity_name_matches_the_served_name_outside_the_cache_layout() {
+    let b = VllmBackend::new();
+    let path = Path::new("/models/my-model");
+    let ModelIdentity::Backend(id) = b.identify(path, &[]) else {
+      panic!("expected a backend identity");
+    };
+    assert_eq!(id.name, served_model_name(path));
+    assert_eq!(id.name, "my-model");
   }
 
   #[test]

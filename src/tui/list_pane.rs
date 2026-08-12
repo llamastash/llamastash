@@ -391,11 +391,7 @@ fn model_row(
     Some(md) => (
       md.arch.clone().unwrap_or_default(),
       md.parameter_label.clone().unwrap_or_default(),
-      // Backend-overlaid label first: a safetensors row carries no GGML tag,
-      // so the enum renders a placeholder for it.
-      md.quant_label
-        .clone()
-        .unwrap_or_else(|| md.quant.label().to_string()),
+      md.quant_display(),
       md.native_ctx,
       mode_hint_label(md.mode_hint),
       md.weights_bytes,

@@ -172,7 +172,11 @@ fn classify_snapshot(snapshot: &Path) -> Classification {
   }
   Classification {
     has_safetensors,
-    has_gguf: contains_gguf(snapshot, GGUF_SCAN_DEPTH),
+    // Only asked when safetensors are present: the sole consumer needs
+    // `has_safetensors && !has_gguf`, so on a GGUF-only cache -- the normal
+    // shape -- this recursive walk would run per repo on every debounced
+    // rescan and the answer would never be read.
+    has_gguf: has_safetensors && contains_gguf(snapshot, GGUF_SCAN_DEPTH),
   }
 }
 
