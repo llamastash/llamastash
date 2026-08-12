@@ -28,3 +28,23 @@ building its parser).
 For the wrapper script that makes a containerised vLLM usable as a LlamaStash
 backend binary, see `docs/vllm-setup.md` — that is a different thing from this
 probe harness.
+
+## `uat.sh`
+
+End-to-end UAT against a **real** native vLLM, in an isolated state dir
+(`~/.cache/ls-vllm-e2e`). Each stage is a separate invocation so a failure
+leaves the daemon up for inspection:
+
+```bash
+scripts/vllm/uat.sh clean    # stop daemon + any stray vLLM child, report RAM
+scripts/vllm/uat.sh boot     # start the isolated daemon, wait for discovery
+scripts/vllm/uat.sh launch   # explicit --ctx; asserts the KV cap reached argv
+scripts/vllm/uat.sh replay   # no flags; last_params must re-apply, cap re-resolve
+scripts/vllm/uat.sh preset   # a preset's own kv_cache_memory_bytes must win
+scripts/vllm/uat.sh chat     # repo id vs revision-hash model name (200 vs 404)
+scripts/vllm/uat.sh stop
+```
+
+`launch` is the one that matters: if `cap-in-argv` ever reads `MISSING`, kill
+the launch — that is the state where vLLM sizes its KV cache against the whole
+pool, which on a unified-memory host is system RAM.
