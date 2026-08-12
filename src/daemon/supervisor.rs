@@ -614,13 +614,14 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
         // model lets the `last_params` recorder reuse it instead of
         // fetching the actuals a second time. Best-effort — a failed fetch
         // yields empty actuals and the gate simply can't fire.
-        let mut actuals = if fit_gate.is_some() {
-          probe_backend
-            .fetch_actuals(probe_model.inner.port, Duration::from_secs(5))
-            .await
-        } else {
-          super::actuals::Actuals::default()
-        };
+        // Unconditional, not just for fit-governed launches: `resolved_ctx` is
+        // reported on every running row, and gating the fetch on the gate left
+        // it permanently null for any backend that builds no gate. The default
+        // trait impl does no I/O, so a backend that exposes no such endpoint
+        // still pays nothing.
+        let mut actuals = probe_backend
+          .fetch_actuals(probe_model.inner.port, Duration::from_secs(5))
+          .await;
         if let (Some(gate), Some(resolved)) = (fit_gate, actuals.resolved_ctx) {
           if gate.is_clamped(resolved) {
             actuals.ctx_clamped = true;

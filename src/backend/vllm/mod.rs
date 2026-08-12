@@ -413,20 +413,44 @@ impl Backend for VllmBackend {
     if user_set(params, "kv_cache_memory_bytes") || user_set(params, "gpu_memory_utilization") {
       return out;
     }
-    let Some(metrics) = ctx.host_metrics.as_ref() else {
-      return out;
+    // Fail **safe**, not open. This used to bail whenever the host sampler had
+    // no reading yet — which is exactly the state right after a daemon
+    // restart, and the launch then took vLLM's pool-sized default: observed at
+    // 112 GiB of a 124 GiB box, with the engine OOM-killed. An unknown host is
+    // treated as unified, because that is the assumption whose failure mode is
+    // survivable: the cost of capping a discrete GPU is a smaller cache the
+    // user can raise, while the cost of not capping a UMA host is the machine.
+    let snapshot = match ctx.host_metrics.as_ref() {
+      Some(metrics) => Some(metrics.read().await.clone()),
+      None => None,
     };
-    let snapshot = metrics.read().await.clone();
-    if !crate::launch::admission::is_sampled(&snapshot) || !snapshot.unified {
+    let sampled = snapshot
+      .as_ref()
+      .is_some_and(crate::launch::admission::is_sampled);
+    if sampled && !snapshot.as_ref().is_some_and(|s| s.unified) {
+      // A sampled, definitely-discrete host: the fraction applies to real
+      // VRAM there, so vLLM's own default is right and we stay out of it.
       return out;
     }
-    let free = crate::launch::admission::effective_free_bytes(&snapshot);
-    let Some(cap) = kv_cache_cap_bytes(free, weights_bytes) else {
-      // Nothing safe left to give. Say nothing and let the admission gate
-      // produce the refusal, rather than launching with a token cache.
-      return out;
+    let cap = match snapshot.as_ref().filter(|_| sampled) {
+      Some(s) => {
+        let free = crate::launch::admission::effective_free_bytes(s);
+        match kv_cache_cap_bytes(free, weights_bytes) {
+          Some(cap) => cap,
+          // Nothing safe left to give. Say nothing and let the admission gate
+          // produce the refusal, rather than launching with a token cache.
+          None => return out,
+        }
+      }
+      None => {
+        log::warn!(
+          "vllm: no host memory reading yet — capping the KV cache at the default \
+           rather than letting the launcher size it against the whole pool"
+        );
+        DEFAULT_KV_CACHE_BYTES
+      }
     };
-    log::info!("vllm: capping KV cache at {cap} bytes on a unified-memory host");
+    log::info!("vllm: capping KV cache at {cap} bytes");
     params.backend_knobs.insert(
       "kv_cache_memory_bytes".to_string(),
       crate::config::KnobValue::Set(cap.to_string()),
