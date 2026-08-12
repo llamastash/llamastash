@@ -26,6 +26,29 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Tuning flags the backend may legitimately emit — the native-knob table plus
+/// the shared context flag. Kept in step with `VLLM_KNOB_FLAGS`; a knob added
+/// there and not here fails loudly, which is the point.
+const KNOWN_TUNING_FLAGS: &[&str] = &[
+  "--max-model-len",
+  "--kv-cache-memory-bytes",
+  "--gpu-memory-utilization",
+  "--max-num-seqs",
+  "--tensor-parallel-size",
+  "--dtype",
+  "--kv-cache-dtype",
+  "--quantization",
+  "--enforce-eager",
+  "--trust-remote-code",
+  // Documented extras a test may pass through the `-- <extras>` tail.
+  "--max-num-batched-tokens",
+  "--swap-space",
+  "--seed",
+];
+
+/// The subset above that takes no value.
+const BOOL_TUNING_FLAGS: &[&str] = &["--enforce-eager", "--trust-remote-code"];
+
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -110,8 +133,26 @@ fn parse_args() -> Config {
         }
       }
       "--bind-early" => bind_early = true,
-      // Every other flag the backend emits is accepted and ignored, the way a
-      // real launcher tolerates its own tuning flags.
+      // A real launcher refuses an argv it cannot parse, and so must this: an
+      // accept-everything fixture cannot detect a misspelled flag, a missing
+      // value, or a dropped tail, which is exactly how the extras tail came to
+      // be silently discarded while every test stayed green. Anything not in
+      // the tuning set below is a construction error and exits non-zero.
+      other if other.starts_with('-') => {
+        if !KNOWN_TUNING_FLAGS.contains(&other.split('=').next().unwrap_or(other)) {
+          eprintln!("fake_vllm_server: unrecognised flag {other:?}");
+          std::process::exit(2);
+        }
+        // Space-separated value belonging to a recognised tuning flag.
+        if !other.contains('=')
+          && !BOOL_TUNING_FLAGS.contains(&other)
+          && args.get(i + 1).is_some_and(|v| !v.starts_with('-'))
+        {
+          i += 1;
+        }
+      }
+      // Positional: the model path, and the extra `--served-model-name`
+      // aliases, which argparse folds into the preceding flag's list.
       _ => {}
     }
     i += 1;

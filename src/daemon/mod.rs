@@ -738,6 +738,25 @@ fn lookup_start_time(pid: u32) -> Option<u64> {
 /// Move a malformed `state.json` aside so the daemon can restart
 /// with defaults. The plan's `state-json corruption` mitigation
 /// — keeps the user's prior data on disk for inspection.
+/// Backend force-enable flags to re-append across a detached re-exec.
+///
+/// Neither the flag nor its env var survives the detach, and the flag is what
+/// overrides a config `enabled: false`; the default-on path needs nothing,
+/// since the child re-reads config. Registry-driven off the force map, whose
+/// keys are backend ids and whose CLI spelling is `--<id>` by construction
+/// (`cli::daemon` builds the map from exactly those flags). A new forceable
+/// backend therefore needs no edit here — this used to be one copy-pasted
+/// eight-line block per backend, duplicated across both re-exec sites, which
+/// is how the newest one came to be missing from them.
+pub fn backend_force_flags(opts: &DaemonOptions) -> Vec<String> {
+  opts
+    .backend_force
+    .iter()
+    .filter(|(_, forced)| **forced)
+    .map(|(id, _)| format!("--{id}"))
+    .collect()
+}
+
 fn quarantine_broken_state(state_dir: &Path) {
   let src = state_dir.join("state.json");
   if !src.exists() {
@@ -849,37 +868,8 @@ pub fn start_detached_with_exe(opts: DaemonOptions, exe: PathBuf) -> Result<Star
   if opts.proxy.insecure_no_auth {
     cmd.arg("--insecure-no-auth");
   }
-  // Carry the opt-in Lemonade enable through the re-exec so a
-  // `daemon start --lemonade` (detached) keeps the backend on in the child.
-  // The env var alone isn't reliable across a detached re-exec.
-  if opts
-    .backend_force
-    .get(crate::backend::lemonade::LEMONADE_BACKEND_ID)
-    .copied()
-    .unwrap_or(false)
-  {
-    cmd.arg("--lemonade");
-  }
-  // Carry the ds4 force-enable through the re-exec: `--ds4` overrides a config
-  // `enabled: false` and the env/flag don't survive detach. The default-on
-  // path needs nothing (the child re-reads `[ds4]` from config).
-  if opts
-    .backend_force
-    .get(crate::backend::ds4::DS4_BACKEND_ID)
-    .copied()
-    .unwrap_or(false)
-  {
-    cmd.arg("--ds4");
-  }
-  // Same for vLLM: `--vllm` overrides a config `enabled: false`, and neither
-  // the flag nor the env var survives the detach on its own.
-  if opts
-    .backend_force
-    .get(crate::backend::vllm::VLLM_BACKEND_ID)
-    .copied()
-    .unwrap_or(false)
-  {
-    cmd.arg("--vllm");
+  for flag in backend_force_flags(&opts) {
+    cmd.arg(flag);
   }
   // Carry `--force` through so the foreground child skips the same backend
   // precheck the parent already waived; without it the child re-runs the gate
@@ -1000,37 +990,8 @@ pub fn start_detached_with_exe(opts: DaemonOptions, exe: PathBuf) -> Result<Star
   if opts.proxy.insecure_no_auth {
     cmd.arg("--insecure-no-auth");
   }
-  // Carry the opt-in Lemonade enable through the re-exec so a
-  // `daemon start --lemonade` (detached) keeps the backend on in the child.
-  // The env var alone isn't reliable across a detached re-exec.
-  if opts
-    .backend_force
-    .get(crate::backend::lemonade::LEMONADE_BACKEND_ID)
-    .copied()
-    .unwrap_or(false)
-  {
-    cmd.arg("--lemonade");
-  }
-  // Carry the ds4 force-enable through the re-exec: `--ds4` overrides a config
-  // `enabled: false` and the env/flag don't survive detach. The default-on
-  // path needs nothing (the child re-reads `[ds4]` from config).
-  if opts
-    .backend_force
-    .get(crate::backend::ds4::DS4_BACKEND_ID)
-    .copied()
-    .unwrap_or(false)
-  {
-    cmd.arg("--ds4");
-  }
-  // Same for vLLM: `--vllm` overrides a config `enabled: false`, and neither
-  // the flag nor the env var survives the detach on its own.
-  if opts
-    .backend_force
-    .get(crate::backend::vllm::VLLM_BACKEND_ID)
-    .copied()
-    .unwrap_or(false)
-  {
-    cmd.arg("--vllm");
+  for flag in backend_force_flags(&opts) {
+    cmd.arg(flag);
   }
   // Carry `--force` through so the foreground child skips the same backend
   // precheck the parent already waived.

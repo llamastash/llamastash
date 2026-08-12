@@ -14,7 +14,6 @@ const ALLOWED: &[&str] = &[
   "src/backend/vllm/discovery.rs",
   "src/backend/mod.rs",
   "src/config/mod.rs",
-  "src/config/loader.rs",
   // The daemon force-flag is user-facing CLI surface, so it names the backend
   // by design — the same sanctioned exception `--lemonade` / `--ds4` carry.
   // `daemon/mod.rs` is on the list for one reason only: re-appending that same
@@ -74,6 +73,30 @@ fn backend_id_does_not_leak_outside_its_module() {
   assert!(
     leaks.is_empty(),
     "backend id leaked outside its module and the registration points: {leaks:?}"
+  );
+}
+
+/// Every allowlist entry must still earn its place.
+///
+/// An entry for a file that no longer names the backend is a permanent hole:
+/// the guard above skips it forever, so a future leak into it passes silently.
+/// `src/config/loader.rs` had become exactly that.
+#[test]
+fn the_leak_allowlist_has_no_stale_entries() {
+  let root = repo_root();
+  let needle = concat!("v", "llm");
+  let stale: Vec<&str> = ALLOWED
+    .iter()
+    .copied()
+    .filter(|rel| {
+      std::fs::read_to_string(root.join(rel))
+        .map(|t| !t.to_ascii_lowercase().contains(needle))
+        .unwrap_or(true)
+    })
+    .collect();
+  assert!(
+    stale.is_empty(),
+    "allowlisted files that no longer name the backend (drop them): {stale:?}"
   );
 }
 
@@ -462,14 +485,27 @@ mod lifecycle {
 /// worked (env survives exec) while the flag did not. Both re-exec sites
 /// carry it, which is why this asserts on the count.
 #[test]
-fn force_flag_is_re_appended_on_both_detached_re_execs() {
-  let daemon = std::fs::read_to_string(repo_root().join("src/daemon/mod.rs")).unwrap();
-  let flag = concat!("--v", "llm");
-  let sites = daemon.matches(&format!("cmd.arg(\"{flag}\")")).count();
-  let ds4_sites = daemon.matches(r#"cmd.arg("--ds4")"#).count();
-  assert_eq!(
-    sites, ds4_sites,
-    "the force flag must ride every re-exec path the other detected backends do"
+fn force_flag_is_re_appended_on_the_detached_re_exec() {
+  use llamastash::daemon::{backend_force_flags, DaemonOptions};
+
+  let id = concat!("v", "llm");
+  let mut opts = DaemonOptions::rooted_at(std::env::temp_dir().join("ls-force-flag"));
+
+  // Not forced: nothing rides along, so a default-on install's argv is
+  // unchanged and the child just re-reads config.
+  assert!(backend_force_flags(&opts).is_empty());
+
+  opts.backend_force.insert(id.to_string(), false);
+  assert!(
+    backend_force_flags(&opts).is_empty(),
+    "an explicit `false` must not become a force flag"
   );
-  assert!(sites >= 2, "expected both re-exec sites, found {sites}");
+
+  // Forced: the flag is rebuilt from the map, so both re-exec sites get it
+  // from one place instead of a copy-pasted block each.
+  opts.backend_force.insert(id.to_string(), true);
+  opts.backend_force.insert("ds4".to_string(), true);
+  let flags = backend_force_flags(&opts);
+  assert!(flags.contains(&format!("--{id}")), "got {flags:?}");
+  assert!(flags.contains(&"--ds4".to_string()), "got {flags:?}");
 }
