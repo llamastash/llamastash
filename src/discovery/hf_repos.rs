@@ -65,6 +65,11 @@ pub struct ConfigSummary {
   /// `"bitsandbytes"`. The verbatim label a leaf renders as the row's quant,
   /// since a safetensors repo has no GGML tag to read.
   pub quant_method: Option<String>,
+  /// `config.json: torch_dtype` (or the newer `dtype`) — `"bfloat16"`,
+  /// `"float16"`. The weight precision of an *unquantized* repo, which is the
+  /// common case: without it those rows have nothing to show in a quant column
+  /// but the `Unknown` placeholder.
+  pub torch_dtype: Option<String>,
   /// `tokenizer_config.json: chat_template` (string form only).
   pub chat_template: Option<String>,
   /// `tokenizer_config.json: tokenizer_class`.
@@ -237,6 +242,10 @@ fn parse_config_summary(snapshot: &Path) -> Option<ConfigSummary> {
     quant_method: config
       .get("quantization_config")
       .and_then(|q| q.get("quant_method"))
+      .and_then(json_str),
+    torch_dtype: config
+      .get("torch_dtype")
+      .or_else(|| config.get("dtype"))
       .and_then(json_str),
     chat_template: None,
     tokenizer_class: None,

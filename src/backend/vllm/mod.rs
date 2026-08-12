@@ -435,12 +435,7 @@ impl Backend for VllmBackend {
     let cap = match snapshot.as_ref().filter(|_| sampled) {
       Some(s) => {
         let free = crate::launch::admission::effective_free_bytes(s);
-        match kv_cache_cap_bytes(free, weights_bytes) {
-          Some(cap) => cap,
-          // Nothing safe left to give. Say nothing and let the admission gate
-          // produce the refusal, rather than launching with a token cache.
-          None => return out,
-        }
+        kv_cache_cap_bytes(free, weights_bytes)
       }
       None => {
         log::warn!(
@@ -473,11 +468,15 @@ fn user_set(params: &LaunchParams, id: &str) -> bool {
 /// launch cannot take the host down.
 const DEFAULT_KV_CACHE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
+/// Floor for the cap. Small enough to be safe on a tight host, large enough to
+/// serve a short context — a launch that cannot live within it is the
+/// admission gate's problem, not a reason to leave the cache unbounded.
+const MIN_KV_CACHE_BYTES: u64 = 512 * 1024 * 1024;
+
 /// Reserve left free for the OS and everything else after weights + cache.
 const UNIFIED_HOST_RESERVE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
-/// The KV cache cap for a unified-memory host, or `None` when the weights
-/// alone leave no room.
+/// The KV cache cap for a unified-memory host. **Always a value.**
 ///
 /// On an APU, GPU memory *is* system RAM, and vLLM sizes its KV cache to fill
 /// whatever `gpu_memory_utilization` allows — a fraction of the **pool**, not
@@ -488,11 +487,18 @@ const UNIFIED_HOST_RESERVE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 /// not help, because the arithmetic is against the wrong number. Capping the
 /// cache in bytes does: vLLM then skips memory profiling entirely and honours
 /// the figure.
-fn kv_cache_cap_bytes(free_bytes: u64, weights_bytes: u64) -> Option<u64> {
-  let headroom = free_bytes
-    .checked_sub(weights_bytes)?
-    .checked_sub(UNIFIED_HOST_RESERVE_BYTES)?;
-  (headroom > 0).then(|| headroom.min(DEFAULT_KV_CACHE_BYTES))
+///
+/// Never `None`. Returning "no opinion" when the arithmetic came out tight
+/// left the knob unset, and an unset knob is not neutral here — it hands the
+/// launch straight back to the pool-sized default this exists to prevent.
+/// A host too tight for the floor gets the floor anyway; the admission gate is
+/// what refuses such a launch, and it can only do that because the figure
+/// exists.
+fn kv_cache_cap_bytes(free_bytes: u64, weights_bytes: u64) -> u64 {
+  free_bytes
+    .saturating_sub(weights_bytes)
+    .saturating_sub(UNIFIED_HOST_RESERVE_BYTES)
+    .clamp(MIN_KV_CACHE_BYTES, DEFAULT_KV_CACHE_BYTES)
 }
 
 impl VllmBackend {
@@ -890,16 +896,18 @@ mod tests {
   /// The freeze guard. vLLM's default sizes the KV cache against the pool,
   /// which on a UMA host is system RAM — measured at ~106 GB of a 121 GB box.
   #[test]
-  fn kv_cap_leaves_the_host_a_reserve() {
+  fn kv_cap_leaves_the_host_a_reserve_and_is_never_absent() {
     const GB: u64 = 1024 * 1024 * 1024;
     // Plenty free: the default budget applies, not "everything that fits".
-    assert_eq!(kv_cache_cap_bytes(113 * GB, GB), Some(8 * GB));
+    assert_eq!(kv_cache_cap_bytes(113 * GB, GB), 8 * GB);
     // Tight: the cap shrinks to what is left after weights + reserve.
-    assert_eq!(kv_cache_cap_bytes(20 * GB, 8 * GB), Some(4 * GB));
-    // No room at all — no knob, so the admission gate refuses instead of us
-    // launching with a token cache.
-    assert_eq!(kv_cache_cap_bytes(10 * GB, 8 * GB), None);
-    assert_eq!(kv_cache_cap_bytes(4 * GB, 8 * GB), None);
+    assert_eq!(kv_cache_cap_bytes(20 * GB, 8 * GB), 4 * GB);
+    // Nothing left, and previously `None` — which left the knob unset and so
+    // handed the launch back to the pool-sized default. It must floor instead;
+    // refusing such a launch is the admission gate's job.
+    assert_eq!(kv_cache_cap_bytes(10 * GB, 8 * GB), MIN_KV_CACHE_BYTES);
+    assert_eq!(kv_cache_cap_bytes(4 * GB, 8 * GB), MIN_KV_CACHE_BYTES);
+    assert_eq!(kv_cache_cap_bytes(0, 0), MIN_KV_CACHE_BYTES);
   }
 
   #[test]

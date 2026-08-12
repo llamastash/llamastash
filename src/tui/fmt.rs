@@ -185,8 +185,11 @@ pub(crate) fn take_tail_by_width(s: &str, budget: usize) -> String {
 }
 
 /// Label column width for the `kv_row` / `kv_row_focused` settings
-/// rows. Wide enough for the longest knob name.
-const KV_LABEL_W: usize = 16;
+/// rows. Must clear the longest native-knob label any backend registers
+/// (`Trust remote code` / `DSpark confidence`, both 17) plus a separating
+/// space — at 16 those two ran straight into their value with no gap
+/// (`Trust remote codeinherited`).
+const KV_LABEL_W: usize = 18;
 
 /// Inherited / empty value sentinels rendered when no override exists.
 /// Tracked in one place so `kv_row` / `kv_row_focused` agree on which

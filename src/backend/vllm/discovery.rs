@@ -45,13 +45,16 @@ pub fn project(candidate: &HfRepoCandidate, backend_id: &str) -> DiscoveredModel
     })
     .map(|mut m| {
       m.weights_bytes = weights;
-      // No GGML tag on a safetensors repo, so the verbatim `quant_method`
-      // is the quant. Without it the row renders `?` in `list`.
-      m.quant_label = candidate
-        .config_summary
-        .as_ref()
-        .and_then(|s| s.quant_method.clone())
-        .map(|q| q.to_ascii_uppercase());
+      // No GGML tag on a safetensors repo. The quantisation method is the
+      // quant where the repo declares one; an unquantized repo shows its
+      // weight precision instead, which beats the `Unknown` placeholder and
+      // is what most safetensors rows will render.
+      m.quant_label = candidate.config_summary.as_ref().and_then(|s| {
+        s.quant_method
+          .clone()
+          .map(|q| q.to_ascii_uppercase())
+          .or_else(|| s.torch_dtype.as_deref().map(dtype_label))
+      });
       m
     });
 
@@ -94,6 +97,19 @@ fn weights_bytes(snapshot: &Path) -> Option<u64> {
     }
   }
   saw_any.then_some(total)
+}
+
+/// Compact label for a torch dtype string (`bfloat16` -> `BF16`). Anything
+/// unrecognised is upper-cased verbatim rather than dropped — a new precision
+/// should show up as itself, not disappear.
+fn dtype_label(dtype: &str) -> String {
+  match dtype {
+    "bfloat16" => "BF16".to_string(),
+    "float16" | "half" => "F16".to_string(),
+    "float32" | "float" => "F32".to_string(),
+    "float8_e4m3fn" | "float8_e5m2" => "FP8".to_string(),
+    other => other.to_ascii_uppercase(),
+  }
 }
 
 /// The `models--owner--name` directory a `snapshots/<rev>` path sits under.

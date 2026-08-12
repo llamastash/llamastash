@@ -1632,15 +1632,22 @@ fn require_events_tx(app: &App, op: &'static str) -> Option<mpsc::Sender<Event>>
 }
 
 /// The model name to put on an OpenAI request against a managed row's
-/// port. Lemonade rows carry the registry name in their synthetic path —
-/// `model_display_name`'s `file_stem` would mangle dotted names
-/// (`lemonade://qwen3.5-4b-FLM` → `qwen3`), and the umbrella resolves
-/// by exact registry name.
+/// port.
+///
+/// A backend that mints its own identity for the path owns the answer: that
+/// name is exactly what it advertises on `/v1/models`. Deriving one from the
+/// filename instead breaks two ways — `model_display_name`'s `file_stem`
+/// mangles dotted registry names (`qwen3.5-4b-FLM` → `qwen3`), and for a
+/// directory-shaped model it yields the snapshot's revision hash, which a
+/// name-validating server rejects outright. Only a plain weight file falls
+/// through to the filename.
 fn served_model_name(path: &std::path::Path) -> String {
-  match crate::backend::lemonade::registry_name_from_path(path) {
-    Some(name) => name.to_string(),
-    None => crate::util::paths::model_display_name(path),
+  if let Some((crate::backend::identity::ModelIdentity::Backend(id), _)) =
+    crate::backend::synthetic_identity_for_path(path)
+  {
+    return id.name;
   }
+  crate::util::paths::model_display_name(path)
 }
 
 /// Trigger an OpenAI streaming chat completion against the focused

@@ -662,7 +662,11 @@ fn group_header(title: &str, palette: &Palette) -> Line<'static> {
   ))
 }
 
-const LABEL_W: usize = 16;
+/// Label column width. Must clear the longest native-knob label any backend
+/// registers (`Trust remote code` / `DSpark confidence`, both 17) plus a
+/// separating space — at 16 those two ran straight into their value with no
+/// gap (`Trust remote codeinherited`).
+const LABEL_W: usize = 18;
 
 /// Pane width at/above which a knob row has room for its `(source)` chip.
 /// In wide mode the right pane is only ~35% of the terminal, so the gate
