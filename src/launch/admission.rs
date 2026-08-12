@@ -144,6 +144,39 @@ pub fn is_sampled(snap: &HostMetricsSnapshot) -> bool {
 /// Post-headroom free bytes across the budget pool(s). Discrete hosts
 /// sum post-headroom VRAM free + post-headroom system-RAM free.
 ///
+/// The cache budget a backend resolved for itself, in bytes, for a launch with
+/// no GGUF header to project from.
+///
+/// Reads the backend's own native knob rather than re-deriving a size: the
+/// knob is the exact figure the launcher will be given, so admission and the
+/// child agree by construction. `None` when no cache knob is set — the budget
+/// is then unbounded from here and a projection would be invention, so the
+/// caller stays out of the way. Matches any knob id ending in
+/// `cache_memory_bytes`, which keeps this site backend-neutral.
+pub fn resolved_cache_bytes(params: &crate::launch::params::LaunchParams) -> Option<u64> {
+  params
+    .backend_knobs
+    .iter()
+    .find(|(id, _)| id.ends_with("cache_memory_bytes"))
+    .and_then(|(_, v)| match v {
+      crate::config::KnobValue::Set(s) => parse_size_bytes(s),
+      _ => None,
+    })
+}
+
+/// Parse a byte count that may carry a `K`/`M`/`G` suffix (the spelling a
+/// launcher's own size flags accept), or a plain integer.
+fn parse_size_bytes(raw: &str) -> Option<u64> {
+  let s = raw.trim();
+  let (digits, mult) = match s.chars().last()? {
+    'k' | 'K' => (&s[..s.len() - 1], 1024),
+    'm' | 'M' => (&s[..s.len() - 1], 1024 * 1024),
+    'g' | 'G' => (&s[..s.len() - 1], 1024 * 1024 * 1024),
+    _ => (s, 1),
+  };
+  digits.trim().parse::<u64>().ok()?.checked_mul(mult)
+}
+
 /// UMA hosts budget the **GPU pool**, not all of system RAM. On an
 /// AMD/Intel integrated APU the GPU can only allocate within the amdgpu
 /// GTT cap (carve-out + GTT), which on a default-config box is roughly
@@ -310,6 +343,36 @@ mod tests {
     ledger.release(1);
     ledger.release(1); // no-op second time
     assert_eq!(ledger.reserved_bytes(), 10 * GIB);
+  }
+
+  #[test]
+  fn resolved_cache_bytes_reads_the_backend_cache_knob() {
+    use crate::launch::mode::LaunchMode;
+    let mut p = crate::launch::params::LaunchParams::new("/m".into(), LaunchMode::Chat);
+    assert_eq!(
+      resolved_cache_bytes(&p),
+      None,
+      "no cache knob means no projection — guessing would be invention"
+    );
+
+    for (raw, want) in [
+      ("2147483648", 2147483648u64),
+      ("2G", 2 * 1024 * 1024 * 1024),
+      ("512M", 512 * 1024 * 1024),
+      (" 8g ", 8 * 1024 * 1024 * 1024),
+    ] {
+      p.backend_knobs.insert(
+        "kv_cache_memory_bytes".to_string(),
+        crate::config::KnobValue::Set(raw.to_string()),
+      );
+      assert_eq!(resolved_cache_bytes(&p), Some(want), "parsing {raw:?}");
+    }
+
+    p.backend_knobs.insert(
+      "kv_cache_memory_bytes".to_string(),
+      crate::config::KnobValue::Set("not-a-size".to_string()),
+    );
+    assert_eq!(resolved_cache_bytes(&p), None, "garbage must not project");
   }
 
   fn snap(backend: &str, unified: bool, ram_total: u64, ram_used: u64) -> HostMetricsSnapshot {

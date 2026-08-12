@@ -911,7 +911,19 @@ pub(crate) async fn spawn_supervised(
   // knob (that path already warned, in memory terms).
   let bypass_note_suppressed = !auto_set_knobs.is_empty();
   let mut admitted = false;
-  if identity.as_gguf().is_some() {
+  // A non-GGUF identity used to skip the gate entirely, so a
+  // process-per-model backend serving a directory could OOM the host with no
+  // pre-spawn refusal at all. It has no header to project from, but the
+  // catalog knows the weight bytes and the backend has already resolved its
+  // own cache budget, which is enough for the same arithmetic.
+  let gate_applies = identity.as_gguf().is_some()
+    || (crate::backend::Backends::all()
+      .into_iter()
+      .find(|b| crate::backend::Backend::id(b) == resolved_backend_id)
+      .map(|b| crate::backend::Backend::lifecycle(&b))
+      == Some(crate::backend::Lifecycle::ProcessPerModel)
+      && total_weight_bytes > 0);
+  if gate_applies {
     if let Some(host_slot) = ctx.host_metrics.as_ref() {
       let snapshot = host_slot.read().await.clone();
       if crate::launch::admission::is_sampled(&snapshot) {
@@ -928,23 +940,35 @@ pub(crate) async fn spawn_supervised(
         let arch_owned = arch.clone();
         let weights_total = total_weight_bytes;
         let mtp_active = launch_params.mtp_directive.is_some();
-        let demand = tokio::task::spawn_blocking(move || {
-          let header = read_gguf_header(&model_path, HeaderReadOptions::default())
-            .ok()?
-            .header;
-          Some(crate::launch::admission::project_demand(
-            &header,
-            arch_owned.as_deref(),
-            &knobs,
-            effective_ctx,
-            &gpu_backend,
-            weights_total,
-            mtp_active,
-          ))
-        })
-        .await
-        .ok()
-        .flatten();
+        let demand = if identity.as_gguf().is_some() {
+          tokio::task::spawn_blocking(move || {
+            let header = read_gguf_header(&model_path, HeaderReadOptions::default())
+              .ok()?
+              .header;
+            Some(crate::launch::admission::project_demand(
+              &header,
+              arch_owned.as_deref(),
+              &knobs,
+              effective_ctx,
+              &gpu_backend,
+              weights_total,
+              mtp_active,
+            ))
+          })
+          .await
+          .ok()
+          .flatten()
+        } else {
+          // No header, so no per-layer KV estimate. Weights are known from the
+          // catalog, and the cache is whatever budget the backend resolved for
+          // itself (its `resolve_native_knobs` ran above) — an unbounded one
+          // means we cannot project, so stay out of the way rather than guess.
+          crate::launch::admission::resolved_cache_bytes(&launch_params).map(|cache| {
+            weights_total
+              .saturating_add(cache)
+              .saturating_add(crate::launch::headroom::overhead_band_bytes(&gpu_backend))
+          })
+        };
         if let Some(demand) = demand {
           if let Err(refusal) = ctx.admission.try_admit(u64::from(port), demand, free) {
             if bypasses_admission {
