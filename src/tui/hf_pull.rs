@@ -290,11 +290,14 @@ pub(crate) fn spawn_download_task(
         let _ = tx.send(Event::Download(evt)).await;
       }
     };
-    let spec = match RepoSpec::parse(&format!(
-      "{}:{}",
-      pull.repo_id,
-      pull.row.download_filename()
-    )) {
+    // A whole-repo pull has no pinned filename, so the spec is the bare repo
+    // id — `owner/repo:` would parse as an empty pin and match nothing.
+    let spec_str = if pull.row.is_whole_repo() {
+      pull.repo_id.clone()
+    } else {
+      format!("{}:{}", pull.repo_id, pull.row.download_filename())
+    };
+    let spec = match RepoSpec::parse(&spec_str) {
       Ok(s) => s,
       Err(e) => {
         push_dl(crate::tui::download_strip::DownloadEvent::Error {
@@ -314,7 +317,11 @@ pub(crate) fn spawn_download_task(
       inner: std::sync::Mutex::new(StripProgressInner::default()),
     });
     let options = DownloadOptions {
-      extension_filter: Some(".gguf".into()),
+      // A whole-repo pull takes the model's full file set — weights plus the
+      // config and tokenizer an engine needs to load them — so no per-file
+      // extension filter. `prefer_safetensors` still drops a duplicate
+      // `.bin`/`.pth` copy of the same weights.
+      extension_filter: (!pull.row.is_whole_repo()).then(|| ".gguf".to_string()),
       estimated_bytes: pull.row.size_bytes(),
       progress: Some(
         progress.clone() as std::sync::Arc<dyn crate::init::download::DownloadProgress>
