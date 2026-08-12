@@ -234,6 +234,72 @@ mod lifecycle {
     path
   }
 
+  /// The discovery chain end to end: an HF-layout tree under a **configured
+  /// scan root** reaches the catalog as a launchable row.
+  ///
+  /// Two things this pins that nothing else did. The walk used to re-derive
+  /// its roots from `$HOME` instead of the configured ones, so a repo outside
+  /// the default cache was invisible no matter what the config said. And the
+  /// projector set was resolved once at daemon boot, so this row only appears
+  /// if the set is recomputed per rescan.
+  #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+  async fn a_safetensors_repo_under_a_configured_root_reaches_the_catalog() {
+    let state = unique_temp("discovery");
+    let cache = unique_temp("discovery-cache");
+    seed_repo(&cache, "Qwen/Qwen2.5-0.5B-Instruct");
+
+    let mut opts = opts_with_vllm(state.clone(), &[]);
+    opts.discovery.scan_roots = vec![llamastash::discovery::scanner::ScanRoot {
+      path: cache.clone(),
+      source: llamastash::discovery::ModelSource::HuggingFace,
+    }];
+    let socket = opts.state_dir.clone();
+    let daemon = tokio::spawn(async move { run_foreground(opts).await });
+    wait_for_socket(&socket).await;
+    let mut client = Client::connect(&socket).await.expect("connect");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let row = loop {
+      let models = client
+        .call("list_models", None)
+        .await
+        .expect("list_models")
+        .get("models")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+      let hit = models
+        .into_iter()
+        .find(|m| m.get("name").and_then(Value::as_str) == Some("Qwen/Qwen2.5-0.5B-Instruct"));
+      if let Some(hit) = hit {
+        break hit;
+      }
+      assert!(
+        std::time::Instant::now() < deadline,
+        "the repo never reached the catalog"
+      );
+      tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+
+    assert_eq!(
+      row.get("supported_backends").and_then(Value::as_array),
+      Some(&vec![Value::String("vllm".into())]),
+      "row: {row}"
+    );
+    assert_eq!(
+      row
+        .get("metadata")
+        .and_then(|m| m.get("weights_bytes"))
+        .and_then(Value::as_u64),
+      Some(64),
+      "a directory row must still carry its summed safetensors size: {row}"
+    );
+
+    let _ = client.call("shutdown", None).await;
+    let _ = daemon.await;
+    let _ = std::fs::remove_dir_all(&cache);
+  }
+
   #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
   async fn safetensors_repo_is_discovered_launched_and_stopped() {
     let state = unique_temp("happy");
