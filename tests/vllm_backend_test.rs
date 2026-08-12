@@ -300,6 +300,82 @@ mod lifecycle {
     let _ = std::fs::remove_dir_all(&cache);
   }
 
+  /// A live child must survive a daemon restart.
+  ///
+  /// The orphan sweep gated re-adoption on the snapshot carrying a GGUF
+  /// identity, on the reasoning that a non-GGUF row is a managed multiplexer
+  /// with no child of its own. This backend is the first that is non-GGUF
+  /// *and* process-per-model, so that inference was wrong: the row was dropped
+  /// as stale without ever probing the port, leaving the server running with
+  /// its GPU allocation and port held, in neither `running` nor `external` and
+  /// reachable by no stop command.
+  #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+  async fn a_live_child_is_readopted_rather_than_dropped_as_stale() {
+    use llamastash::backend::identity::{BackendModelId, ModelIdentity};
+    use llamastash::daemon::orphans::{sweep, SweepInputs};
+    use llamastash::daemon::state_store::RunningSnapshot;
+    use llamastash::launch::mode::LaunchMode;
+    use llamastash::launch::params::LaunchParams;
+
+    let cache = unique_temp("adopt-cache");
+    let snapshot = seed_repo(&cache, "Qwen/Qwen2.5-0.5B-Instruct");
+    let port = allocate_port_range().start;
+
+    // Stand up the fixture on the recorded port, exactly as the real child
+    // would be left behind by a daemon restart.
+    let mut child = std::process::Command::new(fake_vllm_binary())
+      .arg("serve")
+      .arg(&snapshot)
+      .arg("--served-model-name")
+      .arg("Qwen/Qwen2.5-0.5B-Instruct")
+      .arg("--host")
+      .arg("127.0.0.1")
+      .arg("--port")
+      .arg(port.to_string())
+      .spawn()
+      .expect("spawn fixture");
+
+    // Wait for it to answer before sweeping.
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+      assert!(std::time::Instant::now() < deadline, "fixture never bound");
+      tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let recorded = vec![RunningSnapshot {
+      id: ModelIdentity::Backend(BackendModelId {
+        backend: "vllm".to_string(),
+        name: "Qwen/Qwen2.5-0.5B-Instruct".to_string(),
+      }),
+      pid: child.id() as i32,
+      port,
+      started_at: 1_700_000_000,
+      launch_id: None,
+      params: LaunchParams::new(snapshot.clone(), LaunchMode::Chat),
+      actuals: Default::default(),
+      resolved_backend: "vllm".to_string(),
+    }];
+
+    let report = sweep(SweepInputs {
+      recorded_running: &recorded,
+      external_markers: Vec::new(),
+      probe_timeout: Duration::from_secs(2),
+    })
+    .await;
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&cache);
+
+    assert_eq!(
+      report.adopted.len(),
+      1,
+      "a live process-per-model child must be re-adopted, not dropped: {:?}",
+      report.stale.len()
+    );
+    assert!(report.stale.is_empty(), "nothing should be stale here");
+  }
+
   #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
   async fn safetensors_repo_is_discovered_launched_and_stopped() {
     let state = unique_temp("happy");

@@ -332,6 +332,25 @@ impl Backend for VllmBackend {
     Some(VLLM_BACKEND_ID)
   }
 
+  async fn adoption_matches(
+    &self,
+    recorded_path: &Path,
+    argv: &[String],
+    port: u16,
+    probe_timeout: std::time::Duration,
+  ) -> bool {
+    // The default rule looks for the recorded *path* in `/v1/models`, but this
+    // backend advertises the served name instead — the whole point of passing
+    // `--served-model-name`. Confirm on that, cross-checked against the path
+    // still being the argv's model argument so a recycled PID serving a
+    // different model of ours cannot pass.
+    let expected = served_model_name(recorded_path);
+    let path_str = recorded_path.to_string_lossy();
+    let argv_agrees = argv.is_empty() || argv.iter().any(|a| *a == path_str);
+    argv_agrees
+      && crate::daemon::orphans::models_endpoint_serves_id(port, &expected, probe_timeout).await
+  }
+
   fn resolve_launch_binary(
     &self,
     ctx: &MethodContext,

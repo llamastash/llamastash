@@ -164,12 +164,23 @@ pub async fn sweep(inputs: SweepInputs<'_>) -> SweepReport {
       stale.push(snap);
       continue;
     }
-    // Orphan re-adoption is process-based, so it is GGUF-only: a
-    // managed-multiplexer snapshot has no local file and is served by the
-    // shared umbrella, not a re-adoptable per-model child.
-    // A non-GGUF identity therefore can't be re-adopted — drop it as stale.
+    let backend = crate::backend::Backends::all()
+      .into_iter()
+      .find(|b| b.id() == snap.resolved_backend)
+      .unwrap_or_else(crate::backend::default_backend);
+    // Orphan re-adoption is process-based, so it needs a path to confirm
+    // against. Keyed on **lifecycle**, not identity shape: a managed
+    // multiplexer is served by the shared umbrella and has no re-adoptable
+    // child of its own, but a process-per-model backend spawns a real child
+    // with a real path even when its identity is not a GGUF. Dropping those
+    // unprobed left the server alive, holding its port and its GPU
+    // allocation, in neither `running` nor `external` and reachable by no
+    // stop command.
     let path = match snap.id.as_gguf() {
       Some(g) => g.path.clone(),
+      None if backend.lifecycle() == crate::backend::Lifecycle::ProcessPerModel => {
+        snap.params.model_path.clone()
+      }
       None => {
         stale.push(snap);
         continue;
@@ -189,10 +200,6 @@ pub async fn sweep(inputs: SweepInputs<'_>) -> SweepReport {
       .process(sysinfo::Pid::from_u32(snap.pid as u32))
       .map(|p| p.cmd().iter().map(|s| s.to_string_lossy().into()).collect())
       .unwrap_or_default();
-    let backend = crate::backend::Backends::all()
-      .into_iter()
-      .find(|b| b.id() == snap.resolved_backend)
-      .unwrap_or_else(crate::backend::default_backend);
     let matched = backend
       .adoption_matches(&path, &argv, snap.port, inputs.probe_timeout)
       .await;
@@ -291,6 +298,34 @@ pub(crate) async fn models_endpoint_matches(port: u16, expected: &Path, timeout:
     Ok((200, body)) => body_mentions_path(&body, expected),
     _ => false,
   }
+}
+
+/// Adoption confirmation for a backend that advertises a **served name**
+/// rather than the model path in `/v1/models`.
+///
+/// Exact match against the parsed `data[].id` values, never a scan of the raw
+/// body — same reasoning as the readiness probe: a substring hit could come
+/// from another entry's `root` path rather than from an id this server owns.
+pub(crate) async fn models_endpoint_serves_id(
+  port: u16,
+  expected: &str,
+  timeout: Duration,
+) -> bool {
+  let Ok((200, body)) = fetch_models_body(port, timeout).await else {
+    return false;
+  };
+  serde_json::from_slice::<serde_json::Value>(&body)
+    .ok()
+    .and_then(|v| {
+      Some(
+        v.get("data")?
+          .as_array()?
+          .iter()
+          .filter_map(|m| m.get("id")?.as_str())
+          .any(|id| id == expected),
+      )
+    })
+    .unwrap_or(false)
 }
 
 /// Compare two model paths for adoption, tolerant of canonicalisation: try a
