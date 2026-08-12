@@ -86,9 +86,15 @@ pub const VLLM_FORBIDDEN_EXTRA_HEADS: &[&str] = &[
 /// `--swap-space`; CPU offload moved to its own config group.
 pub const VLLM_NATIVE_KNOBS: &[NativeKnobDescriptor] = &[
   NativeKnobDescriptor {
+    id: "kv_cache_memory_bytes",
+    label: "KV cache size",
+    description: "hard cap on KV cache bytes (e.g. 8G); overrides the GPU memory fraction",
+    kind: NativeKnobKind::FreeText,
+  },
+  NativeKnobDescriptor {
     id: "gpu_memory_utilization",
     label: "GPU memory frac",
-    description: "fraction of GPU memory vLLM may claim, 0.0-1.0 (vLLM default 0.9)",
+    description: "fraction of GPU memory vLLM may claim, 0.0-1.0 (vLLM default 0.92)",
     kind: NativeKnobKind::FreeText,
   },
   NativeKnobDescriptor {
@@ -143,6 +149,7 @@ pub const VLLM_NATIVE_KNOBS: &[NativeKnobDescriptor] = &[
 
 /// Native-knob id → `vllm serve` flag.
 const VLLM_KNOB_FLAGS: &[(&str, &str)] = &[
+  ("kv_cache_memory_bytes", "--kv-cache-memory-bytes"),
   ("gpu_memory_utilization", "--gpu-memory-utilization"),
   ("max_num_seqs", "--max-num-seqs"),
   ("tensor_parallel_size", "--tensor-parallel-size"),
@@ -353,6 +360,73 @@ impl Backend for VllmBackend {
   ) -> LaunchPlan {
     LaunchPlan::SpawnProcess(self.process_spec(params, port, binary, probe))
   }
+
+  async fn resolve_native_knobs(
+    &self,
+    ctx: &MethodContext,
+    params: &mut LaunchParams,
+    weights_bytes: u64,
+  ) -> super::NativeKnobResolution {
+    let mut out = super::NativeKnobResolution::default();
+    if user_set(params, "kv_cache_memory_bytes") || user_set(params, "gpu_memory_utilization") {
+      return out;
+    }
+    let Some(metrics) = ctx.host_metrics.as_ref() else {
+      return out;
+    };
+    let snapshot = metrics.read().await.clone();
+    if !crate::launch::admission::is_sampled(&snapshot) || !snapshot.unified {
+      return out;
+    }
+    let free = crate::launch::admission::effective_free_bytes(&snapshot);
+    let Some(cap) = kv_cache_cap_bytes(free, weights_bytes) else {
+      // Nothing safe left to give. Say nothing and let the admission gate
+      // produce the refusal, rather than launching with a token cache.
+      return out;
+    };
+    log::info!("vllm: capping KV cache at {cap} bytes on a unified-memory host");
+    params.backend_knobs.insert(
+      "kv_cache_memory_bytes".to_string(),
+      crate::config::KnobValue::Set(cap.to_string()),
+    );
+    out.auto_set.insert("kv_cache_memory_bytes".to_string());
+    out
+  }
+}
+
+/// Whether the user pinned this knob (as opposed to leaving it to us).
+fn user_set(params: &LaunchParams, id: &str) -> bool {
+  matches!(
+    params.backend_knobs.get(id),
+    Some(crate::config::KnobValue::Set(_))
+  )
+}
+
+/// Default KV cache budget when nothing else bounds it. Generous for a single
+/// user (~85x concurrency at 2k context on a 0.5B) and small enough that the
+/// launch cannot take the host down.
+const DEFAULT_KV_CACHE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
+/// Reserve left free for the OS and everything else after weights + cache.
+const UNIFIED_HOST_RESERVE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
+/// The KV cache cap for a unified-memory host, or `None` when the weights
+/// alone leave no room.
+///
+/// On an APU, GPU memory *is* system RAM, and vLLM sizes its KV cache to fill
+/// whatever `gpu_memory_utilization` allows — a fraction of the **pool**, not
+/// of the model. Measured on a 121 GB Strix Halo: `0.15` on a 0.5B model
+/// reserved 15.1 GiB of KV cache (1.3M tokens, 644x concurrency for a
+/// 2048-token model) and cost 21.2 GB of RAM; the 0.92 default projects to
+/// ~106 GB and has frozen the machine outright. Clamping the *fraction* does
+/// not help, because the arithmetic is against the wrong number. Capping the
+/// cache in bytes does: vLLM then skips memory profiling entirely and honours
+/// the figure.
+fn kv_cache_cap_bytes(free_bytes: u64, weights_bytes: u64) -> Option<u64> {
+  let headroom = free_bytes
+    .checked_sub(weights_bytes)?
+    .checked_sub(UNIFIED_HOST_RESERVE_BYTES)?;
+  (headroom > 0).then(|| headroom.min(DEFAULT_KV_CACHE_BYTES))
 }
 
 impl VllmBackend {
@@ -745,6 +819,33 @@ mod tests {
       }
       other => panic!("expected a model-id poll, got {other:?}"),
     }
+  }
+
+  /// The freeze guard. vLLM's default sizes the KV cache against the pool,
+  /// which on a UMA host is system RAM — measured at ~106 GB of a 121 GB box.
+  #[test]
+  fn kv_cap_leaves_the_host_a_reserve() {
+    const GB: u64 = 1024 * 1024 * 1024;
+    // Plenty free: the default budget applies, not "everything that fits".
+    assert_eq!(kv_cache_cap_bytes(113 * GB, GB), Some(8 * GB));
+    // Tight: the cap shrinks to what is left after weights + reserve.
+    assert_eq!(kv_cache_cap_bytes(20 * GB, 8 * GB), Some(4 * GB));
+    // No room at all — no knob, so the admission gate refuses instead of us
+    // launching with a token cache.
+    assert_eq!(kv_cache_cap_bytes(10 * GB, 8 * GB), None);
+    assert_eq!(kv_cache_cap_bytes(4 * GB, 8 * GB), None);
+  }
+
+  #[test]
+  fn kv_cap_renders_the_verified_flag() {
+    let mut p = params("/c/models--o--n/snapshots/rev");
+    set(&mut p, "kv_cache_memory_bytes", "2147483648");
+    let argv = argv_strings(&p, 1);
+    let i = argv
+      .iter()
+      .position(|a| a == "--kv-cache-memory-bytes")
+      .expect("the cap must reach argv");
+    assert_eq!(argv[i + 1], "2147483648");
   }
 
   #[test]

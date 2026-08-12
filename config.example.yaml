@@ -540,13 +540,25 @@ backend:
     # device probe and fails outright (`Failed to infer device type`) on a
     # host with no usable accelerator. So the path just has to exist.
     #
-    # Where vLLM only ships as a container (ROCm today), point this at a
-    # small wrapper script that execs `docker run …` — the recipe is in
-    # docs/vllm-setup.md.
+    # Prebuilt wheels exist for CUDA and ROCm (Python 3.12 for the ROCm
+    # ones); a container wrapper script also works. Both routes, plus the
+    # distro caveats, are in docs/vllm-setup.md.
     #
     # Sources — CLI: (none) · Env: (none). Config-only.
     servers:
       - binary: /usr/local/bin/vllm
+
+    # On a unified-memory host (an APU, where GPU memory *is* system RAM),
+    # leaving both memory knobs unset lets llamastash cap the KV cache from
+    # live free memory. That guard exists because vLLM sizes its cache
+    # against the whole pool rather than the model, which has exhausted RAM
+    # and frozen a 121 GB machine. Set either knob and the cap steps aside:
+    #
+    #   presets:
+    #     big-ctx:
+    #       backend_knobs:
+    #         kv_cache_memory_bytes: "16G"   # absolute cap; wins outright
+    #         gpu_memory_utilization: "0.5"  # fraction of the pool
 
 # ─── Keybindings ──────────────────────────────────────────────────
 #
