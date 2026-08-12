@@ -3,8 +3,9 @@
 //! Two surfaces, both routed through [`FetchClient`] so the v2 fetch
 //! contract (HTTPS-only, host allowlist, redirect cap, body cap,
 //! offline branch) gates every metadata request:
-//! - [`search`] hits `GET /api/models` with `search`, `filter=gguf`,
-//!   `sort`, and `limit` query params. Results carry the sort-relevant
+//! - [`search`] hits `GET /api/models` with `search`, `sort`, `limit`, and
+//!   optionally a weight-format `filter` (see [`WeightFormatFilter`]) query
+//!   params. Results carry the sort-relevant
 //!   metric, the `pipeline_tag`, tags, and the canonical repo id.
 //!   Pagination is via the `Link` response header (`rel="next"`); we
 //!   extract just the opaque `cursor` query parameter from the next URL

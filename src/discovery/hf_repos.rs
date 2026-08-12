@@ -58,9 +58,13 @@ pub struct ConfigSummary {
   pub num_hidden_layers: Option<u64>,
   pub vocab_size: Option<u64>,
   pub intermediate_size: Option<u64>,
-  /// `config.json: quantization` block present. The shared mapping does not
-  /// interpret it (that is the leaf's job); it only records presence.
+  /// `config.json: quantization_config` block present. The shared mapping does
+  /// not interpret it (that is the leaf's job); it only records presence.
   pub has_quantization: bool,
+  /// `quantization_config.quant_method` — `"awq"`, `"gptq"`, `"fp8"`,
+  /// `"bitsandbytes"`. The verbatim label a leaf renders as the row's quant,
+  /// since a safetensors repo has no GGML tag to read.
+  pub quant_method: Option<String>,
   /// `tokenizer_config.json: chat_template` (string form only).
   pub chat_template: Option<String>,
   /// `tokenizer_config.json: tokenizer_class`.
@@ -224,10 +228,16 @@ fn parse_config_summary(snapshot: &Path) -> Option<ConfigSummary> {
     num_hidden_layers: config.get("num_hidden_layers").and_then(json_u64),
     vocab_size: config.get("vocab_size").and_then(json_u64),
     intermediate_size: config.get("intermediate_size").and_then(json_u64),
+    // The key is `quantization_config`, verified against a real AWQ repo.
+    // This read `quantization`, so it never fired on a quantized model.
     has_quantization: config
-      .get("quantization")
+      .get("quantization_config")
       .map(|v| !v.is_null())
       .unwrap_or(false),
+    quant_method: config
+      .get("quantization_config")
+      .and_then(|q| q.get("quant_method"))
+      .and_then(json_str),
     chat_template: None,
     tokenizer_class: None,
   };

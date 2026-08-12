@@ -332,6 +332,29 @@ impl Backend for VllmBackend {
     Some(VLLM_BACKEND_ID)
   }
 
+  async fn fetch_actuals(
+    &self,
+    port: u16,
+    timeout: std::time::Duration,
+  ) -> crate::daemon::actuals::Actuals {
+    // No `/props` here — that is llama-server's surface. The resolved window
+    // is `max_model_len` on the `/v1/models` entry, which is where
+    // `--max-model-len` lands (verified against 0.27.1). Without this the
+    // running row reported a null context even when `--ctx` was passed.
+    let Ok((200, body)) = crate::daemon::orphans::fetch_models_body(port, timeout).await else {
+      return Default::default();
+    };
+    let ctx = crate::daemon::probe::served_model_entries(&body)
+      .unwrap_or_default()
+      .iter()
+      .find_map(|m| m.get("max_model_len")?.as_u64())
+      .and_then(|n| u32::try_from(n).ok());
+    crate::daemon::actuals::Actuals {
+      resolved_ctx: ctx,
+      ..Default::default()
+    }
+  }
+
   async fn adoption_matches(
     &self,
     recorded_path: &Path,

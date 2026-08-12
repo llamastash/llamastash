@@ -183,6 +183,17 @@ fn body_serves_expected_id(body: &str, expect_ids: &[String]) -> bool {
 ///
 /// Accepts either a whole HTTP response or a bare body.
 pub(crate) fn served_model_ids(body: &[u8]) -> Option<Vec<String>> {
+  Some(
+    served_model_entries(body)?
+      .iter()
+      .filter_map(|m| m.get("id")?.as_str().map(str::to_string))
+      .collect(),
+  )
+}
+
+/// The raw `data[]` entries of a `/v1/models` payload, for callers that need a
+/// field other than `id` (a backend reading its resolved context window, say).
+pub(crate) fn served_model_entries(body: &[u8]) -> Option<Vec<serde_json::Value>> {
   let text = std::str::from_utf8(body).ok()?;
   // Decode the first JSON value and ignore whatever follows it: a captured
   // response carries headers in front, and may be truncated at the read cap or
@@ -190,13 +201,7 @@ pub(crate) fn served_model_ids(body: &[u8]) -> Option<Vec<String>> {
   let start = text.find('{')?;
   let mut de = serde_json::Deserializer::from_str(&text[start..]);
   let value = <serde_json::Value as serde::Deserialize>::deserialize(&mut de).ok()?;
-  let data = value.get("data")?.as_array()?;
-  Some(
-    data
-      .iter()
-      .filter_map(|m| m.get("id")?.as_str().map(str::to_string))
-      .collect(),
-  )
+  Some(value.get("data")?.as_array()?.clone())
 }
 
 /// One probe attempt that also captures the response body (for the model-id

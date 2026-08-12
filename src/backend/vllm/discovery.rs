@@ -45,6 +45,13 @@ pub fn project(candidate: &HfRepoCandidate, backend_id: &str) -> DiscoveredModel
     })
     .map(|mut m| {
       m.weights_bytes = weights;
+      // No GGML tag on a safetensors repo, so the verbatim `quant_method`
+      // is the quant. Without it the row renders `?` in `list`.
+      m.quant_label = candidate
+        .config_summary
+        .as_ref()
+        .and_then(|s| s.quant_method.clone())
+        .map(|q| q.to_ascii_uppercase());
       m
     });
 
