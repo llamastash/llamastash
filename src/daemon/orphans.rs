@@ -314,18 +314,8 @@ pub(crate) async fn models_endpoint_serves_id(
   let Ok((200, body)) = fetch_models_body(port, timeout).await else {
     return false;
   };
-  serde_json::from_slice::<serde_json::Value>(&body)
-    .ok()
-    .and_then(|v| {
-      Some(
-        v.get("data")?
-          .as_array()?
-          .iter()
-          .filter_map(|m| m.get("id")?.as_str())
-          .any(|id| id == expected),
-      )
-    })
-    .unwrap_or(false)
+  crate::daemon::probe::served_model_ids(&body)
+    .is_some_and(|ids| ids.iter().any(|id| id == expected))
 }
 
 /// Compare two model paths for adoption, tolerant of canonicalisation: try a
@@ -380,37 +370,19 @@ pub(crate) async fn fetch_models_body(
 /// process whose response body happened to contain the filename
 /// (think `python -m http.server` serving a directory listing).
 fn body_mentions_path(body: &[u8], expected: &Path) -> bool {
-  let Ok(text) = std::str::from_utf8(body) else {
-    return false;
-  };
   let expected_str = expected.to_string_lossy();
-  let expected_base = expected.file_name().and_then(|s| s.to_str());
-  // Fast reject: the basename is a substring of both a full-path id
-  // and a bare-basename id, so if it isn't anywhere in the body no
-  // documented shape can match.
-  let Some(base) = expected_base else {
+  let Some(base) = expected.file_name().and_then(|s| s.to_str()) else {
     return false;
   };
-  if base.is_empty() || !text.contains(base) {
+  if base.is_empty() {
     return false;
   }
-  // Parse the body strictly. Only accept the documented OpenAI shape
-  // `{ "data": [ { "id": "<id>" }, ... ] }`. Extra fields are allowed
-  // (forward-compatible); a substring-only hit outside `data[].id` is
-  // rejected as accidental.
-  let parsed: serde_json::Value = match serde_json::from_str(text) {
-    Ok(v) => v,
-    Err(_) => return false,
-  };
-  let Some(arr) = parsed.get("data").and_then(|v| v.as_array()) else {
-    return false;
-  };
-  arr.iter().any(|row| {
-    row
-      .get("id")
-      .and_then(|v| v.as_str())
-      .map(|id| id_matches(id, expected_str.as_ref(), base))
-      .unwrap_or(false)
+  // Only the documented OpenAI shape counts; extra fields are fine
+  // (forward-compatible), a substring hit outside `data[].id` is not.
+  crate::daemon::probe::served_model_ids(body).is_some_and(|ids| {
+    ids
+      .iter()
+      .any(|id| id_matches(id, expected_str.as_ref(), base))
   })
 }
 

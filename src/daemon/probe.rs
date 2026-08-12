@@ -164,20 +164,31 @@ pub async fn poll_until_ready_model_id(
 /// A body with no parseable `data` array never matches, so a non-OpenAI
 /// responder stays unready instead of being accidentally accepted.
 fn body_serves_expected_id(body: &str, expect_ids: &[String]) -> bool {
-  served_ids(body).is_some_and(|ids| {
+  served_model_ids(body.as_bytes()).is_some_and(|ids| {
     ids
       .iter()
       .any(|id| expect_ids.iter().any(|want| id.starts_with(want.as_str())))
   })
 }
 
-/// The `data[].id` values from an OpenAI `/v1/models` response body.
-fn served_ids(body: &str) -> Option<Vec<String>> {
-  // Decode the first JSON value and ignore whatever follows it: the captured
-  // string is a whole HTTP response, and it may be truncated at the 16 KiB cap
-  // or carry chunked-encoding trailers. A strict `from_str` rejects both.
-  let start = body.find('{')?;
-  let mut de = serde_json::Deserializer::from_str(&body[start..]);
+/// The `data[].id` values an OpenAI-compatible `/v1/models` payload
+/// advertises, or `None` when the payload is not that shape.
+///
+/// The one place this wire shape is decoded. Every caller that needs to ask
+/// "does this server serve the model I think it does" — the readiness probe
+/// here, and both adoption checks in [`crate::daemon::orphans`] — goes through
+/// it and applies its own comparison to the returned ids. They differ in how
+/// they compare (prefix, exact, path-tolerant), never in how they parse, and
+/// none of them may fall back to scanning the raw payload.
+///
+/// Accepts either a whole HTTP response or a bare body.
+pub(crate) fn served_model_ids(body: &[u8]) -> Option<Vec<String>> {
+  let text = std::str::from_utf8(body).ok()?;
+  // Decode the first JSON value and ignore whatever follows it: a captured
+  // response carries headers in front, and may be truncated at the read cap or
+  // carry chunked-encoding trailers. A strict `from_str` rejects all three.
+  let start = text.find('{')?;
+  let mut de = serde_json::Deserializer::from_str(&text[start..]);
   let value = <serde_json::Value as serde::Deserialize>::deserialize(&mut de).ok()?;
   let data = value.get("data")?.as_array()?;
   Some(
@@ -259,11 +270,11 @@ mod tests {
   use super::*;
 
   #[test]
-  fn served_ids_reads_the_data_array_not_the_whole_body() {
+  fn served_model_ids_reads_the_data_array_not_the_whole_body() {
     let body = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n\
       {\"object\":\"list\",\"data\":[{\"id\":\"owner/model\",\"root\":\"/cache/x\"}]}";
     assert_eq!(
-      served_ids(body).as_deref(),
+      served_model_ids(body.as_bytes()).as_deref(),
       Some(&["owner/model".to_string()][..])
     );
   }
@@ -301,7 +312,10 @@ mod tests {
   #[test]
   fn a_non_openai_body_is_never_ready() {
     let expect = vec!["base".to_string()];
-    assert_eq!(served_ids("HTTP/1.1 200 OK\r\n\r\n<html>base</html>"), None);
+    assert_eq!(
+      served_model_ids(b"HTTP/1.1 200 OK\r\n\r\n<html>base</html>"),
+      None
+    );
     assert!(!body_serves_expected_id(
       "HTTP/1.1 200 OK\r\n\r\n<html>base</html>",
       &expect
