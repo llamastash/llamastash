@@ -389,6 +389,31 @@ pub fn served_model_name(model_path: &Path) -> String {
     .unwrap_or_else(|| model_path.display().to_string())
 }
 
+/// Every name vLLM should answer to, primary first.
+///
+/// vLLM is the first backend behind our proxy that *validates* the request's
+/// `model` field — llama.cpp ignores it, ds4 echoes it back. The proxy forwards
+/// the client's bytes unchanged by design, so a name our own resolver accepted
+/// (it matches case-insensitive substrings) would reach vLLM verbatim and 404
+/// **after** paying a full cold start. `--served-model-name` takes a list, so
+/// registering the aliases is cheaper than teaching the proxy to rewrite bodies.
+///
+/// Not every substring the resolver would accept, which is unbounded — the
+/// forms clients actually send: the repo id, the bare model name, and the
+/// lowercase of each. Verified against vLLM 0.27.1: both entries appear in
+/// `/v1/models` and both route, while an unregistered name still 404s.
+pub fn served_model_aliases(model_path: &Path) -> Vec<String> {
+  let primary = served_model_name(model_path);
+  let mut out = vec![primary.clone()];
+  let bare = primary.rsplit('/').next().unwrap_or(&primary).to_string();
+  for alias in [bare.clone(), primary.to_lowercase(), bare.to_lowercase()] {
+    if !alias.is_empty() && !out.contains(&alias) {
+      out.push(alias);
+    }
+  }
+  out
+}
+
 /// The vLLM readiness contract.
 ///
 /// `/v1/models` returning 200 **with the served name in the body**, not a
@@ -410,7 +435,9 @@ pub fn readiness(served_name: &str) -> Readiness {
 fn vllm_argv(params: &LaunchParams, port: u16) -> Vec<std::ffi::OsString> {
   let mut argv: Vec<std::ffi::OsString> = vec!["serve".into(), params.model_path.clone().into()];
   argv.push("--served-model-name".into());
-  argv.push(served_model_name(&params.model_path).into());
+  for alias in served_model_aliases(&params.model_path) {
+    argv.push(alias.into());
+  }
   // Loopback only, like every other backend we spawn.
   argv.push("--host".into());
   argv.push("127.0.0.1".into());
@@ -542,21 +569,51 @@ mod tests {
   }
 
   #[test]
-  fn minimal_argv_is_path_served_name_loopback_and_port() {
+  fn minimal_argv_is_path_served_names_loopback_and_port() {
     let p = params("/c/models--o--n/snapshots/rev");
     assert_eq!(
       argv_strings(&p, 41100),
       vec![
         "serve",
         "/c/models--o--n/snapshots/rev",
+        // `--served-model-name` takes a list; `--host` terminates it.
         "--served-model-name",
         "o/n",
+        "n",
         "--host",
         "127.0.0.1",
         "--port",
         "41100",
       ]
     );
+  }
+
+  /// A name our resolver accepts must be one vLLM accepts, or the client eats
+  /// a full cold start and then a 404. The primary stays first so `/v1/models`
+  /// and the catalog still agree on the canonical id.
+  #[test]
+  fn aliases_cover_the_bare_name_and_lowercase_forms() {
+    let aliases = served_model_aliases(Path::new(
+      "/c/models--Qwen--Qwen2.5-0.5B-Instruct/snapshots/rev",
+    ));
+    assert_eq!(
+      aliases[0], "Qwen/Qwen2.5-0.5B-Instruct",
+      "primary comes first"
+    );
+    for expected in [
+      "Qwen2.5-0.5B-Instruct",
+      "qwen/qwen2.5-0.5b-instruct",
+      "qwen2.5-0.5b-instruct",
+    ] {
+      assert!(
+        aliases.iter().any(|a| a == expected),
+        "{expected} missing from {aliases:?}"
+      );
+    }
+    let mut deduped = aliases.clone();
+    deduped.sort();
+    deduped.dedup();
+    assert_eq!(deduped.len(), aliases.len(), "aliases must be unique");
   }
 
   #[test]

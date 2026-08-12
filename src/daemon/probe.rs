@@ -131,7 +131,7 @@ pub async fn poll_until_ready_model_id(
   loop {
     match probe_once_body(port, opts.interval, request.as_bytes()).await {
       Ok((status, body)) if status == ready_status => {
-        if expect_ids.is_empty() || expect_ids.iter().any(|id| body.contains(id.as_str())) {
+        if expect_ids.is_empty() || body_serves_expected_id(&body, expect_ids) {
           return ProbeOutcome::Ready;
         }
         // 200 with a non-matching id — the real backend hasn't bound yet.
@@ -145,6 +145,47 @@ pub async fn poll_until_ready_model_id(
     }
     tokio::time::sleep(opts.interval).await;
   }
+}
+
+/// Whether the response advertises a model id matching one of `expect_ids`.
+///
+/// Matching is **prefix against the parsed `data[].id` values**, not a scan of
+/// the whole response. Both halves matter:
+///
+/// - *Parsed*, because `body.contains(id)` matched anywhere in the payload —
+///   a header, another model's `root` cache path, a `parent` field. A short
+///   derived name (`gpt`, `base`) was then satisfied by any foreign server
+///   that grabbed the reserved port during the engine-init window, which is
+///   the exact threat this check exists to close.
+/// - *Prefix*, because ds4 registers the `deepseek-v4-` family prefix rather
+///   than its two exact aliases, so `-flash` / `-pro` / a future `-turbo` all
+///   pass without this list chasing upstream.
+///
+/// A body with no parseable `data` array never matches, so a non-OpenAI
+/// responder stays unready instead of being accidentally accepted.
+fn body_serves_expected_id(body: &str, expect_ids: &[String]) -> bool {
+  served_ids(body).is_some_and(|ids| {
+    ids
+      .iter()
+      .any(|id| expect_ids.iter().any(|want| id.starts_with(want.as_str())))
+  })
+}
+
+/// The `data[].id` values from an OpenAI `/v1/models` response body.
+fn served_ids(body: &str) -> Option<Vec<String>> {
+  // Decode the first JSON value and ignore whatever follows it: the captured
+  // string is a whole HTTP response, and it may be truncated at the 16 KiB cap
+  // or carry chunked-encoding trailers. A strict `from_str` rejects both.
+  let start = body.find('{')?;
+  let mut de = serde_json::Deserializer::from_str(&body[start..]);
+  let value = <serde_json::Value as serde::Deserialize>::deserialize(&mut de).ok()?;
+  let data = value.get("data")?.as_array()?;
+  Some(
+    data
+      .iter()
+      .filter_map(|m| m.get("id")?.as_str().map(str::to_string))
+      .collect(),
+  )
 }
 
 /// One probe attempt that also captures the response body (for the model-id
@@ -216,6 +257,60 @@ fn parse_status(bytes: &[u8]) -> Option<u16> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn served_ids_reads_the_data_array_not_the_whole_body() {
+    let body = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n\
+      {\"object\":\"list\",\"data\":[{\"id\":\"owner/model\",\"root\":\"/cache/x\"}]}";
+    assert_eq!(
+      served_ids(body).as_deref(),
+      Some(&["owner/model".to_string()][..])
+    );
+  }
+
+  /// The guard this check exists for: the reserved port sits idle for the
+  /// whole engine-init window, so a foreign OpenAI-compatible server can
+  /// answer first. A substring scan accepted it whenever the expected name
+  /// appeared anywhere in the response — including inside another model's
+  /// `root` path, which is exactly what a second llamastash proxy would serve.
+  #[test]
+  fn a_foreign_server_mentioning_the_name_is_not_ready() {
+    let expect = vec!["base".to_string()];
+    let foreign = "HTTP/1.1 200 OK\r\n\r\n\
+      {\"object\":\"list\",\"data\":[{\"id\":\"other-model\",\"root\":\"/models/base/x\"}]}";
+    assert!(
+      foreign.contains("base"),
+      "the old substring check would pass this"
+    );
+    assert!(
+      !body_serves_expected_id(foreign, &expect),
+      "a `base` inside another model's path must not count as ready"
+    );
+  }
+
+  /// ds4 registers the family prefix rather than its exact aliases, so prefix
+  /// matching against the parsed ids has to keep working.
+  #[test]
+  fn a_family_prefix_still_matches_a_real_alias() {
+    let body = "HTTP/1.1 200 OK\r\n\r\n\
+      {\"object\":\"list\",\"data\":[{\"id\":\"deepseek-v4-flash\",\"object\":\"model\"}]}";
+    assert!(body_serves_expected_id(body, &["deepseek-v4-".to_string()]));
+    assert!(!body_serves_expected_id(body, &["qwen".to_string()]));
+  }
+
+  #[test]
+  fn a_non_openai_body_is_never_ready() {
+    let expect = vec!["base".to_string()];
+    assert_eq!(served_ids("HTTP/1.1 200 OK\r\n\r\n<html>base</html>"), None);
+    assert!(!body_serves_expected_id(
+      "HTTP/1.1 200 OK\r\n\r\n<html>base</html>",
+      &expect
+    ));
+    assert!(!body_serves_expected_id(
+      "HTTP/1.1 200 OK\r\n\r\n{\"error\":\"nope\"}",
+      &expect
+    ));
+  }
 
   #[test]
   fn scale_for_model_leaves_base_alone_when_size_unknown() {

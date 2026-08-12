@@ -174,8 +174,9 @@ fn classify_snapshot(snapshot: &Path) -> Classification {
 /// pathological tree from being re-walked on every rescan.
 const GGUF_SCAN_DEPTH: u32 = 4;
 
-/// [`contains_gguf`] at the standard depth, for leaves that check a directory
-/// directly instead of going through the enumerator.
+/// Whether a `.gguf` exists anywhere under `dir`, at the same depth the
+/// enumerator uses — for leaves that check a directory directly instead of
+/// going through it.
 pub fn contains_gguf_in_tree(dir: &Path) -> bool {
   contains_gguf(dir, GGUF_SCAN_DEPTH)
 }
