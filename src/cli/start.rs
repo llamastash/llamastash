@@ -311,7 +311,12 @@ fn direct_path_candidate(model: &str, args: &StartArgs) -> Result<Option<PathBuf
   if !path.exists() {
     return Ok(None);
   }
-  if !path.is_file() {
+  // A weight file, or a directory some backend claims as a model of its own.
+  // The `is_file` assumption predates directory-shaped models: the daemon
+  // accepts them over IPC (that is what `synthetic_identity` is for), so
+  // refusing here left such a model with no launch route at all, reported as
+  // "no model matches" rather than "directories are unsupported".
+  if !path.is_file() && crate::backend::synthetic_identity_for_path(&path).is_none() {
     return Ok(None);
   }
   if args.mode.is_none() {

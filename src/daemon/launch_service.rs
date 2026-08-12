@@ -251,7 +251,7 @@ pub(crate) async fn compose_and_spawn(
     Vec<String>,
     Option<u32>,
     ModelIdentity,
-  ) = match crate::backend::synthetic_identity_for_path(&parsed.model_path) {
+  ) = match crate::backend::synthetic_identity_for_path_available(&parsed.model_path, ctx) {
     Some((identity, _backend_id)) => {
       // A synthetic ModelId keeps the file-keyed plumbing (log path, running
       // snapshot retention) working; the sentinel header hash marks it as

@@ -1304,6 +1304,28 @@ pub fn synthetic_identity_for_path(path: &Path) -> Option<(ModelIdentity, String
   })
 }
 
+/// [`synthetic_identity_for_path`] restricted to backends that are actually
+/// available on this host.
+///
+/// The ungated form has no `ctx` and so cannot consult config: a disabled
+/// backend still claimed a path shaped like one of its models, and the launch
+/// then failed with an error naming a backend the user had switched off. That
+/// contradicts the "an absent or disabled backend changes nothing" property
+/// the daemon and discovery task both document. Callers holding a context use
+/// this; the ungated form remains for clients that have none.
+pub fn synthetic_identity_for_path_available(
+  path: &Path,
+  ctx: &MethodContext,
+) -> Option<(ModelIdentity, String)> {
+  Backends::all()
+    .into_iter()
+    .filter(|b| b.available(ctx))
+    .find_map(|b| {
+      b.synthetic_identity(path)
+        .map(|id| (id, b.id().to_string()))
+    })
+}
+
 /// The external-process markers every backend contributes — the orphan sweep's
 /// "is this an unmanaged instance of a backend server" list. Registry-driven,
 /// so a new backend's server is swept from its `process_marker` override alone.
