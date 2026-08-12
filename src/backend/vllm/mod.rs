@@ -462,7 +462,22 @@ impl Backend for VllmBackend {
     let cap = match snapshot.as_ref().filter(|_| sampled) {
       Some(s) => {
         let free = crate::launch::admission::effective_free_bytes(s);
-        kv_cache_cap_bytes(free, weights_bytes)
+        match kv_cache_cap_bytes(free, weights_bytes) {
+          Some(cap) => cap,
+          None => {
+            out.refusal = Some(format!(
+              "not enough memory: {} of weights leaves under {} for the KV \
+               cache once the {} host reserve is kept free (host has {} \
+               available). Lower --ctx, pick a smaller model, or set \
+               kv_cache_memory_bytes to override.",
+              human_bytes(weights_bytes),
+              human_bytes(MIN_KV_CACHE_BYTES),
+              human_bytes(UNIFIED_HOST_RESERVE_BYTES),
+              human_bytes(free),
+            ));
+            return out;
+          }
+        }
       }
       None => {
         log::warn!(
@@ -511,9 +526,15 @@ fn user_set(params: &LaunchParams, id: &str) -> bool {
 /// launch cannot take the host down.
 const DEFAULT_KV_CACHE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
-/// Floor for the cap. Small enough to be safe on a tight host, large enough to
-/// serve a short context — a launch that cannot live within it is the
-/// admission gate's problem, not a reason to leave the cache unbounded.
+/// `1.5 GiB`-style label for a refusal message.
+fn human_bytes(b: u64) -> String {
+  const GIB: f64 = (1024 * 1024 * 1024) as f64;
+  format!("{:.1} GiB", b as f64 / GIB)
+}
+
+/// Floor for the cap. Below this the cache cannot serve a useful context, so
+/// the launch is refused outright rather than admitted with a token cache that
+/// would only fail after a full weight load.
 const MIN_KV_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Reserve left free for the OS and everything else after weights + cache.
@@ -531,17 +552,19 @@ const UNIFIED_HOST_RESERVE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 /// cache in bytes does: vLLM then skips memory profiling entirely and honours
 /// the figure.
 ///
-/// Never `None`. Returning "no opinion" when the arithmetic came out tight
-/// left the knob unset, and an unset knob is not neutral here — it hands the
-/// launch straight back to the pool-sized default this exists to prevent.
-/// A host too tight for the floor gets the floor anyway; the admission gate is
-/// what refuses such a launch, and it can only do that because the figure
-/// exists.
-fn kv_cache_cap_bytes(free_bytes: u64, weights_bytes: u64) -> u64 {
-  free_bytes
+/// `None` means **refuse the launch**, not "no opinion".
+///
+/// An earlier version floored the cap instead of refusing, on the theory that
+/// the admission gate would catch the tight case. It cannot: the gate's demand
+/// is weights + *this* figure, so shrinking the figure shrinks the very term
+/// the gate evaluates, and a launch that should have been refused was admitted
+/// with the host reserve silently abandoned. Whoever decides there is not
+/// enough memory has to be whoever holds the number, which is here.
+fn kv_cache_cap_bytes(free_bytes: u64, weights_bytes: u64) -> Option<u64> {
+  let headroom = free_bytes
     .saturating_sub(weights_bytes)
-    .saturating_sub(UNIFIED_HOST_RESERVE_BYTES)
-    .clamp(MIN_KV_CACHE_BYTES, DEFAULT_KV_CACHE_BYTES)
+    .saturating_sub(UNIFIED_HOST_RESERVE_BYTES);
+  (headroom >= MIN_KV_CACHE_BYTES).then(|| headroom.min(DEFAULT_KV_CACHE_BYTES))
 }
 
 impl VllmBackend {
@@ -942,15 +965,20 @@ mod tests {
   fn kv_cap_leaves_the_host_a_reserve_and_is_never_absent() {
     const GB: u64 = 1024 * 1024 * 1024;
     // Plenty free: the default budget applies, not "everything that fits".
-    assert_eq!(kv_cache_cap_bytes(113 * GB, GB), 8 * GB);
+    assert_eq!(kv_cache_cap_bytes(113 * GB, GB), Some(8 * GB));
     // Tight: the cap shrinks to what is left after weights + reserve.
-    assert_eq!(kv_cache_cap_bytes(20 * GB, 8 * GB), 4 * GB);
-    // Nothing left, and previously `None` — which left the knob unset and so
-    // handed the launch back to the pool-sized default. It must floor instead;
-    // refusing such a launch is the admission gate's job.
-    assert_eq!(kv_cache_cap_bytes(10 * GB, 8 * GB), MIN_KV_CACHE_BYTES);
-    assert_eq!(kv_cache_cap_bytes(4 * GB, 8 * GB), MIN_KV_CACHE_BYTES);
-    assert_eq!(kv_cache_cap_bytes(0, 0), MIN_KV_CACHE_BYTES);
+    assert_eq!(kv_cache_cap_bytes(20 * GB, 8 * GB), Some(4 * GB));
+    // Too tight to serve a useful context: refuse. Flooring instead used to
+    // shrink the demand the admission gate evaluates, so the gate could not
+    // fire and the launch went ahead with the host reserve abandoned.
+    assert_eq!(kv_cache_cap_bytes(10 * GB, 8 * GB), None);
+    assert_eq!(kv_cache_cap_bytes(4 * GB, 8 * GB), None);
+    assert_eq!(kv_cache_cap_bytes(0, 0), None);
+    // The exact boundary is admitted, not refused.
+    assert_eq!(
+      kv_cache_cap_bytes(8 * GB + MIN_KV_CACHE_BYTES, 0),
+      Some(MIN_KV_CACHE_BYTES)
+    );
   }
 
   #[test]

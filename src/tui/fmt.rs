@@ -344,6 +344,27 @@ pub(crate) fn clip_line(line: Line<'static>, max_width: usize, palette: &Palette
 
 #[cfg(test)]
 mod tests {
+
+  /// The label column is a cross-module contract: the strings live in backend
+  /// modules, the renderer is generic, and no golden exercises a long one — a
+  /// backend registering an 18-char label used to produce
+  /// `KV cache dtype sizeinherited` with every test still green.
+  #[test]
+  fn every_registered_knob_label_keeps_a_gap_before_its_value() {
+    let width = kv_label_width();
+    for b in crate::backend::Backends::all() {
+      for d in crate::backend::Backend::native_knobs(&b) {
+        let rendered = format!("{:<width$}", d.label, width = width);
+        assert!(
+          rendered.len() > d.label.chars().count(),
+          "`{}` ({} chars) fills the {width}-wide column with no separating \
+           space, so its value renders flush against it",
+          d.label,
+          d.label.chars().count()
+        );
+      }
+    }
+  }
   use super::*;
 
   fn demo_palette() -> &'static Palette {
