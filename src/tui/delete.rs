@@ -273,27 +273,30 @@ fn hf_blob_target(file: &Path, cache_root: Option<&Path>) -> Option<PathBuf> {
 /// arithmetic, so two paths from the same discovery pass compare reliably —
 /// that is all the "is anything else still in this repo" question needs.
 ///
-/// Two row shapes resolve to the same repo: a GGUF **file**
-/// (`models--*/snapshots/<rev>/<file>`) and a whole-snapshot **directory**
+/// Three row shapes resolve to the same repo: a GGUF **file**
+/// (`models--*/snapshots/<rev>/<file>`), the same file nested in a quant
+/// **subdirectory** (`.../snapshots/<rev>/Q4_K_M/<file>`, which the recursive
+/// GGUF scanner emits as its own row), and a whole-snapshot **directory**
 /// (`models--*/snapshots/<rev>`), which is what a safetensors row carries.
-/// Both must land on the same answer or the "last model in this repo" check
-/// would treat a mixed catalog as two unrelated repos.
+/// All must land on the same answer or the "last model in this repo" check
+/// would treat a mixed catalog as unrelated repos — and a nested GGUF that
+/// resolved to `None` used to be invisible to that check, so deleting the
+/// directory row planned a whole-repo `remove_dir_all` straight over it.
 fn hf_repo_dir_shape(path: &Path) -> Option<&Path> {
-  repo_dir_under_snapshots(path.parent()?).or_else(|| repo_dir_under_snapshots(path))
-}
-
-/// `dir`'s repo directory when `dir` is itself a `snapshots/<rev>` directory.
-fn repo_dir_under_snapshots(dir: &Path) -> Option<&Path> {
-  let snapshots_root = dir.parent()?;
-  if snapshots_root.file_name().and_then(|n| n.to_str()) != Some("snapshots") {
-    return None;
+  // Walk up to `snapshots/` from any depth rather than testing fixed levels.
+  let mut cursor = path;
+  while let Some(parent) = cursor.parent() {
+    if parent.file_name().and_then(|n| n.to_str()) == Some("snapshots") {
+      let repo_dir = parent.parent()?;
+      return repo_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with("models--"))
+        .then_some(repo_dir);
+    }
+    cursor = parent;
   }
-  let repo_dir = snapshots_root.parent()?;
-  repo_dir
-    .file_name()
-    .and_then(|n| n.to_str())
-    .is_some_and(|n| n.starts_with("models--"))
-    .then_some(repo_dir)
+  None
 }
 
 /// [`hf_repo_dir_shape`] plus the gate that makes recursive removal safe: the
@@ -699,6 +702,36 @@ mod tests {
     assert_eq!(
       p.hf_repo_dir, None,
       "another model still lives in the repo, so the repo must survive"
+    );
+    let _ = fs::remove_dir_all(&cache_root);
+  }
+
+  /// A GGUF nested one level below the snapshot dir is a real catalog row
+  /// (the scanner's walk is recursive). It used to resolve to a `None` repo
+  /// shape, so the exclusivity check missed it and deleting the safetensors
+  /// directory row planned `remove_dir_all` over the whole repo — destroying
+  /// a model the user did not select, behind a prompt saying it was the last.
+  #[test]
+  fn a_nested_gguf_keeps_its_repo_alive() {
+    let cache_root = tempdir("dir-row-nested-gguf");
+    let repo = cache_root.join("models--o--r");
+    let snapshot = repo.join("snapshots/rev");
+    fs::create_dir_all(snapshot.join("Q4_K_M")).unwrap();
+    let nested = snapshot.join("Q4_K_M/model.gguf");
+    fs::write(&nested, b"g").unwrap();
+
+    assert_eq!(
+      hf_repo_dir_shape(&nested),
+      Some(repo.as_path()),
+      "a nested GGUF must resolve to the same repo as its snapshot dir"
+    );
+
+    let target = model(&snapshot);
+    let catalog = vec![target.clone(), model(&nested)];
+    let p = plan(&target, &catalog, Some(&cache_root));
+    assert_eq!(
+      p.hf_repo_dir, None,
+      "the nested GGUF still lives here, so the repo must survive"
     );
     let _ = fs::remove_dir_all(&cache_root);
   }

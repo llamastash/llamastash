@@ -155,10 +155,19 @@ async fn build_view(args: &ShowArgs, cli: &Cli, config: &Config) -> Result<ShowV
     .cloned();
 
   let shards = shard_breakdown(&row);
+  // A whole-directory row (a safetensors snapshot) contributes 0 from `stat`,
+  // so fall back the way `display_size` and the TUI list already do. Without
+  // it the JSON contradicts itself: a populated `weights_bytes` beside
+  // `on_disk_total_bytes: 0`.
   let total_bytes: u64 = shards
     .iter()
     .map(|s| s.bytes)
     .fold(0u64, u64::saturating_add);
+  let total_bytes = if total_bytes == 0 {
+    row.weights_bytes.unwrap_or(0)
+  } else {
+    total_bytes
+  };
   let shards_json: Vec<Value> = shards
     .iter()
     .enumerate()

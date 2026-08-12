@@ -30,12 +30,21 @@ pub fn eligible(candidate: &HfRepoCandidate) -> bool {
 /// engines can serve it is already carried by `supported_backends`, so no
 /// backend-named source variant is needed.
 pub fn project(candidate: &HfRepoCandidate, backend_id: &str) -> DiscoveredModel {
+  let weights = weights_bytes(&candidate.snapshot_path);
   let metadata = candidate
     .config_summary
     .as_ref()
     .map(|s| crate::discovery::hf_repos::config_to_metadata(s, &candidate.repo_id))
+    // A config parse failure must not also cost the size signal. The probe
+    // budget scales off `weights_bytes`, so losing it here left a 140 GB load
+    // racing the default budget and getting killed mid-load.
+    .or_else(|| {
+      weights
+        .is_some()
+        .then(crate::discovery::hf_repos::metadata_without_config)
+    })
     .map(|mut m| {
-      m.weights_bytes = weights_bytes(&candidate.snapshot_path);
+      m.weights_bytes = weights;
       m
     });
 
@@ -94,19 +103,18 @@ pub fn is_safetensors_snapshot(path: &Path) -> bool {
   if !path.is_dir() {
     return false;
   }
+  // The GGUF exclusion has to reach as deep as the GGUF scanner does, or a
+  // repo with `Q4_K_M/model.gguf` beside its safetensors gets claimed here and
+  // emitted by the scanner both.
+  if crate::discovery::hf_repos::contains_gguf_in_tree(path) {
+    return false;
+  }
   let Ok(entries) = std::fs::read_dir(path) else {
     return false;
   };
-  let mut safetensors = false;
-  for entry in entries.flatten() {
-    match entry.path().extension().and_then(|e| e.to_str()) {
-      // A GGUF anywhere in the directory means the GGUF scanner owns it.
-      Some("gguf") => return false,
-      Some("safetensors") => safetensors = true,
-      _ => {}
-    }
-  }
-  safetensors
+  entries
+    .flatten()
+    .any(|e| e.path().extension().and_then(|x| x.to_str()) == Some("safetensors"))
 }
 
 /// The `owner/name` repo id for a snapshot directory, recovered from the
@@ -159,6 +167,49 @@ mod tests {
     let row = project(&candidate(true, false), "vllm");
     assert!(row.metadata.is_none());
     assert!(row.parse_error.is_some(), "the row still surfaces, flagged");
+  }
+
+  /// The probe budget scales off `weights_bytes`. Losing it because
+  /// `config.json` failed to parse left a large repo racing the default
+  /// budget and getting killed mid-load, so the size must survive a config
+  /// the launch never needed.
+  #[test]
+  fn a_config_parse_failure_still_carries_the_size() {
+    let dir = crate::util::test_temp::unique_temp_dir("vllm-noconfig-size");
+    std::fs::write(dir.join("model.safetensors"), vec![0u8; 4096]).unwrap();
+    let mut c = candidate(true, false);
+    c.snapshot_path = dir.clone();
+    c.config_summary = None;
+
+    let row = project(&c, "vllm");
+    assert!(
+      row.parse_error.is_some(),
+      "the parse failure is still flagged"
+    );
+    assert_eq!(
+      row.metadata.as_ref().and_then(|m| m.weights_bytes),
+      Some(4096),
+      "the size signal must survive an unparseable config"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+  }
+
+  /// The GGUF scanner walks recursively, so a repo shipping both formats with
+  /// the GGUF one level down yields two rows unless this exclusion reaches as
+  /// deep. Two rows over one repo is what made the delete destructive.
+  #[test]
+  fn is_safetensors_snapshot_rejects_a_nested_gguf() {
+    let dir = crate::util::test_temp::unique_temp_dir("vllm-nested-gguf");
+    std::fs::write(dir.join("model.safetensors"), b"w").unwrap();
+    assert!(is_safetensors_snapshot(&dir), "safetensors-only is claimed");
+
+    std::fs::create_dir_all(dir.join("Q4_K_M")).unwrap();
+    std::fs::write(dir.join("Q4_K_M/model.gguf"), b"g").unwrap();
+    assert!(
+      !is_safetensors_snapshot(&dir),
+      "a GGUF below the snapshot dir belongs to the GGUF scanner"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
   }
 
   #[test]

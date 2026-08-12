@@ -153,20 +153,52 @@ struct Classification {
 /// HF blob layout) classify by their link name, which is correct.
 fn classify_snapshot(snapshot: &Path) -> Classification {
   let mut has_safetensors = false;
-  let mut has_gguf = false;
   if let Ok(rd) = std::fs::read_dir(snapshot) {
     for e in rd.flatten() {
-      match e.path().extension().and_then(|s| s.to_str()) {
-        Some("safetensors") => has_safetensors = true,
-        Some("gguf") => has_gguf = true,
-        _ => {}
+      if e.path().extension().and_then(|s| s.to_str()) == Some("safetensors") {
+        has_safetensors = true;
+        break;
       }
     }
   }
   Classification {
     has_safetensors,
-    has_gguf,
+    has_gguf: contains_gguf(snapshot, GGUF_SCAN_DEPTH),
   }
+}
+
+/// Depth the GGUF exclusion descends. The GGUF scanner's walk is unbounded, so
+/// anything shallower than it lets a repo be claimed as safetensors-only while
+/// the scanner also emits the nested GGUF as its own row. Publishers nest one
+/// level (`Q4_K_M/model.gguf`); the extra levels are slack, and the cap keeps a
+/// pathological tree from being re-walked on every rescan.
+const GGUF_SCAN_DEPTH: u32 = 4;
+
+/// [`contains_gguf`] at the standard depth, for leaves that check a directory
+/// directly instead of going through the enumerator.
+pub fn contains_gguf_in_tree(dir: &Path) -> bool {
+  contains_gguf(dir, GGUF_SCAN_DEPTH)
+}
+
+/// Whether a `.gguf` file exists anywhere under `dir`, within `depth`.
+///
+/// Directory symlinks are not followed — an HF snapshot's subdirectories are
+/// real, only the leaf weight files are links into `blobs/`, so descending
+/// links would buy nothing and risk a cycle.
+fn contains_gguf(dir: &Path, depth: u32) -> bool {
+  let Ok(rd) = std::fs::read_dir(dir) else {
+    return false;
+  };
+  let mut subdirs = Vec::new();
+  for entry in rd.flatten() {
+    if entry.path().extension().and_then(|s| s.to_str()) == Some("gguf") {
+      return true;
+    }
+    if depth > 0 && entry.file_type().is_ok_and(|t| t.is_dir()) {
+      subdirs.push(entry.path());
+    }
+  }
+  subdirs.iter().any(|d| contains_gguf(d, depth - 1))
 }
 
 /// Parse `config.json` (+ optional `tokenizer_config.json` overlay) into a
@@ -238,6 +270,30 @@ pub fn config_to_metadata(summary: &ConfigSummary, repo_id: &str) -> ModelMetada
     // The leaf sums `*.safetensors` file sizes for the SIZE column.
     weights_bytes: None,
     // Embedded-MTP is a GGUF header key; `config.json` has no equivalent.
+    mtp: None,
+  }
+}
+
+/// A metadata row for a repo whose `config.json` is missing or unparseable.
+///
+/// Everything the config would have filled stays unset, but the row exists so
+/// a leaf can still attach `weights_bytes` — the probe-budget scaler and the
+/// SIZE column both read it, and neither needs anything from the config. A
+/// bare `None` metadata loses that signal and scales a 140 GB load against the
+/// default probe budget.
+pub fn metadata_without_config() -> ModelMetadata {
+  ModelMetadata {
+    arch: None,
+    total_parameters: None,
+    parameter_label: None,
+    quant: Quant::Unknown(0),
+    quant_label: None,
+    native_ctx: None,
+    chat_template: None,
+    tokenizer_kind: None,
+    reasoning_hint: false,
+    mode_hint: ModeHint::Unknown,
+    weights_bytes: None,
     mtp: None,
   }
 }
