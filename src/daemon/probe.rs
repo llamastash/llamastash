@@ -208,11 +208,23 @@ pub(crate) fn served_model_entries(body: &[u8]) -> Option<Vec<serde_json::Value>
   // the entries that did arrive by decoding the `data` array element-wise.
   let data_at = text[start..].find("\"data\"")? + start;
   let arr_at = text[data_at..].find('[')? + data_at + 1;
-  let mut stream =
-    serde_json::Deserializer::from_str(&text[arr_at..]).into_iter::<serde_json::Value>();
+  // A stream deserializer expects self-delimiting values, but array elements
+  // are comma-separated: it parses the first and then stops on the separator.
+  // Step over each comma by hand so every whole element before the cut is
+  // recovered, not just the first.
+  let mut rest = text[arr_at..].trim_start();
   let mut out = Vec::new();
-  while let Some(Ok(v)) = stream.next() {
-    out.push(v);
+  loop {
+    let mut stream = serde_json::Deserializer::from_str(rest).into_iter::<serde_json::Value>();
+    let Some(Ok(value)) = stream.next() else {
+      break;
+    };
+    out.push(value);
+    rest = rest[stream.byte_offset()..].trim_start();
+    let Some(after_comma) = rest.strip_prefix(',') else {
+      break;
+    };
+    rest = after_comma.trim_start();
   }
   (!out.is_empty()).then_some(out)
 }
@@ -294,6 +306,20 @@ mod tests {
     assert_eq!(
       served_model_ids(body.as_bytes()).as_deref(),
       Some(&["owner/model".to_string()][..])
+    );
+  }
+
+  /// A body cut off at the read cap still has to yield every id that arrived
+  /// whole, not just the first — the served name we are waiting for may be any
+  /// of them, and losing it means the model never reaches Ready.
+  #[test]
+  fn a_truncated_body_recovers_every_whole_entry() {
+    let body = "HTTP/1.1 200 OK\r\n\r\n\
+      {\"object\":\"list\",\"data\":[\
+      {\"id\":\"owner/first\"},{\"id\":\"owner/second\"},{\"id\":\"owner/thi";
+    assert_eq!(
+      served_model_ids(body.as_bytes()).as_deref(),
+      Some(&["owner/first".to_string(), "owner/second".to_string()][..])
     );
   }
 

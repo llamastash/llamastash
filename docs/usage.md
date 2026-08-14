@@ -330,7 +330,7 @@ Launch a model. Layered resolution: catalog row → optional preset → per-invo
 ```
 llamastash start <ref> [--preset NAME] [--ctx N] [--port N] [--wait]
                      [--reasoning on|off] [--mode chat|embedding|rerank]
-                     [--backend auto|ds4|llamacpp|lemonade] [--server <id>]
+                     [--backend auto|ds4|llamacpp|lemonade|vllm] [--server <id>]
                      [--<advanced-knob> ...] [-- <llama-server-flags>...]
 ```
 
@@ -622,7 +622,9 @@ Three behaviours differ from the GGUF backends and are worth knowing:
 
 **On unified-memory hosts (APUs), the KV cache is capped automatically.** GPU memory is system RAM there, and vLLM sizes its KV cache against the pool rather than the model — the default has exhausted RAM and frozen a 121 GB machine. When neither `kv_cache_memory_bytes` nor `gpu_memory_utilization` is set, the launcher caps the cache from live free memory. See [vLLM setup](vllm-setup.md#notes-and-limitations).
 
-Known gaps: `resolved_ctx` reads null on a running vLLM row (the field comes from a llama.cpp-only `/props` fetch), the `QUANT` cell is empty for safetensors rows, multi-GPU device selection is not wired, and vLLM launches skip the pre-spawn memory admission gate.
+`backend.vllm.cors` controls cross-origin access, defaulting to `true` because that is vLLM's own behaviour (it allows any origin and offers no switch but `--allowed-origins`). The proxy relays those headers onto its stable port, so while it is on, any page you visit can read completions off the loopback listener. Set it to `false` to pin `--allowed-origins '[]'`.
+
+Known gap: multi-GPU device selection is not wired.
 
 ## Proxy (OpenAI-compatible listener)
 

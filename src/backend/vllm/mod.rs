@@ -31,7 +31,7 @@ pub const VLLM_BACKEND_ID: &str = "vllm";
 /// the other detected backends: `None` (unset) means "on when the binary
 /// resolves", `Some(false)` forces off, `Some(true)` forces on. `--vllm` /
 /// `LLAMASTASH_VLLM=1` force on regardless.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
 pub struct VllmConfig {
   #[serde(default)]
@@ -41,6 +41,29 @@ pub struct VllmConfig {
   /// wrapper script — see `docs/vllm-setup.md`.
   #[serde(default)]
   pub servers: Vec<crate::backend::ServerConfig>,
+  /// Let browser pages reach this backend cross-origin. Factory `true`, which
+  /// is vLLM's own default (`allowed_origins = ["*"]`, applied unconditionally)
+  /// — llamastash does not narrow it for you.
+  ///
+  /// Set `false` to pin `--allowed-origins '[]'`. Worth doing: the proxy
+  /// relays the upstream CORS headers onto its stable port, so while this is
+  /// on, any page you visit can read completions off the loopback listener.
+  #[serde(default = "default_true")]
+  pub cors: bool,
+}
+
+fn default_true() -> bool {
+  true
+}
+
+impl Default for VllmConfig {
+  fn default() -> Self {
+    Self {
+      enabled: None,
+      servers: Vec::new(),
+      cors: true,
+    }
+  }
 }
 
 impl VllmConfig {
@@ -79,14 +102,26 @@ pub const VLLM_FORBIDDEN_EXTRA_HEADS: &[&str] = &[
   "--data-parallel-",
   // Ray is selected through this, not through a `--ray` flag.
   "--distributed-executor-backend",
+  // Short aliases for the two parallel heads above. The matcher compares whole
+  // heads, so the long forms do not cover them (vLLM 0.27.1 arg_utils.py).
+  "-pp",
+  "-dp",
+  // Reads further flags out of a YAML file and splices them in ahead of ours,
+  // so every head above — and `--trust-remote-code`, which belongs to the
+  // visible knob channel — would be settable through it.
+  "--config",
 ];
+
+/// Config-projected launch key, not a native knob: it carries a posture
+/// decision from `backend.vllm.cors`, so it belongs nowhere near the picker.
+const VLLM_KNOB_CORS: &str = "cors";
 
 /// vLLM's tunables, on the per-backend native-knob channel.
 ///
-/// Every flag here was checked against a live `vllm serve --help=all`
-/// (0.19.1, 238 flags) rather than the docs. The long tail stays on `extras`
-/// — this set is the part worth a picker row. Note vLLM has **no**
-/// `--swap-space`; CPU offload moved to its own config group.
+/// Every flag here was checked against a live vLLM install (0.27.1) rather
+/// than the docs. The long tail stays on `extras` — this set is the part
+/// worth a picker row. Note vLLM has **no** `--swap-space`; CPU offload
+/// moved to its own config group.
 pub const VLLM_NATIVE_KNOBS: &[NativeKnobDescriptor] = &[
   NativeKnobDescriptor {
     id: "kv_cache_memory_bytes",
@@ -425,6 +460,17 @@ impl Backend for VllmBackend {
     LaunchPlan::SpawnProcess(self.process_spec(params, port, binary, probe))
   }
 
+  fn seed_launch_knobs(&self, ctx: &MethodContext, params: &mut LaunchParams) {
+    // Config, not user intent, so it is re-derived every launch rather than
+    // inherited: a value persisted in last_params must not outlive the config
+    // flip that changed it. Written unconditionally so an absent key keeps
+    // meaning "vLLM's own default", not "whatever was seeded last".
+    params.backend_knobs.insert(
+      VLLM_KNOB_CORS.to_string(),
+      crate::config::KnobValue::Set(ctx.backend.vllm.cors.to_string()),
+    );
+  }
+
   async fn resolve_native_knobs(
     &self,
     ctx: &MethodContext,
@@ -655,6 +701,17 @@ fn vllm_argv(params: &LaunchParams, port: u16) -> Vec<std::ffi::OsString> {
   argv.push("127.0.0.1".into());
   argv.push("--port".into());
   argv.push(port.to_string().into());
+  // `backend.vllm.cors: false` opts out of vLLM's wide-open default
+  // (`allow_origins=["*"]`, added unconditionally). Emitted only then, so a
+  // default launch stays byte-identical to raw `vllm serve`. The value is
+  // parsed with `json.loads`, hence the literal empty array.
+  if matches!(
+    params.backend_knobs.get(VLLM_KNOB_CORS),
+    Some(crate::config::KnobValue::Set(v)) if v == "false"
+  ) {
+    argv.push("--allowed-origins".into());
+    argv.push("[]".into());
+  }
   if let Some(ctx) = params.ctx {
     argv.push("--max-model-len".into());
     argv.push(ctx.to_string().into());
@@ -993,7 +1050,7 @@ mod tests {
     assert_eq!(argv[i + 1], "2147483648");
   }
 
-  /// R1-1: a user-set fraction is a real configuration, not a reason to
+  /// A user-set fraction is a real configuration, not a reason to
   /// disengage the admission gate. It used to return early from knob
   /// resolution *and* leave the gate with nothing to project, so the one
   /// setting that has frozen this hardware got neither guard.
@@ -1017,15 +1074,20 @@ mod tests {
     assert_eq!(b.projected_cache_bytes(&p, 100 * GB), Some(2 * GB));
   }
 
-  /// R1-3: the family is spelled `--data-parallel-size` / `-rank` / …, so a
+  /// The family is spelled `--data-parallel-size` / `-rank` / …, so a
   /// denylist entry without the trailing dash refused only a flag that does
   /// not exist.
   #[test]
-  fn the_data_parallel_family_is_refused_not_just_a_bare_flag() {
+  fn the_parallel_execution_heads_are_refused_in_every_spelling() {
     for smuggle in [
       "--data-parallel-size",
       "--data-parallel-rank",
       "--data-parallel-address",
+      "--pipeline-parallel-size",
+      // Short aliases are whole heads of their own, so the long-form entries
+      // above do not cover them.
+      "-dp",
+      "-pp",
     ] {
       let mut p = params("/c/models--o--n/snapshots/rev");
       p.extras = vec![smuggle.into(), "2".into()];
@@ -1034,7 +1096,58 @@ mod tests {
     }
   }
 
-  /// R1-4: one derivation, so the identity the chat path sends is the name
+  /// `--config` is indirection rather than a spelling: vLLM splices the YAML's
+  /// flags in ahead of ours, which would reinstate every head we refuse here.
+  #[test]
+  fn a_config_file_cannot_smuggle_the_denylist_back_in() {
+    for smuggle in [
+      vec!["--config".to_string(), "/tmp/vllm.yaml".to_string()],
+      vec!["--config=/tmp/vllm.yaml".to_string()],
+    ] {
+      let mut p = params("/c/models--o--n/snapshots/rev");
+      p.extras = smuggle.iter().map(Into::into).collect();
+      let argv = argv_strings(&p, 1).join(" ");
+      assert!(
+        !argv.contains("--config") && !argv.contains("vllm.yaml"),
+        "`{smuggle:?}` survived: {argv}"
+      );
+    }
+  }
+
+  /// `backend.vllm.cors` is the only lever over vLLM's wide-open default, so
+  /// both directions matter: on must not touch argv (raw-`vllm serve` parity),
+  /// off must pin the empty list.
+  #[test]
+  fn cors_config_decides_whether_the_origin_list_is_pinned() {
+    let mut on = params("/c/models--o--n/snapshots/rev");
+    set(&mut on, VLLM_KNOB_CORS, "true");
+    assert!(
+      !argv_strings(&on, 1)
+        .iter()
+        .any(|a| a == "--allowed-origins"),
+      "cors on must leave vLLM's default alone"
+    );
+
+    let mut off = params("/c/models--o--n/snapshots/rev");
+    set(&mut off, VLLM_KNOB_CORS, "false");
+    let argv = argv_strings(&off, 1);
+    assert!(
+      argv
+        .windows(2)
+        .any(|w| w[0] == "--allowed-origins" && w[1] == "[]"),
+      "cors off must pin an empty origin list: {argv:?}"
+    );
+  }
+
+  /// The factory value is vLLM's own, so a stock install is unchanged.
+  #[test]
+  fn cors_defaults_to_on() {
+    assert!(VllmConfig::default().cors);
+    let parsed: VllmConfig = yaml_serde::from_str("{}").expect("empty vllm config");
+    assert_eq!(parsed, VllmConfig::default());
+  }
+
+  /// One derivation, so the identity the chat path sends is the name
   /// the launcher registered.
   #[test]
   fn identity_name_matches_the_served_name_outside_the_cache_layout() {

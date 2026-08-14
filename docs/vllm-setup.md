@@ -138,9 +138,14 @@ picker or saved in a preset:
 vLLM has ~240 flags; the rest ride the `-- <extras>` tail. A handful are
 refused there because they would undo the loopback-only posture or spawn
 processes the supervisor cannot reap: `--api-key`, `--allowed-origins`,
-`--allowed-local-media-path`, `--pipeline-parallel-size`, the
-`--data-parallel-*` family, and `--distributed-executor-backend` (which is how
-Ray is selected), plus the shared `--host` / `--ssl-*` denylist.
+`--allowed-local-media-path`, `--pipeline-parallel-size` (and its `-pp` alias),
+the `--data-parallel-*` family (and `-dp`), and `--distributed-executor-backend`
+(which is how Ray is selected), plus the shared `--host` / `--ssl-*` denylist.
+
+`--config` is refused as well. It points vLLM at a YAML file whose flags are
+spliced in ahead of the launcher's own, so anything in that file would override
+the list above — including `--trust-remote-code`, which belongs to the knob
+channel where it is labelled for what it is.
 
 ## Notes and limitations
 
@@ -177,5 +182,17 @@ Ray is selected), plus the shared `--host` / `--ssl-*` denylist.
   repos only.
 - **Single-host only.** Tensor parallel across local GPUs is exposed;
   multi-node and Ray are out of scope.
-- **No memory admission gate.** The pre-spawn OOM projection is GGUF-header
-  math and is skipped for vLLM; `gpu_memory_utilization` is what governs.
+- **The memory admission gate covers vLLM.** There is no GGUF header to
+  project from, so the pre-spawn refusal prices the weights on disk plus the
+  cache budget the backend resolved for itself. A launch by absolute path from
+  outside the scan roots is measured rather than waved through; when no weight
+  size can be read at all the gate cannot engage and says so in the log.
+- **CORS follows vLLM's default, and vLLM's default is open.** Its OpenAI
+  server allows any origin (`allowed_origins = ["*"]`, applied unconditionally)
+  and offers no switch other than `--allowed-origins`. LlamaStash does not
+  narrow that for you, so a stock launch behaves exactly like `vllm serve`.
+  Because the proxy relays the upstream CORS headers onto its stable port, any
+  page you visit can read completions off the loopback listener while this is
+  on. Set `backend.vllm.cors: false` to pin `--allowed-origins '[]'`; the other
+  backends have no equivalent exposure, since llama.cpp and ds4 keep CORS off
+  by default and refuse `--cors` in the extras tail.

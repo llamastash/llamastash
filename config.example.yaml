@@ -560,6 +560,18 @@ backend:
     #         kv_cache_memory_bytes: "16G"   # absolute cap; wins outright
     #         gpu_memory_utilization: "0.5"  # fraction of the pool
 
+    # Let browser pages reach this backend cross-origin. `true` is vLLM's
+    # own default (it allows any origin, unconditionally), so llamastash
+    # leaves a stock install alone.
+    #
+    # Set `false` to pin `--allowed-origins '[]'`. Worth doing: the proxy
+    # relays the upstream CORS headers onto its stable port, so while this
+    # is on, any page you visit can read completions off the loopback
+    # listener. Turn it off unless a local web app you control needs it.
+    #
+    # Sources — CLI: (none) · Env: (none). Config-only.
+    cors: true
+
 # ─── Keybindings ──────────────────────────────────────────────────
 #
 # Override the default keymap. Each entry maps an action name

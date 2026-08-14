@@ -227,6 +227,7 @@ mod lifecycle {
         vllm: VllmConfig {
           enabled: Some(true),
           servers: vec![ServerConfig { binary, name: None }],
+          ..VllmConfig::default()
         },
         ..base.backend.clone()
       },

@@ -126,6 +126,13 @@ fn parse_args() -> Config {
           i += 1;
         }
       }
+      // Posture flag the launcher emits on every launch to pin CORS closed.
+      // Nothing here serves cross-origin, so only its value is consumed.
+      "--allowed-origins" => {
+        if args.get(i + 1).is_some() {
+          i += 1;
+        }
+      }
       "--load-delay-ms" => {
         if let Some(v) = args.get(i + 1).and_then(|s| s.parse().ok()) {
           load_delay_ms = v;

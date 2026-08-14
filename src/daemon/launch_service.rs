@@ -928,15 +928,18 @@ pub(crate) async fn spawn_supervised(
   // A non-GGUF identity used to skip the gate entirely, so a
   // process-per-model backend serving a directory could OOM the host with no
   // pre-spawn refusal at all. It has no header to project from, but the
-  // catalog knows the weight bytes and the backend has already resolved its
-  // own cache budget, which is enough for the same arithmetic.
+  // weight bytes are recoverable — from the catalog, or by measuring the
+  // directory — and the backend has already resolved its own cache budget,
+  // which is enough for the same arithmetic. Gating on a non-zero catalog
+  // size here would put the zero-size case (a launch by absolute path from
+  // outside the scan roots) back outside the gate, which is the one case
+  // that most needs it.
   let gate_applies = identity.as_gguf().is_some()
-    || (crate::backend::Backends::all()
+    || crate::backend::Backends::all()
       .into_iter()
       .find(|b| crate::backend::Backend::id(b) == resolved_backend_id)
       .map(|b| crate::backend::Backend::lifecycle(&b))
-      == Some(crate::backend::Lifecycle::ProcessPerModel)
-      && total_weight_bytes > 0);
+      == Some(crate::backend::Lifecycle::ProcessPerModel);
   if gate_applies {
     if let Some(host_slot) = ctx.host_metrics.as_ref() {
       let snapshot = host_slot.read().await.clone();
@@ -984,7 +987,14 @@ pub(crate) async fn spawn_supervised(
           let weights_total = if weights_total > 0 {
             weights_total
           } else {
-            let measured = crate::launch::admission::dir_weight_bytes(&model_path);
+            // Sums every shard with a stat apiece, following the HF cache's
+            // symlinks into `blobs/`, so it stays off the runtime worker.
+            let measure_path = model_path.clone();
+            let measured = tokio::task::spawn_blocking(move || {
+              crate::launch::admission::dir_weight_bytes(&measure_path)
+            })
+            .await
+            .unwrap_or(0);
             if measured == 0 {
               log::warn!(
                 "admission: no weight size for {} — gate cannot engage",

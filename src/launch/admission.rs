@@ -282,6 +282,36 @@ mod tests {
 
   const GIB: u64 = 1024 * 1024 * 1024;
 
+  /// The gate's only weight source for a directory launched from outside the
+  /// scan roots, so a wrong answer here silently disarms the OOM refusal.
+  /// Sizes come from the link target, the way the HF cache stores weights.
+  #[test]
+  fn dir_weight_bytes_follows_links_and_ignores_subdirectories() {
+    let dir = crate::util::test_temp::unique_temp_dir("admission-dir-weight");
+    let blobs = dir.join("blobs");
+    std::fs::create_dir_all(&blobs).expect("blobs");
+    std::fs::write(blobs.join("sha-a"), vec![0u8; 4096]).expect("blob a");
+    std::fs::write(blobs.join("sha-b"), vec![0u8; 2048]).expect("blob b");
+
+    let snapshot = dir.join("snapshot");
+    std::fs::create_dir_all(&snapshot).expect("snapshot");
+    #[cfg(unix)]
+    {
+      std::os::unix::fs::symlink(blobs.join("sha-a"), snapshot.join("a.safetensors"))
+        .expect("link a");
+      std::os::unix::fs::symlink(blobs.join("sha-b"), snapshot.join("b.safetensors"))
+        .expect("link b");
+    }
+    // A nested directory contributes nothing; only files directly inside do.
+    std::fs::create_dir_all(snapshot.join("nested")).expect("nested");
+    std::fs::write(snapshot.join("nested").join("ignored"), vec![0u8; 9999]).expect("ignored");
+
+    #[cfg(unix)]
+    assert_eq!(dir_weight_bytes(&snapshot), 4096 + 2048);
+    assert_eq!(dir_weight_bytes(&dir.join("does-not-exist")), 0);
+    std::fs::remove_dir_all(&dir).ok();
+  }
+
   #[test]
   fn admits_when_demand_fits_and_records_reservation() {
     let ledger = Ledger::default();

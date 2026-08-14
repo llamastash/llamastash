@@ -103,6 +103,11 @@ From the multi-backend brainstorm (`docs/brainstorms/2026-06-08-multi-backend-ab
   GGUF-header math. vLLM launches skip it (as Lemonade does); vLLM's own
   `--gpu-memory-utilization` governs. A `config.json` param-count projection is
   a deferred `TODO.md` follow-up.
+  > **Reversed during implementation.** Skipping the gate let a directory-shaped
+  > model OOM the host with no pre-spawn refusal, which is the failure this
+  > feature exists to prevent. The gate now keys on `Lifecycle::ProcessPerModel`
+  > and prices weights-on-disk plus the backend's own resolved cache budget, so
+  > no header is needed. The param-count projection stays deferred.
 - **No container orchestration.** LlamaStash spawns a binary. Where vLLM ships
   only as a container (ROCm hosts today), the `servers[].binary` entry points at
   a thin host wrapper script — documented, never special-cased in code (D12).
@@ -275,7 +280,7 @@ Launch: the knob split between the shared IR and the native channel.
 
 ## Implementation Units
 
-- [ ] **Unit 1: Path-shape audit — can a catalog row be a directory?**
+- [x] **Unit 1: Path-shape audit — can a catalog row be a directory?**
 
 **Goal:** Establish, before any vLLM code exists, exactly which generic code
 paths assume `DiscoveredModel.path` is a file, and pin today's behavior so D2
@@ -319,7 +324,7 @@ GGUF suite is green with the new characterization tests added.
 
 ---
 
-- [ ] **Unit 2: `VllmBackend` trait impl + identity + registry wiring**
+- [x] **Unit 2: `VllmBackend` trait impl + identity + registry wiring**
 
 **Goal:** A registered, dispatchable backend that reports itself correctly and
 launches nothing yet.
@@ -367,7 +372,7 @@ launches nothing yet.
 
 ---
 
-- [ ] **Unit 3: Discovery leaf — eligibility predicate + projection**
+- [x] **Unit 3: Discovery leaf — eligibility predicate + projection**
 
 **Goal:** Safetensors repos in the HF cache appear in the catalog tagged for vLLM.
 
@@ -410,7 +415,7 @@ that records its own `supported_backends`.
 
 ---
 
-- [ ] **Unit 4: Native knobs + argv translation + denylist**
+- [x] **Unit 4: Native knobs + argv translation + denylist**
 
 **Goal:** vLLM's tunables render in the picker, persist in presets, and translate
 to verified flags.
@@ -451,7 +456,7 @@ matches a hand-built `vllm serve` invocation.
 
 ---
 
-- [ ] **Unit 5: Launch orchestration + readiness + `fake_vllm_server`**
+- [x] **Unit 5: Launch orchestration + readiness + `fake_vllm_server`**
 
 **Goal:** `start` on a vLLM row spawns the real binary through the generic
 supervisor and reaches Ready.
@@ -501,7 +506,7 @@ returns the row to stopped with no orphan.
 
 ---
 
-- [ ] **Unit 6: Config, enablement, and CLI/daemon surface**
+- [x] **Unit 6: Config, enablement, and CLI/daemon surface**
 
 **Goal:** Users can enable, disable, target, and configure vLLM.
 
@@ -540,7 +545,7 @@ enable/disable path.
 
 ---
 
-- [ ] **Unit 7: TUI + CLI surfaces**
+- [x] **Unit 7: TUI + CLI surfaces**
 
 **Goal:** vLLM rows look right everywhere a user reads the catalog.
 
@@ -575,7 +580,7 @@ project's TUI rule; golden snapshots updated deliberately.
 
 ---
 
-- [ ] **Unit 8: Docs, TODO, real-vLLM UAT**
+- [x] **Unit 8: Docs, TODO, real-vLLM UAT**
 
 **Goal:** Ship the docs in the same change, and prove it on the real binary.
 

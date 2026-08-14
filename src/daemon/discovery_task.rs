@@ -197,19 +197,21 @@ async fn full_rescan(catalog: &ModelCatalog, opts: &DiscoveryOptions) {
     // Synchronous `read_dir` + `serde_json` per repo, unlike every other
     // producer here (all channel-fed or genuinely async). Inline it and a
     // large cache blocks a runtime worker on each debounced watcher event.
-    let candidates =
-      tokio::task::spawn_blocking(move || crate::discovery::hf_repos::enumerate_repos(&roots))
-        .await
-        .unwrap_or_else(|e| {
-          log::warn!("hf-repo enumeration task panicked: {e}");
-          Vec::new()
-        });
-    for backend in &projectors {
-      new_models.extend(crate::backend::Backend::project_hf_repos(
-        backend,
-        &candidates,
-      ));
-    }
+    // Projection belongs on the same side of the fence: it stats every weight
+    // shard through the cache's symlinks, which is the costlier half.
+    let projected = tokio::task::spawn_blocking(move || {
+      let candidates = crate::discovery::hf_repos::enumerate_repos(&roots);
+      projectors
+        .iter()
+        .flat_map(|b| crate::backend::Backend::project_hf_repos(b, &candidates))
+        .collect::<Vec<_>>()
+    })
+    .await
+    .unwrap_or_else(|e| {
+      log::warn!("hf-repo discovery task panicked: {e}");
+      Vec::new()
+    });
+    new_models.extend(projected);
   }
 
   catalog.replace_all(new_models).await;

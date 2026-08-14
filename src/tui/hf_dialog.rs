@@ -1209,7 +1209,7 @@ fn short_count(n: u64) -> String {
 #[cfg(test)]
 mod tests {
 
-  /// R1-2: a safetensors repo used to render "no files" and could not be
+  /// A safetensors repo used to render "no files" and could not be
   /// pulled at all, which left the backend that serves such repos with no
   /// first-party way to acquire a model.
   #[test]
