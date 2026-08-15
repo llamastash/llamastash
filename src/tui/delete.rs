@@ -391,7 +391,11 @@ mod tests {
     ));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
-    dir
+    // `hf_repo_dir_in_cache` returns a canonical path, so expectations built
+    // from this root must be canonical too. `temp_dir()` is a symlink on macOS
+    // (`/var` -> `/private/var`) and an 8.3 short name on Windows; only Linux
+    // hands back a path that already compares equal.
+    dir.canonicalize().unwrap_or(dir)
   }
 
   #[test]
