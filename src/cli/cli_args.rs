@@ -193,14 +193,16 @@ pub enum Command {
   Logs(LogsArgs),
   /// Manage named launch presets for a model.
   Presets(PresetsArgs),
-  /// Pull a GGUF from `HuggingFace`.
+  /// Pull a model from `HuggingFace`.
   ///
-  /// MVP shape (v2-R65): `llamastash pull <hf-repo>` downloads every
-  /// GGUF in the repo (or a single shard set when the repo ships
-  /// multi-shard files) into the canonical HF cache layout
+  /// `llamastash pull <hf-repo>` downloads every GGUF in the repo (or a
+  /// single shard set when the repo ships multi-shard files) into the
+  /// canonical HF cache layout
   /// (`~/.cache/huggingface/hub/models--<owner>--<repo>/...`) so the
-  /// next `llamastash list` rescan finds it. `--json` emits the
-  /// summary; otherwise progress streams to stderr.
+  /// next `llamastash list` rescan finds it. A repo that ships
+  /// **safetensors** instead is pulled whole — weights plus the config
+  /// and tokenizer files an engine needs to load them. `--json` emits
+  /// the summary; otherwise progress streams to stderr.
   Pull(PullArgs),
   /// Run the first-time setup / maintenance wizard.
   Init(InitArgs),
@@ -607,9 +609,10 @@ pub enum PresetsAction {
 #[derive(Args, Debug)]
 pub struct PullArgs {
   /// `HuggingFace` repo id (`owner/repo`), optionally with a
-  /// `:filename.gguf` suffix to pin one file (defaults to all `.gguf`
-  /// in the repo). Files land in the canonical HF cache layout that
-  /// discovery already scans.
+  /// `:filename.gguf` suffix to pin one file. Unpinned, a GGUF repo
+  /// yields all its `.gguf` files and a safetensors repo its whole file
+  /// set. Files land in the canonical HF cache layout that discovery
+  /// already scans.
   pub repo: String,
   /// Emit a structured JSON summary on success instead of a
   /// human-readable stream. Shape:

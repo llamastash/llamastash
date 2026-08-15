@@ -401,6 +401,22 @@ pub trait Backend {
   /// generic launch path carries no llama.cpp-specific launch scalars.
   fn seed_launch_knobs(&self, _ctx: &MethodContext, _params: &mut LaunchParams) {}
 
+  /// Native knobs that must **not** be replayed from `last_params`.
+  ///
+  /// For a knob whose value is a judgement about *this host, right now* rather
+  /// than a lasting preference. Persisting one makes a single experiment
+  /// permanent: the user passes it once through a preset, and every later bare
+  /// launch silently inherits it — including, for a memory knob, the launch
+  /// where the auto guard would have stepped in. The knob still applies to the
+  /// launch that asked for it, and still applies whenever its preset is named
+  /// again; it just is not remembered on the user's behalf.
+  ///
+  /// Distinct from [`NativeKnobResolution::auto_set`], which drops what the
+  /// *daemon* resolved. This drops what the *user* set. Default: none.
+  fn volatile_native_knobs(&self) -> &'static [&'static str] {
+    &[]
+  }
+
   /// Ctx floor to project admission memory demand against when `ctx` is unpinned,
   /// or `None` to use a neutral default. Default: `None`.
   fn admission_ctx_floor(&self, _params: &LaunchParams) -> Option<u32> {
@@ -1020,6 +1036,10 @@ impl Backend for Backends {
     for_each_backend!(self, b => b.forbidden_extra_heads())
   }
 
+  fn volatile_native_knobs(&self) -> &'static [&'static str] {
+    for_each_backend!(self, b => b.volatile_native_knobs())
+  }
+
   fn serves_web_ui(&self) -> bool {
     for_each_backend!(self, b => b.serves_web_ui())
   }
@@ -1344,6 +1364,124 @@ pub fn synthetic_identity_for_path_available(
       b.synthetic_identity(path)
         .map(|id| (id, b.id().to_string()))
     })
+}
+
+/// Everything a surface needs to identify a model path, whichever shape the
+/// model is: a local GGUF file, or a directory / registry entry a backend
+/// claims. Produced by [`resolve_identity_for_path`].
+#[derive(Debug, Clone)]
+pub struct ResolvedIdentity {
+  /// The file-keyed handle: last-params lookups, log-file names, the proxy's
+  /// coalesce + failure-tracker keys, MRU, running-snapshot retention. A
+  /// backend-claimed path carries the sentinel zero hash — this is a key, not
+  /// a digest, and the zero marks it as not-a-GGUF.
+  pub id: crate::gguf::identity::ModelId,
+  /// The identity that gets **persisted**: `Gguf` for a local file, `Backend`
+  /// for a claimed path.
+  pub identity: ModelIdentity,
+  /// The backend that claimed the path, when one did. Callers stamp it as
+  /// `resolved_backend`.
+  pub claimed_by: Option<String>,
+  /// Header-derived, and therefore `None` for a claimed path — the backend
+  /// owns that recipe, not us.
+  pub arch: Option<String>,
+  pub native_ctx: Option<u32>,
+  pub supported_backends: Vec<String>,
+  pub mtp_embedded: Option<u32>,
+}
+
+/// Why [`resolve_identity_for_path`] could not identify a path.
+#[derive(Debug, Clone)]
+pub enum IdentityError {
+  /// A backend recognizes this path, but it is disabled or its launcher is
+  /// absent. Distinct from `Header` because the fix is different — the user
+  /// enables a backend rather than repairing a file — and because falling
+  /// through to the header reader hands a directory to the GGUF parser and
+  /// surfaces a raw `EISDIR` instead of a reason.
+  BackendUnavailable { backend: String },
+  /// A local-file path whose GGUF header could not be read.
+  Header(String),
+}
+
+impl std::fmt::Display for IdentityError {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      Self::BackendUnavailable { backend } => write!(
+        f,
+        "is served by the `{backend}` backend, which is not available — \
+         enable it in config or install its launcher"
+      ),
+      Self::Header(msg) => write!(f, "{msg}"),
+    }
+  }
+}
+
+/// **The** path → identity resolution. Every surface that turns a model path
+/// into an id goes through here: launch, proxy auto-start, favorites, presets.
+///
+/// Each of those used to do its own thing. Three read a GGUF header directly
+/// and one special-cased a single backend by name, so support for a
+/// directory-shaped model had to be added four times and was in fact added
+/// twice — the proxy's auto-start died with `Is a directory (os error 21)` on
+/// exactly the models the launch path had already learned to handle. A new
+/// model shape is now one predicate ([`Backend::synthetic_identity`]) and every
+/// surface follows.
+///
+/// `ctx` gates on backend availability when a caller has one; clients without
+/// a context (and tests) pass `None` and get the ungated registry answer.
+pub fn resolve_identity_for_path(
+  path: &Path,
+  ctx: Option<&MethodContext>,
+) -> Result<ResolvedIdentity, IdentityError> {
+  let claimed = match ctx {
+    Some(c) => synthetic_identity_for_path_available(path, c),
+    None => synthetic_identity_for_path(path),
+  };
+  if let Some((identity, backend_id)) = claimed {
+    return Ok(ResolvedIdentity {
+      id: crate::gguf::identity::ModelId {
+        path: path.to_path_buf(),
+        header_blake3: [0u8; 32],
+      },
+      identity,
+      claimed_by: Some(backend_id),
+      arch: None,
+      native_ctx: None,
+      supported_backends: Vec::new(),
+      mtp_embedded: None,
+    });
+  }
+  // Claimed, but by a backend that is off or absent. Only reachable with a
+  // context — the ungated call above already accepted every claim.
+  if ctx.is_some() {
+    if let Some((_, backend)) = synthetic_identity_for_path(path) {
+      return Err(IdentityError::BackendUnavailable { backend });
+    }
+  }
+  // A local file. One header read yields the id and every header-derived
+  // field, so the knob resolver never re-reads it.
+  let header =
+    crate::gguf::header::read_path(path, crate::gguf::header::HeaderReadOptions::default())
+      .map_err(|e| {
+        IdentityError::Header(format!(
+          "could not read GGUF header at {}: {e}",
+          path.display()
+        ))
+      })?;
+  let summary = crate::gguf::metadata::summarise(&header.header);
+  let id = crate::gguf::identity::compute(path, &header.raw);
+  Ok(ResolvedIdentity {
+    identity: ModelIdentity::Gguf(id.clone()),
+    id,
+    claimed_by: None,
+    arch: summary.arch,
+    // Trained context window (`<arch>.context_length`), clamped into u32.
+    native_ctx: summary
+      .native_ctx
+      .map(|n| u32::try_from(n).unwrap_or(u32::MAX)),
+    supported_backends: supported_backends_for(&header.header),
+    mtp_embedded: summary.mtp,
+  })
 }
 
 /// The external-process markers every backend contributes — the orphan sweep's

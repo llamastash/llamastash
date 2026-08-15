@@ -23,6 +23,17 @@ pub fn row_path(v: &Value) -> Option<&str> {
   v.get("id")
     .and_then(|id| id.get("path"))
     .and_then(Value::as_str)
+    // A row whose identity is a backend registry entry serializes as
+    // `{backend, name}` and carries no `id.path`, so keying on that alone
+    // dropped every such row: `last-params <model>` reported "no recorded
+    // last-params" for a model whose entry the IPC method was returning.
+    // `params.model_path` is the shape-agnostic key — every row has one, and
+    // it is what the catalog row's `path` is compared against.
+    .or_else(|| {
+      v.get("params")
+        .and_then(|p| p.get("model_path"))
+        .and_then(Value::as_str)
+    })
 }
 
 /// Render `list_models` rows as a padded table on TTY, or
@@ -762,6 +773,30 @@ mod tests {
   use crate::cli::resolve::{ExternalRow, RunningRow};
   use crate::cli::test_lock::serialize;
   use std::sync::MutexGuard;
+
+  /// `last-params <model>` filters on this. A backend-registry identity has no
+  /// `id.path`, so keying on it alone hid every such row behind "no recorded
+  /// last-params" while `last_params_list` was returning it.
+  #[test]
+  fn row_path_falls_back_to_params_model_path_for_a_backend_identity() {
+    let gguf = serde_json::json!({
+      "id": {"path": "/m/a.gguf", "header_blake3": "ab"},
+      "params": {"model_path": "/m/a.gguf"},
+    });
+    assert_eq!(row_path(&gguf), Some("/m/a.gguf"));
+
+    let backend = serde_json::json!({
+      "id": {"backend": "some-backend", "name": "o/r"},
+      "params": {"model_path": "/hf/models--o--r/snapshots/rev"},
+    });
+    assert_eq!(
+      row_path(&backend),
+      Some("/hf/models--o--r/snapshots/rev"),
+      "a row with no id.path still resolves through params.model_path"
+    );
+
+    assert_eq!(row_path(&serde_json::json!({})), None);
+  }
 
   struct ColorGuard {
     _lock: MutexGuard<'static, ()>,

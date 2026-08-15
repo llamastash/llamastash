@@ -96,6 +96,12 @@ impl DeletePlan {
       ""
     };
     match extras.len() {
+      // A whole-directory row removes a tree, not a file. Saying "one file"
+      // there understates an irreversible action on the one shape where the
+      // user is least able to guess what it covers.
+      0 if self.primary.is_dir() => {
+        format!("{head} The whole model directory goes — every file inside it.{blobs}")
+      }
       0 => format!("{head} One file is unlinked.{blobs}"),
       _ => format!(
         "{head} {} files go: the model plus {}.{blobs}",

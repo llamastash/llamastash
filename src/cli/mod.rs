@@ -68,9 +68,15 @@ pub async fn dispatch(mut cli: Cli, config: LoadedConfig) -> Result<i32> {
     // rejected loudly, never silently papered over with defaults. `config`
     // (opens the file), `init` (rewrites it), and `doctor` (diagnoses setup)
     // are exempt so the user can always repair a broken config.
+    //
+    // `daemon stop` is exempt too, and for the same reason: the running daemon
+    // is already up on the config it booted with, and refusing here left a
+    // typo'd file with no way to stop it from the CLI at all. Stopping needs
+    // no config beyond the runtime handle.
     let repair = match &command {
       Some(Command::Config(args)) => args.action.is_none(),
       Some(Command::Init(_)) | Some(Command::Doctor(_)) => true,
+      Some(Command::Daemon(cli_args::DaemonAction::Stop { .. })) => true,
       _ => false,
     };
     if repair {

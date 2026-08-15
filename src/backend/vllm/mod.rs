@@ -298,6 +298,17 @@ impl Backend for VllmBackend {
     VLLM_FORBIDDEN_EXTRA_HEADS
   }
 
+  fn volatile_native_knobs(&self) -> &'static [&'static str] {
+    // Both memory knobs. Either one switches the automatic cap off (see
+    // `resolve_native_knobs`), so persisting one turns a single `--preset`
+    // experiment into a permanent opt-out of the guard that exists because an
+    // uncapped launch has taken a machine down. Measured: one preset launch at
+    // `gpu_memory_utilization 0.15`, and every bare `start` afterwards
+    // reserved 22 GB instead of the ~13 GB the cap would have allowed, with
+    // nothing on any surface saying why.
+    &["kv_cache_memory_bytes", "gpu_memory_utilization"]
+  }
+
   fn accelerators(&self) -> AcceleratorSupport {
     // vLLM is GPU-first: CUDA and ROCm are the shipped serving targets. The
     // CPU path exists but is a build variant we cannot detect from here, so

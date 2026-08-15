@@ -15,8 +15,7 @@ use crate::daemon::context::MethodContext;
 use crate::daemon::launch_service::{compose_and_spawn, LaunchModeWire, StartParams};
 use crate::daemon::registry::LaunchId;
 use crate::daemon::supervisor::ManagedState;
-use crate::gguf::header::{read_path as read_gguf_header, HeaderReadOptions};
-use crate::gguf::identity::{compute as compute_model_id, ModelId};
+use crate::gguf::identity::ModelId;
 use crate::launch::favorites::FavoriteEntry;
 use crate::launch::mode::LaunchMode;
 use crate::launch::params::LaunchParams;
@@ -424,24 +423,13 @@ pub(crate) async fn stop_all_managed(
   let outcomes = join_all(stops).await;
 
   let mut stopped: Vec<(LaunchId, ManagedState)> = Vec::with_capacity(outcomes.len());
-  let mut stopped_keys: Vec<(ModelIdentity, u16)> = Vec::with_capacity(outcomes.len());
-  for (launch_id, model_id, port, final_state) in outcomes {
+  let mut stopped_keys: Vec<(LaunchId, u16)> = Vec::with_capacity(outcomes.len());
+  for (launch_id, _model_id, port, final_state) in outcomes {
     ctx.supervisors.remove(&launch_id).await;
-    stopped_keys.push((model_id.into(), port));
+    stopped_keys.push((launch_id.clone(), port));
     stopped.push((launch_id, final_state));
   }
-  if !stopped_keys.is_empty() {
-    ctx
-      .state
-      .mutate(|s| {
-        s.running.retain(|r| {
-          !stopped_keys
-            .iter()
-            .any(|(id, port)| *id == r.id && *port == r.port)
-        })
-      })
-      .await;
-  }
+  crate::daemon::launch_service::drop_running_snapshots(ctx, &stopped_keys).await;
   stopped
 }
 
@@ -549,11 +537,6 @@ async fn start_model_handler(
   Ok(resp)
 }
 
-pub(crate) fn resolve_model_id(path: &std::path::Path) -> Result<ModelId, ErrorObject> {
-  let (id, _, _, _, _) = resolve_model_id_and_arch(path)?;
-  Ok(id)
-}
-
 /// Header-derived launch inputs from one GGUF read: `(model id, architecture,
 /// trained ctx window, routed-backend tag)`. The routed-backend tag is the
 /// registry's verdict for this header (`None` = the default process backend).
@@ -567,37 +550,21 @@ pub(crate) type ResolvedModelInfo = (
   Option<u32>,
 );
 
-/// One-pass GGUF header read that returns both the canonical model id
-/// and the architecture string. The launch path calls this so the
-/// layered-knob resolver lookup doesn't have to re-read the header to
-/// discover the arch. Arch is best-effort: a `None` here just means
-/// the `defaults_table` lookup falls back to the `*` row.
+/// The header-derived launch inputs, in the tuple shape the preset-key lookup
+/// still wants. A thin adapter over [`crate::backend::resolve_identity_for_path`]
+/// — the header read, the id, the arch and the supported-backend list all come
+/// from there, so this shape can never drift from what a launch observes.
 pub(crate) fn resolve_model_id_and_arch(
   path: &std::path::Path,
 ) -> Result<ResolvedModelInfo, ErrorObject> {
-  let header = read_gguf_header(path, HeaderReadOptions::default()).map_err(|e| {
-    ErrorObject::new(
-      ErrorCode::InvalidParams,
-      format!("could not read GGUF header at {}: {e}", path.display()),
-    )
-  })?;
-  let id = compute_model_id(path, &header.raw);
-  let summary = crate::gguf::metadata::summarise(&header.header);
-  // Trained context window (`<arch>.context_length`), clamped into u32.
-  // Feeds the strict-fit ctx-clamp gate: a `--fit` resolution pinned to
-  // the floor is only "degraded" when the model could have gone higher.
-  let native_ctx = summary
-    .native_ctx
-    .map(|n| u32::try_from(n).unwrap_or(u32::MAX));
-  // The backends that can serve this model, priority-ordered — computed from the
-  // same header read the selection seam consults. Names no backend.
-  let supported_backends = crate::backend::supported_backends_for(&header.header);
+  let r = crate::backend::resolve_identity_for_path(path, None)
+    .map_err(|e| ErrorObject::new(ErrorCode::InvalidParams, e.to_string()))?;
   Ok((
-    id,
-    summary.arch,
-    native_ctx,
-    supported_backends,
-    summary.mtp,
+    r.id,
+    r.arch,
+    r.native_ctx,
+    r.supported_backends,
+    r.mtp_embedded,
   ))
 }
 
@@ -901,21 +868,18 @@ struct FavoriteParams {
   model_path: PathBuf,
 }
 
-/// The favorites-store id for a model path. A Lemonade registry path
-/// (`lemonade://<name>`) has no file to hash, so it gets a synthetic `ModelId`
-/// keyed on that path (sentinel header) — the same synthetic-id convention the
-/// launch path uses, and path-identical to the catalog row so the TUI's `★`
-/// (which matches favorites by `id.path`) resolves. A local GGUF resolves its
-/// real header identity. Shared by add + remove so both build the same key.
+/// The favorites-store id for a model path. Shared by add + remove so both
+/// build the same key.
+///
+/// A path with no file to hash — a registry entry, a snapshot directory — gets
+/// the synthetic id its backend mints, path-identical to the catalog row so the
+/// TUI's `★` (which matches favorites by `id.path`) resolves. This used to
+/// special-case one backend by name, which both broke the no-leak rule and left
+/// every later file-less shape reading a GGUF header that isn't there.
 fn resolve_favorite_id(model_path: &std::path::Path) -> Result<ModelId, ErrorObject> {
-  if crate::backend::lemonade::registry_name_from_path(model_path).is_some() {
-    Ok(ModelId {
-      path: model_path.to_path_buf(),
-      header_blake3: [0u8; 32],
-    })
-  } else {
-    resolve_model_id(model_path)
-  }
+  crate::backend::resolve_identity_for_path(model_path, None)
+    .map(|r| r.id)
+    .map_err(|e| ErrorObject::new(ErrorCode::InvalidParams, e.to_string()))
 }
 
 async fn favorite_add_handler(

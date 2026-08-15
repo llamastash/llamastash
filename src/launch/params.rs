@@ -26,10 +26,24 @@ use crate::launch::mode::LaunchMode;
 
 /// Flags refused in `LaunchParams.extras` because they would break
 /// the loopback-only / same-UID security contract documented in
-/// `docs/architecture.md`. Match is case-insensitive on the flag
-/// itself; `--ssl-*` matches any flag starting with that prefix.
-pub const FORBIDDEN_ADVANCED_PREFIXES: &[&str] =
-  &["--host", "--listen", "--bind", "--api-key", "--ssl-"];
+/// `docs/architecture.md`, or the daemon's ownership of the launch.
+/// Match is case-insensitive on the flag itself; `--ssl-*` matches any
+/// flag starting with that prefix.
+///
+/// `--port` is here for the ownership half, not the security one. Every
+/// engine takes the last `--port` on its argv, so an extras copy silently
+/// won over the port the daemon reserved: the server bound the user's number
+/// while readiness probed the reserved one, leaving the launch stuck in
+/// `loading` with a fully-loaded model on a port nothing tracked. Use the
+/// first-class `--port` flag, which reserves what it asks for.
+pub const FORBIDDEN_ADVANCED_PREFIXES: &[&str] = &[
+  "--host",
+  "--listen",
+  "--bind",
+  "--api-key",
+  "--ssl-",
+  "--port",
+];
 
 /// Whether `head` hits the loopback/credential denylist. Shared with the
 /// native-knob translation entry point ([`crate::launch::native_knobs`]) so a
@@ -813,6 +827,26 @@ mod tests {
     assert!(banned.iter().any(|s| s == "--api-key"));
     assert!(banned.iter().any(|s| s == "--ssl-key-file"));
     assert!(!banned.iter().any(|s| s == "--threads"));
+  }
+
+  /// An engine takes the last `--port` on its argv, so an extras copy beat the
+  /// port the daemon reserved: the server bound the user's number while
+  /// readiness probed the reserved one, and the launch hung in `loading` with
+  /// a loaded model on an untracked port. Reproduced on two engines.
+  #[test]
+  fn forbidden_in_extras_refuses_a_port_that_would_beat_the_reservation() {
+    let space = vec![OsString::from("--port"), OsString::from("9999")];
+    assert!(forbidden_in_extras(&space).iter().any(|s| s == "--port"));
+
+    let equals = vec![OsString::from("--PORT=9999")];
+    assert!(forbidden_in_extras(&equals)
+      .iter()
+      .any(|s| s == "--PORT=9999"));
+
+    // A longer flag that merely starts with the same letters is untouched:
+    // only `--ssl-`-style entries prefix-match.
+    let other = vec![OsString::from("--port-scan"), OsString::from("5")];
+    assert!(forbidden_in_extras(&other).is_empty());
   }
 
   #[test]

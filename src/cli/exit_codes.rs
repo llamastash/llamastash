@@ -31,8 +31,11 @@ pub const STOP_FAILED: i32 = 68;
 /// so a wizard-internal download failure stays separable from a bare
 /// `pull`.
 pub const PULL_FAILED: i32 = 69;
-/// `llama-server` binary not on `$PATH`, no `--llama-server` flag,
-/// and `LLAMASTASH_LLAMA_SERVER` unset.
+/// The engine a launch needs is unavailable: the `llama-server` binary
+/// not on `$PATH` with no `--llama-server` flag and
+/// `LLAMASTASH_LLAMA_SERVER` unset, or the model's backend disabled /
+/// its launcher missing (the daemon tags that refusal
+/// `backend_unavailable` so this stays distinct from a usage error).
 pub const BINARY_NOT_FOUND: i32 = 70;
 /// Catch-all for unexpected errors that don't map to a documented
 /// failure class. anyhow's bubble-up lands here.

@@ -1033,7 +1033,7 @@ Source of truth: `src/cli/exit_codes.rs`. Codes are part of the public CLI contr
 | `67` | `LAUNCH_FAILED`        | Daemon accepted `start_model` but the supervisor failed (probe timeout, port allocation, etc.)                                                         |
 | `68` | `STOP_FAILED`          | `stop` couldn't reach the target (daemon error or process gone)                                                                                        |
 | `69` | `PULL_FAILED`          | `pull` couldn't complete (network, integrity, disk space)                                                                                              |
-| `70` | `BINARY_NOT_FOUND`     | `llama-server` not on PATH, no `--llama-server` flag, `LLAMASTASH_LLAMA_SERVER` unset                                                                  |
+| `70` | `BINARY_NOT_FOUND`     | The engine the model needs is unavailable: `llama-server` not on PATH with no `--llama-server` flag and `LLAMASTASH_LLAMA_SERVER` unset, or the model's backend is disabled / its launcher missing |
 | `71` | `UNKNOWN`              | Catch-all for unexpected errors that don't map to a documented class                                                                                   |
 | `72` | `INIT_ABORTED`         | `init` aborted before smoke — integrity check failed, archive defenses tripped, user declined confirm, or non-TTY config step without explicit consent |
 | `73` | `INIT_DOWNLOAD_FAILED` | `init`'s model-download step failed (distinct from `PULL_FAILED` so agents branch on cause)                                                            |
@@ -1200,7 +1200,7 @@ that pinned a selector. Once a model is running, the read-only Settings
 view shows a `server` row naming the build that served it (when the
 model has more than one compatible server). The bottom `extras` row holds the free-form argv tail for
 flags the typed editor doesn't model; forbidden flags
-(`--host`, `--listen`, `--bind`, `--api-key`, `--ssl-*`) surface a
+(`--host`, `--listen`, `--bind`, `--api-key`, `--ssl-*`, `--port`) surface a
 red inline warning with secret values redacted.
 
 ### Precedence chain

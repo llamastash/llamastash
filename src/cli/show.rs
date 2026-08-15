@@ -233,6 +233,14 @@ fn assemble_envelope(
 /// values the scanner folded into `metadata.weights_bytes`.
 fn shard_breakdown(row: &CatalogRow) -> Vec<ShardSize> {
   let primary = PathBuf::from(&row.path);
+  // A shard is a weight *file*. A whole-directory row (a safetensors snapshot)
+  // has none, and asking for its per-shard breakdown produced one entry sized
+  // by `stat` on the directory — rendered as `shard 1  ! missing <revision>`,
+  // directly under a correct `on_disk_total`. Same reasoning as the delete
+  // planner, which skips its file-shaped companion finders for a directory.
+  if primary.is_dir() {
+    return Vec::new();
+  }
   let siblings: Vec<PathBuf> = row.split_siblings.iter().map(PathBuf::from).collect();
   shard_sizes::per_shard(&primary, &siblings)
 }
@@ -246,11 +254,11 @@ fn render_human(row: &CatalogRow, shards: &[ShardSize], total_bytes: u64, env: &
   // on a TTY) exactly like `status` / `presets`.
   out.push_str(&section_header(&row.name(), None));
   let mut header: Vec<(&str, String)> = Vec::new();
-  // `path` covers single-file models; multi-shard sets get a full
-  // per-shard listing under the `size` section below, so emit the
-  // parent dir instead — shard 1's path on its own would only
-  // partially describe the model on disk.
-  if shards.len() == 1 {
+  // `path` covers models that live at one location — a single file, or a
+  // whole directory (no shards at all). Multi-shard sets get a full per-shard
+  // listing under the `size` section below, so emit the parent dir instead —
+  // shard 1's path on its own would only partially describe the model on disk.
+  if shards.len() <= 1 {
     header.push(("path", row.path.clone()));
   }
   header.push(("parent", row.parent.clone()));
@@ -335,10 +343,13 @@ fn render_human(row: &CatalogRow, shards: &[ShardSize], total_bytes: u64, env: &
 
   out.push('\n');
   out.push_str(&section_header("size", None));
-  let mut size_rows: Vec<(String, String)> = vec![
-    ("shard_count".to_string(), shards.len().to_string()),
-    ("on_disk_total".to_string(), fmt_bytes(total_bytes)),
-  ];
+  let mut size_rows: Vec<(String, String)> = Vec::new();
+  // Omitted for a row with no shards (a whole directory): "shard_count 0"
+  // states an absence the row's own shape already explains.
+  if !shards.is_empty() {
+    size_rows.push(("shard_count".to_string(), shards.len().to_string()));
+  }
+  size_rows.push(("on_disk_total".to_string(), fmt_bytes(total_bytes)));
   // Per-shard breakdown so a multi-shard model shows every file
   // and its individual size, not just shard 1. Single-file models
   // collapse to one row, keeping the human output tight.

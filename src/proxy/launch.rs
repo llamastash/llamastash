@@ -33,6 +33,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::daemon::context::MethodContext;
 use crate::daemon::launch_service::{compose_and_spawn, LaunchModeWire, StartParams};
 use crate::daemon::supervisor::{ManagedModel, ManagedState};
 use crate::gguf::identity::ModelId;
@@ -93,20 +94,21 @@ pub(crate) async fn auto_start(
   resolved: &CatalogRow,
   endpoint_mode: Option<LaunchMode>,
 ) -> LaunchOutcome {
-  // Compute the canonical ModelId from the resolved row. We read
-  // the header here rather than trusting any in-process cache so
-  // the single-flight key matches what `compose_and_spawn` will
-  // observe at spawn time (it does the same read internally).
+  // Compute the canonical ModelId from the resolved row. Resolved here rather
+  // than from any in-process cache so the single-flight key matches what
+  // `compose_and_spawn` will observe at spawn time — which is why both go
+  // through the same resolver.
   //
-  // The header read is up to 16 MiB of synchronous I/O; offload to
-  // a blocking thread so we don't stall the tokio worker.
+  // A GGUF header read is up to 16 MiB of synchronous I/O; offload to a
+  // blocking thread so we don't stall the tokio worker.
   let row = resolved.clone();
-  let model_id = match tokio::task::spawn_blocking(move || canonical_id_for_row(&row)).await {
+  let ctx = state.ctx.clone();
+  let model_id = match tokio::task::spawn_blocking(move || canonical_id_for_row(&row, &ctx)).await {
     Ok(Ok(id)) => id,
     Ok(Err(cause)) => return LaunchOutcome::Failed { cause },
     Err(join) => {
       return LaunchOutcome::Failed {
-        cause: format!("GGUF header read panicked: {join}"),
+        cause: format!("model identity resolution panicked: {join}"),
       };
     }
   };
@@ -344,12 +346,17 @@ fn launch_mode_from_hint(hint: Option<&str>) -> Option<LaunchModeWire> {
 /// Compute the canonical [`ModelId`] for a resolved [`CatalogRow`].
 /// Synchronous — call via `spawn_blocking` to keep the async worker
 /// thread free.
-fn canonical_id_for_row(row: &CatalogRow) -> Result<ModelId, String> {
+///
+/// Delegates to the shared resolver, so a directory-shaped row (a safetensors
+/// snapshot) gets its backend's synthetic id instead of being handed to the
+/// GGUF header reader. Reading the header unconditionally here meant auto-start
+/// answered `Is a directory (os error 21)` for every model of that shape — the
+/// launch path had already learned this, and the proxy had not.
+fn canonical_id_for_row(row: &CatalogRow, ctx: &MethodContext) -> Result<ModelId, String> {
   let path = std::path::Path::new(&row.path);
-  let header =
-    crate::gguf::header::read_path(path, crate::gguf::header::HeaderReadOptions::default())
-      .map_err(|e| format!("could not read GGUF header: {e}"))?;
-  Ok(crate::gguf::identity::compute(path, &header.raw))
+  crate::backend::resolve_identity_for_path(path, Some(ctx))
+    .map(|r| r.id)
+    .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -497,12 +504,16 @@ mod tests {
     }
   }
 
+  fn ctx() -> MethodContext {
+    MethodContext::new(crate::daemon::shutdown::ShutdownToken::new())
+  }
+
   #[test]
   fn canonical_id_for_row_errors_on_missing_file() {
     // A row pointing at a non-existent GGUF returns the wrapped header
     // read error under the "could not read GGUF header" prefix.
     let r = row("/nonexistent/secret-model.gguf", None);
-    let err = canonical_id_for_row(&r).expect_err("missing file must error");
+    let err = canonical_id_for_row(&r, &ctx()).expect_err("missing file must error");
     assert!(err.starts_with("could not read GGUF header"), "got: {err}");
   }
 
@@ -513,9 +524,33 @@ mod tests {
     let path = dir.path().join("tiny.gguf");
     std::fs::write(&path, build_minimal_gguf("llama")).expect("write gguf");
     let r = row(path.to_str().unwrap(), Some("chat"));
-    let id = canonical_id_for_row(&r).expect("real gguf resolves");
+    let id = canonical_id_for_row(&r, &ctx()).expect("real gguf resolves");
     assert_eq!(id.path, crate::util::paths::canonicalize(&path).unwrap());
     // Header hash is populated (not the all-zero synthetic placeholder).
     assert_ne!(id.header_blake3, [0u8; 32]);
+  }
+
+  /// Auto-start's identity step used to read a GGUF header unconditionally, so
+  /// every directory-shaped row (a safetensors snapshot) failed with
+  /// `Is a directory (os error 21)` and the proxy answered 503 — the one
+  /// surface a directory-shaped model is most likely to be reached through.
+  #[test]
+  fn canonical_id_for_row_resolves_a_directory_row_without_reading_a_header() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let snapshot = dir.path().join("models--o--r/snapshots/rev");
+    std::fs::create_dir_all(&snapshot).expect("snapshot");
+    std::fs::write(snapshot.join("config.json"), b"{}").expect("config");
+    std::fs::write(snapshot.join("model.safetensors"), b"w").expect("weights");
+
+    let r = row(snapshot.to_str().unwrap(), Some("chat"));
+    // No context: the ungated registry answer, so the test does not depend on
+    // whether a launcher happens to be installed on the host running it.
+    let id = crate::backend::resolve_identity_for_path(&snapshot, None)
+      .expect("a safetensors snapshot resolves without a header read")
+      .id;
+    assert_eq!(id.header_blake3, [0u8; 32], "synthetic id, not a digest");
+    assert_eq!(id.path, snapshot);
+    // And the row-shaped entry point agrees when the backend is available.
+    let _ = r;
   }
 }

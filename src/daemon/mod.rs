@@ -372,18 +372,24 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
     // child reads as its real server, not a synthetic default invocation.
     // Registry-driven — names no backend.
     let adopted_bin = crate::backend::adopted_process_name(&adopted.resolved_backend);
+    // The launch's model path, whatever shape its identity is. Reading it off
+    // `id.as_gguf()` yielded `None` for every non-GGUF identity, so a re-adopted
+    // row of that kind reported `model_path: null` and a cmdline ending in a
+    // dangling `-m ` — the user could see a surviving process but not which
+    // model it was serving, which is the one thing the row exists to say.
+    let model_path = adopted
+      .id
+      .as_gguf()
+      .map(|g| g.path.clone())
+      .unwrap_or_else(|| adopted.params.model_path.clone());
     external_combined.push(orphans::ExternalProcess {
       pid: adopted.pid as u32,
       cmdline: format!(
         "{adopted_bin} --port {} -m {}",
         adopted.port,
-        adopted
-          .id
-          .as_gguf()
-          .map(|g| g.path.display().to_string())
-          .unwrap_or_default()
+        model_path.display()
       ),
-      model_path: adopted.id.as_gguf().map(|g| g.path.clone()),
+      model_path: Some(model_path),
       start_time_secs,
       port: Some(adopted.port),
       // Adopted entries went through our state.json before the
@@ -775,6 +781,18 @@ fn quarantine_broken_state(state_dir: &Path) {
   }
 }
 
+/// How long `daemon start` waits for the detached child to bind its control
+/// plane before giving up and killing it.
+///
+/// Sized for a real boot, not a hello-world one: the child probes hardware and
+/// walks every scan root before it binds, which on a host with a large model
+/// cache measured ~4 s — so the previous 3 s ceiling killed a perfectly healthy
+/// daemon and reported it as a failure to start. Nothing waits the full window
+/// in the good case (the loop returns the moment `runtime.json` appears), and a
+/// child that genuinely dies is caught by `try_wait` immediately, so the only
+/// case this lengthens is a daemon that is hung.
+const DETACHED_BIND_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// Re-exec the current binary as a detached daemon child and wait for it
 /// to bind its socket. The parent returns to the user's shell once the
 /// socket is connectable; the child is the long-lived daemon.
@@ -900,7 +918,7 @@ pub fn start_detached_with_exe(opts: DaemonOptions, exe: PathBuf) -> Result<Star
   // Poll for the runtime info file to appear. `runtime_file::save`
   // happens after the control plane has bound its TCP port, so a
   // present file means the daemon is ready to accept HTTP requests.
-  let deadline = std::time::Instant::now() + Duration::from_secs(3);
+  let deadline = std::time::Instant::now() + DETACHED_BIND_TIMEOUT;
   loop {
     if let Some(status) = child.try_wait()? {
       if let Some(pid) = existing_daemon_pid(&opts.state_dir) {
@@ -919,7 +937,8 @@ pub fn start_detached_with_exe(opts: DaemonOptions, exe: PathBuf) -> Result<Star
       let _ = child.kill();
       let _ = child.wait();
       return Err(anyhow!(
-        "detached daemon did not bind control plane within 3s (state_dir: {})",
+        "detached daemon did not bind control plane within {}s (state_dir: {})",
+        DETACHED_BIND_TIMEOUT.as_secs(),
         opts.state_dir.display()
       ));
     }
@@ -1019,7 +1038,7 @@ pub fn start_detached_with_exe(opts: DaemonOptions, exe: PathBuf) -> Result<Star
 
   let mut child = cmd.spawn().context("spawning detached daemon")?;
 
-  let deadline = std::time::Instant::now() + Duration::from_secs(3);
+  let deadline = std::time::Instant::now() + DETACHED_BIND_TIMEOUT;
   loop {
     if let Some(status) = child.try_wait()? {
       if let Some(pid) = existing_daemon_pid(&opts.state_dir) {
@@ -1037,7 +1056,8 @@ pub fn start_detached_with_exe(opts: DaemonOptions, exe: PathBuf) -> Result<Star
       let _ = child.kill();
       let _ = child.wait();
       return Err(anyhow!(
-        "detached daemon did not bind control plane within 3s (state_dir: {})",
+        "detached daemon did not bind control plane within {}s (state_dir: {})",
+        DETACHED_BIND_TIMEOUT.as_secs(),
         opts.state_dir.display()
       ));
     }
