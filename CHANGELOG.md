@@ -25,6 +25,10 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 - **A preset's `backend_knobs` were dropped at launch.** `--preset <name>` applied the entry's `ctx` and `extras` but discarded its native knobs, so a preset pinning ds4's `mtp` / `ssd_streaming` launched without them and the auto-resolver then overrode the value the preset had set. A model's `default:` preset now contributes them ahead of `last_params` too.
 - **Presets could not carry the MTP setting.** `mtp` / `mtp_draft_n` were missing from the preset body, the save payload and the launch-params wire row, so `mtp: on` / `mtp: off` under a preset entry was parsed, stored and then silently ignored at launch. Pinning MTP **off** now works, which matters on models where speculation costs more than it saves.
 
+### Security
+
+- ratatui 0.30.0 → 0.30.2, which moves the transitive `lru` dependency to 0.18.2 and clears [RUSTSEC-2026-0253](https://rustsec.org/advisories/RUSTSEC-2026-0253) (unsound `LruCache::pop`).
+
 ## [0.1.0] — 2026-08-09
 
 This release regroups every backend and daemon config key under typed `backend:` / `daemon:` maps, turns each backend's binary into a list of selectable **servers** (one install can offer CUDA / ROCm / Vulkan launches side by side), and unifies the `list` / `show` JSON on one catalog-row shape. It also ships **MTP speculative decoding**, roughly a 2x decode speedup on capable models, on by default. Seven breaking changes, all config-, JSON- or table-shape only; there is no migration step (pre-1.0), so re-nest `config.yaml` against `config.example.yaml` and re-point any `list --json` / `awk -F\t` consumers.
