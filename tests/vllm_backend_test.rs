@@ -211,51 +211,24 @@ mod lifecycle {
       .unwrap_or("")
   }
 
-  fn opts_with_vllm(state: PathBuf, delay_args: &[&str]) -> DaemonOptions {
+  fn opts_with_vllm(state: PathBuf) -> DaemonOptions {
     let base = DaemonOptions::rooted_at(state);
-    let mut binary = fake_vllm_binary();
-    // The fixture takes its extra switches through the same argv the backend
-    // builds, so a wrapper script is the only way to inject them. Keep it
-    // simple: when no extra args are needed, use the fixture directly.
-    if !delay_args.is_empty() {
-      binary = wrapper_for(&base.state_dir, &fake_vllm_binary(), delay_args);
-    }
     DaemonOptions {
       binary: Some(fake_llama_binary()),
       port_range: allocate_port_range(),
       backend: BackendConfig {
         vllm: VllmConfig {
           enabled: Some(true),
-          servers: vec![ServerConfig { binary, name: None }],
+          servers: vec![ServerConfig {
+            binary: fake_vllm_binary(),
+            name: None,
+          }],
           ..VllmConfig::default()
         },
         ..base.backend.clone()
       },
       ..base
     }
-  }
-
-  /// A shell shim that appends fixture-only switches to whatever argv
-  /// llamastash builds — the same shape a user needs on a host where vLLM
-  /// only exists inside a container.
-  fn wrapper_for(dir: &std::path::Path, real: &std::path::Path, extra: &[&str]) -> PathBuf {
-    std::fs::create_dir_all(dir).unwrap();
-    let path = dir.join("vllm-wrapper.sh");
-    std::fs::write(
-      &path,
-      format!(
-        "#!/bin/sh\nexec {} \"$@\" {}\n",
-        real.display(),
-        extra.join(" ")
-      ),
-    )
-    .unwrap();
-    #[cfg(unix)]
-    {
-      use std::os::unix::fs::PermissionsExt;
-      std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    path
   }
 
   /// The discovery chain end to end: an HF-layout tree under a **configured
@@ -272,7 +245,7 @@ mod lifecycle {
     let cache = unique_temp("discovery-cache");
     seed_repo(&cache, "Qwen/Qwen2.5-0.5B-Instruct");
 
-    let mut opts = opts_with_vllm(state.clone(), &[]);
+    let mut opts = opts_with_vllm(state.clone());
     opts.discovery.scan_roots = vec![llamastash::discovery::scanner::ScanRoot {
       path: cache.clone(),
       source: llamastash::discovery::ModelSource::HuggingFace,
@@ -406,7 +379,7 @@ mod lifecycle {
     let cache = unique_temp("happy-cache");
     let snapshot = seed_repo(&cache, "Qwen/Qwen2.5-0.5B-Instruct");
 
-    let opts = opts_with_vllm(state.clone(), &[]);
+    let opts = opts_with_vllm(state.clone());
     let socket = opts.state_dir.clone();
     let daemon = tokio::spawn(async move { run_foreground(opts).await });
     wait_for_socket(&socket).await;
@@ -450,7 +423,7 @@ mod lifecycle {
     let cache = unique_temp("earlybind-cache");
     let snapshot = seed_repo(&cache, "Qwen/Qwen2.5-0.5B-Instruct");
 
-    let opts = opts_with_vllm(state.clone(), &["--bind-early", "--load-delay-ms", "1500"]);
+    let opts = opts_with_vllm(state.clone());
     let socket = opts.state_dir.clone();
     let daemon = tokio::spawn(async move { run_foreground(opts).await });
     wait_for_socket(&socket).await;
@@ -460,7 +433,13 @@ mod lifecycle {
     client
       .call(
         "start_model",
-        Some(json!({ "model_path": snapshot.to_string_lossy() })),
+        // The fixture's timing switches ride the extras tail the backend
+        // forwards verbatim. A wrapper script would have to be a shell script,
+        // which Windows cannot spawn (`os error 193`).
+        Some(json!({
+          "model_path": snapshot.to_string_lossy(),
+          "extras": ["--bind-early", "--load-delay-ms", "1500"],
+        })),
       )
       .await
       .expect("start_model");
