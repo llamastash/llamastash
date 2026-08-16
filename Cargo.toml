@@ -1,6 +1,6 @@
 [package]
 name = "llamastash"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Deepu K Sasidharan <d4udts@gmail.com>"]
 description = "Zero-overhead, terminal-native local-LLM launcher"
 documentation = "https://github.com/llamastash/llamastash"

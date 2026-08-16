@@ -4,26 +4,32 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-08-16
+
+This release opens LlamaStash to the non-GGUF half of your model cache. A **vLLM backend** discovers safetensors HuggingFace repos and launches them through `vllm serve`, so a repo that was invisible before now shows up in `list`, starts from the TUI, and answers on the proxy. GGUF routing is untouched: llama.cpp stays the default and vLLM only claims safetensors. On unified-memory hosts the KV cache is capped automatically, because vLLM sizes it against the whole pool and will happily eat your system RAM. ds4 also gains **DSpark speculative decoding**, and the HuggingFace pull browser can finally find safetensors repos. No breaking changes.
+
 ### Added
 
 - **vLLM backend (experimental).** Safetensors HuggingFace repos are discovered and launched through `vllm serve`, alongside llama.cpp for GGUF. On unified-memory hosts the KV cache is capped automatically, because vLLM sizes it against the whole memory pool. Partially closes [#36](https://github.com/llamastash/llamastash/issues/36). See [vLLM setup](docs/vllm-setup.md).
 - **DSpark speculative decoding on ds4.** Three new ds4 native knobs (14 → 17) — `dspark`, `dspark_confidence`, `dspark_strict` — drive DeepSeek's DSpark support model through ds4-server's `--mtp` slot. The support GGUF auto-pairs from a sibling by header (it declares its own `deepseek4-dspark` arch), and turning DSpark on with no support file resolvable drops the knobs with a notice instead of letting ds4-server refuse the launch after a full weight load. See `docs/usage.md#dspark-speculative-decoding`.
-
 - **Safetensors repos are findable in the HuggingFace pull browser.** The search pinned a GGUF-only filter, so a safetensors repo could not be found and therefore could not be pulled. Results now carry a `fmt` column (`GGUF` / `SFTN`), and a safetensors repo is pulled as one whole-repo row (weights plus config and tokenizer) rather than a menu of files.
 
 ### Fixed
 
+- **A preset's `backend_knobs` were dropped at launch.** `--preset <name>` applied the entry's `ctx` and `extras` but discarded its native knobs, so a preset pinning ds4's `mtp` / `ssd_streaming` launched without them and the auto-resolver then overrode the value the preset had set. A model's `default:` preset now contributes them ahead of `last_params` too.
+- **Presets could not carry the MTP setting.** `mtp` / `mtp_draft_n` were missing from the preset body, the save payload and the launch-params wire row, so `mtp: on` / `mtp: off` under a preset entry was parsed, stored and then silently ignored at launch. Pinning MTP **off** now works, which matters on models where speculation costs more than it saves.
+- **`daemon start` gave up after 3 seconds** and killed a healthy daemon that was still walking a large model cache. It waits up to 20 seconds now, and still returns the moment the daemon binds.
+- **`-- --port N` silently moved a server off the port llamastash reserved**, leaving the launch stuck loading while a fully loaded model sat on an untracked port. It is refused now; the first-class `--port` flag reserves what it asks for.
+- **A nested GGUF could be destroyed by deleting a different model.** A repo shipping safetensors plus a GGUF in a quant subdirectory yielded two catalog rows; deleting one removed the whole cache repo, behind a prompt saying it was the last model in it.
+- **A DSpark support GGUF scanned as a launchable model.** Draft-head detection gated its header read on an `mtp` token in the filename, which DeepSeek's DSpark support file does not carry, so a tokenizer-less support file appeared in `list` as a startable model.
+- **The TUI chat tab sent a name the backend could reject.** It posted a name derived from the model's path rather than the identity the backend advertises on `/v1/models`, so a name-validating server answered 404, and a registry model with a dot in its name was truncated at the dot.
 - **The proxy could not auto-start a safetensors model.** Naming one in a request returned 503 (`Is a directory`), because auto-start identified the model by reading a GGUF header. Every surface that turns a path into a model id now shares one resolver, so a new model shape works on all of them at once.
 - **`status` reported the wrong backend and context after a vLLM launch.** A stopped launch left its record behind, and the next launch on the reused port inherited that record's backend name and resolved context, whichever backend actually ran. The record is now dropped when the launch stops, and `status` matches on the launch id instead of the port.
 - **A preset's `gpu_memory_utilization` switched off the automatic KV-cache cap permanently.** The value was replayed on every later launch as if you had set it there, so one experiment opted the model out of the guard with no signal. Memory knobs now apply to the launch that asks for them and are not remembered.
 - **`last-params <model>` could not find a non-GGUF model's entry**, reporting nothing recorded while the IPC method returned it.
-- **`-- --port N` silently moved a server off the port llamastash reserved**, leaving the launch stuck loading while a fully loaded model sat on an untracked port. It is refused now; the first-class `--port` flag reserves what it asks for.
-- **`daemon start` gave up after 3 seconds** and killed a healthy daemon that was still walking a large model cache. It waits up to 20 seconds now, and still returns the moment the daemon binds.
-- Smaller fixes: `show` no longer reports a missing shard for a whole-directory model, deleting one says the directory goes rather than "one file", a launch no longer claims it dropped a knob you never set, an unavailable backend exits `70` rather than `64`, `daemon stop` works while the config file has a typo in it, and `pull --help` no longer says GGUF only.
-- **A nested GGUF could be destroyed by deleting a different model.** A repo shipping safetensors plus a GGUF in a quant subdirectory yielded two catalog rows; deleting one removed the whole cache repo, behind a prompt saying it was the last model in it.
-- **A DSpark support GGUF scanned as a launchable model.** Draft-head detection gated its header read on an `mtp` token in the filename, which DeepSeek's DSpark support file does not carry, so a tokenizer-less support file appeared in `list` as a startable model.
-- **A preset's `backend_knobs` were dropped at launch.** `--preset <name>` applied the entry's `ctx` and `extras` but discarded its native knobs, so a preset pinning ds4's `mtp` / `ssd_streaming` launched without them and the auto-resolver then overrode the value the preset had set. A model's `default:` preset now contributes them ahead of `last_params` too.
-- **Presets could not carry the MTP setting.** `mtp` / `mtp_draft_n` were missing from the preset body, the save payload and the launch-params wire row, so `mtp: on` / `mtp: off` under a preset entry was parsed, stored and then silently ignored at launch. Pinning MTP **off** now works, which matters on models where speculation costs more than it saves.
+- **A directory-shaped model reported its inode size**, so a 942 MB safetensors repo rendered as `4K` in both `list` and the TUI. The summed weight bytes win now.
+- **A non-GGUF server could outlive the daemon untracked.** The orphan sweep only re-adopted a child whose record carried a GGUF identity, so after a daemon restart a running safetensors server appeared in neither `running` nor `external`, kept its port and its GPU allocation, and no `stop` could reach it. Such a launch also skipped the pre-spawn memory admission check that refuses a launch the host cannot hold.
+- Smaller fixes: `show` no longer reports a missing shard for a whole-directory model, deleting one says the directory goes rather than "one file", a launch no longer claims it dropped a knob you never set, an unavailable backend exits `70` rather than `64`, `daemon stop` works while the config file has a typo in it, `start` accepts an absolute directory path, and `pull --help` no longer says GGUF only.
 
 ### Security
 
