@@ -62,6 +62,22 @@ pub struct ModelMetadata {
   pub mtp: Option<u32>,
 }
 
+impl ModelMetadata {
+  /// The quant label to render: the backend's verbatim overlay where one
+  /// exists, else the GGML tag.
+  ///
+  /// The single accessor on purpose. The fallback used to be written out at
+  /// each render site, and two of five had it — so an AWQ safetensors row read
+  /// `AWQ` in `list` and the TUI but `Unknown` through the Ollama-compat
+  /// surface. Call this; never reach for `quant` directly to display.
+  pub fn quant_display(&self) -> String {
+    self
+      .quant_label
+      .clone()
+      .unwrap_or_else(|| self.quant.label().to_string())
+  }
+}
+
 /// GGML tensor quantisation tag the GGUF advertises. `Unknown(u32)` carries
 /// the raw tag for upstream variants we haven't enumerated yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

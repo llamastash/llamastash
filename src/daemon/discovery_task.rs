@@ -36,9 +36,32 @@ pub struct DiscoveryOptions {
   /// rows (R11, list-only). `None` (the default, and whenever the Lemonade
   /// backend is disabled) skips it entirely — no `lemond` contact.
   pub lemonade_port: Option<u16>,
+  /// Backend config + force map, consulted on **every** rescan to decide which
+  /// backends project rows from the shared safetensors / HF-repo enumerator.
+  ///
+  /// Re-read each pass rather than resolved once at boot: `status` evaluates
+  /// availability live, so a backend installed after the daemon started used
+  /// to report itself enabled while the walk stayed permanently skipped — a
+  /// dead state the shipped diagnostic confirmed as healthy. None projecting
+  /// skips the walk entirely, so an install with no safetensors-capable
+  /// backend pays nothing and its catalog stays byte-identical. This module
+  /// names no backend.
+  pub backend: crate::backend::BackendConfig,
+  pub backend_force: std::collections::BTreeMap<String, bool>,
 }
 
 impl DiscoveryOptions {
+  /// Backends that project HF-repo rows right now.
+  fn hf_repo_projectors(&self) -> Vec<crate::backend::Backends> {
+    crate::backend::Backends::all()
+      .into_iter()
+      .filter(|b| {
+        crate::backend::Backend::projects_hf_repos(b)
+          && crate::backend::Backend::enabled_in_config(b, &self.backend, &self.backend_force)
+      })
+      .collect()
+  }
+
   pub fn new(roots: Vec<ScanRoot>) -> Self {
     // Production builds default to the standard-capacity metadata
     // cache so successive watcher-driven rescans don't re-parse
@@ -54,6 +77,8 @@ impl DiscoveryOptions {
       scan,
       watcher: WatcherOptions::default(),
       lemonade_port: None,
+      backend: Default::default(),
+      backend_force: Default::default(),
     }
   }
 }
@@ -159,6 +184,36 @@ async fn full_rescan(catalog: &ModelCatalog, opts: &DiscoveryOptions) {
     new_models.extend(crate::backend::lemonade::discovery::enumerate(port).await);
   }
 
+  // Safetensors / HF-repo rows. One walk, shared across every projecting
+  // backend, and skipped outright when none is enabled.
+  let projectors = opts.hf_repo_projectors();
+  if !projectors.is_empty() {
+    // Walk the *configured* roots, not a re-derivation from `$HOME`. Deriving
+    // them independently escaped the discovery scope in both directions:
+    // `--no-scan` still got HF-cache rows it had excluded, and an HF-layout
+    // tree under a configured `model_paths` root was never seen. A root with
+    // no `models--*` children contributes nothing, so passing them all is safe.
+    let roots: Vec<std::path::PathBuf> = opts.scan_roots.iter().map(|r| r.path.clone()).collect();
+    // Synchronous `read_dir` + `serde_json` per repo, unlike every other
+    // producer here (all channel-fed or genuinely async). Inline it and a
+    // large cache blocks a runtime worker on each debounced watcher event.
+    // Projection belongs on the same side of the fence: it stats every weight
+    // shard through the cache's symlinks, which is the costlier half.
+    let projected = tokio::task::spawn_blocking(move || {
+      let candidates = crate::discovery::hf_repos::enumerate_repos(&roots);
+      projectors
+        .iter()
+        .flat_map(|b| crate::backend::Backend::project_hf_repos(b, &candidates))
+        .collect::<Vec<_>>()
+    })
+    .await
+    .unwrap_or_else(|e| {
+      log::warn!("hf-repo discovery task panicked: {e}");
+      Vec::new()
+    });
+    new_models.extend(projected);
+  }
+
   catalog.replace_all(new_models).await;
 }
 
@@ -225,6 +280,8 @@ mod tests {
       scan: ScanOptions::default(),
       watcher: fast_watcher(),
       lemonade_port: None,
+      backend: Default::default(),
+      backend_force: Default::default(),
     };
     let _task = spawn(catalog.clone(), opts);
 
@@ -256,6 +313,8 @@ mod tests {
       scan: ScanOptions::default(),
       watcher: fast_watcher(),
       lemonade_port: None,
+      backend: Default::default(),
+      backend_force: Default::default(),
     };
     let _task = spawn(catalog.clone(), opts);
 

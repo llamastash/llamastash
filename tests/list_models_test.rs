@@ -44,6 +44,8 @@ fn fast_discovery_for(root: &Path) -> DiscoveryOptions {
       channel_capacity: 16,
     },
     lemonade_port: None,
+    backend: Default::default(),
+    backend_force: Default::default(),
   }
 }
 

@@ -32,7 +32,6 @@ use crate::daemon::supervisor::{
 };
 use crate::gguf::header::{read_path as read_gguf_header, HeaderReadOptions};
 use crate::gguf::identity::ModelId;
-use crate::ipc::methods::resolve_model_id_and_arch;
 use crate::ipc::protocol::{ErrorCode, ErrorObject};
 use crate::launch::mode::LaunchMode;
 use crate::launch::params::LaunchParams;
@@ -200,6 +199,11 @@ pub struct LaunchExec {
   /// persisted `last_params` so they re-resolve next launch (see
   /// [`crate::backend::Backend::resolve_native_knobs`]).
   pub(crate) auto_set_knobs: std::collections::BTreeSet<String>,
+  /// Native-knob keys the backend declares as here-and-now judgements — also
+  /// stripped from the persisted `last_params`, so a one-off `--preset` cannot
+  /// silently become permanent (see
+  /// [`crate::backend::Backend::volatile_native_knobs`]).
+  pub(crate) volatile_knobs: &'static [&'static str],
   /// Whether this launch bypasses the memory admission gate (streams from disk).
   pub(crate) bypasses_admission: bool,
   /// Advisories accumulated during composition, extended by the execution.
@@ -237,46 +241,33 @@ pub(crate) async fn compose_and_spawn(
     )
   })?;
 
-  // Resolve identity + (for GGUF) the architecture. A file-less backend-registry
-  // path (e.g. a managed-multiplexer's synthetic `<scheme>://<name>`) has no local
-  // file, so a backend mints the identity from the path instead of reading a
-  // header — that is what makes the backend dispatch below select the registry
-  // backend rather than crashing on the missing GGUF. Every other path is a local
-  // GGUF: one header read yields both the canonical id and the arch. Names no
-  // backend — the synthetic-path recognition is registry-driven.
-  let (id, arch, native_ctx, supported_backends, mtp_embedded, identity): (
-    ModelId,
-    Option<String>,
-    Option<u32>,
-    Vec<String>,
-    Option<u32>,
-    ModelIdentity,
-  ) = match crate::backend::synthetic_identity_for_path(&parsed.model_path) {
-    Some((identity, _backend_id)) => {
-      // A synthetic ModelId keeps the file-keyed plumbing (log path, running
-      // snapshot retention) working; the sentinel header hash marks it as
-      // not-a-GGUF. Arch + native_ctx are `None` — the backend owns the recipe,
-      // not us, so the strict-fit ctx gate never applies to such a row.
-      let synthetic = ModelId {
-        path: parsed.model_path.clone(),
-        header_blake3: [0u8; 32],
-      };
-      (synthetic, None, None, Vec::new(), None, identity)
-    }
-    None => {
-      let (id, arch, native_ctx, supported_backends, mtp_embedded) =
-        resolve_model_id_and_arch(&parsed.model_path)?;
-      let identity: ModelIdentity = id.clone().into();
-      (
-        id,
-        arch,
-        native_ctx,
-        supported_backends,
-        mtp_embedded,
-        identity,
-      )
-    }
-  };
+  // Identity + (for a GGUF) the header-derived launch inputs, from the one
+  // resolver every surface shares. A file-less or directory-shaped path is
+  // claimed by its backend and gets a synthetic id; a local GGUF gets its real
+  // one out of a single header read, so the knob resolver never re-reads it.
+  let crate::backend::ResolvedIdentity {
+    id,
+    identity,
+    arch,
+    native_ctx,
+    supported_backends,
+    mtp_embedded,
+    ..
+  } = crate::backend::resolve_identity_for_path(&parsed.model_path, Some(ctx)).map_err(
+    |e| match &e {
+      // Tagged so the CLI maps it to an environment exit code without
+      // string-matching the message. Without the tag it was indistinguishable
+      // from a bad flag and came back as a usage error.
+      crate::backend::IdentityError::BackendUnavailable { .. } => ErrorObject::with_data(
+        ErrorCode::InvalidParams,
+        format!("`{}` {e}", parsed.model_path.display()),
+        serde_json::json!({ "cause": "backend_unavailable" }),
+      ),
+      crate::backend::IdentityError::Header(msg) => {
+        ErrorObject::new(ErrorCode::InvalidParams, msg.clone())
+      }
+    },
+  )?;
 
   // Pre-spawn refusal (D-guard): on an auto-routed launch, ask every backend
   // whether it declines this model (e.g. a distributed/split GGUF half a
@@ -799,11 +790,17 @@ pub(crate) async fn compose_and_spawn(
   // Dropped-knob surfacing (R6): typed knobs the user set that the resolved
   // backend can't honor are silently dropped from argv — tell the user which.
   // ds4 honors only `Ctx`, so a `--flash-attn` on a ds4-routed model warns.
+  //
+  // Against the **user** layer, not the resolved set. The resolved set carries
+  // the resolver's own answers (a model-default `reasoning`, an arch default),
+  // so every launch on a narrow-capability backend warned that it had dropped a
+  // knob the user never touched — noise on a bare `start`, on the surface where
+  // a real dropped knob most needs to be noticed.
   {
     let caps = crate::backend::Backend::capabilities(&inference_backend);
     let dropped: Vec<&str> = crate::launch::flag_aliases::knob_specs()
       .iter()
-      .filter(|spec| !caps.supports(spec.field) && field_is_set(&launch_params.knobs, spec.field))
+      .filter(|spec| !caps.supports(spec.field) && field_is_set(&user_knobs, spec.field))
       .map(|spec| spec.canonical)
       .collect();
     if !dropped.is_empty() {
@@ -858,6 +855,7 @@ pub(crate) async fn compose_and_spawn(
     total_weight_bytes,
     user_knobs,
     auto_set_knobs,
+    volatile_knobs: crate::backend::Backend::volatile_native_knobs(&inference_backend),
     bypasses_admission,
     warnings,
     resolved_backend_id,
@@ -894,6 +892,7 @@ pub(crate) async fn spawn_supervised(
     total_weight_bytes,
     user_knobs,
     auto_set_knobs,
+    volatile_knobs,
     bypasses_admission,
     resolved_backend_id,
     default_binary: _,
@@ -911,7 +910,22 @@ pub(crate) async fn spawn_supervised(
   // knob (that path already warned, in memory terms).
   let bypass_note_suppressed = !auto_set_knobs.is_empty();
   let mut admitted = false;
-  if identity.as_gguf().is_some() {
+  // A non-GGUF identity used to skip the gate entirely, so a
+  // process-per-model backend serving a directory could OOM the host with no
+  // pre-spawn refusal at all. It has no header to project from, but the
+  // weight bytes are recoverable — from the catalog, or by measuring the
+  // directory — and the backend has already resolved its own cache budget,
+  // which is enough for the same arithmetic. Gating on a non-zero catalog
+  // size here would put the zero-size case (a launch by absolute path from
+  // outside the scan roots) back outside the gate, which is the one case
+  // that most needs it.
+  let gate_applies = identity.as_gguf().is_some()
+    || crate::backend::Backends::all()
+      .into_iter()
+      .find(|b| crate::backend::Backend::id(b) == resolved_backend_id)
+      .map(|b| crate::backend::Backend::lifecycle(&b))
+      == Some(crate::backend::Lifecycle::ProcessPerModel);
+  if gate_applies {
     if let Some(host_slot) = ctx.host_metrics.as_ref() {
       let snapshot = host_slot.read().await.clone();
       if crate::launch::admission::is_sampled(&snapshot) {
@@ -928,23 +942,48 @@ pub(crate) async fn spawn_supervised(
         let arch_owned = arch.clone();
         let weights_total = total_weight_bytes;
         let mtp_active = launch_params.mtp_directive.is_some();
-        let demand = tokio::task::spawn_blocking(move || {
-          let header = read_gguf_header(&model_path, HeaderReadOptions::default())
-            .ok()?
-            .header;
-          Some(crate::launch::admission::project_demand(
-            &header,
-            arch_owned.as_deref(),
-            &knobs,
-            effective_ctx,
-            &gpu_backend,
-            weights_total,
-            mtp_active,
-          ))
-        })
-        .await
-        .ok()
-        .flatten();
+        let demand = if identity.as_gguf().is_some() {
+          tokio::task::spawn_blocking(move || {
+            let header = read_gguf_header(&model_path, HeaderReadOptions::default())
+              .ok()?
+              .header;
+            Some(crate::launch::admission::project_demand(
+              &header,
+              arch_owned.as_deref(),
+              &knobs,
+              effective_ctx,
+              &gpu_backend,
+              weights_total,
+              mtp_active,
+            ))
+          })
+          .await
+          .ok()
+          .flatten()
+        } else {
+          // No header, so no per-layer KV estimate. Weights come from
+          // `launch_total_bytes`, which measures a directory when neither the
+          // catalog nor `stat` can size it — the same figure the backend priced
+          // its cache against, so the gate and the cap cannot disagree.
+          if weights_total == 0 {
+            log::warn!(
+              "admission: no weight size for {} — gate cannot engage",
+              model_path.display()
+            );
+          }
+          // Only the backend can price the rest, since the figure lives in its
+          // own knob vocabulary and may be a pool fraction rather than bytes.
+          crate::backend::Backends::all()
+            .into_iter()
+            .find(|b| crate::backend::Backend::id(b) == resolved_backend_id)
+            .and_then(|b| crate::backend::Backend::projected_cache_bytes(&b, &launch_params, free))
+            .filter(|_| weights_total > 0)
+            .map(|cache| {
+              weights_total
+                .saturating_add(cache)
+                .saturating_add(crate::launch::headroom::overhead_band_bytes(&gpu_backend))
+            })
+        };
         if let Some(demand) = demand {
           if let Err(refusal) = ctx.admission.try_admit(u64::from(port), demand, free) {
             if bypasses_admission {
@@ -1042,8 +1081,11 @@ pub(crate) async fn spawn_supervised(
   persist_params.knobs = user_knobs;
   persist_params.ctx = None;
   persist_params.reasoning = false;
-  persist_params.backend_knobs =
-    backend_knobs_for_persist(&launch_params.backend_knobs, &auto_set_knobs);
+  persist_params.backend_knobs = backend_knobs_for_persist(
+    &launch_params.backend_knobs,
+    &auto_set_knobs,
+    volatile_knobs,
+  );
   spawn_last_params_recorder(
     ctx.state.clone(),
     model.clone(),
@@ -1095,20 +1137,42 @@ pub(crate) async fn stop_supervised(
   let stopped_port = model.port();
   let final_state = model.stop(Duration::from_secs(grace_secs)).await;
   ctx.supervisors.remove(launch_id).await;
-  // Drop the running snapshot keyed by `(id, port)` so a second launch of the
-  // same GGUF on a different port keeps its row.
-  let stopped_id: ModelIdentity = model.id().clone().into();
-  ctx
-    .state
-    .mutate(move |s| {
-      s.running
-        .retain(|r| !(r.id == stopped_id && r.port == stopped_port));
-    })
-    .await;
+  drop_running_snapshots(ctx, &[(launch_id.clone(), stopped_port)]).await;
   Ok(serde_json::json!({
     "launch_id": launch_id,
     "state": crate::ipc::methods::flatten_state(&final_state),
   }))
+}
+
+/// Drop the persisted running snapshots for launches that have just stopped.
+///
+/// Keyed on the **launch id** — unique per launch, and the same key whatever
+/// shape the model's identity is. This used to compare a `ModelIdentity` built
+/// from the supervisor's `ModelId`, which is always the `Gguf` variant, so a
+/// row persisted under a `Backend` identity never matched and its snapshot
+/// outlived the process. `status` then matched that orphan by port and reported
+/// its backend and its resolved ctx for whatever launched next on the reused
+/// port — every later launch in the session, of any backend.
+///
+/// The `port` fallback covers a row adopted before launch ids were stamped.
+/// Keyed per launch, so a second launch of the same model on another port keeps
+/// its own row either way.
+pub(crate) async fn drop_running_snapshots(ctx: &MethodContext, stopped: &[(LaunchId, u16)]) {
+  if stopped.is_empty() {
+    return;
+  }
+  let stopped = stopped.to_vec();
+  ctx
+    .state
+    .mutate(move |s| {
+      s.running.retain(|r| {
+        !stopped.iter().any(|(launch_id, port)| match &r.launch_id {
+          Some(id) => id == launch_id,
+          None => r.port == *port,
+        })
+      });
+    })
+    .await;
 }
 
 /// The backend that owns a running launch: an umbrella's owner (via
@@ -1141,34 +1205,47 @@ pub(crate) async fn backend_for_launch(
   }
 }
 
-/// Whether `field` holds a concrete (`Set`) value in `knobs` — the view the
-/// dropped-knob warning needs (an `Auto` / unset knob emits nothing, so it is
-/// not "dropped" in any user-visible sense).
+/// Whether `field` holds a value that would actually have reached the argv —
+/// the view the dropped-knob warning needs. An `Auto` / unset knob emits
+/// nothing, so it is not "dropped" in any user-visible sense.
+///
+/// A `false` bool counts as nothing for the same reason: every backend emits a
+/// bare flag or nothing at all, so `false` was never going to appear and
+/// announcing it as dropped is a lie. It matters because `false` is also what
+/// an *absent* value round-trips to — `LaunchParams.reasoning` is a plain
+/// `bool`, so a preset that never mentions reasoning comes back from
+/// `presets_show` as `reasoning: false`, and every preset launch on a
+/// narrow-capability backend warned about a knob nobody set.
 fn field_is_set(
   knobs: &crate::config::TypedKnobs,
   field: crate::launch::flag_aliases::KnobField,
 ) -> bool {
   knobs.slot(field).as_u32().is_some()
     || knobs.slot(field).as_f32().is_some()
-    || knobs.slot(field).as_bool().is_some()
+    || knobs.slot(field).as_bool() == Some(true)
     || knobs.slot(field).as_str().is_some()
 }
 
 /// The `backend_knobs` to persist into `last_params`: the resolved set, minus
-/// any knob the backend auto-resolved this launch (`auto_set`). An auto-resolved
-/// knob is a one-time response to live conditions, not a user opt-in — freezing
-/// it would make the next no-selection relaunch inherit it as explicit even after
-/// conditions change. A user-set / inherited knob is preserved. Pure so the
-/// invariant is unit-testable.
+/// the two kinds of knob that must not be replayed.
+///
+/// - `auto_set` — what the *daemon* resolved this launch. A one-time response
+///   to live conditions, not a user opt-in; freezing it would make the next
+///   no-selection relaunch inherit it as explicit after conditions change.
+/// - `volatile` — what the *user* set, on a knob the backend declares as a
+///   here-and-now judgement ([`crate::backend::Backend::volatile_native_knobs`]).
+///   It applies to the launch that asked for it and to any launch that names
+///   its preset again, but is not remembered on the user's behalf.
+///
+/// Every other user-set knob is preserved. Pure so the invariant is unit-testable.
 fn backend_knobs_for_persist(
   resolved: &std::collections::BTreeMap<String, KnobValue<String>>,
   auto_set: &std::collections::BTreeSet<String>,
+  volatile: &[&str],
 ) -> std::collections::BTreeMap<String, KnobValue<String>> {
-  // Drop any knob the daemon auto-resolved this launch (`auto_set`): those
-  // re-resolve from live conditions next launch, so persisting them would freeze
-  // a value the user never chose. Generic — the key set comes from the backend.
+  // Generic — both key sets come from the backend.
   let mut out = resolved.clone();
-  out.retain(|k, _| !auto_set.contains(k));
+  out.retain(|k, _| !auto_set.contains(k) && !volatile.contains(&k.as_str()));
   out
 }
 
@@ -1362,9 +1439,26 @@ async fn launch_total_bytes(ctx: &MethodContext, model_path: &std::path::Path) -
     if let Some(b) = row.metadata.as_ref().and_then(|md| md.weights_bytes) {
       return b;
     }
-    return crate::discovery::shard_sizes::on_disk_total(&row.path, &row.split_siblings);
+    let total = crate::discovery::shard_sizes::on_disk_total(&row.path, &row.split_siblings);
+    if total > 0 {
+      return total;
+    }
   }
-  crate::discovery::shard_sizes::on_disk_total(model_path, &[])
+  let total = crate::discovery::shard_sizes::on_disk_total(model_path, &[]);
+  if total > 0 {
+    return total;
+  }
+  // `stat` on a directory reports its inode size, not its contents, so a
+  // directory-shaped model launched by absolute path from outside the scan
+  // roots measured 0 here — and 0 is the figure that disarms the memory
+  // guards. The admission gate used to patch this up privately, which left the
+  // backend's own cache-cap arithmetic still working from 0: one launch, two
+  // different weights. Measured once, here, so every consumer agrees.
+  // Off the runtime — a stat per shard, following the HF cache's symlinks.
+  let p = model_path.to_path_buf();
+  tokio::task::spawn_blocking(move || crate::launch::admission::dir_weight_bytes(&p))
+    .await
+    .unwrap_or(0)
 }
 
 /// Live GPU-backend flavor — keys the built-in defaults table.
@@ -1416,7 +1510,7 @@ mod tests {
     // inherited) knobs survive verbatim.
     let auto_set: std::collections::BTreeSet<String> =
       ["auto_knob".to_string()].into_iter().collect();
-    let persisted = backend_knobs_for_persist(&resolved, &auto_set);
+    let persisted = backend_knobs_for_persist(&resolved, &auto_set, &[]);
     assert!(
       !persisted.contains_key("auto_knob"),
       "an auto-resolved knob must not be frozen into last_params"
@@ -1427,12 +1521,82 @@ mod tests {
     );
 
     // Nothing auto-resolved → every knob persists verbatim.
-    let none_auto = backend_knobs_for_persist(&resolved, &std::collections::BTreeSet::new());
+    let none_auto = backend_knobs_for_persist(&resolved, &std::collections::BTreeSet::new(), &[]);
     assert_eq!(
       none_auto.get("auto_knob"),
       Some(&KnobValue::Set("true".to_string())),
       "with no auto-set keys, all knobs persist"
     );
+
+    // A knob the backend declares volatile is dropped even though the *user*
+    // set it: replaying it turns a one-off `--preset` into a permanent
+    // opt-out of whatever guard the unset state arms.
+    let volatile = backend_knobs_for_persist(
+      &resolved,
+      &std::collections::BTreeSet::new(),
+      &["user_knob"],
+    );
+    assert!(
+      !volatile.contains_key("user_knob"),
+      "a volatile knob must not be replayed from last_params"
+    );
+    assert!(
+      volatile.contains_key("auto_knob"),
+      "every other knob still persists"
+    );
+  }
+
+  /// "Dropped" has to mean something was going to be emitted. A `false` bool
+  /// never reaches argv on any backend, and `false` is also what an unset
+  /// value round-trips to through a preset, so counting it warned on every
+  /// preset launch about a knob the user never touched.
+  #[test]
+  fn field_is_set_ignores_a_false_bool_but_counts_a_true_one() {
+    use crate::config::{KnobValue, TypedKnobs};
+    use crate::launch::flag_aliases::KnobField;
+
+    let mut knobs = TypedKnobs::default();
+    assert!(!field_is_set(&knobs, KnobField::Reasoning), "unset");
+
+    knobs.reasoning = Some(KnobValue::Set(false));
+    assert!(
+      !field_is_set(&knobs, KnobField::Reasoning),
+      "a false bool emits nothing, so nothing was dropped"
+    );
+
+    knobs.reasoning = Some(KnobValue::Set(true));
+    assert!(
+      field_is_set(&knobs, KnobField::Reasoning),
+      "a true bool would have reached argv"
+    );
+
+    let auto = TypedKnobs {
+      reasoning: Some(KnobValue::Auto),
+      ..Default::default()
+    };
+    assert!(
+      !field_is_set(&auto, KnobField::Reasoning),
+      "Auto emits nothing"
+    );
+  }
+
+  /// The guard is only as good as the declaration: a backend whose unset
+  /// memory knobs arm an automatic cap must list both, or one `--preset` run
+  /// disables the cap for every launch after it.
+  #[test]
+  fn a_backend_that_auto_caps_memory_declares_those_knobs_volatile() {
+    use crate::backend::Backend;
+    for b in crate::backend::Backends::all() {
+      let volatile = Backend::volatile_native_knobs(&b);
+      let knobs: Vec<&str> = Backend::native_knobs(&b).iter().map(|d| d.id).collect();
+      for id in volatile {
+        assert!(
+          knobs.contains(id),
+          "{} declares `{id}` volatile but does not register it as a native knob",
+          Backend::id(&b)
+        );
+      }
+    }
   }
 
   #[tokio::test]
@@ -1487,6 +1651,72 @@ mod tests {
         .id(),
       crate::backend::DEFAULT_BACKEND_ID
     );
+  }
+
+  /// A stopped launch must drop its snapshot **whatever shape its identity is**.
+  /// Keyed on `ModelIdentity` equality, a row persisted under a `Backend`
+  /// identity never matched the supervisor's always-`Gguf` id, so the snapshot
+  /// outlived the process; `status` then matched the orphan by port and
+  /// reported its backend and ctx for the next launch on that port.
+  #[tokio::test]
+  async fn stopping_a_backend_identity_launch_drops_its_running_snapshot() {
+    let ctx = MethodContext::new(ShutdownToken::new());
+    let backend_row = RunningSnapshot {
+      id: ModelIdentity::Backend(crate::backend::identity::BackendModelId {
+        backend: "some-backend".to_string(),
+        name: "o/r".to_string(),
+      }),
+      pid: 1,
+      port: 41100,
+      started_at: 0,
+      launch_id: Some(LaunchId("L1".to_string())),
+      params: LaunchParams::new(PathBuf::from("/m/snapshots/rev"), LaunchMode::Chat),
+      actuals: Default::default(),
+      resolved_backend: "some-backend".to_string(),
+    };
+    let other = RunningSnapshot {
+      launch_id: Some(LaunchId("L2".to_string())),
+      port: 41101,
+      ..backend_row.clone()
+    };
+    ctx
+      .state
+      .mutate(move |s| {
+        s.running.push(backend_row);
+        s.running.push(other);
+      })
+      .await;
+
+    drop_running_snapshots(&ctx, &[(LaunchId("L1".to_string()), 41100)]).await;
+
+    let left = ctx.state.snapshot().await.running;
+    assert_eq!(left.len(), 1, "only the stopped launch's row is dropped");
+    assert_eq!(left[0].launch_id, Some(LaunchId("L2".to_string())));
+  }
+
+  /// A row with no stamped launch id (adopted before the stamp existed) still
+  /// has to be reapable, so the port fallback stays.
+  #[tokio::test]
+  async fn drop_running_snapshots_falls_back_to_port_for_an_unstamped_row() {
+    let ctx = MethodContext::new(ShutdownToken::new());
+    ctx
+      .state
+      .mutate(|s| {
+        s.running.push(RunningSnapshot {
+          id: ModelIdentity::Gguf(crate::gguf::identity::compute("/m/a.gguf", b"hdr")),
+          pid: 1,
+          port: 41100,
+          started_at: 0,
+          launch_id: None,
+          params: LaunchParams::new(PathBuf::from("/m/a.gguf"), LaunchMode::Chat),
+          actuals: Default::default(),
+          resolved_backend: "llamacpp".to_string(),
+        });
+      })
+      .await;
+
+    drop_running_snapshots(&ctx, &[(LaunchId("L1".to_string()), 41100)]).await;
+    assert!(ctx.state.snapshot().await.running.is_empty());
   }
 
   #[test]

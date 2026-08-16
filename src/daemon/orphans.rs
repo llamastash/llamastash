@@ -76,6 +76,25 @@ pub struct ExternalProcess {
   pub launched_by_llamastash: bool,
 }
 
+/// Whether a process basename is an instance of the backend `marker` names.
+///
+/// An exact basename match, plus `<marker>-<suffix>` for **compound** markers
+/// only.
+///
+/// A bare `contains` was safe while every marker was a long compound basename
+/// (`llama-server`, `ds4-server`), where a `-cuda` / `-vulkan` build suffix is
+/// certainly the same program and `comm`'s 15-char cap can truncate it. It
+/// stops being safe once a backend registers a short single-token marker: a
+/// four-character token is a substring of unrelated tools on the host, and
+/// claiming one makes it a legal `stop_external` target. Suffix tolerance is
+/// therefore extended only to markers already specific enough to earn it.
+fn basename_matches_marker(basename: &str, marker: &str) -> bool {
+  if basename == marker {
+    return true;
+  }
+  marker.contains('-') && basename.starts_with(&format!("{marker}-"))
+}
+
 /// Inputs to a sweep — the daemon hands them in.
 #[derive(Debug, Clone)]
 pub struct SweepInputs<'a> {
@@ -145,12 +164,23 @@ pub async fn sweep(inputs: SweepInputs<'_>) -> SweepReport {
       stale.push(snap);
       continue;
     }
-    // Orphan re-adoption is process-based, so it is GGUF-only: a
-    // managed-multiplexer snapshot has no local file and is served by the
-    // shared umbrella, not a re-adoptable per-model child.
-    // A non-GGUF identity therefore can't be re-adopted — drop it as stale.
+    let backend = crate::backend::Backends::all()
+      .into_iter()
+      .find(|b| b.id() == snap.resolved_backend)
+      .unwrap_or_else(crate::backend::default_backend);
+    // Orphan re-adoption is process-based, so it needs a path to confirm
+    // against. Keyed on **lifecycle**, not identity shape: a managed
+    // multiplexer is served by the shared umbrella and has no re-adoptable
+    // child of its own, but a process-per-model backend spawns a real child
+    // with a real path even when its identity is not a GGUF. Dropping those
+    // unprobed left the server alive, holding its port and its GPU
+    // allocation, in neither `running` nor `external` and reachable by no
+    // stop command.
     let path = match snap.id.as_gguf() {
       Some(g) => g.path.clone(),
+      None if backend.lifecycle() == crate::backend::Lifecycle::ProcessPerModel => {
+        snap.params.model_path.clone()
+      }
       None => {
         stale.push(snap);
         continue;
@@ -170,10 +200,6 @@ pub async fn sweep(inputs: SweepInputs<'_>) -> SweepReport {
       .process(sysinfo::Pid::from_u32(snap.pid as u32))
       .map(|p| p.cmd().iter().map(|s| s.to_string_lossy().into()).collect())
       .unwrap_or_default();
-    let backend = crate::backend::Backends::all()
-      .into_iter()
-      .find(|b| b.id() == snap.resolved_backend)
-      .unwrap_or_else(crate::backend::default_backend);
     let matched = backend
       .adoption_matches(&path, &argv, snap.port, inputs.probe_timeout)
       .await;
@@ -214,7 +240,11 @@ pub async fn sweep(inputs: SweepInputs<'_>) -> SweepReport {
       // basename — for `/usr/bin/llama-server` it is `llama-server`,
       // for `target/debug/llamastash` it is `llamastash`.
       let basename = proc.name().to_string_lossy();
-      if !inputs.external_markers.iter().any(|m| basename.contains(m)) {
+      if !inputs
+        .external_markers
+        .iter()
+        .any(|m| basename_matches_marker(&basename, m))
+      {
         return None;
       }
       let model_path = extract_model_path(&cmd);
@@ -270,6 +300,24 @@ pub(crate) async fn models_endpoint_matches(port: u16, expected: &Path, timeout:
   }
 }
 
+/// Adoption confirmation for a backend that advertises a **served name**
+/// rather than the model path in `/v1/models`.
+///
+/// Exact match against the parsed `data[].id` values, never a scan of the raw
+/// body — same reasoning as the readiness probe: a substring hit could come
+/// from another entry's `root` path rather than from an id this server owns.
+pub(crate) async fn models_endpoint_serves_id(
+  port: u16,
+  expected: &str,
+  timeout: Duration,
+) -> bool {
+  let Ok((200, body)) = fetch_models_body(port, timeout).await else {
+    return false;
+  };
+  crate::daemon::probe::served_model_ids(&body)
+    .is_some_and(|ids| ids.iter().any(|id| id == expected))
+}
+
 /// Compare two model paths for adoption, tolerant of canonicalisation: try a
 /// canonical compare first (resolves symlinks / `..`), fall back to a direct
 /// path compare when either can't be canonicalised (file already gone). Shared
@@ -322,37 +370,19 @@ pub(crate) async fn fetch_models_body(
 /// process whose response body happened to contain the filename
 /// (think `python -m http.server` serving a directory listing).
 fn body_mentions_path(body: &[u8], expected: &Path) -> bool {
-  let Ok(text) = std::str::from_utf8(body) else {
-    return false;
-  };
   let expected_str = expected.to_string_lossy();
-  let expected_base = expected.file_name().and_then(|s| s.to_str());
-  // Fast reject: the basename is a substring of both a full-path id
-  // and a bare-basename id, so if it isn't anywhere in the body no
-  // documented shape can match.
-  let Some(base) = expected_base else {
+  let Some(base) = expected.file_name().and_then(|s| s.to_str()) else {
     return false;
   };
-  if base.is_empty() || !text.contains(base) {
+  if base.is_empty() {
     return false;
   }
-  // Parse the body strictly. Only accept the documented OpenAI shape
-  // `{ "data": [ { "id": "<id>" }, ... ] }`. Extra fields are allowed
-  // (forward-compatible); a substring-only hit outside `data[].id` is
-  // rejected as accidental.
-  let parsed: serde_json::Value = match serde_json::from_str(text) {
-    Ok(v) => v,
-    Err(_) => return false,
-  };
-  let Some(arr) = parsed.get("data").and_then(|v| v.as_array()) else {
-    return false;
-  };
-  arr.iter().any(|row| {
-    row
-      .get("id")
-      .and_then(|v| v.as_str())
-      .map(|id| id_matches(id, expected_str.as_ref(), base))
-      .unwrap_or(false)
+  // Only the documented OpenAI shape counts; extra fields are fine
+  // (forward-compatible), a substring hit outside `data[].id` is not.
+  crate::daemon::probe::served_model_ids(body).is_some_and(|ids| {
+    ids
+      .iter()
+      .any(|id| id_matches(id, expected_str.as_ref(), base))
   })
 }
 
@@ -421,6 +451,31 @@ pub fn extract_port(cmd: &[String]) -> Option<u16> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  /// A short single-token marker used to match any process whose name merely
+  /// contained it — even with that backend disabled, which made unrelated
+  /// tools legal `stop_external` targets. Compound markers keep their
+  /// build-suffix tolerance, which is what the loose check was buying.
+  #[test]
+  fn a_marker_matches_its_own_binary_not_neighbours_that_share_the_name() {
+    for (basename, marker, want) in [
+      ("srv", "srv", true),
+      ("llama-server", "llama-server", true),
+      ("llama-server-cuda", "llama-server", true),
+      // A short token says nothing once anything follows it.
+      ("srv-router", "srv", false),
+      ("srvproxy", "srv", false),
+      ("my-srv-serve", "srv", false),
+      ("usrv", "srv", false),
+      ("not-llama-server", "llama-server", false),
+    ] {
+      assert_eq!(
+        basename_matches_marker(basename, marker),
+        want,
+        "{basename} vs {marker}"
+      );
+    }
+  }
 
   use std::path::PathBuf;
   use tokio::io::{AsyncReadExt, AsyncWriteExt};

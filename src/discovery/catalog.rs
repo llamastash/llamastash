@@ -103,7 +103,10 @@ fn catalog_row(m: &DiscoveredModel, available_routed: &BTreeSet<String>) -> Cata
     parent: m.parent.to_string_lossy().into_owned(),
     source: m.source.label().to_string(),
     arch: md.and_then(|d| d.arch.clone()),
-    quant: md.map(|d| d.quant.label().to_string()),
+    // A non-GGUF row has no GGML tag, so the verbatim `quant_label` a backend
+    // overlaid (AWQ / GPTQ / FP8) wins where present. Without this the field
+    // renders the `Unknown` placeholder for every safetensors row.
+    quant: md.map(|d| d.quant_display()),
     native_ctx: md.and_then(|d| d.native_ctx),
     mode_hint: md.map(|d| mode_hint_label(d.mode_hint).to_string()),
     parameter_label: md.and_then(|d| d.parameter_label.clone()),

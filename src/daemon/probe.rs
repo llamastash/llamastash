@@ -131,7 +131,7 @@ pub async fn poll_until_ready_model_id(
   loop {
     match probe_once_body(port, opts.interval, request.as_bytes()).await {
       Ok((status, body)) if status == ready_status => {
-        if expect_ids.is_empty() || expect_ids.iter().any(|id| body.contains(id.as_str())) {
+        if expect_ids.is_empty() || body_serves_expected_id(&body, expect_ids) {
           return ProbeOutcome::Ready;
         }
         // 200 with a non-matching id — the real backend hasn't bound yet.
@@ -145,6 +145,88 @@ pub async fn poll_until_ready_model_id(
     }
     tokio::time::sleep(opts.interval).await;
   }
+}
+
+/// Whether the response advertises a model id matching one of `expect_ids`.
+///
+/// Matching is **prefix against the parsed `data[].id` values**, not a scan of
+/// the whole response. Both halves matter:
+///
+/// - *Parsed*, because `body.contains(id)` matched anywhere in the payload —
+///   a header, another model's `root` cache path, a `parent` field. A short
+///   derived name (`gpt`, `base`) was then satisfied by any foreign server
+///   that grabbed the reserved port during the engine-init window, which is
+///   the exact threat this check exists to close.
+/// - *Prefix*, because ds4 registers the `deepseek-v4-` family prefix rather
+///   than its two exact aliases, so `-flash` / `-pro` / a future `-turbo` all
+///   pass without this list chasing upstream.
+///
+/// A body with no parseable `data` array never matches, so a non-OpenAI
+/// responder stays unready instead of being accidentally accepted.
+fn body_serves_expected_id(body: &str, expect_ids: &[String]) -> bool {
+  served_model_ids(body.as_bytes()).is_some_and(|ids| {
+    ids
+      .iter()
+      .any(|id| expect_ids.iter().any(|want| id.starts_with(want.as_str())))
+  })
+}
+
+/// The `data[].id` values an OpenAI-compatible `/v1/models` payload
+/// advertises, or `None` when the payload is not that shape.
+///
+/// The one place this wire shape is decoded. Every caller that needs to ask
+/// "does this server serve the model I think it does" — the readiness probe
+/// here, and both adoption checks in [`crate::daemon::orphans`] — goes through
+/// it and applies its own comparison to the returned ids. They differ in how
+/// they compare (prefix, exact, path-tolerant), never in how they parse, and
+/// none of them may fall back to scanning the raw payload.
+///
+/// Accepts either a whole HTTP response or a bare body.
+pub(crate) fn served_model_ids(body: &[u8]) -> Option<Vec<String>> {
+  Some(
+    served_model_entries(body)?
+      .iter()
+      .filter_map(|m| m.get("id")?.as_str().map(str::to_string))
+      .collect(),
+  )
+}
+
+/// The raw `data[]` entries of a `/v1/models` payload, for callers that need a
+/// field other than `id` (a backend reading its resolved context window, say).
+pub(crate) fn served_model_entries(body: &[u8]) -> Option<Vec<serde_json::Value>> {
+  let text = std::str::from_utf8(body).ok()?;
+  // Skip the response headers, then decode the first JSON value and ignore
+  // whatever follows it (chunked-encoding trailers, a second document).
+  let start = text.find('{')?;
+  let mut de = serde_json::Deserializer::from_str(&text[start..]);
+  if let Ok(value) = <serde_json::Value as serde::Deserialize>::deserialize(&mut de) {
+    return Some(value.get("data")?.as_array()?.clone());
+  }
+  // Truncated at the read cap: the object never closes, so a strict decode
+  // fails outright and every id is lost — a server advertising enough models
+  // would then never reach Ready, with nothing pointing at the cap. Recover
+  // the entries that did arrive by decoding the `data` array element-wise.
+  let data_at = text[start..].find("\"data\"")? + start;
+  let arr_at = text[data_at..].find('[')? + data_at + 1;
+  // A stream deserializer expects self-delimiting values, but array elements
+  // are comma-separated: it parses the first and then stops on the separator.
+  // Step over each comma by hand so every whole element before the cut is
+  // recovered, not just the first.
+  let mut rest = text[arr_at..].trim_start();
+  let mut out = Vec::new();
+  loop {
+    let mut stream = serde_json::Deserializer::from_str(rest).into_iter::<serde_json::Value>();
+    let Some(Ok(value)) = stream.next() else {
+      break;
+    };
+    out.push(value);
+    rest = rest[stream.byte_offset()..].trim_start();
+    let Some(after_comma) = rest.strip_prefix(',') else {
+      break;
+    };
+    rest = after_comma.trim_start();
+  }
+  (!out.is_empty()).then_some(out)
 }
 
 /// One probe attempt that also captures the response body (for the model-id
@@ -216,6 +298,77 @@ fn parse_status(bytes: &[u8]) -> Option<u16> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn served_model_ids_reads_the_data_array_not_the_whole_body() {
+    let body = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n\
+      {\"object\":\"list\",\"data\":[{\"id\":\"owner/model\",\"root\":\"/cache/x\"}]}";
+    assert_eq!(
+      served_model_ids(body.as_bytes()).as_deref(),
+      Some(&["owner/model".to_string()][..])
+    );
+  }
+
+  /// A body cut off at the read cap still has to yield every id that arrived
+  /// whole, not just the first — the served name we are waiting for may be any
+  /// of them, and losing it means the model never reaches Ready.
+  #[test]
+  fn a_truncated_body_recovers_every_whole_entry() {
+    let body = "HTTP/1.1 200 OK\r\n\r\n\
+      {\"object\":\"list\",\"data\":[\
+      {\"id\":\"owner/first\"},{\"id\":\"owner/second\"},{\"id\":\"owner/thi";
+    assert_eq!(
+      served_model_ids(body.as_bytes()).as_deref(),
+      Some(&["owner/first".to_string(), "owner/second".to_string()][..])
+    );
+  }
+
+  /// The guard this check exists for: the reserved port sits idle for the
+  /// whole engine-init window, so a foreign OpenAI-compatible server can
+  /// answer first. A substring scan accepted it whenever the expected name
+  /// appeared anywhere in the response — including inside another model's
+  /// `root` path, which is exactly what a second llamastash proxy would serve.
+  #[test]
+  fn a_foreign_server_mentioning_the_name_is_not_ready() {
+    let expect = vec!["base".to_string()];
+    let foreign = "HTTP/1.1 200 OK\r\n\r\n\
+      {\"object\":\"list\",\"data\":[{\"id\":\"other-model\",\"root\":\"/models/base/x\"}]}";
+    assert!(
+      foreign.contains("base"),
+      "the old substring check would pass this"
+    );
+    assert!(
+      !body_serves_expected_id(foreign, &expect),
+      "a `base` inside another model's path must not count as ready"
+    );
+  }
+
+  /// ds4 registers the family prefix rather than its exact aliases, so prefix
+  /// matching against the parsed ids has to keep working.
+  #[test]
+  fn a_family_prefix_still_matches_a_real_alias() {
+    let body = "HTTP/1.1 200 OK\r\n\r\n\
+      {\"object\":\"list\",\"data\":[{\"id\":\"deepseek-v4-flash\",\"object\":\"model\"}]}";
+    assert!(body_serves_expected_id(body, &["deepseek-v4-".to_string()]));
+    assert!(!body_serves_expected_id(body, &["qwen".to_string()]));
+  }
+
+  #[test]
+  fn a_non_openai_body_is_never_ready() {
+    let expect = vec!["base".to_string()];
+    assert_eq!(
+      served_model_ids(b"HTTP/1.1 200 OK\r\n\r\n<html>base</html>"),
+      None
+    );
+    assert!(!body_serves_expected_id(
+      "HTTP/1.1 200 OK\r\n\r\n<html>base</html>",
+      &expect
+    ));
+    assert!(!body_serves_expected_id(
+      "HTTP/1.1 200 OK\r\n\r\n{\"error\":\"nope\"}",
+      &expect
+    ));
+  }
 
   #[test]
   fn scale_for_model_leaves_base_alone_when_size_unknown() {

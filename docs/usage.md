@@ -330,7 +330,7 @@ Launch a model. Layered resolution: catalog row → optional preset → per-invo
 ```
 llamastash start <ref> [--preset NAME] [--ctx N] [--port N] [--wait]
                      [--reasoning on|off] [--mode chat|embedding|rerank]
-                     [--backend auto|ds4|llamacpp|lemonade] [--server <id>]
+                     [--backend auto|ds4|llamacpp|lemonade|vllm] [--server <id>]
                      [--<advanced-knob> ...] [-- <llama-server-flags>...]
 ```
 
@@ -599,6 +599,32 @@ ds4-server advertises a **static two-entry list** on `/v1/models` — both `deep
 ### kv-disk cache privacy
 
 `--kv-disk-dir` is ds4's own persistent cache, reused across restarts. LlamaStash never subdir-mangles or cleans it — it is entirely ds4-owned state. It durably holds conversation-derived data under ds4's own permissions (umask) at exactly the path you type, without any of LlamaStash's `0600` state-file hygiene. **Point it at a private, user-owned directory.**
+
+## vLLM backend
+
+**Experimental.** vLLM serves **safetensors HuggingFace repos** — the non-GGUF half of your cache. A GGUF still binds llama.cpp (or ds4); vLLM claims repos the GGUF scanner does not. Setup, the ROCm container recipe, and the full knob table are in **[vLLM setup](vllm-setup.md)**.
+
+Enable/disable follows the same tri-state as the other detected backends: unset means on-when-found, `backend.vllm.enabled: false` forces off, and `daemon start --vllm` / `LLAMASTASH_VLLM=1` force on over it.
+
+```bash
+llamastash status --json | jq '.backends[] | select(.id == "vllm")'
+llamastash list                       # safetensors rows show BACKEND=vllm
+llamastash start owner/repo --ctx 4096
+```
+
+Three behaviours differ from the GGUF backends and are worth knowing:
+
+- **A vLLM row's path is a directory**, not a weight file — the resolved HF snapshot. `list` shows the repo id as the name, since the directory basename is an opaque revision hash.
+- **Detection never runs the binary.** vLLM builds its argument parser through a device probe and fails with `Failed to infer device type` on a host with no usable accelerator, so LlamaStash checks only that the configured path exists. That is also why a container wrapper script works as the `binary`.
+- **Startup is slow and readiness waits for it.** Engine init (memory profiling plus KV-cache build) ran 10-27 s on a 0.5B and takes longer on real models. Readiness requires `/v1/models` to advertise the model, not just an answering port.
+
+`--ctx` maps to `--max-model-len`. Nine vLLM-specific tunables are native knobs (`kv_cache_memory_bytes`, `gpu_memory_utilization`, `max_num_seqs`, `tensor_parallel_size`, `dtype`, `kv_cache_dtype`, `quantization`, `enforce_eager`, `trust_remote_code`); the rest of vLLM's ~240 flags ride the `-- <extras>` tail, minus a denylist that keeps the launch loopback-only and reapable.
+
+**On unified-memory hosts (APUs), the KV cache is capped automatically.** GPU memory is system RAM there, and vLLM sizes its KV cache against the pool rather than the model — the default has exhausted RAM and frozen a 121 GB machine. When neither `kv_cache_memory_bytes` nor `gpu_memory_utilization` is set, the launcher caps the cache from live free memory. See [vLLM setup](vllm-setup.md#notes-and-limitations).
+
+`backend.vllm.cors` controls cross-origin access, defaulting to `true` because that is vLLM's own behaviour (it allows any origin and offers no switch but `--allowed-origins`). The proxy relays those headers onto its stable port, so while it is on, any page you visit can read completions off the loopback listener. Set it to `false` to pin `--allowed-origins '[]'`.
+
+Known gap: multi-GPU device selection is not wired.
 
 ## Proxy (OpenAI-compatible listener)
 
@@ -1007,7 +1033,7 @@ Source of truth: `src/cli/exit_codes.rs`. Codes are part of the public CLI contr
 | `67` | `LAUNCH_FAILED`        | Daemon accepted `start_model` but the supervisor failed (probe timeout, port allocation, etc.)                                                         |
 | `68` | `STOP_FAILED`          | `stop` couldn't reach the target (daemon error or process gone)                                                                                        |
 | `69` | `PULL_FAILED`          | `pull` couldn't complete (network, integrity, disk space)                                                                                              |
-| `70` | `BINARY_NOT_FOUND`     | `llama-server` not on PATH, no `--llama-server` flag, `LLAMASTASH_LLAMA_SERVER` unset                                                                  |
+| `70` | `BINARY_NOT_FOUND`     | The engine the model needs is unavailable: `llama-server` not on PATH with no `--llama-server` flag and `LLAMASTASH_LLAMA_SERVER` unset, or the model's backend is disabled / its launcher missing |
 | `71` | `UNKNOWN`              | Catch-all for unexpected errors that don't map to a documented class                                                                                   |
 | `72` | `INIT_ABORTED`         | `init` aborted before smoke — integrity check failed, archive defenses tripped, user declined confirm, or non-TTY config step without explicit consent |
 | `73` | `INIT_DOWNLOAD_FAILED` | `init`'s model-download step failed (distinct from `PULL_FAILED` so agents branch on cause)                                                            |
@@ -1081,7 +1107,11 @@ When enabled, left-click moves focus and the wheel replays the `↑`/`↓` actio
 
 ### HuggingFace pull dialog (`Focus::HfDialog`, `Shift+P` from the Models list)
 
-Three-stage modal: **Search → File picker → Confirm**. Search runs live against the public `/api/models` endpoint (300 ms debounce); paste an `owner/repo[:filename]` slug + Enter to bypass search. Each search row carries two size columns — `params` (model parameter count, e.g. `35B`) and `size` (approximate download size, the representative GGUF file HF parsed, e.g. `5.3G`); the exact per-quant size lands in the File picker.
+Three-stage modal: **Search → File picker → Confirm**. Search runs live against the public `/api/models` endpoint (300 ms debounce); paste an `owner/repo[:filename]` slug + Enter to bypass search. Each search row carries a `fmt` column and two size columns — `params` (model parameter count, e.g. `35B`) and `size` (approximate download size, the representative GGUF file HF parsed, e.g. `5.3G`); the exact per-quant size lands in the File picker.
+
+`fmt` is the repo's weight format: `GGUF` for llama.cpp / ds4, `SFTN` for a safetensors repo (vLLM), `-` when the repo publishes both or neither. Both formats are searched — the browser used to be GGUF-only, which left safetensors repos unfindable and so unpullable. The `init` wizard still searches GGUF only, since it is bootstrapping a first model for the default backend.
+
+Drilling into a GGUF repo lists its quants to pick from. A safetensors repo has nothing to pick — one model spread over `*.safetensors` plus `config.json` and the tokenizer files, all of which an engine needs — so the picker offers a single whole-repo row and the pull takes the full set.
 
 | Key                         | Action                                                                                                                                                                                                   |
 | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1170,7 +1200,7 @@ that pinned a selector. Once a model is running, the read-only Settings
 view shows a `server` row naming the build that served it (when the
 model has more than one compatible server). The bottom `extras` row holds the free-form argv tail for
 flags the typed editor doesn't model; forbidden flags
-(`--host`, `--listen`, `--bind`, `--api-key`, `--ssl-*`) surface a
+(`--host`, `--listen`, `--bind`, `--api-key`, `--ssl-*`, `--port`) surface a
 red inline warning with secret values redacted.
 
 ### Precedence chain

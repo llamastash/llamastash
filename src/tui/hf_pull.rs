@@ -290,11 +290,14 @@ pub(crate) fn spawn_download_task(
         let _ = tx.send(Event::Download(evt)).await;
       }
     };
-    let spec = match RepoSpec::parse(&format!(
-      "{}:{}",
-      pull.repo_id,
-      pull.row.download_filename()
-    )) {
+    // A whole-repo pull has no pinned filename, so the spec is the bare repo
+    // id — `owner/repo:` would parse as an empty pin and match nothing.
+    let spec_str = if pull.row.is_whole_repo() {
+      pull.repo_id.clone()
+    } else {
+      format!("{}:{}", pull.repo_id, pull.row.download_filename())
+    };
+    let spec = match RepoSpec::parse(&spec_str) {
       Ok(s) => s,
       Err(e) => {
         push_dl(crate::tui::download_strip::DownloadEvent::Error {
@@ -314,7 +317,11 @@ pub(crate) fn spawn_download_task(
       inner: std::sync::Mutex::new(StripProgressInner::default()),
     });
     let options = DownloadOptions {
-      extension_filter: Some(".gguf".into()),
+      // A whole-repo pull takes the model's full file set — weights plus the
+      // config and tokenizer an engine needs to load them — so no per-file
+      // extension filter. `prefer_safetensors` still drops a duplicate
+      // `.bin`/`.pth` copy of the same weights.
+      extension_filter: (!pull.row.is_whole_repo()).then(|| ".gguf".to_string()),
       estimated_bytes: pull.row.size_bytes(),
       progress: Some(
         progress.clone() as std::sync::Arc<dyn crate::init::download::DownloadProgress>
@@ -483,7 +490,19 @@ fn spawn_hf_search(
   };
   tokio::spawn(async move {
     let fetch_client = build_tui_fetch_client(offline);
-    let evt = match hf_api::search(&fetch_client, &query, sort, cursor.as_deref()).await {
+    // Unfiltered: the search pinned `filter=gguf`, so a safetensors repo could
+    // not be found and therefore could not be pulled at all. Rows carry a
+    // FORMAT column instead, which is the honest answer -- a repo is worth
+    // downloading whether or not a backend that serves it is installed today.
+    let evt = match hf_api::search(
+      &fetch_client,
+      &query,
+      sort,
+      cursor.as_deref(),
+      hf_api::WeightFormatFilter::Any,
+    )
+    .await
+    {
       Ok(page) => crate::tui::hf_dialog::HfDialogEvent::SearchResults { seq, page },
       Err(e) => crate::tui::hf_dialog::HfDialogEvent::SearchFailed { seq, error: e },
     };

@@ -48,6 +48,7 @@ pub mod identity;
 pub mod lemonade;
 pub mod llama_cpp;
 pub mod server;
+pub mod vllm;
 
 pub use server::{
   build_server_catalog, config_server_catalog, missing_configured_servers, Device, Server,
@@ -71,6 +72,7 @@ use crate::backend::ds4::Ds4Backend;
 use crate::backend::identity::ModelIdentity;
 use crate::backend::lemonade::LemonadeBackend;
 use crate::backend::llama_cpp::LlamaCppBackend;
+use crate::backend::vllm::VllmBackend;
 use crate::daemon::context::MethodContext;
 use crate::daemon::probe::ProbeOptions;
 use crate::gguf::header::GgufHeader;
@@ -399,6 +401,22 @@ pub trait Backend {
   /// generic launch path carries no llama.cpp-specific launch scalars.
   fn seed_launch_knobs(&self, _ctx: &MethodContext, _params: &mut LaunchParams) {}
 
+  /// Native knobs that must **not** be replayed from `last_params`.
+  ///
+  /// For a knob whose value is a judgement about *this host, right now* rather
+  /// than a lasting preference. Persisting one makes a single experiment
+  /// permanent: the user passes it once through a preset, and every later bare
+  /// launch silently inherits it — including, for a memory knob, the launch
+  /// where the auto guard would have stepped in. The knob still applies to the
+  /// launch that asked for it, and still applies whenever its preset is named
+  /// again; it just is not remembered on the user's behalf.
+  ///
+  /// Distinct from [`NativeKnobResolution::auto_set`], which drops what the
+  /// *daemon* resolved. This drops what the *user* set. Default: none.
+  fn volatile_native_knobs(&self) -> &'static [&'static str] {
+    &[]
+  }
+
   /// Ctx floor to project admission memory demand against when `ctx` is unpinned,
   /// or `None` to use a neutral default. Default: `None`.
   fn admission_ctx_floor(&self, _params: &LaunchParams) -> Option<u32> {
@@ -499,6 +517,42 @@ pub trait Backend {
   /// claiming backend's id as the model's `routed_backend`, and the `list`
   /// badge / launch routing read that — so a new special-routing backend needs
   /// only override this, with no discovery edit.
+  /// Config-only enablement, for boot decisions taken before the full
+  /// [`MethodContext`] exists (the discovery task is spawned first). Same
+  /// predicate as [`Backend::available`], reading only what `DaemonOptions`
+  /// already has. Default `false` — a backend opts in alongside
+  /// [`Backend::projects_hf_repos`].
+  fn enabled_in_config(
+    &self,
+    _config: &BackendConfig,
+    _force: &std::collections::BTreeMap<String, bool>,
+  ) -> bool {
+    false
+  }
+
+  /// Whether this backend projects rows from the shared safetensors / HF-repo
+  /// enumerator. Read *before* the walk so an install with no such backend
+  /// enabled skips it entirely rather than walking the cache and discarding
+  /// the result.
+  fn projects_hf_repos(&self) -> bool {
+    false
+  }
+
+  /// Catalog rows this backend contributes from the shared safetensors /
+  /// HF-repo enumerator, given every non-GGUF candidate the walk found.
+  ///
+  /// Default: none. A backend that serves safetensors repos overrides this
+  /// with its eligibility predicate plus a projection — that pair is the whole
+  /// leaf, and it keeps the discovery task free of any backend name. The
+  /// enumerator runs once per rescan and the candidates are shared, so a
+  /// second safetensors engine costs one more override, not another walk.
+  fn project_hf_repos(
+    &self,
+    _candidates: &[crate::discovery::hf_repos::HfRepoCandidate],
+  ) -> Vec<crate::discovery::DiscoveredModel> {
+    Vec::new()
+  }
+
   fn auto_routes(&self, _header: &GgufHeader) -> bool {
     false
   }
@@ -606,6 +660,22 @@ pub trait Backend {
     _weights_bytes: u64,
   ) -> NativeKnobResolution {
     NativeKnobResolution::default()
+  }
+
+  /// Bytes this launch will hold beyond its weights, for a model with no GGUF
+  /// header to project demand from.
+  ///
+  /// Only the backend can answer: the figure lives in its own native knobs,
+  /// and the knobs are its own vocabulary. Called with post-headroom free
+  /// bytes so a backend expressing its budget as a *fraction of the pool* can
+  /// turn that into bytes. `None` means "no projection possible", which leaves
+  /// the admission gate disengaged — return a figure wherever one can be
+  /// derived, because a silent skip is how an oversized launch reaches spawn.
+  ///
+  /// Default `None`: a GGUF backend projects from its header instead and never
+  /// reaches this path.
+  fn projected_cache_bytes(&self, _params: &LaunchParams, _free_bytes: u64) -> Option<u64> {
+    None
   }
 
   /// Whether this launch bypasses the pre-spawn memory admission gate — a
@@ -856,6 +926,7 @@ pub struct BackendConfig {
   pub llamacpp: crate::backend::llama_cpp::LlamaCppConfig,
   pub lemonade: crate::backend::lemonade::LemonadeConfig,
   pub ds4: crate::backend::ds4::Ds4Config,
+  pub vllm: crate::backend::vllm::VllmConfig,
 }
 
 /// Zero-cost, exhaustive dispatch over the available backends.
@@ -872,6 +943,8 @@ pub enum Backends {
   Lemonade(LemonadeBackend),
   /// ds4 (DwarfStar) — direct process-per-model for DeepSeek V4 GGUFs.
   Ds4(Ds4Backend),
+  /// vLLM — direct process-per-model for safetensors HF repos.
+  Vllm(VllmBackend),
 }
 
 /// Forward a [`Backend`] call to whichever [`Backends`] variant is active.
@@ -888,6 +961,7 @@ macro_rules! for_each_backend {
       Backends::LlamaCpp($b) => $body,
       Backends::Lemonade($b) => $body,
       Backends::Ds4($b) => $body,
+      Backends::Vllm($b) => $body,
     }
   };
 }
@@ -905,6 +979,7 @@ impl Backends {
       Backends::LlamaCpp(LlamaCppBackend::new()),
       Backends::Lemonade(LemonadeBackend::new()),
       Backends::Ds4(Ds4Backend::new()),
+      Backends::Vllm(VllmBackend::new()),
     ]
   }
 }
@@ -959,6 +1034,10 @@ impl Backend for Backends {
 
   fn forbidden_extra_heads(&self) -> &'static [&'static str] {
     for_each_backend!(self, b => b.forbidden_extra_heads())
+  }
+
+  fn volatile_native_knobs(&self) -> &'static [&'static str] {
+    for_each_backend!(self, b => b.volatile_native_knobs())
   }
 
   fn serves_web_ui(&self) -> bool {
@@ -1023,6 +1102,25 @@ impl Backend for Backends {
     for_each_backend!(self, b => b.auto_routes(header))
   }
 
+  fn enabled_in_config(
+    &self,
+    config: &BackendConfig,
+    force: &std::collections::BTreeMap<String, bool>,
+  ) -> bool {
+    for_each_backend!(self, b => b.enabled_in_config(config, force))
+  }
+
+  fn projects_hf_repos(&self) -> bool {
+    for_each_backend!(self, b => b.projects_hf_repos())
+  }
+
+  fn project_hf_repos(
+    &self,
+    candidates: &[crate::discovery::hf_repos::HfRepoCandidate],
+  ) -> Vec<crate::discovery::DiscoveredModel> {
+    for_each_backend!(self, b => b.project_hf_repos(candidates))
+  }
+
   fn serves_mode(&self, mode: LaunchMode) -> bool {
     for_each_backend!(self, b => b.serves_mode(mode))
   }
@@ -1071,6 +1169,10 @@ impl Backend for Backends {
 
   fn bypasses_admission(&self, params: &LaunchParams) -> bool {
     for_each_backend!(self, b => b.bypasses_admission(params))
+  }
+
+  fn projected_cache_bytes(&self, params: &LaunchParams, free_bytes: u64) -> Option<u64> {
+    for_each_backend!(self, b => b.projected_cache_bytes(params, free_bytes))
   }
 
   fn installed(&self, ctx: &MethodContext) -> bool {
@@ -1239,6 +1341,146 @@ pub fn synthetic_identity_for_path(path: &Path) -> Option<(ModelIdentity, String
   Backends::all().into_iter().find_map(|b| {
     b.synthetic_identity(path)
       .map(|id| (id, b.id().to_string()))
+  })
+}
+
+/// [`synthetic_identity_for_path`] restricted to backends that are actually
+/// available on this host.
+///
+/// The ungated form has no `ctx` and so cannot consult config: a disabled
+/// backend still claimed a path shaped like one of its models, and the launch
+/// then failed with an error naming a backend the user had switched off. That
+/// contradicts the "an absent or disabled backend changes nothing" property
+/// the daemon and discovery task both document. Callers holding a context use
+/// this; the ungated form remains for clients that have none.
+pub fn synthetic_identity_for_path_available(
+  path: &Path,
+  ctx: &MethodContext,
+) -> Option<(ModelIdentity, String)> {
+  Backends::all()
+    .into_iter()
+    .filter(|b| b.available(ctx))
+    .find_map(|b| {
+      b.synthetic_identity(path)
+        .map(|id| (id, b.id().to_string()))
+    })
+}
+
+/// Everything a surface needs to identify a model path, whichever shape the
+/// model is: a local GGUF file, or a directory / registry entry a backend
+/// claims. Produced by [`resolve_identity_for_path`].
+#[derive(Debug, Clone)]
+pub struct ResolvedIdentity {
+  /// The file-keyed handle: last-params lookups, log-file names, the proxy's
+  /// coalesce + failure-tracker keys, MRU, running-snapshot retention. A
+  /// backend-claimed path carries the sentinel zero hash — this is a key, not
+  /// a digest, and the zero marks it as not-a-GGUF.
+  pub id: crate::gguf::identity::ModelId,
+  /// The identity that gets **persisted**: `Gguf` for a local file, `Backend`
+  /// for a claimed path.
+  pub identity: ModelIdentity,
+  /// The backend that claimed the path, when one did. Callers stamp it as
+  /// `resolved_backend`.
+  pub claimed_by: Option<String>,
+  /// Header-derived, and therefore `None` for a claimed path — the backend
+  /// owns that recipe, not us.
+  pub arch: Option<String>,
+  pub native_ctx: Option<u32>,
+  pub supported_backends: Vec<String>,
+  pub mtp_embedded: Option<u32>,
+}
+
+/// Why [`resolve_identity_for_path`] could not identify a path.
+#[derive(Debug, Clone)]
+pub enum IdentityError {
+  /// A backend recognizes this path, but it is disabled or its launcher is
+  /// absent. Distinct from `Header` because the fix is different — the user
+  /// enables a backend rather than repairing a file — and because falling
+  /// through to the header reader hands a directory to the GGUF parser and
+  /// surfaces a raw `EISDIR` instead of a reason.
+  BackendUnavailable { backend: String },
+  /// A local-file path whose GGUF header could not be read.
+  Header(String),
+}
+
+impl std::fmt::Display for IdentityError {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      Self::BackendUnavailable { backend } => write!(
+        f,
+        "is served by the `{backend}` backend, which is not available — \
+         enable it in config or install its launcher"
+      ),
+      Self::Header(msg) => write!(f, "{msg}"),
+    }
+  }
+}
+
+/// **The** path → identity resolution. Every surface that turns a model path
+/// into an id goes through here: launch, proxy auto-start, favorites, presets.
+///
+/// Each of those used to do its own thing. Three read a GGUF header directly
+/// and one special-cased a single backend by name, so support for a
+/// directory-shaped model had to be added four times and was in fact added
+/// twice — the proxy's auto-start died with `Is a directory (os error 21)` on
+/// exactly the models the launch path had already learned to handle. A new
+/// model shape is now one predicate ([`Backend::synthetic_identity`]) and every
+/// surface follows.
+///
+/// `ctx` gates on backend availability when a caller has one; clients without
+/// a context (and tests) pass `None` and get the ungated registry answer.
+pub fn resolve_identity_for_path(
+  path: &Path,
+  ctx: Option<&MethodContext>,
+) -> Result<ResolvedIdentity, IdentityError> {
+  let claimed = match ctx {
+    Some(c) => synthetic_identity_for_path_available(path, c),
+    None => synthetic_identity_for_path(path),
+  };
+  if let Some((identity, backend_id)) = claimed {
+    return Ok(ResolvedIdentity {
+      id: crate::gguf::identity::ModelId {
+        path: path.to_path_buf(),
+        header_blake3: [0u8; 32],
+      },
+      identity,
+      claimed_by: Some(backend_id),
+      arch: None,
+      native_ctx: None,
+      supported_backends: Vec::new(),
+      mtp_embedded: None,
+    });
+  }
+  // Claimed, but by a backend that is off or absent. Only reachable with a
+  // context — the ungated call above already accepted every claim.
+  if ctx.is_some() {
+    if let Some((_, backend)) = synthetic_identity_for_path(path) {
+      return Err(IdentityError::BackendUnavailable { backend });
+    }
+  }
+  // A local file. One header read yields the id and every header-derived
+  // field, so the knob resolver never re-reads it.
+  let header =
+    crate::gguf::header::read_path(path, crate::gguf::header::HeaderReadOptions::default())
+      .map_err(|e| {
+        IdentityError::Header(format!(
+          "could not read GGUF header at {}: {e}",
+          path.display()
+        ))
+      })?;
+  let summary = crate::gguf::metadata::summarise(&header.header);
+  let id = crate::gguf::identity::compute(path, &header.raw);
+  Ok(ResolvedIdentity {
+    identity: ModelIdentity::Gguf(id.clone()),
+    id,
+    claimed_by: None,
+    arch: summary.arch,
+    // Trained context window (`<arch>.context_length`), clamped into u32.
+    native_ctx: summary
+      .native_ctx
+      .map(|n| u32::try_from(n).unwrap_or(u32::MAX)),
+    supported_backends: supported_backends_for(&header.header),
+    mtp_embedded: summary.mtp,
   })
 }
 
@@ -1562,7 +1804,7 @@ mod tests {
     // construction (one `all()` line), which is what makes it surface in
     // `status` / `doctor` / `--backend` without editing those sites.
     let ids: Vec<&str> = Backends::all().iter().map(|b| b.id()).collect();
-    assert_eq!(ids, vec!["llamacpp", "lemonade", "ds4"]);
+    assert_eq!(ids, vec!["llamacpp", "lemonade", "ds4", "vllm"]);
     // Forwarding through the macro reaches each variant's real lifecycle.
     let by_id: std::collections::BTreeMap<&str, Lifecycle> = Backends::all()
       .iter()
@@ -1571,6 +1813,7 @@ mod tests {
     assert_eq!(by_id["llamacpp"], Lifecycle::ProcessPerModel);
     assert_eq!(by_id["lemonade"], Lifecycle::ManagedMultiplexer);
     assert_eq!(by_id["ds4"], Lifecycle::ProcessPerModel);
+    assert_eq!(by_id["vllm"], Lifecycle::ProcessPerModel);
   }
 
   fn ds4_header() -> GgufHeader {

@@ -184,9 +184,31 @@ pub(crate) fn take_tail_by_width(s: &str, budget: usize) -> String {
   s[start..].to_string()
 }
 
-/// Label column width for the `kv_row` / `kv_row_focused` settings
-/// rows. Wide enough for the longest knob name.
-const KV_LABEL_W: usize = 16;
+/// Label column width for every knob row, derived from the labels backends
+/// actually register rather than hand-maintained.
+///
+/// Two hand-set copies of this used to exist, both `18`, both documenting the
+/// same two 17-char labels, with nothing linking them — so the next backend to
+/// register a longer label would need both bumped, and bumping one reproduced
+/// the `Trust remote codeinherited` collision in whichever pane was missed.
+pub fn kv_label_width() -> usize {
+  static W: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+  *W.get_or_init(|| {
+    crate::backend::Backends::all()
+      .iter()
+      .flat_map(|b| crate::backend::Backend::native_knobs(b).iter())
+      .map(|d| d.label.chars().count())
+      .chain(std::iter::once(MIN_KV_LABEL_W))
+      .max()
+      .unwrap_or(MIN_KV_LABEL_W)
+      // One column of gap between label and value.
+      + 1
+  })
+}
+
+/// Floor, so the shared (non-native) rows keep their historical alignment even
+/// on a build whose backends all register short labels.
+const MIN_KV_LABEL_W: usize = 15;
 
 /// Inherited / empty value sentinels rendered when no override exists.
 /// Tracked in one place so `kv_row` / `kv_row_focused` agree on which
@@ -207,13 +229,13 @@ fn kv_value_style(value: &str, palette: &Palette) -> Style {
 }
 
 /// `  label            value` row used by the Settings running-launch
-/// view. Label padded to [`KV_LABEL_W`] in the label tone; value muted
+/// view. Label padded to [`kv_label_width`] in the label tone; value muted
 /// when it reads as a layered default.
 pub(crate) fn kv_row(label: &str, value: String, palette: &Palette) -> Line<'static> {
   let style = kv_value_style(&value, palette);
   Line::from(vec![
     Span::styled(
-      format!("  {label:<width$}", width = KV_LABEL_W),
+      format!("  {label:<width$}", width = kv_label_width()),
       palette.label_style(),
     ),
     Span::styled(value, style),
@@ -248,7 +270,7 @@ pub(crate) fn kv_row_focused(
   };
   let mut spans: Vec<Span<'static>> = Vec::with_capacity(6);
   spans.push(Span::styled(
-    format!("{marker}{label:<width$}", width = KV_LABEL_W),
+    format!("{marker}{label:<width$}", width = kv_label_width()),
     label_style,
   ));
   let v_style = kv_value_style(&value, palette);
@@ -322,6 +344,27 @@ pub(crate) fn clip_line(line: Line<'static>, max_width: usize, palette: &Palette
 
 #[cfg(test)]
 mod tests {
+
+  /// The label column is a cross-module contract: the strings live in backend
+  /// modules, the renderer is generic, and no golden exercises a long one — a
+  /// backend registering an 18-char label used to produce
+  /// `KV cache dtype sizeinherited` with every test still green.
+  #[test]
+  fn every_registered_knob_label_keeps_a_gap_before_its_value() {
+    let width = kv_label_width();
+    for b in crate::backend::Backends::all() {
+      for d in crate::backend::Backend::native_knobs(&b) {
+        let rendered = format!("{:<width$}", d.label, width = width);
+        assert!(
+          rendered.len() > d.label.chars().count(),
+          "`{}` ({} chars) fills the {width}-wide column with no separating \
+           space, so its value renders flush against it",
+          d.label,
+          d.label.chars().count()
+        );
+      }
+    }
+  }
   use super::*;
 
   fn demo_palette() -> &'static Palette {

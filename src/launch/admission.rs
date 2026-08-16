@@ -141,6 +141,38 @@ pub fn is_sampled(snap: &HostMetricsSnapshot) -> bool {
   snap.gpu_backend != HostMetricsSnapshot::UNINITIALIZED_BACKEND
 }
 
+/// Parse a byte count that may carry a `K`/`M`/`G` suffix (the spelling a
+/// launcher's own size flags accept), or a plain integer.
+pub fn parse_size_bytes(raw: &str) -> Option<u64> {
+  let s = raw.trim();
+  let (digits, mult) = match s.chars().last()? {
+    'k' | 'K' => (&s[..s.len() - 1], 1024),
+    'm' | 'M' => (&s[..s.len() - 1], 1024 * 1024),
+    'g' | 'G' => (&s[..s.len() - 1], 1024 * 1024 * 1024),
+    _ => (s, 1),
+  };
+  digits.trim().parse::<u64>().ok()?.checked_mul(mult)
+}
+
+/// On-disk bytes of a directory-shaped model: every regular file directly
+/// inside it, symlinks followed (the HF cache stores weights as links into
+/// `blobs/`). Zero when `dir` is not a readable directory.
+///
+/// The fallback when the catalog has no size — a launch by absolute path from
+/// outside the configured scan roots — because `stat` on a directory reports
+/// its inode size, not its contents.
+pub fn dir_weight_bytes(dir: &std::path::Path) -> u64 {
+  let Ok(entries) = std::fs::read_dir(dir) else {
+    return 0;
+  };
+  entries
+    .flatten()
+    .filter_map(|e| std::fs::metadata(e.path()).ok())
+    .filter(|m| m.is_file())
+    .map(|m| m.len())
+    .fold(0u64, u64::saturating_add)
+}
+
 /// Post-headroom free bytes across the budget pool(s). Discrete hosts
 /// sum post-headroom VRAM free + post-headroom system-RAM free.
 ///
@@ -250,6 +282,36 @@ mod tests {
 
   const GIB: u64 = 1024 * 1024 * 1024;
 
+  /// The gate's only weight source for a directory launched from outside the
+  /// scan roots, so a wrong answer here silently disarms the OOM refusal.
+  /// Sizes come from the link target, the way the HF cache stores weights.
+  #[test]
+  fn dir_weight_bytes_follows_links_and_ignores_subdirectories() {
+    let dir = crate::util::test_temp::unique_temp_dir("admission-dir-weight");
+    let blobs = dir.join("blobs");
+    std::fs::create_dir_all(&blobs).expect("blobs");
+    std::fs::write(blobs.join("sha-a"), vec![0u8; 4096]).expect("blob a");
+    std::fs::write(blobs.join("sha-b"), vec![0u8; 2048]).expect("blob b");
+
+    let snapshot = dir.join("snapshot");
+    std::fs::create_dir_all(&snapshot).expect("snapshot");
+    #[cfg(unix)]
+    {
+      std::os::unix::fs::symlink(blobs.join("sha-a"), snapshot.join("a.safetensors"))
+        .expect("link a");
+      std::os::unix::fs::symlink(blobs.join("sha-b"), snapshot.join("b.safetensors"))
+        .expect("link b");
+    }
+    // A nested directory contributes nothing; only files directly inside do.
+    std::fs::create_dir_all(snapshot.join("nested")).expect("nested");
+    std::fs::write(snapshot.join("nested").join("ignored"), vec![0u8; 9999]).expect("ignored");
+
+    #[cfg(unix)]
+    assert_eq!(dir_weight_bytes(&snapshot), 4096 + 2048);
+    assert_eq!(dir_weight_bytes(&dir.join("does-not-exist")), 0);
+    std::fs::remove_dir_all(&dir).ok();
+  }
+
   #[test]
   fn admits_when_demand_fits_and_records_reservation() {
     let ledger = Ledger::default();
@@ -310,6 +372,16 @@ mod tests {
     ledger.release(1);
     ledger.release(1); // no-op second time
     assert_eq!(ledger.reserved_bytes(), 10 * GIB);
+  }
+
+  #[test]
+  fn parse_size_bytes_accepts_the_suffixes_a_launcher_flag_takes() {
+    assert_eq!(parse_size_bytes("2147483648"), Some(2147483648));
+    assert_eq!(parse_size_bytes("2G"), Some(2 * 1024 * 1024 * 1024));
+    assert_eq!(parse_size_bytes("512M"), Some(512 * 1024 * 1024));
+    assert_eq!(parse_size_bytes(" 8g "), Some(8 * 1024 * 1024 * 1024));
+    assert_eq!(parse_size_bytes("not-a-size"), None);
+    assert_eq!(parse_size_bytes(""), None);
   }
 
   fn snap(backend: &str, unified: bool, ram_total: u64, ram_used: u64) -> HostMetricsSnapshot {

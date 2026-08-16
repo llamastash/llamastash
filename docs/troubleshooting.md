@@ -271,6 +271,32 @@ Or install `ds4-server` so compatible GGUFs route to ds4 instead. (On a b9840+ l
 
 **This is expected pre-release.** The ds4 work added a `resolved_backend` tag on last-params **and running-snapshot** rows and a `"ds4"` backend value the older binary's state schema doesn't understand, so it rejects the file rather than misreading it. LlamaStash keeps no backward-compatibility guarantees before the first stable release. Favorites / last-params / the running snapshot reset for that boot; named presets live in `config.yaml` and survive. Don't hop between old and new binaries against one state dir.
 
+## vLLM shows as not installed even though it runs
+
+**Symptom:** `doctor` / the Daemon pane reports vLLM as unavailable, but `vllm serve` works from your shell.
+
+**Detection is a filesystem check, never an exec.** vLLM builds its argument parser through a device probe, so even `vllm --version` can fail with `RuntimeError: Failed to infer device type` on a host with no usable accelerator — running it to detect it would be unreliable. LlamaStash only checks that a `vllm` launcher exists on `PATH` or at `backend.vllm.servers[].binary`. If yours lives in a venv that is not on the daemon's `PATH`, point `backend.vllm.servers` at the absolute path. A wrapper script works for the same reason.
+
+## vLLM launch is OOM-killed on an APU
+
+**Symptom:** the engine starts, then dies during KV-cache build; `dmesg` shows the OOM killer.
+
+**On a unified-memory host GPU memory *is* system RAM,** and vLLM sizes its KV cache against the whole pool rather than the model. The launcher therefore sets `--kv-cache-memory-bytes` from live free memory when the host is unified and you set neither `kv_cache_memory_bytes` nor `gpu_memory_utilization`. If you set either knob yourself the auto-cap steps aside and the figure is yours to get right — `gpu_memory_utilization` in particular is a fraction *of the pool*, so even `0.15` reserved 15.1 GiB on a 0.5B model. Prefer the absolute `kv_cache_memory_bytes` cap on these hosts.
+
+If the daemon has no memory reading yet (right after a restart), it treats the host as unified rather than leaving the launch uncapped.
+
+## Stopping a containerized vLLM leaves it running
+
+**Symptom:** `stop` returns, but the vLLM process and its port are still held.
+
+**The SIGKILL escalation does not cross the container boundary.** Where vLLM ships only as a container, `backend.vllm.servers[].binary` points at a thin host wrapper script; LlamaStash signals the wrapper, not the engine inside. A graceful stop works when the wrapper forwards signals — make sure it `exec`s the container runtime rather than backgrounding it, so the runtime inherits the wrapper's PID. Otherwise stop the container yourself. The native wheel has no such gap and is the documented default; see [vLLM setup](vllm-setup.md).
+
+## vLLM sits in `starting` for minutes
+
+**Symptom:** the row stays `starting` far longer than a llama.cpp model of the same size.
+
+**Expected.** Weight load is quick, but engine init (memory profiling plus KV-cache build) took 10-27 s on a 0.5B and runs considerably longer on real models; the readiness deadline scales with model size. Setting `kv_cache_memory_bytes` skips vLLM's memory-profiling pass, which is the slowest part. If it never reaches Ready, check `logs` for the engine's own error — a repo whose architecture vLLM cannot serve fails here, since eligibility only checks that a repo is safetensors-and-no-GGUF.
+
 ## HuggingFace pull
 
 `llamastash pull <owner/repo[:filename.gguf]>` downloads a GGUF into the HuggingFace cache layout the scanner already reads, so the model shows up in `list` / the TUI right after. The TUI's `d` HuggingFace dialog is the interactive face of the same worker. If a download stalls, check network / egress and that the repo + filename resolve on huggingface.co; a failed pull exits `69` (`PULL_FAILED`). The per-file cap is 512 GiB (raised for ds4's single-file DeepSeek-V4 GGUFs).

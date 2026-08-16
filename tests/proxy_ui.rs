@@ -41,8 +41,10 @@ fn unique_temp(label: &str) -> PathBuf {
 }
 
 fn allocate_port() -> u16 {
-  let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
-  l.local_addr().unwrap().port()
+  // Batch-probe rather than binding one ephemeral and dropping it: the kernel
+  // will not hand the same port to eight concurrent binds, so parallel test
+  // binaries land on disjoint sets instead of racing for one number.
+  llamastash::test_support::allocate_port_range(8).start
 }
 
 fn fake_binary() -> PathBuf {

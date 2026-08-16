@@ -58,9 +58,18 @@ pub struct ConfigSummary {
   pub num_hidden_layers: Option<u64>,
   pub vocab_size: Option<u64>,
   pub intermediate_size: Option<u64>,
-  /// `config.json: quantization` block present. The shared mapping does not
-  /// interpret it (that is the leaf's job); it only records presence.
+  /// `config.json: quantization_config` block present. The shared mapping does
+  /// not interpret it (that is the leaf's job); it only records presence.
   pub has_quantization: bool,
+  /// `quantization_config.quant_method` — `"awq"`, `"gptq"`, `"fp8"`,
+  /// `"bitsandbytes"`. The verbatim label a leaf renders as the row's quant,
+  /// since a safetensors repo has no GGML tag to read.
+  pub quant_method: Option<String>,
+  /// `config.json: torch_dtype` (or the newer `dtype`) — `"bfloat16"`,
+  /// `"float16"`. The weight precision of an *unquantized* repo, which is the
+  /// common case: without it those rows have nothing to show in a quant column
+  /// but the `Unknown` placeholder.
+  pub torch_dtype: Option<String>,
   /// `tokenizer_config.json: chat_template` (string form only).
   pub chat_template: Option<String>,
   /// `tokenizer_config.json: tokenizer_class`.
@@ -153,20 +162,57 @@ struct Classification {
 /// HF blob layout) classify by their link name, which is correct.
 fn classify_snapshot(snapshot: &Path) -> Classification {
   let mut has_safetensors = false;
-  let mut has_gguf = false;
   if let Ok(rd) = std::fs::read_dir(snapshot) {
     for e in rd.flatten() {
-      match e.path().extension().and_then(|s| s.to_str()) {
-        Some("safetensors") => has_safetensors = true,
-        Some("gguf") => has_gguf = true,
-        _ => {}
+      if e.path().extension().and_then(|s| s.to_str()) == Some("safetensors") {
+        has_safetensors = true;
+        break;
       }
     }
   }
   Classification {
     has_safetensors,
-    has_gguf,
+    // Only asked when safetensors are present: the sole consumer needs
+    // `has_safetensors && !has_gguf`, so on a GGUF-only cache -- the normal
+    // shape -- this recursive walk would run per repo on every debounced
+    // rescan and the answer would never be read.
+    has_gguf: has_safetensors && contains_gguf(snapshot, GGUF_SCAN_DEPTH),
   }
+}
+
+/// Depth the GGUF exclusion descends. The GGUF scanner's walk is unbounded, so
+/// anything shallower than it lets a repo be claimed as safetensors-only while
+/// the scanner also emits the nested GGUF as its own row. Publishers nest one
+/// level (`Q4_K_M/model.gguf`); the extra levels are slack, and the cap keeps a
+/// pathological tree from being re-walked on every rescan.
+const GGUF_SCAN_DEPTH: u32 = 4;
+
+/// Whether a `.gguf` exists anywhere under `dir`, at the same depth the
+/// enumerator uses — for leaves that check a directory directly instead of
+/// going through it.
+pub fn contains_gguf_in_tree(dir: &Path) -> bool {
+  contains_gguf(dir, GGUF_SCAN_DEPTH)
+}
+
+/// Whether a `.gguf` file exists anywhere under `dir`, within `depth`.
+///
+/// Directory symlinks are not followed — an HF snapshot's subdirectories are
+/// real, only the leaf weight files are links into `blobs/`, so descending
+/// links would buy nothing and risk a cycle.
+fn contains_gguf(dir: &Path, depth: u32) -> bool {
+  let Ok(rd) = std::fs::read_dir(dir) else {
+    return false;
+  };
+  let mut subdirs = Vec::new();
+  for entry in rd.flatten() {
+    if entry.path().extension().and_then(|s| s.to_str()) == Some("gguf") {
+      return true;
+    }
+    if depth > 0 && entry.file_type().is_ok_and(|t| t.is_dir()) {
+      subdirs.push(entry.path());
+    }
+  }
+  subdirs.iter().any(|d| contains_gguf(d, depth - 1))
 }
 
 /// Parse `config.json` (+ optional `tokenizer_config.json` overlay) into a
@@ -191,10 +237,20 @@ fn parse_config_summary(snapshot: &Path) -> Option<ConfigSummary> {
     num_hidden_layers: config.get("num_hidden_layers").and_then(json_u64),
     vocab_size: config.get("vocab_size").and_then(json_u64),
     intermediate_size: config.get("intermediate_size").and_then(json_u64),
+    // The key is `quantization_config`, verified against a real AWQ repo.
+    // This read `quantization`, so it never fired on a quantized model.
     has_quantization: config
-      .get("quantization")
+      .get("quantization_config")
       .map(|v| !v.is_null())
       .unwrap_or(false),
+    quant_method: config
+      .get("quantization_config")
+      .and_then(|q| q.get("quant_method"))
+      .and_then(json_str),
+    torch_dtype: config
+      .get("torch_dtype")
+      .or_else(|| config.get("dtype"))
+      .and_then(json_str),
     chat_template: None,
     tokenizer_class: None,
   };
@@ -238,6 +294,30 @@ pub fn config_to_metadata(summary: &ConfigSummary, repo_id: &str) -> ModelMetada
     // The leaf sums `*.safetensors` file sizes for the SIZE column.
     weights_bytes: None,
     // Embedded-MTP is a GGUF header key; `config.json` has no equivalent.
+    mtp: None,
+  }
+}
+
+/// A metadata row for a repo whose `config.json` is missing or unparseable.
+///
+/// Everything the config would have filled stays unset, but the row exists so
+/// a leaf can still attach `weights_bytes` — the probe-budget scaler and the
+/// SIZE column both read it, and neither needs anything from the config. A
+/// bare `None` metadata loses that signal and scales a 140 GB load against the
+/// default probe budget.
+pub fn metadata_without_config() -> ModelMetadata {
+  ModelMetadata {
+    arch: None,
+    total_parameters: None,
+    parameter_label: None,
+    quant: Quant::Unknown(0),
+    quant_label: None,
+    native_ctx: None,
+    chat_template: None,
+    tokenizer_kind: None,
+    reasoning_hint: false,
+    mode_hint: ModeHint::Unknown,
+    weights_bytes: None,
     mtp: None,
   }
 }

@@ -142,6 +142,8 @@ async fn config_model_paths_populate_list_models() {
       scan: ScanOptions::default(),
       watcher: fast_watcher(),
       lemonade_port: None,
+      backend: Default::default(),
+      backend_force: Default::default(),
     },
     ..DaemonOptions::rooted_at(state.clone())
   };
@@ -240,6 +242,8 @@ async fn ollama_default_cache_surfaces_through_list_models() {
       scan: ScanOptions::default(),
       watcher: fast_watcher(),
       lemonade_port: None,
+      backend: Default::default(),
+      backend_force: Default::default(),
     },
     ..DaemonOptions::rooted_at(state.clone())
   };

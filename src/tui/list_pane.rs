@@ -391,7 +391,7 @@ fn model_row(
     Some(md) => (
       md.arch.clone().unwrap_or_default(),
       md.parameter_label.clone().unwrap_or_default(),
-      md.quant.label().to_string(),
+      md.quant_display(),
       md.native_ctx,
       mode_hint_label(md.mode_hint),
       md.weights_bytes,

@@ -92,6 +92,17 @@ pub enum PickerRow {
     filename: String,
     size_bytes: Option<u64>,
   },
+  /// Every weight file in a safetensors repo, as one row.
+  ///
+  /// Such a repo is not a menu of interchangeable quants — it is one model
+  /// spread over `*.safetensors` plus `config.json` and the tokenizer files,
+  /// and an engine needs all of them. There is nothing to pick, so the picker
+  /// offers the repo itself.
+  WholeRepo {
+    label: String,
+    file_count: usize,
+    total_size_bytes: Option<u64>,
+  },
   Split {
     /// Display label — the shard base with `.gguf` appended.
     label: String,
@@ -121,6 +132,7 @@ impl PickerRow {
   pub fn label(&self) -> &str {
     match self {
       PickerRow::Single { filename, .. } => filename,
+      PickerRow::WholeRepo { label, .. } => label,
       PickerRow::Split { label, .. } => label,
     }
   }
@@ -129,6 +141,9 @@ impl PickerRow {
   pub fn size_bytes(&self) -> Option<u64> {
     match self {
       PickerRow::Single { size_bytes, .. } => *size_bytes,
+      PickerRow::WholeRepo {
+        total_size_bytes, ..
+      } => *total_size_bytes,
       PickerRow::Split {
         total_size_bytes, ..
       } => *total_size_bytes,
@@ -140,6 +155,8 @@ impl PickerRow {
   pub fn download_filename(&self) -> &str {
     match self {
       PickerRow::Single { filename, .. } => filename,
+      // No single file to name: the downloader takes the whole repo.
+      PickerRow::WholeRepo { .. } => "",
       PickerRow::Split {
         launch_filename, ..
       } => launch_filename,
@@ -152,6 +169,8 @@ impl PickerRow {
   pub fn all_filenames(&self) -> Vec<String> {
     match self {
       PickerRow::Single { filename, .. } => vec![filename.clone()],
+      // Unknown up front — the cache probe cannot short-circuit a repo pull.
+      PickerRow::WholeRepo { .. } => Vec::new(),
       PickerRow::Split {
         shard_filenames, ..
       } => shard_filenames.clone(),
@@ -160,12 +179,23 @@ impl PickerRow {
 
   /// `true` when the row can be selected. Incomplete shard sets
   /// return `false` so the picker can grey them out.
+  /// Whether the pull takes the entire repo rather than a chosen file.
+  pub fn is_whole_repo(&self) -> bool {
+    matches!(self, PickerRow::WholeRepo { .. })
+  }
+
   pub fn selectable(&self) -> bool {
     match self {
       PickerRow::Single { .. } => true,
+      PickerRow::WholeRepo { file_count, .. } => *file_count > 0,
       PickerRow::Split { complete, .. } => *complete,
     }
   }
+}
+
+/// Whether a repo file is a safetensors weight shard.
+fn is_safetensors_weight(f: &HfRepoFile) -> bool {
+  f.filename.to_ascii_lowercase().ends_with(".safetensors")
 }
 
 /// Collapse a flat sibling list into picker rows. Shards sharing a
@@ -599,13 +629,33 @@ impl HfDialogState {
   /// Apply a successful `list_repo_files` response. Filters to
   /// `.gguf` files and collapses split-shard sets into one
   /// logical row per group.
-  pub fn apply_repo_files(&mut self, repo_id: &str, mut files: Vec<HfRepoFile>) {
+  pub fn apply_repo_files(&mut self, repo_id: &str, files: Vec<HfRepoFile>) {
     // Drop if the dialog moved on to a different repo.
     if self.picker_repo_id.as_deref() != Some(repo_id) {
       return;
     }
-    files.retain(|f| f.filename.to_ascii_lowercase().ends_with(".gguf"));
-    let rows = collapse_picker_rows(files);
+    let gguf: Vec<HfRepoFile> = files
+      .iter()
+      .filter(|f| f.filename.to_ascii_lowercase().ends_with(".gguf"))
+      .cloned()
+      .collect();
+    // A safetensors repo has no GGUF to choose between, and filtering to
+    // `.gguf` left it showing "no files" with no way to pull it at all — so
+    // the backend that serves such repos had no first-party way to acquire a
+    // model. Offer the repo as one row instead.
+    let rows = if gguf.is_empty() && files.iter().any(is_safetensors_weight) {
+      vec![PickerRow::WholeRepo {
+        label: format!("{repo_id} (safetensors repo)"),
+        file_count: files.len(),
+        total_size_bytes: files
+          .iter()
+          .filter(|f| is_safetensors_weight(f))
+          .map(|f| f.size_bytes)
+          .try_fold(0u64, |acc, b| b.map(|b| acc.saturating_add(b))),
+      }]
+    } else {
+      collapse_picker_rows(gguf)
+    };
     // Pre-select the first selectable row so an incomplete shard
     // set doesn't trap the cursor on a non-selectable row.
     let picker_idx = rows.iter().position(PickerRow::selectable).unwrap_or(0);
@@ -915,6 +965,7 @@ fn render_search_row(
       format!("{:<36}  ", crate::tui::fmt::truncate_end(&r.repo_id, 36)),
       style,
     ),
+    Span::styled(format!("{:<4}  ", r.weight_format().label()), style),
     Span::styled(format!("{params:>6}  "), style),
     Span::styled(format!("{size:>6}  "), style),
     Span::styled(
@@ -937,6 +988,7 @@ fn render_search_header(sort: HfSortKey, palette: &Palette) -> Line<'static> {
       format!("  {:<36}  ", "repo"),
       col_style(sort == HfSortKey::RepoName),
     ),
+    Span::styled(format!("{:<4}  ", "fmt"), label),
     Span::styled(
       format!("{:>6}  ", "params"),
       col_style(sort == HfSortKey::ParamSize),
@@ -984,7 +1036,7 @@ fn render_picker_body(
     }
     PickerLoad::Ready if state.picker_rows.is_empty() => {
       lines.push(Line::from(Span::styled(
-        "no `.gguf` files in this repo.",
+        "no loadable weight files in this repo.",
         palette.muted_style(),
       )));
       lines.push(Line::from(Span::styled(
@@ -1041,6 +1093,9 @@ fn render_picker_body(
           .unwrap_or_else(|| "?".into());
         let label = match row {
           PickerRow::Single { filename, .. } => filename.clone(),
+          PickerRow::WholeRepo {
+            label, file_count, ..
+          } => format!("{label}  ({file_count} files)"),
           PickerRow::Split {
             label,
             total,
@@ -1153,6 +1208,51 @@ fn short_count(n: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+
+  /// A safetensors repo used to render "no files" and could not be
+  /// pulled at all, which left the backend that serves such repos with no
+  /// first-party way to acquire a model.
+  #[test]
+  fn a_safetensors_repo_offers_one_whole_repo_row() {
+    let mut st = HfDialogState::open(false, HardwareFitContext::default());
+    st.picker_repo_id = Some("Qwen/Qwen2.5-0.5B-Instruct".into());
+    st.apply_repo_files(
+      "Qwen/Qwen2.5-0.5B-Instruct",
+      vec![
+        file("model.safetensors", Some(900)),
+        file("config.json", Some(1)),
+        file("tokenizer.json", Some(2)),
+      ],
+    );
+    assert_eq!(st.picker_rows.len(), 1, "one row, not one per file");
+    let row = &st.picker_rows[0];
+    assert!(row.is_whole_repo());
+    assert!(row.selectable(), "it must be pullable");
+    assert_eq!(
+      row.size_bytes(),
+      Some(900),
+      "weights only, not the metadata"
+    );
+    assert!(row.label().contains("safetensors repo"), "{}", row.label());
+  }
+
+  /// A repo publishing both keeps the GGUF menu — the quant choice is the
+  /// point there, and llama.cpp still owns those files.
+  #[test]
+  fn a_mixed_repo_still_offers_its_gguf_quants() {
+    let mut st = HfDialogState::open(false, HardwareFitContext::default());
+    st.picker_repo_id = Some("o/r".into());
+    st.apply_repo_files(
+      "o/r",
+      vec![
+        file("model.safetensors", Some(900)),
+        file("model-Q4_K_M.gguf", Some(400)),
+      ],
+    );
+    assert_eq!(st.picker_rows.len(), 1);
+    assert!(!st.picker_rows[0].is_whole_repo());
+    assert_eq!(st.picker_rows[0].label(), "model-Q4_K_M.gguf");
+  }
   use super::*;
   use std::time::Duration;
 

@@ -211,6 +211,13 @@ Full detail per feature in [`FEATURES.md`](FEATURES.md) — including trade-offs
 - **A pluggable backend seam.** llama.cpp is the direct, zero-overhead default; [Lemonade](https://github.com/lemonade-sdk/lemonade) (`lemond`) plugs in as a second backend for engines llama.cpp can't reach — **NPU inference** on AMD Ryzen AI / XDNA, plus ROCm / ONNX / others. Default-on when the `lemond` binary resolves (like ds4); force via `--lemonade` / `LLAMASTASH_LEMONADE=1`, or set `backend.lemonade.enabled: false` to opt out. Zero footprint when the binary is absent.
 - **You install Lemonade; LlamaStash drives it.** No auto-install — LlamaStash finds `lemond` (PATH or `backend.lemonade.servers`), supervises the shared umbrella, discovers its models, routes inference through the proxy, and evicts idle models by API unload. See **[Lemonade setup](docs/lemonade-setup.md)**.
 
+### [vLLM — safetensors HuggingFace repos (experimental)](docs/vllm-setup.md)
+
+- **⚠️ Experimental** — validated against vLLM 0.27.1 on a single Strix Halo / ROCm box; behaviour and config may change.
+- **The non-GGUF half of your cache.** Safetensors repos sitting in `~/.cache/huggingface` were invisible to LlamaStash before; now they appear in the catalog and launch through `vllm serve`. No competition with llama.cpp — a GGUF still binds llama.cpp (or ds4), and vLLM claims safetensors repos only.
+- **You install vLLM; LlamaStash drives it.** Default-on when a `vllm` launcher resolves (PATH or `backend.vllm.servers`); force with `--vllm` / `LLAMASTASH_VLLM=1`, opt out with `backend.vllm.enabled: false`. Zero footprint when absent. On ROCm, where vLLM ships only as a container, point the config at a small wrapper script — the recipe is in **[vLLM setup](docs/vllm-setup.md)**.
+- **Nine native knobs** (`--kv-cache-memory-bytes`, `--gpu-memory-utilization`, `--tensor-parallel-size`, `--dtype`, `--kv-cache-dtype`, `--quantization`, `--max-num-seqs`, `--enforce-eager`, `--trust-remote-code`) in the launch picker and presets; `--ctx` maps to `--max-model-len`.
+
 ### [ds4 (DwarfStar) — DeepSeek V4 GGUFs](docs/usage.md#ds4-backend)
 
 - **⚠️ Experimental** — new and lightly road-tested (validated on a single Strix Halo / ROCm box); behaviour, config, and defaults may change. llama.cpp stays the stable default and runs DeepSeek-V4 too on a current build (llama.cpp **b9840+**), so nothing depends on ds4.

@@ -96,6 +96,12 @@ impl DeletePlan {
       ""
     };
     match extras.len() {
+      // A whole-directory row removes a tree, not a file. Saying "one file"
+      // there understates an irreversible action on the one shape where the
+      // user is least able to guess what it covers.
+      0 if self.primary.is_dir() => {
+        format!("{head} The whole model directory goes — every file inside it.{blobs}")
+      }
       0 => format!("{head} One file is unlinked.{blobs}"),
       _ => format!(
         "{head} {} files go: the model plus {}.{blobs}",
@@ -128,22 +134,27 @@ pub fn plan(
     .filter(|m| m.path != target.path && m.parent == target.parent)
     .collect();
 
-  // Resolved from disk rather than from the catalog's capability flags: a
-  // projector whose own header won't parse leaves `multimodal` unset but is
-  // still a file this model owns. Both finders are a directory walk, and the
-  // per-neighbour re-resolution below only runs once one actually matched.
-  plan.projector = scanner::find_mmproj(&target.path).filter(|proj| {
-    !neighbours
-      .iter()
-      .any(|m| scanner::find_mmproj(&m.path).as_deref() == Some(proj.as_path()))
-  });
-  let arch = target.metadata.as_ref().and_then(|m| m.arch.as_deref());
-  plan.mtp_head = scanner::find_mtp_head(&target.path, arch).filter(|head| {
-    !neighbours.iter().any(|m| {
-      let neighbour_arch = m.metadata.as_ref().and_then(|md| md.arch.as_deref());
-      scanner::find_mtp_head(&m.path, neighbour_arch).as_deref() == Some(head.as_path())
-    })
-  });
+  // Companions are a GGUF-file notion. A whole-directory row (a safetensors
+  // snapshot) owns none, and the finders would walk the enclosing `snapshots/`
+  // dir for an mmproj that cannot be there.
+  if !target.path.is_dir() {
+    // Resolved from disk rather than from the catalog's capability flags: a
+    // projector whose own header won't parse leaves `multimodal` unset but is
+    // still a file this model owns. Both finders are a directory walk, and the
+    // per-neighbour re-resolution below only runs once one actually matched.
+    plan.projector = scanner::find_mmproj(&target.path).filter(|proj| {
+      !neighbours
+        .iter()
+        .any(|m| scanner::find_mmproj(&m.path).as_deref() == Some(proj.as_path()))
+    });
+    let arch = target.metadata.as_ref().and_then(|m| m.arch.as_deref());
+    plan.mtp_head = scanner::find_mtp_head(&target.path, arch).filter(|head| {
+      !neighbours.iter().any(|m| {
+        let neighbour_arch = m.metadata.as_ref().and_then(|md| md.arch.as_deref());
+        scanner::find_mtp_head(&m.path, neighbour_arch).as_deref() == Some(head.as_path())
+      })
+    });
+  }
 
   // Whole-repo removal reclaims the non-GGUF cache cruft (refs, configs,
   // stale revisions) that per-file unlinking cannot see, but only once
@@ -188,6 +199,30 @@ pub fn execute(plan: &DeletePlan) -> io::Result<String> {
     return Ok(format!(
       "deleted HF cache for {}",
       repo_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("model")
+    ));
+  }
+
+  // A directory primary cannot go through `remove_file` (EISDIR, surfaced as
+  // an opaque failure). Two ways to get here, and they are not the same
+  // situation — saying the wrong one sent users looking for a sibling model
+  // that does not exist.
+  if plan.primary.is_dir() {
+    if plan.in_hf_cache {
+      return Err(io::Error::other(format!(
+        "{} is not the only model in its cache repo — refusing to delete it",
+        plan.primary.display()
+      )));
+    }
+    // Outside the resolved cache root: nothing else shares this directory, so
+    // removing it is exactly what the user asked for.
+    fs::remove_dir_all(&plan.primary)?;
+    return Ok(format!(
+      "deleted {}",
+      plan
+        .primary
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("model")
@@ -252,21 +287,34 @@ fn hf_blob_target(file: &Path, cache_root: Option<&Path>) -> Option<PathBuf> {
 }
 
 /// The `models--<owner>--<repo>` directory `path` sits under by directory
-/// shape alone (`models--*/snapshots/<rev>/<file>`), with no cache-root gate
-/// and no canonicalisation. Pure path arithmetic, so two paths from the same
-/// discovery pass compare reliably — that is all the "is anything else still
-/// in this repo" question needs.
+/// shape alone, with no cache-root gate and no canonicalisation. Pure path
+/// arithmetic, so two paths from the same discovery pass compare reliably —
+/// that is all the "is anything else still in this repo" question needs.
+///
+/// Three row shapes resolve to the same repo: a GGUF **file**
+/// (`models--*/snapshots/<rev>/<file>`), the same file nested in a quant
+/// **subdirectory** (`.../snapshots/<rev>/Q4_K_M/<file>`, which the recursive
+/// GGUF scanner emits as its own row), and a whole-snapshot **directory**
+/// (`models--*/snapshots/<rev>`), which is what a safetensors row carries.
+/// All must land on the same answer or the "last model in this repo" check
+/// would treat a mixed catalog as unrelated repos — and a nested GGUF that
+/// resolved to `None` used to be invisible to that check, so deleting the
+/// directory row planned a whole-repo `remove_dir_all` straight over it.
 fn hf_repo_dir_shape(path: &Path) -> Option<&Path> {
-  let snapshots_root = path.parent()?.parent()?;
-  if snapshots_root.file_name().and_then(|n| n.to_str()) != Some("snapshots") {
-    return None;
+  // Walk up to `snapshots/` from any depth rather than testing fixed levels.
+  let mut cursor = path;
+  while let Some(parent) = cursor.parent() {
+    if parent.file_name().and_then(|n| n.to_str()) == Some("snapshots") {
+      let repo_dir = parent.parent()?;
+      return repo_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with("models--"))
+        .then_some(repo_dir);
+    }
+    cursor = parent;
   }
-  let repo_dir = snapshots_root.parent()?;
-  repo_dir
-    .file_name()
-    .and_then(|n| n.to_str())
-    .is_some_and(|n| n.starts_with("models--"))
-    .then_some(repo_dir)
+  None
 }
 
 /// [`hf_repo_dir_shape`] plus the gate that makes recursive removal safe: the
@@ -343,7 +391,11 @@ mod tests {
     ));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
-    dir
+    // `hf_repo_dir_in_cache` returns a canonical path, so expectations built
+    // from this root must be canonical too. `temp_dir()` is a symlink on macOS
+    // (`/var` -> `/private/var`) and an 8.3 short name on Windows; only Linux
+    // hands back a path that already compares equal.
+    dir.canonicalize().unwrap_or(dir)
   }
 
   #[test]
@@ -623,6 +675,139 @@ mod tests {
     };
     let body = plan.describe("a");
     assert!(body.contains("models--owner--repo"), "got `{body}`");
+  }
+
+  /// A catalog row whose `path` is a whole snapshot directory rather than a
+  /// single file — the shape a safetensors backend produces. These four pin
+  /// that the file-shaped assumptions in this module degrade safely.
+  #[test]
+  fn directory_row_resolves_no_companions() {
+    let root = tempdir("dir-row-companions");
+    let snapshot = root.join("models--o--r/snapshots/rev");
+    fs::create_dir_all(&snapshot).unwrap();
+    fs::write(snapshot.join("model.safetensors"), b"w").unwrap();
+    // An mmproj sitting where the file-shaped finder would look.
+    fs::write(root.join("models--o--r/snapshots/mmproj-x.gguf"), b"p").unwrap();
+
+    let target = model(&snapshot);
+    let p = plan(&target, std::slice::from_ref(&target), None);
+    assert_eq!(p.projector, None, "a directory row owns no projector");
+    assert_eq!(p.mtp_head, None, "a directory row owns no MTP head");
+    assert!(p.shards.is_empty());
+    let _ = fs::remove_dir_all(&root);
+  }
+
+  #[test]
+  fn directory_row_last_in_repo_plans_whole_repo_removal() {
+    let cache_root = tempdir("dir-row-repo");
+    let repo = cache_root.join("models--o--r");
+    let snapshot = repo.join("snapshots/rev");
+    fs::create_dir_all(&snapshot).unwrap();
+
+    let target = model(&snapshot);
+    let p = plan(&target, std::slice::from_ref(&target), Some(&cache_root));
+    assert_eq!(p.hf_repo_dir.as_deref(), Some(repo.as_path()));
+    let _ = fs::remove_dir_all(&cache_root);
+  }
+
+  #[test]
+  fn directory_row_sharing_a_repo_does_not_plan_repo_removal() {
+    let cache_root = tempdir("dir-row-shared-repo");
+    let repo = cache_root.join("models--o--r");
+    let snapshot = repo.join("snapshots/rev");
+    fs::create_dir_all(&snapshot).unwrap();
+    let sibling = repo.join("snapshots/rev/other.gguf");
+
+    let target = model(&snapshot);
+    let catalog = vec![target.clone(), model(&sibling)];
+    let p = plan(&target, &catalog, Some(&cache_root));
+    assert_eq!(
+      p.hf_repo_dir, None,
+      "another model still lives in the repo, so the repo must survive"
+    );
+    let _ = fs::remove_dir_all(&cache_root);
+  }
+
+  /// A GGUF nested one level below the snapshot dir is a real catalog row
+  /// (the scanner's walk is recursive). It used to resolve to a `None` repo
+  /// shape, so the exclusivity check missed it and deleting the safetensors
+  /// directory row planned `remove_dir_all` over the whole repo — destroying
+  /// a model the user did not select, behind a prompt saying it was the last.
+  #[test]
+  fn a_nested_gguf_keeps_its_repo_alive() {
+    let cache_root = tempdir("dir-row-nested-gguf");
+    let repo = cache_root.join("models--o--r");
+    let snapshot = repo.join("snapshots/rev");
+    fs::create_dir_all(snapshot.join("Q4_K_M")).unwrap();
+    let nested = snapshot.join("Q4_K_M/model.gguf");
+    fs::write(&nested, b"g").unwrap();
+
+    assert_eq!(
+      hf_repo_dir_shape(&nested),
+      Some(repo.as_path()),
+      "a nested GGUF must resolve to the same repo as its snapshot dir"
+    );
+
+    let target = model(&snapshot);
+    let catalog = vec![target.clone(), model(&nested)];
+    let p = plan(&target, &catalog, Some(&cache_root));
+    assert_eq!(
+      p.hf_repo_dir, None,
+      "the nested GGUF still lives here, so the repo must survive"
+    );
+    let _ = fs::remove_dir_all(&cache_root);
+  }
+
+  /// Outside the resolved cache root nothing else shares the directory, so
+  /// the delete is exactly what the user asked for. This used to refuse with
+  /// "is not the only model in its cache repo" — a false reason that left the
+  /// row with no route to removal at all.
+  #[test]
+  fn a_directory_outside_the_cache_root_is_deleted() {
+    let root = tempdir("dir-row-outside-cache");
+    let snapshot = root.join("snapshots/rev");
+    fs::create_dir_all(&snapshot).unwrap();
+    fs::write(snapshot.join("model.safetensors"), b"w").unwrap();
+
+    let msg = execute(&DeletePlan::single(&snapshot)).expect("must delete");
+    assert!(msg.contains("deleted"), "got `{msg}`");
+    assert!(!snapshot.exists(), "the directory must be gone");
+    let _ = fs::remove_dir_all(&root);
+  }
+
+  /// Inside the cache with a sibling still listed, the repo arm is withheld
+  /// and the refusal must state *that* reason.
+  #[test]
+  fn a_shared_cache_repo_directory_is_refused_with_the_real_reason() {
+    let cache_root = tempdir("dir-row-shared-refuse");
+    let repo = cache_root.join("models--o--r");
+    let snapshot = repo.join("snapshots/rev");
+    fs::create_dir_all(&snapshot).unwrap();
+    fs::write(snapshot.join("model.safetensors"), b"w").unwrap();
+    let sibling = repo.join("snapshots/rev2/other.gguf");
+    fs::create_dir_all(sibling.parent().unwrap()).unwrap();
+    fs::write(&sibling, b"g").unwrap();
+
+    let target = model(&snapshot);
+    let catalog = vec![target.clone(), model(&sibling)];
+    let p = plan(&target, &catalog, Some(&cache_root));
+    assert_eq!(
+      p.hf_repo_dir, None,
+      "a sibling survives, so no repo removal"
+    );
+
+    let err = execute(&p).expect_err("must refuse");
+    assert!(
+      err
+        .to_string()
+        .contains("not the only model in its cache repo"),
+      "got `{err}`"
+    );
+    assert!(
+      snapshot.exists(),
+      "nothing may be removed on the refusal path"
+    );
+    let _ = fs::remove_dir_all(&cache_root);
   }
 
   fn symlink_or_copy(target: &Path, link: &Path) {

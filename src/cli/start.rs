@@ -311,7 +311,12 @@ fn direct_path_candidate(model: &str, args: &StartArgs) -> Result<Option<PathBuf
   if !path.exists() {
     return Ok(None);
   }
-  if !path.is_file() {
+  // A weight file, or a directory some backend claims as a model of its own.
+  // The `is_file` assumption predates directory-shaped models: the daemon
+  // accepts them over IPC (that is what `synthetic_identity` is for), so
+  // refusing here left such a model with no launch route at all, reported as
+  // "no model matches" rather than "directories are unsupported".
+  if !path.is_file() && crate::backend::synthetic_identity_for_path(&path).is_none() {
     return Ok(None);
   }
   if args.mode.is_none() {
@@ -558,11 +563,25 @@ fn map_start_error(e: crate::ipc::ClientError, row: &CatalogRow) -> CliExit {
       // scripts can react. The binary name comes from the default backend's
       // process marker (`llama-server`) so this site names no backend; guard
       // the empty-marker case so `contains("")` never matches everything.
+      // The daemon tags a refusal it raised because the model's backend is off
+      // or its launcher is absent. An environment problem, not a usage one —
+      // the flags were fine — so it gets the environment code rather than
+      // landing in the `InvalidParams` → USAGE bucket below.
+      let backend_unavailable = err
+        .data
+        .as_ref()
+        .and_then(|d| d.get("cause"))
+        .and_then(Value::as_str)
+        == Some("backend_unavailable");
       let lower = err.message.to_lowercase();
       let marker = crate::backend::default_backend()
         .process_marker()
         .unwrap_or("");
-      if lower.contains("launch environment") || (!marker.is_empty() && lower.contains(marker)) {
+      if backend_unavailable {
+        CliExit::new(BINARY_NOT_FOUND, err.message)
+      } else if lower.contains("launch environment")
+        || (!marker.is_empty() && lower.contains(marker))
+      {
         CliExit::new(
           BINARY_NOT_FOUND,
           format!(

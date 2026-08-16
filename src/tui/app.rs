@@ -2241,9 +2241,12 @@ fn discovered_from_catalog_row(cr: &crate::launch::resolve::CatalogRow) -> Disco
       .as_deref()
       .map(parse_quant)
       .unwrap_or(Quant::Unknown(0)),
-    // Not on the `CatalogRow` wire yet — no backend populates it. Mirrors the
-    // other non-round-tripped fields (chat_template).
-    quant_label: None,
+    // The wire's `quant` *is* the display label — `catalog_row` already
+    // resolved the backend overlay into it. Keeping it verbatim is the only
+    // way a non-GGML label survives: `parse_quant` below maps anything outside
+    // the GGML tag set to `Unknown`, so an FP8/AWQ/GPTQ repo rendered `—` here
+    // while `list` and `show` showed the real label.
+    quant_label: cr.quant.clone(),
     native_ctx: cr.native_ctx,
     chat_template: None,
     tokenizer_kind: cr.tokenizer_kind.clone(),

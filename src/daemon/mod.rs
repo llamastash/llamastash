@@ -315,6 +315,12 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   if opts.lemonade_available() {
     discovery_opts.lemonade_port = Some(opts.backend.lemonade.port);
   }
+  // Safetensors / HF-repo discovery, generically over whichever backends are
+  // available and project rows from the shared enumerator. An install with
+  // none enabled contributes an empty list, so the walk never runs and the
+  // catalog is unchanged.
+  discovery_opts.backend = opts.backend.clone();
+  discovery_opts.backend_force = opts.backend_force.clone();
   let _discovery = discovery_task::spawn(catalog.clone(), discovery_opts);
 
   // 5. Persisted state — favorites, last_params, running.
@@ -366,18 +372,24 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
     // child reads as its real server, not a synthetic default invocation.
     // Registry-driven — names no backend.
     let adopted_bin = crate::backend::adopted_process_name(&adopted.resolved_backend);
+    // The launch's model path, whatever shape its identity is. Reading it off
+    // `id.as_gguf()` yielded `None` for every non-GGUF identity, so a re-adopted
+    // row of that kind reported `model_path: null` and a cmdline ending in a
+    // dangling `-m ` — the user could see a surviving process but not which
+    // model it was serving, which is the one thing the row exists to say.
+    let model_path = adopted
+      .id
+      .as_gguf()
+      .map(|g| g.path.clone())
+      .unwrap_or_else(|| adopted.params.model_path.clone());
     external_combined.push(orphans::ExternalProcess {
       pid: adopted.pid as u32,
       cmdline: format!(
         "{adopted_bin} --port {} -m {}",
         adopted.port,
-        adopted
-          .id
-          .as_gguf()
-          .map(|g| g.path.display().to_string())
-          .unwrap_or_default()
+        model_path.display()
       ),
-      model_path: adopted.id.as_gguf().map(|g| g.path.clone()),
+      model_path: Some(model_path),
       start_time_secs,
       port: Some(adopted.port),
       // Adopted entries went through our state.json before the
@@ -732,6 +744,25 @@ fn lookup_start_time(pid: u32) -> Option<u64> {
 /// Move a malformed `state.json` aside so the daemon can restart
 /// with defaults. The plan's `state-json corruption` mitigation
 /// — keeps the user's prior data on disk for inspection.
+/// Backend force-enable flags to re-append across a detached re-exec.
+///
+/// Neither the flag nor its env var survives the detach, and the flag is what
+/// overrides a config `enabled: false`; the default-on path needs nothing,
+/// since the child re-reads config. Registry-driven off the force map, whose
+/// keys are backend ids and whose CLI spelling is `--<id>` by construction
+/// (`cli::daemon` builds the map from exactly those flags). A new forceable
+/// backend therefore needs no edit here — this used to be one copy-pasted
+/// eight-line block per backend, duplicated across both re-exec sites, which
+/// is how the newest one came to be missing from them.
+pub fn backend_force_flags(opts: &DaemonOptions) -> Vec<String> {
+  opts
+    .backend_force
+    .iter()
+    .filter(|(_, forced)| **forced)
+    .map(|(id, _)| format!("--{id}"))
+    .collect()
+}
+
 fn quarantine_broken_state(state_dir: &Path) {
   let src = state_dir.join("state.json");
   if !src.exists() {
@@ -749,6 +780,18 @@ fn quarantine_broken_state(state_dir: &Path) {
     );
   }
 }
+
+/// How long `daemon start` waits for the detached child to bind its control
+/// plane before giving up and killing it.
+///
+/// Sized for a real boot, not a hello-world one: the child probes hardware and
+/// walks every scan root before it binds, which on a host with a large model
+/// cache measured ~4 s — so the previous 3 s ceiling killed a perfectly healthy
+/// daemon and reported it as a failure to start. Nothing waits the full window
+/// in the good case (the loop returns the moment `runtime.json` appears), and a
+/// child that genuinely dies is caught by `try_wait` immediately, so the only
+/// case this lengthens is a daemon that is hung.
+const DETACHED_BIND_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Re-exec the current binary as a detached daemon child and wait for it
 /// to bind its socket. The parent returns to the user's shell once the
@@ -843,27 +886,8 @@ pub fn start_detached_with_exe(opts: DaemonOptions, exe: PathBuf) -> Result<Star
   if opts.proxy.insecure_no_auth {
     cmd.arg("--insecure-no-auth");
   }
-  // Carry the opt-in Lemonade enable through the re-exec so a
-  // `daemon start --lemonade` (detached) keeps the backend on in the child.
-  // The env var alone isn't reliable across a detached re-exec.
-  if opts
-    .backend_force
-    .get(crate::backend::lemonade::LEMONADE_BACKEND_ID)
-    .copied()
-    .unwrap_or(false)
-  {
-    cmd.arg("--lemonade");
-  }
-  // Carry the ds4 force-enable through the re-exec: `--ds4` overrides a config
-  // `enabled: false` and the env/flag don't survive detach. The default-on
-  // path needs nothing (the child re-reads `[ds4]` from config).
-  if opts
-    .backend_force
-    .get(crate::backend::ds4::DS4_BACKEND_ID)
-    .copied()
-    .unwrap_or(false)
-  {
-    cmd.arg("--ds4");
+  for flag in backend_force_flags(&opts) {
+    cmd.arg(flag);
   }
   // Carry `--force` through so the foreground child skips the same backend
   // precheck the parent already waived; without it the child re-runs the gate
@@ -894,7 +918,7 @@ pub fn start_detached_with_exe(opts: DaemonOptions, exe: PathBuf) -> Result<Star
   // Poll for the runtime info file to appear. `runtime_file::save`
   // happens after the control plane has bound its TCP port, so a
   // present file means the daemon is ready to accept HTTP requests.
-  let deadline = std::time::Instant::now() + Duration::from_secs(3);
+  let deadline = std::time::Instant::now() + DETACHED_BIND_TIMEOUT;
   loop {
     if let Some(status) = child.try_wait()? {
       if let Some(pid) = existing_daemon_pid(&opts.state_dir) {
@@ -913,7 +937,8 @@ pub fn start_detached_with_exe(opts: DaemonOptions, exe: PathBuf) -> Result<Star
       let _ = child.kill();
       let _ = child.wait();
       return Err(anyhow!(
-        "detached daemon did not bind control plane within 3s (state_dir: {})",
+        "detached daemon did not bind control plane within {}s (state_dir: {})",
+        DETACHED_BIND_TIMEOUT.as_secs(),
         opts.state_dir.display()
       ));
     }
@@ -984,27 +1009,8 @@ pub fn start_detached_with_exe(opts: DaemonOptions, exe: PathBuf) -> Result<Star
   if opts.proxy.insecure_no_auth {
     cmd.arg("--insecure-no-auth");
   }
-  // Carry the opt-in Lemonade enable through the re-exec so a
-  // `daemon start --lemonade` (detached) keeps the backend on in the child.
-  // The env var alone isn't reliable across a detached re-exec.
-  if opts
-    .backend_force
-    .get(crate::backend::lemonade::LEMONADE_BACKEND_ID)
-    .copied()
-    .unwrap_or(false)
-  {
-    cmd.arg("--lemonade");
-  }
-  // Carry the ds4 force-enable through the re-exec: `--ds4` overrides a config
-  // `enabled: false` and the env/flag don't survive detach. The default-on
-  // path needs nothing (the child re-reads `[ds4]` from config).
-  if opts
-    .backend_force
-    .get(crate::backend::ds4::DS4_BACKEND_ID)
-    .copied()
-    .unwrap_or(false)
-  {
-    cmd.arg("--ds4");
+  for flag in backend_force_flags(&opts) {
+    cmd.arg(flag);
   }
   // Carry `--force` through so the foreground child skips the same backend
   // precheck the parent already waived.
@@ -1032,7 +1038,7 @@ pub fn start_detached_with_exe(opts: DaemonOptions, exe: PathBuf) -> Result<Star
 
   let mut child = cmd.spawn().context("spawning detached daemon")?;
 
-  let deadline = std::time::Instant::now() + Duration::from_secs(3);
+  let deadline = std::time::Instant::now() + DETACHED_BIND_TIMEOUT;
   loop {
     if let Some(status) = child.try_wait()? {
       if let Some(pid) = existing_daemon_pid(&opts.state_dir) {
@@ -1050,7 +1056,8 @@ pub fn start_detached_with_exe(opts: DaemonOptions, exe: PathBuf) -> Result<Star
       let _ = child.kill();
       let _ = child.wait();
       return Err(anyhow!(
-        "detached daemon did not bind control plane within 3s (state_dir: {})",
+        "detached daemon did not bind control plane within {}s (state_dir: {})",
+        DETACHED_BIND_TIMEOUT.as_secs(),
         opts.state_dir.display()
       ));
     }

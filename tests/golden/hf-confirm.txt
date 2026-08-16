@@ -24,7 +24,7 @@
 │       │                                                                                                      │       │
 │       │                                                                                                      │       │
 │       └──────────────────────────────────────────────────────────────────────────────────────────────────────┘       │
-│                                                                            ││   cache_type_v    inherited            │
+│                                                                            ││   cache_type_v      inherited          │
 │                                                                            ││   ── Throughput                        │
-│                                                                            ││   threads         inherited            │
+│                                                                            ││   threads           inherited          │
 └ ◌ launching · ◐ loading · ● ready · ▲ error · ○ stopped · ⇪ external ──────┘└ e:edit for launch · s:stop · p:path ───┘

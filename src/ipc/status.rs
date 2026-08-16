@@ -22,7 +22,7 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
   let snap = ctx.supervisors.snapshot().await;
   // Post-launch actuals live on the persisted running snapshot
   // (stamped by the recorder on Ready); the live status row is built
-  // from the supervisor, so cross-reference by (id, port) to surface
+  // from the supervisor, so cross-reference by **launch id** to surface
   // the resolved context.
   let running = ctx.state.snapshot().await.running;
   // Config-preset hint inputs, snapshotted once for the whole model loop.
@@ -44,7 +44,21 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
     // `params` so an agent can reproduce the launch without a
     // separate `last_params_list` call.
     let params = model.params();
-    let running_snap = running.iter().find(|r| r.port == model.port());
+    // Keyed on the launch id, not the port. A port is reused the moment its
+    // launch stops, so a snapshot that outlived its process was matched to
+    // whatever launched next — and that row's `backend` and `resolved_ctx`
+    // (both read from the snapshot below) then described the *previous* model.
+    // The launch id is unique per launch, so it cannot alias.
+    let running_snap = running
+      .iter()
+      .find(|r| r.launch_id.as_ref() == Some(&launch_id))
+      // A row adopted before launch ids were stamped carries none; fall back to
+      // the port so its actuals are not lost.
+      .or_else(|| {
+        running
+          .iter()
+          .find(|r| r.launch_id.is_none() && r.port == model.port())
+      });
     // The backend this launch *resolved* to, stamped on the running snapshot
     // at spawn — the honest signal (respects an explicit backend override on a
     // compatible file), not the routing prediction.
