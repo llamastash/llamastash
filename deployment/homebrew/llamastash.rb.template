@@ -6,7 +6,7 @@
 # Do not edit Formula/llamastash.rb in the tap repo by hand — it is
 # overwritten on every tag.
 class Llamastash < Formula
-  desc "Zero-overhead, terminal-native local-LLM launcher"
+  desc "Zero-overhead, terminal-native local-LLM manager"
   homepage "https://github.com/llamastash/llamastash"
   version "$version"
   license "MIT"

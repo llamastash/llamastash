@@ -1,7 +1,7 @@
 {
   "$$schema": "https://raw.githubusercontent.com/ScoopInstaller/Scoop/master/schema.json",
   "version": "$version",
-  "description": "Zero-overhead, terminal-native local-LLM launcher",
+  "description": "Zero-overhead, terminal-native local-LLM manager",
   "homepage": "https://github.com/llamastash/llamastash",
   "license": "MIT",
   "architecture": {

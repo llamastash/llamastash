@@ -2,7 +2,7 @@
 name = "llamastash"
 version = "0.2.0"
 authors = ["Deepu K Sasidharan <d4udts@gmail.com>"]
-description = "Zero-overhead, terminal-native local-LLM launcher"
+description = "Zero-overhead, terminal-native local-LLM manager"
 documentation = "https://github.com/llamastash/llamastash"
 categories = ["command-line-utilities"]
 keywords = ["llama-cpp", "llm", "tui", "gguf", "openai"]
