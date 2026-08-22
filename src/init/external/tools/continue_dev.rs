@@ -4,8 +4,10 @@
 //! roles }, ... ]` — a TOP-LEVEL array of named entries. Wholesale
 //! replacing it would clobber user-added OpenAI/Anthropic models, so
 //! [`merge_with_current`](ToolPatcher::merge_with_current) is
-//! overridden to merge by `name`: any entry already named
-//! `llamastash` is replaced, everything else is left untouched.
+//! overridden to merge by `name`: entries in our `llamastash-*`
+//! namespace are ours to replace, everything else is left untouched.
+//! Entries for models that are no longer registered are dropped from
+//! that namespace, so a favorite removed upstream stops appearing here.
 //!
 //! `config.yaml` is the current format (per Continue's docs as of
 //! 2025–2026 — `config.json` is deprecated; we never write the old
@@ -19,7 +21,23 @@ use crate::init::external::{merge, Format, PatchContext, ToolPatcher};
 
 pub struct ContinueDev;
 
-const LLAMASTASH_MODEL_NAME: &str = "llamastash";
+/// Prefix owning our entries in Continue's top-level `models[]`. Anything
+/// under it is ours to rewrite or drop; anything else is the user's.
+/// `llamastash` bare is the pre-0.3 single-entry name, swept for the same
+/// reason.
+const NAME_PREFIX: &str = "llamastash-";
+const LEGACY_MODEL_NAME: &str = "llamastash";
+
+fn entry_name(id: &str) -> String {
+  format!("{NAME_PREFIX}{id}")
+}
+
+fn is_ours(entry: &Value) -> bool {
+  entry
+    .get("name")
+    .and_then(|v| v.as_str())
+    .is_some_and(|n| n == LEGACY_MODEL_NAME || n.starts_with(NAME_PREFIX))
+}
 
 impl ToolPatcher for ContinueDev {
   fn id(&self) -> &'static str {
@@ -44,29 +62,35 @@ impl ToolPatcher for ContinueDev {
     Format::Yaml
   }
   fn build_additions(&self, ctx: &PatchContext) -> Value {
-    let model_id = ctx.model_id.as_deref().unwrap_or("default");
-    // Continue's `roles` enum drives what the IDE attempts with the
-    // model. Setting `chat`/`edit` on an embedder (nomic-embed-text
-    // etc.) gives confusing errors because Continue tries to chat
-    // with an encoder-only model. The `embed` role is the right
-    // wire for embedding models.
-    let roles = if ctx.is_embed {
-      json!(["embed"])
-    } else {
-      json!(["chat", "edit"])
-    };
-    let mut entry = serde_json::Map::new();
-    entry.insert("name".into(), json!(LLAMASTASH_MODEL_NAME));
-    entry.insert("provider".into(), json!("openai"));
-    entry.insert("apiBase".into(), json!(ctx.proxy_base_url));
-    entry.insert("model".into(), json!(model_id));
-    entry.insert("apiKey".into(), json!(ctx.api_key));
-    entry.insert("roles".into(), roles);
+    let models: Vec<Value> = ctx
+      .models
+      .iter()
+      .map(|m| {
+        // Continue's `roles` enum drives what the IDE attempts with the
+        // model. Setting `chat`/`edit` on an embedder (nomic-embed-text
+        // etc.) gives confusing errors because Continue tries to chat
+        // with an encoder-only model. The `embed` role is the right
+        // wire for embedding models.
+        let roles = if m.is_embed {
+          json!(["embed"])
+        } else {
+          json!(["chat", "edit"])
+        };
+        let mut entry = serde_json::Map::new();
+        entry.insert("name".into(), json!(entry_name(&m.id)));
+        entry.insert("provider".into(), json!("openai"));
+        entry.insert("apiBase".into(), json!(ctx.proxy_base_url));
+        entry.insert("model".into(), json!(m.id));
+        entry.insert("apiKey".into(), json!(ctx.api_key));
+        entry.insert("roles".into(), roles);
+        Value::Object(entry)
+      })
+      .collect();
     json!({
       "name": "llamastash",
       "version": "1.0.0",
       "schema": "v1",
-      "models": [Value::Object(entry)],
+      "models": models,
     })
   }
   fn merge_with_current(&self, current: Value, ctx: &PatchContext) -> Value {
@@ -101,14 +125,30 @@ impl ToolPatcher for ContinueDev {
     // practice today (we've removed everything), but the recursion
     // is cheap and future-proofs against added fields.
     let mut merged = merge::merge(Value::Object(current_obj), Value::Object(additions_obj));
-    if !our_models.is_empty() {
-      if let Value::Object(ref mut m) = merged {
-        let slot = m
-          .entry("models")
-          .or_insert_with(|| Value::Array(Vec::new()));
-        if let Value::Array(arr) = slot {
-          splice_named(arr, our_models, "name");
+    if let Value::Object(ref mut m) = merged {
+      let slot = m
+        .entry("models")
+        .or_insert_with(|| Value::Array(Vec::new()));
+      if let Value::Array(arr) = slot {
+        if !our_models.is_empty() {
+          // Sweep our namespace so a model that is no longer registered
+          // stops being offered, then splice the current set in. Skipped
+          // when we resolved no models at all — that means we could not
+          // read the catalog, not that the user has none, and wiping a
+          // working config on a daemon hiccup is not a trade worth making.
+          let incoming: std::collections::HashSet<&str> = our_models
+            .iter()
+            .filter_map(|e| e.get("name").and_then(|v| v.as_str()))
+            .collect();
+          arr.retain(|e| {
+            !is_ours(e)
+              || e
+                .get("name")
+                .and_then(|v| v.as_str())
+                .is_some_and(|n| incoming.contains(n))
+          });
         }
+        splice_named(arr, our_models, "name");
       }
     }
     merged
@@ -146,21 +186,11 @@ mod tests {
   use crate::init::external::apply;
 
   fn ctx() -> PatchContext {
-    PatchContext {
-      proxy_base_url: "http://127.0.0.1:11435/v1".into(),
-      api_key: "llamastash".into(),
-      model_id: Some("qwen3-coder-30b".into()),
-      is_embed: false,
-    }
+    PatchContext::fixture(&["qwen3-coder-30b"])
   }
 
   fn embed_ctx() -> PatchContext {
-    PatchContext {
-      proxy_base_url: "http://127.0.0.1:11435/v1".into(),
-      api_key: "llamastash".into(),
-      model_id: Some("nomic-embed-text-v1.5".into()),
-      is_embed: true,
-    }
+    PatchContext::fixture(&["nomic-embed-text-v1.5"])
   }
 
   #[test]
@@ -169,7 +199,7 @@ mod tests {
     let path = dir.join("config.yaml");
     apply(&ContinueDev, &ctx(), Some(path.clone())).expect("apply");
     let body = std::fs::read_to_string(&path).unwrap();
-    assert!(body.contains("name: llamastash"));
+    assert!(body.contains("name: llamastash-qwen3-coder-30b"));
     assert!(body.contains("apiBase: http://127.0.0.1:11435/v1"));
     assert!(body.contains("model: qwen3-coder-30b"));
     std::fs::remove_dir_all(&dir).ok();
@@ -187,7 +217,10 @@ mod tests {
     apply(&ContinueDev, &ctx(), Some(path.clone())).expect("apply");
     let body = std::fs::read_to_string(&path).unwrap();
     assert!(body.contains("name: GPT-4"), "user model preserved");
-    assert!(body.contains("name: llamastash"), "our model added");
+    assert!(
+      body.contains("name: llamastash-qwen3-coder-30b"),
+      "our model added"
+    );
     assert!(body.contains("name: My Config"), "top-level name preserved");
     std::fs::remove_dir_all(&dir).ok();
   }
@@ -225,6 +258,54 @@ mod tests {
       !body.contains("- edit"),
       "edit role NOT written for embedder"
     );
+    std::fs::remove_dir_all(&dir).ok();
+  }
+
+  #[test]
+  fn every_model_gets_its_own_entry() {
+    let dir = crate::util::test_temp::unique_temp_dir("continue-multi");
+    let path = dir.join("config.yaml");
+    let ctx = PatchContext::fixture(&["qwen3-coder-30b", "nomic-embed-text-v1.5"]);
+    apply(&ContinueDev, &ctx, Some(path.clone())).expect("apply");
+    let body = std::fs::read_to_string(&path).unwrap();
+    assert!(body.contains("name: llamastash-qwen3-coder-30b"));
+    assert!(body.contains("name: llamastash-nomic-embed-text-v1.5"));
+    // Each carries the role its kind needs.
+    assert!(body.contains("- chat"));
+    assert!(body.contains("- embed"));
+    std::fs::remove_dir_all(&dir).ok();
+  }
+
+  #[test]
+  fn a_model_that_is_no_longer_registered_is_swept_from_our_namespace() {
+    let dir = crate::util::test_temp::unique_temp_dir("continue-sweep");
+    let path = dir.join("config.yaml");
+    let two = PatchContext::fixture(&["qwen3-coder-30b", "gemma-2-9b-it"]);
+    apply(&ContinueDev, &two, Some(path.clone())).expect("first");
+    // Second run registers only one of them — the other must not linger,
+    // or Continue keeps offering a model the proxy no longer serves.
+    apply(&ContinueDev, &ctx(), Some(path.clone())).expect("second");
+    let body = std::fs::read_to_string(&path).unwrap();
+    assert!(body.contains("name: llamastash-qwen3-coder-30b"));
+    assert!(!body.contains("gemma-2-9b-it"), "stale entry swept");
+    std::fs::remove_dir_all(&dir).ok();
+  }
+
+  #[test]
+  fn an_empty_model_list_leaves_existing_entries_alone() {
+    // No models resolved means the catalog was unreadable, not that the
+    // user has none — wiping their working entries would be the wrong read.
+    let dir = crate::util::test_temp::unique_temp_dir("continue-nomodels");
+    let path = dir.join("config.yaml");
+    apply(&ContinueDev, &ctx(), Some(path.clone())).expect("first");
+    apply(
+      &ContinueDev,
+      &PatchContext::fixture(&[]),
+      Some(path.clone()),
+    )
+    .expect("second");
+    let body = std::fs::read_to_string(&path).unwrap();
+    assert!(body.contains("name: llamastash-qwen3-coder-30b"));
     std::fs::remove_dir_all(&dir).ok();
   }
 

@@ -194,6 +194,7 @@ Full detail per feature in [`FEATURES.md`](FEATURES.md) — including trade-offs
 - [Colored TTY output, byte-stable TSV when piped](FEATURES.md#colored-tty-output-byte-stable-tsv-when-piped) — existing `awk` / `column` pipelines keep working.
 - [`llamastash pull <hf-repo>`](FEATURES.md#llamastash-pull-hf-repo--standalone-hf-fetch) — same primitive as the wizard, with disk-space prechecks.
 - [`llamastash recommend`](FEATURES.md#llamastash-recommend--hardware-aware-picks-in-your-shell) — the recommender on its own, agent-friendly.
+- [`llamastash integrations`](FEATURES.md#llamastash-integrations--point-your-ai-tools-at-the-proxy) — point OpenCode, Aider, Continue.dev, Zed or pi.dev at the proxy, with your favorites registered.
 - [Reproducible pulls via `--revision <SHA>`](FEATURES.md#reproducible-pulls-via---revision-sha).
 
 ### [Drop-in OpenAI + Ollama proxy](FEATURES.md#drop-in-openai--ollama-proxy)

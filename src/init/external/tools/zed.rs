@@ -32,21 +32,33 @@ impl ToolPatcher for Zed {
   fn format(&self) -> Format {
     Format::Json
   }
+  fn required_env_var(&self) -> Option<&'static str> {
+    // Zed's own convention: the key for an `openai_compatible` provider
+    // comes from `<DISPLAY_NAME>_API_KEY` in the environment and is never
+    // read out of settings.json.
+    Some(super::env_sh::API_KEY_VAR)
+  }
   fn build_additions(&self, ctx: &PatchContext) -> Value {
-    let mut available_models = Vec::new();
-    if let Some(id) = &ctx.model_id {
-      available_models.push(json!({
-        "name": id,
-        "display_name": id,
-        "max_tokens": 32768,
-        "capabilities": {
-          "tools": true,
-          "images": false,
-          "parallel_tool_calls": false,
-          "prompt_cache_key": false,
-        }
-      }));
-    }
+    // Zed's openai_compatible provider drives chat/inline-assist only, so
+    // an embedder in the list would show up as a broken assistant model.
+    let available_models: Vec<Value> = ctx
+      .models
+      .iter()
+      .filter(|m| !m.is_embed)
+      .map(|m| {
+        json!({
+          "name": m.id,
+          "display_name": m.id,
+          "max_tokens": m.declared_context(),
+          "capabilities": {
+            "tools": true,
+            "images": false,
+            "parallel_tool_calls": false,
+            "prompt_cache_key": false,
+          }
+        })
+      })
+      .collect();
     json!({
       "language_models": {
         "openai_compatible": {
@@ -66,12 +78,20 @@ mod tests {
   use crate::init::external::apply;
 
   fn ctx() -> PatchContext {
-    PatchContext {
-      proxy_base_url: "http://127.0.0.1:11435/v1".into(),
-      api_key: "llamastash".into(),
-      model_id: Some("qwen3-coder-30b".into()),
-      is_embed: false,
-    }
+    PatchContext::fixture(&["qwen3-coder-30b"])
+  }
+
+  #[test]
+  fn every_chat_model_is_listed_and_embedders_are_not() {
+    // Zed's openai_compatible provider is assistant-only.
+    let ctx = PatchContext::fixture(&["qwen3-coder-30b", "nomic-embed-text-v1.5"]);
+    let v = Zed.build_additions(&ctx);
+    let models = v["language_models"]["openai_compatible"]["LlamaStash"]["available_models"]
+      .as_array()
+      .expect("array")
+      .clone();
+    let names: Vec<&str> = models.iter().filter_map(|m| m["name"].as_str()).collect();
+    assert_eq!(names, vec!["qwen3-coder-30b"]);
   }
 
   #[test]

@@ -369,23 +369,18 @@ async fn list_models(state: Arc<ProxyState>) -> ProxyResponse {
 }
 
 /// Project a [`DiscoveredModel`] onto the `id` field of an OpenAI
-/// `model` object. Rule: `display_label` wins when set (Ollama
-/// surfaces `<name>:<tag>` here), otherwise fall back to
-/// `path.file_stem()` via [`crate::util::paths::model_display_name`].
-/// This matches what the TUI and `llamastash list` show, so the same
-/// model identifier appears in every surface.
+/// `model` object, through the shared
+/// [`crate::util::paths::model_public_id`] rule so `/v1/models`, the
+/// Ollama-compat surface, and the tool configs `init` writes all name a
+/// model identically.
 ///
 /// Note: `CatalogRow::name()` falls back to `path.file_name()`
-/// (basename *with* extension) rather than the file stem. We use the
-/// stem here so the OpenAI `id` reads cleanly (`qwen2.5-coder` rather
-/// than `qwen2.5-coder.gguf`). The resolver's substring matching is
-/// tolerant to either form, so this divergence is intentional and
-/// bounded.
+/// (basename *with* extension) rather than the file stem. The stem reads
+/// cleaner as an OpenAI `id` (`qwen2.5-coder` rather than
+/// `qwen2.5-coder.gguf`), and the resolver's substring matching is
+/// tolerant to either form, so the divergence is intentional and bounded.
 fn model_id_for(m: &DiscoveredModel) -> String {
-  if let Some(label) = &m.display_label {
-    return label.clone();
-  }
-  crate::util::paths::model_display_name(&m.path)
+  crate::util::paths::model_public_id(&m.path, m.display_label.as_deref())
 }
 
 // === Ollama-compat handlers ============================================

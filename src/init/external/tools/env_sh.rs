@@ -27,6 +27,11 @@ use crate::init::external::{Format, PatchContext, ToolPatcher};
 
 pub struct EnvSh;
 
+/// The variable every tool that cannot resolve a credential itself reads
+/// the proxy key from. Named here, next to the writer that defines it, so
+/// the tools that depend on it point at one place.
+pub const API_KEY_VAR: &str = "LLAMASTASH_API_KEY";
+
 impl ToolPatcher for EnvSh {
   fn id(&self) -> &'static str {
     "env-sh"
@@ -44,6 +49,9 @@ impl ToolPatcher for EnvSh {
     // Unused for Format::Raw — present to satisfy the trait.
     serde_json::Value::Null
   }
+  fn provides_env_var(&self) -> Option<&'static str> {
+    Some(API_KEY_VAR)
+  }
   fn raw_body(&self, ctx: &PatchContext) -> Option<String> {
     let url = &ctx.proxy_base_url;
     let key = &ctx.api_key;
@@ -56,7 +64,7 @@ impl ToolPatcher for EnvSh {
        export OPENAI_BASE_URL=\"{url}\"\n\
        export OPENAI_API_BASE=\"{url}\"\n\
        export OPENAI_API_KEY=\"{key}\"\n\
-       export LLAMASTASH_API_KEY=\"{key}\"\n",
+       export {API_KEY_VAR}=\"{key}\"\n",
       self
         .default_path()
         .map(|p| p.display().to_string())
@@ -71,12 +79,7 @@ mod tests {
   use crate::init::external::{apply, dry_run};
 
   fn ctx() -> PatchContext {
-    PatchContext {
-      proxy_base_url: "http://127.0.0.1:11435/v1".into(),
-      api_key: "llamastash".into(),
-      model_id: None,
-      is_embed: false,
-    }
+    PatchContext::fixture(&[])
   }
 
   #[test]

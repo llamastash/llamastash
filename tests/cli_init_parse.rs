@@ -365,3 +365,64 @@ fn init_only_integrations_parses_as_step() {
     other => panic!("expected init, got {other:?}"),
   }
 }
+
+// === `llamastash integrations` — the top-level shortcut ================
+
+/// Fold the standalone command the way the dispatcher does.
+fn integrations_args(argv: &[&str]) -> llamastash::cli::cli_args::InitArgs {
+  match parse(argv).command {
+    Some(Command::Integrations(args)) => llamastash::cli::cli_args::integrations_to_init_args(args),
+    other => panic!("expected integrations, got {other:?}"),
+  }
+}
+
+#[test]
+fn integrations_command_pins_the_step_and_skips_the_tui() {
+  let folded = integrations_args(&["integrations"]);
+  assert_eq!(folded.only, vec![InitStep::Integrations]);
+  assert!(folded.skip.is_empty());
+  assert!(folded.no_tui, "standalone run must not hand off to the TUI");
+  assert!(!folded.recommended, "the picker still runs interactively");
+  assert!(folded.integrations.is_empty());
+}
+
+#[test]
+fn integrations_takes_tool_ids_positionally() {
+  assert_eq!(
+    integrations_args(&["integrations", "pi"]).integrations,
+    vec!["pi".to_string()]
+  );
+  assert_eq!(
+    integrations_args(&["integrations", "pi", "zed"]).integrations,
+    vec!["pi".to_string(), "zed".to_string()]
+  );
+  assert_eq!(
+    integrations_args(&["integrations", "pi,zed"]).integrations,
+    vec!["pi".to_string(), "zed".to_string()]
+  );
+}
+
+#[test]
+fn integrations_flag_form_matches_the_positional_one() {
+  assert_eq!(
+    integrations_args(&["integrations", "--integrations", "pi"]).integrations,
+    integrations_args(&["integrations", "pi"]).integrations,
+  );
+}
+
+#[test]
+fn integrations_json_carries_through() {
+  assert!(integrations_args(&["integrations", "pi", "--json"]).json);
+}
+
+#[test]
+fn api_key_command_parses_bare_and_with_json() {
+  match parse(&["api-key"]).command {
+    Some(Command::ApiKey(args)) => assert!(!args.json),
+    other => panic!("expected api-key, got {other:?}"),
+  }
+  match parse(&["api-key", "--json"]).command {
+    Some(Command::ApiKey(args)) => assert!(args.json),
+    other => panic!("expected api-key, got {other:?}"),
+  }
+}

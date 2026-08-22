@@ -289,6 +289,19 @@ impl CatalogRow {
       .map(|s| s.to_string_lossy().into_owned())
       .unwrap_or_else(|| self.path.clone())
   }
+
+  /// The identifier this row answers to on the wire — what `/v1/models`
+  /// publishes and what a client sends back as `body.model`. Same rule as
+  /// the proxy's projection ([`crate::util::paths::model_public_id`]):
+  /// the repo id / `<name>:<tag>` label where the source has one, the file
+  /// stem for a plain GGUF. Distinct from [`Self::name`], which keeps the
+  /// extension for table rendering.
+  pub fn public_id(&self) -> String {
+    crate::util::paths::model_public_id(
+      std::path::Path::new(&self.path),
+      self.display_label.as_deref(),
+    )
+  }
 }
 
 /// Distinguishes the three resolver failure modes the HTTP proxy needs

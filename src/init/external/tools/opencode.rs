@@ -48,11 +48,19 @@ impl ToolPatcher for OpenCode {
   fn format(&self) -> Format {
     Format::Json
   }
+  fn required_env_var(&self) -> Option<&'static str> {
+    // OpenCode resolves config values through exactly two substitutions,
+    // `{env:VAR}` and `{file:PATH}` (verified against 1.18.21). With no
+    // command form, the environment is the only way in that does not put
+    // the key on disk.
+    Some(super::env_sh::API_KEY_VAR)
+  }
   fn build_additions(&self, ctx: &PatchContext) -> serde_json::Value {
-    let mut models = serde_json::Map::new();
-    if let Some(id) = &ctx.model_id {
-      models.insert(id.clone(), json!({ "name": id }));
-    }
+    let models: serde_json::Map<String, serde_json::Value> = ctx
+      .models
+      .iter()
+      .map(|m| (m.id.clone(), json!({ "name": m.id })))
+      .collect();
     json!({
       "$schema": "https://opencode.ai/config.json",
       "provider": {
@@ -76,12 +84,17 @@ mod tests {
   use crate::init::external::{apply, dry_run};
 
   fn ctx() -> PatchContext {
-    PatchContext {
-      proxy_base_url: "http://127.0.0.1:11435/v1".into(),
-      api_key: "llamastash".into(),
-      model_id: Some("qwen3-coder-30b".into()),
-      is_embed: false,
-    }
+    PatchContext::fixture(&["qwen3-coder-30b"])
+  }
+
+  #[test]
+  fn every_model_is_registered_under_the_one_provider() {
+    let ctx = PatchContext::fixture(&["qwen3-coder-30b", "Qwen/Qwen3-0.6B"]);
+    let v = OpenCode.build_additions(&ctx);
+    let models = &v["provider"]["llamastash"]["models"];
+    // A safetensors repo id carries a slash — it is still just a key.
+    assert_eq!(models["qwen3-coder-30b"]["name"], "qwen3-coder-30b");
+    assert_eq!(models["Qwen/Qwen3-0.6B"]["name"], "Qwen/Qwen3-0.6B");
   }
 
   #[test]

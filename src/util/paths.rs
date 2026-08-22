@@ -64,6 +64,65 @@ pub fn model_display_name(path: &Path) -> String {
     .to_string()
 }
 
+/// The one user-visible identifier for a model: `display_label` when the
+/// source supplies one, otherwise [`model_display_name`] over the path.
+///
+/// A GGUF row has no label, so it reads as the file stem
+/// (`Qwen2.5-Coder-7B-Q4_K_M`); a safetensors repo, an Ollama blob, and a
+/// Lemonade registry entry all have opaque paths and carry a label instead
+/// (`Qwen/Qwen3-0.6B`, `llama3:8b`, `qwen3.5-4b-FLM`). This is the `id`
+/// `/v1/models` publishes and the string external tool configs must send
+/// back, so both go through here rather than deriving a name each.
+pub fn model_public_id(path: &Path, display_label: Option<&str>) -> String {
+  match display_label {
+    Some(label) => label.to_string(),
+    None => model_display_name(path),
+  }
+}
+
+/// Follow `path` through any symlinks to the real file that would be
+/// written.
+///
+/// Atomic writes go tempfile-then-rename, and a rename over a symlink
+/// **replaces the link** with a regular file. Dotfile setups routinely
+/// symlink these configs into a managed repo (`~/.pi/agent/settings.json`
+/// → `~/dotfiles/...`), so writing without resolving first would silently
+/// detach the user's config from the repo managing it.
+///
+/// Relative link targets resolve against the link's own directory. A
+/// broken or missing link resolves to the last path that existed, so the
+/// caller creates a file where the user pointed. Hops are capped so a
+/// loop returns rather than spins.
+pub fn resolve_symlinks(path: &Path) -> PathBuf {
+  let mut current = path.to_path_buf();
+  for _ in 0..SYMLINK_HOPS {
+    let Ok(meta) = std::fs::symlink_metadata(&current) else {
+      return current;
+    };
+    if !meta.file_type().is_symlink() {
+      return current;
+    }
+    let Ok(target) = std::fs::read_link(&current) else {
+      return current;
+    };
+    current = if target.is_absolute() {
+      target
+    } else {
+      match current.parent() {
+        // Normalise the `..` a relative link introduces, so the path we
+        // report and write is the one the user would type.
+        Some(dir) => canonicalize(dir.join(&target)).unwrap_or_else(|_| dir.join(target)),
+        None => target,
+      }
+    };
+  }
+  current
+}
+
+/// Cap on symlink hops in [`resolve_symlinks`]. Linux's own limit is 40;
+/// a config path nested deeper than this is a loop, not a setup.
+const SYMLINK_HOPS: usize = 8;
+
 /// File basename of `path`, extension included (`qwen-coder.gguf`),
 /// falling back to the full path display when there is no final
 /// component. This is the per-model preset key the CLI/TUI write under,

@@ -62,10 +62,11 @@ impl ToolPatcher for ClaudeCode {
   fn raw_body(&self, ctx: &PatchContext) -> Option<String> {
     let key = &ctx.api_key;
     let anthropic_url = anthropic_base(&ctx.proxy_base_url);
-    let model = match &ctx.model_id {
-      Some(id) if !ctx.is_embed => format!(
+    let model = match ctx.primary() {
+      Some(m) if !m.is_embed => format!(
         "export ANTHROPIC_MODEL=\"{id}\"\n\
-         export ANTHROPIC_SMALL_FAST_MODEL=\"{id}\"\n"
+         export ANTHROPIC_SMALL_FAST_MODEL=\"{id}\"\n",
+        id = m.id
       ),
       _ => String::new(),
     };
@@ -93,12 +94,7 @@ mod tests {
   use crate::init::external::apply;
 
   fn ctx() -> PatchContext {
-    PatchContext {
-      proxy_base_url: "http://127.0.0.1:11435/v1".into(),
-      api_key: "llamastash".into(),
-      model_id: Some("qwen3-coder-30b".into()),
-      is_embed: false,
-    }
+    PatchContext::fixture(&["qwen3-coder-30b"])
   }
 
   #[test]
@@ -134,16 +130,12 @@ mod tests {
 
   #[test]
   fn omits_model_for_embedder_or_when_unknown() {
-    // No model id → base + token only, no model pins.
-    let mut c = ctx();
-    c.model_id = None;
-    let no_model_body = ClaudeCode.raw_body(&c).unwrap();
+    // No models → base + token only, no model pins.
+    let no_model_body = ClaudeCode.raw_body(&PatchContext::fixture(&[])).unwrap();
     assert!(no_model_body.contains("export ANTHROPIC_BASE_URL="));
     assert!(!no_model_body.contains("ANTHROPIC_MODEL"));
-    // Embedder → still no model pins (Claude Code can't use one).
-    let mut embed = ctx();
-    embed.model_id = Some("nomic-embed-text-v1.5".into());
-    embed.is_embed = true;
+    // Embedders only → still no model pins (Claude Code can't use one).
+    let embed = PatchContext::fixture(&["nomic-embed-text-v1.5"]);
     let embed_body = ClaudeCode.raw_body(&embed).unwrap();
     assert!(!embed_body.contains("ANTHROPIC_MODEL"));
   }

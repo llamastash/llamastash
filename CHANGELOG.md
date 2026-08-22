@@ -4,6 +4,19 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 ## [Unreleased]
 
+### Added
+
+- `llamastash api-key` — print the proxy's bearer key on stdout, for client configs that resolve a credential by shelling out and for `$(...)` in scripts.
+- `llamastash integrations [tools...]` — patch your AI dev tools' configs without running the whole `init` wizard. Registers every **favorited** model, not just one, and names each the way `/v1/models` publishes it, so GGUF files and safetensors repos both resolve.
+
+### Fixed
+
+- **A tool could be patched and then silently fail to authenticate.** OpenCode and Zed read the key from `LLAMASTASH_API_KEY`, and with proxy auth on an unexported variable meant they started unauthenticated with nothing said at patch time. `init` / `integrations` now name the affected tools in the summary with the line to add to your shell rc (`integrations.env_requirement` in `--json`).
+- **pi.dev needed an env var nobody had exported.** The provider carried `apiKey: "$LLAMASTASH_API_KEY"`, so a terminal that had not sourced `env.sh` got "No API key found for llamastash" and no models in scope. It shells out to `llamastash api-key` now, which needs nothing set up.
+- **pi.dev models were configured but unreachable.** pi bounds its model switcher by `enabledModels` in `settings.json`; the provider block alone left every llamastash model out of scope. `init` / `integrations` now append `llamastash/**` there, and only when the user already has a scope set.
+- **pi.dev got an embedding model it cannot use.** The patcher wrote `api: openai-embeddings` for an embedder, which is not an API pi implements — the model would only fail at request time. Embedders are left out of pi and Zed, which both drive chat only.
+- **A symlinked tool config was replaced by a regular file.** Atomic writes rename over the target, so patching a config that a dotfiles repo symlinks in detached it from the repo. Every patcher resolves the link and writes through it now.
+
 ### Changed
 
 - Repositioned from "launcher" to "local-LLM manager" across the README, `--help`, crate metadata, packaging manifests and the website. The binary already launches, supervises, routes and evicts; "launcher" only described the first of those.

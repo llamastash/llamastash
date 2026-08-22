@@ -216,6 +216,20 @@ pub enum Command {
   /// recommended GGUF without walking through the full first-run
   /// wizard.
   Recommend(RecommendArgs),
+  /// Point your AI dev tools at LlamaStash: patches the config of each
+  /// selected tool (OpenCode, Aider, Continue.dev, Zed, pi.dev) with the
+  /// proxy URL and every model you have favorited, and writes the
+  /// sourceable env snippets. Shortcut for `init --only integrations`
+  /// that skips the rest of the wizard.
+  Integrations(IntegrationsArgs),
+  /// Print the proxy's bearer key on stdout. For client configs that
+  /// resolve a credential by shelling out (pi.dev's
+  /// `apiKey: "!llamastash api-key"`) and for `$(...)` in scripts, so the
+  /// key never has to be copied into a config file. Prints the
+  /// `llamastash` stub when the loopback proxy is keyless — it ignores the
+  /// value, but clients that require a non-empty key still need one.
+  #[command(name = "api-key")]
+  ApiKey(ApiKeyArgs),
   /// Inspect the last successful `start_model` params for one or
   /// every catalog model. Surfaces the daemon's `last_params_list`
   /// IPC so agents can answer "how did I launch this model last
@@ -1035,6 +1049,58 @@ pub fn recommend_to_init_args(args: RecommendArgs) -> InitArgs {
     integrations: Vec::new(),
     step: None,
   }
+}
+
+/// Convert the `integrations` subcommand's args into the equivalent
+/// `init --only integrations` invocation. Positional tool ids and
+/// `--integrations` are the same axis — a user typing
+/// `llamastash integrations pi` and one typing
+/// `llamastash integrations --integrations pi` mean the same thing — so
+/// both are folded into the flat `integrations` list the wizard reads.
+pub fn integrations_to_init_args(args: IntegrationsArgs) -> InitArgs {
+  let mut integrations = args.tools;
+  integrations.extend(args.integrations);
+  InitArgs {
+    recommended: false,
+    yes: false,
+    json: args.json,
+    offline: false,
+    only: vec![InitStep::Integrations],
+    skip: Vec::new(),
+    install: None,
+    model: None,
+    config_choice: None,
+    revision: None,
+    no_tui: true,
+    integrations,
+    step: None,
+  }
+}
+
+#[derive(Args, Debug)]
+pub struct ApiKeyArgs {
+  /// Emit `{"api_key", "auth", "base_url"}` instead of the bare key.
+  /// The plain form stays a single unadorned line so it can be consumed
+  /// by a shell-out or `$(...)` without post-processing.
+  #[arg(long)]
+  pub json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct IntegrationsArgs {
+  /// Tools to patch (`opencode`, `aider`, `continue`, `zed`, `pi`,
+  /// `env-sh`, `claude-code`), space- or comma-separated. Omit to pick
+  /// from an interactive list; `none` runs the step and patches nothing.
+  #[arg(value_name = "TOOLS", value_delimiter = ',')]
+  pub tools: Vec<String>,
+  /// Same list as the positional form, for parity with
+  /// `init --integrations`.
+  #[arg(long, value_name = "TOOLS", value_delimiter = ',', action = ArgAction::Append)]
+  pub integrations: Vec<String>,
+  /// Emit a structured JSON summary on completion. Mirrors
+  /// `init --only integrations --json`.
+  #[arg(long)]
+  pub json: bool,
 }
 
 #[derive(Args, Debug)]
