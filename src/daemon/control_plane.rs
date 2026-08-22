@@ -334,7 +334,7 @@ fn not_found() -> Response<Full<Bytes>> {
 async fn rpc_handler(req: Request<Incoming>, ctx: MethodContext) -> Response<Full<Bytes>> {
   let body = match collect_body(req, MAX_RPC_BODY_BYTES).await {
     Ok(b) => b,
-    Err(resp) => return resp,
+    Err(resp) => return *resp,
   };
   let request: RpcRequest = match serde_json::from_slice(&body) {
     Ok(r) => r,
@@ -380,11 +380,11 @@ fn json_rpc_response(resp: RpcResponse) -> Response<Full<Bytes>> {
 async fn collect_body(
   req: Request<Incoming>,
   max_bytes: usize,
-) -> Result<Bytes, Response<Full<Bytes>>> {
+) -> Result<Bytes, Box<Response<Full<Bytes>>>> {
   let collected = match req.into_body().collect().await {
     Ok(c) => c,
     Err(e) => {
-      return Err(
+      return Err(Box::new(
         Response::builder()
           .status(StatusCode::BAD_REQUEST)
           .header(CONTENT_TYPE, "application/json")
@@ -392,12 +392,12 @@ async fn collect_body(
             serde_json::json!({"error": "body read failed", "reason": e.to_string()}).to_string(),
           )))
           .expect("static response is well-formed"),
-      );
+      ));
     }
   };
   let bytes = collected.to_bytes();
   if bytes.len() > max_bytes {
-    return Err(
+    return Err(Box::new(
       Response::builder()
         .status(StatusCode::PAYLOAD_TOO_LARGE)
         .header(CONTENT_TYPE, "application/json")
@@ -405,7 +405,7 @@ async fn collect_body(
           serde_json::json!({"error": "payload too large", "max_bytes": max_bytes}).to_string(),
         )))
         .expect("static response is well-formed"),
-    );
+    ));
   }
   Ok(bytes)
 }
