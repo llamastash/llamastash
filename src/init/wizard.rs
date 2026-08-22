@@ -220,11 +220,29 @@ pub struct AppliedTool {
 /// tools that ran cleanly; `failed` is the ones that errored
 /// non-fatally (e.g. a path the user can't write to) — the wizard
 /// surfaces these as warnings without aborting.
+/// Emitted when a tool the run just patched reads the proxy key from the
+/// environment *and* the proxy actually enforces auth. Without the
+/// variable exported those tools are configured but unauthenticated, and
+/// the failure surfaces later in whatever terminal the user opens next,
+/// far from the command that caused it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EnvRequirement {
+  /// Variable the tools below read.
+  pub var: String,
+  /// Display names of the patched tools that need it.
+  pub tools: Vec<String>,
+  /// The sourceable file that defines it, when this run wrote one.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub source_file: Option<PathBuf>,
+}
+
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct IntegrationsSummary {
   pub applied: Vec<AppliedTool>,
   #[serde(default, skip_serializing_if = "Vec::is_empty")]
   pub failed: Vec<FailedTool>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub env_requirement: Option<EnvRequirement>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -413,7 +431,7 @@ pub async fn run(args: InitArgs, cli: &Cli, config: &Config) -> CliResult {
   // / --recommended skip the picker (we won't silently mutate external
   // tool configs without an explicit opt-in).
   if plan.integrations {
-    match run_integrations_step(&args, config, summary.model.as_ref()).await {
+    match run_integrations_step(&args, cli, config, summary.model.as_ref()).await {
       Ok(Some(s)) => {
         summary.steps_ran.push("integrations");
         summary.integrations = Some(s);
@@ -1189,22 +1207,6 @@ fn canonical_value_bytes(v: &yaml_serde::Value) -> Vec<u8> {
   s.trim_end().as_bytes().to_vec()
 }
 
-/// Cheap heuristic: does the model id look like an embedding model?
-/// Used to pick embed-shaped fields in the integrations step
-/// (Continue.dev `roles: [embed]`, pi.dev `api: openai-embeddings`).
-/// Matches `nomic-embed-*`, `snowflake-arctic-embed-*`, `bge-*-embed`,
-/// `gte-*-embed`, and anything else with `embed` in the basename.
-///
-/// Trade-off vs the canonical [`crate::gguf::metadata::ModeHint`]
-/// detection (BERT arch + pooling_type + name/tags scan): no GGUF
-/// header parse on the wizard hot path. Misclassifies a pure BERT
-/// model whose name doesn't include "embed" (rare). Upgrade to
-/// ModeHint when init starts carrying parsed metadata through to
-/// the integrations step.
-fn is_embed_model_id(id: &str) -> bool {
-  id.to_ascii_lowercase().contains("embed")
-}
-
 /// Step 5 — external AI tool config patchers.
 ///
 /// Resolution priority for which patchers run:
@@ -1227,6 +1229,7 @@ fn is_embed_model_id(id: &str) -> bool {
 /// already succeeded.
 async fn run_integrations_step(
   args: &InitArgs,
+  cli: &Cli,
   config: &Config,
   model_summary: Option<&ModelSummary>,
 ) -> Result<Option<IntegrationsSummary>, CliExit> {
@@ -1236,40 +1239,20 @@ async fn run_integrations_step(
   // auth is enforced, or every request 401s. Fall back to the
   // `llamastash` stub on the keyless loopback default — clients that
   // require a non-empty key still boot, and the keyless proxy ignores it.
-  let api_key = config
-    .proxy
-    .effective_api_key()
-    .unwrap_or_else(|| "llamastash".to_string());
-  // Find the GGUF in the downloaded file set — `.gitattributes` /
-  // `README.md` / etc. are also present and would otherwise win
-  // `files.first()`. Multi-shard GGUFs (`foo-00001-of-00002.gguf`)
-  // route through the existing
-  // [`crate::discovery::split_gguf::parse_shard_name`] so the id we
-  // hand to tools matches the catalog row's name rather than
-  // shard 1 specifically — same helper the discovery scanner uses
-  // to collapse shard sets into one entry.
-  let model_id = model_summary.and_then(|m| {
-    let gguf = m.files.iter().find(|f| {
-      f.extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("gguf"))
-    })?;
-    let filename = gguf.file_name().and_then(|s| s.to_str())?;
-    if let Some(shard) = crate::discovery::split_gguf::parse_shard_name(filename) {
-      Some(shard.base)
-    } else {
-      gguf
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .map(|s| s.to_string())
+  let configured_key = config.proxy.effective_api_key();
+  let auth_enforced = configured_key.is_some();
+  let api_key = configured_key.unwrap_or_else(|| "llamastash".to_string());
+  let resolved = crate::init::external::models::resolve(cli, config, model_summary).await;
+  if let Some(note) = &resolved.note {
+    if !args.json {
+      eprintln!("{}", colors::warning(note));
     }
-  });
-  let is_embed = model_id.as_deref().map(is_embed_model_id).unwrap_or(false);
+    log::debug!("init: integrations model list: {note}");
+  }
   let ctx = crate::init::external::PatchContext {
     proxy_base_url,
     api_key,
-    model_id,
-    is_embed,
+    models: resolved.models,
   };
 
   let chosen_ids: Vec<String> = if !args.integrations.is_empty() {
@@ -1315,6 +1298,10 @@ async fn run_integrations_step(
   };
 
   let mut summary = IntegrationsSummary::default();
+  // Tools that will sit unauthenticated until a variable is exported, and
+  // the file this run wrote that defines it (when the user picked it).
+  let mut env_needed: Vec<(&'static str, String)> = Vec::new();
+  let mut env_source: Option<PathBuf> = None;
   for id in chosen_ids {
     let Some(patcher) = crate::init::external::patcher_by_id(&id) else {
       summary.failed.push(FailedTool {
@@ -1323,29 +1310,96 @@ async fn run_integrations_step(
       });
       continue;
     };
-    match crate::init::external::apply(patcher.as_ref(), &ctx, None) {
-      Ok(out) => summary.applied.push(AppliedTool {
-        id: out.tool_id.to_string(),
-        display_name: out.display_name.to_string(),
-        path: out.path,
-        written_bytes: out.written_bytes,
-        diff_json: out.diff_json,
-      }),
-      Err(e) => {
-        if !args.json {
-          eprintln!(
-            "{}",
-            colors::warning(&format!("{}: skipped ({e})", patcher.display_name()))
-          );
+    // A companion is the same integration's second file, so it lands in
+    // the same summary — one row per file the user can go look at.
+    let companions = patcher.companions();
+    let targets = std::iter::once(patcher.as_ref()).chain(companions.iter().map(|c| c.as_ref()));
+    for target in targets {
+      match crate::init::external::apply(target, &ctx, None) {
+        Ok(out) => {
+          if let Some(var) = target.required_env_var() {
+            env_needed.push((var, out.display_name.to_string()));
+          }
+          if target.provides_env_var().is_some() {
+            env_source = Some(out.path.clone());
+          }
+          summary.applied.push(AppliedTool {
+            id: out.tool_id.to_string(),
+            display_name: out.display_name.to_string(),
+            path: out.path,
+            written_bytes: out.written_bytes,
+            diff_json: out.diff_json,
+          })
         }
-        summary.failed.push(FailedTool {
-          id: patcher.id().to_string(),
-          error: e.to_string(),
-        });
+        Err(e) => {
+          if !args.json {
+            eprintln!(
+              "{}",
+              colors::warning(&format!("{}: skipped ({e})", target.display_name()))
+            );
+          }
+          summary.failed.push(FailedTool {
+            id: target.id().to_string(),
+            error: e.to_string(),
+          });
+        }
       }
     }
   }
+  // Rendered in the run summary rather than shouted here, so it sits with
+  // the list of files that were patched instead of scrolling above it.
+  summary.env_requirement = env_requirement(auth_enforced, &env_needed, env_source);
   Ok(Some(summary))
+}
+
+/// Decide whether the user needs to hear about an unexported variable.
+///
+/// Only when the proxy enforces auth: on the keyless loopback default the
+/// value is ignored, and nagging about it there would train people to skip
+/// the notice for the one case that breaks. Deliberately does *not* check
+/// whether the variable is set in this process — it usually is not the
+/// shell the tool will run in, and a missed warning costs more than a
+/// redundant one.
+fn env_requirement(
+  auth_enforced: bool,
+  needed: &[(&'static str, String)],
+  source_file: Option<PathBuf>,
+) -> Option<EnvRequirement> {
+  if !auth_enforced {
+    return None;
+  }
+  let var = needed.first()?.0.to_string();
+  let mut tools: Vec<String> = needed
+    .iter()
+    .filter(|(v, _)| *v == var)
+    .map(|(_, name)| name.clone())
+    .collect();
+  tools.dedup();
+  Some(EnvRequirement {
+    var,
+    tools,
+    source_file,
+  })
+}
+
+pub(crate) fn render_env_requirement(req: &EnvRequirement) -> String {
+  let tools = req.tools.join(", ");
+  let var = &req.var;
+  let (verb, subject) = if req.tools.len() == 1 {
+    ("reads", "it starts")
+  } else {
+    ("read", "they start")
+  };
+  let fix = match &req.source_file {
+    Some(path) => format!("source {}", path.display()),
+    // No sourceable file written this run, so give the export that works
+    // on its own rather than pointing at a file that may not exist.
+    None => format!("export {var}=\"$(llamastash api-key)\""),
+  };
+  format!(
+    "{tools} {verb} the key from ${var} and the proxy has auth on. \
+     Add to your shell rc, or {subject} unauthenticated:\n     {fix}"
+  )
 }
 
 /// What `run_config_step` composes for the writer. Skipping empty
@@ -1601,25 +1655,52 @@ mod tests {
   }
 
   #[test]
+  fn no_env_notice_on_a_keyless_proxy() {
+    // The value is ignored there, and a notice for the harmless case
+    // teaches people to skip the one that matters.
+    let needed = vec![("LLAMASTASH_API_KEY", "OpenCode".to_string())];
+    assert!(env_requirement(false, &needed, None).is_none());
+  }
+
+  #[test]
+  fn no_env_notice_when_no_patched_tool_reads_one() {
+    assert!(env_requirement(true, &[], None).is_none());
+  }
+
+  #[test]
+  fn env_notice_names_every_tool_that_needs_the_variable() {
+    let needed = vec![
+      ("LLAMASTASH_API_KEY", "OpenCode".to_string()),
+      ("LLAMASTASH_API_KEY", "Zed".to_string()),
+    ];
+    let req = env_requirement(true, &needed, None).expect("notice");
+    assert_eq!(req.var, "LLAMASTASH_API_KEY");
+    assert_eq!(req.tools, vec!["OpenCode", "Zed"]);
+    // No sourceable file written this run: give an export that stands alone.
+    let text = render_env_requirement(&req);
+    assert!(text.contains("llamastash api-key"), "got: {text}");
+  }
+
+  #[test]
+  fn env_notice_points_at_the_file_this_run_wrote() {
+    let needed = vec![("LLAMASTASH_API_KEY", "OpenCode".to_string())];
+    let req = env_requirement(
+      true,
+      &needed,
+      Some(PathBuf::from("/home/u/.config/llamastash/env.sh")),
+    )
+    .expect("notice");
+    let text = render_env_requirement(&req);
+    assert!(
+      text.contains("source /home/u/.config/llamastash/env.sh"),
+      "got: {text}"
+    );
+  }
+
+  #[test]
   fn init_date_is_iso8601() {
     let t = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
     assert_eq!(crate::util::datetime::iso8601(t), "2023-11-14T22:13:20Z");
-  }
-
-  #[test]
-  fn is_embed_model_id_matches_known_embedder_names() {
-    assert!(is_embed_model_id("nomic-embed-text-v1.5"));
-    assert!(is_embed_model_id("nomic-embed-code"));
-    assert!(is_embed_model_id("snowflake-arctic-embed-m"));
-    assert!(is_embed_model_id("Snowflake-Arctic-Embed-L")); // case-insensitive
-    assert!(is_embed_model_id("bge-large-en-embed"));
-  }
-
-  #[test]
-  fn is_embed_model_id_rejects_chat_names() {
-    assert!(!is_embed_model_id("qwen3-coder-30b"));
-    assert!(!is_embed_model_id("Llama-3.1-8B-Instruct-Q4_K_M"));
-    assert!(!is_embed_model_id("gemma-2-9b-it"));
   }
 
   #[test]

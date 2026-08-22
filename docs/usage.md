@@ -961,7 +961,7 @@ Each step is also a first-class subcommand. `llamastash init server` is sugar fo
 | `init config`              | `init --only config`             | `--config-step`     |
 | `init integrations`        | `init --only integrations`       | `--integrations`    |
 
-Examples: `llamastash init server --install gh-releases`, `llamastash init models --json`, `llamastash init config --config-step write`. Bare `llamastash init` (no subcommand) still runs the full wizard and honors the `--only` / `--skip` flags.
+Examples: `llamastash init server --install gh-releases`, `llamastash init models --json`, `llamastash init config --config-step write`. Bare `llamastash init` (no subcommand) still runs the full wizard and honors the `--only` / `--skip` flags. Two steps also have top-level shortcuts that skip the wizard entirely: [`llamastash recommend`](#llamastash-recommend) and [`llamastash integrations`](#llamastash-integrations-tools).
 
 | Flag                     | Effect                                                                                                                                                                  |
 | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1007,6 +1007,50 @@ llamastash recommend [--json] [--offline] [--model <CHOICE>] [--revision <SHA>]
 | `--model <CHOICE>` | Pre-answer the picker. Values: `recommended` (auto-pick top entry), `none`, `<owner>/<repo>`. Omit to get the interactive top-10 picker. |
 | `--revision <SHA>` | Pin the HF revision; honored only on `<owner>/<repo>` paste branch.                                                                      |
 | `--offline`        | Refused — recommend always needs network. Kept for `init` parity.                                                                        |
+
+### `llamastash integrations [tools...]`
+
+Shortcut for `init --only integrations` that points your AI dev tools at the local proxy without walking the wizard. Patches each selected tool's config with the proxy URL and every model you have **favorited**, and writes the sourceable env snippets.
+
+```
+llamastash integrations [TOOLS] [--integrations <TOOLS>] [--json]
+```
+
+| Flag / arg              | Effect                                                                                                                                             |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `[TOOLS]`               | Tool ids to patch, space- or comma-separated: `opencode`, `aider`, `continue`, `zed`, `pi`, `env-sh`, `claude-code`. Omit for the interactive multiselect; `none` runs the step and patches nothing. |
+| `--integrations <TOOLS>` | Same list in flag form, for parity with `init --integrations`.                                                                                     |
+| `--json`                | Same `{"steps_ran": ["detect","integrations"], "integrations": {"applied": [...], "failed": [...]}}` shape as `init --only integrations --json`.    |
+
+Examples: `llamastash integrations pi`, `llamastash integrations opencode,zed`, `llamastash integrations` (pick from the list).
+
+**Which models get registered.** The run reads your favorites from the daemon and registers each one, named exactly as `/v1/models` publishes it — a GGUF by its file stem (`Qwen3-Coder-30B-Q4_K_M`), a safetensors repo by its repo id (`Qwen/Qwen3-0.6B`), an Ollama model by `<name>:<tag>`. So whatever a tool sends back as `body.model` is a name the proxy already answers to. During a full `llamastash init` the model the download step just fetched is registered first, then the favorites. No favorites and nothing downloaded means a provider block with no models: the run says so on stderr, and `llamastash favorites add <model>` then a re-run fills it in.
+
+Per-tool shape: tools whose schema holds a model list (OpenCode, Continue.dev, Zed, pi.dev) register all of them; tools with a single model slot (Aider's `model:`, Claude Code's `ANTHROPIC_MODEL`) take the first non-embedding model. Embedders are routed by kind — Continue.dev gets `roles: [embed]`; Zed and pi.dev leave them out, since both drive chat only and pi has no embeddings API at all.
+
+**pi.dev patches two files.** `~/.pi/agent/models.json` gets the provider block, and `~/.pi/agent/settings.json` gets `llamastash/**` appended to `enabledModels` — pi's model switcher is bounded by that list, so without the pattern the models are configured but out of scope until you widen it by hand. The pattern is only appended when `enabledModels` is already set: pi reads an absent or empty list as "no scoping", and writing ours there would hide every other provider. Any config that is a symlink (a dotfiles repo, typically) is written *through* the link, not over it.
+
+**Where the key ends up**, per tool — it is only a real secret when you have turned proxy auth on; the loopback default ignores the value and every writer uses the `llamastash` stub.
+
+| Tool | Form | Secret at rest? |
+| --- | --- | --- |
+| pi.dev | `!llamastash api-key` (pi runs it, reads stdout) | No — resolved per pi process |
+| OpenCode | `{env:LLAMASTASH_API_KEY}` | No — needs the var exported |
+| Zed | nothing written (Zed reads `LLAMASTASH_API_KEY` from env by its own convention) | No |
+| Aider, Continue.dev | literal, file mode `0600` | Yes |
+| `env-sh`, `claude-code` | literal in the `.sh` they write, mode `0600` | Yes |
+
+The tools in the last two rows have no reference syntax to use, so the value goes in directly and the file is written user-only. If you keep these configs in a dotfiles repo, that is the row to check before committing.
+
+When the run patches a tool that reads the variable **and** the proxy has auth on, the summary says so and gives the line to add to your shell rc — pointing at the `env.sh` it just wrote when you picked that integration, and at `export LLAMASTASH_API_KEY="$(llamastash api-key)"` when you did not. `--json` carries the same under `integrations.env_requirement` (`{var, tools, source_file}`); the field is absent when nothing needs it. Nothing is said on the keyless loopback default, where the value is ignored.
+
+### `llamastash api-key`
+
+```
+llamastash api-key [--json]
+```
+
+Prints the proxy's bearer key on stdout, alone on one line, for client configs that resolve a credential by shelling out and for `$(...)` in scripts. Reads the local config only — no daemon contact, so it stays inside a client's shell-out timeout. On the keyless loopback default it prints the `llamastash` stub, since the proxy ignores the value but clients that demand a non-empty key still need one. `--json` emits `{"api_key", "auth", "base_url"}`.
 
 ### `llamastash pull <repo>`
 

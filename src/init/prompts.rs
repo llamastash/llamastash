@@ -269,6 +269,12 @@ pub fn outro(summary: &InitSummary) {
           env.path.display()
         ));
       }
+      if let Some(req) = &int.env_requirement {
+        body.push_str(&format!(
+          "\n  ! {}",
+          crate::init::wizard::render_env_requirement(req)
+        ));
+      }
       if let Some(cc) = int.applied.iter().find(|t| t.id == "claude-code") {
         body.push_str(&format!(
           "\n  ▸ Claude Code (local proxy, this shell only): source {} && claude",

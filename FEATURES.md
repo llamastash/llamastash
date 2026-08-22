@@ -167,6 +167,10 @@ Same `hf-hub`-backed primitive the wizard and the TUI dialog use; honors `HF_TOK
 
 The wizard's recommender without the install / download / config-write steps. Up to 10 ranked candidates from `init::recommender`. Pass `--model recommended` to short-circuit to the top entry without prompting; pipe `--json` to `jq` for everything else. See [`docs/usage.md` § `llamastash recommend`](docs/usage.md#llamastash-recommend).
 
+### `llamastash integrations` — point your AI tools at the proxy
+
+Patches the config of each tool you pick — OpenCode, Aider, Continue.dev, Zed, pi.dev — with the proxy URL and every model you have favorited, and writes the sourceable `env.sh` / `claude-code.sh` snippets. `llamastash integrations pi` for one tool, bare for an interactive multiselect. Merges preserve your own keys, API keys are written as env references rather than literals, and each model is named the way `/v1/models` publishes it, so a GGUF file and a safetensors repo both resolve. Same step `init` runs, without the wizard. See [`docs/usage.md` § `llamastash integrations`](docs/usage.md#llamastash-integrations-tools).
+
 ### Reproducible pulls via `--revision <SHA>`
 
 Pin HF downloads to a specific commit for agent and CI workflows. Threaded into `hf-hub`'s `Repo::with_revision` so the byte-stream resolves at the supplied commit. See [`docs/usage.md` § Pinning a HuggingFace revision](docs/usage.md#pinning-a-huggingface-revision).

@@ -43,11 +43,12 @@ impl ToolPatcher for Aider {
       "openai-api-base": ctx.proxy_base_url,
       "openai-api-key": ctx.api_key,
     });
-    if let Some(id) = &ctx.model_id {
+    // Aider's `model:` is a single slot — the primary chat model.
+    if let Some(m) = ctx.primary() {
       obj
         .as_object_mut()
         .unwrap()
-        .insert("model".into(), json!(format!("openai/{id}")));
+        .insert("model".into(), json!(format!("openai/{}", m.id)));
     }
     obj
   }
@@ -59,12 +60,15 @@ mod tests {
   use crate::init::external::apply;
 
   fn ctx() -> PatchContext {
-    PatchContext {
-      proxy_base_url: "http://127.0.0.1:11435/v1".into(),
-      api_key: "llamastash".into(),
-      model_id: Some("qwen3-coder-30b".into()),
-      is_embed: false,
-    }
+    PatchContext::fixture(&["qwen3-coder-30b"])
+  }
+
+  #[test]
+  fn the_single_model_slot_takes_the_first_chat_model() {
+    // Aider has one `model:` key, and an embedder in it would be useless.
+    let ctx = PatchContext::fixture(&["nomic-embed-text-v1.5", "qwen3-coder-30b"]);
+    let v = Aider.build_additions(&ctx);
+    assert_eq!(v["model"], "openai/qwen3-coder-30b");
   }
 
   #[test]

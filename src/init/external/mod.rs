@@ -17,6 +17,7 @@
 //! tool is ~30 lines.
 
 pub mod merge;
+pub mod models;
 pub mod tools;
 pub mod write;
 
@@ -52,17 +53,93 @@ pub enum Format {
 /// default so clients that *require* a non-empty key don't refuse to
 /// boot.
 ///
-/// `is_embed`: the model is an embedding model (nomic-embed,
-/// snowflake-arctic-embed, etc.). Patchers that care about the
-/// distinction — Continue.dev's `roles` field, pi.dev's `api`
-/// field — branch on this. Tools that don't differentiate just
-/// register the model and let the user wire it up.
+/// `models` is every model to register with the tool, in preference
+/// order: the one `init`'s model step just downloaded first (when it ran),
+/// then the user's favorites. Tools whose schema holds a list
+/// (OpenCode, Continue, Zed, pi.dev) register all of them; tools with a
+/// single model slot (Aider's `model:`, Claude Code's `ANTHROPIC_MODEL`)
+/// take [`PatchContext::primary`].
 #[derive(Debug, Clone)]
 pub struct PatchContext {
   pub proxy_base_url: String,
   pub api_key: String,
-  pub model_id: Option<String>,
+  pub models: Vec<PatchModel>,
+}
+
+/// Declared when the catalog has no context figure for a model. Small
+/// enough to be safe with any model rather than a guess that overflows.
+const DEFAULT_CONTEXT_WINDOW: u64 = 32768;
+
+/// One model to register, named the way the proxy publishes it.
+///
+/// `is_embed`: an embedding model (nomic-embed, snowflake-arctic-embed,
+/// …). Patchers that care about the distinction — Continue.dev's `roles`
+/// field, pi.dev's `api` field — branch on it; tools that don't
+/// differentiate just register the model and let the user wire it up.
+#[derive(Debug, Clone)]
+pub struct PatchModel {
+  /// The `id` `/v1/models` publishes for this model — a GGUF's file stem,
+  /// a safetensors repo's `owner/repo`, an Ollama `<name>:<tag>`. Built by
+  /// [`crate::util::paths::model_public_id`] so what we write is what the
+  /// proxy answers to.
+  pub id: String,
   pub is_embed: bool,
+  /// The model's trained context window, when the catalog knows it.
+  /// Clients size their own history against this — declare 32k for a 262k
+  /// model and the tool compacts the conversation long before it needs to.
+  /// The launched context is resolved per launch (and `--fit` may size it
+  /// down), so the trained window is the honest figure at patch time.
+  pub context_window: Option<u64>,
+}
+
+impl PatchModel {
+  /// Classify by id when there is no catalog row to ask. The name
+  /// substring is all a freshly downloaded file offers before the daemon
+  /// has rescanned; [`Self::from_catalog_row`] uses the GGUF header's
+  /// `mode_hint` instead wherever a row exists.
+  pub fn from_id(id: String) -> Self {
+    let is_embed = id.to_ascii_lowercase().contains("embed");
+    Self {
+      id,
+      is_embed,
+      context_window: None,
+    }
+  }
+
+  /// Context window to declare, falling back to a conservative 32k when
+  /// the catalog has no figure (a parse failure, a registry row).
+  pub fn declared_context(&self) -> u64 {
+    self.context_window.unwrap_or(DEFAULT_CONTEXT_WINDOW)
+  }
+
+  /// Project a catalog row. Prefers the parsed `mode_hint` over the name
+  /// heuristic — a header that says `embedding` is not a guess.
+  pub fn from_catalog_row(row: &crate::launch::resolve::CatalogRow) -> Self {
+    let id = row.public_id();
+    let is_embed = match row.mode_hint.as_deref() {
+      Some(hint) => hint == "embedding",
+      None => Self::from_id(id.clone()).is_embed,
+    };
+    Self {
+      id,
+      is_embed,
+      context_window: row.native_ctx,
+    }
+  }
+}
+
+impl PatchContext {
+  /// The model a single-slot tool should point at: the first non-embedding
+  /// entry, falling back to the first entry when every model is an
+  /// embedder (better to register something than nothing). `None` when no
+  /// models resolved at all.
+  pub fn primary(&self) -> Option<&PatchModel> {
+    self
+      .models
+      .iter()
+      .find(|m| !m.is_embed)
+      .or_else(|| self.models.first())
+  }
 }
 
 /// One supported external-tool patcher. Implementors declare where
@@ -108,6 +185,29 @@ pub trait ToolPatcher: Send + Sync {
   ) -> serde_json::Value {
     merge::merge(current, self.build_additions(ctx))
   }
+  /// Name of an environment variable this tool reads the proxy key from,
+  /// when it has no way to resolve a credential itself. Declared here so
+  /// the wizard can tell the user which of the tools it just patched will
+  /// sit there unauthenticated until the variable is exported — the tool
+  /// knows its own contract, the wizard should not carry a list.
+  fn required_env_var(&self) -> Option<&'static str> {
+    None
+  }
+  /// Name of an environment variable this patcher *defines* (the
+  /// sourceable `.sh` writers). Pairs with [`Self::required_env_var`] so
+  /// the wizard can point at the file it just wrote instead of telling
+  /// the user to invent an export.
+  fn provides_env_var(&self) -> Option<&'static str> {
+    None
+  }
+  /// Extra patchers applied whenever this one is, and never offered in
+  /// the picker on their own. For a tool whose integration spans two
+  /// files — pi.dev's provider block and the `enabledModels` scope that
+  /// makes it reachable — the second file is a companion, not a second
+  /// integration the user has to know to select.
+  fn companions(&self) -> Vec<Box<dyn ToolPatcher>> {
+    Vec::new()
+  }
   /// For [`Format::Raw`] patchers: produce the full file body to
   /// write. Default implementation returns `None`, which means
   /// merge-based writes are used (Json/Yaml).
@@ -121,6 +221,22 @@ pub trait ToolPatcher: Send + Sync {
   /// read isn't useful.
   fn unix_mode(&self) -> u32 {
     0o600
+  }
+}
+
+#[cfg(test)]
+impl PatchContext {
+  /// The loopback proxy + stub key every patcher test patches against.
+  /// Model kinds are classified from the ids, same as a real run.
+  pub fn fixture(model_ids: &[&str]) -> Self {
+    Self {
+      proxy_base_url: "http://127.0.0.1:11435/v1".into(),
+      api_key: "llamastash".into(),
+      models: model_ids
+        .iter()
+        .map(|id| PatchModel::from_id((*id).to_string()))
+        .collect(),
+    }
   }
 }
 
@@ -241,10 +357,12 @@ fn resolve_path(
   // file. Falls back to the default for fresh installs.
   for alt in patcher.alt_paths() {
     if alt.exists() {
-      return Ok(alt);
+      return Ok(crate::util::paths::resolve_symlinks(&alt));
     }
   }
-  Ok(default)
+  // Through the symlink, not over it: these configs are commonly linked
+  // into a dotfiles repo, and an atomic rename would replace the link.
+  Ok(crate::util::paths::resolve_symlinks(&default))
 }
 
 /// Returns every patcher the wizard knows about. Order is the
@@ -293,12 +411,129 @@ mod tests {
   }
 
   fn ctx() -> PatchContext {
-    PatchContext {
-      proxy_base_url: "http://127.0.0.1:11435/v1".into(),
-      api_key: "llamastash".into(),
-      model_id: None,
-      is_embed: false,
+    PatchContext::fixture(&[])
+  }
+
+  #[test]
+  fn primary_prefers_a_chat_model_over_an_embedder() {
+    let ctx = PatchContext::fixture(&["nomic-embed-text-v1.5", "qwen3-coder-30b"]);
+    assert_eq!(ctx.primary().expect("primary").id, "qwen3-coder-30b");
+  }
+
+  #[test]
+  fn primary_falls_back_to_the_first_entry_when_all_are_embedders() {
+    let ctx = PatchContext::fixture(&["nomic-embed-text-v1.5", "bge-embed"]);
+    assert_eq!(ctx.primary().expect("primary").id, "nomic-embed-text-v1.5");
+    assert!(PatchContext::fixture(&[]).primary().is_none());
+  }
+
+  #[test]
+  fn a_catalog_rows_mode_hint_beats_the_name_heuristic() {
+    // A BERT encoder whose name says nothing, and a chat model that happens
+    // to have "embed" in its name: the parsed header settles both.
+    let mut row = crate::launch::resolve::CatalogRow::for_resolution(
+      "/models/bge-large-en.gguf".into(),
+      None,
+      None,
+    );
+    row.mode_hint = Some("embedding".into());
+    assert!(PatchModel::from_catalog_row(&row).is_embed);
+    row.mode_hint = Some("chat".into());
+    assert!(!PatchModel::from_catalog_row(&row).is_embed);
+  }
+
+  #[test]
+  fn the_catalogs_context_window_is_declared_not_a_default() {
+    let mut row = crate::launch::resolve::CatalogRow::for_resolution(
+      "/models/Qwen3.6-27B-Q8_0.gguf".into(),
+      None,
+      None,
+    );
+    row.native_ctx = Some(262_144);
+    assert_eq!(
+      PatchModel::from_catalog_row(&row).declared_context(),
+      262_144
+    );
+    // No figure in the catalog: fall back rather than guess high.
+    row.native_ctx = None;
+    assert_eq!(
+      PatchModel::from_catalog_row(&row).declared_context(),
+      DEFAULT_CONTEXT_WINDOW
+    );
+  }
+
+  #[test]
+  fn model_ids_follow_the_rule_the_proxy_publishes() {
+    // GGUF: the file stem. Safetensors / Ollama: the row's label.
+    let gguf = crate::launch::resolve::CatalogRow::for_resolution(
+      "/models/Qwen3-Coder-30B-Q4_K_M.gguf".into(),
+      None,
+      None,
+    );
+    assert_eq!(
+      PatchModel::from_catalog_row(&gguf).id,
+      "Qwen3-Coder-30B-Q4_K_M"
+    );
+    let repo = crate::launch::resolve::CatalogRow::for_resolution(
+      "/hub/models--Qwen--Qwen3-0.6B/snapshots/abc123".into(),
+      Some("Qwen/Qwen3-0.6B".into()),
+      None,
+    );
+    assert_eq!(PatchModel::from_catalog_row(&repo).id, "Qwen/Qwen3-0.6B");
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn a_symlinked_config_is_written_through_not_replaced() {
+    // Dotfile setups link these configs into a managed repo. An atomic
+    // rename over the link would swap it for a regular file and detach the
+    // user's config from the repo tracking it.
+    struct Linked;
+    impl ToolPatcher for Linked {
+      fn id(&self) -> &'static str {
+        "linked"
+      }
+      fn display_name(&self) -> &'static str {
+        "Linked"
+      }
+      fn default_path(&self) -> Option<PathBuf> {
+        Some(std::env::temp_dir())
+      }
+      fn format(&self) -> Format {
+        Format::Json
+      }
+      fn build_additions(&self, _ctx: &PatchContext) -> serde_json::Value {
+        serde_json::json!({ "patched": true })
+      }
     }
+
+    let dir = crate::util::test_temp::unique_temp_dir("ext-symlink");
+    let real = dir.join("dotfiles-conf.json");
+    let link = dir.join("conf.json");
+    std::fs::write(&real, r#"{"user":"kept"}"#).unwrap();
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    let resolved = resolve_path(&Linked, None).expect("default path");
+    assert_eq!(resolved, std::env::temp_dir(), "no link, no change");
+    apply(
+      &Linked,
+      &ctx(),
+      Some(crate::util::paths::resolve_symlinks(&link)),
+    )
+    .expect("apply");
+
+    assert!(
+      std::fs::symlink_metadata(&link)
+        .unwrap()
+        .file_type()
+        .is_symlink(),
+      "link survived the write"
+    );
+    let body: serde_json::Value =
+      serde_json::from_str(&std::fs::read_to_string(&real).unwrap()).unwrap();
+    assert_eq!(body["patched"], serde_json::json!(true));
+    assert_eq!(body["user"], "kept");
+    std::fs::remove_dir_all(&dir).ok();
   }
 
   #[test]

@@ -6,6 +6,7 @@
 //! top-level dispatcher can map structured failure into the
 //! documented exit-code table without losing the message.
 
+pub mod api_key;
 pub mod cli_args;
 pub mod client;
 pub(crate) mod colors;
@@ -118,6 +119,15 @@ pub async fn dispatch(mut cli: Cli, config: LoadedConfig) -> Result<i32> {
       )
       .await
     }
+    Some(Command::Integrations(args)) => {
+      init::handle(
+        cli_args::integrations_to_init_args(args),
+        &cli,
+        resolved_config,
+      )
+      .await
+    }
+    Some(Command::ApiKey(args)) => api_key::handle(args, &cli, resolved_config),
     Some(Command::Doctor(args)) => doctor::handle(args, &cli, resolved_config).await,
     #[cfg(feature = "uat")]
     Some(Command::Uat(args)) => uat::handle(args, &cli, resolved_config).await,
