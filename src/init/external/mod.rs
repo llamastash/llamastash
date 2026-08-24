@@ -488,7 +488,9 @@ mod tests {
     // Dotfile setups link these configs into a managed repo. An atomic
     // rename over the link would swap it for a regular file and detach the
     // user's config from the repo tracking it.
-    struct Linked;
+    struct Linked {
+      default: PathBuf,
+    }
     impl ToolPatcher for Linked {
       fn id(&self) -> &'static str {
         "linked"
@@ -497,7 +499,7 @@ mod tests {
         "Linked"
       }
       fn default_path(&self) -> Option<PathBuf> {
-        Some(std::env::temp_dir())
+        Some(self.default.clone())
       }
       fn format(&self) -> Format {
         Format::Json
@@ -513,10 +515,16 @@ mod tests {
     std::fs::write(&real, r#"{"user":"kept"}"#).unwrap();
     std::os::unix::fs::symlink(&real, &link).unwrap();
 
-    let resolved = resolve_path(&Linked, None).expect("default path");
-    assert_eq!(resolved, std::env::temp_dir(), "no link, no change");
+    // A default the test owns: `env::temp_dir()` is `/tmp` on a macOS
+    // runner, which is itself a link to `/private/tmp`, so resolving it
+    // *does* change the path and says nothing about the no-link case.
+    let patcher = Linked {
+      default: dir.join("default.json"),
+    };
+    let resolved = resolve_path(&patcher, None).expect("default path");
+    assert_eq!(resolved, dir.join("default.json"), "no link, no change");
     apply(
-      &Linked,
+      &patcher,
       &ctx(),
       Some(crate::util::paths::resolve_symlinks(&link)),
     )
