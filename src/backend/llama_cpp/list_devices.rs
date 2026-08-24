@@ -169,6 +169,9 @@ pub fn probe_devices(binary: &Path) -> Vec<crate::backend::Device> {
 /// catalog rather than failing the whole probe.
 pub fn probe(binary: &Path) -> Vec<BinaryDevice> {
   let mut cmd = Command::new(binary);
+  // The unified app takes server flags behind `serve`; `llama --list-devices`
+  // is an unknown command.
+  cmd.args(super::serve_prefix(binary));
   cmd.arg("--list-devices");
   match crate::util::process::run_with_drain_and_timeout(cmd, LIST_DEVICES_TIMEOUT) {
     Ok(out) => {

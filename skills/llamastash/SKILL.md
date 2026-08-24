@@ -134,7 +134,7 @@ Important codes:
 | `67` | launch failed |
 | `68` | stop failed |
 | `69` | pull failed |
-| `70` | `llama-server` binary not found |
+| `70` | llama.cpp server binary not found (`llama-server` or `llama`) |
 | `71` | unexpected error |
 | `72` | `init` aborted before substantive work |
 | `73` | `init` download failed |

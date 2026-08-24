@@ -764,8 +764,8 @@ impl Backend for Ds4Backend {
     20
   }
 
-  fn process_marker(&self) -> Option<&'static str> {
-    Some("ds4-server")
+  fn process_markers(&self) -> &'static [&'static str] {
+    &["ds4-server"]
   }
 
   fn resolve_launch_binary(

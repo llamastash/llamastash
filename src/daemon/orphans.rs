@@ -468,6 +468,10 @@ mod tests {
       ("my-srv-serve", "srv", false),
       ("usrv", "srv", false),
       ("not-llama-server", "llama-server", false),
+      // llama.cpp's unified app: its own basename, nothing around it.
+      ("llama", "llama", true),
+      ("ollama", "llama", false),
+      ("llama-server", "llama", false),
     ] {
       assert_eq!(
         basename_matches_marker(basename, marker),

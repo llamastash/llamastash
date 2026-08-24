@@ -791,13 +791,15 @@ pub trait Backend {
     None
   }
 
-  /// The process-name marker the orphan sweep uses to recognise an *unmanaged*
-  /// instance of this backend's server on the host (the basename of its server
-  /// binary), or `None` for a backend with no standalone per-model server
-  /// process (a managed multiplexer's umbrella is supervised, not swept).
-  /// Default `None`. Also drives the adopted-child process name in the sweep.
-  fn process_marker(&self) -> Option<&'static str> {
-    None
+  /// Every basename this backend's server binary can carry — the names the
+  /// `$PATH` locator searches for and the orphan sweep recognises an
+  /// *unmanaged* instance by. The **first** entry is the primary marker (the
+  /// name used in messages and for an adopted child); the rest are alternate
+  /// distributions of the same server. Empty for a backend with no standalone
+  /// per-model server process (a managed multiplexer's umbrella is supervised,
+  /// not swept). Default empty.
+  fn process_markers(&self) -> &'static [&'static str] {
+    &[]
   }
 
   /// A backend-specific KV-cache byte model for `header`, or `None` to use the
@@ -1223,8 +1225,8 @@ impl Backend for Backends {
     for_each_backend!(self, b => b.synthetic_identity(path))
   }
 
-  fn process_marker(&self) -> Option<&'static str> {
-    for_each_backend!(self, b => b.process_marker())
+  fn process_markers(&self) -> &'static [&'static str] {
+    for_each_backend!(self, b => b.process_markers())
   }
 
   fn accelerators(&self) -> AcceleratorSupport {
@@ -1486,11 +1488,12 @@ pub fn resolve_identity_for_path(
 
 /// The external-process markers every backend contributes — the orphan sweep's
 /// "is this an unmanaged instance of a backend server" list. Registry-driven,
-/// so a new backend's server is swept from its `process_marker` override alone.
+/// so a new backend's server is swept from its `process_markers` override
+/// alone, alternate binary names included.
 pub fn external_process_markers() -> Vec<&'static str> {
   Backends::all()
     .iter()
-    .filter_map(|b| b.process_marker())
+    .flat_map(|b| b.process_markers().iter().copied())
     .collect()
 }
 
@@ -1526,14 +1529,14 @@ pub fn native_knobs_for(id: &str) -> &'static [NativeKnobDescriptor] {
 /// The process name for an adopted child recorded under `backend_id`, or the
 /// default backend's own marker when the id is unknown / marker-less. Used by
 /// the orphan sweep to label a re-adopted process. Names no backend — the marker
-/// comes from the backend's own `process_marker`.
+/// comes from the backend's own `process_markers`.
 pub fn adopted_process_name(backend_id: &str) -> &'static str {
   Backends::all()
     .iter()
     .find(|b| b.id() == backend_id)
-    .and_then(|b| b.process_marker())
+    .and_then(|b| b.process_markers().first().copied())
     // Unknown / marker-less id falls back to the default backend's own marker.
-    .or_else(|| default_backend().process_marker())
+    .or_else(|| default_backend().process_markers().first().copied())
     .unwrap_or_default()
 }
 

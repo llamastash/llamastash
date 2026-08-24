@@ -407,7 +407,9 @@ backend:
     # device names (`llamacpp-cuda`, `llamacpp-rocm`, `llamacpp-vulkan`), or
     # `<backend>-<build-dir>` when two builds share a compute type. An optional
     # per-server `name:` overrides it (`llamacpp-<name>`). Leave the list empty
-    # to fall back to a `llama-server` on `$PATH`.
+    # to fall back to a `llama-server` on `$PATH`, or to the unified `llama`
+    # binary when there is no `llama-server`. An entry may point at either;
+    # the unified one is launched as `llama serve ...`.
     #
     # Sources — CLI: --llama-server PATH (sets the first entry) ·
     #           Env: LLAMASTASH_LLAMA_SERVER=PATH.

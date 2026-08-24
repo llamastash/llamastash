@@ -156,7 +156,7 @@ llamastash init
 
 The interactive wizard detects your hardware, installs the right `llama-server` build, picks a starter GGUF tuned to your VRAM, downloads it, writes a tuned `config.yaml`, and smoke-launches the result — usually under 5 minutes on a 100 Mbps link.
 
-If you already have `llama-server` installed (e.g. via `brew install llama.cpp`), `init` will detect and reuse it.
+If you already have llama.cpp installed, `init` will detect and reuse it. That covers both the standalone `llama-server` (e.g. `brew install llama.cpp`) and the unified `llama` / `llama.exe` binary that llama.cpp's own installer (`llama.app`, `winget`) puts on your `PATH`.
 
 After `init`, just run `llamastash` to open the TUI.
 

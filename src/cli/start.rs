@@ -560,9 +560,11 @@ fn map_start_error(e: crate::ipc::ClientError, row: &CatalogRow) -> CliExit {
     ClientError::Remote(err) => {
       // Daemon distinguishes "binary missing" via the launch
       // environment guard; surface that as BINARY_NOT_FOUND so
-      // scripts can react. The binary name comes from the default backend's
+      // scripts can react. The binary name is the default backend's *primary*
       // process marker (`llama-server`) so this site names no backend; guard
-      // the empty-marker case so `contains("")` never matches everything.
+      // the empty-marker case so `contains("")` never matches everything. Only
+      // the primary is matched — an alternate marker short enough to be a
+      // substring of an unrelated message would misclassify the error.
       // The daemon tags a refusal it raised because the model's backend is off
       // or its launcher is absent. An environment problem, not a usage one —
       // the flags were fine — so it gets the environment code rather than
@@ -575,7 +577,9 @@ fn map_start_error(e: crate::ipc::ClientError, row: &CatalogRow) -> CliExit {
         == Some("backend_unavailable");
       let lower = err.message.to_lowercase();
       let marker = crate::backend::default_backend()
-        .process_marker()
+        .process_markers()
+        .first()
+        .copied()
         .unwrap_or("");
       if backend_unavailable {
         CliExit::new(BINARY_NOT_FOUND, err.message)
