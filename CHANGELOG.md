@@ -22,6 +22,10 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 - Repositioned from "launcher" to "local-LLM manager" across the README, `--help`, crate metadata, packaging manifests and the website. The binary already launches, supervises, routes and evicts; "launcher" only described the first of those.
 
+### Security
+
+- h2 0.4.14 → 0.4.18, clearing [RUSTSEC-2026-0258](https://rustsec.org/advisories/RUSTSEC-2026-0258): empty HTTP/2 DATA frames were queued without limit, so an undrained stream could grow memory without bound or panic on overflow. Transitive via hyper and reqwest.
+
 ## [0.2.0] — 2026-08-16
 
 This release opens LlamaStash to the non-GGUF half of your model cache. A **vLLM backend** discovers safetensors HuggingFace repos and launches them through `vllm serve`, so a repo that was invisible before now shows up in `list`, starts from the TUI, and answers on the proxy. GGUF routing is untouched: llama.cpp stays the default and vLLM only claims safetensors. On unified-memory hosts the KV cache is capped automatically, because vLLM sizes it against the whole pool and will happily eat your system RAM. ds4 also gains **DSpark speculative decoding**, and the HuggingFace pull browser can finally find safetensors repos. No breaking changes.
