@@ -1,0 +1,263 @@
+//! ds4's declared knobs.
+//!
+//! Transcribed from the pre-registry `DS4_NATIVE_KNOBS` descriptors and
+//! `DS4_FLAG_MAP`, plus the `Ctx` slot ds4 honoured through the old
+//! `capabilities()` gate. Flags verified against a real `ds4-server --help
+//! runtime` (2026-08-05 build).
+//!
+//! Two changes from the old declaration, both of which the registry forces
+//! into the open:
+//!
+//! - **`threads` is typed and carries [`Concept::Threads`].** It used to be a
+//!   free-text native knob *and* ds4 reported the `Threads` IR slot
+//!   unsupported, so `start --threads 8` silently vanished on a ds4 launch
+//!   while `threads` in a preset worked. One declaration, one behaviour.
+//! - **The sidecar path is `mtp-model`, not `mtp`.** The neutral speculation
+//!   *enable* owns `mtp`; ds4's `--mtp` takes a draft-head *path*. Two
+//!   different kinds cannot share one id, so the path knob keeps the flag and
+//!   takes a distinct id.
+//!
+//! Numeric knobs that used to be free-text strings are typed here, so a bad
+//! value is refused at parse time instead of after a multi-minute model load.
+
+use crate::launch::knobs::{AutoKind, Concept, Emit, Group, KnobDef, KnobKind};
+
+pub const KNOBS: &[KnobDef] = &[
+  KnobDef {
+    id: "ctx",
+    flag: None,
+    concept: Some(Concept::ContextLength),
+    kind: KnobKind::U32 {
+      max: Some(crate::config::MAX_CTX_TOKENS),
+    },
+    auto: Some(AutoKind::Delegate),
+    group: Group::Context,
+    label: "Context",
+    help: "context length in tokens",
+    aliases: &["-c"],
+    emit: Emit::FlagValue,
+  },
+  KnobDef {
+    id: "power",
+    flag: None,
+    concept: None,
+    kind: KnobKind::U32 { max: Some(100) },
+    auto: None,
+    group: Group::Throughput,
+    label: "GPU power %",
+    help: "GPU duty-cycle target, 1-100 (ds4 default 100)",
+    aliases: &[],
+    emit: Emit::FlagValue,
+  },
+  KnobDef {
+    id: "tokens",
+    flag: None,
+    concept: None,
+    kind: KnobKind::U32 { max: None },
+    auto: None,
+    group: Group::Throughput,
+    label: "Default tokens",
+    help: "default max output tokens when a client omits a limit",
+    aliases: &[],
+    emit: Emit::FlagValue,
+  },
+  KnobDef {
+    id: "threads",
+    flag: None,
+    concept: Some(Concept::Threads),
+    kind: KnobKind::U32 { max: None },
+    auto: None,
+    group: Group::Throughput,
+    label: "CPU threads",
+    help: "CPU helper thread count for host-side work",
+    aliases: &["-t"],
+    emit: Emit::FlagValue,
+  },
+  KnobDef {
+    id: "kv-disk-dir",
+    flag: None,
+    concept: None,
+    kind: KnobKind::Str,
+    auto: None,
+    group: Group::Memory,
+    label: "KV disk dir",
+    help: "directory for the persistent disk KV cache (user-owned, never cleaned)",
+    aliases: &[],
+    emit: Emit::FlagValue,
+  },
+  KnobDef {
+    id: "kv-disk-space-mb",
+    flag: None,
+    concept: None,
+    kind: KnobKind::U32 { max: None },
+    auto: None,
+    group: Group::Memory,
+    label: "KV disk cap",
+    help: "disk KV cache budget in MB (ds4 default 4096 when enabled)",
+    aliases: &[],
+    emit: Emit::FlagValue,
+  },
+  KnobDef {
+    id: "ssd-streaming",
+    flag: None,
+    concept: None,
+    kind: KnobKind::Bool,
+    auto: None,
+    group: Group::Memory,
+    label: "SSD streaming",
+    help: "stream weights from disk (below-RAM-floor mode; skips the admission gate)",
+    aliases: &[],
+    emit: Emit::BareFlagWhenTrue,
+  },
+  KnobDef {
+    id: "ssd-streaming-cache-experts",
+    flag: None,
+    concept: None,
+    // Takes either an exact count or a memory budget (`64`, `12GB`), so it
+    // stays free-form rather than numeric.
+    kind: KnobKind::Str,
+    auto: None,
+    group: Group::Memory,
+    label: "SSD cache cap",
+    help: "resident routed-expert cap — count N or budget NGB (ds4 auto: 80% of the working set)",
+    aliases: &[],
+    emit: Emit::FlagValue,
+  },
+  KnobDef {
+    id: "ssd-streaming-preload-experts",
+    flag: None,
+    concept: None,
+    kind: KnobKind::U32 { max: None },
+    auto: None,
+    group: Group::Memory,
+    label: "SSD preload",
+    help: "upfront popularity preload count (auto-seeded when unset)",
+    aliases: &[],
+    emit: Emit::FlagValue,
+  },
+  KnobDef {
+    id: "ssd-streaming-cold",
+    flag: None,
+    concept: None,
+    kind: KnobKind::Bool,
+    auto: None,
+    group: Group::Memory,
+    label: "SSD cold start",
+    help: "skip the default popularity-based expert-cache preload",
+    aliases: &[],
+    emit: Emit::BareFlagWhenTrue,
+  },
+  KnobDef {
+    id: "warm-weights",
+    flag: None,
+    concept: None,
+    kind: KnobKind::Bool,
+    auto: None,
+    group: Group::Memory,
+    label: "Warm weights",
+    help: "touch mapped tensor pages at startup to reduce first-use stalls",
+    aliases: &[],
+    emit: Emit::BareFlagWhenTrue,
+  },
+  KnobDef {
+    id: "quality",
+    flag: None,
+    concept: None,
+    kind: KnobKind::Bool,
+    auto: None,
+    group: Group::Advanced,
+    label: "Exact kernels",
+    help: "prefer exact kernels where faster approximate paths exist",
+    aliases: &[],
+    emit: Emit::BareFlagWhenTrue,
+  },
+  // Speculation. `mtp` is the neutral enable every backend honours; the rest
+  // are ds4's own dials.
+  KnobDef {
+    id: "mtp",
+    flag: None,
+    concept: None,
+    kind: KnobKind::Bool,
+    auto: Some(AutoKind::Capability),
+    group: Group::Speculation,
+    label: "MTP",
+    help: "multi-token prediction; auto enables it when the model can",
+    aliases: &[],
+    emit: Emit::Custom,
+  },
+  KnobDef {
+    id: "mtp-model",
+    flag: Some("--mtp"),
+    concept: None,
+    kind: KnobKind::Str,
+    auto: None,
+    group: Group::Speculation,
+    label: "MTP sidecar",
+    help: "path to the draft-head GGUF (auto-paired from a sibling when unset)",
+    aliases: &[],
+    emit: Emit::FlagValue,
+  },
+  KnobDef {
+    id: "mtp-draft-n",
+    flag: Some("--mtp-draft"),
+    concept: None,
+    kind: KnobKind::U32 { max: None },
+    auto: None,
+    group: Group::Speculation,
+    label: "Draft tokens",
+    help: "tokens drafted per speculation step (ds4 default 1)",
+    aliases: &[],
+    emit: Emit::FlagValue,
+  },
+  KnobDef {
+    id: "mtp-margin",
+    flag: None,
+    concept: None,
+    kind: KnobKind::U32 { max: None },
+    auto: None,
+    group: Group::Speculation,
+    label: "MTP margin",
+    help: "verifier confidence margin for fast acceptance (ds4 default 3)",
+    aliases: &[],
+    emit: Emit::FlagValue,
+  },
+  KnobDef {
+    id: "dspark",
+    flag: None,
+    concept: None,
+    kind: KnobKind::Bool,
+    auto: None,
+    group: Group::Speculation,
+    label: "DSpark",
+    help: "block speculative decoding off the DSpark support GGUF in `mtp-model` (greedy only)",
+    aliases: &[],
+    emit: Emit::BareFlagWhenTrue,
+  },
+  KnobDef {
+    id: "dspark-confidence",
+    flag: None,
+    concept: None,
+    kind: KnobKind::F32 {
+      min: Some(0.0),
+      max: Some(1.0),
+    },
+    auto: None,
+    group: Group::Speculation,
+    label: "DSpark confidence",
+    help: "prune proposals below this confidence, 0..1 (ds4 default 0.7; 0 = fixed blocks)",
+    aliases: &[],
+    emit: Emit::FlagValue,
+  },
+  KnobDef {
+    id: "dspark-strict",
+    flag: None,
+    concept: None,
+    kind: KnobKind::Bool,
+    auto: None,
+    group: Group::Speculation,
+    label: "DSpark strict",
+    help: "load the DSpark support model but keep target-only decode (comparison baseline)",
+    aliases: &[],
+    emit: Emit::BareFlagWhenTrue,
+  },
+];

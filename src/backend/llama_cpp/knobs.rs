@@ -1,0 +1,309 @@
+//! llama.cpp's declared knobs.
+//!
+//! Transcribed from the pre-registry `SPECS` table (`launch/flag_aliases.rs`)
+//! and `TypedKnobs`, so the flag spellings, aliases, help text and emission
+//! order are unchanged — the composed argv must stay byte-identical through the
+//! registry migration.
+//!
+//! Order is the canonical emission order: argv diffs stay readable across
+//! releases, and the editor renders rows in this order within each group.
+
+use crate::launch::knobs::{AutoKind, Concept, Emit, Group, KnobDef, KnobKind};
+
+/// Ceiling llamastash accepts for a context window, mirroring the daemon's
+/// own `MAX_CTX_TOKENS` guard so a bad `--ctx-size` is refused at parse time
+/// rather than after a multi-minute load.
+const MAX_CTX: Option<u32> = Some(crate::config::MAX_CTX_TOKENS);
+
+/// K/V cache quantisation types a stock build accepts. `OpenEnum` because
+/// custom builds add types (`fp4`, `turbo_quant`) that llamastash must not
+/// block — the ring is a cycle hint, never a gate.
+const KV_CACHE_TYPES: &[&str] = crate::gguf::memory::KV_CACHE_TYPES;
+
+/// `--split-mode` choices. Closed: llama-server rejects anything else.
+const SPLIT_MODES: &[&str] = &["none", "layer", "row", "tensor"];
+
+/// Serving modes. `Emit::Custom` — llama-server spells these as presence flags
+/// (`--embedding`, `--reranking`, nothing for chat), not as a valued flag.
+const MODES: &[&str] = &["chat", "embedding", "rerank"];
+
+pub const KNOBS: &[KnobDef] = &[
+  KnobDef {
+    id: "ctx-size",
+    flag: None,
+    concept: Some(Concept::ContextLength),
+    kind: KnobKind::U32 { max: MAX_CTX },
+    auto: Some(AutoKind::Delegate),
+    group: Group::Context,
+    label: "Context",
+    help: "context length in tokens (0 = model's trained maximum)",
+    aliases: &["-c", "ctx"],
+    emit: Emit::Custom,
+  },
+  KnobDef {
+    id: "reasoning",
+    flag: None,
+    concept: None,
+    kind: KnobKind::Bool,
+    auto: None,
+    group: Group::Context,
+    label: "Reasoning",
+    help: "enable reasoning (jinja + deepseek reasoning-format bundle)",
+    aliases: &[],
+    emit: Emit::Custom,
+  },
+  KnobDef {
+    id: "mode",
+    flag: None,
+    concept: Some(Concept::Mode),
+    kind: KnobKind::Enum { choices: MODES },
+    auto: None,
+    group: Group::Context,
+    label: "Mode",
+    help: "serving mode; inferred from the model when unset",
+    aliases: &[],
+    emit: Emit::Custom,
+  },
+  KnobDef {
+    id: "n-gpu-layers",
+    flag: None,
+    concept: None,
+    kind: KnobKind::U32 { max: None },
+    auto: Some(AutoKind::Delegate),
+    group: Group::Offload,
+    label: "GPU layers",
+    help: "layers offloaded to the GPU (0 = CPU-only)",
+    aliases: &["-ngl"],
+    emit: Emit::FlagValue,
+  },
+  KnobDef {
+    id: "n-cpu-moe",
+    flag: None,
+    concept: None,
+    kind: KnobKind::U32 { max: None },
+    auto: Some(AutoKind::Delegate),
+    group: Group::Offload,
+    label: "CPU MoE layers",
+    help: "MoE expert layers kept on the CPU (frees VRAM)",
+    aliases: &["-ncmoe"],
+    emit: Emit::FlagValue,
+  },
+  KnobDef {
+    id: "device",
+    flag: None,
+    concept: Some(Concept::Device),
+    kind: KnobKind::Str,
+    auto: None,
+    group: Group::MultiGpu,
+    label: "Device",
+    help: "device selector(s), comma-separated (e.g. Vulkan0,Vulkan1)",
+    aliases: &["-d"],
+    emit: Emit::FlagValue,
+  },
+  KnobDef {
+    id: "tensor-split",
+    flag: None,
+    concept: None,
+    kind: KnobKind::Str,
+    auto: Some(AutoKind::Delegate),
+    group: Group::MultiGpu,
+    label: "Tensor split",
+    help: "proportional split across GPUs (e.g. 3,1)",
+    aliases: &["-ts"],
+    emit: Emit::FlagValue,
+  },
+  KnobDef {
+    id: "main-gpu",
+    flag: None,
+    concept: None,
+    kind: KnobKind::U32 { max: None },
+    auto: None,
+    group: Group::MultiGpu,
+    label: "Main GPU",
+    help: "index of the primary GPU holding non-split tensors",
+    aliases: &["-mg"],
+    emit: Emit::FlagValue,
+  },
+  KnobDef {
+    id: "split-mode",
+    flag: None,
+    concept: None,
+    kind: KnobKind::Enum {
+      choices: SPLIT_MODES,
+    },
+    auto: None,
+    group: Group::MultiGpu,
+    label: "Split mode",
+    help: "how to split the model across GPUs",
+    aliases: &["-sm"],
+    emit: Emit::FlagValue,
+  },
+  KnobDef {
+    id: "flash-attn",
+    flag: None,
+    concept: Some(Concept::FlashAttn),
+    kind: KnobKind::Bool,
+    auto: None,
+    group: Group::Attention,
+    label: "Flash attention",
+    help: "enable flash attention",
+    aliases: &["-fa"],
+    emit: Emit::BareFlagWhenTrue,
+  },
+  KnobDef {
+    id: "cache-type-k",
+    flag: None,
+    concept: Some(Concept::KvCacheKType),
+    kind: KnobKind::OpenEnum {
+      choices: KV_CACHE_TYPES,
+    },
+    auto: None,
+    group: Group::Attention,
+    label: "K cache type",
+    help: "K cache quantization type",
+    aliases: &["-ctk"],
+    emit: Emit::FlagValue,
+  },
+  KnobDef {
+    id: "cache-type-v",
+    flag: None,
+    concept: Some(Concept::KvCacheVType),
+    kind: KnobKind::OpenEnum {
+      choices: KV_CACHE_TYPES,
+    },
+    auto: None,
+    group: Group::Attention,
+    label: "V cache type",
+    help: "V cache quantization type",
+    aliases: &["-ctv"],
+    emit: Emit::FlagValue,
+  },
+  KnobDef {
+    id: "threads",
+    flag: None,
+    concept: Some(Concept::Threads),
+    kind: KnobKind::U32 { max: None },
+    auto: None,
+    group: Group::Throughput,
+    label: "Threads",
+    help: "CPU threads used during generation",
+    aliases: &["-t"],
+    emit: Emit::FlagValue,
+  },
+  KnobDef {
+    id: "parallel",
+    flag: None,
+    concept: Some(Concept::MaxConcurrency),
+    kind: KnobKind::U32 { max: None },
+    auto: None,
+    group: Group::Throughput,
+    label: "Parallel",
+    help: "parallel sequences served concurrently",
+    aliases: &["-np"],
+    emit: Emit::FlagValue,
+  },
+  KnobDef {
+    id: "batch-size",
+    flag: None,
+    concept: None,
+    kind: KnobKind::U32 { max: None },
+    auto: None,
+    group: Group::Throughput,
+    label: "Batch size",
+    help: "logical batch size for prompt processing",
+    aliases: &["-b"],
+    emit: Emit::FlagValue,
+  },
+  KnobDef {
+    id: "ubatch-size",
+    flag: None,
+    concept: None,
+    kind: KnobKind::U32 { max: None },
+    auto: None,
+    group: Group::Throughput,
+    label: "Ubatch size",
+    help: "physical (micro) batch size",
+    aliases: &["-ub"],
+    emit: Emit::FlagValue,
+  },
+  KnobDef {
+    id: "mlock",
+    flag: None,
+    concept: None,
+    kind: KnobKind::Bool,
+    auto: None,
+    group: Group::Memory,
+    label: "mlock",
+    help: "lock the model in RAM (prevents swap-out)",
+    aliases: &[],
+    emit: Emit::BareFlagWhenTrue,
+  },
+  KnobDef {
+    id: "no-mmap",
+    flag: None,
+    concept: None,
+    kind: KnobKind::Bool,
+    auto: None,
+    group: Group::Memory,
+    label: "No mmap",
+    help: "load the whole model into RAM instead of mmap",
+    aliases: &[],
+    emit: Emit::BareFlagWhenTrue,
+  },
+  // Speculation. The enable is a three-state knob whose `auto` means "on when
+  // the model carries a draft head" — a per-model runtime property, not a
+  // config layer. That is `AutoKind::Capability`, and it is why this knob can
+  // live on the generated path at all: the old `KnobValue::Auto` meant only
+  // "delegate to --fit", which forced speculation off the path entirely.
+  KnobDef {
+    id: "mtp",
+    flag: None,
+    concept: None,
+    kind: KnobKind::Bool,
+    auto: Some(AutoKind::Capability),
+    group: Group::Speculation,
+    label: "MTP",
+    help: "multi-token prediction; auto enables it when the model can",
+    aliases: &[],
+    emit: Emit::Custom,
+  },
+  KnobDef {
+    id: "mtp-draft-n",
+    flag: Some("--spec-draft-n-max"),
+    concept: None,
+    kind: KnobKind::U32 { max: None },
+    auto: None,
+    group: Group::Speculation,
+    label: "Draft tokens",
+    help: "tokens drafted per speculation step (engine default when unset)",
+    aliases: &[],
+    emit: Emit::FlagValue,
+  },
+  KnobDef {
+    id: "rope-freq-scale",
+    flag: None,
+    concept: None,
+    kind: KnobKind::F32 {
+      min: None,
+      max: None,
+    },
+    auto: None,
+    group: Group::Advanced,
+    label: "RoPE freq scale",
+    help: "RoPE frequency scaling factor (context extension)",
+    aliases: &[],
+    emit: Emit::FlagValue,
+  },
+  KnobDef {
+    id: "keep",
+    flag: None,
+    concept: None,
+    kind: KnobKind::U32 { max: None },
+    auto: None,
+    group: Group::Advanced,
+    label: "Keep",
+    help: "tokens kept from the initial prompt on context shift",
+    aliases: &[],
+    emit: Emit::FlagValue,
+  },
+];

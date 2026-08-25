@@ -378,6 +378,18 @@ pub trait Backend {
     &[]
   }
 
+  /// The knobs this backend declares — the single source every surface reads.
+  ///
+  /// The CLI derives a flag from each, the TUI derives a row, and the preset /
+  /// persistence layer derives a key. Because all three are generated, a knob
+  /// cannot reach one surface and be missing from another; that is the whole
+  /// point of the registry (`crate::launch::knobs`).
+  ///
+  /// **No default on purpose.** A backend that declares nothing would accept no
+  /// flags and render an empty Settings pane, which is always an oversight
+  /// rather than a choice — so omitting this fails to compile.
+  fn knobs(&self) -> &'static [crate::launch::knobs::KnobDef];
+
   /// Network-affecting flag heads this backend refuses in `extras` /
   /// native-knob values **on top of** the base loopback/credential denylist
   /// ([`crate::launch::params::FORBIDDEN_ADVANCED_PREFIXES`]). Default empty:
@@ -1063,6 +1075,10 @@ impl Backend for Backends {
 
   fn native_knobs(&self) -> &'static [NativeKnobDescriptor] {
     for_each_backend!(self, b => b.native_knobs())
+  }
+
+  fn knobs(&self) -> &'static [crate::launch::knobs::KnobDef] {
+    for_each_backend!(self, b => b.knobs())
   }
 
   fn forbidden_extra_heads(&self) -> &'static [&'static str] {

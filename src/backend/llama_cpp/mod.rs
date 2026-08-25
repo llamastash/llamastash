@@ -14,6 +14,7 @@
 
 mod actuals;
 mod compose;
+pub mod knobs;
 pub mod list_devices;
 mod telemetry;
 
@@ -240,6 +241,9 @@ impl LlamaCppBackend {
 }
 
 impl Backend for LlamaCppBackend {
+  fn knobs(&self) -> &'static [crate::launch::knobs::KnobDef] {
+    knobs::KNOBS
+  }
   fn id(&self) -> &'static str {
     "llamacpp"
   }

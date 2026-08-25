@@ -4,6 +4,8 @@
 //! - [`binary`] — locate the `llama-server` executable on disk.
 //! - [`params`] — the neutral launch IR (`LaunchParams`, typed knobs, the
 //!   layered resolver). Per-backend argv emission lives with each backend.
+//! - [`knobs`] — the unified knob registry: every backend declares its own
+//!   tunables, and the CLI / TUI / preset surfaces are generated from them.
 //! - [`mode`] — `LaunchMode` (chat/embedding/rerank) and helpers.
 //! - [`presets`] / [`favorites`] — types persisted in
 //!   [`crate::daemon::state_store`].
@@ -14,6 +16,7 @@ pub mod defaults_table;
 pub mod favorites;
 pub mod flag_aliases;
 pub mod headroom;
+pub mod knobs;
 pub mod mode;
 pub mod native_knobs;
 pub mod params;

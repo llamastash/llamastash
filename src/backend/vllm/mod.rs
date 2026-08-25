@@ -8,6 +8,7 @@
 //! Plan: `docs/plans/2026-08-10-001-feat-vllm-backend-plan.md`.
 
 pub mod discovery;
+pub mod knobs;
 
 use std::path::{Path, PathBuf};
 
@@ -243,6 +244,9 @@ impl Default for VllmBackend {
 }
 
 impl Backend for VllmBackend {
+  fn knobs(&self) -> &'static [crate::launch::knobs::KnobDef] {
+    knobs::KNOBS
+  }
   fn id(&self) -> &'static str {
     VLLM_BACKEND_ID
   }

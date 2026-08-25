@@ -24,6 +24,8 @@
 //!   (confirmed under `--help runtime`), so the native-knob table is 9 entries.
 //!   `--quality` is ds4-CLI-only and excluded.
 
+pub mod knobs;
+
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -608,6 +610,9 @@ async fn models_endpoint_reports_ds4_alias(port: u16, timeout: std::time::Durati
 }
 
 impl Backend for Ds4Backend {
+  fn knobs(&self) -> &'static [crate::launch::knobs::KnobDef] {
+    knobs::KNOBS
+  }
   fn id(&self) -> &'static str {
     DS4_BACKEND_ID
   }

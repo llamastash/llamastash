@@ -235,6 +235,9 @@ impl Default for LemonadeBackend {
 }
 
 impl Backend for LemonadeBackend {
+  fn knobs(&self) -> &'static [crate::launch::knobs::KnobDef] {
+    super::knobs::KNOBS
+  }
   fn id(&self) -> &'static str {
     LEMONADE_BACKEND_ID
   }
