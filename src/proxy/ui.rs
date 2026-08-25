@@ -218,12 +218,13 @@ async fn forward_ui(
   entry: RunningEntry,
 ) -> ProxyResponse {
   let (method, uri, headers, body) = forward::deconstruct(req);
-  // Buffer the body under the shared 2 MiB cap via the same helper the
+  // Buffer the body under the daemon's cap via the same helper the
   // data plane uses. UI asset GETs are bodyless; the base-relative API
   // POSTs carry a JSON payload we pass through untouched.
-  let body_bytes = match route::buffer_body(body, route::BODY_LIMIT_BYTES).await {
+  let cap = state.max_body_size;
+  let body_bytes = match route::buffer_body(body, cap).await {
     Ok(b) => b,
-    Err(e) => return route::body_error_response(e),
+    Err(e) => return route::body_error_response(e, cap),
   };
 
   let stripped = strip_ui_prefix(&uri);

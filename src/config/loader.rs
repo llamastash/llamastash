@@ -339,6 +339,16 @@ pub struct ProxyConfig {
   /// prints either way when the proxy binds a non-loopback address.
   #[serde(default)]
   pub insecure_no_auth: bool,
+  /// Cap in bytes on every request body the proxy buffers before
+  /// forwarding (`/v1/*`, `/api/show`, `/ui`). The default 16 MiB
+  /// covers vision payloads (a base64 image is ~33% larger than the
+  /// source file) while still bounding worst-case memory; `0` rejects
+  /// every non-empty body (HTTP 413 on any body). Anything larger
+  /// returns HTTP 413 `payload_too_large` naming this limit.
+  ///
+  /// Sources — CLI: (none) · Env: (none).
+  #[serde(default = "ProxyConfig::default_max_body_size")]
+  pub max_body_size: usize,
 }
 
 impl ProxyConfig {
@@ -402,6 +412,10 @@ impl ProxyConfig {
   fn default_idle_ttl_secs() -> u64 {
     30 * 60
   }
+
+  fn default_max_body_size() -> usize {
+    crate::proxy::route::DEFAULT_BODY_LIMIT_BYTES
+  }
 }
 
 impl Default for ProxyConfig {
@@ -416,6 +430,7 @@ impl Default for ProxyConfig {
       host: None,
       api_key: None,
       insecure_no_auth: false,
+      max_body_size: Self::default_max_body_size(),
     }
   }
 }
@@ -1618,6 +1633,13 @@ backend:
     assert!(cfg.proxy.enabled);
     assert!(!cfg.proxy.ollama_compat);
     assert_eq!(cfg.proxy.port, None);
+    // The body cap defaults to the shared 16 MiB constant (vision
+    // payloads fit; accidental uploads are refused).
+    assert_eq!(
+      cfg.proxy.max_body_size,
+      crate::proxy::route::DEFAULT_BODY_LIMIT_BYTES
+    );
+    assert_eq!(cfg.proxy.max_body_size, 16 * 1024 * 1024);
     // Resolved port follows the mode: 11435 in default mode, 11434
     // when ollama-compat is enabled.
     assert_eq!(cfg.proxy.effective_port(), 11435);
@@ -1647,6 +1669,7 @@ theme: latte
 proxy:
   enabled: false
   port: 13579
+  max_body_size: 10485760
 ",
     )
     .expect("config fixture should be written");
@@ -1657,6 +1680,9 @@ proxy:
     assert!(!loaded.config.proxy.enabled);
     assert_eq!(loaded.config.proxy.port, Some(13579));
     assert_eq!(loaded.config.proxy.effective_port(), 13579);
+    // An explicit cap (the issue #65 10 MiB example) parses; omitted
+    // keys keep the default (covered in proxy_config_defaults_match_plan).
+    assert_eq!(loaded.config.proxy.max_body_size, 10485760);
     fs::remove_dir_all(dir).expect("temp test dir should be removed");
   }
 
@@ -1776,6 +1802,20 @@ proxy:
       Some(std::path::Path::new("/opt/lemonade/lemond"))
     );
     fs::remove_dir_all(on_dir).expect("temp test dir should be removed");
+  }
+
+  #[test]
+  fn proxy_config_max_body_size_zero_parses() {
+    // `0` is legal (it means "reject every non-empty body") — the
+    // loader must accept it rather than treating it as absent.
+    let dir = temp_test_dir("proxy-zero-cap");
+    let path = dir.join("config.yaml");
+    fs::write(&path, "proxy:\n  max_body_size: 0\n").expect("write failed");
+
+    let loaded = load_config_from_path(&path);
+    assert!(loaded.warning.is_none(), "valid config should not warn");
+    assert_eq!(loaded.config.proxy.max_body_size, 0);
+    fs::remove_dir_all(dir).expect("temp test dir should be removed");
   }
 
   #[test]

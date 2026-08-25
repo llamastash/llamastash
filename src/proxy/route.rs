@@ -7,7 +7,7 @@
 //! arms to render an OpenAI-shaped body.
 //!
 //! Hot path:
-//!   1. Buffer the body under a 2 MiB cap ([`http-body-util::Limited`]).
+//!   1. Buffer the body under the size cap ([`http-body-util::Limited`]).
 //!   2. Extract `body.model` with a tolerant `JustModel` parse that
 //!      ignores every other field. Empty / missing → 400.
 //!   3. Build a `Vec<CatalogRow>` from the catalog snapshot and run
@@ -35,11 +35,12 @@ use super::mru::{pick_fallback, FallbackCandidate};
 use super::router::ProxyResponse;
 use super::state::ProxyState;
 
-/// Inbound body size cap. The 2 MiB ceiling lets OpenAI-shape chat
-/// completions with multi-thousand-token histories through while
-/// still bounding worst-case memory and refusing accidental
-/// uploads. Anything larger surfaces as HTTP 413 via [`BodyError::TooLarge`].
-pub const BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024;
+/// Default inbound body size cap. 16 MiB lets vision payloads through
+/// (a base64 phone photo is ~4–11 MiB; base64 inflates the source file
+/// ~33%) while still bounding worst-case memory and refusing accidental
+/// uploads. Anything larger surfaces as HTTP 413 (a `BodyError::TooLarge`
+/// from the `Limited` adapter). `proxy.max_body_size` overrides per daemon.
+pub const DEFAULT_BODY_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 
 /// Forwarding plan produced by [`decide`]. Keep this `pub(crate)` —
 /// the router pattern-matches on variants but no external module
@@ -114,7 +115,7 @@ pub(crate) enum RouteDecision {
 /// status mapping in [`super::router`].
 #[derive(Debug)]
 pub(crate) enum BodyError {
-  /// Body exceeded the 2 MiB ceiling. HTTP 413.
+  /// Body exceeded the configured cap. HTTP 413.
   TooLarge,
   /// Body wasn't valid JSON or `body.model` wasn't a string.
   /// HTTP 400 `invalid_request`.
@@ -134,18 +135,22 @@ struct JustModel {
 }
 
 /// Outcome of buffering + extracting. `bytes` is the full body
-/// (capped at [`BODY_LIMIT_BYTES`]); we forward these verbatim, so
-/// no re-encoding ever happens after this point.
+/// (capped at the daemon's limit, [`DEFAULT_BODY_LIMIT_BYTES`] by
+/// default); we forward these verbatim, so no re-encoding ever
+/// happens after this point.
 pub(crate) struct ParsedBody {
   pub bytes: Bytes,
   pub model: Option<String>,
 }
 
-/// Drain the inbound body under the 2 MiB cap, then peek the
-/// `model` field with a single tolerant parse. The body bytes are
-/// kept as-is for verbatim forwarding.
-pub(crate) async fn buffer_and_extract(body: Incoming) -> Result<ParsedBody, BodyError> {
-  let bytes = buffer_body(body, BODY_LIMIT_BYTES).await?;
+/// Drain the inbound body under `cap`, then peek the `model` field
+/// with a single tolerant parse. The body bytes are kept as-is for
+/// verbatim forwarding.
+pub(crate) async fn buffer_and_extract(
+  body: Incoming,
+  cap: usize,
+) -> Result<ParsedBody, BodyError> {
+  let bytes = buffer_body(body, cap).await?;
 
   // An empty body is allowed in principle — `model` extraction
   // then returns None and the caller emits `model_required`.
@@ -193,22 +198,45 @@ pub(crate) async fn buffer_body(body: Incoming, cap: usize) -> Result<Bytes, Bod
 /// Map a body-buffering [`BodyError`] to its proxy error response, so
 /// every surface that drains a request body (data plane + `/ui`) emits
 /// the same status + message for an oversized / unreadable / malformed
-/// payload.
-pub(crate) fn body_error_response(err: BodyError) -> ProxyResponse {
+/// payload. `cap` is the in-force limit — the 413 message names it.
+pub(crate) fn body_error_response(err: BodyError, cap: usize) -> ProxyResponse {
   use hyper::StatusCode;
   match err {
     BodyError::TooLarge => super::router::error_response(
       StatusCode::PAYLOAD_TOO_LARGE,
       "payload_too_large",
-      &format!(
-        "request body exceeds the {} MiB limit",
-        BODY_LIMIT_BYTES / (1024 * 1024)
-      ),
+      &format!("request body exceeds the {} limit", format_bytes(cap)),
     ),
     BodyError::Malformed { message } | BodyError::Read { message } => {
       super::router::error_response(StatusCode::BAD_REQUEST, "invalid_request", &message)
     }
   }
+}
+
+/// Render a byte cap for the 413 message: largest unit the value
+/// fits in, whole when exact (`16 MiB`), two decimals otherwise with
+/// trailing zeros trimmed (`976.57 KiB`, `2 MiB`, never `2.00 MiB`).
+/// Sub-KiB caps stay raw bytes.
+fn format_bytes(n: usize) -> String {
+  // Largest unit first, so 2 MiB + 16 B renders `2 MiB`, not
+  // `2048.02 KiB`.
+  const UNITS: [(&str, usize); 3] = [
+    ("GiB", 1024 * 1024 * 1024),
+    ("MiB", 1024 * 1024),
+    ("KiB", 1024),
+  ];
+  for (name, unit) in UNITS {
+    if n >= unit {
+      let v = n as f64 / unit as f64;
+      if v.fract() == 0.0 {
+        return format!("{:.0} {name}", v);
+      }
+      let s = format!("{v:.2}");
+      let trimmed = s.trim_end_matches('0').trim_end_matches('.');
+      return format!("{trimmed} {name}");
+    }
+  }
+  format!("{n} B")
 }
 
 /// Build a [`RouteDecision`] from the parsed body. Does no I/O
@@ -687,6 +715,42 @@ async fn collect_fallback_candidates(state: &Arc<ProxyState>) -> Vec<FallbackCan
 mod tests {
   use super::fallback_reason_for;
 
+  // ─── body cap rendering + 413 envelope ─────────────────────────
+  //
+  // The 413 message names the in-force cap, so any configured value
+  // (not just whole MiB) must render sensibly.
+
+  #[test]
+  fn format_bytes_renders_whole_and_fractional_units() {
+    assert_eq!(super::format_bytes(512), "512 B");
+    assert_eq!(super::format_bytes(1024), "1 KiB");
+    assert_eq!(super::format_bytes(512 * 1024), "512 KiB");
+    assert_eq!(super::format_bytes(2 * 1024 * 1024 + 16), "2 MiB");
+    assert_eq!(
+      super::format_bytes(super::DEFAULT_BODY_LIMIT_BYTES),
+      "16 MiB",
+      "the default cap renders as 16 MiB"
+    );
+    assert_eq!(super::format_bytes(1000003), "976.57 KiB");
+    assert_eq!(super::format_bytes(1024 * 1024 * 1024), "1 GiB");
+  }
+
+  #[tokio::test]
+  async fn too_large_message_names_the_configured_cap() {
+    use http_body_util::BodyExt;
+    let resp = super::body_error_response(super::BodyError::TooLarge, 512 * 1024)
+      .expect("error response must build");
+    assert_eq!(resp.status(), hyper::StatusCode::PAYLOAD_TOO_LARGE);
+    let collected = resp.into_body().collect().await.expect("body").to_bytes();
+    let v: serde_json::Value = serde_json::from_slice(&collected).expect("json envelope");
+    assert_eq!(v["error"]["type"], "payload_too_large");
+    let message = v["error"]["message"].as_str().expect("message");
+    assert!(
+      message.contains("512 KiB"),
+      "message must name the configured cap, got: {message}"
+    );
+  }
+
   // The four arms of `fallback_reason_for` decide whether the
   // x-llamastash-fallback-reason header reads "launch_failed" (the
   // picked model is in the same family as what the client asked for
@@ -828,7 +892,12 @@ mod tests {
       },
       std::collections::BTreeMap::new(),
     );
-    let state = crate::proxy::state::ProxyState::from_context(&ctx, false, true);
+    let state = crate::proxy::state::ProxyState::from_context(
+      &ctx,
+      false,
+      true,
+      super::DEFAULT_BODY_LIMIT_BYTES,
+    );
 
     let chat_backend = super::would_route_backend(&state, &chat_row)
       .await

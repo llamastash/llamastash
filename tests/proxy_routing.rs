@@ -37,6 +37,7 @@ use llamastash::launch::mode::LaunchMode;
 use llamastash::launch::params::LaunchParams;
 use llamastash::proxy::server::{loopback_addr, new_status_cell, serve, ProxyStatus, StatusCell};
 use llamastash::proxy::state::ProxyState;
+use llamastash::proxy::DEFAULT_BODY_LIMIT_BYTES;
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -195,10 +196,22 @@ async fn wait_for_listening(status: &StatusCell, budget: Duration) -> Option<Soc
 }
 
 /// Build a ProxyState whose catalog has the supplied discovered
-/// models and whose supervisor registry is the provided one.
+/// models and whose supervisor registry is the provided one (default
+/// body cap).
 async fn proxy_state_with(
   models: Vec<DiscoveredModel>,
   supervisors: SupervisorRegistry,
+) -> Arc<ProxyState> {
+  proxy_state_with_cap(models, supervisors, DEFAULT_BODY_LIMIT_BYTES).await
+}
+
+/// Like [`proxy_state_with`] but with an explicit body cap — the
+/// `proxy.max_body_size` seam the daemon passes through
+/// `from_context_with_auth` in production.
+async fn proxy_state_with_cap(
+  models: Vec<DiscoveredModel>,
+  supervisors: SupervisorRegistry,
+  max_body_size: usize,
 ) -> Arc<ProxyState> {
   let catalog = ModelCatalog::new();
   for m in models {
@@ -206,7 +219,7 @@ async fn proxy_state_with(
   }
   let ctx =
     MethodContext::with_catalog(ShutdownToken::new(), catalog).with_supervisors(supervisors);
-  ProxyState::from_context(&ctx, false, true)
+  ProxyState::from_context(&ctx, false, true, max_body_size)
 }
 
 /// Send an HTTP POST and read the response head + body. Returns
@@ -557,14 +570,17 @@ async fn catalog_match_without_running_supervisor_returns_launch_failed() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn body_exceeding_two_mib_returns_413() {
+async fn body_exceeding_cap_returns_413() {
   let registry = SupervisorRegistry::new();
-  let state = proxy_state_with(Vec::new(), registry).await;
+  // A 1 KiB cap: the default (16 MiB) would let this body through,
+  // so the refusal proves the configured cap — not the default —
+  // is in force.
+  let state = proxy_state_with_cap(Vec::new(), registry, 1024).await;
   let (addr, shutdown, listener_handle) = spawn_listener_with_state(state).await;
 
-  // Build a JSON body > 2 MiB: a single string field padded with
-  // 'A's. The `Limited` adapter trips before serde even runs.
-  let pad = "A".repeat(2 * 1024 * 1024 + 16);
+  // A body just over the cap: the `Limited` adapter trips before
+  // serde even runs.
+  let pad = "A".repeat(1024 + 16);
   let body = format!(r#"{{"model":"x","pad":"{pad}"}}"#);
   let (status, _headers, response) = http_post(addr, "/v1/chat/completions", &body, &[]).await;
   assert_eq!(status, 413);
@@ -574,6 +590,36 @@ async fn body_exceeding_two_mib_returns_413() {
   // code happens to match.
   let v: Value = serde_json::from_slice(&response).expect("json body");
   assert_eq!(v["error"]["type"], "payload_too_large");
+  // The message names the configured cap, not the default.
+  let message = v["error"]["message"].as_str().expect("message");
+  assert!(
+    message.contains("1 KiB"),
+    "413 message must name the configured cap, got: {message}"
+  );
+  shutdown_listener(shutdown, listener_handle).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn body_between_old_and_new_default_passes_cap() {
+  // 3 MiB: the pre-#65 hard cap was 2 MiB (413), the new default is
+  // 16 MiB. No model is running, so the routing answer is 503
+  // launch_failed — proof the body survived the cap and reached
+  // routing, not the 413 path.
+  let registry = SupervisorRegistry::new();
+  let state = proxy_state_with(
+    vec![discovered("/m/qwen3.gguf", Some("qwen3"), "qwen3")],
+    registry,
+  )
+  .await;
+  let (addr, shutdown, listener_handle) = spawn_listener_with_state(state).await;
+
+  let pad = "A".repeat(3 * 1024 * 1024);
+  let body = format!(r#"{{"model":"qwen3","pad":"{pad}"}}"#);
+  let (status, _headers, response) = http_post(addr, "/v1/chat/completions", &body, &[]).await;
+  assert_ne!(status, 413, "3 MiB body must pass the 16 MiB default cap");
+  assert_eq!(status, 503);
+  let v: Value = serde_json::from_slice(&response).expect("json body");
+  assert_eq!(v["error"]["type"], "launch_failed");
   shutdown_listener(shutdown, listener_handle).await;
 }
 

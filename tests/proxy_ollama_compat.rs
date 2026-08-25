@@ -41,6 +41,7 @@ use llamastash::launch::mode::LaunchMode;
 use llamastash::launch::params::LaunchParams;
 use llamastash::proxy::server::{loopback_addr, new_status_cell, serve, ProxyStatus, StatusCell};
 use llamastash::proxy::state::ProxyState;
+use llamastash::proxy::DEFAULT_BODY_LIMIT_BYTES;
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -211,7 +212,7 @@ async fn proxy_state_with_models_compat(
     catalog.upsert(m).await;
   }
   let ctx = MethodContext::with_catalog(ShutdownToken::new(), catalog);
-  ProxyState::from_context(&ctx, ollama_compat, true)
+  ProxyState::from_context(&ctx, ollama_compat, true, DEFAULT_BODY_LIMIT_BYTES)
 }
 
 #[allow(dead_code)]
@@ -618,7 +619,7 @@ async fn proxy_state_with_models_and_registry(
     catalog.upsert(m).await;
   }
   let ctx = MethodContext::with_catalog(ShutdownToken::new(), catalog).with_supervisors(registry);
-  ProxyState::from_context(&ctx, false, true)
+  ProxyState::from_context(&ctx, false, true, DEFAULT_BODY_LIMIT_BYTES)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

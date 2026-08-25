@@ -40,6 +40,7 @@ use llamastash::gguf::test_fixtures::build_minimal_gguf;
 use llamastash::ipc::Client;
 use llamastash::proxy::server::{loopback_addr, new_status_cell, serve, ProxyStatus, StatusCell};
 use llamastash::proxy::state::ProxyState;
+use llamastash::proxy::DEFAULT_BODY_LIMIT_BYTES;
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -173,7 +174,7 @@ async fn proxy_state_with_models(models: Vec<DiscoveredModel>) -> Arc<ProxyState
     catalog.upsert(m).await;
   }
   let ctx = MethodContext::with_catalog(ShutdownToken::new(), catalog);
-  ProxyState::from_context(&ctx, false, true)
+  ProxyState::from_context(&ctx, false, true, DEFAULT_BODY_LIMIT_BYTES)
 }
 
 // --- direct-listener tests ----------------------------------------------

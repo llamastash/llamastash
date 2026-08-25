@@ -28,6 +28,7 @@ use llamastash::gguf::metadata::{ModeHint, ModelMetadata, Quant};
 use llamastash::gguf::test_fixtures::build_minimal_gguf;
 use llamastash::proxy::server::{loopback_addr, new_status_cell, serve, ProxyStatus, StatusCell};
 use llamastash::proxy::state::ProxyState;
+use llamastash::proxy::DEFAULT_BODY_LIMIT_BYTES;
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -151,7 +152,7 @@ async fn build_state(
   let ctx = MethodContext::with_catalog(token, catalog)
     .with_supervisors(SupervisorRegistry::new())
     .with_launch_env(env);
-  let state = ProxyState::from_context(&ctx, false, true);
+  let state = ProxyState::from_context(&ctx, false, true, DEFAULT_BODY_LIMIT_BYTES);
   (state, ctx)
 }
 

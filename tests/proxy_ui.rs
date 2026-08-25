@@ -30,6 +30,7 @@ use llamastash::launch::mode::LaunchMode;
 use llamastash::launch::params::LaunchParams;
 use llamastash::proxy::server::{loopback_addr, new_status_cell, serve, ProxyStatus, StatusCell};
 use llamastash::proxy::state::ProxyState;
+use llamastash::proxy::DEFAULT_BODY_LIMIT_BYTES;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::sleep;
@@ -195,7 +196,13 @@ async fn build_state(
   }
   let ctx =
     MethodContext::with_catalog(ShutdownToken::new(), catalog).with_supervisors(supervisors);
-  ProxyState::from_context_with_auth(&ctx, false, true, api_key.map(str::to_string))
+  ProxyState::from_context_with_auth(
+    &ctx,
+    false,
+    true,
+    api_key.map(str::to_string),
+    DEFAULT_BODY_LIMIT_BYTES,
+  )
 }
 
 /// Send a raw HTTP/1.1 GET and return `(status, headers, body)`. Does

@@ -34,6 +34,7 @@ use llamastash::launch::params::LaunchParams;
 use llamastash::proxy::eviction;
 use llamastash::proxy::server::{loopback_addr, new_status_cell, serve, ProxyStatus, StatusCell};
 use llamastash::proxy::state::ProxyState;
+use llamastash::proxy::DEFAULT_BODY_LIMIT_BYTES;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::sleep;
@@ -108,7 +109,7 @@ async fn proxy_state_with(
   }
   let ctx =
     MethodContext::with_catalog(ShutdownToken::new(), catalog).with_supervisors(supervisors);
-  ProxyState::from_context(&ctx, false, true)
+  ProxyState::from_context(&ctx, false, true, DEFAULT_BODY_LIMIT_BYTES)
 }
 
 async fn spawn_listener(
@@ -282,7 +283,8 @@ async fn idle_lemonade_model_is_unloaded_but_umbrella_stays_up() {
     .await;
   let ctx =
     MethodContext::with_catalog(ShutdownToken::new(), catalog).with_supervisors(registry.clone());
-  let state = llamastash::proxy::state::ProxyState::from_context(&ctx, false, true);
+  let state =
+    llamastash::proxy::state::ProxyState::from_context(&ctx, false, true, DEFAULT_BODY_LIMIT_BYTES);
   // Persist the running snapshot + recorded state the way `start_model`
   // does, so the sweep's row cleanup has something real to clear.
   let identity = llamastash::backend::identity::ModelIdentity::Backend(

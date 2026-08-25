@@ -853,7 +853,7 @@ The proxy speaks HTTP/1.1 only on `127.0.0.1:<port>` (no h2c upgrade, no ALPN-ne
 | `GET`  | `/api/ps`              | **Ollama compat.** Currently-Ready supervisors in Ollama's running-list shape (`{models:[…{expires_at, size_vram, …}]}`). `expires_at` is a far-future placeholder until idle-TTL eviction lands (R34 deferred); `size_vram` is `0` until per-PID VRAM attribution lands.                                                                                                                                                                            |
 | `POST` | `/api/show`            | **Ollama compat.** `{"model":"<name>"}` or `{"name":"<name>"}` body → per-model metadata in Ollama shape (`{modelfile, parameters, template, details, model_info, capabilities}`). Same fuzzy resolver as `/v1/chat/completions`.                                                                                                                                                                                                                    |
 
-Request body cap: **2 MiB**, enforced via `http-body-util::Limited` before forwarding. Anything larger returns HTTP 413. OpenAI chat completion requests are typically well under 1 MiB even with long histories; the cap is intentional rather than implicit.
+Request body cap: **`proxy.max_body_size` bytes, default 16 MiB**, enforced via `http-body-util::Limited` before forwarding. Anything larger returns HTTP 413 naming the configured limit. Text-only chat completions are typically well under 1 MiB even with long histories; 16 MiB covers vision payloads (a base64 image is ~33% larger than the source file — one phone photo fits with room to spare) while still bounding worst-case per-request memory. `0` rejects every non-empty body; the cap is intentional rather than implicit.
 
 ### Ollama-compat surface
 
@@ -909,7 +909,7 @@ Every non-2xx response carries an OpenAI-shaped JSON body:
 | 400  | `invalid_request`                                            | Request body wasn't valid JSON, or the HTTP method couldn't be translated for forwarding.                                                                                                                                                                                                                                                                                                                                                                  |
 | 404  | `model_not_found`                                            | Fuzzy match returned zero candidates. `matches` is omitted from the body when empty (the field is `Option`-shaped and serialised with `skip_serializing_if`).                                                                                                                                                                                                                                                                                              |
 | 404  | `not_found`                                                  | No such route (unknown path _or_ wrong HTTP method on a known path — e.g. `GET /v1/chat/completions`).                                                                                                                                                                                                                                                                                                                                                     |
-| 413  | `payload_too_large`                                          | Request body exceeded 2 MiB.                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| 413  | `payload_too_large`                                          | Request body exceeded `proxy.max_body_size` (default 16 MiB).                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | 502  | `upstream_unreachable`                                       | The model was Ready a moment ago but the connect to `llama-server` failed (process exited between snapshot and forward, kernel-level refusal, …). The agent sees this rather than a hanging socket.                                                                                                                                                                                                                                                        |
 | 503  | `launch_failed`                                              | Auto-start failed and no Ready models exist for fallback. `running: []` is always present on this arm. The list reflects models that were **in `Ready` state at the moment the proxy snapshotted the supervisor registry for fallback** — models in `Launching` / `Loading` are not included, so an empty list does not mean "the daemon has nothing alive," only "no candidate was available for instant fallback." Retry once the slow launch completes. |
 
@@ -929,11 +929,16 @@ proxy:
     # env: LLAMASTASH_OLLAMA_COMPAT=1. All three sources are OR-ed.
   # port: 11435          # Pin to override the mode default. Omitted = derived from
   # ollama_compat (11434 when true, 11435 when false).
-  # Loopback only — there is no `host` knob; LAN binding is
-  # a deferred follow-up.
+  # host: 0.0.0.0        # LAN bind (requires api_key unless insecure_no_auth).
+  # api_key: "..."       # Bearer token enforced whenever set.
+  # fallback_enabled: true   # Family-MRU fallback on auto-start failure.
+  # header_read_timeout_secs: 30
+  # idle_ttl_secs: 1800      # 0 disables idle eviction.
+  # max_body_size: 16777216  # Bytes; cap on every request body (default
+  # 16 MiB; 0 rejects every non-empty body).
 ```
 
-Unknown keys inside `[proxy]` are **rejected loudly** (`#[serde(deny_unknown_fields)]`) — a typo never silently falls back to defaults. The top-level config still tolerates unknown keys for forward-compat. There is no `host`, no `api_key`, no `tls_*`, no fallback-tuning knob; these are all deferred per the plan's Scope Boundaries.
+Unknown keys inside `[proxy]` are **rejected loudly** (`#[serde(deny_unknown_fields)]`) — a typo never silently falls back to defaults. The top-level config still tolerates unknown keys for forward-compat. No `tls_*` — TLS for a LAN-exposed proxy is still deferred per the plan's Scope Boundaries. The full key set with per-key sources is in `config.example.yaml` under `[proxy]`.
 
 `llamastash daemon start --proxy-port <PORT>` overrides the mode default for that daemon process — CLI flag beats config beats mode default. `--proxy-port 0` binds an ephemeral port; the actual address is reported via `llamastash status --json | jq .proxy.listen`. The flag survives the default detached start (the re-exec'd child receives it on its argv). `--ollama-compat` is similarly propagated.
 

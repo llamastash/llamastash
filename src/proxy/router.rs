@@ -165,14 +165,16 @@ fn text_response(status: StatusCode, body: &'static str) -> Response<BoxBody<Byt
     .expect("static text response must build")
 }
 
-/// Forwarding pipeline: buffer the body under the 2 MiB cap, extract
-/// `body.model`, run the resolver, pick a Ready supervisor, forward.
+/// Forwarding pipeline: buffer the body under the daemon's cap,
+/// extract `body.model`, run the resolver, pick a Ready supervisor,
+/// forward.
 async fn forward_request(state: Arc<ProxyState>, req: Request<Incoming>) -> ProxyResponse {
   let (method, uri, headers, body) = forward::deconstruct(req);
+  let cap = state.max_body_size;
 
-  let parsed = match route::buffer_and_extract(body).await {
+  let parsed = match route::buffer_and_extract(body, cap).await {
     Ok(p) => p,
-    Err(e) => return route::body_error_response(e),
+    Err(e) => return route::body_error_response(e, cap),
   };
 
   let decision = route::decide(&state, parsed.model).await;
@@ -471,9 +473,10 @@ async fn ollama_ps(state: Arc<ProxyState>) -> ProxyResponse {
 /// works on the other.
 async fn ollama_show(state: Arc<ProxyState>, req: Request<Incoming>) -> ProxyResponse {
   let (_method, _uri, _headers, body) = forward::deconstruct(req);
-  let parsed = match route::buffer_and_extract(body).await {
+  let cap = state.max_body_size;
+  let parsed = match route::buffer_and_extract(body, cap).await {
     Ok(p) => p,
-    Err(e) => return route::body_error_response(e),
+    Err(e) => return route::body_error_response(e, cap),
   };
   // Re-parse the body bytes into the Ollama-shape ShowRequest. The
   // proxy's `JustModel` peek picked out `body.model`; for /api/show we
