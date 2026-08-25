@@ -19,6 +19,7 @@
 //! - [`emit`] — one generic argv emitter, replacing the per-backend translators.
 //! - [`registry`] — the union across backends, id resolution, and validation.
 //! - [`resolve`] — the layered precedence chain, now over every declared knob.
+//! - [`serde_impl`] — the flat `id: value` shape used by config, state, and wire.
 //!
 //! Values are keyed by the backend's own flag spelling, so one string serves
 //! the YAML key, the CLI flag, and the engine's own `--help`. Genuinely shared
@@ -29,6 +30,7 @@ pub mod def;
 pub mod emit;
 pub mod registry;
 pub mod resolve;
+pub mod serde_impl;
 pub mod value;
 
 pub use def::{AutoKind, Concept, Emit, Group, KnobDef, KnobId, KnobKind};
