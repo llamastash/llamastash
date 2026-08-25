@@ -154,6 +154,9 @@ pub enum Emit {
   FlagValue,
   /// `--flag` when true, nothing when false. No `--no-flag` form.
   BareFlagWhenTrue,
+  /// `--flag on` / `--flag off`. For engines that require an explicit value on
+  /// a boolean flag and would otherwise swallow the next argv token as it.
+  FlagOnOff,
   /// The backend consumes the value itself (non-argv transports, or a value
   /// that expands into a bundle of flags).
   Custom,

@@ -49,10 +49,20 @@ impl Scalar {
   }
 
   /// The value as the engine would receive it on a command line.
+  ///
+  /// Whole floats keep one decimal place (`1.0`, not `1`) because that is what
+  /// engines echo back and what the pre-registry emitter produced; changing it
+  /// would silently alter every composed argv carrying a float knob.
   pub fn to_arg(&self) -> String {
     match self {
       Scalar::U32(v) => v.to_string(),
-      Scalar::F32(v) => v.to_string(),
+      Scalar::F32(v) => {
+        if v.fract() == 0.0 && v.is_finite() {
+          format!("{v:.1}")
+        } else {
+          format!("{v}")
+        }
+      }
       Scalar::Bool(v) => v.to_string(),
       Scalar::Str(v) => v.clone(),
     }

@@ -16,6 +16,7 @@
 //!
 //! - [`def`] — what a backend declares ([`KnobDef`], [`KnobKind`], [`Concept`]).
 //! - [`value`] — what a launch carries ([`KnobSet`], [`KnobValue`], [`Scalar`]).
+//! - [`emit`] — one generic argv emitter, replacing the per-backend translators.
 //! - [`registry`] — the union across backends, id resolution, and validation.
 //! - [`resolve`] — the layered precedence chain, now over every declared knob.
 //!
@@ -25,6 +26,7 @@
 //! the user across a backend switch and gives scripts one neutral spelling.
 
 pub mod def;
+pub mod emit;
 pub mod registry;
 pub mod resolve;
 pub mod value;
@@ -34,5 +36,6 @@ pub use registry::{
   def_for, def_for_backend, def_for_backend_concept, distinct_ids, for_backend, resolve_id,
   RegistryError,
 };
+pub use emit::emit_argv;
 pub use resolve::{resolve_layered, seed_layerless, Resolved};
 pub use value::{parse_value, KnobSet, KnobValue, ParseError, Scalar, AUTO_TOKEN};

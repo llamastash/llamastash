@@ -541,6 +541,131 @@ mod tests {
     assert!(!argv.iter().any(|a| a == "-c"));
   }
 
+  /// **The migration invariant (plan D9).** The registry emitter must produce
+  /// byte-identical argv to the pre-registry `argvify` for the same knob
+  /// values. Anything else is a silent behaviour change on every launch.
+  ///
+  /// This test and its converter exist only to prove the migration; both die
+  /// with `TypedKnobs` when the persistence flip lands.
+  #[test]
+  fn registry_emitter_matches_argvify_byte_for_byte() {
+    use crate::launch::knobs::{self, KnobSet, Scalar};
+
+    fn id(name: &str) -> knobs::KnobId {
+      knobs::resolve_id(name).unwrap_or_else(|| panic!("no knob `{name}`"))
+    }
+
+    /// Throwaway `TypedKnobs` -> `KnobSet` converter, covering exactly the
+    /// fields `argvify` emits.
+    fn to_set(t: &TypedKnobs) -> KnobSet {
+      let mut k = KnobSet::new();
+      macro_rules! num {
+        ($field:ident, $name:literal) => {
+          if let Some(v) = t.$field.set_value().copied() {
+            k.set_scalar(id($name), Scalar::U32(v));
+          }
+        };
+      }
+      macro_rules! flag {
+        ($field:ident, $name:literal) => {
+          if let Some(v) = t.$field.set_value().copied() {
+            k.set_scalar(id($name), Scalar::Bool(v));
+          }
+        };
+      }
+      macro_rules! text {
+        ($field:ident, $name:literal) => {
+          if let Some(v) = t.$field.set_value() {
+            k.set_scalar(id($name), Scalar::Str(v.clone()));
+          }
+        };
+      }
+      num!(n_gpu_layers, "n-gpu-layers");
+      num!(n_cpu_moe, "n-cpu-moe");
+      num!(threads, "threads");
+      num!(parallel, "parallel");
+      num!(batch_size, "batch-size");
+      num!(ubatch_size, "ubatch-size");
+      num!(keep, "keep");
+      num!(main_gpu, "main-gpu");
+      flag!(flash_attn, "flash-attn");
+      flag!(mlock, "mlock");
+      flag!(no_mmap, "no-mmap");
+      text!(cache_type_k, "cache-type-k");
+      text!(cache_type_v, "cache-type-v");
+      text!(tensor_split, "tensor-split");
+      text!(split_mode, "split-mode");
+      if let Some(v) = t.rope_freq_scale.set_value().copied() {
+        k.set_scalar(id("rope-freq-scale"), Scalar::F32(v));
+      }
+      k
+    }
+
+    let cases: Vec<(&str, TypedKnobs)> = vec![
+      ("empty", TypedKnobs::default()),
+      (
+        "full set",
+        TypedKnobs {
+          ctx: Some(KnobValue::Set(32768)),
+          reasoning: Some(KnobValue::Set(true)),
+          n_gpu_layers: Some(KnobValue::Set(99)),
+          n_cpu_moe: Some(KnobValue::Set(12)),
+          threads: Some(KnobValue::Set(8)),
+          cache_type_k: Some(KnobValue::Set("q8_0".into())),
+          cache_type_v: Some(KnobValue::Set("q8_0".into())),
+          flash_attn: Some(KnobValue::Set(true)),
+          mlock: Some(KnobValue::Set(true)),
+          no_mmap: Some(KnobValue::Set(true)),
+          parallel: Some(KnobValue::Set(4)),
+          batch_size: Some(KnobValue::Set(2048)),
+          ubatch_size: Some(KnobValue::Set(512)),
+          rope_freq_scale: Some(KnobValue::Set(1.0)),
+          keep: Some(KnobValue::Set(64)),
+          device: Some(KnobValue::Set("ROCm0".into())),
+          tensor_split: Some(KnobValue::Set("3,1".into())),
+          main_gpu: Some(KnobValue::Set(1)),
+          split_mode: Some(KnobValue::Set("row".into())),
+        },
+      ),
+      (
+        "bools off",
+        TypedKnobs {
+          flash_attn: Some(KnobValue::Set(false)),
+          mlock: Some(KnobValue::Set(false)),
+          no_mmap: Some(KnobValue::Set(false)),
+          ..TypedKnobs::default()
+        },
+      ),
+      (
+        "auto knobs emit nothing",
+        TypedKnobs {
+          ctx: Some(KnobValue::Auto),
+          n_gpu_layers: Some(KnobValue::Auto),
+          n_cpu_moe: Some(KnobValue::Auto),
+          tensor_split: Some(KnobValue::Auto),
+          ..TypedKnobs::default()
+        },
+      ),
+      (
+        "fractional float",
+        TypedKnobs {
+          rope_freq_scale: Some(KnobValue::Set(0.5)),
+          ..TypedKnobs::default()
+        },
+      ),
+    ];
+
+    for (name, typed) in cases {
+      let old = strs(&argvify(&typed));
+      let new = strs(&knobs::emit_argv(
+        crate::backend::DEFAULT_BACKEND_ID,
+        &to_set(&typed),
+        &[],
+      ));
+      assert_eq!(old, new, "argv diverged for case `{name}`");
+    }
+  }
+
   #[test]
   fn argvify_emits_full_set_in_canonical_order() {
     let knobs = TypedKnobs {
