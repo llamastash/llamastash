@@ -175,6 +175,51 @@ impl KnobSet {
     self.get(id).is_some_and(KnobValue::is_auto)
   }
 
+  /// Read `backend_id`'s knob for `concept`.
+  ///
+  /// The backend-neutral accessor: callers that need "the context window" or
+  /// "the serving mode" without caring which engine is running ask by concept,
+  /// and the registry maps it to that backend's own spelling. Naming a knob id
+  /// directly in shared code would hard-code one backend's vocabulary, which
+  /// is the mistake this whole registry exists to undo.
+  pub fn by_concept(&self, backend_id: &str, concept: super::def::Concept) -> Option<&KnobValue> {
+    let def = super::registry::def_for_backend_concept(backend_id, concept)?;
+    self.get(def.knob_id())
+  }
+
+  /// Concrete `u32` for `backend_id`'s knob carrying `concept`.
+  pub fn u32_by_concept(&self, backend_id: &str, concept: super::def::Concept) -> Option<u32> {
+    self.by_concept(backend_id, concept)?.set_value()?.as_u32()
+  }
+
+  /// Concrete `bool` for `backend_id`'s knob carrying `concept`.
+  pub fn bool_by_concept(&self, backend_id: &str, concept: super::def::Concept) -> Option<bool> {
+    self.by_concept(backend_id, concept)?.set_value()?.as_bool()
+  }
+
+  /// Concrete `&str` for `backend_id`'s knob carrying `concept`.
+  pub fn str_by_concept(&self, backend_id: &str, concept: super::def::Concept) -> Option<&str> {
+    self.by_concept(backend_id, concept)?.set_value()?.as_str()
+  }
+
+  /// Write `backend_id`'s knob for `concept`, when that backend has one.
+  /// Returns whether it landed — `false` means the backend does not honour
+  /// this concept, which callers surface rather than swallow.
+  pub fn set_by_concept(
+    &mut self,
+    backend_id: &str,
+    concept: super::def::Concept,
+    value: KnobValue,
+  ) -> bool {
+    match super::registry::def_for_backend_concept(backend_id, concept) {
+      Some(def) => {
+        self.set(def.knob_id(), value);
+        true
+      }
+      None => false,
+    }
+  }
+
   /// Write every slot from `other` that this set does not already hold.
   /// The per-field merge the layered resolver runs, and the "overlay CLI
   /// overrides onto a preset baseline" the `start` handler needs — a set knob

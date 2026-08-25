@@ -164,7 +164,16 @@ fn update_leaf(
         .map_err(|e| WriteError::Patch(e.to_string()))?;
       let keycol = f.location.point_span.0 .1;
       let block = render_keyed_block(path[path.len() - 1], body, keycol)?;
-      let mut out = replace_span(source, f.location.byte_span, &block);
+      let span = trim_trailing_trivia(source, f.location.byte_span);
+      // The trimmed span ends just past the node's last newline; the rendered
+      // block has none, so restore it or the preserved comment below would be
+      // glued onto the final value line.
+      let block = if source[..span.1].ends_with('\n') && !block.ends_with('\n') {
+        format!("{block}\n")
+      } else {
+        block
+      };
+      let mut out = replace_span(source, span, &block);
       // `query_pretty`'s span for the document's *last* node includes its
       // trailing newline; the rendered block omits it, so restore EOF parity.
       if source.ends_with('\n') && !out.ends_with('\n') {
@@ -173,6 +182,38 @@ fn update_leaf(
       Ok(out)
     }
   }
+}
+
+/// Shrink a node's replacement span so it stops after the node's own content,
+/// leaving any trailing blank lines and comments in place.
+///
+/// `query_pretty` reports a span that runs to the start of the next sibling,
+/// which swallows the comment block sitting above that sibling. Replacing the
+/// whole span therefore deletes a comment that documents someone *else's*
+/// entry. By YAML convention a comment block immediately above a key belongs
+/// to that key, so it must survive an edit to the node before it.
+///
+/// Without this, every `presets save` against a commented config silently ate
+/// the comments introducing whatever came next.
+fn trim_trailing_trivia(source: &str, span: (usize, usize)) -> (usize, usize) {
+  let (start, mut end) = span;
+  let region = &source[start..end];
+  // Walk back over whole lines that are blank or comment-only.
+  let lines: Vec<&str> = region.split_inclusive('\n').collect();
+  let mut cut = region.len();
+  for line in lines.iter().rev() {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+      cut -= line.len();
+    } else {
+      break;
+    }
+  }
+  // Keep the newline that terminates the last content line.
+  if cut < region.len() {
+    end = start + cut;
+  }
+  (start, end)
 }
 
 /// Remove the node at `path`, pruning now-empty parent blocks up the chain
@@ -722,6 +763,33 @@ mod tests {
       cur = cur.get(k)?;
     }
     Some(cur)
+  }
+
+  /// Regression: `query_pretty` reports a span running to the next sibling,
+  /// which swallowed the comment block introducing that sibling. Every
+  /// `presets save` against a commented config silently ate the comments for
+  /// whatever came after the entry being written.
+  #[test]
+  fn upsert_block_preserves_a_following_siblings_comment() {
+    let src = concat!(
+      "presets:\n",
+      "  a:\n",
+      "    entries:\n",
+      "      e1:\n",
+      "        ctx: 1\n",
+      "  # this documents b, not a\n",
+      "  b:\n",
+      "    entries:\n",
+      "      e2:\n",
+      "        ctx: 2\n",
+    );
+    let body = parse_ok("ctx: 9\n");
+    let out = upsert_block(src, &["presets", "a", "entries", "e1"], &body).unwrap();
+    assert!(out.contains("ctx: 9"), "the edit still applied:\n{out}");
+    assert!(
+      out.contains("\n  # this documents b, not a\n"),
+      "sibling comment must survive on its own line:\n{out}"
+    );
   }
 
   #[test]

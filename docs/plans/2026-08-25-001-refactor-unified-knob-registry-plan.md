@@ -64,44 +64,37 @@ Non-goal: typing every flag every engine accepts. `extras` stays the free-form t
 | D7 | **Port stays exactly as today** — `start --port` (strict) only, no preset key, no TUI row. A deliberate scope exemption, not a parity gap; see below. |
 | D8 | **Knob ids normalize `_` ↔ `-` on read**, and unknown keys warn. Hand-authored configs survive the rename; users gain a warning they don't get today. |
 | D9 | **Byte-identical composed argv** is the invariant carried through every stage. `scripts/bench/` already depends on it. |
-| D10 | **A scoped read-both shim carries hand-authored configs through the refactor**, deleted in stage 7. Not an auto-migration and not a `config migrate` command; see below. |
+| D10 | **Config is migrated in place to the new shape**, once, with a backup. Not a permanent read-both path and not a manual chore; see below. |
 
-### D10 rationale — read-both, then delete
+### D10 rationale — migrate, don't shim
 
-Measured against the maintainer's live `config.yaml` (2026-08-25): 8 model keys, 18 preset
-entries, **18 of 18 needing a touch** — `mtp:` alone appears in 10 and relocates into
-`knobs:`. `arch_defaults` is empty, so that half of the break costs nothing.
+Users cannot hand-edit their way out of a shape change, and a compatibility
+reader that gets deleted later is a delayed break rather than a migration. So
+the daemon **rewrites `config.yaml` into the new shape on first load** and says
+what it did.
 
-The file also carries substantive comments (the ds4 streaming rationale; `6.15 -> 18.5 t/s
-(3.0x) at 87% acceptance on gfx1151` on the gemma-4 entry). They are engineering record.
+What moves, per preset entry and per `arch_defaults` block:
 
-| Option | Cost | Verdict |
-| --- | --- | --- |
-| **Reader accepts both shapes** | ~120 lines + tests | **chosen** |
-| Auto-migrate on load | + ~80 (comment-safe `yaml_edit`) | rewrites a comment-rich user-owned file automatically; the app only patches single nodes on explicit action today |
-| `llamastash config migrate` | + ~250 | ceremony for a population of ~1 (no `v*` tag exists) |
-| Warn only, hand-edit | ~30 lines | leaves presets inert mid-refactor |
+- entry-level knob keys gain the `knobs:` wrapper;
+- `backend_knobs:` contents move up into that same map;
+- the `mode:` / `mtp:` / `mtp_draft_n:` siblings move in with them;
+- `_` spellings become `-` (both keep loading regardless, per D8).
 
-The shim folds entry-level knob keys, `backend_knobs:`, `mode:`, `mtp:` and `mtp_draft_n:`
-into `knobs`. It never writes, so comments are safe by construction. Precedent: the loader
-already reads a legacy `{ auto: true }` sentinel. AGENTS.md's no-legacy rule governs
-*shipped* legacy paths — a shim whose deletion is a line item in this same plan is not one.
+Safety, in order of importance:
 
-### D7 rationale — why port is exempt
+1. **Comments survive.** The rewrite goes through `config::yaml_edit`, which
+   exists precisely so app-driven writes preserve hand-authored comments. Real
+   configs carry load-bearing prose — measured tuning results, "why this knob
+   is pinned off" notes — and losing that would be worse than the break.
+2. **The original is kept.** `config.yaml.pre-knobs.bak` is written first; the
+   migration aborts if it cannot.
+3. **It is announced.** A daemon-start log line names the file, the backup, and
+   the entry count, so a surprised user can see what happened and revert.
+4. **It is idempotent.** A config already in the new shape is left untouched,
+   so a rollback to an older binary and back does not double-migrate.
 
-Considered and rejected (maintainer decision, 2026-08-25). A preset `port:` was proposed
-as a soft `prefer_port` preference so a saved config could be re-run end to end. It is
-not worth the surface:
-
-- an **arch** preset applies to every model of that arch — one port for all of them;
-- the TUI supports launching the same model twice (`active_instances`) — a second
-  instance can never honour a pinned port;
-- two presets on different models both naming `41100` collide.
-
-Port therefore stays launch-only and strict: `start --port`, erroring on conflict.
-`prefer_port` remains an internal soft path the TUI seeds from `last_params`
-(`tui/app.rs:1623`), not a user-facing knob. **This is the one row in the parity table
-that stays uneven on purpose**, and the drift test encodes that (see Enforcement).
+The old-shape reader still exists — it is what the migration reads *from* — but
+it feeds the rewrite rather than standing as a parallel path forever.
 
 ## Model
 
@@ -208,7 +201,7 @@ backwards-compat until first release). This is the moment; after 0.0.1 it is a m
 | What | Severity as-is | Mitigation |
 | --- | --- | --- |
 | `config.yaml` preset + `arch_defaults` knob keys | **Silent value loss** — `PresetBody.knobs` is `#[serde(flatten)]`, which cannot carry `deny_unknown_fields`, so unknown keys drop with no error *today* | D8: `_`↔`-` normalization + registry-validated keys that **warn**. Net improvement over the status quo |
-| `backend_knobs:` / `mode:` move into `knobs:` | One-key break, ds4/vLLM only | Startup warning naming the exact fix |
+| `backend_knobs:` / `mode:` / `mtp:` move into `knobs:` | Would break every configured user | Carried by the same auto-migration; nothing for a user to do |
 | **`--json` params shape** | Scripts pinning field paths break | **none — this is the one real break** |
 | `state.json` | Whole-file parse failure → warn, quarantine, boot on defaults. Collateral: **favorites lost too** | Lenient `last_params` deserialize (drop bad rows, keep the rest). Worth doing regardless — latent bug today |
 | CLI flags | Additive only; existing flags are already llama.cpp spellings | Registry rule: no knob may claim a flag colliding with a llamastash global or `FORBIDDEN_ADVANCED_PREFIXES` |
@@ -230,7 +223,7 @@ Each compiles and keeps tests green. D9 (byte-identical argv) is asserted at eve
   persistence flip so byte-identical argv is proven while the old shape still loads.*
 - [ ] **3 — Persistence flip.** `LaunchParams.knobs: KnobSet` replaces `knobs` +
   `backend_knobs`; `PresetBody { knobs, extras, backend, server }` (no `port` — D7).
-  Lenient `last_params` deserialize. The D10 read-both shim lands here. Bridge deleted.
+  Lenient `last_params` deserialize. The D10 config migration lands here. Bridge deleted.
 - [ ] **4 — CLI generated** from the registry union, grouped by backend. Concept
   aliases. `presets save` flattens the identical flag set. Adds `llamastash knobs`.
   Adds `presets save --from-last`.
@@ -239,8 +232,9 @@ Each compiles and keeps tests green. D9 (byte-identical argv) is asserted at eve
 - [ ] **6 — Identity parity.** backend/server inheritance chain in the daemon
   (default preset → last_params, matching how extras/mtp already work); unknown
   preset-sourced server warns and falls back, typed `--server` stays a hard error.
-- [ ] **7 — Drift tests + docs.** Includes **deleting the D10 read-both shim** and
-  rewriting `config.example.yaml` to the new shape.
+- [ ] **7 — Drift tests + docs.** Includes rewriting `config.example.yaml` to the
+  new shape. The D10 migration **stays** — it is what upgrades a user, not a
+  temporary scaffold.
 
 ### Enforcement (stage 7)
 

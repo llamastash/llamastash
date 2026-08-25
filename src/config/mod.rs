@@ -6,6 +6,7 @@
 //! 3. YAML config file (`config.yaml` under the OS config dir)
 //! 4. Built-in defaults
 
+pub mod knob_migration;
 pub mod loader;
 pub mod presets_writer;
 pub mod writer;
