@@ -66,6 +66,31 @@ pub async fn handle(action: DaemonAction, cli: &Cli, config: &Config) -> Result<
   }
 }
 
+
+/// Migrate `config.yaml` to the unified knob shape, returning the re-parsed
+/// config when a rewrite happened (plan D10).
+///
+/// Failure is never fatal: a config we could not rewrite still loads, because
+/// knob keys normalise on read either way. The user is told what happened, and
+/// where the backup is, so a surprising rewrite is recoverable.
+fn migrate_knob_config(cli: &Cli) -> Option<Config> {
+  let path = crate::config::config_path(cli.config.clone())?;
+  match crate::config::knob_migration::migrate(&path) {
+    Ok(Some(report)) => {
+      log::info!("{report}");
+      if !cli.quiet {
+        eprintln!("{}", crate::cli::colors::success(&report.to_string()));
+      }
+      Some(crate::config::load_config_from_path(&path).config)
+    }
+    Ok(None) => None,
+    Err(e) => {
+      log::warn!("config knob migration skipped: {e}");
+      None
+    }
+  }
+}
+
 // `handle_start` is the single thin shim that unpacks every
 // `daemon start` flag and feeds them into `build_options`. Each new
 // CLI flag added here costs an argument; the alternative (a typed
@@ -88,6 +113,12 @@ async fn handle_start(
   cli: &Cli,
   config: &Config,
 ) -> Result<()> {
+  // Bring a pre-registry `config.yaml` to the unified knob shape before
+  // anything reads it. The daemon owns config writes, so this is the one
+  // place it can run; a plain CLI command must never rewrite the user's file.
+  // Idempotent, backs the original up first, and preserves comments.
+  let migrated_config = migrate_knob_config(cli);
+
   let mut opts = build_options(
     state_dir,
     proxy_port,
@@ -101,6 +132,11 @@ async fn handle_start(
     cli,
     config,
   )?;
+  if let Some(fresh) = migrated_config {
+    // `config` was parsed from the pre-migration text, so its preset blocks
+    // are in the old shape. Take the rewritten file's.
+    opts.presets = fresh.presets;
+  }
   // Provision the proxy bearer key when a LAN bind is requested. Runs
   // in the parent (or the foreground process) so the generated key is
   // printed to the user's terminal; the detached child re-reads it
