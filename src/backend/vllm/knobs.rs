@@ -18,6 +18,7 @@
 //! does not carry into a vLLM launch and is reported as dropped.
 
 use crate::launch::knobs::{AutoKind, Concept, Emit, Group, KnobDef, KnobKind};
+use crate::launch::params::LayerLabel;
 
 pub const KNOBS: &[KnobDef] = &[
   KnobDef {
@@ -32,6 +33,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "Context",
     help: "context length in tokens",
     aliases: &[],
+    fallback: LayerLabel::ModelDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -45,6 +47,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "KV cache size",
     help: "hard cap on KV cache bytes (e.g. 8G); overrides the GPU memory fraction",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -60,6 +63,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "GPU memory frac",
     help: "fraction of GPU memory vLLM may claim, 0.0-1.0 (vLLM default 0.92)",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -72,6 +76,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "Max sequences",
     help: "ceiling on concurrently batched sequences",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -84,6 +89,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "Tensor parallel",
     help: "GPUs to shard the model across on this host",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -98,6 +104,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "Weight dtype",
     help: "weight/activation dtype",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -112,6 +119,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "KV cache dtype",
     help: "KV cache dtype; the fp8 stops trade accuracy for cache headroom",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -126,6 +134,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "Quantization",
     help: "quantization method; leave unset to read it from the repo config",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -138,6 +147,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "Eager mode",
     help: "skip graph capture — faster startup, lower steady-state throughput",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::BareFlagWhenTrue,
   },
   KnobDef {
@@ -150,6 +160,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "Trust remote code",
     help: "execute custom model code shipped in the repo (only for repos you trust)",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::BareFlagWhenTrue,
   },
 ];

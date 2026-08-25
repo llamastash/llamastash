@@ -360,6 +360,7 @@ mod tests {
       label: "Test",
       help: "test knob",
       aliases: &[],
+      fallback: crate::launch::params::LayerLabel::ServerDefault,
       emit: Emit::FlagValue,
     }
   }

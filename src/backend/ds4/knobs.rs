@@ -21,6 +21,7 @@
 //! value is refused at parse time instead of after a multi-minute model load.
 
 use crate::launch::knobs::{AutoKind, Concept, Emit, Group, KnobDef, KnobKind};
+use crate::launch::params::LayerLabel;
 
 pub const KNOBS: &[KnobDef] = &[
   KnobDef {
@@ -35,6 +36,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "Context",
     help: "context length in tokens",
     aliases: &["-c"],
+    fallback: LayerLabel::ModelDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -47,6 +49,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "GPU power %",
     help: "GPU duty-cycle target, 1-100 (ds4 default 100)",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -59,6 +62,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "Default tokens",
     help: "default max output tokens when a client omits a limit",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -71,6 +75,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "CPU threads",
     help: "CPU helper thread count for host-side work",
     aliases: &["-t"],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -83,6 +88,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "KV disk dir",
     help: "directory for the persistent disk KV cache (user-owned, never cleaned)",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -95,6 +101,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "KV disk cap",
     help: "disk KV cache budget in MB (ds4 default 4096 when enabled)",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -107,6 +114,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "SSD streaming",
     help: "stream weights from disk (below-RAM-floor mode; skips the admission gate)",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::BareFlagWhenTrue,
   },
   KnobDef {
@@ -121,6 +129,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "SSD cache cap",
     help: "resident routed-expert cap — count N or budget NGB (ds4 auto: 80% of the working set)",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -133,6 +142,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "SSD preload",
     help: "upfront popularity preload count (auto-seeded when unset)",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -145,6 +155,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "SSD cold start",
     help: "skip the default popularity-based expert-cache preload",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::BareFlagWhenTrue,
   },
   KnobDef {
@@ -157,6 +168,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "Warm weights",
     help: "touch mapped tensor pages at startup to reduce first-use stalls",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::BareFlagWhenTrue,
   },
   KnobDef {
@@ -169,6 +181,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "Exact kernels",
     help: "prefer exact kernels where faster approximate paths exist",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::BareFlagWhenTrue,
   },
   // Speculation. `mtp` is the neutral enable every backend honours; the rest
@@ -183,6 +196,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "MTP",
     help: "multi-token prediction; auto enables it when the model can",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::Custom,
   },
   KnobDef {
@@ -195,6 +209,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "MTP sidecar",
     help: "path to the draft-head GGUF (auto-paired from a sibling when unset)",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -207,6 +222,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "Draft tokens",
     help: "tokens drafted per speculation step (ds4 default 1)",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -219,6 +235,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "MTP margin",
     help: "verifier confidence margin for fast acceptance (ds4 default 3)",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -231,6 +248,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "DSpark",
     help: "block speculative decoding off the DSpark support GGUF in `mtp-model` (greedy only)",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::BareFlagWhenTrue,
   },
   KnobDef {
@@ -246,6 +264,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "DSpark confidence",
     help: "prune proposals below this confidence, 0..1 (ds4 default 0.7; 0 = fixed blocks)",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -258,6 +277,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "DSpark strict",
     help: "load the DSpark support model but keep target-only decode (comparison baseline)",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::BareFlagWhenTrue,
   },
 ];

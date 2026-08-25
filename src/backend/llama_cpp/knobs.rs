@@ -9,6 +9,7 @@
 //! releases, and the editor renders rows in this order within each group.
 
 use crate::launch::knobs::{AutoKind, Concept, Emit, Group, KnobDef, KnobKind};
+use crate::launch::params::LayerLabel;
 
 /// Ceiling llamastash accepts for a context window, mirroring the daemon's
 /// own `MAX_CTX_TOKENS` guard so a bad `--ctx-size` is refused at parse time
@@ -38,6 +39,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "Context",
     help: "context length in tokens (0 = model's trained maximum)",
     aliases: &["-c", "ctx"],
+    fallback: LayerLabel::ModelDefault,
     emit: Emit::Custom,
   },
   KnobDef {
@@ -50,6 +52,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "Reasoning",
     help: "enable reasoning (jinja + deepseek reasoning-format bundle)",
     aliases: &[],
+    fallback: LayerLabel::ModelDefault,
     emit: Emit::Custom,
   },
   KnobDef {
@@ -62,6 +65,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "Mode",
     help: "serving mode; inferred from the model when unset",
     aliases: &[],
+    fallback: LayerLabel::ModelDefault,
     emit: Emit::Custom,
   },
   KnobDef {
@@ -74,6 +78,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "GPU layers",
     help: "layers offloaded to the GPU (0 = CPU-only)",
     aliases: &["-ngl"],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -86,6 +91,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "CPU MoE layers",
     help: "MoE expert layers kept on the CPU (frees VRAM)",
     aliases: &["-ncmoe"],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -98,6 +104,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "Device",
     help: "device selector(s), comma-separated (e.g. Vulkan0,Vulkan1)",
     aliases: &["-d"],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -110,6 +117,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "Tensor split",
     help: "proportional split across GPUs (e.g. 3,1)",
     aliases: &["-ts"],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -122,6 +130,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "Main GPU",
     help: "index of the primary GPU holding non-split tensors",
     aliases: &["-mg"],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -136,6 +145,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "Split mode",
     help: "how to split the model across GPUs",
     aliases: &["-sm"],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -148,6 +158,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "Flash attention",
     help: "enable flash attention",
     aliases: &["-fa"],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::BareFlagWhenTrue,
   },
   KnobDef {
@@ -162,6 +173,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "K cache type",
     help: "K cache quantization type",
     aliases: &["-ctk"],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -176,6 +188,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "V cache type",
     help: "V cache quantization type",
     aliases: &["-ctv"],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -188,6 +201,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "Threads",
     help: "CPU threads used during generation",
     aliases: &["-t"],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -200,6 +214,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "Parallel",
     help: "parallel sequences served concurrently",
     aliases: &["-np"],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -212,6 +227,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "Batch size",
     help: "logical batch size for prompt processing",
     aliases: &["-b"],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -224,6 +240,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "Ubatch size",
     help: "physical (micro) batch size",
     aliases: &["-ub"],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -236,6 +253,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "mlock",
     help: "lock the model in RAM (prevents swap-out)",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::BareFlagWhenTrue,
   },
   KnobDef {
@@ -248,6 +266,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "No mmap",
     help: "load the whole model into RAM instead of mmap",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::BareFlagWhenTrue,
   },
   // Speculation. The enable is a three-state knob whose `auto` means "on when
@@ -265,6 +284,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "MTP",
     help: "multi-token prediction; auto enables it when the model can",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::Custom,
   },
   KnobDef {
@@ -277,6 +297,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "Draft tokens",
     help: "tokens drafted per speculation step (engine default when unset)",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -292,6 +313,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "RoPE freq scale",
     help: "RoPE frequency scaling factor (context extension)",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
   KnobDef {
@@ -304,6 +326,7 @@ pub const KNOBS: &[KnobDef] = &[
     label: "Keep",
     help: "tokens kept from the initial prompt on context shift",
     aliases: &[],
+    fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
   },
 ];

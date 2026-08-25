@@ -13,6 +13,7 @@
 //! [`KnobSet`]: crate::launch::knobs::KnobSet
 
 use crate::launch::knobs::{AutoKind, Concept, Emit, Group, KnobDef, KnobKind};
+use crate::launch::params::LayerLabel;
 
 pub const KNOBS: &[KnobDef] = &[KnobDef {
   id: "ctx-size",
@@ -26,5 +27,6 @@ pub const KNOBS: &[KnobDef] = &[KnobDef {
   label: "Context",
   help: "context length in tokens (the load request's `ctx_size`)",
   aliases: &["-c", "ctx"],
+  fallback: LayerLabel::ModelDefault,
   emit: Emit::Custom,
 }];

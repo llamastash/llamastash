@@ -17,6 +17,7 @@
 //! - [`def`] — what a backend declares ([`KnobDef`], [`KnobKind`], [`Concept`]).
 //! - [`value`] — what a launch carries ([`KnobSet`], [`KnobValue`], [`Scalar`]).
 //! - [`registry`] — the union across backends, id resolution, and validation.
+//! - [`resolve`] — the layered precedence chain, now over every declared knob.
 //!
 //! Values are keyed by the backend's own flag spelling, so one string serves
 //! the YAML key, the CLI flag, and the engine's own `--help`. Genuinely shared
@@ -25,6 +26,7 @@
 
 pub mod def;
 pub mod registry;
+pub mod resolve;
 pub mod value;
 
 pub use def::{AutoKind, Concept, Emit, Group, KnobDef, KnobId, KnobKind};
@@ -32,4 +34,5 @@ pub use registry::{
   def_for, def_for_backend, def_for_backend_concept, distinct_ids, for_backend, resolve_id,
   RegistryError,
 };
+pub use resolve::{resolve_layered, seed_layerless, Resolved};
 pub use value::{parse_value, KnobSet, KnobValue, ParseError, Scalar, AUTO_TOKEN};

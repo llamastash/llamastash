@@ -5,6 +5,8 @@
 //! generates a key. Nothing is hand-wired per surface, so a knob cannot exist
 //! on one surface and be missing from another.
 
+use crate::launch::params::LayerLabel;
+
 /// A knob's stable identity — its persistence key, wire key, and (by default)
 /// its flag spelling minus the leading dashes.
 ///
@@ -234,6 +236,15 @@ pub struct KnobDef {
   /// Extra accepted spellings (`-ngl`, `-c`). Recognised on input; never emitted.
   pub aliases: &'static [&'static str],
   pub emit: Emit,
+  /// Where the value comes from when *no* layer supplies one, which is what
+  /// the editor renders as the origin chip. `ModelDefault` for knobs the
+  /// engine reads out of the model file when the flag is omitted (context
+  /// window, chat template); `ServerDefault` for everything else, where
+  /// omitting the flag lands on the engine's own hardcoded default.
+  ///
+  /// Doubles as the "no layer supplied this" sentinel: no real layer ever
+  /// carries these two labels, so `source == fallback` is an exact test.
+  pub fallback: LayerLabel,
 }
 
 impl KnobDef {
