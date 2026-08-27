@@ -286,8 +286,21 @@ impl KnobSet {
   /// directly in shared code would hard-code one backend's vocabulary, which
   /// is the mistake this whole registry exists to undo.
   pub fn by_concept(&self, backend_id: &str, concept: super::def::Concept) -> Option<&KnobValue> {
-    let def = super::registry::def_for_backend_concept(backend_id, concept)?;
-    self.get(def.knob_id())
+    // This backend's own spelling first.
+    if let Some(def) = super::registry::def_for_backend_concept(backend_id, concept) {
+      if let Some(v) = self.get(def.knob_id()) {
+        return Some(v);
+      }
+    }
+    // Then any sibling's spelling of the same concept. A concept *is* the claim
+    // that two backends mean one thing by it, so reading another's key is not a
+    // guess — and a set often carries one: config and CLI keys resolve without
+    // knowing which backend will serve, so `ctx` on a non-default backend's
+    // preset lands under whichever knob the blind lookup matched first. Without
+    // this the value was stored, never found, and silently dropped.
+    self.values.iter().find_map(|(id, value)| {
+      (super::registry::def_for(*id).and_then(|d| d.concept) == Some(concept)).then_some(value)
+    })
   }
 
   /// Concrete `u32` for `backend_id`'s knob carrying `concept`.

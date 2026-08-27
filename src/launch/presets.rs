@@ -342,6 +342,35 @@ fn merge_block(
 
 #[cfg(test)]
 mod tests {
+  /// A preset on a backend whose context knob is not the one a backend-blind
+  /// lookup matches first still gets its context window.
+  ///
+  /// `ctx:` in config.yaml resolves before the serving backend is known, so it
+  /// lands under whichever knob declares that alias — not necessarily the one
+  /// this preset's backend reads. `materialize_preset` then looked for its own
+  /// backend's spelling, found nothing, and dropped the window with no warning:
+  /// the preset launched at the engine default instead of the size asked for.
+  #[test]
+  fn a_preset_context_window_survives_whichever_key_it_lands_under() {
+    for (backend_id, yaml) in [
+      ("ds4", "knobs:\n  ctx: 8192\nbackend: ds4\n"),
+      ("llamacpp", "knobs:\n  ctx: 8192\nbackend: llamacpp\n"),
+    ] {
+      let body: crate::config::PresetBody = yaml_serde::from_str(yaml).expect("parse");
+      let np = materialize_preset("p", &body, PathBuf::from("/m/x.gguf"));
+      assert_eq!(
+        np.params.ctx,
+        Some(8192),
+        "{backend_id} preset lost its context window; stored under {:?}",
+        body
+          .knobs
+          .iter()
+          .map(|(id, _)| id.to_string())
+          .collect::<Vec<_>>()
+      );
+    }
+  }
+
   use super::*;
 
   use std::path::PathBuf;

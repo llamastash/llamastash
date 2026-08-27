@@ -311,6 +311,37 @@ mod tests {
     assert!(err.to_string().contains("--threads"), "{err}");
   }
 
+  /// The exemption list is a decision, not a dumping ground.
+  ///
+  /// Each entry keeps a bespoke flag because it carries CLI semantics a plain
+  /// value flag cannot, and each still reaches every surface through the same
+  /// knob map. Pinned so a knob cannot quietly opt out of generation — which is
+  /// the one way the CLI could go back to drifting from the editor.
+  #[test]
+  fn the_hand_written_exemptions_are_exactly_these() {
+    assert_eq!(
+      HAND_WRITTEN,
+      [
+        "ctx-size",
+        "ctx",
+        "max-model-len",
+        "reasoning",
+        "mode",
+        "mtp",
+        "mtp-draft-n",
+      ],
+      "adding an exemption means adding the reason above it"
+    );
+    // Every exemption still names a knob some backend declares; a stale entry
+    // would silently suppress a flag that no longer has a hand-written twin.
+    for id in HAND_WRITTEN {
+      assert!(
+        knobs::resolve_id(id).is_some(),
+        "`{id}` is exempted but no backend declares it"
+      );
+    }
+  }
+
   #[test]
   fn hand_written_flags_are_not_also_derived() {
     let cmd = KnobFlags::augment_args(Command::new("test"));
