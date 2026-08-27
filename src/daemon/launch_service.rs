@@ -373,10 +373,31 @@ pub(crate) async fn compose_and_spawn(
   // → built-in `(arch, backend)` table → llama-server's own default.
   let mut launch_params = LaunchParams::new(parsed.model_path.clone(), mode);
   launch_params.port = Some(port);
+
+  // Launch *identity* — which backend, and which of its builds — inherited on
+  // a no-selection launch the same way extras and knobs are, so a plain
+  // `start` reproduces the run rather than silently dropping back to the
+  // priority-default build.
+  //
+  // This has to settle before backend resolution, because a server pick
+  // decides which backend runs. That rules out the backend-matched
+  // `last_params` gate the knob layers use (it needs the resolved backend,
+  // which needs this) — but the recorded server id names its own backend, so
+  // there is nothing to contaminate.
+  let identity_default = if matches!(parsed.selection, LaunchSelection::Default) {
+    inherited_launch_identity(ctx, &parsed, &identity, arch.as_deref()).await
+  } else {
+    InheritedIdentity::default()
+  };
+
   // Per-model backend override: `None` keeps the default `Auto`
   // (identity rule); an explicit choice from `start --backend` / the TUI
-  // picker overrides it.
-  launch_params.backend = parsed.backend.unwrap_or_default();
+  // picker overrides it, and a remembered one fills in behind both.
+  launch_params.backend = parsed
+    .backend
+    .clone()
+    .or(identity_default.backend)
+    .unwrap_or_default();
 
   // Chosen server (a build/binary of a backend). Resolve it from the catalog
   // once — it drives the launch binary below and, when the backend is still
@@ -384,13 +405,18 @@ pub(crate) async fn compose_and_spawn(
   // pick subsumes backend selection. An unknown id was already rejected before
   // the port reservation; the only `None` that reaches here is the empty-catalog
   // startup race, which falls back to the default binary.
-  launch_params.server = parsed.server.clone();
+  launch_params.server = parsed.server.clone().or(identity_default.server);
   let picked_server: Option<crate::backend::Server> = match &launch_params.server {
     Some(server_id) => {
       let servers = env.servers.read().await;
       let found = servers.iter().find(|s| &s.id == server_id).cloned();
       if found.is_none() {
-        log::warn!("server {server_id:?} not in catalog yet; using default binary");
+        // A typed `--server` was already rejected up front. Reaching here
+        // means the id came from a preset or a remembered launch and the
+        // build is gone (rebuilt llama.cpp, moved machine) — warn and take
+        // the default rather than failing a launch the user did not pin.
+        log::warn!("server {server_id:?} not in catalog; using the default binary");
+        launch_params.server = None;
       }
       found
     }
@@ -1208,6 +1234,57 @@ fn knobs_for_persist(
   out.retain_ids(|id| !auto_set.contains(id.as_str()) && !volatile.contains(&id.as_str()));
   out
 }
+
+/// Launch identity carried over from the model's configured default preset or
+/// its last successful launch. Empty unless the caller made no selection.
+#[derive(Default)]
+struct InheritedIdentity {
+  backend: Option<crate::launch::params::BackendChoice>,
+  server: Option<String>,
+}
+
+/// The backend / server a no-selection launch should reuse.
+///
+/// Precedence matches every other inherited field: the model's `default:`
+/// preset outranks its last successful launch. Returns empties when neither
+/// pins anything, which leaves the identity rule and the priority-default
+/// build in charge exactly as before.
+async fn inherited_launch_identity(
+  ctx: &MethodContext,
+  parsed: &StartParams,
+  identity: &crate::backend::identity::ModelIdentity,
+  arch: Option<&str>,
+) -> InheritedIdentity {
+  let from_preset = {
+    let store = ctx.presets.snapshot().await;
+    let rows = crate::ipc::methods::catalog_rows(ctx).await;
+    let key = crate::util::paths::path_basename(&parsed.model_path);
+    let path_str = parsed.model_path.display().to_string();
+    crate::launch::presets::effective_presets(&key, &path_str, arch, &store, &rows)
+      .default_preset()
+      .map(|np| (np.params.backend.clone(), np.params.server.clone()))
+  };
+  let from_last = {
+    let snap = ctx.state.snapshot().await;
+    snap
+      .last_params
+      .iter()
+      .find(|e| &e.id == identity)
+      .map(|e| (e.params.backend.clone(), e.params.server.clone()))
+  };
+
+  let pick = |f: fn(&(crate::launch::params::BackendChoice, Option<String>)) -> bool| {
+    from_preset
+      .as_ref()
+      .filter(|v| f(v))
+      .or(from_last.as_ref().filter(|v| f(v)))
+  };
+  InheritedIdentity {
+    backend: pick(|(b, _)| b.explicit_id().is_some()).map(|(b, _)| b.clone()),
+    server: pick(|(_, s)| s.is_some()).and_then(|(_, s)| s.clone()),
+  }
+}
+
 
 /// Human-readable admission refusal: the effective free (post-headroom),
 /// what other launches hold, this launch's projected demand, and the
