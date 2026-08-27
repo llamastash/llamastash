@@ -211,6 +211,10 @@ pub enum Command {
   Doctor(DoctorArgs),
   /// Mark, unmark, and list favorite models.
   Favorites(FavoritesArgs),
+  /// List every tunable each backend declares, with its flag, value shape and
+  /// `auto` behaviour. The discovery surface behind `start --help`'s flags —
+  /// needs no daemon, and `--json` gives an agent the whole tuning space.
+  Knobs(KnobsArgs),
   /// List and download the best-fit model for this hardware. Shortcut for
   /// `init --only models` that lets users grab a
   /// recommended GGUF without walking through the full first-run
@@ -496,6 +500,17 @@ fn parse_backend_id(s: &str) -> Result<String, String> {
 fn parse_mtp_enable(s: &str) -> Result<crate::launch::params::MtpEnable, String> {
   crate::launch::params::MtpEnable::from_token(s)
     .ok_or_else(|| format!("invalid --mtp value `{s}`; expected auto, on, or off"))
+}
+
+#[derive(Args, Debug)]
+pub struct KnobsArgs {
+  /// Show only this backend's knobs. Omit for every compiled-in backend.
+  #[arg(long, value_parser = parse_backend_id)]
+  pub backend: Option<String>,
+  /// Emit JSON instead of the table. Stable shape:
+  /// `{"backends": [{"backend", "knobs": [{"id", "flag", "kind", …}]}]}`.
+  #[arg(long)]
+  pub json: bool,
 }
 
 #[derive(Args, Debug)]
