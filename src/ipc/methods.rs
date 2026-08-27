@@ -678,6 +678,13 @@ struct PresetsSaveParams {
   mtp: crate::launch::params::MtpEnable,
   #[serde(default)]
   mtp_draft_n: Option<u32>,
+  /// Backend this preset pins. Launch *identity*, not a knob — it decides
+  /// which backend's knobs apply at all, so it cannot be backend-declared.
+  #[serde(default)]
+  backend: Option<String>,
+  /// Server (build/binary) this preset pins. Identity, like `backend`.
+  #[serde(default)]
+  server: Option<String>,
 }
 
 async fn presets_save_handler(
@@ -707,6 +714,14 @@ async fn presets_save_handler(
   // so a preset could never pin speculation on or off.
   lp.mtp = parsed.mtp;
   lp.mtp_draft_n = parsed.mtp_draft_n;
+  // Identity: which backend and which of its builds this preset pins. Stored
+  // verbatim so a saved preset can reproduce the run it was captured from.
+  lp.backend = parsed
+    .backend
+    .as_deref()
+    .map(crate::launch::params::BackendChoice::from_id)
+    .unwrap_or_default();
+  lp.server = parsed.server.clone();
   lp.extras = parsed.extras.into_iter().map(OsString::from).collect();
   let body = preset_body_from_launch_params(&lp);
 

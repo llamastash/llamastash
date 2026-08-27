@@ -496,8 +496,14 @@ async fn presets_save_list_delete_round_trip() {
     Command::Presets(PresetsArgs {
       model: "m.gguf".into(),
       action: PresetsAction::Save {
+        knobs: Default::default(),
+        backend: None,
+        server: None,
+        mtp: None,
+        mtp_draft_n: None,
+        from_last: false,
         name: "long-ctx".into(),
-        ctx: Some(32768),
+        ctx: Some(llamastash::cli::cli_args::CtxArg::Value(32768)),
         reasoning: Some(ReasoningFlag::On),
         mode: Some(CliLaunchMode::Chat),
         extra: vec![OsString::from("--threads"), OsString::from("4")],
@@ -679,8 +685,14 @@ async fn presets_list_json_emits_array_for_agents() {
     Command::Presets(PresetsArgs {
       model: "m.gguf".into(),
       action: PresetsAction::Save {
+        knobs: Default::default(),
+        backend: None,
+        server: None,
+        mtp: None,
+        mtp_draft_n: None,
+        from_last: false,
         name: "coding".into(),
-        ctx: Some(32768),
+        ctx: Some(llamastash::cli::cli_args::CtxArg::Value(32768)),
         reasoning: Some(ReasoningFlag::On),
         mode: Some(CliLaunchMode::Chat),
         extra: vec![],
@@ -728,8 +740,14 @@ async fn start_preset_chain_seeds_supervisor_with_saved_params() {
     Command::Presets(PresetsArgs {
       model: "m.gguf".into(),
       action: PresetsAction::Save {
+        knobs: Default::default(),
+        backend: None,
+        server: None,
+        mtp: None,
+        mtp_draft_n: None,
+        from_last: false,
         name: "coding".into(),
-        ctx: Some(16384),
+        ctx: Some(llamastash::cli::cli_args::CtxArg::Value(16384)),
         reasoning: Some(ReasoningFlag::On),
         mode: Some(CliLaunchMode::Chat),
         extra: vec![OsString::from("--threads"), OsString::from("8")],

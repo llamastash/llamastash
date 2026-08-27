@@ -589,14 +589,44 @@ pub enum PresetsAction {
     json: bool,
   },
   /// Save the current/passed launch params under `name`.
+  ///
+  /// Takes the **same** knob flags as `start`, generated from the same
+  /// registry, so anything you can launch with you can also save. Before that
+  /// the two surfaces diverged: `start` had first-class flags for every knob
+  /// while `save` accepted only ctx / reasoning / mode.
   Save {
     name: String,
-    #[arg(long, value_name = "TOKENS")]
-    ctx: Option<u32>,
+    /// Context length. A token count pins it; the literal `auto` delegates the
+    /// window to the engine's fitter.
+    #[arg(long, value_name = "TOKENS|auto", value_parser = parse_ctx_arg)]
+    ctx: Option<CtxArg>,
     #[arg(long, value_enum)]
     reasoning: Option<ReasoningFlag>,
     #[arg(long, value_enum)]
     mode: Option<LaunchMode>,
+    /// Backend this preset pins. `auto` (default) leaves the identity rule in
+    /// charge. Launch identity, so it is stored, not translated.
+    #[arg(long, value_parser = parse_backend_id)]
+    backend: Option<String>,
+    /// Server (a build/binary of a backend) this preset pins. Ids come from
+    /// `status` (`servers`).
+    #[arg(long)]
+    server: Option<String>,
+    /// MTP speculative decoding: `auto` (default), `on`, or `off`.
+    #[arg(long, value_name = "auto|on|off", value_parser = parse_mtp_enable)]
+    mtp: Option<crate::launch::params::MtpEnable>,
+    /// Tokens drafted per speculation step.
+    #[arg(long, value_name = "N")]
+    mtp_draft_n: Option<u32>,
+    /// Snapshot the model's last successful launch instead of building the
+    /// preset from flags — the "save what I just ran" gesture the TUI has had
+    /// as `Ctrl+P` all along. Flags layer on top of the snapshot.
+    #[arg(long)]
+    from_last: bool,
+    /// Advanced launch params, generated from the knob registry — the same
+    /// flag set `start` accepts.
+    #[command(flatten)]
+    knobs: crate::cli::knob_flags::KnobFlags,
     #[arg(last = true, value_name = "ARG")]
     extra: Vec<OsString>,
     /// Emit JSON. `{ "action": "save", "name": "...", "replaced":
@@ -2167,7 +2197,7 @@ mod tests {
             name, ctx, extra, ..
           } => {
             assert_eq!(name, "long-ctx");
-            assert_eq!(ctx, Some(131_072));
+            assert_eq!(ctx, Some(CtxArg::Value(131_072)));
             assert_eq!(extra, vec![OsString::from("--flash-attn")]);
           }
           other => panic!("expected Save, got {other:?}"),
@@ -2279,7 +2309,7 @@ mod tests {
     let cli = parse(&["presets", "qwen-coder", "save", "pinned", "--ctx", "32768"]);
     match cli.command {
       Some(Command::Presets(args)) => match args.action {
-        PresetsAction::Save { ctx, .. } => assert_eq!(ctx, Some(32_768)),
+        PresetsAction::Save { ctx, .. } => assert_eq!(ctx, Some(CtxArg::Value(32_768))),
         other => panic!("expected Save, got {other:?}"),
       },
       other => panic!("expected Presets, got {other:?}"),
