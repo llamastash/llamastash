@@ -17,7 +17,8 @@
 //! concept; the V concept has no vLLM counterpart, so a `cache-type-v` value
 //! does not carry into a vLLM launch and is reported as dropped.
 
-use crate::launch::knobs::{AutoKind, Concept, Emit, Group, KnobDef, KnobKind, Shape};
+use crate::launch::knobs::def::CTX_LADDER;
+use crate::launch::knobs::{AutoKind, Concept, Emit, Group, KnobDef, KnobKind, Ring, Shape};
 use crate::launch::params::LayerLabel;
 
 pub const KNOBS: &[KnobDef] = &[
@@ -35,6 +36,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ModelDefault,
     emit: Emit::FlagValue,
+    ring: Ring::UpToTrainedContext(CTX_LADDER),
   },
   KnobDef {
     id: "kv-cache-memory-bytes",
@@ -49,6 +51,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::None,
   },
   KnobDef {
     id: "gpu-memory-utilization",
@@ -65,6 +68,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::Fixed(&["0.5", "0.7", "0.8", "0.9", "0.95"]),
   },
   KnobDef {
     id: "max-num-seqs",
@@ -78,6 +82,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::Fixed(&["1", "8", "16", "32", "64", "128", "256"]),
   },
   KnobDef {
     id: "tensor-parallel-size",
@@ -91,6 +96,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::Fixed(&["1", "2", "4", "8"]),
   },
   KnobDef {
     id: "dtype",
@@ -106,6 +112,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::None,
   },
   KnobDef {
     id: "kv-cache-dtype",
@@ -122,6 +129,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::None,
   },
   KnobDef {
     id: "quantization",
@@ -138,6 +146,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::None,
   },
   KnobDef {
     id: "enforce-eager",
@@ -151,6 +160,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::BareFlagWhenTrue,
+    ring: Ring::None,
   },
   KnobDef {
     id: "trust-remote-code",
@@ -164,5 +174,6 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::BareFlagWhenTrue,
+    ring: Ring::None,
   },
 ];

@@ -12,7 +12,8 @@
 //!
 //! [`KnobSet`]: crate::launch::knobs::KnobSet
 
-use crate::launch::knobs::{AutoKind, Concept, Emit, Group, KnobDef, KnobKind};
+use crate::launch::knobs::def::CTX_LADDER;
+use crate::launch::knobs::{AutoKind, Concept, Emit, Group, KnobDef, KnobKind, Ring};
 use crate::launch::params::LayerLabel;
 
 pub const KNOBS: &[KnobDef] = &[KnobDef {
@@ -29,4 +30,5 @@ pub const KNOBS: &[KnobDef] = &[KnobDef {
   aliases: &["-c", "ctx"],
   fallback: LayerLabel::ModelDefault,
   emit: Emit::Custom,
+  ring: Ring::UpToTrainedContext(CTX_LADDER),
 }];

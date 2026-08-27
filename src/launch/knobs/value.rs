@@ -227,8 +227,8 @@ impl KnobSet {
       log::warn!("no knob `{name}` for backend `{backend_id}`; ignoring");
       return false;
     };
-    let Some(def) = super::registry::def_for_backend(backend_id, id)
-      .or_else(|| super::registry::def_for(id))
+    let Some(def) =
+      super::registry::def_for_backend(backend_id, id).or_else(|| super::registry::def_for(id))
     else {
       return false;
     };
@@ -257,7 +257,10 @@ impl KnobSet {
 
   /// [`Self::is_set_by_name`] scoped to one backend's vocabulary.
   pub fn is_set_by_name_for(&self, backend_id: &str, name: &str) -> bool {
-    matches!(self.get_by_name_for(backend_id, name), Some(KnobValue::Set(_)))
+    matches!(
+      self.get_by_name_for(backend_id, name),
+      Some(KnobValue::Set(_))
+    )
   }
 
   /// [`Self::remove_by_name`] scoped to one backend's vocabulary.
@@ -518,7 +521,11 @@ pub fn parse_value(def: &KnobDef, raw: &str) -> Result<KnobValue, ParseError> {
     }
     KnobKind::Ratio => {
       let parts: Vec<&str> = raw.split(',').map(str::trim).collect();
-      if parts.is_empty() || parts.iter().any(|p| p.is_empty() || p.parse::<f32>().is_err()) {
+      if parts.is_empty()
+        || parts
+          .iter()
+          .any(|p| p.is_empty() || p.parse::<f32>().is_err())
+      {
         return Err(ParseError::NotARatio {
           id,
           value: raw.to_string(),
@@ -534,7 +541,7 @@ pub fn parse_value(def: &KnobDef, raw: &str) -> Result<KnobValue, ParseError> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::launch::knobs::def::{AutoKind, Emit, Group};
+  use crate::launch::knobs::def::{AutoKind, Emit, Group, Ring};
 
   fn def(kind: KnobKind, auto: Option<AutoKind>) -> KnobDef {
     KnobDef {
@@ -549,6 +556,7 @@ mod tests {
       aliases: &[],
       fallback: crate::launch::params::LayerLabel::ServerDefault,
       emit: Emit::FlagValue,
+      ring: Ring::None,
     }
   }
 

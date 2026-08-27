@@ -8,7 +8,8 @@
 //! Order is the canonical emission order: argv diffs stay readable across
 //! releases, and the editor renders rows in this order within each group.
 
-use crate::launch::knobs::{AutoKind, Concept, Emit, Group, KnobDef, KnobKind, Shape};
+use crate::launch::knobs::def::CTX_LADDER;
+use crate::launch::knobs::{AutoKind, Concept, Emit, Group, KnobDef, KnobKind, Ring, Shape};
 use crate::launch::params::LayerLabel;
 
 /// Ceiling llamastash accepts for a context window, mirroring the daemon's
@@ -41,6 +42,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &["-c", "ctx"],
     fallback: LayerLabel::ModelDefault,
     emit: Emit::Custom,
+    ring: Ring::UpToTrainedContext(CTX_LADDER),
   },
   KnobDef {
     id: "reasoning",
@@ -54,6 +56,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ModelDefault,
     emit: Emit::Custom,
+    ring: Ring::None,
   },
   KnobDef {
     id: "n-gpu-layers",
@@ -67,6 +70,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &["-ngl"],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::Fixed(&["0", "16", "32", "64", "99"]),
   },
   KnobDef {
     id: "n-cpu-moe",
@@ -80,6 +84,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &["-ncmoe"],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::Fixed(&["0", "4", "8", "16", "32", "64"]),
   },
   KnobDef {
     id: "device",
@@ -93,6 +98,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &["-d"],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::Custom,
+    ring: Ring::DeviceCheckbox,
   },
   KnobDef {
     id: "tensor-split",
@@ -106,6 +112,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &["-ts"],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::None,
   },
   KnobDef {
     id: "main-gpu",
@@ -119,6 +126,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &["-mg"],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::DeviceIndex,
   },
   KnobDef {
     id: "split-mode",
@@ -134,6 +142,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &["-sm"],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::None,
   },
   KnobDef {
     id: "threads",
@@ -147,6 +156,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &["-t"],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::Fixed(&["1", "2", "4", "6", "8", "12", "16", "24"]),
   },
   KnobDef {
     id: "cache-type-k",
@@ -163,6 +173,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &["-ctk"],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::None,
   },
   KnobDef {
     id: "cache-type-v",
@@ -179,6 +190,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &["-ctv"],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::None,
   },
   KnobDef {
     id: "parallel",
@@ -192,6 +204,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &["-np"],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::Fixed(&["1", "2", "4", "8", "16"]),
   },
   KnobDef {
     id: "flash-attn",
@@ -207,6 +220,7 @@ pub const KNOBS: &[KnobDef] = &[
     // Modern llama-server (b9000+) rejects the bare flag and parses the next
     // argv entry as this flag's value.
     emit: Emit::FlagOnOff,
+    ring: Ring::None,
   },
   KnobDef {
     id: "mlock",
@@ -220,6 +234,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::BareFlagWhenTrue,
+    ring: Ring::None,
   },
   KnobDef {
     id: "no-mmap",
@@ -233,6 +248,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::BareFlagWhenTrue,
+    ring: Ring::None,
   },
   KnobDef {
     id: "batch-size",
@@ -246,6 +262,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &["-b"],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::Fixed(&["256", "512", "1024", "2048", "4096"]),
   },
   KnobDef {
     id: "ubatch-size",
@@ -259,6 +276,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &["-ub"],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::Fixed(&["128", "256", "512", "1024"]),
   },
   KnobDef {
     id: "rope-freq-scale",
@@ -275,6 +293,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::Fixed(&["0.5", "1.0", "2.0", "4.0"]),
   },
   KnobDef {
     id: "keep",
@@ -288,6 +307,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::Fixed(&["0", "64", "128", "256", "512", "1024"]),
   },
   KnobDef {
     id: "mode",
@@ -301,6 +321,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ModelDefault,
     emit: Emit::Custom,
+    ring: Ring::None,
   },
   // Speculation. The enable is a three-state knob whose `auto` means "on when
   // the model carries a draft head" — a per-model runtime property, not a
@@ -319,6 +340,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::Custom,
+    ring: Ring::None,
   },
   KnobDef {
     id: "mtp-draft-n",
@@ -332,5 +354,6 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::Fixed(&["1", "2", "3", "4"]),
   },
 ];

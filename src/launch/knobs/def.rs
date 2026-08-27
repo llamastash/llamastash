@@ -126,11 +126,13 @@ impl Shape {
 }
 
 impl KnobKind {
-  /// Whether a surface should open a text input for this knob. Bool and the
-  /// closed rings are cycled instead, so offering an editor on them would be a
-  /// dead affordance.
+  /// Whether a surface should open a text input for this knob. Only a bool is
+  /// excluded: it has exactly two states, so typing one is strictly worse than
+  /// toggling it, and the editor chip would be a dead affordance. Everything
+  /// else — a closed ring included — accepts a typed value, validated on
+  /// commit by [`super::parse_value`].
   pub fn is_editable(self) -> bool {
-    !matches!(self, KnobKind::Bool | KnobKind::Enum { .. })
+    !matches!(self, KnobKind::Bool)
   }
 
   /// The ring a surface cycles for this knob; empty when it has none.
@@ -191,6 +193,43 @@ pub enum Emit {
   Custom,
 }
 
+/// What `←`/`→` cycles on this knob's editor row.
+///
+/// The ring is part of the *declaration* because the editor is generated from
+/// it: a knob whose backend forgot to say how it cycles would render a dead
+/// row, which is exactly the drift the registry exists to make impossible.
+/// Three variants resolve against runtime state the declaration cannot know
+/// — offering a stop the host or model cannot honor is offering a launch that
+/// fails.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ring {
+  /// Nothing to cycle. Free-form values are `e`-edited instead, and an
+  /// [`KnobKind::Enum`] / [`KnobKind::OpenEnum`] cycles its declared
+  /// `choices` — restating those here would be a second source for one fact.
+  None,
+  /// A fixed ladder of stops, ascending.
+  Fixed(&'static [&'static str]),
+  /// A fixed ladder trimmed to the window the *model* was trained for.
+  UpToTrainedContext(&'static [&'static str]),
+  /// `0 .. N-1` over the devices actually in play. A fixed ladder would offer
+  /// GPU indices a smaller host does not have.
+  DeviceIndex,
+  /// Not a value ring: `←`/`→` walks the host's devices and `Space` toggles
+  /// each in or out of the selection.
+  DeviceCheckbox,
+}
+
+/// A runtime condition that has to hold for a [`Group`]'s rows to be worth
+/// showing at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupGate {
+  /// The host exposes more than one selectable device.
+  MultiDevice,
+  /// The model can actually speculate (an embedded draft head, or a drafter
+  /// sibling on disk).
+  SpeculationCapable,
+}
+
 /// Where a knob sits in the editor, and the `--help` heading it groups under.
 /// Ordered by how often a typical user touches it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -219,9 +258,15 @@ impl Group {
     }
   }
 
-  /// Rows only worth showing on a host with more than one selectable device.
-  pub fn multi_device_only(self) -> bool {
-    matches!(self, Group::MultiGpu)
+  /// What has to be true for this group's rows to be shown, or `None` when
+  /// they always are. Evaluated generically by the editor, so a group can gain
+  /// a gate without the editor learning anything about it.
+  pub fn gate(self) -> Option<GroupGate> {
+    match self {
+      Group::MultiGpu => Some(GroupGate::MultiDevice),
+      Group::Speculation => Some(GroupGate::SpeculationCapable),
+      _ => None,
+    }
   }
 
   /// Render / navigation order.
@@ -238,6 +283,14 @@ impl Group {
     ]
   }
 }
+
+/// Context-window quick picks, doubling up to the launcher's own ceiling
+/// (`MAX_CTX_TOKENS` = 1 Mi). Declared once here because more than one backend
+/// offers the same ladder; each trims it to the model's trained window through
+/// [`Ring::UpToTrainedContext`].
+pub const CTX_LADDER: &[&str] = &[
+  "2048", "4096", "8192", "16384", "32768", "65536", "131072", "262144", "524288", "1048576",
+];
 
 /// One tunable, as declared by the backend that owns it.
 ///
@@ -268,6 +321,8 @@ pub struct KnobDef {
   /// Extra accepted spellings (`-ngl`, `-c`). Recognised on input; never emitted.
   pub aliases: &'static [&'static str],
   pub emit: Emit,
+  /// How the editor cycles this knob. See [`Ring`].
+  pub ring: Ring,
   /// Where the value comes from when *no* layer supplies one, which is what
   /// the editor renders as the origin chip. `ModelDefault` for knobs the
   /// engine reads out of the model file when the flag is omitted (context
@@ -304,5 +359,20 @@ impl KnobDef {
   /// the layer-less seeding rule may seed to `Auto`.
   pub fn is_fit_delegated(&self) -> bool {
     matches!(self.auto, Some(AutoKind::Delegate))
+  }
+
+  /// The declared ring, with a closed-choice knob's `choices` standing in for
+  /// [`Ring::None`]. Lets a surface ask one question instead of two.
+  pub fn ring(&self) -> Ring {
+    match self.ring {
+      Ring::None if !self.kind.choices().is_empty() => Ring::Fixed(self.kind.choices()),
+      other => other,
+    }
+  }
+
+  /// Whether a surface should open a text input on this knob. A ring and a
+  /// text input coexist — cycling is the quick path, typing the exact one.
+  pub fn is_editable(&self) -> bool {
+    self.kind.is_editable()
   }
 }

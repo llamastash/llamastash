@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use super::def::{Concept, KnobDef, KnobId};
+use super::def::{Concept, Group, KnobDef, KnobId};
 use crate::backend::{Backend, Backends};
 
 /// Every knob every compiled-in backend declares, in a stable order:
@@ -174,6 +174,24 @@ pub fn by_backend() -> Vec<(&'static str, &'static [KnobDef])> {
     .collect()
 }
 
+/// One backend's knobs bucketed for the editor: [`Group::all`] order across
+/// buckets, declaration order within one. Empty groups are dropped, so a
+/// caller renders a header only where rows follow it.
+///
+/// This is what makes the editor generated rather than hand-listed — the row
+/// order is a consequence of the declarations, not a second table that has to
+/// be kept in step with them.
+pub fn grouped_for_backend(backend_id: &str) -> Vec<(Group, Vec<&'static KnobDef>)> {
+  let defs = for_backend(backend_id);
+  Group::all()
+    .iter()
+    .filter_map(|g| {
+      let rows: Vec<&'static KnobDef> = defs.iter().filter(|d| d.group == *g).collect();
+      (!rows.is_empty()).then_some((*g, rows))
+    })
+    .collect()
+}
+
 /// A registry inconsistency. These are programmer errors in a backend's
 /// declaration, caught by a test rather than at runtime — a shipped binary
 /// cannot have a malformed registry because the test gates the build.
@@ -202,6 +220,13 @@ pub enum RegistryError {
     flag: String,
     reason: &'static str,
   },
+  /// A declared cycle stop the knob's own kind rejects. The editor would offer
+  /// it and the commit would then refuse it — a dead stop the user can land on
+  /// but not keep.
+  UnparsableRingStop {
+    id: &'static str,
+    stop: &'static str,
+  },
 }
 
 impl std::fmt::Display for RegistryError {
@@ -218,6 +243,10 @@ impl std::fmt::Display for RegistryError {
       RegistryError::MalformedId { id } => {
         write!(f, "knob id `{id}` is not a valid flag / config key")
       }
+      RegistryError::UnparsableRingStop { id, stop } => write!(
+        f,
+        "knob `{id}` offers the cycle stop `{stop}`, which its own kind rejects"
+      ),
       RegistryError::ReservedFlag { id, flag, reason } => {
         write!(f, "knob `{id}` claims `{flag}`, which {reason}")
       }
@@ -283,6 +312,17 @@ pub fn validate() -> Vec<RegistryError> {
         flag,
         reason: "the loopback / credential denylist refuses",
       });
+    }
+
+    // A stop the editor can land on but the commit refuses is a dead row.
+    let stops: &[&'static str] = match def.ring {
+      super::def::Ring::Fixed(r) | super::def::Ring::UpToTrainedContext(r) => r,
+      _ => &[],
+    };
+    for stop in stops {
+      if super::value::parse_value(def, stop).is_err() {
+        errors.push(RegistryError::UnparsableRingStop { id: def.id, stop });
+      }
     }
 
     match kinds.get(def.id) {

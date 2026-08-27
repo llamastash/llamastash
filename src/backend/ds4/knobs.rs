@@ -20,7 +20,8 @@
 //! Numeric knobs that used to be free-text strings are typed here, so a bad
 //! value is refused at parse time instead of after a multi-minute model load.
 
-use crate::launch::knobs::{AutoKind, Concept, Emit, Group, KnobDef, KnobKind};
+use crate::launch::knobs::def::CTX_LADDER;
+use crate::launch::knobs::{AutoKind, Concept, Emit, Group, KnobDef, KnobKind, Ring};
 use crate::launch::params::LayerLabel;
 
 pub const KNOBS: &[KnobDef] = &[
@@ -38,6 +39,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &["-c"],
     fallback: LayerLabel::ModelDefault,
     emit: Emit::FlagValue,
+    ring: Ring::UpToTrainedContext(CTX_LADDER),
   },
   KnobDef {
     id: "power",
@@ -51,6 +53,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::Fixed(&["25", "50", "75", "100"]),
   },
   KnobDef {
     id: "tokens",
@@ -64,6 +67,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::None,
   },
   KnobDef {
     id: "threads",
@@ -77,6 +81,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &["-t"],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::Fixed(&["1", "2", "4", "6", "8", "12", "16", "24"]),
   },
   KnobDef {
     id: "kv-disk-dir",
@@ -90,6 +95,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::None,
   },
   KnobDef {
     id: "kv-disk-space-mb",
@@ -103,6 +109,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::None,
   },
   KnobDef {
     id: "ssd-streaming",
@@ -118,6 +125,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::BareFlagWhenTrue,
+    ring: Ring::None,
   },
   KnobDef {
     id: "ssd-streaming-cache-experts",
@@ -133,6 +141,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::None,
   },
   KnobDef {
     id: "ssd-streaming-preload-experts",
@@ -146,6 +155,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::None,
   },
   KnobDef {
     id: "ssd-streaming-cold",
@@ -159,6 +169,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::BareFlagWhenTrue,
+    ring: Ring::None,
   },
   KnobDef {
     id: "warm-weights",
@@ -172,6 +183,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::BareFlagWhenTrue,
+    ring: Ring::None,
   },
   KnobDef {
     id: "quality",
@@ -185,6 +197,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::BareFlagWhenTrue,
+    ring: Ring::None,
   },
   // Speculation. `mtp` is the neutral enable every backend honours; the rest
   // are ds4's own dials.
@@ -200,6 +213,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::Custom,
+    ring: Ring::None,
   },
   KnobDef {
     id: "mtp-model",
@@ -213,6 +227,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::None,
   },
   KnobDef {
     id: "mtp-draft-n",
@@ -226,6 +241,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::Fixed(&["1", "2", "3", "4"]),
   },
   KnobDef {
     id: "mtp-margin",
@@ -242,6 +258,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::None,
   },
   KnobDef {
     id: "dspark",
@@ -255,6 +272,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::BareFlagWhenTrue,
+    ring: Ring::None,
   },
   KnobDef {
     id: "dspark-confidence",
@@ -271,6 +289,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
+    ring: Ring::None,
   },
   KnobDef {
     id: "dspark-strict",
@@ -284,5 +303,6 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::BareFlagWhenTrue,
+    ring: Ring::None,
   },
 ];

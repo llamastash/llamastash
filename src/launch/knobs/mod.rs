@@ -33,7 +33,7 @@ pub mod resolve;
 pub mod serde_impl;
 pub mod value;
 
-pub use def::{AutoKind, Concept, Emit, Group, KnobDef, KnobId, KnobKind, Shape};
+pub use def::{AutoKind, Concept, Emit, Group, GroupGate, KnobDef, KnobId, KnobKind, Ring, Shape};
 
 /// Resolve a knob name to its id, panicking when no backend declares it.
 ///
@@ -43,11 +43,11 @@ pub use def::{AutoKind, Concept, Emit, Group, KnobDef, KnobId, KnobKind, Shape};
 pub fn kid(name: &str) -> KnobId {
   resolve_id(name).unwrap_or_else(|| panic!("no knob declared for `{name}`"))
 }
+pub use emit::emit_argv;
 pub use registry::{
   def_for, def_for_backend, def_for_backend_concept, distinct_ids, for_backend, resolve_id,
   resolve_id_for, RegistryError,
 };
-pub use emit::emit_argv;
 pub use resolve::{resolve_layered, seed_layerless, Resolved};
 pub use value::{parse_value, KnobSet, KnobValue, ParseError, Scalar, AUTO_TOKEN};
 
