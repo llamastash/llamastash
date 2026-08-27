@@ -31,7 +31,7 @@ pub struct LocateInputs {
 pub enum LocateError {
   /// None of the supplied sources pointed at a real, executable file
   /// and `which` found nothing on `$PATH`.
-  #[error("could not find `llama-server` (or the unified `llama` binary) — set `--llama-server <path>` or `LLAMASTASH_LLAMA_SERVER`, or add it to your $PATH")]
+  #[error("could not find {} — set `--llama-server <path>` or `LLAMASTASH_LLAMA_SERVER`, or add one to your $PATH", searched_names())]
   NotFound,
   /// A specific path was supplied (flag/env/config) but it doesn't
   /// exist or isn't a regular file. Distinct from `NotFound` so the
@@ -44,6 +44,18 @@ pub enum LocateError {
   /// a user-actionable message later.
   #[error("configured `llama-server` path is not executable: {p} — run `chmod +x {p}` or point `--llama-server` / `LLAMASTASH_LLAMA_SERVER` at the real binary", p = .0.display())]
   ExplicitPathNotExecutable(PathBuf),
+}
+
+/// The binary names the `$PATH` step searched, rendered for the not-found
+/// message. Read back from the same marker list the search itself walks, so a
+/// backend that adds or renames a distribution updates the error with it.
+fn searched_names() -> String {
+  crate::backend::default_backend()
+    .process_markers()
+    .iter()
+    .map(|n| format!("`{n}`"))
+    .collect::<Vec<_>>()
+    .join(" or ")
 }
 
 /// Resolve `llama-server`'s on-disk path. Returns the canonicalised
@@ -294,6 +306,14 @@ mod tests {
       ),
       Err(LocateError::NotFound) => {}
       Err(other) => panic!("unexpected error: {other:?}"),
+    }
+  }
+
+  #[test]
+  fn not_found_names_every_binary_the_search_actually_tried() {
+    let msg = LocateError::NotFound.to_string();
+    for marker in crate::backend::default_backend().process_markers() {
+      assert!(msg.contains(marker), "{marker} missing from: {msg}");
     }
   }
 }

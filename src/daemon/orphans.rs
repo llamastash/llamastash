@@ -101,7 +101,7 @@ pub struct SweepInputs<'a> {
   pub recorded_running: &'a [RunningSnapshot],
   /// Process basenames matched to detect backend-child invocations the daemon
   /// doesn't own. In production this is [`crate::backend::external_process_markers`]
-  /// (every backend's `process_marker`), so the sweep learns a new backend's
+  /// (every backend's `process_markers`), so the sweep learns a new backend's
   /// server from its registration alone; tests inject a unique substring so they
   /// don't trip on the real binaries.
   pub external_markers: Vec<&'static str>,
@@ -240,11 +240,15 @@ pub async fn sweep(inputs: SweepInputs<'_>) -> SweepReport {
       // basename — for `/usr/bin/llama-server` it is `llama-server`,
       // for `target/debug/llamastash` it is `llamastash`.
       let basename = proc.name().to_string_lossy();
-      if !inputs
+      let matched = inputs
         .external_markers
         .iter()
-        .any(|m| basename_matches_marker(&basename, m))
-      {
+        .find(|m| basename_matches_marker(&basename, m))?;
+      // A basename is not always the whole answer: a backend whose server is
+      // one mode of a multi-command binary gets to read the argv and disown the
+      // other modes. Asked through the registry, so the sweep still names no
+      // backend and no subcommand.
+      if !crate::backend::external_argv_is_server(matched, &cmd) {
         return None;
       }
       let model_path = extract_model_path(&cmd);

@@ -802,6 +802,16 @@ pub trait Backend {
     &[]
   }
 
+  /// Whether `argv` is a *server* invocation, for a process whose executable
+  /// basename already matched one of [`Backend::process_markers`]. Default
+  /// `true`: when the marker *is* the server binary, the basename settled it.
+  /// A backend whose server ships inside a multi-command binary overrides this
+  /// to read the subcommand, so the sweep doesn't report that binary's other
+  /// modes as unmanaged servers (and offer them as `stop` targets).
+  fn argv_is_server(&self, _argv: &[String]) -> bool {
+    true
+  }
+
   /// A backend-specific KV-cache byte model for `header`, or `None` to use the
   /// generic GQA/MLA estimate.
   ///
@@ -1229,6 +1239,10 @@ impl Backend for Backends {
     for_each_backend!(self, b => b.process_markers())
   }
 
+  fn argv_is_server(&self, argv: &[String]) -> bool {
+    for_each_backend!(self, b => b.argv_is_server(argv))
+  }
+
   fn accelerators(&self) -> AcceleratorSupport {
     for_each_backend!(self, b => b.accelerators())
   }
@@ -1495,6 +1509,17 @@ pub fn external_process_markers() -> Vec<&'static str> {
     .iter()
     .flat_map(|b| b.process_markers().iter().copied())
     .collect()
+}
+
+/// Whether a swept process is really a backend *server*, given the marker its
+/// basename matched and its full argv. Routes to the owning backend's
+/// [`Backend::argv_is_server`]; a marker no backend claims (tests inject their
+/// own) passes, leaving the basename match as the only gate.
+pub fn external_argv_is_server(marker: &str, argv: &[String]) -> bool {
+  Backends::all()
+    .iter()
+    .find(|b| b.process_markers().contains(&marker))
+    .is_none_or(|b| b.argv_is_server(argv))
 }
 
 /// The default backend instance — what a plain GGUF binds to and every

@@ -85,8 +85,8 @@ pub const LLAMA_ENV_STRIP: &[&str] = &[
 /// `llama-server` is the standalone server every release tarball still
 /// carries. `llama` is the unified app upstream added in May 2026: one binary
 /// that dispatches on a subcommand, and the only one the official installer at
-/// <https://llama.app> puts on `$PATH` — so a `winget` / `irm` install has no
-/// `llama-server` at all.
+/// <https://llama.app> puts on `$PATH` — so a host set up through that installer
+/// has no `llama-server` at all.
 pub const SERVER_BINARIES: &[&str] = &["llama-server", "llama"];
 
 /// The subcommand argv `binary` needs ahead of the server flags: `["serve"]`
@@ -339,6 +339,24 @@ impl Backend for LlamaCppBackend {
     SERVER_BINARIES
   }
 
+  /// The unified app is one binary for every mode, so a matched basename is not
+  /// yet a server: `llama cli` and `llama download` carry the same name. Require
+  /// the subcommand [`serve_prefix`] would have launched with, which leaves the
+  /// standalone binary (empty prefix) matching on its basename alone. An argv
+  /// the OS won't hand over falls back to the basename verdict rather than
+  /// dropping a process that may well be a server.
+  fn argv_is_server(&self, argv: &[String]) -> bool {
+    let Some(exe) = argv.first() else {
+      return true;
+    };
+    let expected = serve_prefix(Path::new(exe));
+    argv.len() > expected.len()
+      && expected
+        .iter()
+        .zip(argv[1..].iter())
+        .all(|(want, got)| got == want)
+  }
+
   fn serves_web_ui(&self) -> bool {
     // llama-server ships a stock browser web UI the proxy's `/ui` reverse-proxies.
     // The one backend that opts into the default-off `serves_web_ui`.
@@ -545,6 +563,54 @@ mod tests {
     assert_eq!(unified.argv, expected);
     // Same flags either way — the subcommand is the whole difference.
     assert_eq!(&unified.argv[1..], &compose(&p, 41100)[..]);
+  }
+
+  #[test]
+  fn only_the_unified_app_s_serve_mode_counts_as_a_server() {
+    let b = LlamaCppBackend::new();
+    let argv = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+    // The standalone binary has no other modes to confuse it with.
+    assert!(b.argv_is_server(&argv(&["/bin/llama-server", "--port", "8080"])));
+    assert!(b.argv_is_server(&argv(&["/bin/llama-server-vulkan", "-m", "a.gguf"])));
+
+    assert!(b.argv_is_server(&argv(&[
+      "/home/u/.local/bin/llama",
+      "serve",
+      "-m",
+      "a.gguf"
+    ])));
+    // The same binary in one of its other modes is not a server the daemon
+    // should list, adopt a port from, or accept as a `stop` target.
+    for other in [
+      vec!["/home/u/.local/bin/llama", "cli", "-m", "a.gguf"],
+      vec![
+        "/home/u/.local/bin/llama",
+        "download",
+        "ggml-org/gemma-3-1b",
+      ],
+      vec!["/home/u/.local/bin/llama", "--version"],
+      vec!["/home/u/.local/bin/llama"],
+    ] {
+      assert!(!b.argv_is_server(&argv(&other)), "{other:?}");
+    }
+
+    // No argv to read (a protected process): keep the basename verdict rather
+    // than dropping a real server.
+    assert!(b.argv_is_server(&[]));
+  }
+
+  #[test]
+  fn the_argv_gate_routes_through_the_registry_and_ignores_unknown_markers() {
+    let serve = ["/home/u/.local/bin/llama", "serve", "-m", "a.gguf"].map(String::from);
+    let cli = ["/home/u/.local/bin/llama", "cli"].map(String::from);
+    assert!(crate::backend::external_argv_is_server("llama", &serve));
+    assert!(!crate::backend::external_argv_is_server("llama", &cli));
+    // A marker no backend claims (what the sweep's own tests inject) passes.
+    assert!(crate::backend::external_argv_is_server(
+      "not-a-backend-marker",
+      &cli
+    ));
   }
 
   #[test]
