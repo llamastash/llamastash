@@ -1,15 +1,20 @@
 //! `llamastash start <model> -- <flags>` tail-args parser.
 //!
-//! Walks tokens left-to-right; flags recognised by
-//! [`crate::launch::flag_aliases::recognise`] land on typed knobs,
-//! everything else routes to `extras`. Typed-knob type/range errors
-//! return `USAGE` (64); unknown flags route silently.
+//! Walks tokens left-to-right. A flag any backend declares — by its canonical
+//! id, a declared alias (`-ngl`, `-c`), or a concept's neutral spelling — lands
+//! on that knob; everything else routes to `extras`. Type / range errors return
+//! `USAGE` (64); unrecognised flags route silently.
+//!
+//! Recognition reads the registry, not one backend's table. It used to read
+//! the default backend's alias list alone, so a knob any *other* backend
+//! declared had a generated `start` flag that parsed, appeared in `--help`, and
+//! then fell through to `extras` — reaching the engine as raw argv while
+//! skipping layering, persistence and presets entirely.
 
 use std::ffi::OsString;
 
 use crate::cli::exit_codes::{CliExit, USAGE};
-use crate::launch::flag_aliases::KnobField;
-use crate::launch::flag_aliases::{recognise, ValueKind};
+use crate::launch::knobs::{self, KnobDef, KnobKind};
 
 /// Walk `tokens` and split into (knobs, extras). Last-occurrence
 /// wins for repeated knob flags.
@@ -21,45 +26,43 @@ pub fn parse_tail_args(
   let mut iter = tokens.iter().peekable();
   while let Some(tok) = iter.next() {
     let lossy = tok.to_string_lossy().into_owned();
-    let recognised = recognise(&lossy).map(|r| {
-      // Detach the lifetime from `lossy` by copying the inline value
-      // into an owned `String`. Borrow checker won't let us keep
-      // `Recognised<'_>` alive across the `consume_value` call below.
-      (r.field, r.kind, r.inline_value.map(|s| s.to_string()))
-    });
-    match recognised {
-      Some((field, kind, inline)) => {
-        let value = match kind {
-          // Booleans default to `Some(true)` for a bare flag
-          // (`--flash-attn`). The equals-form (`--flash-attn=false`)
-          // is honoured so a user override actually disables a knob
-          // an inherited layer set to `true`. Space-form is consumed
-          // only when the next token is a recognised on/off spelling
-          // — modern llama-server's `--flash-attn` now requires
-          // `on|off|auto`, so we mirror that. Anything else stays
-          // unconsumed and routes through extras like before.
-          ValueKind::Bool => {
-            if let Some(v) = inline.clone() {
-              Some(v)
-            } else {
-              match iter
-                .peek()
-                .map(|t| t.to_string_lossy().to_ascii_lowercase())
-              {
-                Some(p) if is_bool_value_token(&p) || p == "auto" => {
-                  iter.next();
-                  Some(p)
-                }
-                _ => None,
-              }
-            }
+    let (head, inline) = match lossy.split_once('=') {
+      Some((h, v)) => (h.to_string(), Some(v.to_string())),
+      None => (lossy.clone(), None),
+    };
+    // Only a flag can name a knob. Without this a bare positional that happens
+    // to match a knob id (`threads`) would be swallowed instead of forwarded.
+    let Some(def) = head
+      .starts_with('-')
+      .then(|| knobs::resolve_id(&head).and_then(knobs::def_for))
+      .flatten()
+    else {
+      extras.push(tok.clone());
+      continue;
+    };
+    let value = match def.kind {
+      // Booleans default to `true` for a bare flag (`--flash-attn`). The
+      // equals-form (`--flash-attn=false`) is honoured so a user override
+      // actually disables a knob an inherited layer set to `true`. Space-form
+      // is consumed only when the next token is a recognised on/off spelling —
+      // modern llama-server's `--flash-attn` requires `on|off|auto`, so we
+      // mirror that. Anything else stays unconsumed and routes through extras.
+      KnobKind::Bool => match inline {
+        Some(v) => Some(v),
+        None => match iter
+          .peek()
+          .map(|t| t.to_string_lossy().to_ascii_lowercase())
+        {
+          Some(p) if is_bool_value_token(&p) || p == knobs::AUTO_TOKEN => {
+            iter.next();
+            Some(p)
           }
-          _ => Some(consume_value(&lossy, inline.as_deref(), &mut iter)?),
-        };
-        apply_knob(&mut knobs, field, kind, value.as_deref(), &lossy)?;
-      }
-      None => extras.push(tok.clone()),
-    }
+          _ => None,
+        },
+      },
+      _ => Some(consume_value(&lossy, inline.as_deref(), &mut iter)?),
+    };
+    apply_knob(&mut knobs, def, value.as_deref(), &lossy)?;
   }
   Ok((knobs, extras))
 }
@@ -105,44 +108,30 @@ where
 /// hand-maintained arm per knob.
 fn apply_knob(
   knobs: &mut crate::launch::knobs::KnobSet,
-  field: KnobField,
-  kind: ValueKind,
+  def: &'static KnobDef,
   value: Option<&str>,
   flag: &str,
 ) -> Result<(), CliExit> {
-  let Some(id) = crate::launch::knobs::resolve_id(field.field_name()) else {
-    return Ok(());
-  };
-  let Some(def) = crate::launch::knobs::def_for(id) else {
-    return Ok(());
-  };
+  let id = def.knob_id();
   // The `auto` literal sets the knob's Auto state, on any knob that has one.
   // For the string knobs where `auto` is also a legal upstream value, the knob
   // state wins; to pass a literal `auto` through, use the `--` extras tail.
-  if def.has_auto() && value.is_some_and(|v| v.eq_ignore_ascii_case("auto")) {
+  if def.has_auto() && value.is_some_and(|v| v.eq_ignore_ascii_case(knobs::AUTO_TOKEN)) {
     knobs.set_auto(id);
     return Ok(());
   }
-  let raw = match (kind, value) {
+  let raw = match (def.kind, value) {
     // A bare boolean flag means "on".
-    (ValueKind::Bool, None) => "true",
+    (KnobKind::Bool, None) => "true",
     (_, Some(v)) => v,
-    (_, None) => {
-      return Err(CliExit::new(
-        crate::cli::exit_codes::USAGE,
-        format!("{flag} needs a value"),
-      ))
-    }
+    (_, None) => return Err(CliExit::new(USAGE, format!("{flag} needs a value"))),
   };
-  match crate::launch::knobs::parse_value(def, raw) {
+  match knobs::parse_value(def, raw) {
     Ok(v) => {
       knobs.set(id, v);
       Ok(())
     }
-    Err(e) => Err(CliExit::new(
-      crate::cli::exit_codes::USAGE,
-      format!("{flag}: {e}"),
-    )),
+    Err(e) => Err(CliExit::new(USAGE, format!("{flag}: {e}"))),
   }
 }
 
@@ -454,5 +443,59 @@ mod tests {
       extras,
       vec![OsString::from("--rope-freq-base"), OsString::from("10000")]
     );
+  }
+  /// Recognition reads the registry, so a knob any backend declares lands on
+  /// the knob rather than in `extras`.
+  ///
+  /// It read the default backend's alias table alone before, so every knob
+  /// another backend declared had a generated `start` flag that parsed,
+  /// appeared in `--help`, and then fell through to the raw argv tail — no
+  /// layering, no persistence into `last_params`, and nothing for
+  /// `presets save` to record.
+  #[test]
+  fn a_knob_from_any_backend_lands_on_the_knob_not_in_extras() {
+    let home = crate::backend::DEFAULT_BACKEND_ID;
+    for (backend, def) in crate::launch::knobs::registry::iter() {
+      if backend == home {
+        continue;
+      }
+      let raw = match def.kind {
+        KnobKind::Bool => "true".to_string(),
+        KnobKind::U32 { .. } => "4".to_string(),
+        KnobKind::F32 { min, max } => {
+          let lo = min.unwrap_or(0.0);
+          format!("{}", max.map_or(lo + 1.0, |hi| (lo + hi) / 2.0))
+        }
+        KnobKind::Ratio => "3,1".to_string(),
+        KnobKind::Enum { choices } | KnobKind::OpenEnum { choices, .. } => choices[0].to_string(),
+        KnobKind::Str => "x".to_string(),
+      };
+      // The CLI spells a knob by its **id**, not by the flag the engine takes:
+      // two knobs may share an engine flag (a sidecar path and its on/off
+      // enable), and only the ids are unique.
+      let token = OsString::from(format!("--{}={raw}", def.id));
+      let (knobs, extras) = parse_tail_args(&[token]).expect("parse");
+      assert!(
+        extras.is_empty(),
+        "{backend}'s `{}` fell through to extras: {extras:?}",
+        def.id
+      );
+      // The id it lands on is its own, or a sibling carrying the same concept.
+      // At parse time the serving backend isn't known yet, so `--ctx` means
+      // "the context window" and stores under whichever knob declares that
+      // concept; `resolve_layered` re-keys it into the serving backend's own
+      // spelling at launch.
+      let stored: Vec<_> = knobs.iter().map(|(id, _)| id).collect();
+      let ok = stored.iter().any(|id| {
+        *id == def.knob_id()
+          || (def.concept.is_some()
+            && crate::launch::knobs::def_for(*id).and_then(|d| d.concept) == def.concept)
+      });
+      assert!(
+        ok,
+        "{backend}'s `{}` parsed but stored nothing that reaches it: {stored:?}",
+        def.id
+      );
+    }
   }
 }
