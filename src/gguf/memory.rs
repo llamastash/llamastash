@@ -49,7 +49,7 @@ macro_rules! cache_types {
 
     /// Standard llama-server cache types accepted by `--cache-type-k/v`
     /// and cycled in the TUI launch picker. Re-exported as
-    /// `crate::launch::flag_aliases::KV_CACHE_TYPES`. Values outside this
+    /// this list. Values outside it
     /// list still pass validation when they look like a custom quant
     /// identifier (see `crate::cli::tail_args::is_custom_kv_cache_type`),
     /// so modified llama-server builds are not blocked at this layer.

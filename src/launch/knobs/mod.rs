@@ -46,7 +46,7 @@ pub fn kid(name: &str) -> KnobId {
 pub use emit::emit_argv;
 pub use registry::{
   def_for, def_for_backend, def_for_backend_concept, distinct_ids, for_backend, resolve_id,
-  resolve_id_for, RegistryError,
+  resolve_id_for, volatile_ids, RegistryError,
 };
 pub use resolve::{resolve_layered, seed_layerless, Resolved};
 pub use value::{parse_value, KnobSet, KnobValue, ParseError, Scalar, AUTO_TOKEN};

@@ -323,6 +323,20 @@ pub struct KnobDef {
   pub emit: Emit,
   /// How the editor cycles this knob. See [`Ring`].
   pub ring: Ring,
+  /// Whether a user-set value must **not** be replayed from `last_params`.
+  ///
+  /// For a knob whose value is a judgement about *this host, right now* rather
+  /// than a lasting preference. Persisting one makes a single experiment
+  /// permanent: the user passes it once through a preset, and every later bare
+  /// launch silently inherits it — including, for a memory knob, the launch
+  /// where the automatic guard would have stepped in. The knob still applies to
+  /// the launch that asked for it, and whenever its preset is named again; it
+  /// is just not remembered on the user's behalf.
+  ///
+  /// Declared here rather than in a separate id list because the two drifted:
+  /// the list kept pre-registry spellings after the ids changed, so it matched
+  /// nothing and the guard silently stopped guarding.
+  pub volatile: bool,
   /// Where the value comes from when *no* layer supplies one, which is what
   /// the editor renders as the origin chip. `ModelDefault` for knobs the
   /// engine reads out of the model file when the flag is omitted (context

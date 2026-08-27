@@ -37,8 +37,15 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ModelDefault,
     emit: Emit::FlagValue,
     ring: Ring::UpToTrainedContext(CTX_LADDER),
+    volatile: false,
   },
   KnobDef {
+    // Volatile, like its sibling below: setting either switches the automatic
+    // cap off, so persisting one turns a single `--preset` experiment into a
+    // permanent opt-out of the guard. Measured: one preset launch at
+    // `gpu-memory-utilization 0.15`, and every bare `start` afterwards reserved
+    // 22 GB instead of the ~13 GB the cap would have allowed, with nothing on
+    // any surface saying why.
     id: "kv-cache-memory-bytes",
     flag: None,
     concept: None,
@@ -52,6 +59,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::None,
+    volatile: true,
   },
   KnobDef {
     id: "gpu-memory-utilization",
@@ -69,6 +77,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::Fixed(&["0.5", "0.7", "0.8", "0.9", "0.95"]),
+    volatile: true,
   },
   KnobDef {
     id: "max-num-seqs",
@@ -83,6 +92,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::Fixed(&["1", "8", "16", "32", "64", "128", "256"]),
+    volatile: false,
   },
   KnobDef {
     id: "tensor-parallel-size",
@@ -97,6 +107,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::Fixed(&["1", "2", "4", "8"]),
+    volatile: false,
   },
   KnobDef {
     id: "dtype",
@@ -113,6 +124,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::None,
+    volatile: false,
   },
   KnobDef {
     id: "kv-cache-dtype",
@@ -130,6 +142,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::None,
+    volatile: false,
   },
   KnobDef {
     id: "quantization",
@@ -147,6 +160,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::None,
+    volatile: false,
   },
   KnobDef {
     id: "enforce-eager",
@@ -161,6 +175,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::BareFlagWhenTrue,
     ring: Ring::None,
+    volatile: false,
   },
   KnobDef {
     id: "trust-remote-code",
@@ -175,5 +190,6 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::BareFlagWhenTrue,
     ring: Ring::None,
+    volatile: false,
   },
 ];

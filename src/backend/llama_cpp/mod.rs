@@ -6,7 +6,6 @@
 //!
 //! - argv ← `compose::compose` (llama.cpp's own emitter, the `compose` submodule)
 //! - identity ← [`crate::gguf::identity::compute`]
-//! - capabilities ← every [`crate::launch::flag_aliases`] knob
 //! - the env strip ← [`LLAMA_ENV_STRIP`] (moved here from the supervisor)
 //!
 //! The golden parity tests below pin `prepare_launch`'s argv to
@@ -27,8 +26,7 @@ use serde::{Deserialize, Serialize};
 
 use super::identity::ModelIdentity;
 use super::{
-  Accelerator, AcceleratorSupport, Backend, KnobCapability, LaunchPlan, Lifecycle,
-  ProcessLaunchSpec, Readiness,
+  Accelerator, AcceleratorSupport, Backend, LaunchPlan, Lifecycle, ProcessLaunchSpec, Readiness,
 };
 use crate::daemon::context::MethodContext;
 use crate::daemon::probe::ProbeOptions;
@@ -186,16 +184,12 @@ impl LlamaCppConfig {
 /// llama.cpp backend: direct, zero-overhead, fully-tuned. The product's
 /// reason to exist; never routed through a wrapper.
 #[derive(Debug, Clone)]
-pub struct LlamaCppBackend {
-  capabilities: KnobCapability,
-}
+pub struct LlamaCppBackend {}
 
 impl LlamaCppBackend {
   pub fn new() -> Self {
     // llama.cpp honors the full typed-knob vocabulary.
-    Self {
-      capabilities: KnobCapability::all(),
-    }
+    Self {}
   }
 }
 
@@ -248,10 +242,6 @@ impl Backend for LlamaCppBackend {
 
   fn lifecycle(&self) -> Lifecycle {
     Lifecycle::ProcessPerModel
-  }
-
-  fn capabilities(&self) -> &KnobCapability {
-    &self.capabilities
   }
 
   fn accelerators(&self) -> AcceleratorSupport {

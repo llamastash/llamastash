@@ -40,6 +40,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ModelDefault,
     emit: Emit::FlagValue,
     ring: Ring::UpToTrainedContext(CTX_LADDER),
+    volatile: false,
   },
   KnobDef {
     id: "power",
@@ -54,6 +55,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::Fixed(&["25", "50", "75", "100"]),
+    volatile: false,
   },
   KnobDef {
     id: "tokens",
@@ -68,6 +70,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::None,
+    volatile: false,
   },
   KnobDef {
     id: "threads",
@@ -82,6 +85,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::Fixed(&["1", "2", "4", "6", "8", "12", "16", "24"]),
+    volatile: false,
   },
   KnobDef {
     id: "kv-disk-dir",
@@ -96,6 +100,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::None,
+    volatile: false,
   },
   KnobDef {
     id: "kv-disk-space-mb",
@@ -110,6 +115,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::None,
+    volatile: false,
   },
   KnobDef {
     id: "ssd-streaming",
@@ -117,7 +123,7 @@ pub const KNOBS: &[KnobDef] = &[
     concept: None,
     kind: KnobKind::Bool,
     // Auto here means "decide at launch from residency vs. free memory", which
-    // `resolve_native_knobs` does. A user on/off always wins.
+    // `resolve_knobs` does. A user on/off always wins.
     auto: Some(AutoKind::Capability),
     group: Group::Memory,
     label: "SSD streaming",
@@ -126,6 +132,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::BareFlagWhenTrue,
     ring: Ring::None,
+    volatile: false,
   },
   KnobDef {
     id: "ssd-streaming-cache-experts",
@@ -142,6 +149,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::None,
+    volatile: false,
   },
   KnobDef {
     id: "ssd-streaming-preload-experts",
@@ -156,6 +164,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::None,
+    volatile: false,
   },
   KnobDef {
     id: "ssd-streaming-cold",
@@ -170,6 +179,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::BareFlagWhenTrue,
     ring: Ring::None,
+    volatile: false,
   },
   KnobDef {
     id: "warm-weights",
@@ -184,6 +194,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::BareFlagWhenTrue,
     ring: Ring::None,
+    volatile: false,
   },
   KnobDef {
     id: "quality",
@@ -198,6 +209,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::BareFlagWhenTrue,
     ring: Ring::None,
+    volatile: false,
   },
   // Speculation. `mtp` is the neutral enable every backend honours; the rest
   // are ds4's own dials.
@@ -214,6 +226,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::Custom,
     ring: Ring::None,
+    volatile: false,
   },
   KnobDef {
     id: "mtp-model",
@@ -228,6 +241,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::None,
+    volatile: false,
   },
   KnobDef {
     id: "mtp-draft-n",
@@ -242,6 +256,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::Fixed(&["1", "2", "3", "4"]),
+    volatile: false,
   },
   KnobDef {
     id: "mtp-margin",
@@ -259,6 +274,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::None,
+    volatile: false,
   },
   KnobDef {
     id: "dspark",
@@ -273,6 +289,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::BareFlagWhenTrue,
     ring: Ring::None,
+    volatile: false,
   },
   KnobDef {
     id: "dspark-confidence",
@@ -290,6 +307,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::None,
+    volatile: false,
   },
   KnobDef {
     id: "dspark-strict",
@@ -304,5 +322,6 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::BareFlagWhenTrue,
     ring: Ring::None,
+    volatile: false,
   },
 ];

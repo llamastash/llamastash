@@ -557,6 +557,7 @@ mod tests {
       fallback: crate::launch::params::LayerLabel::ServerDefault,
       emit: Emit::FlagValue,
       ring: Ring::None,
+      volatile: false,
     }
   }
 

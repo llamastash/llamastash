@@ -192,6 +192,16 @@ pub fn grouped_for_backend(backend_id: &str) -> Vec<(Group, Vec<&'static KnobDef
     .collect()
 }
 
+/// The ids one backend marks volatile — user-set values that must not be
+/// replayed from `last_params`. See [`KnobDef::volatile`].
+pub fn volatile_ids(backend_id: &str) -> Vec<&'static str> {
+  for_backend(backend_id)
+    .iter()
+    .filter(|d| d.volatile)
+    .map(|d| d.id)
+    .collect()
+}
+
 /// A registry inconsistency. These are programmer errors in a backend's
 /// declaration, caught by a test rather than at runtime — a shipped binary
 /// cannot have a malformed registry because the test gates the build.

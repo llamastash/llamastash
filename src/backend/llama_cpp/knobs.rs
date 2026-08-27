@@ -43,6 +43,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ModelDefault,
     emit: Emit::Custom,
     ring: Ring::UpToTrainedContext(CTX_LADDER),
+    volatile: false,
   },
   KnobDef {
     id: "reasoning",
@@ -57,6 +58,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ModelDefault,
     emit: Emit::Custom,
     ring: Ring::None,
+    volatile: false,
   },
   KnobDef {
     id: "n-gpu-layers",
@@ -71,6 +73,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::Fixed(&["0", "16", "32", "64", "99"]),
+    volatile: false,
   },
   KnobDef {
     id: "n-cpu-moe",
@@ -85,6 +88,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::Fixed(&["0", "4", "8", "16", "32", "64"]),
+    volatile: false,
   },
   KnobDef {
     id: "device",
@@ -99,6 +103,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::Custom,
     ring: Ring::DeviceCheckbox,
+    volatile: false,
   },
   KnobDef {
     id: "tensor-split",
@@ -113,6 +118,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::None,
+    volatile: false,
   },
   KnobDef {
     id: "main-gpu",
@@ -127,6 +133,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::DeviceIndex,
+    volatile: false,
   },
   KnobDef {
     id: "split-mode",
@@ -143,6 +150,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::None,
+    volatile: false,
   },
   KnobDef {
     id: "threads",
@@ -157,6 +165,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::Fixed(&["1", "2", "4", "6", "8", "12", "16", "24"]),
+    volatile: false,
   },
   KnobDef {
     id: "cache-type-k",
@@ -174,6 +183,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::None,
+    volatile: false,
   },
   KnobDef {
     id: "cache-type-v",
@@ -191,6 +201,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::None,
+    volatile: false,
   },
   KnobDef {
     id: "parallel",
@@ -205,6 +216,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::Fixed(&["1", "2", "4", "8", "16"]),
+    volatile: false,
   },
   KnobDef {
     id: "flash-attn",
@@ -221,6 +233,7 @@ pub const KNOBS: &[KnobDef] = &[
     // argv entry as this flag's value.
     emit: Emit::FlagOnOff,
     ring: Ring::None,
+    volatile: false,
   },
   KnobDef {
     id: "mlock",
@@ -235,6 +248,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::BareFlagWhenTrue,
     ring: Ring::None,
+    volatile: false,
   },
   KnobDef {
     id: "no-mmap",
@@ -249,6 +263,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::BareFlagWhenTrue,
     ring: Ring::None,
+    volatile: false,
   },
   KnobDef {
     id: "batch-size",
@@ -263,6 +278,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::Fixed(&["256", "512", "1024", "2048", "4096"]),
+    volatile: false,
   },
   KnobDef {
     id: "ubatch-size",
@@ -277,6 +293,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::Fixed(&["128", "256", "512", "1024"]),
+    volatile: false,
   },
   KnobDef {
     id: "rope-freq-scale",
@@ -294,6 +311,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::Fixed(&["0.5", "1.0", "2.0", "4.0"]),
+    volatile: false,
   },
   KnobDef {
     id: "keep",
@@ -308,6 +326,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::Fixed(&["0", "64", "128", "256", "512", "1024"]),
+    volatile: false,
   },
   KnobDef {
     id: "mode",
@@ -322,6 +341,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ModelDefault,
     emit: Emit::Custom,
     ring: Ring::None,
+    volatile: false,
   },
   // Speculation. The enable is a three-state knob whose `auto` means "on when
   // the model carries a draft head" — a per-model runtime property, not a
@@ -341,6 +361,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::Custom,
     ring: Ring::None,
+    volatile: false,
   },
   KnobDef {
     id: "mtp-draft-n",
@@ -355,5 +376,6 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
     ring: Ring::Fixed(&["1", "2", "3", "4"]),
+    volatile: false,
   },
 ];

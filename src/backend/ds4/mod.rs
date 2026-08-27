@@ -32,17 +32,15 @@ use serde::{Deserialize, Serialize};
 
 use super::identity::ModelIdentity;
 use super::{
-  Accelerator, AcceleratorSupport, Backend, KnobCapability, LaunchPlan, Lifecycle,
-  NativeKnobResolution, ProcessLaunchSpec, Readiness, CREDENTIAL_ENV_STRIP,
+  Accelerator, AcceleratorSupport, Backend, KnobResolution, LaunchPlan, Lifecycle,
+  ProcessLaunchSpec, Readiness, CREDENTIAL_ENV_STRIP,
 };
 use crate::config::Config;
 use crate::daemon::context::MethodContext;
 use crate::daemon::probe::ProbeOptions;
 use crate::gguf::header::{GgufHeader, GgufValue};
 use crate::init::doctor::{Finding, Severity};
-use crate::launch::flag_aliases::KnobField;
 use crate::launch::mode::LaunchMode;
-use crate::launch::native_knobs::{NativeKnobDescriptor, NativeKnobKind};
 use crate::launch::params::LaunchParams;
 
 /// The backend id — the stable string used in `BackendChoice`, `status`, the
@@ -327,18 +325,14 @@ pub fn resolve_ds4_binary(configured: Option<&Path>) -> Option<PathBuf> {
 
 /// The ds4 backend: direct, process-per-model, DeepSeek-V4-only.
 #[derive(Debug, Clone)]
-pub struct Ds4Backend {
-  capabilities: KnobCapability,
-}
+pub struct Ds4Backend {}
 
 impl Ds4Backend {
   pub fn new() -> Self {
     // ds4 honors exactly one IR knob — `Ctx` (→ `--ctx`). Everything else
     // llama.cpp-shaped is dropped per R6; ds4's own tunables ride the
     // native-knob channel.
-    Self {
-      capabilities: KnobCapability::of(&[KnobField::Ctx]),
-    }
+    Self {}
   }
 
   /// Effective free memory when a launch of `weights_bytes` needs SSD
@@ -471,119 +465,6 @@ async fn models_endpoint_reports_ds4_alias(port: u16, timeout: std::time::Durati
     .unwrap_or(false)
 }
 
-/// ds4's native-knob descriptor table — 14 tunables that have no llama.cpp IR
-/// slot. Ids are stable persistence keys; label/description drive the
-/// launch-picker rows. Only flags the real `ds4-server` binary accepts
-/// (verified via `--help runtime`, 2026-08-05 build): the MTP trio
-/// (`--mtp`/`--mtp-draft`/`--mtp-margin`), the SSD-streaming tuning family,
-/// and the `--warm-weights` / `--quality` bools are included.
-pub const DS4_NATIVE_KNOBS: &[NativeKnobDescriptor] = &[
-  NativeKnobDescriptor {
-    id: "power",
-    label: "GPU power %",
-    description: "GPU duty-cycle target, 1-100 (ds4 default 100)",
-    kind: NativeKnobKind::FreeText,
-  },
-  NativeKnobDescriptor {
-    id: "tokens",
-    label: "Default tokens",
-    description: "default max output tokens when a client omits a limit",
-    kind: NativeKnobKind::FreeText,
-  },
-  NativeKnobDescriptor {
-    id: "threads",
-    label: "CPU threads",
-    description: "CPU helper thread count for host-side work",
-    kind: NativeKnobKind::FreeText,
-  },
-  NativeKnobDescriptor {
-    id: "kv_disk_dir",
-    label: "KV disk dir",
-    description: "directory for ds4's persistent disk KV cache (user-owned, never cleaned)",
-    kind: NativeKnobKind::FreeText,
-  },
-  NativeKnobDescriptor {
-    id: "kv_disk_space_mb",
-    label: "KV disk cap",
-    description: "disk KV cache budget in MB (ds4 default 4096 when enabled)",
-    kind: NativeKnobKind::FreeText,
-  },
-  NativeKnobDescriptor {
-    id: "ssd_streaming",
-    label: "SSD streaming",
-    description: "stream weights from disk (below-RAM-floor mode; skips the admission gate)",
-    kind: NativeKnobKind::Bool,
-  },
-  NativeKnobDescriptor {
-    id: "ssd_streaming_cache_experts",
-    label: "SSD cache cap",
-    description: "SSD streaming: resident routed-expert cap — exact count N or routed memory budget NGB (ds4 auto: 80% of the working set)",
-    kind: NativeKnobKind::FreeText,
-  },
-  NativeKnobDescriptor {
-    id: "ssd_streaming_preload_experts",
-    label: "SSD preload",
-    description: "SSD streaming: upfront popularity preload count (DeepSeek auto-seeds when unset)",
-    kind: NativeKnobKind::FreeText,
-  },
-  NativeKnobDescriptor {
-    id: "ssd_streaming_cold",
-    label: "SSD cold start",
-    description: "SSD streaming: skip the default popularity-based expert-cache preload",
-    kind: NativeKnobKind::Bool,
-  },
-  NativeKnobDescriptor {
-    id: "warm_weights",
-    label: "Warm weights",
-    description: "touch mapped tensor pages at startup to reduce first-use stalls",
-    kind: NativeKnobKind::Bool,
-  },
-  NativeKnobDescriptor {
-    id: "quality",
-    label: "Exact kernels",
-    description: "prefer exact kernels where faster approximate paths exist",
-    kind: NativeKnobKind::Bool,
-  },
-  NativeKnobDescriptor {
-    // Matches the declared knob id: `mtp` is the neutral on/off enable, so the
-    // sidecar *path* takes its own id and keeps the `--mtp` flag.
-    id: "mtp-model",
-    label: "MTP sidecar",
-    description: "path to the MTP draft-head GGUF (auto-paired from a sibling when unset)",
-    kind: NativeKnobKind::FreeText,
-  },
-  NativeKnobDescriptor {
-    id: "mtp-draft-n",
-    label: "MTP draft",
-    description: "max autoregressive MTP draft tokens (ds4 default 1)",
-    kind: NativeKnobKind::FreeText,
-  },
-  NativeKnobDescriptor {
-    id: "mtp_margin",
-    label: "MTP margin",
-    description: "verifier confidence margin for fast MTP acceptance (ds4 default 3)",
-    kind: NativeKnobKind::FreeText,
-  },
-  NativeKnobDescriptor {
-    id: "dspark",
-    label: "DSpark",
-    description: "block speculative decoding off the DSpark support GGUF in `mtp` (greedy only)",
-    kind: NativeKnobKind::Bool,
-  },
-  NativeKnobDescriptor {
-    id: "dspark_confidence",
-    label: "DSpark confidence",
-    description: "prune proposals below this confidence, 0..1 (ds4 default 0.7; 0 = fixed blocks)",
-    kind: NativeKnobKind::FreeText,
-  },
-  NativeKnobDescriptor {
-    id: "dspark_strict",
-    label: "DSpark strict",
-    description: "load the DSpark support model but keep target-only decode (comparison baseline)",
-    kind: NativeKnobKind::Bool,
-  },
-];
-
 impl Backend for Ds4Backend {
   fn knobs(&self) -> &'static [crate::launch::knobs::KnobDef] {
     knobs::KNOBS
@@ -594,14 +475,6 @@ impl Backend for Ds4Backend {
 
   fn lifecycle(&self) -> Lifecycle {
     Lifecycle::ProcessPerModel
-  }
-
-  fn capabilities(&self) -> &KnobCapability {
-    &self.capabilities
-  }
-
-  fn native_knobs(&self) -> &'static [NativeKnobDescriptor] {
-    DS4_NATIVE_KNOBS
   }
 
   fn forbidden_extra_heads(&self) -> &'static [&'static str] {
@@ -766,13 +639,13 @@ impl Backend for Ds4Backend {
     }
   }
 
-  async fn resolve_native_knobs(
+  async fn resolve_knobs(
     &self,
     ctx: &MethodContext,
     params: &mut LaunchParams,
     weights_bytes: u64,
-  ) -> NativeKnobResolution {
-    let mut out = NativeKnobResolution::default();
+  ) -> KnobResolution {
+    let mut out = KnobResolution::default();
     // MTP auto-pair (KD7): an unset `mtp` knob resolves to a separate MTP
     // draft-head sidecar found next to the model (the same sibling detection
     // discovery uses on disk), paired as `--mtp <path>`. A user-set value wins.
@@ -1286,31 +1159,23 @@ mod tests {
     assert!(!a.iter().any(|s| s.contains("--cors")));
   }
 
-  // ---- descriptor table + capabilities ----
+  // ---- declared knobs ----
 
+  /// Ids are persistence keys, and label / help are the only prose a user sees
+  /// for a knob on any surface — an empty one renders a blank row.
   #[test]
-  fn native_knob_ids_are_unique_and_documented() {
+  fn declared_knob_ids_are_unique_and_documented() {
     let b = Ds4Backend::new();
-    let descs = b.native_knobs();
-    assert_eq!(
-      descs.len(),
-      17,
-      "ds4 exposes 17 native knobs (6 base + 3 ssd-streaming tuning + warm_weights/quality + the MTP trio + the DSpark trio)"
-    );
-    let mut ids: Vec<&str> = descs.iter().map(|d| d.id).collect();
-    ids.sort();
+    let defs = Backend::knobs(&b);
+    let mut ids: Vec<&str> = defs.iter().map(|d| d.id).collect();
+    let total = ids.len();
+    assert!(total > 0);
+    ids.sort_unstable();
     ids.dedup();
-    assert_eq!(ids.len(), 17, "ids are unique persistence keys");
-    for d in descs {
+    assert_eq!(ids.len(), total, "ids are unique persistence keys");
+    for d in defs {
       assert!(!d.label.is_empty(), "{} has a label", d.id);
-      assert!(!d.description.is_empty(), "{} has a description", d.id);
-      // Every picker descriptor resolves to a declared knob — otherwise the
-      // row edits a value no backend ever emits.
-      assert!(
-        crate::launch::knobs::resolve_id_for(DS4_BACKEND_ID, d.id).is_some(),
-        "{} resolves to a declared knob",
-        d.id
-      );
+      assert!(!d.help.is_empty(), "{} has help text", d.id);
     }
   }
 
@@ -1384,12 +1249,27 @@ mod tests {
     assert!(b.draft_acceptance(&lines).is_none());
   }
 
+  /// A backend declares only what it actually honors: declaring a knob is
+  /// claiming it, and a claimed knob renders an editor row and accepts a CLI
+  /// flag whose value would then go nowhere.
   #[test]
-  fn capabilities_honor_only_ctx() {
+  fn declares_a_context_knob_and_no_process_offload_knobs() {
     let b = Ds4Backend::new();
-    assert!(b.capabilities().supports(KnobField::Ctx));
-    assert!(!b.capabilities().supports(KnobField::NGpuLayers));
-    assert!(!b.capabilities().supports(KnobField::FlashAttn));
+    let ids: Vec<&str> = crate::backend::Backend::knobs(&b)
+      .iter()
+      .map(|d| d.id)
+      .collect();
+    assert!(crate::launch::knobs::def_for_backend_concept(
+      DS4_BACKEND_ID,
+      crate::launch::knobs::Concept::ContextLength
+    )
+    .is_some());
+    for foreign in ["n-gpu-layers", "flash-attn", "split-mode"] {
+      assert!(
+        !ids.contains(&foreign),
+        "`{foreign}` belongs to a process-spawning engine this backend is not"
+      );
+    }
   }
 
   #[test]

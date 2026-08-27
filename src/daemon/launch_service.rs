@@ -189,13 +189,13 @@ pub struct LaunchExec {
   pub(crate) user_knobs: crate::launch::knobs::KnobSet,
   /// Native-knob keys the backend auto-resolved this launch — stripped from the
   /// persisted `last_params` so they re-resolve next launch (see
-  /// [`crate::backend::Backend::resolve_native_knobs`]).
+  /// [`crate::backend::Backend::resolve_knobs`]).
   pub(crate) auto_set_knobs: std::collections::BTreeSet<String>,
   /// Native-knob keys the backend declares as here-and-now judgements — also
   /// stripped from the persisted `last_params`, so a one-off `--preset` cannot
   /// silently become permanent (see
-  /// [`crate::backend::Backend::volatile_native_knobs`]).
-  pub(crate) volatile_knobs: &'static [&'static str],
+  /// [`KnobDef::volatile`](crate::launch::knobs::KnobDef)).
+  pub(crate) volatile_knobs: Vec<&'static str>,
   /// Whether this launch bypasses the memory admission gate (streams from disk).
   pub(crate) bypasses_admission: bool,
   /// Advisories accumulated during composition, extended by the execution.
@@ -830,7 +830,7 @@ pub(crate) async fn compose_and_spawn(
   // auto-behavior, not a special case. A user on/off is left untouched.
   // Registry-driven, so this path names no backend or knob.
   let native_resolution = inference_backend
-    .resolve_native_knobs(ctx, &mut launch_params, total_weight_bytes)
+    .resolve_knobs(ctx, &mut launch_params, total_weight_bytes)
     .await;
   for msg in &native_resolution.warnings {
     log::warn!("{msg}");
@@ -865,7 +865,7 @@ pub(crate) async fn compose_and_spawn(
     total_weight_bytes,
     user_knobs,
     auto_set_knobs,
-    volatile_knobs: crate::backend::Backend::volatile_native_knobs(&inference_backend),
+    volatile_knobs: crate::launch::knobs::volatile_ids(&resolved_backend_id),
     bypasses_admission,
     warnings,
     resolved_backend_id,
@@ -1094,7 +1094,7 @@ pub(crate) async fn spawn_supervised(
   persist_params.knobs = user_knobs;
   persist_params.ctx = None;
   persist_params.reasoning = false;
-  persist_params.knobs = knobs_for_persist(persist_params.knobs, &auto_set_knobs, volatile_knobs);
+  persist_params.knobs = knobs_for_persist(persist_params.knobs, &auto_set_knobs, &volatile_knobs);
   spawn_last_params_recorder(
     ctx.state.clone(),
     model.clone(),
@@ -1221,7 +1221,7 @@ pub(crate) async fn backend_for_launch(
 ///   to live conditions, not a user opt-in; freezing it would make the next
 ///   no-selection relaunch inherit it as explicit after conditions change.
 /// - `volatile` — what the *user* set, on a knob the backend declares as a
-///   here-and-now judgement ([`crate::backend::Backend::volatile_native_knobs`]).
+///   here-and-now judgement ([`KnobDef::volatile`](crate::launch::knobs::KnobDef)).
 ///   It applies to the launch that asked for it and to any launch that names
 ///   its preset again, but is not remembered on the user's behalf.
 ///
@@ -1537,19 +1537,20 @@ mod tests {
   use crate::daemon::probe::ProbeOptions;
   use crate::daemon::registry::SupervisorRegistry;
 
-  /// The guard is only as good as the declaration: a backend whose unset
-  /// memory knobs arm an automatic cap must list both, or one `--preset` run
-  /// disables the cap for every launch after it.
+  /// A volatile id has to be one `retain_ids` will actually see, which is the
+  /// knob's registry id. The guard used to read a hand-kept list that still
+  /// carried pre-registry spellings, so it matched nothing and silently stopped
+  /// guarding — one `--preset` run then disabled an automatic memory cap for
+  /// every launch after it.
   #[test]
-  fn a_backend_that_auto_caps_memory_declares_those_knobs_volatile() {
+  fn volatile_ids_are_registry_ids_that_persistence_can_match() {
     use crate::backend::Backend;
     for b in crate::backend::Backends::all() {
-      let volatile = Backend::volatile_native_knobs(&b);
-      let knobs: Vec<&str> = Backend::native_knobs(&b).iter().map(|d| d.id).collect();
-      for id in volatile {
+      let declared: Vec<&str> = Backend::knobs(&b).iter().map(|d| d.id).collect();
+      for id in crate::launch::knobs::volatile_ids(Backend::id(&b)) {
         assert!(
-          knobs.contains(id),
-          "{} declares `{id}` volatile but does not register it as a native knob",
+          declared.contains(&id),
+          "{} marks `{id}` volatile but never declares the knob itself",
           Backend::id(&b)
         );
       }

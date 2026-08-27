@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 
 use super::super::identity::{BackendModelId, ModelIdentity};
 use super::super::{
-  Accelerator, AcceleratorSupport, Backend, KnobCapability, LaunchPlan, Lifecycle,
-  ManagerLaunchSpec, ManagerModelRef, ProcessLaunchSpec, Readiness,
+  Accelerator, AcceleratorSupport, Backend, LaunchPlan, Lifecycle, ManagerLaunchSpec,
+  ManagerModelRef, ProcessLaunchSpec, Readiness,
 };
 use super::{umbrella_launch_id, LemonadeClient};
 use crate::daemon::context::MethodContext;
@@ -49,9 +49,7 @@ const LIVE_PATH: &str = "/live";
 
 /// The Lemonade backend.
 #[derive(Debug, Clone)]
-pub struct LemonadeBackend {
-  capabilities: KnobCapability,
-}
+pub struct LemonadeBackend {}
 
 impl LemonadeBackend {
   pub fn new() -> Self {
@@ -61,9 +59,7 @@ impl LemonadeBackend {
     // channel from the typed-knob IR). No other typed knob is honored —
     // notably `-ngl` is on lemond's exclusion list, so offload knobs can
     // never pass through (R6: drop + hide).
-    Self {
-      capabilities: KnobCapability::of(&[crate::launch::flag_aliases::KnobField::Ctx]),
-    }
+    Self {}
   }
 
   /// Derive the `lemond` registry model name from the launch input.
@@ -244,10 +240,6 @@ impl Backend for LemonadeBackend {
 
   fn lifecycle(&self) -> Lifecycle {
     Lifecycle::ManagedMultiplexer
-  }
-
-  fn capabilities(&self) -> &KnobCapability {
-    &self.capabilities
   }
 
   fn accelerators(&self) -> AcceleratorSupport {
@@ -802,7 +794,6 @@ async fn umbrella_state(ctx: &MethodContext) -> &'static str {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::launch::flag_aliases::knob_specs;
   use crate::launch::mode::LaunchMode;
 
   fn manager_of(plan: LaunchPlan) -> ManagerLaunchSpec {
@@ -874,22 +865,26 @@ mod tests {
     assert_eq!(umbrella_port_state(port), UmbrellaPortState::Free);
   }
 
+  /// One declared knob, carrying the context concept.
+  ///
+  /// It maps onto lemond's `ctx_size` load option. Everything the other
+  /// backends declare is process vocabulary lemond either owns itself
+  /// (offload) or does not expose; extras ride a separate channel (`*_args`),
+  /// not the knob path.
   #[test]
-  fn capabilities_cover_exactly_ctx() {
-    // `ctx` maps onto lemond's `ctx_size` load option; everything else in
-    // the typed-knob IR is llama.cpp-process vocabulary lemond either owns
-    // itself (offload) or doesn't expose. Extras ride a separate channel
-    // (`*_args`), not the knob IR.
+  fn declares_exactly_the_context_knob() {
     let b = LemonadeBackend::new();
-    for spec in knob_specs() {
-      let expected = spec.field == crate::launch::flag_aliases::KnobField::Ctx;
-      assert_eq!(
-        b.capabilities().supports(spec.field),
-        expected,
-        "lemonade capability for {:?}",
-        spec.field
-      );
-    }
+    let defs = crate::backend::Backend::knobs(&b);
+    assert_eq!(
+      defs.len(),
+      1,
+      "{:?}",
+      defs.iter().map(|d| d.id).collect::<Vec<_>>()
+    );
+    assert_eq!(
+      defs[0].concept,
+      Some(crate::launch::knobs::Concept::ContextLength)
+    );
   }
 
   #[test]

@@ -196,7 +196,7 @@ pub fn kv_label_width() -> usize {
   *W.get_or_init(|| {
     crate::backend::Backends::all()
       .iter()
-      .flat_map(|b| crate::backend::Backend::native_knobs(b).iter())
+      .flat_map(|b| crate::backend::Backend::knobs(b).iter())
       .map(|d| d.label.chars().count())
       .chain(std::iter::once(MIN_KV_LABEL_W))
       .max()
@@ -353,7 +353,7 @@ mod tests {
   fn every_registered_knob_label_keeps_a_gap_before_its_value() {
     let width = kv_label_width();
     for b in crate::backend::Backends::all() {
-      for d in crate::backend::Backend::native_knobs(&b) {
+      for d in crate::backend::Backend::knobs(&b) {
         let rendered = format!("{:<width$}", d.label, width = width);
         assert!(
           rendered.len() > d.label.chars().count(),

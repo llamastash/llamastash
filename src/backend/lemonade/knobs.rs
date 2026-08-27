@@ -31,4 +31,5 @@ pub const KNOBS: &[KnobDef] = &[KnobDef {
   fallback: LayerLabel::ModelDefault,
   emit: Emit::Custom,
   ring: Ring::UpToTrainedContext(CTX_LADDER),
+  volatile: false,
 }];
