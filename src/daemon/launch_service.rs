@@ -651,7 +651,11 @@ pub(crate) async fn compose_and_spawn(
   // nothing, exactly like the unset slot it replaces). The mode is
   // `Config.default_launch_mode` (+ `LLAMASTASH_DEFAULT_LAUNCH_MODE`),
   // threaded through `LaunchEnv`.
-  crate::launch::knobs::seed_layerless(&mut resolved, &resolved_backend_id, env.default_launch_mode);
+  crate::launch::knobs::seed_layerless(
+    &mut resolved,
+    &resolved_backend_id,
+    env.default_launch_mode,
+  );
   // A knob some layer supplied that this backend cannot honour is dropped and
   // surfaced rather than silently emitted (R6). The whole-map contamination
   // gate the old shape needed is gone: the resolver carries values across a
@@ -668,9 +672,10 @@ pub(crate) async fn compose_and_spawn(
   // An `Auto` ctx/reasoning collapses to "no inline flag" here
   // (`set_value()` → `None`): `compose` emits nothing and `--fit`
   // governs ctx, the chat template governs reasoning.
-  launch_params.ctx = resolved
-    .knobs
-    .u32_by_concept(&resolved_backend_id, crate::launch::knobs::Concept::ContextLength);
+  launch_params.ctx = resolved.knobs.u32_by_concept(
+    &resolved_backend_id,
+    crate::launch::knobs::Concept::ContextLength,
+  );
   launch_params.reasoning = resolved
     .knobs
     .get_by_name("reasoning")
@@ -1209,7 +1214,6 @@ pub(crate) async fn backend_for_launch(
   }
 }
 
-
 /// The `backend_knobs` to persist into `last_params`: the resolved set, minus
 /// the two kinds of knob that must not be replayed.
 ///
@@ -1284,7 +1288,6 @@ async fn inherited_launch_identity(
     server: pick(|(_, s)| s.is_some()).and_then(|(_, s)| s.clone()),
   }
 }
-
 
 /// Human-readable admission refusal: the effective free (post-headroom),
 /// what other launches hold, this launch's projected demand, and the
@@ -1533,8 +1536,6 @@ mod tests {
   use crate::daemon::context::LaunchEnv;
   use crate::daemon::probe::ProbeOptions;
   use crate::daemon::registry::SupervisorRegistry;
-
-
 
   /// The guard is only as good as the declaration: a backend whose unset
   /// memory knobs arm an automatic cap must list both, or one `--preset` run

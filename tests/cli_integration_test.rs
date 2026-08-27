@@ -517,7 +517,9 @@ async fn presets_save_list_delete_round_trip() {
   // confirm via config.yaml (presets live there now, not state.json)
   let cfg = llamastash::config::load_config_from_path(&h.config_path).config;
   assert_eq!(
-    cfg.presets["m.gguf"].entries["long-ctx"].knobs.u32(llamastash::launch::knobs::kid("ctx-size")),
+    cfg.presets["m.gguf"].entries["long-ctx"]
+      .knobs
+      .u32(llamastash::launch::knobs::kid("ctx-size")),
     Some(32768),
     "preset should round-trip into config.yaml: {:?}",
     cfg.presets
@@ -804,9 +806,7 @@ async fn start_preset_chain_seeds_supervisor_with_saved_params() {
       break;
     }
     if Instant::now() > deadline {
-      panic!(
-        "supervisor should have recorded the preset's ctx + reasoning + threads: {arr:?}",
-      );
+      panic!("supervisor should have recorded the preset's ctx + reasoning + threads: {arr:?}",);
     }
     tokio::time::sleep(Duration::from_millis(100)).await;
   }

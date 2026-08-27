@@ -120,9 +120,9 @@ pub fn resolve_layered_with_disable_defaults(
   for (_, layer) in layers {
     for id in layer.ids() {
       let honoured = registry::def_for_backend(backend_id, id).is_some();
-      let carried = defs.iter().any(|d| {
-        d.concept.is_some() && registry::def_for(id).and_then(|s| s.concept) == d.concept
-      });
+      let carried = defs
+        .iter()
+        .any(|d| d.concept.is_some() && registry::def_for(id).and_then(|s| s.concept) == d.concept);
       if !honoured && !carried && !dropped.contains(&id) {
         dropped.push(id);
       }
@@ -142,7 +142,7 @@ pub fn resolve_layered_with_disable_defaults(
 /// The conversion goes through the same `parse_value` every other surface
 /// uses, so a value that cannot be represented in the destination kind is
 /// skipped rather than stored as a mistyped `Scalar`.
-fn carry_over(def: &super::def::KnobDef, layer: &KnobSet) -> Option<KnobValue> {
+pub fn carry_over(def: &super::def::KnobDef, layer: &KnobSet) -> Option<KnobValue> {
   let concept = def.concept?;
   for (id, value) in layer.iter() {
     if registry::def_for(id).and_then(|d| d.concept) != Some(concept) {
@@ -155,6 +155,26 @@ fn carry_over(def: &super::def::KnobDef, layer: &KnobSet) -> Option<KnobValue> {
     };
   }
   None
+}
+
+/// Re-key a user's knob set into `backend_id`'s vocabulary, dropping what that
+/// backend does not declare.
+///
+/// For a surface that lets the user change backend mid-edit. A value the
+/// destination has no knob for would otherwise sit in the set — invisible,
+/// since no row renders it, but still shipped on the wire. Shared concepts
+/// survive the move (a pinned context window is still a pinned context window
+/// after switching engines); the rest are honestly backend-local and go.
+pub fn rescope(layer: &KnobSet, backend_id: &str) -> KnobSet {
+  let mut out = KnobSet::new();
+  for def in registry::for_backend(backend_id) {
+    let id = def.knob_id();
+    // The destination's own spelling wins; a concept sibling fills in for it.
+    if let Some(v) = layer.get(id).cloned().or_else(|| carry_over(def, layer)) {
+      out.set(id, v);
+    }
+  }
+  out
 }
 
 /// Seed knobs no layer filled, per the configured default launch mode.
@@ -249,7 +269,10 @@ mod tests {
     let empty = KnobSet::new();
     let r = resolve_layered_with_disable_defaults(
       backend,
-      &[(LayerLabel::User, &empty), (LayerLabel::ArchDefault, &lower)],
+      &[
+        (LayerLabel::User, &empty),
+        (LayerLabel::ArchDefault, &lower),
+      ],
       true,
     );
     assert_eq!(r.knobs.u32(ctx), None, "arch layer is skipped entirely");
@@ -303,7 +326,8 @@ mod tests {
   fn seeding_touches_only_fit_delegated_layer_less_knobs() {
     let backend = default_backend();
     let empty = KnobSet::new();
-    let mut r = resolve_layered_with_disable_defaults(backend, &[(LayerLabel::User, &empty)], false);
+    let mut r =
+      resolve_layered_with_disable_defaults(backend, &[(LayerLabel::User, &empty)], false);
     seed_layerless(&mut r, backend, DefaultLaunchMode::Auto);
 
     for def in registry::for_backend(backend) {
@@ -327,7 +351,9 @@ mod tests {
       .unwrap()
       .knob_id();
     assert!(
-      registry::def_for_backend(backend, ctx).unwrap().is_fit_delegated(),
+      registry::def_for_backend(backend, ctx)
+        .unwrap()
+        .is_fit_delegated(),
       "precondition: the context knob is fit-delegated"
     );
     let remembered = set(ctx, 8192);
@@ -341,7 +367,8 @@ mod tests {
   fn inherited_mode_seeds_nothing() {
     let backend = default_backend();
     let empty = KnobSet::new();
-    let mut r = resolve_layered_with_disable_defaults(backend, &[(LayerLabel::User, &empty)], false);
+    let mut r =
+      resolve_layered_with_disable_defaults(backend, &[(LayerLabel::User, &empty)], false);
     seed_layerless(&mut r, backend, DefaultLaunchMode::Inherited);
     assert!(r.knobs.is_empty(), "Inherited mode leaves every knob unset");
   }

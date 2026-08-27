@@ -573,7 +573,12 @@ async fn last_params_persists_only_user_supplied_knob_deltas() {
   let deadline = std::time::Instant::now() + Duration::from_secs(60);
   loop {
     let s = state_store::load(&state_dir).expect("load state");
-    if !s.last_params.is_empty() && s.last_params[0].params.knobs.u32(llamastash::launch::knobs::kid("threads")) == Some(4)
+    if !s.last_params.is_empty()
+      && s.last_params[0]
+        .params
+        .knobs
+        .u32(llamastash::launch::knobs::kid("threads"))
+        == Some(4)
     {
       break;
     }
@@ -616,7 +621,12 @@ async fn last_params_persists_only_user_supplied_knob_deltas() {
   let knobs = loop {
     let s = state_store::load(&state_dir).expect("load state");
     if let Some(entry) = s.last_params.first() {
-      if entry.params.knobs.bool(llamastash::launch::knobs::kid("mlock")) == Some(true) {
+      if entry
+        .params
+        .knobs
+        .bool(llamastash::launch::knobs::kid("mlock"))
+        == Some(true)
+      {
         break entry.params.knobs.clone();
       }
     }
@@ -633,7 +643,8 @@ async fn last_params_persists_only_user_supplied_knob_deltas() {
     "user-supplied mlock must persist verbatim"
   );
   assert_eq!(
-    knobs.u32(llamastash::launch::knobs::kid("threads")), None,
+    knobs.u32(llamastash::launch::knobs::kid("threads")),
+    None,
     "threads came from `last_used` resolver layer, NOT user input on \
      call 2 — persistence must drop it so the source chip can stay \
      `(last used)` on the next launch rather than collapsing to \
@@ -643,10 +654,19 @@ async fn last_params_persists_only_user_supplied_knob_deltas() {
   // Spot-check a few other fields that the resolver might fill (GPU
   // backends seed `n_gpu_layers`; some arches seed `flash_attn`).
   // Whatever the resolver decided, none of it is in the user delta.
-  assert_eq!(knobs.u32(llamastash::launch::knobs::kid("n-gpu-layers")), None);
-  assert_eq!(knobs.bool(llamastash::launch::knobs::kid("flash-attn")), None);
+  assert_eq!(
+    knobs.u32(llamastash::launch::knobs::kid("n-gpu-layers")),
+    None
+  );
+  assert_eq!(
+    knobs.bool(llamastash::launch::knobs::kid("flash-attn")),
+    None
+  );
   assert_eq!(knobs.u32(llamastash::launch::knobs::kid("ctx-size")), None);
-  assert_eq!(knobs.bool(llamastash::launch::knobs::kid("reasoning")), None);
+  assert_eq!(
+    knobs.bool(llamastash::launch::knobs::kid("reasoning")),
+    None
+  );
 
   let _ = client.call("shutdown", None).await;
   let _ = timeout(Duration::from_secs(3), daemon).await;
@@ -749,7 +769,12 @@ async fn no_selection_start_inherits_last_params_extras() {
   let extras = loop {
     let s = state_store::load(&state_dir).expect("load state");
     if let Some(entry) = s.last_params.first() {
-      if entry.params.knobs.bool(llamastash::launch::knobs::kid("mlock")) == Some(true) {
+      if entry
+        .params
+        .knobs
+        .bool(llamastash::launch::knobs::kid("mlock"))
+        == Some(true)
+      {
         break entry.params.extras.clone();
       }
     }

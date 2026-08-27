@@ -382,9 +382,10 @@ impl Backend for LlamaCppBackend {
       // `compose` emits no `--jinja`.
       params.launch_config.remove(LLAMACPP_KNOB_JINJA);
     }
-    params
-      .launch_config
-      .insert(LLAMACPP_KNOB_STRICT_FIT.to_string(), cfg.strict_fit.to_string());
+    params.launch_config.insert(
+      LLAMACPP_KNOB_STRICT_FIT.to_string(),
+      cfg.strict_fit.to_string(),
+    );
     params.launch_config.insert(
       LLAMACPP_KNOB_FIT_CTX_FLOOR.to_string(),
       cfg.fit_ctx_floor.to_string(),
@@ -784,7 +785,6 @@ mod tests {
     assert_eq!(b.lifecycle(), Lifecycle::ProcessPerModel);
   }
 
-
   #[test]
   fn identify_delegates_to_gguf_identity() {
     let b = LlamaCppBackend::new();
@@ -799,10 +799,4 @@ mod tests {
   // parent module (`crate::backend`), where the enum now lives.
 
   // ---- config-derived launch knobs (jinja / strict_fit / fit_ctx_floor) ----
-
-  
-
-
-
-
 }

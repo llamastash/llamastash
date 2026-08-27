@@ -1,4 +1,4 @@
- LlamaStash v0.0.5 · ● daemon · ◐ macchiato                 P:pull · ?:help · ↹/⇧↹:panes · ↑↓:scroll · t:theme · q:quit
+ LlamaStash v0.2.0 · ● daemon · ◐ macchiato                 P:pull · ?:help · ↹/⇧↹:panes · ↑↓:scroll · t:theme · q:quit
 ┌ Host ─────────────────┐┌ Daemon ─────────────────────────────────────────────────────────────────────────┐┌──────────┐
 │CPU  ███░░░░ 48% 54°C  ││port    48134 · pid 4242 · up 3h12m                                              ││  ▉    ▉  │
 │MEM  ██░░░░░ 11/32G    ││server  /usr/local/bin/llama-server (cuda)                                       ││  █▃██▃█  │
@@ -24,7 +24,7 @@
 │       │                                                                                                      │       │
 │       │                                                                                                      │       │
 │       └──────────────────────────────────────────────────────────────────────────────────────────────────────┘       │
-│                                                                            ││   cache_type_v      inherited          │
+│                                                                            ││   cache-type-v      inherited          │
+│                                                                            ││   flash-attn        inherited          │
 │                                                                            ││   ── Throughput                        │
-│                                                                            ││   threads           inherited          │
 └ ◌ launching · ◐ loading · ● ready · ▲ error · ○ stopped · ⇪ external ──────┘└ e:edit for launch · s:stop · p:path ───┘

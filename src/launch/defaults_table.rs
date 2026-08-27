@@ -11,8 +11,8 @@
 //! the table coverage. Anything not explicitly listed falls through
 //! to the `*` row.
 
-use crate::launch::knobs::KnobSet;
 use crate::daemon::host_metrics::GpuFlavor;
+use crate::launch::knobs::KnobSet;
 
 /// Look up the built-in defaults row for `(arch, backend)`. The
 /// architecture string is lower-cased; unknown architectures fall
@@ -146,7 +146,6 @@ mod tests {
     }
   }
 
-
   #[test]
   fn qwen2_on_cpu_only_sets_nothing() {
     let k = lookup("qwen2", GpuFlavor::CpuOnly);
@@ -157,14 +156,19 @@ mod tests {
   #[test]
   fn unknown_arch_on_nvidia_opts_into_nothing() {
     let k = lookup("entirely-unknown-arch", GpuFlavor::Nvidia);
-    assert_eq!(k.bool(crate::launch::knobs::kid("flash-attn")), None, "wildcard does not opt into flash_attn");
+    assert_eq!(
+      k.bool(crate::launch::knobs::kid("flash-attn")),
+      None,
+      "wildcard does not opt into flash_attn"
+    );
   }
 
   #[test]
   fn qwen2_on_amd_no_flash_attn() {
     let k = lookup("qwen2", GpuFlavor::Amd);
     assert_eq!(
-      k.bool(crate::launch::knobs::kid("flash-attn")), None,
+      k.bool(crate::launch::knobs::kid("flash-attn")),
+      None,
       "HIP flash-attn coverage is uneven — leave it to user override"
     );
   }
@@ -173,10 +177,9 @@ mod tests {
   fn gemma_on_nvidia_no_flash_attn() {
     let k = lookup("gemma", GpuFlavor::Nvidia);
     assert_eq!(
-      k.bool(crate::launch::knobs::kid("flash-attn")), None,
+      k.bool(crate::launch::knobs::kid("flash-attn")),
+      None,
       "gemma not on the flash-attn opt-in list at v1"
     );
   }
-
-
 }

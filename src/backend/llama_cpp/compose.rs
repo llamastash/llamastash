@@ -27,13 +27,6 @@ use std::ffi::OsString;
 use crate::launch::mode::LaunchMode;
 use crate::launch::params::{is_forbidden_head, LaunchParams};
 
-
-
-
-
-
-
-
 /// Materialise the argv `Command::args(...)` will hand to
 /// `llama-server`. Caller passes the resolved listening port
 /// separately because allocation happens in the supervisor, not in
@@ -46,11 +39,8 @@ use crate::launch::params::{is_forbidden_head, LaunchParams};
 /// math, no backend guessing. The caller is responsible for spawning
 /// the matching binary so the selector is valid.
 pub(crate) fn compose(params: &LaunchParams, allocated_port: u16) -> Vec<OsString> {
-  let mut knob_argv = crate::launch::knobs::emit_argv(
-    crate::backend::DEFAULT_BACKEND_ID,
-    &params.knobs,
-    &[],
-  );
+  let mut knob_argv =
+    crate::launch::knobs::emit_argv(crate::backend::DEFAULT_BACKEND_ID, &params.knobs, &[]);
   let mut argv: Vec<OsString> = Vec::with_capacity(16 + knob_argv.len() + params.extras.len());
   argv.push("--host".into());
   argv.push("127.0.0.1".into());
@@ -72,7 +62,10 @@ pub(crate) fn compose(params: &LaunchParams, allocated_port: u16) -> Vec<OsStrin
   // reasoning needs the Jinja chat template, so it forces the flag on even
   // when the config default is `false`. Emitted once; reasoning then adds its
   // `--reasoning-format deepseek` pair.
-  let jinja = params.launch_config.get("jinja").is_some_and(|s| s == "true");
+  let jinja = params
+    .launch_config
+    .get("jinja")
+    .is_some_and(|s| s == "true");
   if jinja || params.reasoning {
     argv.push("--jinja".into());
   }
@@ -266,8 +259,6 @@ mod tests {
       .any(|a| a == "--embeddings" || a == "--reranking"));
   }
 
-
-
   #[test]
   fn unset_ctx_without_floor_emits_neither() {
     // No floor configured (e.g. a bare LaunchParams) → no ctx flags.
@@ -303,9 +294,6 @@ mod tests {
     assert_eq!(argv[i + 1], "deepseek");
   }
 
-
-
-
   // ---- MTP speculative decoding ----
 
   #[test]
@@ -316,7 +304,6 @@ mod tests {
     assert!(!argv.iter().any(|a| a == "--spec-type"));
     assert!(!argv.iter().any(|a| a == "--model-draft"));
   }
-
 
   #[test]
   fn compose_emits_separate_head_and_draft_n_max() {
@@ -356,17 +343,13 @@ mod tests {
     assert!(!argv.iter().any(|a| a == "-c"));
   }
 
-
-
-
-
-
-
-
   #[test]
   fn compose_emits_knobs_then_extras_at_tail() {
     let mut p = base_params();
-    p.knobs.set_scalar(crate::launch::knobs::kid("n-gpu-layers"), crate::launch::knobs::Scalar::U32(99));
+    p.knobs.set_scalar(
+      crate::launch::knobs::kid("n-gpu-layers"),
+      crate::launch::knobs::Scalar::U32(99),
+    );
     p.extras = vec!["--rope-freq-base".into(), "10000".into()];
     let argv = strs(&compose(&p, 41100));
     let ngl = argv.iter().position(|a| a == "--n-gpu-layers").unwrap();
@@ -402,7 +385,10 @@ mod tests {
   #[test]
   fn compose_emits_extras_overlap_after_knob_so_last_wins() {
     let mut p = base_params();
-    p.knobs.set_scalar(crate::launch::knobs::kid("n-gpu-layers"), crate::launch::knobs::Scalar::U32(99));
+    p.knobs.set_scalar(
+      crate::launch::knobs::kid("n-gpu-layers"),
+      crate::launch::knobs::Scalar::U32(99),
+    );
     p.extras = vec!["--n-gpu-layers".into(), "7".into()];
     let argv = strs(&compose(&p, 41100));
     let positions: Vec<usize> = argv
@@ -443,7 +429,6 @@ mod tests {
   // ---- Device selector tests ----
 
   /// Collect every `--device` value present in the argv.
-  
 
   #[test]
   fn compose_skips_device_when_none() {
@@ -452,6 +437,4 @@ mod tests {
     let argv = strs(&compose(&p, 41100));
     assert!(!argv.iter().any(|a| *a == "--device"));
   }
-
-
 }

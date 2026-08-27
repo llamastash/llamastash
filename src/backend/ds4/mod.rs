@@ -152,9 +152,14 @@ const DSPARK_ARCH: &str = "deepseek4-dspark";
 /// Is DSpark switched on for this launch? `--dspark` and `--dspark-strict`
 /// both load the support model, so either one needs a paired `--mtp` file.
 fn dspark_on(params: &LaunchParams) -> bool {
-  ["dspark", "dspark-strict"]
-    .iter()
-    .any(|k| params.knobs.get_by_name_for(DS4_BACKEND_ID, k).and_then(|v| v.set_value()).and_then(|s| s.as_bool()) == Some(true))
+  ["dspark", "dspark-strict"].iter().any(|k| {
+    params
+      .knobs
+      .get_by_name_for(DS4_BACKEND_ID, k)
+      .and_then(|v| v.set_value())
+      .and_then(|s| s.as_bool())
+      == Some(true)
+  })
 }
 
 /// The **ds4-compatibility predicate** — the single routing signal (D-compat).
@@ -283,8 +288,6 @@ pub fn ds4_kv_bytes(header: &GgufHeader, ctx: u64) -> u64 {
 fn is_routed_expert_tensor(name: &str) -> bool {
   name.contains("_exps")
 }
-
-
 
 /// Resolve the `ds4-server` binary: an explicit `ds4.binary` config path
 /// (must exist), else the first `ds4-server` on `PATH`. Canonicalized.
@@ -793,7 +796,9 @@ impl Backend for Ds4Backend {
       };
       if let Some(head) = head {
         log::info!("ds4: auto-paired MTP sidecar {}", head.display());
-        params.knobs.set_by_name_for(DS4_BACKEND_ID, "mtp-model", head.display().to_string());
+        params
+          .knobs
+          .set_by_name_for(DS4_BACKEND_ID, "mtp-model", head.display().to_string());
         out.auto_set.insert("mtp".to_string());
       }
     }
@@ -823,9 +828,13 @@ impl Backend for Ds4Backend {
     // native knob wasn't set directly, which wins.
     if let Some(n) = params.mtp_draft_n {
       let head_paired = params.knobs.is_set_by_name_for(DS4_BACKEND_ID, "mtp-model");
-      let knob_set_directly = params.knobs.is_set_by_name_for(DS4_BACKEND_ID, "mtp-draft-n");
+      let knob_set_directly = params
+        .knobs
+        .is_set_by_name_for(DS4_BACKEND_ID, "mtp-draft-n");
       if head_paired && !knob_set_directly {
-        params.knobs.set_by_name_for(DS4_BACKEND_ID, "mtp-draft-n", n.to_string());
+        params
+          .knobs
+          .set_by_name_for(DS4_BACKEND_ID, "mtp-draft-n", n.to_string());
         out.auto_set.insert("mtp_draft".to_string());
       }
     }
@@ -834,9 +843,15 @@ impl Backend for Ds4Backend {
     // see (~1.25× weights), so a full-residency spawn OOM-kills mid-load
     // (ds4-server sets its own oom_score_adj=1000) — disk-stream instead. A user
     // on/off wins; only the unset/Auto knob resolves here.
-    let stream_pinned_on = params.knobs.get_by_name_for(DS4_BACKEND_ID, "ssd-streaming").and_then(|v| v.set_value()).and_then(|s| s.as_bool())
+    let stream_pinned_on = params
+      .knobs
+      .get_by_name_for(DS4_BACKEND_ID, "ssd-streaming")
+      .and_then(|v| v.set_value())
+      .and_then(|s| s.as_bool())
       == Some(true);
-    let stream_pinned = params.knobs.is_set_by_name_for(DS4_BACKEND_ID, "ssd-streaming");
+    let stream_pinned = params
+      .knobs
+      .is_set_by_name_for(DS4_BACKEND_ID, "ssd-streaming");
     // Free memory the auto path would stream against — `None` when the knob is
     // pinned (nothing to resolve) or residency fits.
     let auto_stream_free = if stream_pinned {
@@ -869,7 +884,9 @@ impl Backend for Ds4Backend {
         params.knobs.remove_by_name_for(DS4_BACKEND_ID, "mtp-model");
         out.auto_set.remove("mtp");
         if out.auto_set.remove("mtp_draft") {
-          params.knobs.remove_by_name_for(DS4_BACKEND_ID, "mtp-draft-n");
+          params
+            .knobs
+            .remove_by_name_for(DS4_BACKEND_ID, "mtp-draft-n");
         }
         out.warnings.push(
           "ds4 cannot stream from disk with an MTP draft head — dropped the auto-paired \
@@ -890,7 +907,9 @@ impl Backend for Ds4Backend {
     }
 
     if let Some(free) = auto_stream_free {
-      params.knobs.set_by_name_for(DS4_BACKEND_ID, "ssd-streaming", "true");
+      params
+        .knobs
+        .set_by_name_for(DS4_BACKEND_ID, "ssd-streaming", "true");
       out.auto_set.insert("ssd-streaming".to_string());
       let gib = crate::init::detection::fmt_gib;
       out.warnings.push(format!(
@@ -921,7 +940,11 @@ impl Backend for Ds4Backend {
   fn bypasses_admission(&self, params: &LaunchParams) -> bool {
     // Streaming weights from disk skips the hard OOM refusal (on-disk bytes ≠
     // memory demand). Reads the resolved `ssd_streaming` knob.
-    params.knobs.get_by_name_for(DS4_BACKEND_ID, "ssd-streaming").and_then(|v| v.set_value()).and_then(|s| s.as_bool())
+    params
+      .knobs
+      .get_by_name_for(DS4_BACKEND_ID, "ssd-streaming")
+      .and_then(|v| v.set_value())
+      .and_then(|s| s.as_bool())
       == Some(true)
   }
 
@@ -1424,8 +1447,14 @@ mod tests {
   #[test]
   fn typed_knobs_outside_ctx_never_reach_argv() {
     let mut p = params_with(None, &[]);
-    p.knobs.set_scalar(crate::launch::knobs::kid("n-gpu-layers"), crate::launch::knobs::Scalar::U32(99));
-    p.knobs.set_scalar(crate::launch::knobs::kid("flash-attn"), crate::launch::knobs::Scalar::Bool(true));
+    p.knobs.set_scalar(
+      crate::launch::knobs::kid("n-gpu-layers"),
+      crate::launch::knobs::Scalar::U32(99),
+    );
+    p.knobs.set_scalar(
+      crate::launch::knobs::kid("flash-attn"),
+      crate::launch::knobs::Scalar::Bool(true),
+    );
     let a = argv_strings(&p, 8000);
     assert!(!a.iter().any(|s| s == "-ngl" || s == "--n-gpu-layers"));
     // Precise flag check (the model path itself contains "flash").
@@ -1490,8 +1519,6 @@ mod tests {
     assert_eq!(mtp_stream_conflict(false, false, true, false), None);
     assert_eq!(mtp_stream_conflict(false, false, false, true), None);
   }
-
-
 
   /// Spin up a tiny single-shot HTTP responder on an OS-assigned loopback port,
   /// returning `(task, port)` — so the alias endpoint check runs against a real

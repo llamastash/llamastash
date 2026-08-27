@@ -315,7 +315,10 @@ mod tests {
     migrate(&p).unwrap().expect("should migrate");
     let after = read(&p);
     for comment in before.lines().map(str::trim).filter(|l| l.starts_with('#')) {
-      assert!(after.contains(comment), "lost comment {comment:?}:\n{after}");
+      assert!(
+        after.contains(comment),
+        "lost comment {comment:?}:\n{after}"
+      );
     }
     assert!(after.contains("ssd-streaming: false"), "{after}");
     assert!(after.contains("mtp: true"), "{after}");

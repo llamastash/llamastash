@@ -26,8 +26,8 @@ use crate::cli::exit_codes::{
 use crate::cli::resolve::{fetch_catalog, resolve_model_with_candidates, CatalogRow, ResolveError};
 use crate::cli::tail_args::parse_tail_args;
 use crate::config::Config;
-use crate::launch::knobs::{Concept, KnobSet};
 use crate::ipc::Client;
+use crate::launch::knobs::{Concept, KnobSet};
 
 pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
   let mut client = connect_or_spawn(cli, config).await?;
@@ -68,7 +68,10 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
     // it must not also set top-level ctx (that would pin `-c`).
     Some(CtxArg::Auto) => {
       if let Some(def) = crate::launch::knobs::def_for_backend_concept(
-        args.backend.as_deref().unwrap_or(crate::backend::DEFAULT_BACKEND_ID),
+        args
+          .backend
+          .as_deref()
+          .unwrap_or(crate::backend::DEFAULT_BACKEND_ID),
         Concept::ContextLength,
       ) {
         params.knobs.set_auto(def.knob_id());
@@ -707,7 +710,6 @@ mod tests {
     assert!(resolve_mode(&r, None).is_err());
   }
 
-
   #[test]
   fn build_payload_includes_backend_override_when_set() {
     let p = PartialParams::default();
@@ -715,7 +717,6 @@ mod tests {
     assert_eq!(v["backend"], serde_json::json!("llamacpp"));
     assert_eq!(v["selection"], serde_json::json!("explicit"));
   }
-
 
   #[test]
   fn build_payload_omits_empty_backend_knobs() {
@@ -733,7 +734,6 @@ mod tests {
   fn osvec(args: &[&str]) -> Vec<OsString> {
     args.iter().map(OsString::from).collect()
   }
-
 
   #[test]
   fn cli_knobs_inline_and_passthrough_combine_passthrough_wins() {
@@ -755,7 +755,6 @@ mod tests {
       vec!["--rope-freq-base".to_string(), "10000".to_string()]
     );
   }
-
 
   #[test]
   fn cli_knobs_bad_value_is_usage() {

@@ -224,10 +224,7 @@ async fn preset_save_carries_a_backends_own_knobs() {
     json!(true),
     "saved preset must carry the ssd-streaming knob: {saved}"
   );
-  assert_eq!(
-    saved["saved"]["params"]["knobs"]["power"],
-    json!(60)
-  );
+  assert_eq!(saved["saved"]["params"]["knobs"]["power"], json!(60));
 
   // It round-trips through `presets_show` and lands in config.yaml.
   let shown = call(

@@ -146,12 +146,6 @@ fn apply_knob(
   }
 }
 
-
-
-
-
-
-
 /// Returns `true` when `s` looks like a cache-type identifier a custom
 /// `llama-server` build might define — starts with an ASCII letter and
 /// contains only ASCII letters, digits, and underscores. This lets
@@ -180,14 +174,20 @@ mod tests {
   fn happy_path_threads_and_flash_attn() {
     let (knobs, extras) = parse_tail_args(&osvec(&["--threads", "8", "--flash-attn"])).unwrap();
     assert_eq!(knobs.u32(crate::launch::knobs::kid("threads")), Some(8));
-    assert_eq!(knobs.bool(crate::launch::knobs::kid("flash-attn")), Some(true));
+    assert_eq!(
+      knobs.bool(crate::launch::knobs::kid("flash-attn")),
+      Some(true)
+    );
     assert!(extras.is_empty());
   }
 
   #[test]
   fn short_alias_ngl() {
     let (knobs, extras) = parse_tail_args(&osvec(&["-ngl", "99"])).unwrap();
-    assert_eq!(knobs.u32(crate::launch::knobs::kid("n-gpu-layers")), Some(99));
+    assert_eq!(
+      knobs.u32(crate::launch::knobs::kid("n-gpu-layers")),
+      Some(99)
+    );
     assert!(extras.is_empty());
   }
 
@@ -211,7 +211,10 @@ mod tests {
       "row",
     ]))
     .unwrap();
-    assert_eq!(k.str(crate::launch::knobs::kid("tensor-split")), Some("3,1"));
+    assert_eq!(
+      k.str(crate::launch::knobs::kid("tensor-split")),
+      Some("3,1")
+    );
     assert_eq!(k.u32(crate::launch::knobs::kid("main-gpu")), Some(0));
     assert_eq!(k.str(crate::launch::knobs::kid("split-mode")), Some("row"));
     assert!(extras.is_empty());
@@ -292,7 +295,10 @@ mod tests {
   #[test]
   fn boolean_does_not_consume_next_flag() {
     let (knobs, _) = parse_tail_args(&osvec(&["--flash-attn", "--threads", "8"])).unwrap();
-    assert_eq!(knobs.bool(crate::launch::knobs::kid("flash-attn")), Some(true));
+    assert_eq!(
+      knobs.bool(crate::launch::knobs::kid("flash-attn")),
+      Some(true)
+    );
     assert_eq!(knobs.u32(crate::launch::knobs::kid("threads")), Some(8));
   }
 
@@ -302,32 +308,42 @@ mod tests {
     // bench harness emits the space form, so the parser must absorb
     // the value rather than leaving it as an orphan positional.
     let (knobs_on, extras_on) = parse_tail_args(&osvec(&["--flash-attn", "on"])).unwrap();
-    assert_eq!(knobs_on.bool(crate::launch::knobs::kid("flash-attn")), Some(true));
+    assert_eq!(
+      knobs_on.bool(crate::launch::knobs::kid("flash-attn")),
+      Some(true)
+    );
     assert!(
       extras_on.is_empty(),
       "`on` must be consumed, not routed to extras: {extras_on:?}"
     );
 
     let (knobs_off, extras_off) = parse_tail_args(&osvec(&["--flash-attn", "off"])).unwrap();
-    assert_eq!(knobs_off.bool(crate::launch::knobs::kid("flash-attn")), Some(false));
+    assert_eq!(
+      knobs_off.bool(crate::launch::knobs::kid("flash-attn")),
+      Some(false)
+    );
     assert!(extras_off.is_empty());
   }
-
-
 
   #[test]
   fn bool_equals_false_sets_explicit_off() {
     // Lets users override a built-in `Some(true)` from the CLI
     // without having to round-trip through YAML or the TUI.
     let (knobs, extras) = parse_tail_args(&osvec(&["--flash-attn=false"])).unwrap();
-    assert_eq!(knobs.bool(crate::launch::knobs::kid("flash-attn")), Some(false));
+    assert_eq!(
+      knobs.bool(crate::launch::knobs::kid("flash-attn")),
+      Some(false)
+    );
     assert!(extras.is_empty());
   }
 
   #[test]
   fn bool_equals_true_sets_explicit_on() {
     let (knobs, _) = parse_tail_args(&osvec(&["--flash-attn=true"])).unwrap();
-    assert_eq!(knobs.bool(crate::launch::knobs::kid("flash-attn")), Some(true));
+    assert_eq!(
+      knobs.bool(crate::launch::knobs::kid("flash-attn")),
+      Some(true)
+    );
   }
 
   #[test]
@@ -378,7 +394,10 @@ mod tests {
       "myfmt0",
     ] {
       let (parsed, _) = parse_tail_args(&osvec(&["--cache-type-k", t])).expect(t);
-      assert_eq!(parsed.str(crate::launch::knobs::kid("cache-type-k")), Some(t));
+      assert_eq!(
+        parsed.str(crate::launch::knobs::kid("cache-type-k")),
+        Some(t)
+      );
     }
     // Identifiers that can't name a type (leading digit, embedded space)
     // are still rejected with a USAGE error that lists the known set.
@@ -409,9 +428,11 @@ mod tests {
   #[test]
   fn rope_freq_scale_accepts_float() {
     let (knobs, _) = parse_tail_args(&osvec(&["--rope-freq-scale", "0.5"])).unwrap();
-    assert_eq!(knobs.f32(crate::launch::knobs::kid("rope-freq-scale")), Some(0.5));
+    assert_eq!(
+      knobs.f32(crate::launch::knobs::kid("rope-freq-scale")),
+      Some(0.5)
+    );
   }
-
 
   #[test]
   fn mixed_knobs_and_extras() {
@@ -425,7 +446,10 @@ mod tests {
     ]))
     .unwrap();
     assert_eq!(knobs.u32(crate::launch::knobs::kid("threads")), Some(8));
-    assert_eq!(knobs.u32(crate::launch::knobs::kid("n-gpu-layers")), Some(99));
+    assert_eq!(
+      knobs.u32(crate::launch::knobs::kid("n-gpu-layers")),
+      Some(99)
+    );
     assert_eq!(
       extras,
       vec![OsString::from("--rope-freq-base"), OsString::from("10000")]

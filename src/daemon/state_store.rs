@@ -383,7 +383,9 @@ mod tests {
     let mut s = DaemonState::default();
     let mut params = fake_params("/m/a.gguf");
     params.knobs.set_by_name("kv-disk-dir", "/tmp/kv");
-    params.knobs.set_auto(crate::launch::knobs::kid("ssd-streaming"));
+    params
+      .knobs
+      .set_auto(crate::launch::knobs::kid("ssd-streaming"));
     s.upsert_last_params(id("/m/a.gguf", 1), params.clone(), "llamacpp".into());
     save(&dir, &s).expect("save");
     let back = load(&dir).expect("load");

@@ -527,13 +527,6 @@ impl LayerLabel {
   }
 }
 
-
-
-
-
-
-
-
 /// Strict-`"1"` env-var read for `LLAMASTASH_BENCH_DISABLE_DEFAULTS`.
 /// Any other value (including `"0"`, `"true"`, `"yes"`, empty
 /// string, or unset) is treated as "not set." This matches the
@@ -543,9 +536,6 @@ impl LayerLabel {
 pub(crate) fn bench_disable_defaults_from_env() -> bool {
   std::env::var_os("LLAMASTASH_BENCH_DISABLE_DEFAULTS").is_some_and(|v| v == "1")
 }
-
-
-
 
 #[cfg(test)]
 mod tests {
@@ -775,21 +765,13 @@ mod tests {
     assert!(s.contains("--ssl-key-file <value-redacted>"));
   }
 
-
-
-
-
-
-
-
-
-
-
-
   #[test]
   fn launch_params_serde_round_trip() {
     let mut p = base_params();
-    p.knobs.set_scalar(crate::launch::knobs::kid("n-gpu-layers"), crate::launch::knobs::Scalar::U32(99));
+    p.knobs.set_scalar(
+      crate::launch::knobs::kid("n-gpu-layers"),
+      crate::launch::knobs::Scalar::U32(99),
+    );
     p.extras = vec!["--rope-freq-base".into(), "10000".into()];
     let json = serde_json::to_string(&p).unwrap();
     let back: LaunchParams = serde_json::from_str(&json).unwrap();
@@ -809,5 +791,4 @@ mod tests {
       "empty backend_knobs must not appear in the wire shape, got {json}"
     );
   }
-
 }

@@ -82,7 +82,10 @@ pub fn preset_body_from_launch_params(params: &LaunchParams) -> PresetBody {
   let mut knobs = params.knobs.clone();
   // `ctx` / `reasoning` / `mode` are still `LaunchParams` siblings on the
   // wire; fold them into the knob map so a preset stores one shape.
-  let backend_id = params.backend.explicit_id().unwrap_or(crate::backend::DEFAULT_BACKEND_ID);
+  let backend_id = params
+    .backend
+    .explicit_id()
+    .unwrap_or(crate::backend::DEFAULT_BACKEND_ID);
   if let Some(c) = params.ctx {
     knobs.set_by_concept(
       backend_id,
@@ -133,7 +136,9 @@ pub fn materialize_preset(name: &str, body: &PresetBody, model_path: PathBuf) ->
     .as_deref()
     .map(crate::launch::params::BackendChoice::from_id)
     .unwrap_or_default();
-  let backend_id = backend.explicit_id().unwrap_or(crate::backend::DEFAULT_BACKEND_ID);
+  let backend_id = backend
+    .explicit_id()
+    .unwrap_or(crate::backend::DEFAULT_BACKEND_ID);
 
   let mode = knobs
     .str_by_concept(backend_id, Concept::Mode)
@@ -386,7 +391,6 @@ mod tests {
 
   // ---- materialization / capture / resolution ----
 
-  
   fn catalog_row(path: &str, arch: &str) -> CatalogRow {
     CatalogRow {
       mtp: None,
@@ -449,9 +453,20 @@ mod tests {
     assert_eq!(np.params.ctx, Some(65536));
     assert!(np.params.reasoning);
     assert_eq!(np.params.mode, LaunchMode::Embedding);
-    assert_eq!(np.params.knobs.u32(crate::launch::knobs::kid("ctx-size")), None);
-    assert_eq!(np.params.knobs.bool(crate::launch::knobs::kid("reasoning")), None);
-    assert_eq!(np.params.knobs.bool(crate::launch::knobs::kid("flash-attn")), Some(true));
+    assert_eq!(
+      np.params.knobs.u32(crate::launch::knobs::kid("ctx-size")),
+      None
+    );
+    assert_eq!(
+      np.params.knobs.bool(crate::launch::knobs::kid("reasoning")),
+      None
+    );
+    assert_eq!(
+      np.params
+        .knobs
+        .bool(crate::launch::knobs::kid("flash-attn")),
+      Some(true)
+    );
     assert_eq!(np.params.extras.len(), 2);
     // Capture is the inverse — back to a flat body with ctx/reasoning in knobs.
     let back = preset_body_from_launch_params(&np.params);
@@ -476,7 +491,10 @@ mod tests {
     // Capture drops the inert defaults (reasoning false / chat mode).
     let back = preset_body_from_launch_params(&np.params);
     assert_eq!(back.knobs.str(crate::launch::knobs::kid("mode")), None);
-    assert_eq!(back.knobs.bool(crate::launch::knobs::kid("reasoning")), None);
+    assert_eq!(
+      back.knobs.bool(crate::launch::knobs::kid("reasoning")),
+      None
+    );
   }
 
   #[test]
@@ -488,8 +506,14 @@ mod tests {
     lp.mtp = crate::launch::params::MtpEnable::Off;
     lp.mtp_draft_n = Some(4);
     let body = preset_body_from_launch_params(&lp);
-    assert_eq!(body.knobs.bool(crate::launch::knobs::kid("mtp")), Some(false));
-    assert_eq!(body.knobs.u32(crate::launch::knobs::kid("mtp-draft-n")), Some(4));
+    assert_eq!(
+      body.knobs.bool(crate::launch::knobs::kid("mtp")),
+      Some(false)
+    );
+    assert_eq!(
+      body.knobs.u32(crate::launch::knobs::kid("mtp-draft-n")),
+      Some(4)
+    );
     let np = materialize_preset("p", &body, PathBuf::from("/m/a.gguf"));
     assert_eq!(np.params.mtp, crate::launch::params::MtpEnable::Off);
     assert_eq!(np.params.mtp_draft_n, Some(4));
@@ -507,7 +531,6 @@ mod tests {
       "unset MTP must not serialise, got {yaml}"
     );
   }
-
 
   #[test]
   fn classify_exact_name_is_per_model_arch_id_is_arch() {

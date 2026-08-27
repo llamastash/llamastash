@@ -1607,8 +1607,9 @@ impl App {
       state.mtp_capable = self.mtp_capable_for(p);
       if let Some(last) = self.last_params.get(p) {
         state.prefer_port = last.port;
-        // A returning user keeps their last MTP choice (auto/on/off).
-        state.mtp = last.mtp;
+        // A returning user keeps their last MTP choice. It arrives as a typed
+        // sibling on the wire params and lands on the knob row that renders it.
+        state.set_mtp_intent(last.mtp);
         // returning user inherits the typed-knob deltas they
         // last shipped. The daemon persists only user-supplied
         // deltas (not the fully resolved set) so seeding straight
@@ -1644,10 +1645,6 @@ impl App {
       state.servers = self.compatible_servers(p);
       state.selected_server = self.last_params.get(p).and_then(|l| l.server.clone());
     }
-    // Surface the model's backend native knobs (its own set, or none for a
-    // backend with no native-knob channel). Ordered after the server seed so a
-    // remembered cross-backend pick resolves the right descriptor set.
-    state.seed_native_descriptors();
     // Seed the preset cycle from the model's effective set (per-model ∪
     // arch, resolved against the catalog). Always called — the Preset row
     // is always shown (it offers `last used` ↔ `auto` even with no named
@@ -2541,9 +2538,9 @@ mod tests {
       picker.model_backend,
       crate::launch::params::BackendChoice::Explicit("lemonade".into())
     );
-    let visible: Vec<PickerField> = PickerField::all()
-      .iter()
-      .copied()
+    let visible: Vec<PickerField> = picker
+      .ordered_fields()
+      .into_iter()
       .filter(|f| picker.field_visible(*f))
       .collect();
     assert!(
@@ -3173,7 +3170,6 @@ mod tests {
       "right pane must be visible after open_launch_picker (compact)"
     );
   }
-
 
   fn ready_managed(path: &str, port: u16, state: SurfaceState) -> ManagedRow {
     ManagedRow {

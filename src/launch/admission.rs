@@ -247,8 +247,12 @@ pub fn project_demand(
 ) -> u64 {
   let opts = EstimateOptions {
     ctx_len: effective_ctx as u64,
-    cache_type_k: parse_cache_type(knobs.str_by_concept(backend_id, crate::launch::knobs::Concept::KvCacheKType)),
-    cache_type_v: parse_cache_type(knobs.str_by_concept(backend_id, crate::launch::knobs::Concept::KvCacheVType)),
+    cache_type_k: parse_cache_type(
+      knobs.str_by_concept(backend_id, crate::launch::knobs::Concept::KvCacheKType),
+    ),
+    cache_type_v: parse_cache_type(
+      knobs.str_by_concept(backend_id, crate::launch::knobs::Concept::KvCacheVType),
+    ),
     // The GPU/RAM split is not modelled here — demand is the combined
     // total against the combined pool free — so `n_gpu_layers` would be
     // ignored downstream. Left unset rather than threaded in.

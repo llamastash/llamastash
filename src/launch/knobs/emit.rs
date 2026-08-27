@@ -73,7 +73,10 @@ fn push(
   def: &KnobDef,
 ) {
   if is_forbidden_head_ext(flag, extra_forbidden) {
-    log::warn!("knob `{}`: refusing to emit denylisted flag {flag:?}", def.id);
+    log::warn!(
+      "knob `{}`: refusing to emit denylisted flag {flag:?}",
+      def.id
+    );
     return;
   }
   if let Some(v) = value {

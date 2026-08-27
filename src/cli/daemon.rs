@@ -66,7 +66,6 @@ pub async fn handle(action: DaemonAction, cli: &Cli, config: &Config) -> Result<
   }
 }
 
-
 /// Migrate `config.yaml` to the unified knob shape, returning the re-parsed
 /// config when a rewrite happened (plan D10).
 ///

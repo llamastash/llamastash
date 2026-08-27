@@ -117,8 +117,6 @@ pub const VLLM_FORBIDDEN_EXTRA_HEADS: &[&str] = &[
 /// decision from `backend.vllm.cors`, so it belongs nowhere near the picker.
 const VLLM_KNOB_CORS: &str = "cors";
 
-
-
 /// Resolve the launcher **by filesystem existence only — never by running it.**
 ///
 /// vLLM builds its argument parser through a device probe: on a host with no
@@ -469,9 +467,10 @@ impl Backend for VllmBackend {
     // inherited: a value persisted in last_params must not outlive the config
     // flip that changed it. Written unconditionally so an absent key keeps
     // meaning "vLLM's own default", not "whatever was seeded last".
-    params
-      .launch_config
-      .insert(VLLM_KNOB_CORS.to_string(), ctx.backend.vllm.cors.to_string());
+    params.launch_config.insert(
+      VLLM_KNOB_CORS.to_string(),
+      ctx.backend.vllm.cors.to_string(),
+    );
   }
 
   async fn resolve_native_knobs(
@@ -537,7 +536,9 @@ impl Backend for VllmBackend {
       }
     };
     log::info!("vllm: capping KV cache at {cap} bytes");
-    params.knobs.set_by_name_for(VLLM_BACKEND_ID, "kv-cache-memory-bytes", cap.to_string());
+    params
+      .knobs
+      .set_by_name_for(VLLM_BACKEND_ID, "kv-cache-memory-bytes", cap.to_string());
     out.auto_set.insert("kv-cache-memory-bytes".to_string());
     out
   }
@@ -550,7 +551,12 @@ fn knob_bytes(params: &LaunchParams, id: &str) -> Option<u64> {
 
 /// A knob's value parsed as a fraction.
 fn knob_f64(params: &LaunchParams, id: &str) -> Option<f64> {
-  params.knobs.text_by_name_for(VLLM_BACKEND_ID, id)?.trim().parse().ok()
+  params
+    .knobs
+    .text_by_name_for(VLLM_BACKEND_ID, id)?
+    .trim()
+    .parse()
+    .ok()
 }
 
 /// Whether the user pinned this knob (as opposed to leaving it to us).
@@ -934,10 +940,7 @@ mod tests {
       .iter()
       .map(|d| d.emit_flag())
     {
-      assert!(
-        !argv.contains(&flag),
-        "{flag} leaked when unset"
-      );
+      assert!(!argv.contains(&flag), "{flag} leaked when unset");
     }
   }
 
@@ -1120,7 +1123,8 @@ mod tests {
   #[test]
   fn cors_config_decides_whether_the_origin_list_is_pinned() {
     let mut on = params("/c/models--o--n/snapshots/rev");
-    on.launch_config.insert(VLLM_KNOB_CORS.to_string(), "true".into());
+    on.launch_config
+      .insert(VLLM_KNOB_CORS.to_string(), "true".into());
     assert!(
       !argv_strings(&on, 1)
         .iter()
@@ -1129,7 +1133,9 @@ mod tests {
     );
 
     let mut off = params("/c/models--o--n/snapshots/rev");
-    off.launch_config.insert(VLLM_KNOB_CORS.to_string(), "false".into());
+    off
+      .launch_config
+      .insert(VLLM_KNOB_CORS.to_string(), "false".into());
     let argv = argv_strings(&off, 1);
     assert!(
       argv

@@ -574,13 +574,6 @@ impl<T> KnobValueOpt<T> for Option<KnobValue<T>> {
   }
 }
 
-
-
-
-
-
-
-
 /// One model-or-arch key's preset block in the config `presets:` map.
 ///
 /// `entries` is keyed by preset **name** (a map, not a sequence) so the
@@ -614,7 +607,10 @@ pub struct PresetBody {
   /// the `backend_knobs:` sub-map, and the `mode:` / `mtp:` / `mtp_draft_n:`
   /// siblings. A pre-registry config is rewritten into this shape once, on
   /// daemon start (`crate::config::knob_migration`).
-  #[serde(default, skip_serializing_if = "crate::launch::knobs::KnobSet::is_empty")]
+  #[serde(
+    default,
+    skip_serializing_if = "crate::launch::knobs::KnobSet::is_empty"
+  )]
   pub knobs: crate::launch::knobs::KnobSet,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub extras: Option<Vec<String>>,
@@ -999,9 +995,6 @@ mod tests {
     assert_eq!(sanitize_left_pane_ratios(&[150, 0, 100]), vec![100, 0, 100]);
   }
 
-
-
-
   #[test]
   fn config_presets_block_round_trips_through_yaml() {
     let yaml = "\
@@ -1023,12 +1016,23 @@ presets:
     assert_eq!(block.default.as_deref(), Some("long-ctx"));
     assert_eq!(block.entries.len(), 2);
     let long = block.entries.get("long-ctx").unwrap();
-    assert_eq!(long.knobs.u32(crate::launch::knobs::kid("ctx-size")), Some(65536));
-    assert_eq!(long.knobs.bool(crate::launch::knobs::kid("flash-attn")), Some(true));
+    assert_eq!(
+      long.knobs.u32(crate::launch::knobs::kid("ctx-size")),
+      Some(65536)
+    );
+    assert_eq!(
+      long.knobs.bool(crate::launch::knobs::kid("flash-attn")),
+      Some(true)
+    );
     let arch = cfg.presets.get("qwen2").unwrap();
     assert!(arch.default.is_none());
     assert_eq!(
-      arch.entries.get("balanced").unwrap().knobs.u32(crate::launch::knobs::kid("ctx-size")),
+      arch
+        .entries
+        .get("balanced")
+        .unwrap()
+        .knobs
+        .u32(crate::launch::knobs::kid("ctx-size")),
       Some(16384)
     );
   }
@@ -1038,15 +1042,6 @@ presets:
     let cfg: Config = yaml_serde::from_str("theme: latte\n").unwrap();
     assert!(cfg.presets.is_empty());
   }
-
-
-
-
-
-
-
-
-
 
   fn temp_test_dir(name: &str) -> PathBuf {
     let suffix = SystemTime::now()
@@ -1532,8 +1527,14 @@ arch_defaults:
       .arch_defaults
       .get("qwen2")
       .expect("qwen2 entry present");
-    assert_eq!(qwen2.u32(crate::launch::knobs::kid("n-gpu-layers")), Some(99));
-    assert_eq!(qwen2.bool(crate::launch::knobs::kid("flash-attn")), Some(true));
+    assert_eq!(
+      qwen2.u32(crate::launch::knobs::kid("n-gpu-layers")),
+      Some(99)
+    );
+    assert_eq!(
+      qwen2.bool(crate::launch::knobs::kid("flash-attn")),
+      Some(true)
+    );
     assert_eq!(
       qwen2.str(crate::launch::knobs::kid("cache-type-k")),
       Some("q8_0")
@@ -1550,7 +1551,9 @@ arch_defaults:
     assert_eq!(llama.u32(crate::launch::knobs::kid("threads")), Some(8));
     assert_eq!(llama.u32(crate::launch::knobs::kid("parallel")), Some(4));
     assert!(
-      llama.u32(crate::launch::knobs::kid("n-gpu-layers")).is_none(),
+      llama
+        .u32(crate::launch::knobs::kid("n-gpu-layers"))
+        .is_none(),
       "partial entry leaves rest None"
     );
 

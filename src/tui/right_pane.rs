@@ -346,10 +346,10 @@ pub(crate) fn bottom_hint_chips(app: &App) -> Vec<crate::tui::hint_picker::Ranke
         // row is active.
         let device_row_focused = picker_ref
           .map(|p| {
-            p.field
-              == crate::tui::launch_picker::PickerField::Knob(
-                crate::launch::flag_aliases::KnobField::Device,
-              )
+            matches!(p.field, crate::tui::launch_picker::PickerField::Knob(id)
+            if p.def(id).is_some_and(|d| {
+              d.concept == Some(crate::launch::knobs::Concept::Device)
+            }))
           })
           .unwrap_or(false);
         if device_row_focused {
@@ -797,9 +797,10 @@ fn render_header_stats(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &P
       ];
       // ctx — the resolved `--fit` window (llama.cpp) or the pinned value; omit
       // when neither is known (ds4/lemonade launched without an explicit ctx).
-      let known_ctx = m
-        .resolved_ctx
-        .or_else(|| m.knobs.u32(crate::launch::knobs::resolve_id("ctx-size").expect("ctx knob")));
+      let known_ctx = m.resolved_ctx.or_else(|| {
+        m.knobs
+          .u32(crate::launch::knobs::resolve_id("ctx-size").expect("ctx knob"))
+      });
       if let Some(ctx) = known_ctx {
         spans.push(middot());
         spans.push(Span::styled(
@@ -1324,13 +1325,13 @@ mod tests {
     app.open_launch_picker();
     // Focus the Ctx row (editable) — the cursor opens on the Preset row.
     app.launch_picker.as_mut().unwrap().field =
-      PickerField::Knob(crate::launch::flag_aliases::KnobField::Ctx);
+      PickerField::Knob(crate::launch::knobs::kid("ctx-size"));
     let baseline = chip_texts(&app);
     assert!(baseline.contains(&"e:edit".to_string()));
     // Move focus onto a boolean knob — chip disappears.
     {
       let picker = app.launch_picker.as_mut().unwrap();
-      picker.field = PickerField::Knob(crate::launch::flag_aliases::KnobField::FlashAttn);
+      picker.field = PickerField::Knob(crate::launch::knobs::kid("flash-attn"));
     }
     let on_bool = chip_texts(&app);
     assert!(
@@ -1364,7 +1365,7 @@ mod tests {
     app.open_launch_picker();
     // Focus an editable knob (the cursor opens on the Preset row).
     app.launch_picker.as_mut().unwrap().field =
-      PickerField::Knob(crate::launch::flag_aliases::KnobField::Ctx);
+      PickerField::Knob(crate::launch::knobs::kid("ctx-size"));
     // Baseline: picker open, no inline edit → e:edit visible.
     let baseline = chip_texts(&app);
     assert!(baseline.contains(&"e:edit".to_string()));
@@ -1373,7 +1374,7 @@ mod tests {
     {
       let picker = app.launch_picker.as_mut().unwrap();
       picker.inline_edit.open(
-        PickerField::Knob(crate::launch::flag_aliases::KnobField::Ctx),
+        PickerField::Knob(crate::launch::knobs::kid("ctx-size")),
         String::new(),
       );
     }
@@ -1417,7 +1418,7 @@ mod tests {
     app.open_launch_picker();
     let picker = app.launch_picker.as_mut().unwrap();
     picker.inline_edit.open(
-      PickerField::Knob(crate::launch::flag_aliases::KnobField::Ctx),
+      PickerField::Knob(crate::launch::knobs::kid("ctx-size")),
       String::new(),
     );
     let chips = chip_texts(&app);
