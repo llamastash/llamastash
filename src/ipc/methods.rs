@@ -671,9 +671,7 @@ struct PresetsSaveParams {
   #[serde(default)]
   mode: Option<LaunchModeWire>,
   #[serde(default)]
-  knobs: crate::config::TypedKnobs,
-  #[serde(default)]
-  backend_knobs: std::collections::BTreeMap<String, crate::config::KnobValue<String>>,
+  knobs: crate::launch::knobs::KnobSet,
   #[serde(default)]
   extras: Vec<String>,
   #[serde(default)]
@@ -705,9 +703,6 @@ async fn presets_save_handler(
   lp.ctx = parsed.ctx;
   lp.reasoning = parsed.reasoning.unwrap_or(false);
   lp.knobs = parsed.knobs;
-  // Carry the native (ds4) knobs into the preset — a ds4 launch's `--power` /
-  // `--ssd-streaming` are save-able, not just apply-able.
-  lp.backend_knobs = parsed.backend_knobs;
   // KD2 scoped MTP to "launch / TUI / preset"; the save path used to drop it,
   // so a preset could never pin speculation on or off.
   lp.mtp = parsed.mtp;
@@ -843,13 +838,6 @@ fn launch_params_row(p: &LaunchParams) -> Value {
     // reopens on the last-used build.
     "server": p.server,
   });
-  // Native knobs are additive and omitted when empty, so the row stays
-  // byte-stable for llama.cpp / Lemonade (neither declares native knobs).
-  if !p.backend_knobs.is_empty() {
-    if let Ok(v) = serde_json::to_value(&p.backend_knobs) {
-      row["backend_knobs"] = v;
-    }
-  }
   // MTP intent, additive like the native knobs: omitted at its `Auto` default so
   // non-MTP rows stay byte-stable. The CLI reads this back off `presets_show` to
   // rebuild a preset's launch params, so leaving it out silently disarmed every
@@ -962,26 +950,23 @@ mod tests {
 
   #[test]
   fn launch_params_row_omits_empty_backend_knobs_and_emits_when_set() {
-    use crate::config::KnobValue;
     use crate::launch::mode::LaunchMode;
     use std::path::PathBuf;
     // Empty → the key is absent (byte-stable for llama.cpp / Lemonade).
     let lp = LaunchParams::new(PathBuf::from("/m/a.gguf"), LaunchMode::Chat);
     let row = launch_params_row(&lp);
     assert!(
-      row.get("backend_knobs").is_none(),
-      "empty backend_knobs must not appear: {row}"
+      row["knobs"].as_object().is_some_and(|m| m.is_empty()),
+      "an empty knob set renders as an empty map: {row}"
     );
     // Set → the key carries the map, with the same shape the TUI parses back.
     let mut lp2 = LaunchParams::new(PathBuf::from("/m/a.gguf"), LaunchMode::Chat);
-    lp2
-      .backend_knobs
-      .insert("kv_disk_dir".into(), KnobValue::Set("/tmp/kv".into()));
+    lp2.knobs.set_by_name("kv-disk-dir", "/tmp/kv");
     let row2 = launch_params_row(&lp2);
     assert_eq!(
-      row2["backend_knobs"]["kv_disk_dir"],
+      row2["knobs"]["kv-disk-dir"],
       serde_json::json!("/tmp/kv"),
-      "set backend_knobs round-trips into the row"
+      "a backend's own knob round-trips into the row like any other"
     );
   }
 

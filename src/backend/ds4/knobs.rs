@@ -109,7 +109,9 @@ pub const KNOBS: &[KnobDef] = &[
     flag: None,
     concept: None,
     kind: KnobKind::Bool,
-    auto: None,
+    // Auto here means "decide at launch from residency vs. free memory", which
+    // `resolve_native_knobs` does. A user on/off always wins.
+    auto: Some(AutoKind::Capability),
     group: Group::Memory,
     label: "SSD streaming",
     help: "stream weights from disk (below-RAM-floor mode; skips the admission gate)",
@@ -229,7 +231,10 @@ pub const KNOBS: &[KnobDef] = &[
     id: "mtp-margin",
     flag: None,
     concept: None,
-    kind: KnobKind::U32 { max: None },
+    kind: KnobKind::F32 {
+      min: None,
+      max: None,
+    },
     auto: None,
     group: Group::Speculation,
     label: "MTP margin",

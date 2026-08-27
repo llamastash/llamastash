@@ -8,7 +8,6 @@
 use std::path::PathBuf;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-use llamastash::config::KnobValue;
 use llamastash::discovery::{DiscoveredModel, ModelSource};
 use llamastash::gguf::metadata::{ModeHint, ModelMetadata, Quant};
 use llamastash::theme::ThemeName;
@@ -218,19 +217,24 @@ fn arrows_in_settings_tab_cycle_fields_and_values() {
     PickerField::Knob(KnobField::Ctx)
   );
   assert_eq!(
-    app.launch_picker.as_ref().unwrap().user_knobs.ctx,
+    app.launch_picker.as_ref().unwrap().user_knobs.u32(llamastash::launch::knobs::kid("ctx-size")),
     None,
     "ctx defaults to native (no user override)"
   );
   // → advances the focused field's value; the first ring stop is Auto.
   pump_input(&mut app, key(KeyCode::Right, KeyModifiers::NONE));
-  assert_eq!(
-    app.launch_picker.as_ref().unwrap().user_knobs.ctx,
-    Some(KnobValue::Auto)
+  assert!(
+    app
+      .launch_picker
+      .as_ref()
+      .unwrap()
+      .user_knobs
+      .is_auto(llamastash::launch::knobs::kid("ctx-size")),
+    "the first ring stop is Auto"
   );
   // ← walks it back to inherited.
   pump_input(&mut app, key(KeyCode::Left, KeyModifiers::NONE));
-  assert_eq!(app.launch_picker.as_ref().unwrap().user_knobs.ctx, None);
+  assert_eq!(app.launch_picker.as_ref().unwrap().user_knobs.u32(llamastash::launch::knobs::kid("ctx-size")), None);
   // ↓ moves the cursor to the next field.
   pump_input(&mut app, key(KeyCode::Down, KeyModifiers::NONE));
   assert_eq!(
@@ -241,8 +245,8 @@ fn arrows_in_settings_tab_cycle_fields_and_values() {
   // Inherited → on → off, so → lands on `on`.
   pump_input(&mut app, key(KeyCode::Right, KeyModifiers::NONE));
   assert_eq!(
-    app.launch_picker.as_ref().unwrap().user_knobs.reasoning,
-    Some(KnobValue::Set(true))
+    app.launch_picker.as_ref().unwrap().user_knobs.bool(llamastash::launch::knobs::kid("reasoning")),
+    Some(true)
   );
 }
 
@@ -439,10 +443,10 @@ fn launch_picker_seeds_from_persisted_last_params() {
   app.go_top();
   app.open_launch_picker();
   let picker = app.launch_picker.as_ref().expect("picker open");
-  assert_eq!(picker.user_knobs.ctx, Some(KnobValue::Set(8192)));
+  assert_eq!(picker.user_knobs.u32(llamastash::launch::knobs::kid("ctx-size")), Some(8192));
   assert_eq!(
-    picker.user_knobs.reasoning,
-    Some(KnobValue::Set(true)),
+    picker.user_knobs.bool(llamastash::launch::knobs::kid("reasoning")),
+    Some(true),
     "reasoning toggle must seed from last_params via user_knobs"
   );
   let extras: Vec<String> = picker

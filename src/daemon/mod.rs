@@ -89,7 +89,7 @@ pub struct DaemonOptions {
   /// The daemon's `start_model` handler merges these into the
   /// layered resolver with `LayerLabel::ArchDefault`, between
   /// `LastUsed` and `BuiltIn`. Default: empty map.
-  pub arch_defaults: std::collections::BTreeMap<String, crate::config::TypedKnobs>,
+  pub arch_defaults: std::collections::BTreeMap<String, crate::launch::knobs::KnobSet>,
   /// Extra CLI args to propagate to the re-exec'd child when
   /// `start_detached` spawns the daemon. Tests leave this empty;
   /// production builds it from the parent's `--model-path` /

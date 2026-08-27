@@ -1,6 +1,6 @@
 //! Neutral launch IR: the backend-agnostic types every backend reads.
 //!
-//! [`LaunchParams`] carries the user's launch choices, [`TypedKnobs`] the
+//! [`LaunchParams`] carries the user's launch choices, [`crate::launch::knobs::KnobSet`] the
 //! typed tuning surface, and the layered resolver ([`resolve_layered`],
 //! [`seed_layerless`]) merges the precedence chain into a [`Resolved`] set.
 //! The per-backend argv emitter lives with its backend — llama.cpp's is
@@ -20,8 +20,6 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{DefaultLaunchMode, KnobSlotMut, KnobSlotRef, KnobValue, TypedKnobs};
-use crate::launch::flag_aliases::{knob_specs, KnobField};
 use crate::launch::mode::LaunchMode;
 
 /// Flags refused in `LaunchParams.extras` because they would break
@@ -159,7 +157,7 @@ pub fn redact_for_display(extras: &[OsString]) -> String {
 ///
 /// This is a *launch-level* choice, not a translated knob — "which backend"
 /// has no `llama-server` argv form, so it rides on [`LaunchParams`] rather
-/// than [`TypedKnobs`]. The default [`BackendChoice::Auto`] runs the R13
+/// than [`crate::launch::knobs::KnobSet`]. The default [`BackendChoice::Auto`] runs the R13
 /// identity rule (GGUF → llama.cpp, registry → its owning backend); an
 /// explicit variant overrides it. Resolved by
 /// [`crate::backend::resolve_backend`].
@@ -181,6 +179,15 @@ impl BackendChoice {
   /// backend id. The wire form (the custom [`serde::Serialize`] below) is
   /// exactly this string, so a persisted `"ds4"` / `"llamacpp"` round-trips
   /// byte-for-byte with the old enum encoding.
+  /// The pinned backend id, or `None` when this is `Auto`. Callers that need
+  /// "which backend's knobs apply" resolve `None` to the default themselves.
+  pub fn explicit_id(&self) -> Option<&str> {
+    match self {
+      BackendChoice::Auto => None,
+      BackendChoice::Explicit(id) => Some(id),
+    }
+  }
+
   pub fn label(&self) -> &str {
     match self {
       BackendChoice::Auto => "auto",
@@ -358,7 +365,7 @@ pub fn extras_have_flag(extras: &[OsString], head: &str) -> bool {
 /// `last_params: HashMap<ModelIdentity, LaunchParams>` in `state.json`.
 ///
 /// Pre-1.0 schema flip: the old `advanced: Vec<OsString>` field has
-/// been replaced with `knobs: TypedKnobs` + `extras: Vec<OsString>`.
+/// been replaced with `knobs: crate::launch::knobs::KnobSet` + `extras: Vec<OsString>`.
 /// Existing state files from before the flip parse-fail and
 /// quarantine to `state.json.broken-<ts>` per `daemon::mod`'s
 /// existing path.
@@ -375,9 +382,9 @@ pub struct LaunchParams {
   /// **Persistence note:** on a running launch this holds the
   /// *resolved* ctx the supervisor argv-ified (after the
   /// `user > last_used > arch_defaults > builtin > model_default`
-  /// chain). It may differ from `knobs.ctx`, which holds the
+  /// chain). It may differ from `knobs.u32(crate::launch::knobs::kid("ctx-size"))`, which holds the
   /// *user-supplied delta* — the field the editor seeds `user_knobs`
-  /// from on return. Read `knobs.ctx` for source-chip semantics;
+  /// from on return. Read `knobs.u32(crate::launch::knobs::kid("ctx-size"))` for source-chip semantics;
   /// read this for what actually shipped on the wire.
   pub ctx: Option<u32>,
   /// Listening port. `None` leaves port allocation to the supervisor.
@@ -387,13 +394,18 @@ pub struct LaunchParams {
   ///
   /// **Persistence note:** like `ctx` above, this is the *resolved*
   /// value collapsed to a bool (`None`/`Some(false)` → `false`).
-  /// May differ from `knobs.reasoning`, which keeps the tri-state
+  /// May differ from `knobs.bool(crate::launch::knobs::kid("reasoning"))`, which keeps the tri-state
   /// `Option<bool>` the user actually supplied.
   pub reasoning: bool,
-  /// Resolved typed knobs — argvified before `extras` in canonical
-  /// flag order. `None`-fields are skipped (no flag emitted).
+  /// Every knob this launch carries, keyed by the declaring backend's own id
+  /// (`crate::launch::knobs`). Emitted before `extras` in the backend's
+  /// declaration order; unset ids emit nothing.
+  ///
+  /// Replaces the old split between a llama.cpp-keyed `crate::launch::knobs::KnobSet` struct and
+  /// a parallel stringly-typed `backend_knobs` map. One map means one layering
+  /// engine, one persistence shape, and one generated surface per client.
   #[serde(default)]
-  pub knobs: TypedKnobs,
+  pub knobs: crate::launch::knobs::KnobSet,
   /// Free-form argv tail for `llama-server` flags the typed editor
   /// doesn't model (e.g. `--rope-freq-base`, sampling params).
   /// Emitted *after* `knobs` so the last-occurrence wins per
@@ -421,15 +433,16 @@ pub struct LaunchParams {
   /// binary). `#[serde(default)]` keeps pre-server-abstraction rows loading.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub server: Option<String>,
-  /// Per-backend native-knob values, keyed by descriptor id (see
-  /// [`crate::launch::native_knobs`]). Parallel to `knobs` (the llama.cpp
-  /// IR): a backend whose tunables live outside the IR stores them here and
-  /// translates them to argv in its `prepare_launch` via
-  /// [`crate::launch::native_knobs::translate`] — ds4 is the first consumer.
-  /// Empty for llama.cpp / Lemonade, so `skip_serializing_if` keeps the
-  /// persisted shape byte-stable when no native knob is set.
+  /// Config values a backend projects onto its own launch, keyed by the
+  /// backend's own name for them.
+  ///
+  /// Deliberately **not** knobs: these come from `config.yaml`, not from the
+  /// user's per-launch intent, so they get no CLI flag, no editor row and no
+  /// preset key. Re-derived every launch rather than inherited, so a value
+  /// persisted in `last_params` cannot outlive the config flip that changed
+  /// it. Empty for a backend that projects nothing.
   #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-  pub backend_knobs: BTreeMap<String, KnobValue<String>>,
+  pub launch_config: BTreeMap<String, String>,
   /// MTP (multi-token prediction) speculative-decoding intent for this launch.
   /// Default [`MtpEnable::Auto`] (enable when the model is MTP-capable);
   /// launch-only (no config-file entry — KD2), persisted here in `last_params`
@@ -459,12 +472,12 @@ impl LaunchParams {
       ctx: None,
       port: None,
       reasoning: false,
-      knobs: TypedKnobs::default(),
+      knobs: crate::launch::knobs::KnobSet::new(),
       extras: Vec::new(),
       mmproj_path: None,
       backend: BackendChoice::default(),
       server: None,
-      backend_knobs: BTreeMap::new(),
+      launch_config: BTreeMap::new(),
       mtp: MtpEnable::default(),
       mtp_draft_n: None,
       mtp_directive: None,
@@ -514,125 +527,12 @@ impl LayerLabel {
   }
 }
 
-/// Resolver output. `knobs` is the merged set the supervisor uses;
-/// `sources` names which layer contributed each field so the editor
-/// can render origin chips. Fields the resolver couldn't fill from
-/// any layer land on `LayerLabel::ModelDefault` in `sources`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Resolved {
-  pub knobs: TypedKnobs,
-  pub sources: BTreeMap<KnobField, LayerLabel>,
-}
 
-/// Walk `layers` top-down per field; the first `Some` wins. Each
-/// layer contributes a `LayerLabel` so the resulting `Resolved`
-/// names where every field came from.
-///
-/// Layers are passed in precedence order — most-specific first. The
-/// IPC handler builds `[(User, &caller_knobs), (LastUsed, &last),
-/// (ArchDefault, &yaml), (ArchDefault, &table_lookup)]` — yaml and
-/// the compiled-in arch table share the `ArchDefault` chip label,
-/// with yaml winning per-field via precedence order. Anything still
-/// `None` after that walk is annotated with the field's
-/// `spec.fallback_label` — `ModelDefault` for ctx/reasoning (read
-/// from the model file when omitted), `ServerDefault` for everything
-/// else (llama-server's hardcoded default).
-///
-/// When `LLAMASTASH_BENCH_DISABLE_DEFAULTS=1` is set in the
-/// environment, the resolver collapses to "User-labeled layers only"
-/// — preset, last-used, yaml-arch, and compiled-in arch defaults are
-/// all skipped. The benchmark harness sets this to make
-/// `llamastash start` produce byte-identical argv to raw
-/// `llama-server` for the same explicit knobs. Documented as
-/// maintainer / bench-internal; not a public knob.
-pub fn resolve_layered(layers: &[(LayerLabel, &TypedKnobs)]) -> Resolved {
-  resolve_layered_with_disable_defaults(layers, bench_disable_defaults_from_env())
-}
 
-/// Inner resolver used by [`resolve_layered`]. Split out so tests
-/// can exercise the bench-disable-defaults branch without mutating
-/// process environment (env-var mutation in tests is racy across
-/// `cargo test`'s thread pool).
-pub fn resolve_layered_with_disable_defaults(
-  layers: &[(LayerLabel, &TypedKnobs)],
-  disable_defaults: bool,
-) -> Resolved {
-  if disable_defaults {
-    let user_only: Vec<(LayerLabel, &TypedKnobs)> = layers
-      .iter()
-      .filter(|(l, _)| matches!(l, LayerLabel::User))
-      .copied()
-      .collect();
-    return resolve_layered_inner(&user_only);
-  }
-  resolve_layered_inner(layers)
-}
 
-fn resolve_layered_inner(layers: &[(LayerLabel, &TypedKnobs)]) -> Resolved {
-  let mut knobs = TypedKnobs::default();
-  let mut sources: BTreeMap<KnobField, LayerLabel> = BTreeMap::new();
-  for spec in knob_specs() {
-    sources.insert(spec.field, spec.fallback_label);
-  }
-  for spec in knob_specs() {
-    for (label, layer) in layers {
-      if try_inherit_field(&mut knobs, layer, spec.field) {
-        sources.insert(spec.field, *label);
-        break;
-      }
-    }
-  }
-  Resolved { knobs, sources }
-}
 
-/// Seed every knob no layer filled — its source is still the
-/// `fallback_label`, meaning no User / LastUsed / ArchDefault layer
-/// supplied it — per the configured default launch mode (R1 seeding
-/// rule). Under [`DefaultLaunchMode::Auto`] those layer-less knobs
-/// become [`KnobValue::Auto`] so `--fit` governs them; under
-/// `Inherited` they stay `None` and fall through to llama-server's own
-/// default. Knobs a real layer supplied are left untouched, so
-/// *remembered values win*.
-///
-/// `fallback_label` is `ServerDefault`/`ModelDefault` — labels no real
-/// layer ever carries — so `source == fallback_label` is an exact test
-/// for "layer-less".
-pub fn seed_layerless(resolved: &mut Resolved, mode: DefaultLaunchMode) {
-  if mode != DefaultLaunchMode::Auto {
-    return;
-  }
-  for spec in knob_specs() {
-    // Only fit-governed knobs get the Auto seed: for everything else
-    // Auto is a no-op (emits nothing, same as Inherited) and would just
-    // render a meaningless `auto` row. Non-fit layer-less knobs stay
-    // Inherited and fall through to the server default.
-    if !spec.field.fit_governed() {
-      continue;
-    }
-    let layer_less = resolved
-      .sources
-      .get(&spec.field)
-      .copied()
-      .map(|src| src == spec.fallback_label)
-      .unwrap_or(true);
-    if layer_less {
-      set_field_auto(&mut resolved.knobs, spec.field);
-    }
-  }
-}
 
-/// True when the knob slot is explicitly [`KnobValue::Auto`], keyed by
-/// field. The counterpart to [`set_field_auto`]; used by the TUI picker
-/// to render/cycle the Auto stop.
-pub fn field_is_auto(knobs: &TypedKnobs, field: KnobField) -> bool {
-  knobs.slot(field).is_auto()
-}
 
-/// Set a single knob slot to [`KnobValue::Auto`], keyed by field. Used
-/// by the seeding rule and by the CLI `auto` literal parser.
-pub fn set_field_auto(knobs: &mut TypedKnobs, field: KnobField) {
-  knobs.slot_mut(field).set_auto();
-}
 
 /// Strict-`"1"` env-var read for `LLAMASTASH_BENCH_DISABLE_DEFAULTS`.
 /// Any other value (including `"0"`, `"true"`, `"yes"`, empty
@@ -644,41 +544,8 @@ pub(crate) fn bench_disable_defaults_from_env() -> bool {
   std::env::var_os("LLAMASTASH_BENCH_DISABLE_DEFAULTS").is_some_and(|v| v == "1")
 }
 
-/// If `field` is `Some` on `from` and `None` on `into`, copy it.
-/// Returns true when a copy happened.
-fn try_inherit_field(into: &mut TypedKnobs, from: &TypedKnobs, field: KnobField) -> bool {
-  match (into.slot_mut(field), from.slot(field)) {
-    (KnobSlotMut::U32(i), KnobSlotRef::U32(f)) => copy_some(i, *f),
-    (KnobSlotMut::F32(i), KnobSlotRef::F32(f)) => copy_some(i, *f),
-    (KnobSlotMut::Bool(i), KnobSlotRef::Bool(f)) => copy_some(i, *f),
-    (KnobSlotMut::Str(i), KnobSlotRef::Str(f)) => copy_some_clone(i, f),
-    _ => unreachable!("a KnobField maps to exactly one slot kind"),
-  }
-}
 
-/// Inherit a knob slot wholesale — `Set` *and* `Auto` ride through
-/// unchanged, since each is a distinct state a lower layer can supply.
-/// Only the absent state (`None` = Inherited) falls through to the next
-/// layer.
-fn copy_some<T: Copy>(into: &mut Option<KnobValue<T>>, from: Option<KnobValue<T>>) -> bool {
-  if into.is_none() {
-    if let Some(v) = from {
-      *into = Some(v);
-      return true;
-    }
-  }
-  false
-}
 
-fn copy_some_clone(into: &mut Option<KnobValue<String>>, from: &Option<KnobValue<String>>) -> bool {
-  if into.is_none() {
-    if let Some(v) = from {
-      *into = Some(v.clone());
-      return true;
-    }
-  }
-  false
-}
 
 #[cfg(test)]
 mod tests {
@@ -908,368 +775,21 @@ mod tests {
     assert!(s.contains("--ssl-key-file <value-redacted>"));
   }
 
-  #[test]
-  fn resolve_layered_first_some_wins_per_field() {
-    let _lock = crate::cli::test_lock::serialize();
-    let upper = TypedKnobs {
-      threads: Some(KnobValue::Set(8)),
-      ..TypedKnobs::default()
-    };
-    let lower = TypedKnobs {
-      n_gpu_layers: Some(KnobValue::Set(99)),
-      threads: Some(KnobValue::Set(4)),
-      ..TypedKnobs::default()
-    };
-    let r = resolve_layered(&[
-      (LayerLabel::LastUsed, &upper),
-      (LayerLabel::ArchDefault, &lower),
-    ]);
-    assert_eq!(
-      r.knobs.threads,
-      Some(KnobValue::Set(8)),
-      "upper layer wins on overlap"
-    );
-    assert_eq!(
-      r.knobs.n_gpu_layers,
-      Some(KnobValue::Set(99)),
-      "lower fills the unset"
-    );
-    assert_eq!(
-      r.sources.get(&KnobField::Threads),
-      Some(&LayerLabel::LastUsed)
-    );
-    assert_eq!(
-      r.sources.get(&KnobField::NGpuLayers),
-      Some(&LayerLabel::ArchDefault)
-    );
-    assert_eq!(
-      r.sources.get(&KnobField::FlashAttn),
-      Some(&LayerLabel::ServerDefault),
-      "knob fields no layer filled fall through to ServerDefault"
-    );
-    assert_eq!(
-      r.sources.get(&KnobField::Ctx),
-      Some(&LayerLabel::ModelDefault),
-      "ctx falls through to ModelDefault (read from GGUF when omitted)"
-    );
-    assert_eq!(
-      r.sources.get(&KnobField::Reasoning),
-      Some(&LayerLabel::ModelDefault),
-      "reasoning falls through to ModelDefault (chat template decides)"
-    );
-  }
 
-  #[test]
-  fn seed_layerless_auto_seeds_unfilled_and_preserves_layer_values() {
-    let _lock = crate::cli::test_lock::serialize();
-    // user pinned `threads`, arch filled `n_gpu_layers`; `keep` is
-    // layer-less.
-    let user = TypedKnobs {
-      threads: Some(KnobValue::Set(8)),
-      ..TypedKnobs::default()
-    };
-    let arch = TypedKnobs {
-      n_gpu_layers: Some(KnobValue::Set(99)),
-      ..TypedKnobs::default()
-    };
-    let mut r = resolve_layered(&[(LayerLabel::User, &user), (LayerLabel::ArchDefault, &arch)]);
-    seed_layerless(&mut r, DefaultLaunchMode::Auto);
-    // Matrix row "sets explicit value": untouched.
-    assert_eq!(r.knobs.threads, Some(KnobValue::Set(8)));
-    // Matrix row "touches nothing, a layer has a value": remembered
-    // value wins, not seeded to Auto.
-    assert_eq!(r.knobs.n_gpu_layers, Some(KnobValue::Set(99)));
-    // Layer-less + fit-governed → seeded Auto.
-    assert_eq!(r.knobs.ctx, Some(KnobValue::Auto));
-    assert_eq!(r.knobs.tensor_split, Some(KnobValue::Auto));
-    // Layer-less but NOT fit-governed (`keep`) → left Inherited, since
-    // Auto there is a no-op fit can't act on.
-    assert_eq!(r.knobs.keep, None);
-  }
 
-  #[test]
-  fn seed_layerless_inherited_leaves_unfilled_unset() {
-    let _lock = crate::cli::test_lock::serialize();
-    let empty = TypedKnobs::default();
-    let mut r = resolve_layered(&[(LayerLabel::User, &empty)]);
-    // Matrix row "touches nothing, no layer, mode = inherited":
-    // server-default fallback, no fit-state.
-    seed_layerless(&mut r, DefaultLaunchMode::Inherited);
-    assert_eq!(r.knobs.keep, None);
-    assert_eq!(r.knobs.ctx, None);
-    assert_eq!(
-      r.sources.get(&KnobField::Keep),
-      Some(&LayerLabel::ServerDefault)
-    );
-  }
 
-  #[test]
-  fn seed_layerless_preserves_user_cycled_auto() {
-    let _lock = crate::cli::test_lock::serialize();
-    // Matrix row "cycles to Auto": the user's explicit Auto is a real
-    // layer value, kept distinct from a seeded Auto by its source chip.
-    let user = TypedKnobs {
-      n_gpu_layers: Some(KnobValue::Auto),
-      ..TypedKnobs::default()
-    };
-    let mut r = resolve_layered(&[(LayerLabel::User, &user)]);
-    seed_layerless(&mut r, DefaultLaunchMode::Auto);
-    assert_eq!(r.knobs.n_gpu_layers, Some(KnobValue::Auto));
-    assert_eq!(
-      r.sources.get(&KnobField::NGpuLayers),
-      Some(&LayerLabel::User),
-      "user-cycled Auto reports a User origin, not a seeded default"
-    );
-  }
 
-  #[test]
-  fn resolve_layered_walks_full_precedence_chain() {
-    let _lock = crate::cli::test_lock::serialize();
-    // preset > last_used > yaml-arch > built-in. Same field
-    // contributed by every layer — the highest precedence wins.
-    let preset = TypedKnobs {
-      threads: Some(KnobValue::Set(1)),
-      ..TypedKnobs::default()
-    };
-    let last = TypedKnobs {
-      threads: Some(KnobValue::Set(2)),
-      ..TypedKnobs::default()
-    };
-    let yaml = TypedKnobs {
-      threads: Some(KnobValue::Set(3)),
-      ..TypedKnobs::default()
-    };
-    let builtin = TypedKnobs {
-      threads: Some(KnobValue::Set(4)),
-      ..TypedKnobs::default()
-    };
-    let r = resolve_layered(&[
-      (LayerLabel::User, &preset),
-      (LayerLabel::LastUsed, &last),
-      (LayerLabel::ArchDefault, &yaml),
-      (LayerLabel::ArchDefault, &builtin),
-    ]);
-    assert_eq!(r.knobs.threads, Some(KnobValue::Set(1)));
-    assert_eq!(r.sources.get(&KnobField::Threads), Some(&LayerLabel::User));
-  }
 
-  #[test]
-  fn resolve_layered_preset_default_wins_over_last_used_but_last_fills_gaps() {
-    let _lock = crate::cli::test_lock::serialize();
-    // The default-preset layer outranks last_params for a field it sets,
-    // while last_params still fills a field the default-preset leaves unset.
-    let default_preset = TypedKnobs {
-      threads: Some(KnobValue::Set(1)),
-      ..TypedKnobs::default()
-    };
-    let last = TypedKnobs {
-      threads: Some(KnobValue::Set(2)),
-      mlock: Some(KnobValue::Set(true)),
-      ..TypedKnobs::default()
-    };
-    let r = resolve_layered(&[
-      (LayerLabel::PresetDefault, &default_preset),
-      (LayerLabel::LastUsed, &last),
-    ]);
-    assert_eq!(
-      r.knobs.threads,
-      Some(KnobValue::Set(1)),
-      "default preset wins"
-    );
-    assert_eq!(
-      r.sources.get(&KnobField::Threads),
-      Some(&LayerLabel::PresetDefault)
-    );
-    assert_eq!(
-      r.knobs.mlock,
-      Some(KnobValue::Set(true)),
-      "last_params fills the gap the default preset left"
-    );
-    assert_eq!(
-      r.sources.get(&KnobField::Mlock),
-      Some(&LayerLabel::LastUsed)
-    );
-    assert_eq!(LayerLabel::PresetDefault.label(), "default preset");
-  }
 
-  #[test]
-  fn resolve_layered_yaml_and_builtin_both_report_arch_default() {
-    let _lock = crate::cli::test_lock::serialize();
-    // Yaml and the compiled-in arch table share the `ArchDefault`
-    // chip — only their per-field precedence differs.
-    let yaml = TypedKnobs {
-      threads: Some(KnobValue::Set(8)),
-      ..TypedKnobs::default()
-    };
-    let builtin = TypedKnobs {
-      n_gpu_layers: Some(KnobValue::Set(99)),
-      ..TypedKnobs::default()
-    };
-    let r = resolve_layered(&[
-      (LayerLabel::ArchDefault, &yaml),
-      (LayerLabel::ArchDefault, &builtin),
-    ]);
-    assert_eq!(
-      r.sources.get(&KnobField::Threads),
-      Some(&LayerLabel::ArchDefault)
-    );
-    assert_eq!(
-      r.sources.get(&KnobField::NGpuLayers),
-      Some(&LayerLabel::ArchDefault)
-    );
-  }
 
-  #[test]
-  fn resolve_with_disable_defaults_drops_non_user_layers() {
-    // Bench-disable: only the User-labeled layer's knobs survive.
-    // LastUsed and ArchDefault contributions are dropped — even
-    // fields the user didn't set fall through to fallback_label
-    // (ServerDefault / ModelDefault) rather than inheriting.
-    let user = TypedKnobs {
-      n_gpu_layers: Some(KnobValue::Set(99)),
-      ctx: Some(KnobValue::Set(4096)),
-      ..TypedKnobs::default()
-    };
-    let last = TypedKnobs {
-      threads: Some(KnobValue::Set(8)),
-      flash_attn: Some(KnobValue::Set(true)),
-      ..TypedKnobs::default()
-    };
-    let arch = TypedKnobs {
-      batch_size: Some(KnobValue::Set(2048)),
-      ubatch_size: Some(KnobValue::Set(512)),
-      ..TypedKnobs::default()
-    };
-    let r = resolve_layered_with_disable_defaults(
-      &[
-        (LayerLabel::User, &user),
-        (LayerLabel::LastUsed, &last),
-        (LayerLabel::ArchDefault, &arch),
-      ],
-      true,
-    );
-    assert_eq!(r.knobs.n_gpu_layers, Some(KnobValue::Set(99)));
-    assert_eq!(r.knobs.ctx, Some(KnobValue::Set(4096)));
-    assert_eq!(
-      r.knobs.threads, None,
-      "last_used.threads must NOT inherit when bench-disable is on"
-    );
-    assert_eq!(
-      r.knobs.flash_attn, None,
-      "last_used.flash_attn must NOT inherit when bench-disable is on"
-    );
-    assert_eq!(
-      r.knobs.batch_size, None,
-      "arch_default.batch_size must NOT inherit when bench-disable is on"
-    );
-    assert_eq!(
-      r.sources.get(&KnobField::Threads),
-      Some(&LayerLabel::ServerDefault),
-      "skipped knob falls through to ServerDefault"
-    );
-    assert_eq!(
-      r.sources.get(&KnobField::NGpuLayers),
-      Some(&LayerLabel::User),
-      "user knob still labeled User"
-    );
-  }
 
-  #[test]
-  fn resolve_with_disable_defaults_off_preserves_full_chain() {
-    // Bench-disable off: identical to plain resolve_layered. Verifies
-    // the new branch doesn't accidentally alter the default path.
-    let user = TypedKnobs {
-      n_gpu_layers: Some(KnobValue::Set(99)),
-      ..TypedKnobs::default()
-    };
-    let last = TypedKnobs {
-      threads: Some(KnobValue::Set(8)),
-      ..TypedKnobs::default()
-    };
-    let arch = TypedKnobs {
-      batch_size: Some(KnobValue::Set(2048)),
-      ..TypedKnobs::default()
-    };
-    let layers = [
-      (LayerLabel::User, &user),
-      (LayerLabel::LastUsed, &last),
-      (LayerLabel::ArchDefault, &arch),
-    ];
-    let with_flag = resolve_layered_with_disable_defaults(&layers, false);
-    let baseline = resolve_layered_inner(&layers);
-    assert_eq!(with_flag.knobs, baseline.knobs);
-    assert_eq!(with_flag.sources, baseline.sources);
-    // Sanity: full chain inherits threads + batch_size.
-    assert_eq!(with_flag.knobs.threads, Some(KnobValue::Set(8)));
-    assert_eq!(with_flag.knobs.batch_size, Some(KnobValue::Set(2048)));
-  }
 
-  #[test]
-  fn resolve_with_disable_defaults_and_no_user_layer_yields_empty_knobs() {
-    // Edge: bench-disable but caller passed no User layer (only
-    // last_used + arch defaults). Result is empty knobs with every
-    // field at its fallback_label — never a stale arch-default leak.
-    let last = TypedKnobs {
-      threads: Some(KnobValue::Set(8)),
-      ..TypedKnobs::default()
-    };
-    let arch = TypedKnobs {
-      n_gpu_layers: Some(KnobValue::Set(99)),
-      ..TypedKnobs::default()
-    };
-    let r = resolve_layered_with_disable_defaults(
-      &[
-        (LayerLabel::LastUsed, &last),
-        (LayerLabel::ArchDefault, &arch),
-      ],
-      true,
-    );
-    assert_eq!(r.knobs, TypedKnobs::default());
-    assert_eq!(
-      r.sources.get(&KnobField::Threads),
-      Some(&LayerLabel::ServerDefault)
-    );
-    assert_eq!(
-      r.sources.get(&KnobField::NGpuLayers),
-      Some(&LayerLabel::ServerDefault)
-    );
-  }
 
-  #[test]
-  fn bench_disable_defaults_env_var_is_strict_one() {
-    // Mirrors the LLAMASTASH_ASSUME_NON_TTY contract: only "1" is on.
-    // Test via the env var directly with set/restore. Holds the shared
-    // `cli::test_lock` so the sibling `resolve_layered_*` tests (which
-    // also grab the lock) can't observe our temporary "1" and collapse
-    // to user-only layers mid-assertion.
-    let _lock = crate::cli::test_lock::serialize();
-    let saved = std::env::var_os("LLAMASTASH_BENCH_DISABLE_DEFAULTS");
-    let restore = || match &saved {
-      Some(v) => std::env::set_var("LLAMASTASH_BENCH_DISABLE_DEFAULTS", v),
-      None => std::env::remove_var("LLAMASTASH_BENCH_DISABLE_DEFAULTS"),
-    };
-
-    std::env::remove_var("LLAMASTASH_BENCH_DISABLE_DEFAULTS");
-    assert!(!bench_disable_defaults_from_env(), "unset → false");
-
-    std::env::set_var("LLAMASTASH_BENCH_DISABLE_DEFAULTS", "1");
-    assert!(bench_disable_defaults_from_env(), "\"1\" → true");
-
-    for v in ["0", "true", "yes", "TRUE", ""] {
-      std::env::set_var("LLAMASTASH_BENCH_DISABLE_DEFAULTS", v);
-      assert!(
-        !bench_disable_defaults_from_env(),
-        "{v:?} must be treated as off (strict-\"1\" contract)"
-      );
-    }
-
-    restore();
-  }
 
   #[test]
   fn launch_params_serde_round_trip() {
     let mut p = base_params();
-    p.knobs.n_gpu_layers = Some(KnobValue::Set(99));
+    p.knobs.set_scalar(crate::launch::knobs::kid("n-gpu-layers"), crate::launch::knobs::Scalar::U32(99));
     p.extras = vec!["--rope-freq-base".into(), "10000".into()];
     let json = serde_json::to_string(&p).unwrap();
     let back: LaunchParams = serde_json::from_str(&json).unwrap();
@@ -1282,7 +802,7 @@ mod tests {
     // llama.cpp / Lemonade (neither declares native knobs): no
     // `backend_knobs` key.
     let p = base_params();
-    assert!(p.backend_knobs.is_empty());
+    assert!(p.knobs.is_empty());
     let json = serde_json::to_string(&p).unwrap();
     assert!(
       !json.contains("backend_knobs"),
@@ -1290,24 +810,4 @@ mod tests {
     );
   }
 
-  #[test]
-  fn backend_knobs_round_trip_through_state_json() {
-    let mut p = base_params();
-    p.backend_knobs.insert(
-      "kv_disk_dir".to_string(),
-      KnobValue::Set("/tmp/kv".to_string()),
-    );
-    p.backend_knobs
-      .insert("quality".to_string(), KnobValue::Auto);
-    let json = serde_json::to_string(&p).unwrap();
-    assert!(json.contains("backend_knobs"));
-    let back: LaunchParams = serde_json::from_str(&json).unwrap();
-    assert_eq!(back, p);
-    // Auto rides the bare `auto` token; Set rides the bare scalar.
-    assert_eq!(
-      back.backend_knobs["kv_disk_dir"],
-      KnobValue::Set("/tmp/kv".to_string())
-    );
-    assert_eq!(back.backend_knobs["quality"], KnobValue::Auto);
-  }
 }

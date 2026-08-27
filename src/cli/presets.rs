@@ -134,10 +134,10 @@ pub async fn handle(args: PresetsArgs, cli: &Cli, config: &Config) -> CliResult 
       // recognised flags. Unknown flags land in extras and are
       // forwarded as a JSON array.
       let (knobs, extras_os) = crate::cli::tail_args::parse_tail_args(&extra)?;
-      if knobs != crate::config::TypedKnobs::default() {
+      if knobs != crate::launch::knobs::KnobSet::new() {
         payload.insert(
           "knobs".into(),
-          serde_json::to_value(&knobs).expect("TypedKnobs serialises cleanly"),
+          serde_json::to_value(&knobs).expect("crate::launch::knobs::KnobSet serialises cleanly"),
         );
       }
       if !extras_os.is_empty() {

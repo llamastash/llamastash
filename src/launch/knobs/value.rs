@@ -1,8 +1,7 @@
 //! Knob *values* — the tri-state a slot holds, and the map a launch carries.
 //!
-//! Replaces the split between `TypedKnobs` (statically-typed llama.cpp IR) and
-//! `backend_knobs` (stringly-typed per-backend map): one map, real types, one
-//! layering engine.
+//! Replaces the split between the statically-typed llama.cpp knob IR and the
+//! stringly-typed per-backend map: one map, real types, one layering engine.
 
 use std::collections::BTreeMap;
 
@@ -175,6 +174,107 @@ impl KnobSet {
     self.get(id).is_some_and(KnobValue::is_auto)
   }
 
+  /// Look a knob up by name rather than by resolved [`KnobId`].
+  ///
+  /// For code that knows a specific knob by its declared id string — a
+  /// backend reconciling its own tunables in `prepare_launch`, say. Accepts
+  /// any spelling [`resolve_id`](super::registry::resolve_id) accepts.
+  pub fn get_by_name(&self, name: &str) -> Option<&KnobValue> {
+    self.get(super::registry::resolve_id(name)?)
+  }
+
+  /// Whether `name` resolves to a slot this set holds (`Set` or `Auto`).
+  pub fn contains_by_name(&self, name: &str) -> bool {
+    super::registry::resolve_id(name).is_some_and(|id| self.contains(id))
+  }
+
+  /// Whether `name` holds an explicitly `Set` value (not `Auto`, not unset).
+  pub fn is_set_by_name(&self, name: &str) -> bool {
+    matches!(self.get_by_name(name), Some(KnobValue::Set(_)))
+  }
+
+  /// Set `name` from a text value, typed through its declaration so it lands
+  /// as the right [`Scalar`] variant. A value the knob cannot represent is
+  /// dropped with a warning rather than stored mistyped.
+  pub fn set_by_name(&mut self, name: &str, value: impl AsRef<str>) -> bool {
+    let Some(id) = super::registry::resolve_id(name) else {
+      log::warn!("no knob `{name}`; ignoring");
+      return false;
+    };
+    let Some(def) = super::registry::def_for(id) else {
+      return false;
+    };
+    match super::value::parse_value(def, value.as_ref()) {
+      Ok(v) => {
+        self.set(id, v);
+        true
+      }
+      Err(e) => {
+        log::warn!("{e}; ignoring");
+        false
+      }
+    }
+  }
+
+  /// [`Self::set_by_name`] scoped to one backend's vocabulary.
+  ///
+  /// Use this whenever the writing code knows which backend the value is for:
+  /// it stops another backend's *alias* shadowing this backend's *canonical*
+  /// id (llama.cpp aliases `ctx` onto `ctx-size`, while ds4 declares `ctx`
+  /// itself).
+  pub fn set_by_name_for(&mut self, backend_id: &str, name: &str, value: impl AsRef<str>) -> bool {
+    let Some(id) = super::registry::resolve_id_for(backend_id, name) else {
+      log::warn!("no knob `{name}` for backend `{backend_id}`; ignoring");
+      return false;
+    };
+    let Some(def) = super::registry::def_for_backend(backend_id, id)
+      .or_else(|| super::registry::def_for(id))
+    else {
+      return false;
+    };
+    match super::value::parse_value(def, value.as_ref()) {
+      Ok(v) => {
+        self.set(id, v);
+        true
+      }
+      Err(e) => {
+        log::warn!("{e}; ignoring");
+        false
+      }
+    }
+  }
+
+  /// [`Self::text_by_name`] scoped to one backend's vocabulary.
+  pub fn text_by_name_for(&self, backend_id: &str, name: &str) -> Option<String> {
+    let id = super::registry::resolve_id_for(backend_id, name)?;
+    Some(self.get(id)?.set_value()?.to_arg())
+  }
+
+  /// [`Self::get_by_name`] scoped to one backend's vocabulary.
+  pub fn get_by_name_for(&self, backend_id: &str, name: &str) -> Option<&KnobValue> {
+    self.get(super::registry::resolve_id_for(backend_id, name)?)
+  }
+
+  /// [`Self::is_set_by_name`] scoped to one backend's vocabulary.
+  pub fn is_set_by_name_for(&self, backend_id: &str, name: &str) -> bool {
+    matches!(self.get_by_name_for(backend_id, name), Some(KnobValue::Set(_)))
+  }
+
+  /// [`Self::remove_by_name`] scoped to one backend's vocabulary.
+  pub fn remove_by_name_for(&mut self, backend_id: &str, name: &str) -> Option<KnobValue> {
+    self.clear(super::registry::resolve_id_for(backend_id, name)?)
+  }
+
+  /// Drop `name` back to inherited.
+  pub fn remove_by_name(&mut self, name: &str) -> Option<KnobValue> {
+    self.clear(super::registry::resolve_id(name)?)
+  }
+
+  /// The `Set` value of `name` rendered as the engine would receive it.
+  pub fn text_by_name(&self, name: &str) -> Option<String> {
+    Some(self.get_by_name(name)?.set_value()?.to_arg())
+  }
+
   /// Read `backend_id`'s knob for `concept`.
   ///
   /// The backend-neutral accessor: callers that need "the context window" or
@@ -285,6 +385,10 @@ pub enum ParseError {
     value: String,
     choices: &'static [&'static str],
   },
+  NotARatio {
+    id: KnobId,
+    value: String,
+  },
 }
 
 impl std::fmt::Display for ParseError {
@@ -306,6 +410,10 @@ impl std::fmt::Display for ParseError {
       ParseError::NotAChoice { id, value, choices } => {
         write!(f, "{id}: `{value}` is not one of {}", choices.join(", "))
       }
+      ParseError::NotARatio { id, value } => write!(
+        f,
+        "{id}: `{value}` is not a comma-separated list of numbers (e.g. 3,1)"
+      ),
     }
   }
 }
@@ -392,9 +500,33 @@ pub fn parse_value(def: &KnobDef, raw: &str) -> Result<KnobValue, ParseError> {
           })?;
       Scalar::Str((*hit).to_string())
     }
-    // Deliberately permissive: a custom engine build may accept values we
-    // cannot enumerate, so the ring is a hint, never a gate.
-    KnobKind::OpenEnum { .. } | KnobKind::Str => Scalar::Str(raw.to_string()),
+    // The listed choices are a hint, not a gate — a custom engine build may
+    // accept types we cannot enumerate. Only a value that could not name one
+    // at all is rejected, so the engine stays the authority.
+    KnobKind::OpenEnum { choices, shape } => {
+      if let Some(hit) = choices.iter().find(|c| c.eq_ignore_ascii_case(raw)) {
+        Scalar::Str((*hit).to_string())
+      } else if shape.accepts(raw) {
+        Scalar::Str(raw.to_string())
+      } else {
+        return Err(ParseError::NotAChoice {
+          id,
+          value: raw.to_string(),
+          choices,
+        });
+      }
+    }
+    KnobKind::Ratio => {
+      let parts: Vec<&str> = raw.split(',').map(str::trim).collect();
+      if parts.is_empty() || parts.iter().any(|p| p.is_empty() || p.parse::<f32>().is_err()) {
+        return Err(ParseError::NotARatio {
+          id,
+          value: raw.to_string(),
+        });
+      }
+      Scalar::Str(raw.to_string())
+    }
+    KnobKind::Str => Scalar::Str(raw.to_string()),
   };
   Ok(KnobValue::Set(scalar))
 }
@@ -473,6 +605,7 @@ mod tests {
     let open = def(
       KnobKind::OpenEnum {
         choices: &["a", "b"],
+        shape: crate::launch::knobs::Shape::Identifier,
       },
       None,
     );

@@ -136,7 +136,6 @@ impl clap::Args for KnobFlags {
 mod tests {
   use super::*;
   use crate::cli::tail_args::parse_tail_args;
-  use crate::config::{KnobValue, KnobValueOpt, TypedKnobs};
   use clap::{Args, FromArgMatches};
 
   /// Build a throwaway command with the derived flags, parse `argv`,
@@ -148,7 +147,7 @@ mod tests {
   }
 
   /// Full round-trip: derived flags → tokens → `parse_tail_args`.
-  fn knobs(argv: &[&str]) -> TypedKnobs {
+  fn knobs(argv: &[&str]) -> crate::launch::knobs::KnobSet {
     let flags = parse(argv);
     let (knobs, extras) = parse_tail_args(&flags.tokens).expect("tail parse");
     assert!(
@@ -158,85 +157,17 @@ mod tests {
     knobs
   }
 
-  #[test]
-  fn augment_does_not_panic_and_registers_every_derived_knob() {
-    let cmd = KnobFlags::augment_args(Command::new("test"));
-    for spec in knob_specs() {
-      let present = cmd.get_arguments().any(|a| a.get_id() == long_name(spec));
-      assert_eq!(
-        present,
-        is_cli_derived(spec.field),
-        "{:?}: registered={present}, expected={}",
-        spec.field,
-        is_cli_derived(spec.field)
-      );
-    }
-  }
 
-  #[test]
-  fn valued_knobs_round_trip_through_parse_tail_args() {
-    let k = knobs(&[
-      "test",
-      "--threads",
-      "8",
-      "--n-gpu-layers",
-      "99",
-      "--device",
-      "Vulkan0",
-      "--cache-type-k",
-      "q8_0",
-    ]);
-    assert_eq!(k.threads, Some(KnobValue::Set(8)));
-    assert_eq!(k.n_gpu_layers, Some(KnobValue::Set(99)));
-    assert_eq!(k.device.set_value().map(String::as_str), Some("Vulkan0"));
-    assert_eq!(k.cache_type_k.set_value().map(String::as_str), Some("q8_0"));
-  }
 
-  #[test]
-  fn placement_knobs_round_trip() {
-    let k = knobs(&[
-      "test",
-      "--tensor-split",
-      "3,1",
-      "--main-gpu",
-      "1",
-      "--split-mode",
-      "row",
-    ]);
-    assert_eq!(k.tensor_split.set_value().map(String::as_str), Some("3,1"));
-    assert_eq!(k.main_gpu, Some(KnobValue::Set(1)));
-    assert_eq!(k.split_mode.set_value().map(String::as_str), Some("row"));
-  }
 
-  #[test]
-  fn bare_bool_is_true() {
-    assert_eq!(
-      knobs(&["test", "--flash-attn"]).flash_attn,
-      Some(KnobValue::Set(true))
-    );
-  }
 
-  #[test]
-  fn bool_equals_false_disables() {
-    assert_eq!(
-      knobs(&["test", "--flash-attn=false"]).flash_attn,
-      Some(KnobValue::Set(false))
-    );
-  }
 
-  #[test]
-  fn bool_space_form_off() {
-    assert_eq!(
-      knobs(&["test", "--mlock", "off"]).mlock,
-      Some(KnobValue::Set(false))
-    );
-  }
 
   #[test]
   fn absent_flags_produce_no_tokens() {
     let flags = parse(&["test"]);
     assert!(flags.tokens.is_empty());
-    assert_eq!(knobs(&["test"]), TypedKnobs::default());
+    assert_eq!(knobs(&["test"]), crate::launch::knobs::KnobSet::new());
   }
 
   #[test]

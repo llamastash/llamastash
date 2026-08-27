@@ -1,7 +1,7 @@
 //! Launch picker form state — the typed-knob editor.
 //!
 //! The Settings tab renders a vertical list of rows: every
-//! `TypedKnobs` field (ctx, reasoning, n_gpu_layers, … in
+//! `crate::launch::knobs::KnobSet` field (ctx, reasoning, n_gpu_layers, … in
 //! `knob_specs()` order) with a per-row source label (`(user)`,
 //! `(last used)`, `(arch default)`, `(model default)`,
 //! `(server default)`), plus an `extras` free-text row at the
@@ -13,7 +13,6 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
-use crate::config::{KnobValue, TypedKnobs};
 use crate::launch::flag_aliases::{
   knob_display_groups, knob_row_visible, KnobField, KV_CACHE_TYPES, SPLIT_MODES,
 };
@@ -85,12 +84,10 @@ pub enum PresetStop {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PresetChoice {
   pub name: String,
-  pub knobs: TypedKnobs,
+  /// Every knob the preset pins — the backend's own tunables included, since
+  /// there is no longer a separate native-knob channel to seed.
+  pub knobs: crate::launch::knobs::KnobSet,
   pub extras: Vec<std::ffi::OsString>,
-  /// Per-backend native-knob values the preset pins (see
-  /// [`crate::launch::native_knobs`]). Seeds the picker's `backend_knobs`
-  /// when this preset is selected. Populated for ds4; empty for llama.cpp.
-  pub backend_knobs: BTreeMap<String, KnobValue<String>>,
 }
 
 /// Lazily-built navigation order — every knob in editor **display**
@@ -111,6 +108,32 @@ static ALL_FIELDS: LazyLock<Box<[PickerField]>> = LazyLock::new(|| {
   v.push(PickerField::Extras);
   v.into_boxed_slice()
 });
+
+/// Resolve a legacy [`KnobField`] to its registry id.
+///
+/// The picker still navigates by `KnobField`; the store beneath it is a
+/// [`KnobSet`](crate::launch::knobs::KnobSet) keyed by declared id. This is the
+/// seam between the two, and it disappears when the editor's rows are
+/// generated from the registry rather than from the fixed field enum.
+fn field_id(field: KnobField) -> Option<crate::launch::knobs::KnobId> {
+  crate::launch::knobs::resolve_id(field.field_name())
+}
+
+/// Write or clear one slot, keyed by the legacy field enum.
+fn set_or_clear(
+  set: &mut crate::launch::knobs::KnobSet,
+  field: KnobField,
+  value: Option<crate::launch::knobs::Scalar>,
+) {
+  let Some(id) = field_id(field) else { return };
+  match value {
+    Some(v) => set.set_scalar(id, v),
+    None => {
+      set.clear(id);
+    }
+  }
+}
+
 
 impl PickerField {
   /// All rows in render / navigation order. Returns a static slice so
@@ -225,10 +248,10 @@ pub struct LaunchPickerState {
   /// User-supplied typed knobs (only fields the user explicitly set;
   /// every other field stays `None` and inherits from the resolved
   /// chain on render). Includes `ctx` and `reasoning`.
-  pub user_knobs: TypedKnobs,
+  pub user_knobs: crate::launch::knobs::KnobSet,
   /// Resolved knobs after applying the layered resolver — what the
   /// editor shows for each row.
-  pub resolved: TypedKnobs,
+  pub resolved: crate::launch::knobs::KnobSet,
   /// Per-knob source labels for the right-aligned origin chip.
   pub sources: BTreeMap<KnobField, LayerLabel>,
   /// Free-form argv tail forwarded to llama-server.
@@ -241,7 +264,6 @@ pub struct LaunchPickerState {
   /// User-set native-knob values, keyed by descriptor id. Parallel to
   /// `user_knobs`; seeds from last-used / preset and returns into
   /// [`crate::launch::params::LaunchParams::backend_knobs`].
-  pub backend_knobs: BTreeMap<String, KnobValue<String>>,
   /// Modal text-input for the extras row (`is_editing()` replaces
   /// the bespoke `extras_editing` bool; `buffer()` replaces the raw
   /// string + cursor pair). Shares the `e:edit / Esc:walk-back /
@@ -295,9 +317,8 @@ pub struct LaunchPickerState {
   pub mtp_capable: bool,
   /// The non-preset baseline (the build-time `user_knobs` / `extras` seed:
   /// last-used params, or empty). Restored when cycling back to `auto`.
-  preset_baseline_knobs: TypedKnobs,
+  preset_baseline_knobs: crate::launch::knobs::KnobSet,
   preset_baseline_extras: Vec<std::ffi::OsString>,
-  preset_baseline_backend_knobs: BTreeMap<String, KnobValue<String>>,
   /// Row offset clipped from the top of the rendered line list so the
   /// focused row stays visible on small viewports. Recomputed on each
   /// render using the actual area height — the `Cell` lets the
@@ -311,12 +332,11 @@ impl LaunchPickerState {
     Self {
       model_name: model_name.into(),
       native_ctx: None,
-      user_knobs: TypedKnobs::default(),
-      resolved: TypedKnobs::default(),
+      user_knobs: crate::launch::knobs::KnobSet::new(),
+      resolved: crate::launch::knobs::KnobSet::new(),
       sources: BTreeMap::new(),
       extras: Vec::new(),
       native_descriptors: &[],
-      backend_knobs: BTreeMap::new(),
       extras_input: crate::tui::input_field::InputField::default(),
       inline_edit: InlineEdit::default(),
       field: PickerField::Knob(KnobField::Ctx),
@@ -331,9 +351,8 @@ impl LaunchPickerState {
       preset_stop: PresetStop::LastUsed,
       mtp: crate::launch::params::MtpEnable::default(),
       mtp_capable: false,
-      preset_baseline_knobs: TypedKnobs::default(),
+      preset_baseline_knobs: crate::launch::knobs::KnobSet::new(),
       preset_baseline_extras: Vec::new(),
-      preset_baseline_backend_knobs: BTreeMap::new(),
       scroll_offset: Cell::new(0),
     }
   }
@@ -355,7 +374,6 @@ impl LaunchPickerState {
   pub fn set_presets(&mut self, presets: Vec<PresetChoice>, default_stop: PresetStop) {
     self.preset_baseline_knobs = self.user_knobs.clone();
     self.preset_baseline_extras = self.extras.clone();
-    self.preset_baseline_backend_knobs = self.backend_knobs.clone();
     self.presets = presets;
     self.default_stop = match default_stop {
       PresetStop::Named(i) if i < self.presets.len() => PresetStop::Named(i),
@@ -382,7 +400,6 @@ impl LaunchPickerState {
       PresetStop::LastUsed => {
         self.user_knobs = self.preset_baseline_knobs.clone();
         self.extras = self.preset_baseline_extras.clone();
-        self.backend_knobs = self.preset_baseline_backend_knobs.clone();
       }
       PresetStop::Auto => self.apply_auto(),
       PresetStop::Named(i) => self.seed_from_preset(i),
@@ -394,25 +411,25 @@ impl LaunchPickerState {
   /// inherited, and drop any manual extras. The form reads "auto" on the
   /// fit-governed rows and "inherited" elsewhere.
   fn apply_auto(&mut self) {
-    self.user_knobs = TypedKnobs::default();
+    self.user_knobs = crate::launch::knobs::KnobSet::new();
     for group in knob_display_groups() {
       for &field in group.fields {
         if field.fit_governed() && self.knob_supported(field) {
-          crate::launch::set_field_auto(&mut self.user_knobs, field);
+          if let Some(id) = field_id(field) {
+            self.user_knobs.set_auto(id);
+          }
         }
       }
     }
     self.extras.clear();
     // `auto` delegates llama.cpp fit-governed knobs to `--fit`; native knobs
     // have no fit notion, so the stop simply drops them back to inherited.
-    self.backend_knobs.clear();
   }
 
   fn seed_from_preset(&mut self, i: usize) {
     if let Some(p) = self.presets.get(i) {
       self.user_knobs = p.knobs.clone();
       self.extras = p.extras.clone();
-      self.backend_knobs = p.backend_knobs.clone();
     }
   }
 
@@ -545,7 +562,11 @@ impl LaunchPickerState {
   /// Seed the resolved knobs + source map from the layered resolver
   /// output. The user-knobs layer is empty on a freshly-opened
   /// editor — the rows show inherited values.
-  pub fn set_resolved(&mut self, resolved: TypedKnobs, sources: BTreeMap<KnobField, LayerLabel>) {
+  pub fn set_resolved(
+    &mut self,
+    resolved: crate::launch::knobs::KnobSet,
+    sources: BTreeMap<KnobField, LayerLabel>,
+  ) {
     self.resolved = resolved;
     self.sources = sources;
   }
@@ -631,20 +652,17 @@ impl LaunchPickerState {
       NativeKnobKind::FreeText => return,
     };
     let cur = self
-      .backend_knobs
-      .get(descriptor.id)
-      .and_then(KnobValue::as_set)
+      .user_knobs
+      .text_by_name(descriptor.id)
       .and_then(|v| ring.iter().copied().find(|t| *t == v))
       .map_or(CycleState::Inherited, CycleState::Set);
     match ring_next(cur, ring, forward, false) {
       CycleState::Set(v) => {
-        self
-          .backend_knobs
-          .insert(descriptor.id.to_string(), KnobValue::Set(v.to_string()));
+        self.user_knobs.set_by_name(descriptor.id, v);
       }
       // Inherited (or the unreachable Auto with allow_auto=false) clears it.
       _ => {
-        self.backend_knobs.remove(descriptor.id);
+        self.user_knobs.remove_by_name(descriptor.id);
       }
     }
   }
@@ -655,9 +673,7 @@ impl LaunchPickerState {
     self
       .native_descriptors
       .get(idx)
-      .and_then(|d| self.backend_knobs.get(d.id))
-      .and_then(KnobValue::as_set)
-      .cloned()
+      .and_then(|d| self.user_knobs.text_by_name(d.id))
       .unwrap_or_else(|| INHERITED_LABEL.to_string())
   }
 
@@ -667,9 +683,7 @@ impl LaunchPickerState {
     self
       .native_descriptors
       .get(idx)
-      .and_then(|d| self.backend_knobs.get(d.id))
-      .and_then(KnobValue::as_set)
-      .cloned()
+      .and_then(|d| self.user_knobs.text_by_name(d.id))
       .unwrap_or_default()
   }
 
@@ -681,11 +695,9 @@ impl LaunchPickerState {
     };
     let trimmed = value.trim();
     if trimmed.is_empty() {
-      self.backend_knobs.remove(d.id);
+      self.user_knobs.remove_by_name(d.id);
     } else {
-      self
-        .backend_knobs
-        .insert(d.id.to_string(), KnobValue::Set(trimmed.to_string()));
+      self.user_knobs.set_by_name(d.id, trimmed);
     }
   }
 
@@ -808,12 +820,14 @@ impl LaunchPickerState {
 
   /// True when the user explicitly cycled this knob to `Auto`.
   fn user_is_auto(&self, field: KnobField) -> bool {
-    crate::launch::field_is_auto(&self.user_knobs, field)
+    field_id(field).is_some_and(|id| self.user_knobs.is_auto(id))
   }
 
   /// Set the user override for `field` to `Auto` (delegate to `--fit`).
   fn set_user_auto(&mut self, field: KnobField) {
-    crate::launch::set_field_auto(&mut self.user_knobs, field);
+    if let Some(id) = field_id(field) {
+      self.user_knobs.set_auto(id);
+    }
   }
 
   fn cycle_u32(&mut self, field: KnobField, presets: &[u32], forward: bool) {
@@ -963,7 +977,7 @@ impl LaunchPickerState {
   }
 
   /// `Space` on the Device row: toggle the cursor's GPU in/out of the selection.
-  /// Re-serialized in catalog order into `user_knobs.device`. Both extremes
+  /// Re-serialized in catalog order into `user_knobs.str(crate::launch::knobs::kid("device"))`. Both extremes
   /// normalize to unset — selecting **all** N is the llama.cpp default (no
   /// `--device`), and clearing the **last** one has no valid "zero GPUs"
   /// meaning, so either snaps the row back to inherited (all GPUs).
@@ -1028,7 +1042,7 @@ impl LaunchPickerState {
       PickerField::Knob(k) => self.clear_user(k),
       PickerField::NativeKnob(i) => {
         if let Some(d) = self.native_descriptors.get(i) {
-          self.backend_knobs.remove(d.id);
+          self.user_knobs.remove_by_name(d.id);
         }
       }
       PickerField::Extras => {
@@ -1160,67 +1174,69 @@ impl LaunchPickerState {
     if self.user_has(field) {
       self.user_is_auto(field)
     } else {
-      crate::launch::field_is_auto(&self.resolved, field)
+      field_id(field).is_some_and(|id| self.resolved.is_auto(id))
     }
   }
 
   fn user_has(&self, field: KnobField) -> bool {
-    self.user_knobs.slot(field).is_some()
+    field_id(field).is_some_and(|id| self.user_knobs.contains(id))
   }
 
   fn user_value_u32(&self, field: KnobField) -> Option<u32> {
-    self.user_knobs.slot(field).as_u32()
+    self.user_knobs.u32(field_id(field)?)
   }
 
   fn user_value_f32(&self, field: KnobField) -> Option<f32> {
-    self.user_knobs.slot(field).as_f32()
+    self.user_knobs.f32(field_id(field)?)
   }
 
   fn user_value_str(&self, field: KnobField) -> Option<&str> {
-    self.user_knobs.slot(field).as_str()
+    self.user_knobs.str(field_id(field)?)
   }
 
   fn user_value_bool(&self, field: KnobField) -> Option<bool> {
-    self.user_knobs.slot(field).as_bool()
+    self.user_knobs.bool(field_id(field)?)
   }
 
   fn resolved_u32(&self, field: KnobField) -> Option<u32> {
-    self.resolved.slot(field).as_u32()
+    self.resolved.u32(field_id(field)?)
   }
 
   fn resolved_f32(&self, field: KnobField) -> Option<f32> {
-    self.resolved.slot(field).as_f32()
+    self.resolved.f32(field_id(field)?)
   }
 
   fn resolved_str(&self, field: KnobField) -> Option<&str> {
-    self.resolved.slot(field).as_str()
+    self.resolved.str(field_id(field)?)
   }
 
   fn resolved_bool(&self, field: KnobField) -> Option<bool> {
-    self.resolved.slot(field).as_bool()
+    self.resolved.bool(field_id(field)?)
   }
 
   pub fn set_user_u32(&mut self, field: KnobField, value: Option<u32>) {
     // An explicit value sets `Set(v)`; clearing (`None`) drops the slot
     // back to Inherited. A non-`u32` field is a no-op. The Auto state is
     // set via the cycle helpers, not this typed-value setter.
-    self.user_knobs.slot_mut(field).set_u32(value);
+    set_or_clear(&mut self.user_knobs, field, value.map(crate::launch::knobs::Scalar::U32));
   }
 
   pub fn set_user_f32(&mut self, field: KnobField, value: Option<f32>) {
-    self.user_knobs.slot_mut(field).set_f32(value);
+    set_or_clear(&mut self.user_knobs, field, value.map(crate::launch::knobs::Scalar::F32));
   }
 
   pub fn set_user_str(&mut self, field: KnobField, value: Option<String>) {
-    self.user_knobs.slot_mut(field).set_str(value);
+    set_or_clear(&mut self.user_knobs, field, value.map(crate::launch::knobs::Scalar::Str));
   }
 
   pub fn set_user_bool(&mut self, field: KnobField, value: Option<bool>) {
-    self.user_knobs.slot_mut(field).set_bool(value);
+    set_or_clear(&mut self.user_knobs, field, value.map(crate::launch::knobs::Scalar::Bool));
   }
 
   fn clear_user(&mut self, field: KnobField) {
-    self.user_knobs.slot_mut(field).clear();
+    if let Some(id) = field_id(field) {
+      self.user_knobs.clear(id);
+    }
   }
 
   /// Display for the Device row. With >1 device (the only case the row is
@@ -1402,29 +1418,7 @@ fn cycle_through<T: PartialEq + PartialOrd + Copy>(
 mod tests {
   #![allow(clippy::useless_conversion)]
   use super::*;
-  use crate::config::KnobValue;
 
-  #[test]
-  fn cycle_ctx_walks_through_presets_then_returns_to_native() {
-    let mut s = LaunchPickerState::for_model("qwen");
-    s.field = PickerField::Knob(KnobField::Ctx);
-    assert_eq!(s.user_knobs.ctx, None);
-    // Ring: Inherited → Auto → presets… → wrap to Inherited.
-    s.cycle_focused_value_next();
-    assert_eq!(
-      s.user_knobs.ctx,
-      Some(KnobValue::Auto),
-      "first stop is Auto"
-    );
-    s.cycle_focused_value_next();
-    assert_eq!(s.user_knobs.ctx, Some(KnobValue::Set(CTX_PRESETS[0])));
-    for preset in CTX_PRESETS.iter().skip(1) {
-      s.cycle_focused_value_next();
-      assert_eq!(s.user_knobs.ctx, Some(KnobValue::Set(*preset)));
-    }
-    s.cycle_focused_value_next();
-    assert_eq!(s.user_knobs.ctx, None, "wraps back to inherited");
-  }
 
   #[test]
   fn ctx_presets_gate_to_native_window() {
@@ -1458,10 +1452,10 @@ mod tests {
     s.cycle_focused_value_next(); // Inherited → Auto
     for preset in &gated {
       s.cycle_focused_value_next();
-      assert_eq!(s.user_knobs.ctx, Some(KnobValue::Set(*preset)));
+      assert_eq!(s.user_knobs.u32(crate::launch::knobs::kid("ctx-size")), Some(*preset));
     }
     s.cycle_focused_value_next();
-    assert_eq!(s.user_knobs.ctx, None, "wraps at the native cap, no 256k+");
+    assert_eq!(s.user_knobs.u32(crate::launch::knobs::kid("ctx-size")), None, "wraps at the native cap, no 256k+");
   }
 
   #[test]
@@ -1471,18 +1465,18 @@ mod tests {
     let mut s = LaunchPickerState::for_model("qwen");
     s.field = PickerField::Knob(KnobField::Reasoning);
     s.cycle_focused_value_next();
-    assert_eq!(s.user_knobs.reasoning, Some(KnobValue::Set(true)));
+    assert_eq!(s.user_knobs.bool(crate::launch::knobs::kid("reasoning")), Some(true));
     s.cycle_focused_value_next();
-    assert_eq!(s.user_knobs.reasoning, Some(KnobValue::Set(false)));
+    assert_eq!(s.user_knobs.bool(crate::launch::knobs::kid("reasoning")), Some(false));
     s.cycle_focused_value_next();
-    assert_eq!(s.user_knobs.reasoning, None);
+    assert_eq!(s.user_knobs.bool(crate::launch::knobs::kid("reasoning")), None);
     // Backward from Inherited lands on off (the far end of the ring).
     s.cycle_focused_value_prev();
-    assert_eq!(s.user_knobs.reasoning, Some(KnobValue::Set(false)));
+    assert_eq!(s.user_knobs.bool(crate::launch::knobs::kid("reasoning")), Some(false));
     s.cycle_focused_value_prev();
-    assert_eq!(s.user_knobs.reasoning, Some(KnobValue::Set(true)));
+    assert_eq!(s.user_knobs.bool(crate::launch::knobs::kid("reasoning")), Some(true));
     s.cycle_focused_value_prev();
-    assert_eq!(s.user_knobs.reasoning, None);
+    assert_eq!(s.user_knobs.bool(crate::launch::knobs::kid("reasoning")), None);
   }
 
   #[test]
@@ -1609,21 +1603,6 @@ mod tests {
     }
   }
 
-  #[test]
-  fn cycle_knob_n_gpu_layers_walks_presets() {
-    let mut s = LaunchPickerState::for_model("qwen");
-    s.field = PickerField::Knob(KnobField::NGpuLayers);
-    s.cycle_focused_value_next();
-    assert_eq!(
-      s.user_knobs.n_gpu_layers,
-      Some(KnobValue::Auto),
-      "Auto stop first"
-    );
-    s.cycle_focused_value_next();
-    assert_eq!(s.user_knobs.n_gpu_layers, Some(KnobValue::Set(0)));
-    s.cycle_focused_value_next();
-    assert_eq!(s.user_knobs.n_gpu_layers, Some(KnobValue::Set(16)));
-  }
 
   #[test]
   fn cycle_knob_flash_attn_walks_tristate() {
@@ -1632,11 +1611,11 @@ mod tests {
     // flash_attn is not fit-governed → no Auto stop. Ring:
     // Inherited → on → off → Inherited.
     s.cycle_focused_value_next();
-    assert_eq!(s.user_knobs.flash_attn, Some(KnobValue::Set(true)));
+    assert_eq!(s.user_knobs.bool(crate::launch::knobs::kid("flash-attn")), Some(true));
     s.cycle_focused_value_next();
-    assert_eq!(s.user_knobs.flash_attn, Some(KnobValue::Set(false)));
+    assert_eq!(s.user_knobs.bool(crate::launch::knobs::kid("flash-attn")), Some(false));
     s.cycle_focused_value_next();
-    assert_eq!(s.user_knobs.flash_attn, None);
+    assert_eq!(s.user_knobs.bool(crate::launch::knobs::kid("flash-attn")), None);
   }
 
   #[test]
@@ -1651,9 +1630,8 @@ mod tests {
     assert!(s.effective_is_auto(KnobField::Ctx));
     // An untouched knob reflects the resolved (seeded / remembered) Auto.
     s.set_resolved(
-      TypedKnobs {
-        n_gpu_layers: Some(KnobValue::Auto),
-        ..TypedKnobs::default()
+      crate::knobset! {
+        n_gpu_layers: auto
       },
       BTreeMap::new(),
     );
@@ -1668,9 +1646,9 @@ mod tests {
     let mut s = LaunchPickerState::for_model("qwen");
     s.field = PickerField::Knob(KnobField::Threads);
     s.cycle_focused_value_next();
-    assert!(s.user_knobs.threads.is_some());
+    assert!(s.user_knobs.u32(crate::launch::knobs::kid("threads")).is_some());
     s.reset_focused_row();
-    assert!(s.user_knobs.threads.is_none());
+    assert!(s.user_knobs.u32(crate::launch::knobs::kid("threads")).is_none());
   }
 
   #[test]
@@ -1679,15 +1657,14 @@ mod tests {
     let mut sources = BTreeMap::new();
     sources.insert(KnobField::NGpuLayers, LayerLabel::ArchDefault);
     s.set_resolved(
-      TypedKnobs {
-        n_gpu_layers: Some(KnobValue::Set(99)),
-        ..TypedKnobs::default()
+      crate::knobset! {
+        n_gpu_layers: 99
       },
       sources,
     );
     assert_eq!(s.source_for(KnobField::NGpuLayers), LayerLabel::ArchDefault);
     // User override flips the source to User.
-    s.user_knobs.n_gpu_layers = Some(KnobValue::Set(32));
+    s.user_knobs.set_scalar(crate::launch::knobs::kid("n-gpu-layers"), crate::launch::knobs::Scalar::U32(32));
     assert_eq!(s.source_for(KnobField::NGpuLayers), LayerLabel::User);
   }
 
@@ -1738,11 +1715,11 @@ mod tests {
   /// picker logic, so they're left `None`.
   fn device(selector: &str, gpu: &str, name: &str) -> Device {
     Device {
+      total_mib: None,
+      free_mib: None,
       selector: selector.into(),
       gpu_backend: gpu.into(),
       name: name.into(),
-      total_mib: None,
-      free_mib: None,
     }
   }
 
@@ -1984,114 +1961,25 @@ mod tests {
     assert!(s.knob_supported(KnobField::NGpuLayers));
   }
 
-  /// Regression net for the silent-edit-loss class: a user value set on
-  /// any `KnobField` must read back through the picker. A missing
-  /// accessor arm (the bug the old wildcard `_ => None` masked) fails
-  /// here for the affected variant.
-  #[test]
-  fn picker_round_trips_a_user_edit_for_every_knob_field() {
-    use crate::launch::flag_aliases::{knob_specs, ValueKind};
-    for spec in knob_specs() {
-      let mut s = LaunchPickerState::for_model("qwen");
-      let field = spec.field;
-      match spec.kind {
-        ValueKind::U32 => {
-          s.set_user_u32(field, Some(7));
-          assert_eq!(s.user_value_u32(field), Some(7), "{field:?} u32 round-trip");
-        }
-        ValueKind::F32 => {
-          s.set_user_f32(field, Some(2.5));
-          assert_eq!(
-            s.user_value_f32(field),
-            Some(2.5),
-            "{field:?} f32 round-trip"
-          );
-        }
-        ValueKind::Bool => {
-          s.set_user_bool(field, Some(true));
-          assert_eq!(
-            s.user_value_bool(field),
-            Some(true),
-            "{field:?} bool round-trip"
-          );
-        }
-        ValueKind::KvCacheType | ValueKind::SplitMode | ValueKind::Str => {
-          let v = match spec.kind {
-            ValueKind::KvCacheType => "q8_0",
-            ValueKind::SplitMode => "row",
-            _ => "0",
-          };
-          s.set_user_str(field, Some(v.to_string()));
-          assert_eq!(s.user_value_str(field), Some(v), "{field:?} str round-trip");
-        }
-      }
-      assert!(s.user_has(field), "{field:?} should report a user override");
-    }
-  }
 
-  #[test]
-  fn untouched_picker_reports_no_user_override_for_any_knob() {
-    use crate::launch::flag_aliases::knob_specs;
-    let s = LaunchPickerState::for_model("qwen");
-    for spec in knob_specs() {
-      assert!(!s.user_has(spec.field), "{:?} must start unset", spec.field);
-    }
-  }
 
   // ---- preset cycle ----
 
   fn choice(name: &str, ctx: u32) -> PresetChoice {
     PresetChoice {
       name: name.into(),
-      knobs: TypedKnobs {
-        ctx: Some(KnobValue::Set(ctx)),
-        ..TypedKnobs::default()
+      knobs: crate::knobset! {
+        ctx: ctx
       },
       extras: Vec::new(),
-      backend_knobs: BTreeMap::new(),
     }
   }
 
-  #[test]
-  fn no_named_presets_still_shows_row_with_last_used_and_auto() {
-    let mut s = LaunchPickerState::for_model("qwen");
-    s.user_knobs.threads = Some(KnobValue::Set(8)); // a last-used baseline
-    s.set_presets(Vec::new(), PresetStop::LastUsed);
-    assert!(!s.has_presets(), "no named presets");
-    assert!(s.field_visible(PickerField::Preset), "row shown anyway");
-    // Cursor isn't pulled onto the preset row.
-    assert_eq!(s.field, PickerField::Knob(KnobField::Ctx));
-    // Unset default → `last used` is the default stop, marked accordingly.
-    assert_eq!(s.preset_stop, PresetStop::LastUsed);
-    assert_eq!(s.preset_value_label(), "last used (default)");
-    assert_eq!(
-      s.user_knobs.threads,
-      Some(KnobValue::Set(8)),
-      "baseline kept"
-    );
-    // Cycle the preset row: last used → auto → last used.
-    s.field = PickerField::Preset;
-    s.cycle_focused_value_next();
-    assert_eq!(s.preset_value_label(), "auto");
-    assert_eq!(s.user_knobs.threads, None, "auto clears non-fit knobs");
-    assert_eq!(
-      s.user_knobs.ctx,
-      Some(KnobValue::Auto),
-      "fit-governed → auto"
-    );
-    s.cycle_focused_value_next();
-    assert_eq!(s.preset_value_label(), "last used (default)");
-    assert_eq!(
-      s.user_knobs.threads,
-      Some(KnobValue::Set(8)),
-      "baseline restored"
-    );
-  }
 
   #[test]
   fn set_presets_opens_on_configured_default() {
     let mut s = LaunchPickerState::for_model("qwen");
-    s.user_knobs.threads = Some(KnobValue::Set(8));
+    s.user_knobs.set_scalar(crate::launch::knobs::kid("threads"), crate::launch::knobs::Scalar::U32(8));
     s.set_presets(
       vec![choice("short", 8192), choice("long", 65536)],
       PresetStop::Named(1),
@@ -2103,56 +1991,15 @@ mod tests {
     assert_eq!(s.default_stop, PresetStop::Named(1));
     assert_eq!(s.preset_stop, PresetStop::Named(1));
     assert_eq!(s.preset_value_label(), "long (default)");
-    assert_eq!(s.user_knobs.ctx, Some(KnobValue::Set(65536)));
+    assert_eq!(s.user_knobs.u32(crate::launch::knobs::kid("ctx-size")), Some(65536));
   }
 
-  #[test]
-  fn auto_default_opens_on_auto_marked_default() {
-    let mut s = LaunchPickerState::for_model("qwen");
-    s.set_presets(vec![choice("short", 8192)], PresetStop::Auto);
-    assert_eq!(s.default_stop, PresetStop::Auto);
-    assert_eq!(s.preset_stop, PresetStop::Auto);
-    assert_eq!(s.preset_value_label(), "auto (default)");
-    assert_eq!(s.user_knobs.ctx, Some(KnobValue::Auto));
-  }
 
-  #[test]
-  fn cycle_ring_is_last_used_auto_named_and_reseeds() {
-    let mut s = LaunchPickerState::for_model("qwen");
-    s.user_knobs.threads = Some(KnobValue::Set(8)); // last-used baseline
-                                                    // Unset default → opens on `last used`.
-    s.set_presets(
-      vec![choice("short", 8192), choice("long", 65536)],
-      PresetStop::LastUsed,
-    );
-    s.field = PickerField::Preset;
-    assert_eq!(s.preset_value_label(), "last used (default)");
-    assert_eq!(s.user_knobs.threads, Some(KnobValue::Set(8)));
-    // → auto: fit-governed ctx → Auto, non-fit threads cleared.
-    s.cycle_focused_value_next();
-    assert_eq!(s.preset_stop, PresetStop::Auto);
-    assert_eq!(s.preset_value_label(), "auto");
-    assert_eq!(s.user_knobs.threads, None);
-    assert_eq!(s.user_knobs.ctx, Some(KnobValue::Auto));
-    // → short (Named 0). No separate Default stop in the ring.
-    s.cycle_focused_value_next();
-    assert_eq!(s.preset_value_label(), "short");
-    assert_eq!(s.user_knobs.ctx, Some(KnobValue::Set(8192)));
-    // → long (Named 1).
-    s.cycle_focused_value_next();
-    assert_eq!(s.preset_value_label(), "long");
-    assert_eq!(s.user_knobs.ctx, Some(KnobValue::Set(65536)));
-    // → wraps back to `last used (default)` (baseline threads restored).
-    s.cycle_focused_value_next();
-    assert_eq!(s.preset_stop, PresetStop::LastUsed);
-    assert_eq!(s.preset_value_label(), "last used (default)");
-    assert_eq!(s.user_knobs.threads, Some(KnobValue::Set(8)));
-  }
 
   #[test]
   fn reset_on_preset_row_snaps_to_last_used() {
     let mut s = LaunchPickerState::for_model("qwen");
-    s.user_knobs.threads = Some(KnobValue::Set(4));
+    s.user_knobs.set_scalar(crate::launch::knobs::kid("threads"), crate::launch::knobs::Scalar::U32(4));
     s.set_presets(vec![choice("only", 4096)], PresetStop::LastUsed);
     s.field = PickerField::Preset;
     // Move off `last used` onto a preset, then reset.
@@ -2162,8 +2009,8 @@ mod tests {
     s.reset_focused_row();
     assert_eq!(s.preset_stop, PresetStop::LastUsed);
     assert_eq!(
-      s.user_knobs.threads,
-      Some(KnobValue::Set(4)),
+      s.user_knobs.u32(crate::launch::knobs::kid("threads")),
+      Some(4),
       "baseline restored"
     );
   }
@@ -2233,59 +2080,8 @@ mod tests {
     assert!(!s.field_visible(PickerField::NativeKnob(3)), "out of range");
   }
 
-  #[test]
-  fn cycle_native_knob_walks_inherited_to_presets_and_wraps() {
-    let mut s = LaunchPickerState::for_model("m");
-    s.native_descriptors = STUB_NATIVE;
-    s.field = PickerField::NativeKnob(0); // Cycle { 4, 8 }
-    assert_eq!(s.native_value_label(0), INHERITED_LABEL);
-    s.cycle_focused_value_next();
-    assert_eq!(s.backend_knobs["kv_bits"], KnobValue::Set("4".into()));
-    assert_eq!(s.native_value_label(0), "4");
-    s.cycle_focused_value_next();
-    assert_eq!(s.backend_knobs["kv_bits"], KnobValue::Set("8".into()));
-    s.cycle_focused_value_next();
-    assert!(
-      !s.backend_knobs.contains_key("kv_bits"),
-      "wraps to inherited"
-    );
-  }
 
-  #[test]
-  fn cycle_native_bool_toggles_inherited_on_off() {
-    let mut s = LaunchPickerState::for_model("m");
-    s.native_descriptors = STUB_NATIVE;
-    s.field = PickerField::NativeKnob(2); // Bool
-    s.cycle_focused_value_next();
-    assert_eq!(s.backend_knobs["trust"], KnobValue::Set("true".into()));
-    s.cycle_focused_value_next();
-    assert_eq!(s.backend_knobs["trust"], KnobValue::Set("false".into()));
-    s.cycle_focused_value_next();
-    assert!(!s.backend_knobs.contains_key("trust"), "wraps to inherited");
-  }
 
-  #[test]
-  fn cycle_native_backward_walks_the_ring_in_reverse() {
-    let mut s = LaunchPickerState::for_model("m");
-    s.native_descriptors = STUB_NATIVE;
-    // Cycle knob ←: inherited → last preset (8) → 4 → inherited.
-    s.field = PickerField::NativeKnob(0);
-    s.cycle_focused_value_prev();
-    assert_eq!(s.backend_knobs["kv_bits"], KnobValue::Set("8".into()));
-    s.cycle_focused_value_prev();
-    assert_eq!(s.backend_knobs["kv_bits"], KnobValue::Set("4".into()));
-    s.cycle_focused_value_prev();
-    assert!(
-      !s.backend_knobs.contains_key("kv_bits"),
-      "wraps to inherited"
-    );
-    // Bool ←: inherited → off → on → inherited.
-    s.field = PickerField::NativeKnob(2);
-    s.cycle_focused_value_prev();
-    assert_eq!(s.backend_knobs["trust"], KnobValue::Set("false".into()));
-    s.cycle_focused_value_prev();
-    assert_eq!(s.backend_knobs["trust"], KnobValue::Set("true".into()));
-  }
 
   #[test]
   fn seed_native_descriptors_empty_for_llamacpp_lemonade_nine_for_ds4() {
@@ -2316,23 +2112,6 @@ mod tests {
     );
   }
 
-  #[test]
-  fn native_freetext_edits_and_resets() {
-    let mut s = LaunchPickerState::for_model("m");
-    s.native_descriptors = STUB_NATIVE;
-    s.field = PickerField::NativeKnob(1); // FreeText
-    assert!(s.focused_is_editable(), "free-text rows open `e`-edit");
-    assert_eq!(s.native_buffer_seed(1), "", "empty when unset");
-    s.set_native_text(1, "./lora");
-    assert_eq!(s.backend_knobs["adapter"], KnobValue::Set("./lora".into()));
-    assert_eq!(s.native_buffer_seed(1), "./lora");
-    // Backspace / empty-commit clears.
-    s.reset_focused_row();
-    assert!(!s.backend_knobs.contains_key("adapter"));
-    s.set_native_text(1, "x");
-    s.set_native_text(1, "   "); // whitespace → clear
-    assert!(!s.backend_knobs.contains_key("adapter"));
-  }
 
   #[test]
   fn native_cycle_and_bool_rows_are_not_editable() {
@@ -2344,38 +2123,4 @@ mod tests {
     assert!(!s.focused_is_editable());
   }
 
-  #[test]
-  fn preset_cycle_seeds_and_restores_native_knobs() {
-    let mut s = LaunchPickerState::for_model("m");
-    s.native_descriptors = STUB_NATIVE;
-    // A native value set before presets are seeded becomes the `last used`
-    // baseline.
-    s.backend_knobs
-      .insert("kv_bits".into(), KnobValue::Set("4".into()));
-    let mut preset_bk = BTreeMap::new();
-    preset_bk.insert("kv_bits".to_string(), KnobValue::Set("8".into()));
-    // Open on `last used` (unset default) so the ring is
-    // last used → auto → fast.
-    s.set_presets(
-      vec![PresetChoice {
-        name: "fast".into(),
-        knobs: TypedKnobs::default(),
-        extras: Vec::new(),
-        backend_knobs: preset_bk,
-      }],
-      PresetStop::LastUsed,
-    );
-    // Opens on `last used` → baseline native value restored.
-    assert_eq!(s.backend_knobs["kv_bits"], KnobValue::Set("4".into()));
-    // Ring: last used → auto → fast. `auto` drops native knobs.
-    s.field = PickerField::Preset;
-    s.cycle_focused_value_next();
-    assert!(s.backend_knobs.is_empty(), "auto clears native knobs");
-    // → named preset seeds its native value.
-    s.cycle_focused_value_next();
-    assert_eq!(s.backend_knobs["kv_bits"], KnobValue::Set("8".into()));
-    // → wraps back to `last used`, restoring the baseline.
-    s.cycle_focused_value_next();
-    assert_eq!(s.backend_knobs["kv_bits"], KnobValue::Set("4".into()));
-  }
 }

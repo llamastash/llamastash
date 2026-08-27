@@ -511,8 +511,8 @@ async fn presets_save_list_delete_round_trip() {
   // confirm via config.yaml (presets live there now, not state.json)
   let cfg = llamastash::config::load_config_from_path(&h.config_path).config;
   assert_eq!(
-    cfg.presets["m.gguf"].entries["long-ctx"].knobs.ctx,
-    Some(llamastash::config::KnobValue::Set(32768)),
+    cfg.presets["m.gguf"].entries["long-ctx"].knobs.u32(llamastash::launch::knobs::kid("ctx-size")),
+    Some(32768),
     "preset should round-trip into config.yaml: {:?}",
     cfg.presets
   );
@@ -774,12 +774,12 @@ async fn start_preset_chain_seeds_supervisor_with_saved_params() {
   loop {
     let lp = client.call("last_params_list", None).await.unwrap();
     let arr = lp["last_params"].as_array().cloned().unwrap_or_default();
-    // U4 recorder contract: the daemon persists *user-set knobs only*,
-    // and stops persisting the resolved top-level `ctx`/`reasoning`
-    // (those are now Null/false). The preset's ctx/reasoning/threads
-    // live in the `knobs` sub-object.
+    // U4 recorder contract: the daemon persists *user-set knobs only*, and
+    // stops persisting the resolved top-level `ctx`/`reasoning` (those are
+    // Null/false). Everything the preset pinned lands in the one `knobs` map,
+    // under each knob's declared id.
     if arr.iter().any(|row| {
-      row["params"]["knobs"]["ctx"] == serde_json::json!(16384)
+      row["params"]["knobs"]["ctx-size"] == serde_json::json!(16384)
         && row["params"]["knobs"]["reasoning"] == serde_json::json!(true)
         && row["params"]["knobs"]["threads"] == serde_json::json!(8)
     }) {
@@ -787,7 +787,7 @@ async fn start_preset_chain_seeds_supervisor_with_saved_params() {
     }
     if Instant::now() > deadline {
       panic!(
-        "supervisor should have recorded preset knobs.ctx + knobs.reasoning + knobs.threads: {arr:?}",
+        "supervisor should have recorded the preset's ctx + reasoning + threads: {arr:?}",
       );
     }
     tokio::time::sleep(Duration::from_millis(100)).await;

@@ -175,7 +175,7 @@ pub(crate) fn backend_badge(row: &CatalogRow, placeholder: &str) -> String {
 
 /// The explicit `--device` selector a running launch was dispatched with,
 /// or `None` when it took the backend's default placement. One reader for
-/// the `knobs.device` wire path, shared by the DEVICE cell and the
+/// the `knobs.str(crate::launch::knobs::kid("device"))` wire path, shared by the DEVICE cell and the
 /// `list --json` per-row `status` object.
 fn device_selector(row: &RunningRow) -> Option<&str> {
   row

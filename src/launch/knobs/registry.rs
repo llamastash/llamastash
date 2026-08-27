@@ -107,6 +107,39 @@ pub fn resolve_id(key: &str) -> Option<KnobId> {
   None
 }
 
+/// Resolve a key **within one backend's own vocabulary** first.
+///
+/// [`resolve_id`] is backend-blind: it returns the first declaration matching
+/// the key anywhere in the registry. That is right for the CLI, where a flag
+/// must parse before the serving backend is known — but wrong for a backend
+/// writing its own knob, because a name one backend declares as an *alias*
+/// (llama.cpp's `-c`/`ctx` for `ctx-size`) can shadow another's *canonical*
+/// id (ds4's `ctx`). Writing through the blind lookup then stores the value
+/// under an id the emitting backend never reads.
+///
+/// Order: this backend's canonical ids, then its aliases, then its concepts,
+/// then the global fallback.
+pub fn resolve_id_for(backend_id: &str, key: &str) -> Option<KnobId> {
+  let want = normalise(key);
+  let defs = for_backend(backend_id);
+  if let Some(d) = defs.iter().find(|d| normalise(d.id) == want) {
+    return Some(d.knob_id());
+  }
+  if let Some(d) = defs
+    .iter()
+    .find(|d| d.aliases.iter().any(|a| normalise(a) == want))
+  {
+    return Some(d.knob_id());
+  }
+  if let Some(d) = defs.iter().find(|d| {
+    d.concept
+      .is_some_and(|c| normalise(c.neutral_flag()) == want)
+  }) {
+    return Some(d.knob_id());
+  }
+  resolve_id(key)
+}
+
 /// The first definition for `id`, whichever backend declared it. Used where a
 /// surface needs the kind/label/help but not the owning backend (CLI `--help`,
 /// value parsing).

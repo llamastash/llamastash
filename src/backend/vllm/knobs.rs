@@ -17,7 +17,7 @@
 //! concept; the V concept has no vLLM counterpart, so a `cache-type-v` value
 //! does not carry into a vLLM launch and is reported as dropped.
 
-use crate::launch::knobs::{AutoKind, Concept, Emit, Group, KnobDef, KnobKind};
+use crate::launch::knobs::{AutoKind, Concept, Emit, Group, KnobDef, KnobKind, Shape};
 use crate::launch::params::LayerLabel;
 
 pub const KNOBS: &[KnobDef] = &[
@@ -113,6 +113,7 @@ pub const KNOBS: &[KnobDef] = &[
     concept: Some(Concept::KvCacheKType),
     kind: KnobKind::OpenEnum {
       choices: &["auto", "fp8", "fp8_e5m2", "fp8_e4m3"],
+      shape: Shape::Identifier,
     },
     auto: None,
     group: Group::Attention,
@@ -128,6 +129,7 @@ pub const KNOBS: &[KnobDef] = &[
     concept: None,
     kind: KnobKind::OpenEnum {
       choices: &["awq", "gptq", "fp8", "bitsandbytes"],
+      shape: Shape::Identifier,
     },
     auto: None,
     group: Group::Advanced,

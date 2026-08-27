@@ -1,14 +1,14 @@
 //! llama.cpp's declared knobs.
 //!
 //! Transcribed from the pre-registry `SPECS` table (`launch/flag_aliases.rs`)
-//! and `TypedKnobs`, so the flag spellings, aliases, help text and emission
+//! and `crate::launch::knobs::KnobSet`, so the flag spellings, aliases, help text and emission
 //! order are unchanged — the composed argv must stay byte-identical through the
 //! registry migration.
 //!
 //! Order is the canonical emission order: argv diffs stay readable across
 //! releases, and the editor renders rows in this order within each group.
 
-use crate::launch::knobs::{AutoKind, Concept, Emit, Group, KnobDef, KnobKind};
+use crate::launch::knobs::{AutoKind, Concept, Emit, Group, KnobDef, KnobKind, Shape};
 use crate::launch::params::LayerLabel;
 
 /// Ceiling llamastash accepts for a context window, mirroring the daemon's
@@ -98,7 +98,7 @@ pub const KNOBS: &[KnobDef] = &[
     id: "tensor-split",
     flag: None,
     concept: None,
-    kind: KnobKind::Str,
+    kind: KnobKind::Ratio,
     auto: Some(AutoKind::Delegate),
     group: Group::MultiGpu,
     label: "Tensor split",
@@ -154,6 +154,7 @@ pub const KNOBS: &[KnobDef] = &[
     concept: Some(Concept::KvCacheKType),
     kind: KnobKind::OpenEnum {
       choices: KV_CACHE_TYPES,
+      shape: Shape::Identifier,
     },
     auto: None,
     group: Group::Attention,
@@ -169,6 +170,7 @@ pub const KNOBS: &[KnobDef] = &[
     concept: Some(Concept::KvCacheVType),
     kind: KnobKind::OpenEnum {
       choices: KV_CACHE_TYPES,
+      shape: Shape::Identifier,
     },
     auto: None,
     group: Group::Attention,

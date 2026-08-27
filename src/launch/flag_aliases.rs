@@ -10,7 +10,7 @@
 use crate::launch::params::LayerLabel;
 
 /// One typed knob the editor surfaces. Keep in sync with
-/// `TypedKnobs` in `crate::config`.
+/// `crate::launch::knobs::KnobSet` in `crate::config`.
 ///
 /// `Ctx` and `Reasoning` are surfaced as typed knobs so the resolver
 /// chain and the editor render them through the same layer-source
@@ -62,7 +62,7 @@ impl KnobField {
     )
   }
 
-  /// The snake_case serde key this knob serialises under in `TypedKnobs`
+  /// The snake_case serde key this knob serialises under in `crate::launch::knobs::KnobSet`
   /// and persisted state. Single source for any field-name display (the
   /// Settings label, error text) so a label can never drift from the
   /// persisted JSON key — a drift test pins it against the actual serde

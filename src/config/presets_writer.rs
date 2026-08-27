@@ -64,7 +64,7 @@ fn serialise(body: &impl Serialize) -> Result<YamlValue, WriteError> {
 }
 
 /// Drop top-level `null` values so an entry only carries set fields (a
-/// default [`crate::config::TypedKnobs`] serialises all knobs, most as
+/// default [`crate::launch::knobs::KnobSet`] serialises all knobs, most as
 /// `null`). The body is flat, so a single-level prune suffices; an `Auto`
 /// knob serialises as the non-null `auto` token (and a literal-`auto` `Set`
 /// as the `{ value: … }` escape), so both survive the prune.

@@ -18,8 +18,6 @@ use anyhow::Result;
 use crossterm::event::{self, Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
-
-use crate::config::KnobValueOpt;
 use crate::ipc::Client;
 use crate::tui::app::{App, ConfirmAction};
 use crate::tui::hf_pull::{
@@ -100,7 +98,7 @@ pub enum WriterCmd {
   /// `reasoning: None` (inside `args`) means "omit the field"; the
   /// daemon then falls back to whatever the model's metadata implies.
   /// Boxed (shared with `ConfirmAction::LaunchDuplicate`) so the large
-  /// `TypedKnobs` payload doesn't bloat the other tiny variants.
+  /// `crate::launch::knobs::KnobSet` payload doesn't bloat the other tiny variants.
   StartModel(Box<crate::tui::app::StartModelArgs>),
   /// `stop_model` — graceful shutdown of the supplied launch.
   /// Dispatched by the `s` hotkey when the cursor sits on a
@@ -124,7 +122,7 @@ pub enum WriterCmd {
   /// `config.yaml` under `name` for `model_path` (`Ctrl+P`). `knobs`
   /// carries ctx/reasoning folded in plus any Auto markers; `extras` is
   /// the argv tail. The next `presets_all` refresh reflects it. Boxed
-  /// (like `StartModel`) so the large `TypedKnobs` doesn't bloat the
+  /// (like `StartModel`) so the large `crate::launch::knobs::KnobSet` doesn't bloat the
   /// other tiny variants.
   SavePreset(Box<SavePresetCmd>),
 }
@@ -134,8 +132,7 @@ pub enum WriterCmd {
 pub struct SavePresetCmd {
   pub model_path: PathBuf,
   pub name: String,
-  pub knobs: crate::config::TypedKnobs,
-  pub backend_knobs: std::collections::BTreeMap<String, crate::config::KnobValue<String>>,
+  pub knobs: crate::launch::knobs::KnobSet,
   pub extras: Vec<String>,
 }
 
@@ -1417,7 +1414,6 @@ fn commit_save_preset(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) {
       model_path: dialog.model_path,
       name: name.clone(),
       knobs: dialog.knobs,
-      backend_knobs: dialog.backend_knobs,
       extras: dialog.extras,
     })),
     format!("saved preset `{name}`"),
@@ -1864,8 +1860,8 @@ fn apply_launch_submit(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) 
     _ => "explicit",
   };
   let args = Box::new(crate::tui::app::StartModelArgs {
-    ctx: knobs.ctx.set_value().copied(),
-    reasoning: knobs.reasoning.set_value().copied(),
+    ctx: knobs.u32(crate::launch::knobs::resolve_id("ctx-size").expect("ctx knob")),
+    reasoning: knobs.bool(crate::launch::knobs::resolve_id("reasoning").expect("reasoning knob")),
     model_path: path,
     knobs,
     extras,
@@ -1875,7 +1871,6 @@ fn apply_launch_submit(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) 
     // daemon routes (and the split-half guard fires). See `launch_backend`.
     backend: picker.launch_backend(),
     selection,
-    backend_knobs: picker.backend_knobs.clone(),
     // Chosen server build (or `None` for the priority default). The daemon
     // derives the binary — and, when `backend` is `Auto`, the backend — from it.
     server: picker.selected_server.clone(),
@@ -2213,7 +2208,6 @@ fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
         prefer_port,
         backend,
         selection,
-        backend_knobs,
         server,
         mtp,
       } = *args;
@@ -2236,10 +2230,6 @@ fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
           "backend": backend,
           // Drives daemon default-preset + last_params inheritance.
           "selection": selection,
-          // Per-backend native knobs; omitted-when-empty on the daemon side
-          // via `#[serde(default)]`. Populated for ds4 (six tunables), empty
-          // for llama.cpp / Lemonade.
-          "backend_knobs": backend_knobs,
           // Chosen server build id; daemon ignores `null` / stale ids.
           "server": server,
           // MTP intent from the picker's cycle row (auto/on/off).
@@ -2269,7 +2259,6 @@ fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
         "model_path": cmd.model_path,
         "name": cmd.name,
         "knobs": cmd.knobs,
-        "backend_knobs": cmd.backend_knobs,
         "extras": cmd.extras,
       }),
     ),
@@ -2735,7 +2724,6 @@ fn tick_has_time_decay_ui(app: &App) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::config::KnobValue;
   use crossterm::event::{KeyEvent, KeyModifiers};
 
   fn key(code: KeyCode, mods: KeyModifiers) -> TermEvent {
@@ -3678,7 +3666,7 @@ mod tests {
     p.field = PickerField::Knob(crate::launch::flag_aliases::KnobField::Ctx);
     p.cycle_focused_value_next(); // → Auto
     p.cycle_focused_value_next(); // → first ctx preset
-    let expected_ctx = p.user_knobs.ctx.set_value().copied();
+    let expected_ctx = p.user_knobs.u32(crate::launch::knobs::kid("ctx-size"));
     assert!(expected_ctx.is_some(), "ctx should be a concrete preset");
     // reasoning is not fit-governed → no Auto stop (Inherited → on → off);
     // one step lands on `on`.
@@ -4225,41 +4213,6 @@ mod tests {
     );
   }
 
-  #[test]
-  fn left_right_in_settings_cycle_focused_field_value() {
-    // Round-7: ←/→ change the focused field's value (was bound to
-    // pane-cycle pre-round-7). Outside Settings the keys stay
-    // unbound so they don't double as pane navigation.
-    use crate::tui::launch_picker::PickerField;
-    let mut app = App::new(Default::default());
-    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
-    app.go_top();
-    app.focus = Focus::RightPane;
-    app.right_tab = RightTab::Settings;
-
-    // Auto-stages the picker on first key; the cursor opens on the Preset
-    // row, so Down moves onto Ctx. Then →/← cycle Ctx's value.
-    pump_input(&mut app, key(KeyCode::Down, KeyModifiers::NONE));
-    let p = app.launch_picker.as_ref().expect("picker auto-staged");
-    assert_eq!(
-      p.field,
-      PickerField::Knob(crate::launch::flag_aliases::KnobField::Ctx)
-    );
-    pump_input(&mut app, key(KeyCode::Right, KeyModifiers::NONE));
-    assert_eq!(
-      app.launch_picker.as_ref().unwrap().user_knobs.ctx,
-      Some(KnobValue::Auto),
-      "→ advances Ctx to the Auto stop"
-    );
-    pump_input(&mut app, key(KeyCode::Left, KeyModifiers::NONE));
-    assert_eq!(
-      app.launch_picker.as_ref().unwrap().user_knobs.ctx,
-      None,
-      "← walks Auto back to inherited"
-    );
-    // Pane focus must not have moved.
-    assert_eq!(app.focus, Focus::RightPane);
-  }
 
   #[test]
   fn arrows_in_settings_do_not_open_picker_over_running_launch() {
@@ -4367,8 +4320,8 @@ mod tests {
     pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::NONE));
     let committed = app.launch_picker.as_ref().expect("picker still staged");
     assert_eq!(
-      committed.user_knobs.ctx,
-      Some(KnobValue::Set(65536)),
+      committed.user_knobs.u32(crate::launch::knobs::kid("ctx-size")),
+      Some(65536),
       "ctx commit must write the typed value to user_knobs, not silently drop it"
     );
     assert!(

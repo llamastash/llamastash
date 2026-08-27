@@ -29,7 +29,6 @@
 
 use std::sync::Mutex;
 
-use crate::config::{KnobValueOpt, TypedKnobs};
 use crate::daemon::host_metrics::HostMetricsSnapshot;
 use crate::gguf::header::GgufHeader;
 use crate::gguf::memory::{kv_bytes, parse_cache_type, EstimateOptions};
@@ -235,10 +234,12 @@ pub fn effective_free_bytes(snap: &HostMetricsSnapshot) -> u64 {
 /// GTT-pool budget in [`effective_free_bytes`] bounds it, and the
 /// in-process load check is the final backstop. Weights dominate demand,
 /// so the gross "this model is too big" case is always caught here.
+#[allow(clippy::too_many_arguments)] // one arg per independent memory input
 pub fn project_demand(
   header: &GgufHeader,
   arch: Option<&str>,
-  knobs: &TypedKnobs,
+  knobs: &crate::launch::knobs::KnobSet,
+  backend_id: &str,
   effective_ctx: u32,
   backend: &str,
   weights_total_bytes: u64,
@@ -246,8 +247,8 @@ pub fn project_demand(
 ) -> u64 {
   let opts = EstimateOptions {
     ctx_len: effective_ctx as u64,
-    cache_type_k: parse_cache_type(knobs.cache_type_k.set_value().map(String::as_str)),
-    cache_type_v: parse_cache_type(knobs.cache_type_v.set_value().map(String::as_str)),
+    cache_type_k: parse_cache_type(knobs.str_by_concept(backend_id, crate::launch::knobs::Concept::KvCacheKType)),
+    cache_type_v: parse_cache_type(knobs.str_by_concept(backend_id, crate::launch::knobs::Concept::KvCacheVType)),
     // The GPU/RAM split is not modelled here — demand is the combined
     // total against the combined pool free — so `n_gpu_layers` would be
     // ignored downstream. Left unset rather than threaded in.
@@ -470,13 +471,14 @@ mod tests {
       metadata: std::collections::HashMap::new(),
       tensors: Vec::new(),
     };
-    let knobs = TypedKnobs::default();
+    let knobs = crate::launch::knobs::KnobSet::new();
     // arch `None` → KV term is 0, isolating weights + overhead band.
     let band = overhead_band_bytes(HostMetricsSnapshot::BACKEND_AMD);
     let demand = project_demand(
       &header,
       None,
       &knobs,
+      crate::backend::DEFAULT_BACKEND_ID,
       16384,
       HostMetricsSnapshot::BACKEND_AMD,
       53 * GIB,
@@ -493,6 +495,7 @@ mod tests {
       &header,
       None,
       &knobs,
+      crate::backend::DEFAULT_BACKEND_ID,
       16384,
       HostMetricsSnapshot::BACKEND_AMD,
       53 * GIB,

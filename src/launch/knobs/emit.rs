@@ -77,8 +77,14 @@ fn push(
     return;
   }
   if let Some(v) = value {
-    let head = v.split('=').next().unwrap_or(v);
-    if head.starts_with('-') && is_forbidden_head_ext(head, extra_forbidden) {
+    // Scan every whitespace-separated token, not just the leading one: a
+    // free-text value like `/x --cors` would otherwise smuggle a denylisted
+    // flag through as one argv element the engine still splits on.
+    let smuggles = v.split_whitespace().any(|tok| {
+      let head = tok.split('=').next().unwrap_or(tok);
+      head.starts_with('-') && is_forbidden_head_ext(head, extra_forbidden)
+    });
+    if smuggles {
       log::warn!("knob `{}`: refusing denylisted value", def.id);
       return;
     }

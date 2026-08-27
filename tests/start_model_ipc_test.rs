@@ -17,7 +17,7 @@ use std::time::Duration;
 use std::collections::BTreeMap;
 
 use llamastash::config::loader::PortRange;
-use llamastash::config::{ConfigPresetBlock, KnobValue, PresetBody, TypedKnobs};
+use llamastash::config::{ConfigPresetBlock, PresetBody};
 use llamastash::daemon::state_store;
 use llamastash::daemon::{run_foreground, DaemonOptions};
 use llamastash::gguf::test_fixtures::build_minimal_gguf;
@@ -573,7 +573,7 @@ async fn last_params_persists_only_user_supplied_knob_deltas() {
   let deadline = std::time::Instant::now() + Duration::from_secs(60);
   loop {
     let s = state_store::load(&state_dir).expect("load state");
-    if !s.last_params.is_empty() && s.last_params[0].params.knobs.threads == Some(KnobValue::Set(4))
+    if !s.last_params.is_empty() && s.last_params[0].params.knobs.u32(llamastash::launch::knobs::kid("threads")) == Some(4)
     {
       break;
     }
@@ -616,7 +616,7 @@ async fn last_params_persists_only_user_supplied_knob_deltas() {
   let knobs = loop {
     let s = state_store::load(&state_dir).expect("load state");
     if let Some(entry) = s.last_params.first() {
-      if entry.params.knobs.mlock == Some(KnobValue::Set(true)) {
+      if entry.params.knobs.bool(llamastash::launch::knobs::kid("mlock")) == Some(true) {
         break entry.params.knobs.clone();
       }
     }
@@ -628,25 +628,25 @@ async fn last_params_persists_only_user_supplied_knob_deltas() {
 
   // The contract: only the call-2 delta survives on disk.
   assert_eq!(
-    knobs.mlock,
-    Some(KnobValue::Set(true)),
+    knobs.bool(llamastash::launch::knobs::kid("mlock")),
+    Some(true),
     "user-supplied mlock must persist verbatim"
   );
   assert_eq!(
-    knobs.threads, None,
+    knobs.u32(llamastash::launch::knobs::kid("threads")), None,
     "threads came from `last_used` resolver layer, NOT user input on \
      call 2 — persistence must drop it so the source chip can stay \
      `(last used)` on the next launch rather than collapsing to \
      `(user)`. Got: {:?}",
-    knobs.threads
+    knobs.u32(llamastash::launch::knobs::kid("threads"))
   );
   // Spot-check a few other fields that the resolver might fill (GPU
   // backends seed `n_gpu_layers`; some arches seed `flash_attn`).
   // Whatever the resolver decided, none of it is in the user delta.
-  assert_eq!(knobs.n_gpu_layers, None);
-  assert_eq!(knobs.flash_attn, None);
-  assert_eq!(knobs.ctx, None);
-  assert_eq!(knobs.reasoning, None);
+  assert_eq!(knobs.u32(llamastash::launch::knobs::kid("n-gpu-layers")), None);
+  assert_eq!(knobs.bool(llamastash::launch::knobs::kid("flash-attn")), None);
+  assert_eq!(knobs.u32(llamastash::launch::knobs::kid("ctx-size")), None);
+  assert_eq!(knobs.bool(llamastash::launch::knobs::kid("reasoning")), None);
 
   let _ = client.call("shutdown", None).await;
   let _ = timeout(Duration::from_secs(3), daemon).await;
@@ -749,7 +749,7 @@ async fn no_selection_start_inherits_last_params_extras() {
   let extras = loop {
     let s = state_store::load(&state_dir).expect("load state");
     if let Some(entry) = s.last_params.first() {
-      if entry.params.knobs.mlock == Some(KnobValue::Set(true)) {
+      if entry.params.knobs.bool(llamastash::launch::knobs::kid("mlock")) == Some(true) {
         break entry.params.extras.clone();
       }
     }
@@ -778,13 +778,10 @@ fn preset_block(default: Option<&str>, name: &str, ctx: u32, extras: &[&str]) ->
   entries.insert(
     name.to_string(),
     PresetBody {
-      mode: None,
-      knobs: TypedKnobs {
-        ctx: Some(KnobValue::Set(ctx)),
-        ..TypedKnobs::default()
+      knobs: llamastash::knobset! {
+        ctx: ctx
       },
       extras: (!extras.is_empty()).then(|| extras.iter().map(|s| s.to_string()).collect()),
-      backend_knobs: Default::default(),
       ..PresetBody::default()
     },
   );

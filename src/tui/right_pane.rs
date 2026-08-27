@@ -799,7 +799,7 @@ fn render_header_stats(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &P
       // when neither is known (ds4/lemonade launched without an explicit ctx).
       let known_ctx = m
         .resolved_ctx
-        .or_else(|| m.knobs.ctx.as_ref().and_then(|k| k.as_set().copied()));
+        .or_else(|| m.knobs.u32(crate::launch::knobs::resolve_id("ctx-size").expect("ctx knob")));
       if let Some(ctx) = known_ctx {
         spans.push(middot());
         spans.push(Span::styled(

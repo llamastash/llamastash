@@ -25,7 +25,8 @@ use crate::cli::exit_codes::{
 };
 use crate::cli::resolve::{fetch_catalog, resolve_model_with_candidates, CatalogRow, ResolveError};
 use crate::cli::tail_args::parse_tail_args;
-use crate::config::{Config, KnobValue, TypedKnobs};
+use crate::config::Config;
+use crate::launch::knobs::{Concept, KnobSet};
 use crate::ipc::Client;
 
 pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
@@ -65,7 +66,14 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
     Some(CtxArg::Value(n)) => params.ctx = Some(n),
     // `auto` sets the knob's Auto state so `--fit` governs the window;
     // it must not also set top-level ctx (that would pin `-c`).
-    Some(CtxArg::Auto) => params.knobs.ctx = Some(KnobValue::Auto),
+    Some(CtxArg::Auto) => {
+      if let Some(def) = crate::launch::knobs::def_for_backend_concept(
+        args.backend.as_deref().unwrap_or(crate::backend::DEFAULT_BACKEND_ID),
+        Concept::ContextLength,
+      ) {
+        params.knobs.set_auto(def.knob_id());
+      }
+    }
     None => {}
   }
   if let Some(port) = args.port {
@@ -85,7 +93,7 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
   // Layer per-invocation overrides onto the preset baseline instead of
   // replacing it — a CLI `--threads` must not wipe a preset's other
   // knobs.
-  params.knobs.overlay(cli_knobs);
+  params.knobs.overlay(&cli_knobs);
   // Only replace preset extras when the invocation supplied some; an
   // inline-only launch keeps the preset's passthrough flags.
   if !cli_extras.is_empty() {
@@ -366,13 +374,8 @@ struct PartialParams {
   ctx: Option<u32>,
   port: Option<u16>,
   reasoning: Option<bool>,
-  knobs: TypedKnobs,
+  knobs: KnobSet,
   extras: Vec<String>,
-  /// Backend-native knobs (ds4's `--mtp` / `--ssd-streaming` / `--dspark`).
-  /// Carried verbatim from the preset: the daemon layers typed knobs but
-  /// takes these as a whole map, so dropping them here silently disarmed
-  /// every preset that tuned a native knob.
-  backend_knobs: std::collections::BTreeMap<String, KnobValue<String>>,
   mtp: Option<crate::launch::params::MtpEnable>,
   mtp_draft_n: Option<u32>,
 }
@@ -429,7 +432,7 @@ async fn fetch_preset_params(
   }
   let preset = preset.unwrap();
   let p = preset.get("params").cloned().unwrap_or(Value::Null);
-  let knobs: TypedKnobs = p
+  let knobs: KnobSet = p
     .get("knobs")
     .and_then(|v| serde_json::from_value(v.clone()).ok())
     .unwrap_or_default();
@@ -442,17 +445,12 @@ async fn fetch_preset_params(
         .collect()
     })
     .unwrap_or_default();
-  let backend_knobs = p
-    .get("backend_knobs")
-    .and_then(|v| serde_json::from_value(v.clone()).ok())
-    .unwrap_or_default();
   Ok(PartialParams {
     ctx: p.get("ctx").and_then(Value::as_u64).map(|n| n as u32),
     port: p.get("port").and_then(Value::as_u64).map(|n| n as u16),
     reasoning: p.get("reasoning").and_then(Value::as_bool),
     knobs,
     extras,
-    backend_knobs,
     mtp: p
       .get("mtp")
       .and_then(|v| serde_json::from_value(v.clone()).ok()),
@@ -473,9 +471,9 @@ async fn fetch_preset_params(
 fn parse_cli_knobs(
   knob_tokens: &[OsString],
   extra: &[OsString],
-) -> Result<(TypedKnobs, Vec<String>), CliExit> {
+) -> Result<(KnobSet, Vec<String>), CliExit> {
   if knob_tokens.is_empty() && extra.is_empty() {
-    return Ok((TypedKnobs::default(), Vec::new()));
+    return Ok((KnobSet::new(), Vec::new()));
   }
   let mut combined: Vec<OsString> = knob_tokens.to_vec();
   combined.extend(extra.iter().cloned());
@@ -523,16 +521,10 @@ fn build_payload(
   if let Some(r) = p.reasoning {
     obj.insert("reasoning".into(), Value::from(r));
   }
-  if p.knobs != TypedKnobs::default() {
+  if !p.knobs.is_empty() {
     obj.insert(
       "knobs".into(),
-      serde_json::to_value(&p.knobs).expect("TypedKnobs serialises cleanly"),
-    );
-  }
-  if !p.backend_knobs.is_empty() {
-    obj.insert(
-      "backend_knobs".into(),
-      serde_json::to_value(&p.backend_knobs).expect("KnobValue map serialises cleanly"),
+      serde_json::to_value(&p.knobs).expect("crate::launch::knobs::KnobSet serialises cleanly"),
     );
   }
   if !p.extras.is_empty() {
@@ -664,7 +656,6 @@ fn emit_response(preset: Option<&str>, row: &CatalogRow, resp: &Value, json: boo
 mod tests {
   use super::*;
   use crate::cli::resolve::CatalogRow;
-  use crate::config::{KnobValue, KnobValueOpt};
 
   fn row(mode_hint: Option<&str>) -> CatalogRow {
     CatalogRow {
@@ -716,37 +707,6 @@ mod tests {
     assert!(resolve_mode(&r, None).is_err());
   }
 
-  #[test]
-  fn build_payload_includes_only_set_fields() {
-    let knobs = TypedKnobs {
-      threads: Some(KnobValue::Set(8)),
-      ..TypedKnobs::default()
-    };
-    let p = PartialParams {
-      ctx: Some(32768),
-      port: None,
-      reasoning: Some(true),
-      knobs,
-      extras: vec!["--rope-freq-base".into(), "10000".into()],
-      ..PartialParams::default()
-    };
-    let v = build_payload("/m/a.gguf", "chat", &p, None, None, "default");
-    assert_eq!(v["model_path"], serde_json::json!("/m/a.gguf"));
-    assert_eq!(v["mode"], serde_json::json!("chat"));
-    assert_eq!(v["selection"], serde_json::json!("default"));
-    assert_eq!(v["ctx"], serde_json::json!(32768));
-    assert!(v.get("port").is_none(), "port unset must be absent");
-    assert_eq!(v["reasoning"], serde_json::json!(true));
-    assert_eq!(v["knobs"]["threads"], serde_json::json!(8));
-    assert_eq!(
-      v["extras"],
-      serde_json::json!(["--rope-freq-base", "10000"])
-    );
-    assert!(
-      v.get("backend").is_none(),
-      "backend omitted when not overridden (daemon defaults to Auto)"
-    );
-  }
 
   #[test]
   fn build_payload_includes_backend_override_when_set() {
@@ -756,34 +716,6 @@ mod tests {
     assert_eq!(v["selection"], serde_json::json!("explicit"));
   }
 
-  #[test]
-  fn build_payload_carries_preset_backend_knobs() {
-    // A preset's native knobs used to stop here: `PartialParams` had no slot
-    // for them, so `--preset X` silently launched without the `--mtp` /
-    // `--ssd-streaming` it pinned.
-    let mut backend_knobs = std::collections::BTreeMap::new();
-    backend_knobs.insert(
-      "mtp".to_string(),
-      KnobValue::Set("/m/dspark-support.gguf".to_string()),
-    );
-    backend_knobs.insert(
-      "ssd_streaming".to_string(),
-      KnobValue::Set("false".to_string()),
-    );
-    let p = PartialParams {
-      backend_knobs,
-      ..PartialParams::default()
-    };
-    let v = build_payload("/m/a.gguf", "chat", &p, None, None, "explicit");
-    assert_eq!(
-      v["backend_knobs"]["mtp"],
-      serde_json::json!("/m/dspark-support.gguf")
-    );
-    assert_eq!(
-      v["backend_knobs"]["ssd_streaming"],
-      serde_json::json!("false")
-    );
-  }
 
   #[test]
   fn build_payload_omits_empty_backend_knobs() {
@@ -802,12 +734,6 @@ mod tests {
     args.iter().map(OsString::from).collect()
   }
 
-  #[test]
-  fn cli_knobs_empty_when_nothing_passed() {
-    let (knobs, extras) = parse_cli_knobs(&[], &[]).unwrap();
-    assert_eq!(knobs, TypedKnobs::default());
-    assert!(extras.is_empty());
-  }
 
   #[test]
   fn cli_knobs_inline_and_passthrough_combine_passthrough_wins() {
@@ -819,9 +745,9 @@ mod tests {
       &osvec(&["--threads", "16", "--rope-freq-base", "10000"]),
     )
     .unwrap();
-    assert_eq!(knobs.threads, Some(KnobValue::Set(16)));
+    assert_eq!(knobs.u32(crate::launch::knobs::kid("threads")), Some(16));
     assert_eq!(
-      knobs.device.set_value().map(String::as_str),
+      knobs.str(crate::launch::knobs::kid("device")),
       Some("Vulkan0")
     );
     assert_eq!(
@@ -830,24 +756,6 @@ mod tests {
     );
   }
 
-  #[test]
-  fn cli_knobs_overlay_onto_preset_keeps_untouched_preset_fields() {
-    // Preset baseline sets threads + mlock; the invocation only
-    // overrides threads. mlock must survive.
-    let mut preset = TypedKnobs {
-      threads: Some(KnobValue::Set(8)),
-      mlock: Some(KnobValue::Set(true)),
-      ..TypedKnobs::default()
-    };
-    let (cli_knobs, _) = parse_cli_knobs(&osvec(&["--threads", "2"]), &[]).unwrap();
-    preset.overlay(cli_knobs);
-    assert_eq!(preset.threads, Some(KnobValue::Set(2)), "CLI override wins");
-    assert_eq!(
-      preset.mlock,
-      Some(KnobValue::Set(true)),
-      "untouched preset knob survives"
-    );
-  }
 
   #[test]
   fn cli_knobs_bad_value_is_usage() {

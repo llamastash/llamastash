@@ -89,12 +89,40 @@ pub enum KnobKind {
   /// A closed set of string values. Surfaces cycle the ring; the CLI spells
   /// the choices into `--help`.
   Enum { choices: &'static [&'static str] },
-  /// A closed set the value *usually* comes from, but bare strings outside it
-  /// are still accepted — custom engine builds add types we can't enumerate.
-  /// Cycles the ring like [`Self::Enum`] but never rejects.
-  OpenEnum { choices: &'static [&'static str] },
-  /// Free-form text (device selectors, split ratios, paths).
+  /// A closed set the value *usually* comes from, plus anything matching
+  /// `shape` — custom engine builds add types we cannot enumerate, and the
+  /// engine stays the authority on what it accepts. Cycles the ring like
+  /// [`Self::Enum`] but only rejects what could not possibly be a value.
+  OpenEnum {
+    choices: &'static [&'static str],
+    shape: Shape,
+  },
+  /// Comma-separated numbers (a per-GPU split ratio). Validated because a
+  /// typo here is otherwise only caught by the engine, minutes into a load.
+  Ratio,
+  /// Free-form text (device selectors, paths).
   Str,
+}
+
+/// The shape an [`KnobKind::OpenEnum`] value must have to be accepted outside
+/// its listed choices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shape {
+  /// A single identifier token: leading letter, then letters/digits/`_`.
+  /// What a quantisation type name can look like.
+  Identifier,
+}
+
+impl Shape {
+  pub fn accepts(self, v: &str) -> bool {
+    match self {
+      Shape::Identifier => {
+        let mut chars = v.chars();
+        chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+          && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+      }
+    }
+  }
 }
 
 impl KnobKind {
@@ -108,7 +136,7 @@ impl KnobKind {
   /// The ring a surface cycles for this knob; empty when it has none.
   pub fn choices(self) -> &'static [&'static str] {
     match self {
-      KnobKind::Enum { choices } | KnobKind::OpenEnum { choices } => choices,
+      KnobKind::Enum { choices } | KnobKind::OpenEnum { choices, .. } => choices,
       _ => &[],
     }
   }
@@ -120,6 +148,7 @@ impl KnobKind {
       KnobKind::F32 { .. } => "X",
       KnobKind::Bool => "BOOL",
       KnobKind::Enum { .. } | KnobKind::OpenEnum { .. } => "VALUE",
+      KnobKind::Ratio => "RATIO",
       KnobKind::Str => "VALUE",
     }
   }
