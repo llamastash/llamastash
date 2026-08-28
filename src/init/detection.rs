@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use sysinfo::{Disks, System};
 
+use crate::backend::Backend as _;
 use crate::gpu::{self, ClassSource, GpuDevice, GpuInfo};
 use crate::launch::binary::{locate, LocateInputs};
 
@@ -368,10 +369,15 @@ pub struct DetectBinaryInputs {
 /// linuxbrew on Linux, `/opt/homebrew/bin` on macOS arm64,
 /// `/usr/local/bin` on both, plus the user-scoped `~/.local/bin` and
 /// the prior llamastash-managed install dir under `$XDG_DATA_HOME`.
+///
+/// Every directory is probed for each server basename the default backend
+/// declares (the standalone server, then the unified app — the name the
+/// official llama.cpp installer drops in `~/.local/bin`), so this list names
+/// no backend binary itself.
 fn common_locations() -> Vec<PathBuf> {
-  let mut roots: Vec<PathBuf> = Vec::new();
+  let mut dirs: Vec<PathBuf> = Vec::new();
   if let Some(home) = crate::util::paths::home_dir() {
-    roots.push(home.join(".local/bin/llama-server"));
+    dirs.push(home.join(".local/bin"));
   }
   // llamastash-managed install dir — Vec keeps order stable
   // for tests.
@@ -379,26 +385,30 @@ fn common_locations() -> Vec<PathBuf> {
     let p = b.data_dir().join("llamastash/llama-cpp");
     crate::util::paths::canonicalize(&p).ok().or(Some(p))
   }) {
-    // The actual binary lives under `<data>/<version>/llama-server`;
-    // we don't enumerate versions here, but expose the root so a
-    // higher-level probe can pick the newest.
-    roots.push(data.join("llama-server"));
+    // The actual binary lives under `<data>/<version>/<name>`; we don't
+    // enumerate versions here, but expose the root so a higher-level probe
+    // can pick the newest.
+    dirs.push(data);
   }
   match (OsFamily::detect(), CpuArch::detect()) {
     (OsFamily::MacOs, CpuArch::Arm64) => {
-      roots.push(PathBuf::from("/opt/homebrew/bin/llama-server"));
-      roots.push(PathBuf::from("/usr/local/bin/llama-server"));
+      dirs.push(PathBuf::from("/opt/homebrew/bin"));
+      dirs.push(PathBuf::from("/usr/local/bin"));
     }
     (OsFamily::MacOs, _) => {
-      roots.push(PathBuf::from("/usr/local/bin/llama-server"));
+      dirs.push(PathBuf::from("/usr/local/bin"));
     }
     (OsFamily::Linux, _) => {
-      roots.push(PathBuf::from("/home/linuxbrew/.linuxbrew/bin/llama-server"));
-      roots.push(PathBuf::from("/usr/local/bin/llama-server"));
+      dirs.push(PathBuf::from("/home/linuxbrew/.linuxbrew/bin"));
+      dirs.push(PathBuf::from("/usr/local/bin"));
     }
     _ => {}
   }
-  roots
+  let names = crate::backend::default_backend().process_markers();
+  dirs
+    .iter()
+    .flat_map(|d| names.iter().map(move |n| d.join(n)))
+    .collect()
 }
 
 fn first_existing(paths: &[PathBuf]) -> Option<PathBuf> {
@@ -464,6 +474,21 @@ pub fn detect_binary(inputs: DetectBinaryInputs) -> BinaryPresence {
 mod tests {
   use super::*;
   use crate::gpu::GpuDevice;
+
+  #[test]
+  fn common_locations_probe_every_server_binary_name_per_directory() {
+    let probed = common_locations();
+    let names = crate::backend::default_backend().process_markers();
+    assert!(names.len() > 1, "the default backend declares alternates");
+    for name in names {
+      assert!(
+        probed.iter().any(|p| p.file_name() == Some(name.as_ref())),
+        "no common location probes `{name}`"
+      );
+    }
+    // Every directory contributes one candidate per name, in name order.
+    assert_eq!(probed.len() % names.len(), 0);
+  }
 
   #[test]
   fn fmt_bytes_rolls_through_units_at_threshold_boundaries() {

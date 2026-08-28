@@ -80,6 +80,39 @@ pub const LLAMA_ENV_STRIP: &[&str] = &[
   "HF_ENDPOINT",
 ];
 
+/// Basenames llama.cpp's server ships under, primary first.
+///
+/// `llama-server` is the standalone server every release tarball still
+/// carries. `llama` is the unified app upstream added in May 2026: one binary
+/// that dispatches on a subcommand, and the only one the official installer at
+/// <https://llama.app> puts on `$PATH` — so a host set up through that installer
+/// has no `llama-server` at all.
+pub const SERVER_BINARIES: &[&str] = &["llama-server", "llama"];
+
+/// The subcommand argv `binary` needs ahead of the server flags: `["serve"]`
+/// for the unified app, empty for the standalone server.
+///
+/// The two take the *same* flags — `llama serve --help` is byte-identical to
+/// `llama-server --help` (verified against build 10610) — so the subcommand is the
+/// whole difference, and one prefix covers both the launch argv and the
+/// `--list-devices` probe. Dispatch is on the name of the binary about to be
+/// spawned, not on its version: both binaries ship in the same release and
+/// report the same version, so the version cannot tell them apart. A path
+/// configured explicitly (flag / env / `servers`) is canonicalized before it
+/// gets here, so a symlink is read as its target; a `$PATH` hit keeps the name
+/// it was found under.
+pub fn serve_prefix(binary: &Path) -> &'static [&'static str] {
+  let unified = binary
+    .file_stem()
+    .and_then(|s| s.to_str())
+    .is_some_and(|s| s.eq_ignore_ascii_case("llama"));
+  if unified {
+    &["serve"]
+  } else {
+    &[]
+  }
+}
+
 /// llama.cpp backend configuration — the always-on default backend, so it has
 /// no `enabled` field. `servers` are the `llama-server` build/binary variants
 /// (the first is the *default* binary for auto / no-device launches, and the
@@ -188,9 +221,14 @@ impl LlamaCppBackend {
     probe: ProbeOptions,
   ) -> ProcessLaunchSpec {
     ProcessLaunchSpec {
+      // Delegate to the canonical argv emitter — pinned by parity tests —
+      // behind the subcommand the unified app needs (empty for `llama-server`).
+      argv: serve_prefix(&binary)
+        .iter()
+        .map(std::ffi::OsString::from)
+        .chain(compose(params, port))
+        .collect(),
       binary,
-      // Delegate to the canonical argv emitter — pinned by parity tests.
-      argv: compose(params, port),
       env_remove: LLAMA_ENV_STRIP.to_vec(),
       readiness: Readiness::HttpPoll {
         path: "/health".to_string(),
@@ -297,8 +335,26 @@ impl Backend for LlamaCppBackend {
     10
   }
 
-  fn process_marker(&self) -> Option<&'static str> {
-    Some("llama-server")
+  fn process_markers(&self) -> &'static [&'static str] {
+    SERVER_BINARIES
+  }
+
+  /// The unified app is one binary for every mode, so a matched basename is not
+  /// yet a server: `llama cli` and `llama download` carry the same name. Require
+  /// the subcommand [`serve_prefix`] would have launched with, which leaves the
+  /// standalone binary (empty prefix) matching on its basename alone. An argv
+  /// the OS won't hand over falls back to the basename verdict rather than
+  /// dropping a process that may well be a server.
+  fn argv_is_server(&self, argv: &[String]) -> bool {
+    let Some(exe) = argv.first() else {
+      return true;
+    };
+    let expected = serve_prefix(Path::new(exe));
+    argv.len() > expected.len()
+      && expected
+        .iter()
+        .zip(argv[1..].iter())
+        .all(|(want, got)| got == want)
   }
 
   fn serves_web_ui(&self) -> bool {
@@ -470,6 +526,99 @@ mod tests {
       main_gpu: Some(KnobValue::Set(0)),
       split_mode: Some(KnobValue::Set("layer".into())),
     }
+  }
+
+  // ---- Unified `llama` app: the `serve` subcommand ----
+
+  #[test]
+  fn serve_prefix_is_keyed_on_the_binary_name() {
+    for (path, want) in [
+      ("/bin/llama-server", &[][..]),
+      ("/bin/llama-server.exe", &[][..]),
+      ("/opt/builds/rocm/llama-server-cuda", &[][..]),
+      ("/home/u/.local/bin/llama", &["serve"][..]),
+      // Windows: what the official installer drops in `WindowsApps`.
+      ("llama.exe", &["serve"][..]),
+      ("/home/u/.llama-app/LLAMA.EXE", &["serve"][..]),
+      // Not the app: a longer name that merely starts with it.
+      ("/bin/llama-cli", &[][..]),
+      ("/bin/llamastash", &[][..]),
+    ] {
+      assert_eq!(serve_prefix(Path::new(path)), want, "{path}");
+    }
+  }
+
+  #[test]
+  fn argv_prepends_serve_for_the_unified_binary_only() {
+    let p = LaunchParams::new(PathBuf::from("/m/model.gguf"), LaunchMode::Chat);
+    let unified = spec_of(LlamaCppBackend::new().prepare_launch(
+      &p,
+      41100,
+      PathBuf::from("/home/u/.local/bin/llama"),
+      ProbeOptions::default(),
+    ));
+    let expected: Vec<OsString> = std::iter::once(OsString::from("serve"))
+      .chain(compose(&p, 41100))
+      .collect();
+    assert_eq!(unified.argv, expected);
+    // Same flags either way — the subcommand is the whole difference.
+    assert_eq!(&unified.argv[1..], &compose(&p, 41100)[..]);
+  }
+
+  #[test]
+  fn only_the_unified_app_s_serve_mode_counts_as_a_server() {
+    let b = LlamaCppBackend::new();
+    let argv = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+    // The standalone binary has no other modes to confuse it with.
+    assert!(b.argv_is_server(&argv(&["/bin/llama-server", "--port", "8080"])));
+    assert!(b.argv_is_server(&argv(&["/bin/llama-server-vulkan", "-m", "a.gguf"])));
+
+    assert!(b.argv_is_server(&argv(&[
+      "/home/u/.local/bin/llama",
+      "serve",
+      "-m",
+      "a.gguf"
+    ])));
+    // The same binary in one of its other modes is not a server the daemon
+    // should list, adopt a port from, or accept as a `stop` target.
+    for other in [
+      vec!["/home/u/.local/bin/llama", "cli", "-m", "a.gguf"],
+      vec![
+        "/home/u/.local/bin/llama",
+        "download",
+        "ggml-org/gemma-3-1b",
+      ],
+      vec!["/home/u/.local/bin/llama", "--version"],
+      vec!["/home/u/.local/bin/llama"],
+    ] {
+      assert!(!b.argv_is_server(&argv(&other)), "{other:?}");
+    }
+
+    // No argv to read (a protected process): keep the basename verdict rather
+    // than dropping a real server.
+    assert!(b.argv_is_server(&[]));
+  }
+
+  #[test]
+  fn the_argv_gate_routes_through_the_registry_and_ignores_unknown_markers() {
+    let serve = ["/home/u/.local/bin/llama", "serve", "-m", "a.gguf"].map(String::from);
+    let cli = ["/home/u/.local/bin/llama", "cli"].map(String::from);
+    assert!(crate::backend::external_argv_is_server("llama", &serve));
+    assert!(!crate::backend::external_argv_is_server("llama", &cli));
+    // A marker no backend claims (what the sweep's own tests inject) passes.
+    assert!(crate::backend::external_argv_is_server(
+      "not-a-backend-marker",
+      &cli
+    ));
+  }
+
+  #[test]
+  fn the_unified_app_is_an_alternate_marker_not_the_primary() {
+    // Order is the resolution order: an install carrying both binaries keeps
+    // resolving to the standalone server.
+    let markers = LlamaCppBackend::new().process_markers();
+    assert_eq!(markers, &["llama-server", "llama"]);
   }
 
   // ---- Parity: prepare_launch argv == compose() byte-for-byte ----

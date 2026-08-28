@@ -11,6 +11,7 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 ### Fixed
 
+- **llama.cpp's new unified `llama` binary is now found and launched.** Upstream's own installer (`llama.app`, the `irm` / `curl` one-liner) ships one `llama` / `llama.exe` that serves behind a `serve` subcommand instead of a standalone `llama-server`, so a fresh install left LlamaStash with nothing to launch. `$PATH` lookup falls back to it, `--llama-server` / `LLAMASTASH_LLAMA_SERVER` / `backend.llamacpp.servers` take it, and the subcommand is added automatically. Closes [#67](https://github.com/llamastash/llamastash/issues/67).
 - **A tool could be patched and then silently fail to authenticate.** OpenCode and Zed read the key from `LLAMASTASH_API_KEY`, and with proxy auth on an unexported variable meant they started unauthenticated with nothing said at patch time. `init` / `integrations` now name the affected tools in the summary with the line to add to your shell rc (`integrations.env_requirement` in `--json`).
 - **pi.dev needed an env var nobody had exported.** The provider carried `apiKey: "$LLAMASTASH_API_KEY"`, so a terminal that had not sourced `env.sh` got "No API key found for llamastash" and no models in scope. It shells out to `llamastash api-key` now, which needs nothing set up.
 - **pi.dev models were configured but unreachable.** pi bounds its model switcher by `enabledModels` in `settings.json`; the provider block alone left every llamastash model out of scope. `init` / `integrations` now append `llamastash/**` there, and only when the user already has a scope set.
@@ -20,6 +21,10 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 ### Changed
 
 - Repositioned from "launcher" to "local-LLM manager" across the README, `--help`, crate metadata, packaging manifests and the website. The binary already launches, supervises, routes and evicts; "launcher" only described the first of those.
+
+### Security
+
+- h2 0.4.14 → 0.4.18, clearing [RUSTSEC-2026-0258](https://rustsec.org/advisories/RUSTSEC-2026-0258): empty HTTP/2 DATA frames were queued without limit, so an undrained stream could grow memory without bound or panic on overflow. Transitive via hyper and reqwest.
 
 ## [0.2.0] — 2026-08-16
 

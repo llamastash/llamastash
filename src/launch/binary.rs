@@ -1,14 +1,16 @@
-//! Locate the `llama-server` binary.
+//! Locate the llama.cpp server binary.
 //!
 //! Priority order, per the plan:
 //! 1. CLI flag `--llama-server <path>`
 //! 2. `LLAMASTASH_LLAMA_SERVER` environment variable
 //! 3. `$PATH` lookup via the `which` crate
 //!
-//! When `$PATH` has multiple matching candidates (e.g.,
-//! `llama-server-cuda`, `llama-server`), we take the first and log
-//! the full list so the user knows which one was picked and how to
-//! pin a different one.
+//! The `$PATH` step tries each name the default backend declares in
+//! `process_markers`, in order — the standalone server first, then the
+//! unified app that ships under a different basename. When `$PATH` has
+//! multiple candidates for one name (e.g. `llama-server-cuda`,
+//! `llama-server`), we take the first and log the full list so the user
+//! knows which one was picked and how to pin a different one.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -29,7 +31,7 @@ pub struct LocateInputs {
 pub enum LocateError {
   /// None of the supplied sources pointed at a real, executable file
   /// and `which` found nothing on `$PATH`.
-  #[error("could not find `llama-server` — set `--llama-server <path>` or `LLAMASTASH_LLAMA_SERVER`, or add it to your $PATH")]
+  #[error("could not find {} — set `--llama-server <path>` or `LLAMASTASH_LLAMA_SERVER`, or add one to your $PATH", searched_names())]
   NotFound,
   /// A specific path was supplied (flag/env/config) but it doesn't
   /// exist or isn't a regular file. Distinct from `NotFound` so the
@@ -42,6 +44,18 @@ pub enum LocateError {
   /// a user-actionable message later.
   #[error("configured `llama-server` path is not executable: {p} — run `chmod +x {p}` or point `--llama-server` / `LLAMASTASH_LLAMA_SERVER` at the real binary", p = .0.display())]
   ExplicitPathNotExecutable(PathBuf),
+}
+
+/// The binary names the `$PATH` step searched, rendered for the not-found
+/// message. Read back from the same marker list the search itself walks, so a
+/// backend that adds or renames a distribution updates the error with it.
+fn searched_names() -> String {
+  crate::backend::default_backend()
+    .process_markers()
+    .iter()
+    .map(|n| format!("`{n}`"))
+    .collect::<Vec<_>>()
+    .join(" or ")
 }
 
 /// Resolve `llama-server`'s on-disk path. Returns the canonicalised
@@ -58,37 +72,35 @@ pub fn locate(inputs: LocateInputs) -> Result<PathBuf, LocateError> {
   if let Some(p) = inputs.config_path {
     return canonicalise_or_err(p);
   }
-  // Fall back to `$PATH`. `which::which_all` returns *every* match in
-  // path order; we take the first and log the rest so the user can
-  // pin a specific one via flag/env if the first is wrong. The binary name
-  // is the default backend's process marker, so this resolver names no
-  // backend (the default backend's marker is `llama-server`).
-  let marker = crate::backend::default_backend()
-    .process_marker()
-    .unwrap_or("llama-server");
-  match which::which_all(marker) {
-    Ok(iter) => {
-      let candidates: Vec<PathBuf> = iter.collect();
-      match candidates.first() {
-        Some(first) => {
-          if candidates.len() > 1 {
-            log::info!(
-              "multiple llama-server candidates on $PATH (using {}): {}",
-              first.display(),
-              candidates
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-            );
-          }
-          Ok(first.clone())
-        }
-        None => Err(LocateError::NotFound),
-      }
+  // Fall back to `$PATH`. The names come from the default backend's own
+  // marker list, so this resolver names no backend; they are searched in the
+  // backend's declared order (the standalone server first, then the alternate
+  // distributions), and only the first name that matches anything is used.
+  // `which::which_all` returns *every* match in path order; we take the first
+  // and log the rest so the user can pin a specific one via flag/env if the
+  // first is wrong.
+  for marker in crate::backend::default_backend().process_markers() {
+    let Ok(iter) = which::which_all(marker) else {
+      continue;
+    };
+    let candidates: Vec<PathBuf> = iter.collect();
+    let Some(first) = candidates.first() else {
+      continue;
+    };
+    if candidates.len() > 1 {
+      log::info!(
+        "multiple `{marker}` candidates on $PATH (using {}): {}",
+        first.display(),
+        candidates
+          .iter()
+          .map(|p| p.display().to_string())
+          .collect::<Vec<_>>()
+          .join(", ")
+      );
     }
-    Err(_) => Err(LocateError::NotFound),
+    return Ok(first.clone());
   }
+  Err(LocateError::NotFound)
 }
 
 fn canonicalise_or_err(p: PathBuf) -> Result<PathBuf, LocateError> {
@@ -294,6 +306,14 @@ mod tests {
       ),
       Err(LocateError::NotFound) => {}
       Err(other) => panic!("unexpected error: {other:?}"),
+    }
+  }
+
+  #[test]
+  fn not_found_names_every_binary_the_search_actually_tried() {
+    let msg = LocateError::NotFound.to_string();
+    for marker in crate::backend::default_backend().process_markers() {
+      assert!(msg.contains(marker), "{marker} missing from: {msg}");
     }
   }
 }

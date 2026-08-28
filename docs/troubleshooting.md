@@ -8,6 +8,8 @@ Quick reference for the common ways LlamaStash can refuse to do what you want, w
 
 **Fix:** install llama.cpp's server build, then either put it on your `PATH`, set `LLAMASTASH_LLAMA_SERVER=/abs/path/to/llama-server`, or pass `--llama-server /abs/path/to/llama-server`. If `which llama-server` returns multiple hits (e.g. `llama-server-cuda` + `llama-server`), LlamaStash logs them and uses the first; pin a specific one via flag/env to avoid the surprise.
 
+Both shapes of the binary work. llama.cpp's own installer (`llama.app`) ships a single `llama` / `llama.exe` that serves behind a subcommand instead of a standalone `llama-server`; LlamaStash searches `$PATH` for `llama-server` first, falls back to `llama`, and adds the `serve` subcommand when it launches the unified one. Flag and env var take either.
+
 ## GPU not detected
 
 **Symptom:** `llamastash status --json | jq .gpu` returns `"CpuOnly"` even though you have a GPU. Memory estimates show only RAM, not VRAM.

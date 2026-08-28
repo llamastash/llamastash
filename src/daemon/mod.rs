@@ -367,11 +367,8 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
     {
       continue;
     }
-    let start_time_secs = lookup_start_time(adopted.pid as u32).unwrap_or(0);
-    // Name the binary by the recorded backend's process marker so a re-adopted
-    // child reads as its real server, not a synthetic default invocation.
-    // Registry-driven — names no backend.
-    let adopted_bin = crate::backend::adopted_process_name(&adopted.resolved_backend);
+    let live = lookup_live_process(adopted.pid as u32);
+    let start_time_secs = live.start_time_secs.unwrap_or(0);
     // The launch's model path, whatever shape its identity is. Reading it off
     // `id.as_gguf()` yielded `None` for every non-GGUF identity, so a re-adopted
     // row of that kind reported `model_path: null` and a cmdline ending in a
@@ -384,11 +381,19 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
       .unwrap_or_else(|| adopted.params.model_path.clone());
     external_combined.push(orphans::ExternalProcess {
       pid: adopted.pid as u32,
-      cmdline: format!(
-        "{adopted_bin} --port {} -m {}",
-        adopted.port,
-        model_path.display()
-      ),
+      // The process's own argv when the OS still has it, so the row reads as
+      // what actually launched (`llama serve …` and `llama-server …` are the
+      // same backend under different binaries). Otherwise reconstruct one from
+      // the recorded backend's primary marker: registry-driven, names no
+      // backend, and only a label once the real argv is gone.
+      cmdline: live.cmdline.clone().unwrap_or_else(|| {
+        format!(
+          "{} --port {} -m {}",
+          crate::backend::adopted_process_name(&adopted.resolved_backend),
+          adopted.port,
+          model_path.display()
+        )
+      }),
       model_path: Some(model_path),
       start_time_secs,
       port: Some(adopted.port),
@@ -720,12 +725,25 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
 /// [`ExternalProcess::start_time_secs`] for adopted entries the
 /// daemon can't itself supervise. Falls back to 0 if `sysinfo` has
 /// no record (rare; means the PID has already exited).
-fn lookup_start_time(pid: u32) -> Option<u64> {
+/// What the OS can still tell us about a re-adopted child.
+#[derive(Debug, Default)]
+struct LiveProcess {
+  /// `start_time == 0` reads as `None` so the consumer's `live != 0` guard
+  /// sees a missing value instead of a meaningless zero.
+  start_time_secs: Option<u64>,
+  /// The process's real argv, joined. `None` when the OS won't hand it over
+  /// (already exited, or not readable), which is when the caller falls back to
+  /// reconstructing one.
+  cmdline: Option<String>,
+}
+
+fn lookup_live_process(pid: u32) -> LiveProcess {
   use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
   // `everything()` over a blank kind: explicit about wanting all
   // process metadata so `start_time()` is reliably populated across
   // sysinfo versions and platforms. The cost is one extra /proc read
-  // per call, negligible at boot-sweep scale.
+  // per call, negligible at boot-sweep scale, and it covers the argv
+  // too so reading the real command line is free.
   let refresh = ProcessRefreshKind::everything();
   let mut sys = System::new_with_specifics(RefreshKind::nothing().with_processes(refresh));
   sys.refresh_processes_specifics(
@@ -733,12 +751,18 @@ fn lookup_start_time(pid: u32) -> Option<u64> {
     true,
     refresh,
   );
-  // Filter `start_time == 0` so the consumer's `live != 0` guard
-  // sees `None` instead of a meaningless zero.
-  sys
-    .process(Pid::from_u32(pid))
-    .map(|p| p.start_time())
-    .filter(|s| *s != 0)
+  let Some(proc) = sys.process(Pid::from_u32(pid)) else {
+    return LiveProcess::default();
+  };
+  let argv: Vec<String> = proc
+    .cmd()
+    .iter()
+    .map(|s| s.to_string_lossy().into())
+    .collect();
+  LiveProcess {
+    start_time_secs: Some(proc.start_time()).filter(|s| *s != 0),
+    cmdline: (!argv.is_empty()).then(|| argv.join(" ")),
+  }
 }
 
 /// Move a malformed `state.json` aside so the daemon can restart
@@ -1187,8 +1211,23 @@ pub const SHUTDOWN_DRAIN_TIMEOUT: Duration = control_plane::DRAIN_TIMEOUT;
 
 #[cfg(test)]
 mod tests {
-  use super::{must_refuse_insecure_proxy, proxy_key_present};
+  use super::{lookup_live_process, must_refuse_insecure_proxy, proxy_key_present};
   use std::net::IpAddr;
+
+  #[test]
+  fn a_live_process_yields_its_own_argv_and_a_dead_one_yields_nothing() {
+    // Ourselves: the one pid a test can be sure is alive and readable.
+    let me = lookup_live_process(std::process::id());
+    let argv = me.cmdline.expect("our own argv is readable");
+    assert!(!argv.is_empty(), "argv should not be blank");
+    assert!(me.start_time_secs.is_some(), "our own start time is known");
+
+    // Pid 0 is never a real process, so the adopted-row builder falls back to
+    // reconstructing a command line from the recorded backend's marker.
+    let none = lookup_live_process(0);
+    assert!(none.cmdline.is_none());
+    assert!(none.start_time_secs.is_none());
+  }
 
   fn ip(s: &str) -> IpAddr {
     s.parse().expect("valid ip")

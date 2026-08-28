@@ -381,8 +381,8 @@ impl Backend for VllmBackend {
     5
   }
 
-  fn process_marker(&self) -> Option<&'static str> {
-    Some(VLLM_BACKEND_ID)
+  fn process_markers(&self) -> &'static [&'static str] {
+    &[VLLM_BACKEND_ID]
   }
 
   async fn fetch_actuals(

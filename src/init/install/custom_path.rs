@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use super::{sha256_file, BinaryInstall, InstallError};
+use crate::backend::Backend as _;
 use crate::init::snapshot::InstallMethod;
 
 /// Accept `path` after the integrity gates pass. The caller is
@@ -104,12 +105,14 @@ pub fn preflight_integrity(path: &Path) -> Result<(), InstallError> {
 
 /// Warn when the adopted path's file name doesn't look like the server
 /// binary. llama.cpp ships several tools (`llama-cli`, `llama-bench`, …)
-/// in the same directory; only `llama-server` speaks the HTTP API the
-/// daemon drives. Non-fatal — a custom build may use any name that still
-/// contains "server" — so this only nudges on an obvious mismatch.
+/// in the same directory; only `llama-server` — or the unified app, which
+/// serves behind its own subcommand — speaks the HTTP API the daemon drives.
+/// Non-fatal — a custom build may use any name that still contains "server" —
+/// so this only nudges on an obvious mismatch.
 pub fn server_name_hint(path: &Path) -> Option<String> {
-  let name = path.file_name()?.to_string_lossy().to_ascii_lowercase();
-  if name.contains("server") {
+  // A path with no file name (a bare `/`, a trailing `..`) has nothing to judge.
+  path.file_name()?;
+  if crate::backend::default_backend().binary_serves(path) {
     return None;
   }
   Some(format!(
@@ -213,6 +216,8 @@ mod tests {
   #[test]
   fn server_name_hint_flags_non_server_binaries() {
     assert!(server_name_hint(Path::new("/usr/bin/llama-cli")).is_some());
+    // The unified app serves behind `serve` — not a mismatch.
+    assert!(server_name_hint(Path::new("/home/u/.local/bin/llama")).is_none());
     assert!(server_name_hint(Path::new("/usr/bin/llama-bench")).is_some());
     assert!(server_name_hint(Path::new("/usr/bin/llama-server")).is_none());
     assert!(server_name_hint(Path::new("/opt/x/llama-server.exe")).is_none());

@@ -791,13 +791,46 @@ pub trait Backend {
     None
   }
 
-  /// The process-name marker the orphan sweep uses to recognise an *unmanaged*
-  /// instance of this backend's server on the host (the basename of its server
-  /// binary), or `None` for a backend with no standalone per-model server
-  /// process (a managed multiplexer's umbrella is supervised, not swept).
-  /// Default `None`. Also drives the adopted-child process name in the sweep.
-  fn process_marker(&self) -> Option<&'static str> {
-    None
+  /// Every basename this backend's server binary can carry — the names the
+  /// `$PATH` locator searches for and the orphan sweep recognises an
+  /// *unmanaged* instance by. The **first** entry is the primary marker (the
+  /// name used in messages and for an adopted child); the rest are alternate
+  /// distributions of the same server. Empty for a backend with no standalone
+  /// per-model server process (a managed multiplexer's umbrella is supervised,
+  /// not swept). Default empty.
+  fn process_markers(&self) -> &'static [&'static str] {
+    &[]
+  }
+
+  /// Whether `argv` is a *server* invocation, for a process whose executable
+  /// basename already matched one of [`Backend::process_markers`]. Default
+  /// `true`: when the marker *is* the server binary, the basename settled it.
+  /// A backend whose server ships inside a multi-command binary overrides this
+  /// to read the subcommand, so the sweep doesn't report that binary's other
+  /// modes as unmanaged servers (and offer them as `stop` targets).
+  fn argv_is_server(&self, _argv: &[String]) -> bool {
+    true
+  }
+
+  /// Whether `path` looks like a binary that can serve this backend's HTTP API.
+  /// Read by the adopt path to nudge on an obvious mismatch: llama.cpp ships
+  /// `llama-cli` / `llama-bench` beside its server, and adopting one of those
+  /// leaves every launch failing for a reason the user can't see. A hint, not a
+  /// gate, so an unrecognised-but-plausible name passes.
+  ///
+  /// Default: the basename is one of [`Backend::process_markers`] (build-suffix
+  /// tolerance included), or it carries `server` at all, which is what a custom
+  /// build is most likely called.
+  fn binary_serves(&self, path: &Path) -> bool {
+    let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
+      return false;
+    };
+    let name = name.to_ascii_lowercase();
+    name.contains("server")
+      || self
+        .process_markers()
+        .iter()
+        .any(|m| basename_matches_marker(&name, m))
   }
 
   /// A backend-specific KV-cache byte model for `header`, or `None` to use the
@@ -1223,8 +1256,16 @@ impl Backend for Backends {
     for_each_backend!(self, b => b.synthetic_identity(path))
   }
 
-  fn process_marker(&self) -> Option<&'static str> {
-    for_each_backend!(self, b => b.process_marker())
+  fn process_markers(&self) -> &'static [&'static str] {
+    for_each_backend!(self, b => b.process_markers())
+  }
+
+  fn argv_is_server(&self, argv: &[String]) -> bool {
+    for_each_backend!(self, b => b.argv_is_server(argv))
+  }
+
+  fn binary_serves(&self, path: &Path) -> bool {
+    for_each_backend!(self, b => b.binary_serves(path))
   }
 
   fn accelerators(&self) -> AcceleratorSupport {
@@ -1484,14 +1525,45 @@ pub fn resolve_identity_for_path(
   })
 }
 
+/// Whether a process basename is an instance of the backend `marker` names.
+///
+/// An exact basename match, plus `<marker>-<suffix>` for **compound** markers
+/// only.
+///
+/// A bare `contains` was safe while every marker was a long compound basename
+/// (`llama-server`, `ds4-server`), where a `-cuda` / `-vulkan` build suffix is
+/// certainly the same program and `comm`'s 15-char cap can truncate it. It
+/// stops being safe once a backend registers a short single-token marker: a
+/// four-character token is a substring of unrelated tools on the host, and
+/// claiming one makes it a legal `stop_external` target. Suffix tolerance is
+/// therefore extended only to markers already specific enough to earn it.
+pub fn basename_matches_marker(basename: &str, marker: &str) -> bool {
+  if basename == marker {
+    return true;
+  }
+  marker.contains('-') && basename.starts_with(&format!("{marker}-"))
+}
+
 /// The external-process markers every backend contributes — the orphan sweep's
 /// "is this an unmanaged instance of a backend server" list. Registry-driven,
-/// so a new backend's server is swept from its `process_marker` override alone.
+/// so a new backend's server is swept from its `process_markers` override
+/// alone, alternate binary names included.
 pub fn external_process_markers() -> Vec<&'static str> {
   Backends::all()
     .iter()
-    .filter_map(|b| b.process_marker())
+    .flat_map(|b| b.process_markers().iter().copied())
     .collect()
+}
+
+/// Whether a swept process is really a backend *server*, given the marker its
+/// basename matched and its full argv. Routes to the owning backend's
+/// [`Backend::argv_is_server`]; a marker no backend claims (tests inject their
+/// own) passes, leaving the basename match as the only gate.
+pub fn external_argv_is_server(marker: &str, argv: &[String]) -> bool {
+  Backends::all()
+    .iter()
+    .find(|b| b.process_markers().contains(&marker))
+    .is_none_or(|b| b.argv_is_server(argv))
 }
 
 /// The default backend instance — what a plain GGUF binds to and every
@@ -1524,16 +1596,20 @@ pub fn native_knobs_for(id: &str) -> &'static [NativeKnobDescriptor] {
 }
 
 /// The process name for an adopted child recorded under `backend_id`, or the
-/// default backend's own marker when the id is unknown / marker-less. Used by
-/// the orphan sweep to label a re-adopted process. Names no backend — the marker
-/// comes from the backend's own `process_marker`.
+/// default backend's own marker when the id is unknown / marker-less. Names no
+/// backend — the marker comes from the backend's own `process_markers`.
+///
+/// The primary marker only, so a backend with several binary names gets the one
+/// it resolves first. That makes this a *fallback* label: the sweep prints a
+/// re-adopted process's real argv when the OS still has it, and reaches for this
+/// only once the process is gone or unreadable.
 pub fn adopted_process_name(backend_id: &str) -> &'static str {
   Backends::all()
     .iter()
     .find(|b| b.id() == backend_id)
-    .and_then(|b| b.process_marker())
+    .and_then(|b| b.process_markers().first().copied())
     // Unknown / marker-less id falls back to the default backend's own marker.
-    .or_else(|| default_backend().process_marker())
+    .or_else(|| default_backend().process_markers().first().copied())
     .unwrap_or_default()
 }
 
@@ -1575,6 +1651,61 @@ pub fn resolve_backend_for_launch(
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn binary_serves_takes_the_server_shapes_and_flags_the_sibling_tools() {
+    let b = default_backend();
+    for ok in [
+      "/usr/bin/llama-server",
+      "/opt/x/llama-server.exe",
+      "/opt/builds/rocm/llama-server-cuda",
+      // The unified app: its own basename is a declared marker.
+      "/home/u/.local/bin/llama",
+      "/home/u/.llama-app/llama.exe",
+      // A custom build can be called anything that still says server.
+      "/opt/x/my-server-build",
+    ] {
+      assert!(b.binary_serves(Path::new(ok)), "{ok}");
+    }
+    // The tools llama.cpp ships in the same directory. `llama-cli` is the trap:
+    // it shares a prefix with the unified app but cannot serve.
+    for bad in [
+      "/usr/bin/llama-cli",
+      "/usr/bin/llama-bench",
+      "/usr/bin/ollama",
+    ] {
+      assert!(!b.binary_serves(Path::new(bad)), "{bad}");
+    }
+  }
+
+  /// A short single-token marker used to match any process whose name merely
+  /// contained it — even with that backend disabled, which made unrelated
+  /// tools legal `stop_external` targets. Compound markers keep their
+  /// build-suffix tolerance, which is what the loose check was buying.
+  #[test]
+  fn a_marker_matches_its_own_binary_not_neighbours_that_share_the_name() {
+    for (basename, marker, want) in [
+      ("srv", "srv", true),
+      ("llama-server", "llama-server", true),
+      ("llama-server-cuda", "llama-server", true),
+      // A short token says nothing once anything follows it.
+      ("srv-router", "srv", false),
+      ("srvproxy", "srv", false),
+      ("my-srv-serve", "srv", false),
+      ("usrv", "srv", false),
+      ("not-llama-server", "llama-server", false),
+      // llama.cpp's unified app: its own basename, nothing around it.
+      ("llama", "llama", true),
+      ("ollama", "llama", false),
+      ("llama-server", "llama", false),
+    ] {
+      assert_eq!(
+        basename_matches_marker(basename, marker),
+        want,
+        "{basename} vs {marker}"
+      );
+    }
+  }
   use crate::backend::lemonade::LEMONADE_BACKEND_ID;
 
   #[test]
