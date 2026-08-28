@@ -134,9 +134,6 @@ pub struct LastParamsRow {
   /// user lands on the same overrides; rows the user never touched
   /// re-resolve from yaml / built-in / model default.
   pub knobs: crate::launch::knobs::KnobSet,
-  /// Per-backend native-knob deltas (see [`crate::launch::native_knobs`]),
-  /// keyed by descriptor id. Populated for ds4; empty for llama.cpp / Lemonade.
-  /// Seeds the picker's `backend_knobs` so a returning user keeps their values.
   /// Free-form argv tail that landed on `--`. Surfaces back in the
   /// editor's `extras` row.
   pub extras: Vec<String>,
@@ -468,8 +465,6 @@ pub struct StartModelArgs {
   /// cycle stop sends `"auto"` (pure fit). Never `"default"` — the TUI
   /// always resolves a concrete stop.
   pub selection: &'static str,
-  /// Per-backend native-knob values from the picker (see
-  /// [`crate::launch::native_knobs`]). Populated for ds4; empty for llama.cpp.
   /// Chosen server id (a build/binary of a backend) from the picker's Server
   /// row, or `None` for the priority default. Sent as `LaunchParams.server`;
   /// the daemon derives the binary (and, when `backend` is `Auto`, the backend)

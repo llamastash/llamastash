@@ -10,7 +10,8 @@
 //!
 //! - **Concept carry-over.** A layer that stored a value under one backend's
 //!   spelling still reaches the resolved backend when both tag the same
-//!   [`Concept`]. The value is re-parsed against the destination knob, so a
+//!   [`Concept`](super::def::Concept). The value is re-parsed against the
+//!   destination knob, so a
 //!   kind mismatch is skipped rather than smuggled through.
 //! - **Explicit drops.** A value the resolved backend cannot honour is
 //!   reported in [`Resolved::dropped`] instead of vanishing, which is what R6

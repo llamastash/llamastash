@@ -211,28 +211,28 @@ backwards-compat until first release). This is the moment; after 0.0.1 it is a m
 
 Each compiles and keeps tests green. D9 (byte-identical argv) is asserted at every stage.
 
-- [ ] **0 — Registry + value model.** New `src/launch/knobs/`; `Backend::knobs()`; all
+- [x] **0 — Registry + value model.** New `src/launch/knobs/`; `Backend::knobs()`; all
   four backends transcribe their existing tables. Nothing consumes it yet. Validation
   tests: no id collides with a conflicting kind; every concept maps to ≤1 knob per
   backend; no flag hits a llamastash global or the denylist.
-- [ ] **1 — Resolver on `KnobSet`.** Port `resolve_layered` / `seed_layerless`; add
+- [x] **1 — Resolver on `KnobSet`.** Port `resolve_layered` / `seed_layerless`; add
   concept carry-over. `TypedKnobs` alive behind a bridge. Test: identical output to the
   old resolver over llama.cpp's set.
-- [ ] **2 — Argv emission** from `KnobDef.flag` + `Emit`. Deletes `argvify` and
+- [x] **2 — Argv emission** from `KnobDef.flag` + `Emit`. Deletes `argvify` and
   `native_knobs::translate`; one denylist guard instead of two. *Ordered before the
   persistence flip so byte-identical argv is proven while the old shape still loads.*
-- [ ] **3 — Persistence flip.** `LaunchParams.knobs: KnobSet` replaces `knobs` +
+- [x] **3 — Persistence flip.** `LaunchParams.knobs: KnobSet` replaces `knobs` +
   `backend_knobs`; `PresetBody { knobs, extras, backend, server }` (no `port` — D7).
   Lenient `last_params` deserialize. The D10 config migration lands here. Bridge deleted.
-- [ ] **4 — CLI generated** from the registry union, grouped by backend. Concept
+- [x] **4 — CLI generated** from the registry union, grouped by backend. Concept
   aliases. `presets save` flattens the identical flag set. Adds `llamastash knobs`.
   Adds `presets save --from-last`.
-- [ ] **5 — TUI generated.** `PickerField::Knob(KnobId)`. Preset cycle and `Ctrl+P`
+- [x] **5 — TUI generated.** `PickerField::Knob(KnobId)`. Preset cycle and `Ctrl+P`
   carry the whole `KnobSet` + identity fields. No port row (D7).
-- [ ] **6 — Identity parity.** backend/server inheritance chain in the daemon
+- [x] **6 — Identity parity.** backend/server inheritance chain in the daemon
   (default preset → last_params, matching how extras/mtp already work); unknown
   preset-sourced server warns and falls back, typed `--server` stays a hard error.
-- [ ] **7 — Drift tests + docs.** Includes rewriting `config.example.yaml` to the
+- [x] **7 — Drift tests + docs.** Includes rewriting `config.example.yaml` to the
   new shape. The D10 migration **stays** — it is what upgrades a user, not a
   temporary scaffold.
 

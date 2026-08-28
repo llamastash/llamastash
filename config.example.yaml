@@ -558,9 +558,12 @@ backend:
     #
     #   presets:
     #     big-ctx:
-    #       backend_knobs:
-    #         kv_cache_memory_bytes: "16G"   # absolute cap; wins outright
-    #         gpu_memory_utilization: "0.5"  # fraction of the pool
+    #       knobs:
+    #         kv-cache-memory-bytes: 16G   # absolute cap; wins outright
+    #         gpu-memory-utilization: 0.5  # fraction of the pool
+    #
+    # Neither is remembered: both are marked volatile, so a preset run
+    # applies the value without every later bare `start` inheriting it.
 
     # Let browser pages reach this backend cross-origin. `true` is vLLM's
     # own default (it allows any origin, unconditionally), so llamastash
@@ -664,18 +667,20 @@ keybindings:
 
 # ─── arch_defaults ────────────────────────────────────────────────
 #
-# User escape hatch over the built-in `(architecture, gpu_backend)
-# → TypedKnobs` table that ships in the binary. Keys are GGUF
+# User escape hatch over the built-in `(architecture, gpu_backend)`
+# defaults table that ships in the binary. Keys are GGUF
 # `general.architecture` strings (e.g. `qwen2`, `llama`, `llama3`,
-# `gemma`, `gemma3`, `phi`, `qwen3`). Each value is a TypedKnobs
-# partial — only the fields you want to override need to be
-# specified. At launch time the daemon walks
+# `gemma`, `gemma3`, `phi`, `qwen3`). Each value is a partial knob
+# map — only the knobs you want to override need to be specified. At
+# launch time the daemon walks
 # `preset > last_params > arch_defaults > built-in table >
-# llama-server` and picks the first non-null per field.
+# engine default` and picks the first that supplies a value.
 #
-# Field names match llama-server's flag names (snake_case): each is
-# grep-able directly from the binary's log output. The full set of
-# 14 supported knobs is enumerated below for one example arch; copy
+# Knob names are the flag the engine itself takes, minus the leading
+# dashes (`ctx-size`, `n-gpu-layers`, `flash-attn`), so each is
+# grep-able directly from the binary's log output and is the same
+# string you would pass to `start --<name>`. Run `llamastash knobs`
+# for the full set with value ranges. One arch is spelled out below; copy
 # only the lines you intend to override.
 #
 # Sources — CLI: (none) · Env: (none). Config-only. (The per-launch
@@ -684,31 +689,33 @@ keybindings:
 #
 arch_defaults:
   qwen2:
+    # Each key is the engine's own flag minus the dashes, so it is also
+    # what you would pass to `start --<name>`.
     # ── Context & scheduling ──────────────────────────────
-    ctx: 8192 # → -c / --ctx-size
-    parallel: 4 # → --parallel (request slots)
-    batch_size: 2048 # → --batch-size
-    ubatch_size: 512 # → --ubatch-size (physical)
-    keep: 0 # → --keep (context shift)
-    rope_freq_scale: 1.0 # → --rope-freq-scale
+    ctx-size: 8192
+    parallel: 4 # request slots
+    batch-size: 2048
+    ubatch-size: 512 # physical batch
+    keep: 0 # tokens kept on context shift
+    rope-freq-scale: 1.0
     # ── Compute placement ─────────────────────────────────
-    n_gpu_layers: 99 # → --n-gpu-layers (99 = all)
-    n_cpu_moe: 12 # → --n-cpu-moe (MoE layers on CPU)
-    threads: 8 # → --threads (CPU)
-    flash_attn: true # → --flash-attn
+    n-gpu-layers: 99 # 99 = all
+    n-cpu-moe: 12 # MoE expert layers kept on CPU
+    threads: 8
+    flash-attn: true
     # ── Multi-GPU placement (only meaningful with >1 GPU) ──
-    tensor_split: "3,1" # → --tensor-split (75% GPU0 / 25% GPU1)
-    main_gpu: 0 # → --main-gpu (primary GPU)
-    split_mode: layer # → --split-mode (none|layer|row)
-    # device: Vulkan0              # → --device (pin to one selector)
+    tensor-split: "3,1" # 75% GPU0 / 25% GPU1
+    main-gpu: 0
+    split-mode: layer # none|layer|row|tensor
+    # device: Vulkan0            # pin to one selector
     # ── KV cache quantisation ─────────────────────────────
-    cache_type_k: q8_0 # → --cache-type-k
-    cache_type_v: q8_0 # → --cache-type-v
+    cache-type-k: q8_0
+    cache-type-v: q8_0
     # ── Memory residency ──────────────────────────────────
-    mlock: false # → --mlock (lock in RAM)
-    no_mmap: false # → --no-mmap (full RAM load)
+    mlock: false # lock in RAM
+    no-mmap: false # full RAM load instead of mmap
     # ── Chat template ─────────────────────────────────────
-    reasoning: false # true bundles --jinja,  --reasoning-format deepseek
+    reasoning: false # true bundles --jinja, --reasoning-format deepseek
   llama:
     threads: 8
     parallel: 4
@@ -732,13 +739,14 @@ arch_defaults:
 # A model's effective set is its per-model entries ∪ its arch entries;
 # on a name collision the per-model entry wins.
 #
-# `entries` is a map keyed by preset name. Each entry holds the same
-# typed knobs as `arch_defaults` (flat: `ctx`, `flash_attn`, `threads`,
-# …) plus an optional `mode` (chat | embedding | rerank) and an `extras`
-# argv tail. Apply one with `llamastash start <model> --preset <name>`.
+# `entries` is a map keyed by preset name. Each entry holds a `knobs`
+# map in the same shape as `arch_defaults` (`ctx-size`, `flash-attn`,
+# `threads`, …), plus an optional `backend` / `server` naming what to
+# run it on and an `extras` argv tail. Apply one with
+# `llamastash start <model> --preset <name>`.
 #
-# A knob set to `auto` delegates that knob to llama-server's `--fit`
-# (e.g. `n_gpu_layers: auto`). `auto` is a reserved token, so to set a
+# A knob set to `auto` delegates it to the engine's own fitter
+# (e.g. `n-gpu-layers: auto`). `auto` is a reserved token, so to set a
 # knob to the *literal* string value `auto`, use the escape
 # `{ value: auto }`. The app writes entries in block style (shown below);
 # flow style (`{ ctx: 8192 }`) is also accepted when you hand-author.
@@ -764,20 +772,31 @@ presets:
     default: long-ctx # standing default; auto-applies on a plain start (use `default: auto` for pure fit instead)
     entries:
       short-ctx:
-        ctx: 8192
+        knobs:
+          ctx-size: 8192
       long-ctx:
-        ctx: 65536
-        flash_attn: true
-        n_gpu_layers: auto # delegate this knob to --fit
+        knobs:
+          ctx-size: 65536
+          flash-attn: true
+          n-gpu-layers: auto # delegate this knob to the engine's fitter
       embed:
-        mode: embedding
-        ctx: 4096
+        knobs:
+          mode: embedding
+          ctx-size: 4096
         extras:
           - --rope-freq-base
           - "10000"
+      # A preset can also pin what it runs on, so the whole run reproduces
+      # rather than just its tuning. `server` names one build of a backend.
+      pinned-build:
+        backend: llamacpp
+        server: llamacpp-vulkan
+        knobs:
+          ctx-size: 8192
   # arch preset, keyed by `general.architecture` — applies to every
   # qwen3 model that has no per-model entry of the same name
   qwen3:
     entries:
       balanced:
-        ctx: 16384
+        knobs:
+          ctx-size: 16384

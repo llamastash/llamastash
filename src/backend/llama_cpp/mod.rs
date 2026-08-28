@@ -33,11 +33,12 @@ use crate::daemon::probe::ProbeOptions;
 use crate::launch::params::LaunchParams;
 
 /// Config-derived launch-knob keys llama.cpp carries in
-/// [`LaunchParams::backend_knobs`] (string-encoded, like ds4's native knobs).
-/// These are config projections seeded fresh each launch by
-/// [`LlamaCppBackend::seed_launch_knobs`], **not** [`Backend::native_knobs`]
-/// descriptors — they surface no TUI picker row. `compose` and the admission /
-/// readiness hooks read them straight out of the map.
+/// [`LaunchParams::launch_config`](crate::launch::params::LaunchParams), the
+/// [`LaunchParams::launch_config`](crate::launch::params::LaunchParams) — the
+/// config-projection channel, deliberately not knobs. Seeded fresh each launch
+/// by [`LlamaCppBackend::seed_launch_knobs`] from daemon config rather than
+/// from user intent, so they surface no editor row and no CLI flag. `compose`
+/// and the admission / readiness hooks read them straight out of the map.
 pub const LLAMACPP_KNOB_JINJA: &str = "jinja";
 pub const LLAMACPP_KNOB_STRICT_FIT: &str = "strict_fit";
 pub const LLAMACPP_KNOB_FIT_CTX_FLOOR: &str = "fit_ctx_floor";

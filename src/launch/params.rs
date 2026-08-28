@@ -1,8 +1,10 @@
 //! Neutral launch IR: the backend-agnostic types every backend reads.
 //!
 //! [`LaunchParams`] carries the user's launch choices, [`crate::launch::knobs::KnobSet`] the
-//! typed tuning surface, and the layered resolver ([`resolve_layered`],
-//! [`seed_layerless`]) merges the precedence chain into a [`Resolved`] set.
+//! tuning surface, and the layered resolver
+//! ([`resolve_layered`](crate::launch::knobs::resolve_layered),
+//! [`seed_layerless`](crate::launch::knobs::seed_layerless)) merges the
+//! precedence chain into a [`Resolved`](crate::launch::knobs::Resolved) set.
 //! The per-backend argv emitter lives with its backend — llama.cpp's is
 //! `crate::backend::llama_cpp::compose`.
 //!
