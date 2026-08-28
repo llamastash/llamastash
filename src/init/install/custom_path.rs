@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use super::{sha256_file, BinaryInstall, InstallError};
+use crate::backend::Backend as _;
 use crate::init::snapshot::InstallMethod;
 
 /// Accept `path` after the integrity gates pass. The caller is
@@ -109,8 +110,9 @@ pub fn preflight_integrity(path: &Path) -> Result<(), InstallError> {
 /// Non-fatal — a custom build may use any name that still contains "server" —
 /// so this only nudges on an obvious mismatch.
 pub fn server_name_hint(path: &Path) -> Option<String> {
-  let name = path.file_name()?.to_string_lossy().to_ascii_lowercase();
-  if name.contains("server") || !crate::backend::llama_cpp::serve_prefix(path).is_empty() {
+  // A path with no file name (a bare `/`, a trailing `..`) has nothing to judge.
+  path.file_name()?;
+  if crate::backend::default_backend().binary_serves(path) {
     return None;
   }
   Some(format!(

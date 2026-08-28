@@ -76,25 +76,6 @@ pub struct ExternalProcess {
   pub launched_by_llamastash: bool,
 }
 
-/// Whether a process basename is an instance of the backend `marker` names.
-///
-/// An exact basename match, plus `<marker>-<suffix>` for **compound** markers
-/// only.
-///
-/// A bare `contains` was safe while every marker was a long compound basename
-/// (`llama-server`, `ds4-server`), where a `-cuda` / `-vulkan` build suffix is
-/// certainly the same program and `comm`'s 15-char cap can truncate it. It
-/// stops being safe once a backend registers a short single-token marker: a
-/// four-character token is a substring of unrelated tools on the host, and
-/// claiming one makes it a legal `stop_external` target. Suffix tolerance is
-/// therefore extended only to markers already specific enough to earn it.
-fn basename_matches_marker(basename: &str, marker: &str) -> bool {
-  if basename == marker {
-    return true;
-  }
-  marker.contains('-') && basename.starts_with(&format!("{marker}-"))
-}
-
 /// Inputs to a sweep — the daemon hands them in.
 #[derive(Debug, Clone)]
 pub struct SweepInputs<'a> {
@@ -243,7 +224,7 @@ pub async fn sweep(inputs: SweepInputs<'_>) -> SweepReport {
       let matched = inputs
         .external_markers
         .iter()
-        .find(|m| basename_matches_marker(&basename, m))?;
+        .find(|m| crate::backend::basename_matches_marker(&basename, m))?;
       // A basename is not always the whole answer: a backend whose server is
       // one mode of a multi-command binary gets to read the argv and disown the
       // other modes. Asked through the registry, so the sweep still names no
@@ -455,35 +436,6 @@ pub fn extract_port(cmd: &[String]) -> Option<u16> {
 #[cfg(test)]
 mod tests {
   use super::*;
-
-  /// A short single-token marker used to match any process whose name merely
-  /// contained it — even with that backend disabled, which made unrelated
-  /// tools legal `stop_external` targets. Compound markers keep their
-  /// build-suffix tolerance, which is what the loose check was buying.
-  #[test]
-  fn a_marker_matches_its_own_binary_not_neighbours_that_share_the_name() {
-    for (basename, marker, want) in [
-      ("srv", "srv", true),
-      ("llama-server", "llama-server", true),
-      ("llama-server-cuda", "llama-server", true),
-      // A short token says nothing once anything follows it.
-      ("srv-router", "srv", false),
-      ("srvproxy", "srv", false),
-      ("my-srv-serve", "srv", false),
-      ("usrv", "srv", false),
-      ("not-llama-server", "llama-server", false),
-      // llama.cpp's unified app: its own basename, nothing around it.
-      ("llama", "llama", true),
-      ("ollama", "llama", false),
-      ("llama-server", "llama", false),
-    ] {
-      assert_eq!(
-        basename_matches_marker(basename, marker),
-        want,
-        "{basename} vs {marker}"
-      );
-    }
-  }
 
   use std::path::PathBuf;
   use tokio::io::{AsyncReadExt, AsyncWriteExt};
