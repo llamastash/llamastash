@@ -91,11 +91,6 @@ fn is_legacy_entry(entry: &YamlValue) -> bool {
 /// leaves the original in place because each `upsert_block` rewrites the whole
 /// source and only the final `write_config` touches disk.
 pub fn migrate(config_path: &Path) -> Result<Option<MigrationReport>, WriteError> {
-  // Resolve a symlinked config to its real target so the final write lands
-  // on the file, not on the link (a tmp-file + rename over the link itself
-  // would replace it with a regular file — the same hazard `preflight`
-  // exists to prevent for every other config writer).
-  let target = crate::config::writer::preflight(config_path)?;
   let source = yaml_edit::read_source(config_path)?;
   if source.trim().is_empty() {
     return Ok(None);
@@ -127,6 +122,14 @@ pub fn migrate(config_path: &Path) -> Result<Option<MigrationReport>, WriteError
   if todo.is_empty() {
     return Ok(None);
   }
+
+  // Resolve a symlinked config to its real target so the final write lands on
+  // the file, not on the link (a tmp-file + rename over the link itself would
+  // replace it with a regular file — the hazard `preflight` exists to prevent
+  // for every other config writer). Deliberately *after* the "nothing to do"
+  // return: `preflight` also refuses an insecure parent directory, and a
+  // config needing no migration should not fail on a write it never makes.
+  let target = crate::config::writer::preflight(config_path)?;
 
   // Backup before touching anything. A migration we cannot undo is one we
   // should not run.
@@ -327,6 +330,47 @@ mod tests {
     }
     assert!(after.contains("ssd-streaming: false"), "{after}");
     assert!(after.contains("mtp: true"), "{after}");
+  }
+
+  /// `preflight` refuses a group- or world-writable parent directory. It
+  /// guards the *write*, so a config with nothing to migrate — which makes no
+  /// write — must not fail on it. Calling it up front turned every daemon
+  /// start on an already-migrated config in such a directory into a logged
+  /// failure the user could do nothing about.
+  #[cfg(unix)]
+  #[test]
+  fn nothing_to_migrate_does_not_trip_the_write_path_guard() {
+    use std::os::unix::fs::PermissionsExt;
+    let loose = |label: &str, body: &str| {
+      let p = write(label, body);
+      std::fs::set_permissions(p.parent().unwrap(), std::fs::Permissions::from_mode(0o777))
+        .unwrap();
+      p
+    };
+
+    let empty = loose("guard-empty", "");
+    assert!(matches!(migrate(&empty), Ok(None)), "empty config");
+
+    let done = loose(
+      "guard-done",
+      "presets:\n  m.gguf:\n    entries:\n      fast:\n        knobs:\n          ctx-size: 4096\n",
+    );
+    assert!(matches!(migrate(&done), Ok(None)), "already migrated");
+
+    // The guard still guards when there *is* a write to make, and it fires
+    // before the backup so no stray `.pre-knobs.bak` is left behind.
+    let legacy = loose(
+      "guard-legacy",
+      "presets:\n  m.gguf:\n    entries:\n      fast:\n        ctx: 4096\n",
+    );
+    assert!(
+      matches!(migrate(&legacy), Err(WriteError::ParentDirInsecure { .. })),
+      "an insecure parent must still refuse a real migration"
+    );
+    assert!(
+      !backup_path(&legacy).exists(),
+      "refused migration left a backup behind"
+    );
   }
 
   #[cfg(unix)]
