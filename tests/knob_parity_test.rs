@@ -6,12 +6,13 @@
 //! guarantee, so these tests assert the generation still happens rather than
 //! re-listing the knobs (a list would be the fourth place to forget one).
 //!
-//! Four checks, one per way parity can break:
+//! Five checks, one per way parity can break:
 //!
 //! 1. a declared knob stops reaching a surface,
 //! 2. an identity field (backend / server / extras / port) stops reaching one,
 //! 3. the declarations themselves become inconsistent,
-//! 4. the composed argv drifts from what the engine was getting before.
+//! 4. the composed argv drifts from what the engine was getting before,
+//! 5. a declaration moves out of the backend module that owns it.
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -299,6 +300,73 @@ fn every_backend_declares_resolvable_knobs() {
         Backend::id(&b),
         d.id
       );
+    }
+  }
+}
+
+/// **5.** A [`KnobDef`](knobs::KnobDef) declared outside a backend's own
+/// `knobs.rs` carries no flag spelling.
+///
+/// Two backends that declare one neutral knob identically may share a single
+/// const rather than keeping copies in sync by hand — `MTP_ENABLE` is the only
+/// one today. That stays compatible with `AGENTS.md`'s "adding a backend"
+/// contract, which makes `src/backend/<id>/knobs.rs` the one place a backend's
+/// flag spellings appear, only while the hoisted def has `flag: None`. A
+/// shared def carrying `--something` would move a spelling out of the module
+/// that owns it, and removing that backend would stop being one deletion.
+#[test]
+fn a_knob_def_outside_a_backend_module_declares_no_flag() {
+  let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+  let mut files = Vec::new();
+  collect_rust_sources(&root.join("src"), &mut files);
+  assert!(!files.is_empty(), "found no sources to scan");
+
+  let mut leaks = Vec::new();
+  for file in files {
+    let rel = file
+      .strip_prefix(&root)
+      .unwrap_or(&file)
+      .to_string_lossy()
+      .replace('\\', "/");
+    // A backend's own knob file is exactly where a flag spelling belongs.
+    if rel.starts_with("src/backend/") && rel.ends_with("/knobs.rs") {
+      continue;
+    }
+    let Ok(text) = std::fs::read_to_string(&file) else {
+      continue;
+    };
+    for (n, line) in text.lines().enumerate() {
+      // `flag:` as its own field, so `cli_flag: Some(..)` elsewhere is not a
+      // match.
+      let Some(at) = line.find("flag: Some(") else {
+        continue;
+      };
+      let preceded_by_ident = line[..at]
+        .chars()
+        .next_back()
+        .is_some_and(|c| c.is_alphanumeric() || c == '_');
+      if !preceded_by_ident {
+        leaks.push(format!("{rel}:{}: {}", n + 1, line.trim()));
+      }
+    }
+  }
+  assert!(
+    leaks.is_empty(),
+    "a knob flag spelling escaped the backend module that owns it:\n{}",
+    leaks.join("\n")
+  );
+}
+
+fn collect_rust_sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+  let Ok(entries) = std::fs::read_dir(dir) else {
+    return;
+  };
+  for entry in entries.flatten() {
+    let path = entry.path();
+    if path.is_dir() {
+      collect_rust_sources(&path, out);
+    } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+      out.push(path);
     }
   }
 }

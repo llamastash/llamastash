@@ -312,9 +312,15 @@ pub const THREADS_LADDER: &[&str] = &["1", "2", "4", "6", "8", "12", "16", "24"]
 /// Declared once because more than one backend offers the same ladder.
 pub const DRAFT_N_LADDER: &[&str] = &["1", "2", "3", "4"];
 
-/// The neutral speculation-enable knob. Its meaning — "delegate to the
-/// engine's own capability check" — is backend-agnostic, so more than one
-/// backend declares this exact knob rather than a backend-specific variant.
+/// The neutral speculation-enable knob, and the one [`KnobDef`] declared
+/// outside a backend module.
+///
+/// Its meaning — "delegate to the engine's own capability check" — is
+/// backend-agnostic, so more than one backend declares this exact knob rather
+/// than a backend-specific variant. Shared rather than copied because the
+/// copies were byte-identical and nothing kept them that way. It carries no
+/// flag (the daemon projects the resolved intent onto it, `Emit::Custom`), so
+/// hoisting it leaves no backend flag spelling outside `<id>/knobs.rs`.
 pub const MTP_ENABLE: KnobDef = KnobDef {
   id: "mtp",
   flag: None,
@@ -333,8 +339,12 @@ pub const MTP_ENABLE: KnobDef = KnobDef {
 
 /// One tunable, as declared by the backend that owns it.
 ///
-/// Declared in `src/backend/<id>/knobs.rs` and nowhere else — that file is the
-/// only place a backend's flag spellings appear.
+/// Declared in `src/backend/<id>/knobs.rs` — that file is the only place a
+/// backend's flag spellings appear. A knob two backends declare *identically*
+/// may instead be a shared const here ([`MTP_ENABLE`]), which is safe only
+/// while that const has `flag: None`: a hoisted def carrying `--something`
+/// would move a spelling out of the module that owns it. Pinned by
+/// `a_knob_def_outside_a_backend_module_declares_no_flag`.
 #[derive(Debug, Clone, Copy)]
 pub struct KnobDef {
   /// Stable persistence / wire / config key. By convention the flag spelling
