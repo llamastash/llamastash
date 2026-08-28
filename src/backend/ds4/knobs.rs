@@ -20,7 +20,7 @@
 //! Numeric knobs that used to be free-text strings are typed here, so a bad
 //! value is refused at parse time instead of after a multi-minute model load.
 
-use crate::launch::knobs::def::CTX_LADDER;
+use crate::launch::knobs::def::{CTX_LADDER, DRAFT_N_LADDER, MTP_ENABLE, THREADS_LADDER};
 use crate::launch::knobs::{AutoKind, Concept, Emit, Group, KnobDef, KnobKind, Ring};
 use crate::launch::params::LayerLabel;
 
@@ -84,7 +84,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &["-t"],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
-    ring: Ring::Fixed(&["1", "2", "4", "6", "8", "12", "16", "24"]),
+    ring: Ring::Fixed(THREADS_LADDER),
     volatile: false,
   },
   KnobDef {
@@ -213,21 +213,7 @@ pub const KNOBS: &[KnobDef] = &[
   },
   // Speculation. `mtp` is the neutral enable every backend honours; the rest
   // are ds4's own dials.
-  KnobDef {
-    id: "mtp",
-    flag: None,
-    concept: None,
-    kind: KnobKind::Bool,
-    auto: Some(AutoKind::Capability),
-    group: Group::Speculation,
-    label: "MTP",
-    help: "multi-token prediction; auto enables it when the model can",
-    aliases: &[],
-    fallback: LayerLabel::ServerDefault,
-    emit: Emit::Custom,
-    ring: Ring::None,
-    volatile: false,
-  },
+  MTP_ENABLE,
   KnobDef {
     id: "mtp-model",
     flag: Some("--mtp"),
@@ -255,7 +241,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
-    ring: Ring::Fixed(&["1", "2", "3", "4"]),
+    ring: Ring::Fixed(DRAFT_N_LADDER),
     volatile: false,
   },
   KnobDef {

@@ -91,6 +91,11 @@ fn is_legacy_entry(entry: &YamlValue) -> bool {
 /// leaves the original in place because each `upsert_block` rewrites the whole
 /// source and only the final `write_config` touches disk.
 pub fn migrate(config_path: &Path) -> Result<Option<MigrationReport>, WriteError> {
+  // Resolve a symlinked config to its real target so the final write lands
+  // on the file, not on the link (a tmp-file + rename over the link itself
+  // would replace it with a regular file — the same hazard `preflight`
+  // exists to prevent for every other config writer).
+  let target = crate::config::writer::preflight(config_path)?;
   let source = yaml_edit::read_source(config_path)?;
   if source.trim().is_empty() {
     return Ok(None);
@@ -142,7 +147,7 @@ pub fn migrate(config_path: &Path) -> Result<Option<MigrationReport>, WriteError
     )?;
     migrated.push((model, name));
   }
-  yaml_edit::write_config(config_path, &current)?;
+  yaml_edit::write_config(&target, &current)?;
 
   Ok(Some(MigrationReport {
     config: config_path.to_path_buf(),
@@ -322,5 +327,44 @@ mod tests {
     }
     assert!(after.contains("ssd-streaming: false"), "{after}");
     assert!(after.contains("mtp: true"), "{after}");
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn migrate_follows_symlink_and_preserves_the_link() {
+    // A `config.yaml` symlinked into (say) a dotfiles repo must migrate
+    // *through* to its real target, keeping the link — not replaced by a
+    // regular file the way a tmp-file + rename over the link itself would.
+    use std::os::unix::fs::symlink;
+    let dir = unique_temp_dir("knob-migration-symlink");
+    let real = dir.join("real-config.yaml");
+    std::fs::write(
+      &real,
+      "presets:\n  # kept on purpose\n  m.gguf:\n    entries:\n      fast:\n        ctx: 4096\n        flash_attn: true\n",
+    )
+    .unwrap();
+    let link = dir.join("config.yaml");
+    symlink(&real, &link).unwrap();
+
+    let report = migrate(&link).unwrap().expect("should migrate");
+
+    assert!(
+      std::fs::symlink_metadata(&link)
+        .unwrap()
+        .file_type()
+        .is_symlink(),
+      "symlink preserved, not replaced by a regular file"
+    );
+    let real_body = read(&real);
+    assert!(
+      real_body.contains("knobs:"),
+      "write landed on target:\n{real_body}"
+    );
+    assert!(real_body.contains("# kept on purpose"), "comment survives");
+    assert_eq!(read(&link), real_body, "reading through the link matches");
+    assert!(
+      read(&report.backup).contains("flash_attn: true"),
+      "backup captured the original"
+    );
   }
 }

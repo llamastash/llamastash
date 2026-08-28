@@ -44,16 +44,20 @@ pub fn parse_tail_args(
       // Booleans default to `true` for a bare flag (`--flash-attn`). The
       // equals-form (`--flash-attn=false`) is honoured so a user override
       // actually disables a knob an inherited layer set to `true`. Space-form
-      // is consumed only when the next token is a recognised on/off spelling —
-      // modern llama-server's `--flash-attn` requires `on|off|auto`, so we
-      // mirror that. Anything else stays unconsumed and routes through extras.
+      // is consumed only when the next token is a recognised on/off spelling
+      // or the `auto` token (handled here, not by `parse_bool`, since it sets
+      // the knob's `KnobValue::Auto` state rather than a boolean) — modern
+      // llama-server's `--flash-attn` requires `on|off|auto`, so we mirror
+      // that. Anything else stays unconsumed and routes through extras. This
+      // fixes the prior `--flash-attn auto` bug where `auto` was left as a
+      // dangling positional in extras, producing broken argv.
       KnobKind::Bool => match inline {
         Some(v) => Some(v),
         None => match iter
           .peek()
           .map(|t| t.to_string_lossy().to_ascii_lowercase())
         {
-          Some(p) if is_bool_value_token(&p) || p == knobs::AUTO_TOKEN => {
+          Some(p) if knobs::parse_bool(&p).is_some() || p == knobs::AUTO_TOKEN => {
             iter.next();
             Some(p)
           }
@@ -65,19 +69,6 @@ pub fn parse_tail_args(
     apply_knob(&mut knobs, def, value.as_deref(), &lossy)?;
   }
   Ok((knobs, extras))
-}
-
-/// `parse_bool`-spellings that may follow a bool flag in space form,
-/// matching the `on|off|true|false|...` spellings `parse_bool` accepts.
-/// The literal `auto` is consumed too (handled at the call site, not
-/// here) — it sets the knob's [`KnobValue::Auto`] state rather than a
-/// boolean. This fixes the prior `--flash-attn auto` bug where `auto`
-/// was left as a dangling positional in extras, producing broken argv.
-fn is_bool_value_token(s: &str) -> bool {
-  matches!(
-    s,
-    "on" | "off" | "true" | "false" | "1" | "0" | "yes" | "no"
-  )
 }
 
 fn consume_value<'a, I>(
@@ -132,22 +123,6 @@ fn apply_knob(
       Ok(())
     }
     Err(e) => Err(CliExit::new(USAGE, format!("{flag}: {e}"))),
-  }
-}
-
-/// Returns `true` when `s` looks like a cache-type identifier a custom
-/// `llama-server` build might define — starts with an ASCII letter and
-/// contains only ASCII letters, digits, and underscores. This lets
-/// non-standard types (e.g. `fp4`, `turbo_quant`) clear the CLI / TUI
-/// gate so `llama-server` itself is the authority on whether the type is
-/// actually supported, rather than llamastash rejecting it up front.
-pub fn is_custom_kv_cache_type(s: &str) -> bool {
-  let mut chars = s.chars();
-  match chars.next() {
-    Some(first) if first.is_ascii_alphabetic() => {
-      chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-    }
-    _ => false,
   }
 }
 
@@ -399,19 +374,6 @@ mod tests {
         .code,
       USAGE
     );
-  }
-
-  #[test]
-  fn is_custom_kv_cache_type_accepts_quant_ids_and_rejects_garbage() {
-    // Permissive on purpose: anything that could name a quant type passes
-    // so llama-server stays the authority. The gate only rejects what
-    // could not be a single identifier token.
-    for ok in ["fp4", "turbo_quant", "q4_0", "iq4_nl", "a", "FP8"] {
-      assert!(is_custom_kv_cache_type(ok), "should accept {ok:?}");
-    }
-    for bad in ["", "4bad", "_lead", "has space", "dash-no"] {
-      assert!(!is_custom_kv_cache_type(bad), "should reject {bad:?}");
-    }
   }
 
   #[test]

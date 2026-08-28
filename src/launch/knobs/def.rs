@@ -269,6 +269,18 @@ impl Group {
     }
   }
 
+  /// Whether this group's runtime gate is satisfied, given the two runtime
+  /// facts a [`GroupGate`] can ask about. A group with no gate is always
+  /// open. Shared so an editable picker and a read-only summary of the same
+  /// backend's knobs can never answer a gate differently.
+  pub fn gate_open(self, multi_device: bool, mtp_capable: bool) -> bool {
+    match self.gate() {
+      None => true,
+      Some(GroupGate::MultiDevice) => multi_device,
+      Some(GroupGate::SpeculationCapable) => mtp_capable,
+    }
+  }
+
   /// Render / navigation order.
   pub fn all() -> &'static [Group] {
     &[
@@ -291,6 +303,33 @@ impl Group {
 pub const CTX_LADDER: &[&str] = &[
   "2048", "4096", "8192", "16384", "32768", "65536", "131072", "262144", "524288", "1048576",
 ];
+
+/// CPU thread-count quick picks. Declared once because more than one backend
+/// offers the same ladder for its own `threads` knob.
+pub const THREADS_LADDER: &[&str] = &["1", "2", "4", "6", "8", "12", "16", "24"];
+
+/// Draft-token-count quick picks for a speculative-decoding draft-n knob.
+/// Declared once because more than one backend offers the same ladder.
+pub const DRAFT_N_LADDER: &[&str] = &["1", "2", "3", "4"];
+
+/// The neutral speculation-enable knob. Its meaning — "delegate to the
+/// engine's own capability check" — is backend-agnostic, so more than one
+/// backend declares this exact knob rather than a backend-specific variant.
+pub const MTP_ENABLE: KnobDef = KnobDef {
+  id: "mtp",
+  flag: None,
+  concept: None,
+  kind: KnobKind::Bool,
+  auto: Some(AutoKind::Capability),
+  group: Group::Speculation,
+  label: "MTP",
+  help: "multi-token prediction; auto enables it when the model can",
+  aliases: &[],
+  fallback: LayerLabel::ServerDefault,
+  emit: Emit::Custom,
+  ring: Ring::None,
+  volatile: false,
+};
 
 /// One tunable, as declared by the backend that owns it.
 ///

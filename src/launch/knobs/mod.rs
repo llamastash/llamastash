@@ -49,6 +49,7 @@ pub use registry::{
   resolve_id_for, volatile_ids, RegistryError,
 };
 pub use resolve::{resolve_layered, seed_layerless, Resolved};
+pub(crate) use value::parse_bool;
 pub use value::{parse_value, KnobSet, KnobValue, ParseError, Scalar, AUTO_TOKEN};
 
 /// Build a [`KnobSet`] from `name: value` pairs, the way a struct literal used

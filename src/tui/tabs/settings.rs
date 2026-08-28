@@ -176,11 +176,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
       let speculates = app.mtp_capable_for(&m.path);
       crate::launch::knobs::registry::grouped_for_backend(id)
         .into_iter()
-        .filter(|(g, _)| match g.gate() {
-          None => true,
-          Some(crate::launch::knobs::GroupGate::MultiDevice) => multi,
-          Some(crate::launch::knobs::GroupGate::SpeculationCapable) => speculates,
-        })
+        .filter(|(g, _)| g.gate_open(multi, speculates))
         .collect()
     }
   };
@@ -391,20 +387,13 @@ fn clamp_scroll_with_margin(current: u16, focused: u16, viewport: u16, total: u1
 
 /// A persisted knob's value as the read-only running view renders it.
 ///
-/// Same spellings the editor uses, so one knob does not read `on` in the form
-/// and `true` two lines away in the running view.
+/// Delegates to the same renderer the editor's `value_label` uses, so one
+/// knob does not read `on` in the form and `true` two lines away here.
 fn format_persisted_knob_value(
   knobs: &crate::launch::knobs::KnobSet,
   id: crate::launch::knobs::KnobId,
 ) -> String {
-  match knobs.get(id) {
-    Some(crate::launch::knobs::KnobValue::Auto) => crate::launch::knobs::AUTO_TOKEN.to_string(),
-    Some(crate::launch::knobs::KnobValue::Set(crate::launch::knobs::Scalar::Bool(b))) => {
-      if *b { "on" } else { "off" }.to_string()
-    }
-    Some(crate::launch::knobs::KnobValue::Set(v)) => v.to_arg(),
-    None => INHERITED_LABEL.to_string(),
-  }
+  crate::launch::knobs::KnobValue::render(knobs.get(id), INHERITED_LABEL)
 }
 
 /// Read-only `server` row label for a running launch, or `None` when the model

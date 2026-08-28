@@ -8,7 +8,7 @@
 //! Order is the canonical emission order: argv diffs stay readable across
 //! releases, and the editor renders rows in this order within each group.
 
-use crate::launch::knobs::def::CTX_LADDER;
+use crate::launch::knobs::def::{CTX_LADDER, DRAFT_N_LADDER, MTP_ENABLE, THREADS_LADDER};
 use crate::launch::knobs::{AutoKind, Concept, Emit, Group, KnobDef, KnobKind, Ring, Shape};
 use crate::launch::params::LayerLabel;
 
@@ -164,7 +164,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &["-t"],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
-    ring: Ring::Fixed(&["1", "2", "4", "6", "8", "12", "16", "24"]),
+    ring: Ring::Fixed(THREADS_LADDER),
     volatile: false,
   },
   KnobDef {
@@ -348,21 +348,7 @@ pub const KNOBS: &[KnobDef] = &[
   // config layer. That is `AutoKind::Capability`, and it is why this knob can
   // live on the generated path at all: the old `KnobValue::Auto` meant only
   // "delegate to --fit", which forced speculation off the path entirely.
-  KnobDef {
-    id: "mtp",
-    flag: None,
-    concept: None,
-    kind: KnobKind::Bool,
-    auto: Some(AutoKind::Capability),
-    group: Group::Speculation,
-    label: "MTP",
-    help: "multi-token prediction; auto enables it when the model can",
-    aliases: &[],
-    fallback: LayerLabel::ServerDefault,
-    emit: Emit::Custom,
-    ring: Ring::None,
-    volatile: false,
-  },
+  MTP_ENABLE,
   KnobDef {
     id: "mtp-draft-n",
     flag: Some("--spec-draft-n-max"),
@@ -375,7 +361,7 @@ pub const KNOBS: &[KnobDef] = &[
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
-    ring: Ring::Fixed(&["1", "2", "3", "4"]),
+    ring: Ring::Fixed(DRAFT_N_LADDER),
     volatile: false,
   },
 ];

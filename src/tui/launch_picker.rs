@@ -16,7 +16,7 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 
 use crate::launch::knobs::{
-  self, Group, GroupGate, KnobDef, KnobId, KnobKind, KnobSet, KnobValue, Ring, Scalar,
+  self, Group, KnobDef, KnobId, KnobKind, KnobSet, KnobValue, Ring, Scalar,
 };
 use crate::launch::params::{BackendChoice, LayerLabel};
 
@@ -236,11 +236,7 @@ impl LaunchPickerState {
   /// Whether a group's runtime gate is satisfied. A group with no gate is
   /// always open.
   fn group_gate_open(&self, group: Group) -> bool {
-    match group.gate() {
-      None => true,
-      Some(GroupGate::MultiDevice) => self.multi_device(),
-      Some(GroupGate::SpeculationCapable) => self.mtp_capable,
-    }
+    group.gate_open(self.multi_device(), self.mtp_capable)
   }
 
   /// All rows in render / navigation order: `Preset`, `Server`, every visible
@@ -665,14 +661,7 @@ impl LaunchPickerState {
     if matches!(def.ring(), Ring::DeviceCheckbox) {
       return self.device_value_display();
     }
-    match self.effective(id) {
-      Some(KnobValue::Auto) => knobs::AUTO_TOKEN.to_string(),
-      // A bool row reads `on` / `off`, not `true` / `false` — it is the
-      // spelling the flag itself takes and the one a toggle row wants.
-      Some(KnobValue::Set(Scalar::Bool(b))) => if *b { "on" } else { "off" }.to_string(),
-      Some(KnobValue::Set(s)) => s.to_arg(),
-      None => INHERITED_LABEL.to_string(),
-    }
+    KnobValue::render(self.effective(id), INHERITED_LABEL)
   }
 
   /// Seed text for an `e`-edit on a knob row: the current effective value, or

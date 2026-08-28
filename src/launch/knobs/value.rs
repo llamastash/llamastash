@@ -91,6 +91,20 @@ impl KnobValue {
       KnobValue::Auto => None,
     }
   }
+
+  /// Render a knob value the way every surface spells it: `auto` for a
+  /// delegated row, `on`/`off` for a bool (the flag's own spelling, not
+  /// `true`/`false`), a scalar's own [`Scalar::to_arg`] otherwise, and
+  /// `inherited_label` when unset. Shared so an editable row and a read-only
+  /// summary of the same knob can never drift on how the value reads.
+  pub fn render(value: Option<&KnobValue>, inherited_label: &str) -> String {
+    match value {
+      Some(KnobValue::Auto) => AUTO_TOKEN.to_string(),
+      Some(KnobValue::Set(Scalar::Bool(b))) => if *b { "on" } else { "off" }.to_string(),
+      Some(KnobValue::Set(s)) => s.to_arg(),
+      None => inherited_label.to_string(),
+    }
+  }
 }
 
 /// The bare token denoting [`KnobValue::Auto`] in YAML and JSON.
@@ -176,11 +190,29 @@ impl KnobSet {
 
   /// Look a knob up by name rather than by resolved [`KnobId`].
   ///
+  /// Resolve `name` to a knob id, optionally scoped to one backend's
+  /// vocabulary. Every `*_by_name` / `*_by_name_for` accessor below differs
+  /// only in whether this scoping is present, so they all resolve through
+  /// here: scoped, it stops another backend's *alias* shadowing this
+  /// backend's *canonical* id (llama.cpp aliases `ctx` onto `ctx-size`, while
+  /// ds4 declares `ctx` itself); unscoped, it accepts any spelling
+  /// [`resolve_id`](super::registry::resolve_id) accepts.
+  fn resolve_scoped(backend_id: Option<&str>, name: &str) -> Option<KnobId> {
+    match backend_id {
+      Some(backend_id) => super::registry::resolve_id_for(backend_id, name),
+      None => super::registry::resolve_id(name),
+    }
+  }
+
   /// For code that knows a specific knob by its declared id string — a
-  /// backend reconciling its own tunables in `prepare_launch`, say. Accepts
-  /// any spelling [`resolve_id`](super::registry::resolve_id) accepts.
+  /// backend reconciling its own tunables in `prepare_launch`, say.
   pub fn get_by_name(&self, name: &str) -> Option<&KnobValue> {
-    self.get(super::registry::resolve_id(name)?)
+    self.get(Self::resolve_scoped(None, name)?)
+  }
+
+  /// [`Self::get_by_name`] scoped to one backend's vocabulary.
+  pub fn get_by_name_for(&self, backend_id: &str, name: &str) -> Option<&KnobValue> {
+    self.get(Self::resolve_scoped(Some(backend_id), name)?)
   }
 
   /// Whether `name` resolves to a slot this set holds (`Set` or `Auto`).
@@ -193,68 +225,6 @@ impl KnobSet {
     matches!(self.get_by_name(name), Some(KnobValue::Set(_)))
   }
 
-  /// Set `name` from a text value, typed through its declaration so it lands
-  /// as the right [`Scalar`] variant. A value the knob cannot represent is
-  /// dropped with a warning rather than stored mistyped.
-  pub fn set_by_name(&mut self, name: &str, value: impl AsRef<str>) -> bool {
-    let Some(id) = super::registry::resolve_id(name) else {
-      log::warn!("no knob `{name}`; ignoring");
-      return false;
-    };
-    let Some(def) = super::registry::def_for(id) else {
-      return false;
-    };
-    match super::value::parse_value(def, value.as_ref()) {
-      Ok(v) => {
-        self.set(id, v);
-        true
-      }
-      Err(e) => {
-        log::warn!("{e}; ignoring");
-        false
-      }
-    }
-  }
-
-  /// [`Self::set_by_name`] scoped to one backend's vocabulary.
-  ///
-  /// Use this whenever the writing code knows which backend the value is for:
-  /// it stops another backend's *alias* shadowing this backend's *canonical*
-  /// id (llama.cpp aliases `ctx` onto `ctx-size`, while ds4 declares `ctx`
-  /// itself).
-  pub fn set_by_name_for(&mut self, backend_id: &str, name: &str, value: impl AsRef<str>) -> bool {
-    let Some(id) = super::registry::resolve_id_for(backend_id, name) else {
-      log::warn!("no knob `{name}` for backend `{backend_id}`; ignoring");
-      return false;
-    };
-    let Some(def) =
-      super::registry::def_for_backend(backend_id, id).or_else(|| super::registry::def_for(id))
-    else {
-      return false;
-    };
-    match super::value::parse_value(def, value.as_ref()) {
-      Ok(v) => {
-        self.set(id, v);
-        true
-      }
-      Err(e) => {
-        log::warn!("{e}; ignoring");
-        false
-      }
-    }
-  }
-
-  /// [`Self::text_by_name`] scoped to one backend's vocabulary.
-  pub fn text_by_name_for(&self, backend_id: &str, name: &str) -> Option<String> {
-    let id = super::registry::resolve_id_for(backend_id, name)?;
-    Some(self.get(id)?.set_value()?.to_arg())
-  }
-
-  /// [`Self::get_by_name`] scoped to one backend's vocabulary.
-  pub fn get_by_name_for(&self, backend_id: &str, name: &str) -> Option<&KnobValue> {
-    self.get(super::registry::resolve_id_for(backend_id, name)?)
-  }
-
   /// [`Self::is_set_by_name`] scoped to one backend's vocabulary.
   pub fn is_set_by_name_for(&self, backend_id: &str, name: &str) -> bool {
     matches!(
@@ -263,19 +233,72 @@ impl KnobSet {
     )
   }
 
-  /// [`Self::remove_by_name`] scoped to one backend's vocabulary.
-  pub fn remove_by_name_for(&mut self, backend_id: &str, name: &str) -> Option<KnobValue> {
-    self.clear(super::registry::resolve_id_for(backend_id, name)?)
+  /// Set `name` from a text value, optionally scoped to one backend's
+  /// vocabulary, typed through its declaration so it lands as the right
+  /// [`Scalar`] variant. A value the knob cannot represent, or a name that
+  /// does not resolve, is dropped with a warning rather than stored mistyped.
+  fn set_scoped(&mut self, backend_id: Option<&str>, name: &str, value: &str) -> bool {
+    let Some(id) = Self::resolve_scoped(backend_id, name) else {
+      match backend_id {
+        Some(backend_id) => log::warn!("no knob `{name}` for backend `{backend_id}`; ignoring"),
+        None => log::warn!("no knob `{name}`; ignoring"),
+      }
+      return false;
+    };
+    let def = match backend_id {
+      Some(backend_id) => {
+        super::registry::def_for_backend(backend_id, id).or_else(|| super::registry::def_for(id))
+      }
+      None => super::registry::def_for(id),
+    };
+    let Some(def) = def else {
+      return false;
+    };
+    match super::value::parse_value(def, value) {
+      Ok(v) => {
+        self.set(id, v);
+        true
+      }
+      Err(e) => {
+        log::warn!("{e}; ignoring");
+        false
+      }
+    }
+  }
+
+  /// Set `name` from a text value. See [`Self::set_scoped`].
+  pub fn set_by_name(&mut self, name: &str, value: impl AsRef<str>) -> bool {
+    self.set_scoped(None, name, value.as_ref())
+  }
+
+  /// [`Self::set_by_name`] scoped to one backend's vocabulary.
+  pub fn set_by_name_for(&mut self, backend_id: &str, name: &str, value: impl AsRef<str>) -> bool {
+    self.set_scoped(Some(backend_id), name, value.as_ref())
   }
 
   /// Drop `name` back to inherited.
   pub fn remove_by_name(&mut self, name: &str) -> Option<KnobValue> {
-    self.clear(super::registry::resolve_id(name)?)
+    self.clear(Self::resolve_scoped(None, name)?)
+  }
+
+  /// [`Self::remove_by_name`] scoped to one backend's vocabulary.
+  pub fn remove_by_name_for(&mut self, backend_id: &str, name: &str) -> Option<KnobValue> {
+    self.clear(Self::resolve_scoped(Some(backend_id), name)?)
   }
 
   /// The `Set` value of `name` rendered as the engine would receive it.
   pub fn text_by_name(&self, name: &str) -> Option<String> {
     Some(self.get_by_name(name)?.set_value()?.to_arg())
+  }
+
+  /// [`Self::text_by_name`] scoped to one backend's vocabulary.
+  pub fn text_by_name_for(&self, backend_id: &str, name: &str) -> Option<String> {
+    Some(
+      self
+        .get_by_name_for(backend_id, name)?
+        .set_value()?
+        .to_arg(),
+    )
   }
 
   /// Read `backend_id`'s knob for `concept`.
@@ -438,7 +461,7 @@ impl std::error::Error for ParseError {}
 
 /// Accepted spellings for a boolean knob value. Matches what the CLI tail
 /// parser has always taken, so `--flash-attn off` keeps working.
-fn parse_bool(s: &str) -> Option<bool> {
+pub(crate) fn parse_bool(s: &str) -> Option<bool> {
   match s.to_ascii_lowercase().as_str() {
     "true" | "on" | "yes" | "1" => Some(true),
     "false" | "off" | "no" | "0" => Some(false),
@@ -631,10 +654,22 @@ mod tests {
       },
       None,
     );
-    assert_eq!(
-      parse_value(&open, "z").unwrap(),
-      KnobValue::Set(Scalar::Str("z".into()))
-    );
+    // An unlisted but identifier-shaped value (e.g. a custom quant type a
+    // modified llama-server build might define) clears the gate.
+    for ok in ["z", "fp4", "turbo_quant", "q4_0", "iq4_nl", "FP8"] {
+      assert_eq!(
+        parse_value(&open, ok).unwrap(),
+        KnobValue::Set(Scalar::Str(ok.into())),
+        "{ok}"
+      );
+    }
+    // Not identifier-shaped at all, so not even a custom build could mean it.
+    for bad in ["", "4bad", "_lead", "has space", "dash-no"] {
+      assert!(
+        matches!(parse_value(&open, bad), Err(ParseError::NotAChoice { .. })),
+        "should reject {bad:?}"
+      );
+    }
   }
 
   #[test]
