@@ -121,14 +121,10 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
     }
   }
 
-  let payload = build_payload(
-    &row.path,
-    mode,
-    &params,
-    args.backend.as_deref(),
-    args.server.as_deref(),
-    selection,
-  );
+  // An explicit flag beats the preset's pin; the preset beats nothing at all.
+  let backend = args.backend.as_deref().or(params.backend.as_deref());
+  let server = args.server.as_deref().or(params.server.as_deref());
+  let payload = build_payload(&row.path, mode, &params, backend, server, selection);
   let resp = client
     .call("start_model", Some(payload))
     .await
@@ -381,6 +377,12 @@ struct PartialParams {
   extras: Vec<String>,
   mtp: Option<crate::launch::params::MtpEnable>,
   mtp_draft_n: Option<u32>,
+  /// Backend and server a preset pins. Launch *identity*, not tuning: they
+  /// say which engine and which build run, so a preset that carries them and
+  /// a launch that ignores them reproduce different runs. An explicit CLI
+  /// flag still wins.
+  backend: Option<String>,
+  server: Option<String>,
 }
 
 fn resolve_mode(
@@ -433,7 +435,15 @@ async fn fetch_preset_params(
       format!("preset `{preset_name}` not found for {model_path}"),
     ));
   }
-  let preset = preset.unwrap();
+  Ok(partial_params_from_preset(preset.unwrap()))
+}
+
+/// Map one `presets_show` preset object onto the launch params `start` sends.
+///
+/// Split out of the wire call so it is testable without a daemon: this is
+/// where a preset stops being config and becomes a launch, and every field it
+/// forgets is a preset that silently reproduces a different run.
+fn partial_params_from_preset(preset: &Value) -> PartialParams {
   let p = preset.get("params").cloned().unwrap_or(Value::Null);
   let knobs: KnobSet = p
     .get("knobs")
@@ -448,7 +458,7 @@ async fn fetch_preset_params(
         .collect()
     })
     .unwrap_or_default();
-  Ok(PartialParams {
+  PartialParams {
     ctx: p.get("ctx").and_then(Value::as_u64).map(|n| n as u32),
     port: p.get("port").and_then(Value::as_u64).map(|n| n as u16),
     reasoning: p.get("reasoning").and_then(Value::as_bool),
@@ -461,7 +471,9 @@ async fn fetch_preset_params(
       .get("mtp_draft_n")
       .and_then(Value::as_u64)
       .map(|n| n as u32),
-  })
+    backend: p.get("backend").and_then(Value::as_str).map(str::to_string),
+    server: p.get("server").and_then(Value::as_str).map(str::to_string),
+  }
 }
 
 /// Resolve the per-invocation knob overrides from the two CLI surfaces:
@@ -659,6 +671,62 @@ fn emit_response(preset: Option<&str>, row: &CatalogRow, resp: &Value, json: boo
 mod tests {
   use super::*;
   use crate::cli::resolve::CatalogRow;
+
+  /// A preset that pins `backend` / `server` has to launch on them.
+  ///
+  /// These are launch *identity*, not tuning: they say which engine and which
+  /// build run. `PartialParams` carried neither, so `start --preset` rebuilt
+  /// the preset without them and launched on whatever `auto` picked, while
+  /// still printing the preset's name. Verified on real builds: a preset
+  /// pinning the second of two llama.cpp servers launched on the first.
+  #[test]
+  fn a_presets_pinned_backend_and_server_survive_the_rebuild() {
+    let preset = serde_json::json!({
+      "params": {
+        "ctx": 2048,
+        "backend": "some-engine",
+        "server": "build-two",
+        "knobs": {},
+        "extras": [],
+      }
+    });
+    let p = partial_params_from_preset(&preset);
+    assert_eq!(p.backend.as_deref(), Some("some-engine"));
+    assert_eq!(p.server.as_deref(), Some("build-two"));
+    assert_eq!(p.ctx, Some(2048), "tuning still comes through");
+
+    // A preset that pins neither leaves both to the identity rule.
+    let bare = serde_json::json!({ "params": { "knobs": {}, "extras": [] } });
+    let b = partial_params_from_preset(&bare);
+    assert_eq!(b.backend, None);
+    assert_eq!(b.server, None);
+  }
+
+  /// An explicit flag beats the preset's pin, the preset beats nothing.
+  ///
+  /// The same last-wins order the knob flags follow, kept here so the two
+  /// identity fields cannot drift from it.
+  #[test]
+  fn an_explicit_identity_flag_wins_over_the_presets_pin() {
+    let preset = serde_json::json!({
+      "params": { "backend": "from-preset", "server": "srv-preset",
+                  "knobs": {}, "extras": [] }
+    });
+    let p = partial_params_from_preset(&preset);
+
+    let flag_backend: Option<String> = Some("from-flag".into());
+    let flag_server: Option<String> = None;
+    assert_eq!(
+      flag_backend.as_deref().or(p.backend.as_deref()),
+      Some("from-flag"),
+      "an explicit --backend wins"
+    );
+    assert_eq!(
+      flag_server.as_deref().or(p.server.as_deref()),
+      Some("srv-preset"),
+      "no --server falls back to the pin"
+    );
+  }
 
   fn row(mode_hint: Option<&str>) -> CatalogRow {
     CatalogRow {

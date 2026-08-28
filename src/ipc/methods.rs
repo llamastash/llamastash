@@ -853,6 +853,13 @@ fn launch_params_row(p: &LaunchParams) -> Value {
     // reopens on the last-used build.
     "server": p.server,
   });
+  // Pinned backend, omitted at its `Auto` default so non-pinned rows stay
+  // byte-stable. Same reason `mtp` below is additive: `start --preset` reads
+  // this back to rebuild the preset's launch params, and leaving it out
+  // silently dropped every `backend:` a preset declared.
+  if let Some(id) = p.backend.explicit_id() {
+    row["backend"] = Value::String(id.to_string());
+  }
   // MTP intent, additive like the native knobs: omitted at its `Auto` default so
   // non-MTP rows stay byte-stable. The CLI reads this back off `presets_show` to
   // rebuild a preset's launch params, so leaving it out silently disarmed every
@@ -961,6 +968,37 @@ mod tests {
 
   fn ctx() -> MethodContext {
     MethodContext::new(ShutdownToken::new())
+  }
+
+  /// A pinned backend has to survive onto the wire.
+  ///
+  /// It did not: the row carried `server` but never `backend`, so a preset
+  /// declaring one could not be read back by anything, and `start --preset`
+  /// launched on the default engine while reporting the preset's name.
+  #[test]
+  fn launch_params_row_carries_a_pinned_backend_and_omits_an_auto_one() {
+    use crate::launch::mode::LaunchMode;
+    use crate::launch::params::BackendChoice;
+    use std::path::PathBuf;
+
+    // Auto is the default, so the key stays absent and rows stay byte-stable.
+    let auto = LaunchParams::new(PathBuf::from("/m/a.gguf"), LaunchMode::Chat);
+    assert_eq!(auto.backend, BackendChoice::Auto);
+    assert!(
+      launch_params_row(&auto).get("backend").is_none(),
+      "an auto backend must not widen the row"
+    );
+
+    // Pinned rides the row as the bare id, matching `server` beside it.
+    let mut pinned = LaunchParams::new(PathBuf::from("/m/a.gguf"), LaunchMode::Chat);
+    pinned.backend = BackendChoice::from_id(crate::backend::DEFAULT_BACKEND_ID);
+    pinned.server = Some("build-two".into());
+    let row = launch_params_row(&pinned);
+    assert_eq!(
+      row["backend"].as_str(),
+      Some(crate::backend::DEFAULT_BACKEND_ID)
+    );
+    assert_eq!(row["server"].as_str(), Some("build-two"));
   }
 
   #[test]

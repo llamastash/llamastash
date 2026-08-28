@@ -151,6 +151,15 @@ fn two_device_server(backend_id: &str) -> Vec<llamastash::backend::Server> {
 /// still be forgotten. The uneven row is deliberate: `port` is CLI-only (D7),
 /// recorded here so dropping a surface is still a failure while the one
 /// exemption stays a decision rather than an oversight.
+///
+/// Reaching a surface is necessary and not sufficient: `backend` and `server`
+/// passed this check while `start --preset` still dropped them on the way to
+/// the daemon, because storing a field and *launching on it* are two things.
+/// The launch half is pinned next to the code that does it, by
+/// `launch_params_row_carries_a_pinned_backend_and_omits_an_auto_one`
+/// (`src/ipc/methods.rs`) and
+/// `a_presets_pinned_backend_and_server_survive_the_rebuild`
+/// (`src/cli/start.rs`).
 #[test]
 fn every_identity_field_reaches_its_declared_surfaces() {
   struct Field {
