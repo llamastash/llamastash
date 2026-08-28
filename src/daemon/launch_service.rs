@@ -802,6 +802,18 @@ pub(crate) async fn compose_and_spawn(
   // embedding / rerank launch never speculates. And the backend defers entirely
   // when the user is already hand-driving speculation through extras (KD3) —
   // asked, not matched here, so the resolution names no backend or flag.
+  // Fold the resolved knob into the typed sibling the backends compose from.
+  // `parsed.mtp_draft_n` is the wire field (CLI `--mtp-draft-n`); a preset or
+  // arch default supplies the same value as a knob instead, and only the
+  // resolver knows which layer won. Wire field first, so an explicit flag
+  // still beats an inherited layer.
+  if launch_params.mtp_draft_n.is_none() {
+    launch_params.mtp_draft_n = launch_params
+      .knobs
+      .get_by_name_for(&resolved_backend_id, "mtp-draft-n")
+      .and_then(|v| v.set_value())
+      .and_then(|s| s.as_u32());
+  }
   let user_drives_speculation =
     crate::backend::Backend::speculation_set_in_extras(&inference_backend, &launch_params.extras);
   launch_params.mtp_directive = if matches!(mode, LaunchMode::Chat) && !user_drives_speculation {
@@ -828,6 +840,26 @@ pub(crate) async fn compose_and_spawn(
         launch_params.mtp_directive.is_some(),
       )),
     );
+  }
+  // Same for the draft count, which no longer emits on its own: show what the
+  // launch is really drafting with, and drop a stale count on a launch that
+  // ended up not speculating.
+  if let Some(def) = crate::launch::knobs::def_for_backend(
+    &resolved_backend_id,
+    crate::launch::knobs::kid("mtp-draft-n"),
+  ) {
+    match launch_params
+      .mtp_draft_n
+      .filter(|_| launch_params.mtp_directive.is_some())
+    {
+      Some(n) => launch_params.knobs.set(
+        def.knob_id(),
+        crate::launch::knobs::KnobValue::Set(crate::launch::knobs::Scalar::U32(n)),
+      ),
+      None => {
+        launch_params.knobs.clear(def.knob_id());
+      }
+    }
   }
   // Dropped-knob surfacing (R6): typed knobs the user set that the resolved
   // backend can't honor are silently dropped from argv — tell the user which.

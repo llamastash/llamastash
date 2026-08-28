@@ -325,6 +325,50 @@ mod tests {
       .position(|a| a == "--spec-draft-n-max")
       .expect("--spec-draft-n-max");
     assert_eq!(argv[n + 1], "5");
+    // `position` finds the first hit, which is how this test passed while the
+    // flag was in argv twice. Count instead.
+    assert_eq!(
+      argv.iter().filter(|a| *a == "--spec-draft-n-max").count(),
+      1,
+      "emitted more than once: {argv:?}"
+    );
+  }
+
+  /// No knob's flag reaches argv twice, whichever channel carried its value.
+  ///
+  /// `mtp-draft-n` lived on two: the `mtp_draft_n` typed field the MTP block
+  /// composes from, and the knob's own `Emit::FlagValue`. A preset setting the
+  /// knob populated both, so argv carried `--spec-draft-n-max` twice.
+  /// llama-server takes the last one and warns, so the two channels
+  /// disagreeing would have silently picked a value the user never asked for.
+  /// The knob is `Emit::Custom` now; this counts rather than trusting that.
+  #[test]
+  fn no_declared_flag_is_emitted_twice() {
+    use crate::launch::knobs::{KnobValue, Scalar};
+
+    let mut p = base_params();
+    // The real shape that produced the duplicate: a preset pinning the knob on
+    // a launch that also resolved a directive.
+    p.mtp_directive = Some(MtpDirective { draft_model: None });
+    p.mtp_draft_n = Some(4);
+    p.knobs.set_by_name("mtp-draft-n", "4");
+    p.knobs.set_by_name("flash-attn", "true");
+    p.knobs.set_by_name("threads", "16");
+    p.knobs.set(
+      crate::launch::knobs::kid("ctx-size"),
+      KnobValue::Set(Scalar::U32(4096)),
+    );
+
+    let argv = strs(&compose(&p, 41100));
+    let mut seen = std::collections::BTreeMap::new();
+    for a in argv.iter().filter(|a| a.starts_with("--")) {
+      *seen.entry(a.clone()).or_insert(0usize) += 1;
+    }
+    let dupes: Vec<_> = seen.iter().filter(|(_, n)| **n > 1).collect();
+    assert!(
+      dupes.is_empty(),
+      "flags emitted more than once: {dupes:?}\n{argv:?}"
+    );
   }
 
   #[test]

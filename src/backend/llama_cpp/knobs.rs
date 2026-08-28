@@ -360,7 +360,13 @@ pub const KNOBS: &[KnobDef] = &[
     help: "tokens drafted per speculation step (engine default when unset)",
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
-    emit: Emit::FlagValue,
+    // `Custom`, like `mtp` beside it: the speculation flags are composed as one
+    // block from the server-resolved directive, before the ctx block so `--fit`
+    // reserves the draft context (KD6). Self-emitting here put the flag in argv
+    // twice -- once from the block, once from the generic emitter -- which
+    // llama-server accepts with a deprecation warning and last-wins, so two
+    // layers disagreeing would have silently picked the wrong one.
+    emit: Emit::Custom,
     ring: Ring::Fixed(DRAFT_N_LADDER),
     volatile: false,
   },
