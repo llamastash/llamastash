@@ -390,12 +390,18 @@ fn clamp_scroll_with_margin(current: u16, focused: u16, viewport: u16, total: u1
 }
 
 /// A persisted knob's value as the read-only running view renders it.
+///
+/// Same spellings the editor uses, so one knob does not read `on` in the form
+/// and `true` two lines away in the running view.
 fn format_persisted_knob_value(
   knobs: &crate::launch::knobs::KnobSet,
   id: crate::launch::knobs::KnobId,
 ) -> String {
   match knobs.get(id) {
-    Some(crate::launch::knobs::KnobValue::Auto) => "auto".to_string(),
+    Some(crate::launch::knobs::KnobValue::Auto) => crate::launch::knobs::AUTO_TOKEN.to_string(),
+    Some(crate::launch::knobs::KnobValue::Set(crate::launch::knobs::Scalar::Bool(b))) => {
+      if *b { "on" } else { "off" }.to_string()
+    }
     Some(crate::launch::knobs::KnobValue::Set(v)) => v.to_arg(),
     None => INHERITED_LABEL.to_string(),
   }

@@ -814,6 +814,21 @@ pub(crate) async fn compose_and_spawn(
   } else {
     None
   };
+  // Record what speculation actually resolved to on its own knob, so every
+  // surface reading `params.knobs` sees the truth. The knob emits nothing
+  // itself (`Emit::Custom` — the backend builds the flags from the directive),
+  // so argv is unchanged; without this the running view rendered `inherited`
+  // on a launch that was speculating.
+  if let Some(def) =
+    crate::launch::knobs::def_for_backend(&resolved_backend_id, crate::launch::knobs::kid("mtp"))
+  {
+    launch_params.knobs.set(
+      def.knob_id(),
+      crate::launch::knobs::KnobValue::Set(crate::launch::knobs::Scalar::Bool(
+        launch_params.mtp_directive.is_some(),
+      )),
+    );
+  }
   // Dropped-knob surfacing (R6): typed knobs the user set that the resolved
   // backend can't honor are silently dropped from argv — tell the user which.
   // ds4 honors only `Ctx`, so a `--flash-attn` on a ds4-routed model warns.
