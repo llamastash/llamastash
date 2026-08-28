@@ -188,10 +188,10 @@ impl KnobSet {
     self.get(id).is_some_and(KnobValue::is_auto)
   }
 
-  /// Look a knob up by name rather than by resolved [`KnobId`].
-  ///
   /// Resolve `name` to a knob id, optionally scoped to one backend's
-  /// vocabulary. Every `*_by_name` / `*_by_name_for` accessor below differs
+  /// vocabulary.
+  ///
+  /// Every `*_by_name` / `*_by_name_for` accessor below differs
   /// only in whether this scoping is present, so they all resolve through
   /// here: scoped, it stops another backend's *alias* shadowing this
   /// backend's *canonical* id (llama.cpp aliases `ctx` onto `ctx-size`, while
@@ -204,6 +204,8 @@ impl KnobSet {
     }
   }
 
+  /// Look a knob up by name rather than by resolved [`KnobId`].
+  ///
   /// For code that knows a specific knob by its declared id string — a
   /// backend reconciling its own tunables in `prepare_launch`, say.
   pub fn get_by_name(&self, name: &str) -> Option<&KnobValue> {
@@ -217,7 +219,7 @@ impl KnobSet {
 
   /// Whether `name` resolves to a slot this set holds (`Set` or `Auto`).
   pub fn contains_by_name(&self, name: &str) -> bool {
-    super::registry::resolve_id(name).is_some_and(|id| self.contains(id))
+    Self::resolve_scoped(None, name).is_some_and(|id| self.contains(id))
   }
 
   /// Whether `name` holds an explicitly `Set` value (not `Auto`, not unset).
@@ -266,7 +268,10 @@ impl KnobSet {
     }
   }
 
-  /// Set `name` from a text value. See [`Self::set_scoped`].
+  /// Set `name` from a text value, typed through its declaration so it lands
+  /// as the right [`Scalar`] variant. A value the knob cannot represent, or a
+  /// name that does not resolve, is dropped with a warning rather than stored
+  /// mistyped.
   pub fn set_by_name(&mut self, name: &str, value: impl AsRef<str>) -> bool {
     self.set_scoped(None, name, value.as_ref())
   }

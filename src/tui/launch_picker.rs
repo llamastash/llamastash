@@ -179,7 +179,8 @@ pub struct LaunchPickerState {
   pub preset_stop: PresetStop,
   /// Whether the focused model can speculate (an embedded draft head, or a
   /// `mtp-*.gguf` drafter sibling). Gates the whole [`Group::Speculation`]
-  /// block through [`GroupGate::SpeculationCapable`] — backend-agnostic.
+  /// block through [`GroupGate::SpeculationCapable`](knobs::GroupGate) —
+  /// backend-agnostic.
   pub mtp_capable: bool,
   /// The non-preset baseline (the build-time `user_knobs` / `extras` seed:
   /// last-used params, or empty). Restored when cycling back to `last used`.
