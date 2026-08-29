@@ -198,45 +198,25 @@ pub(crate) async fn buffer_body(body: Incoming, cap: usize) -> Result<Bytes, Bod
 /// Map a body-buffering [`BodyError`] to its proxy error response, so
 /// every surface that drains a request body (data plane + `/ui`) emits
 /// the same status + message for an oversized / unreadable / malformed
-/// payload. `cap` is the in-force limit — the 413 message names it.
+/// payload. `cap` is the in-force limit — the 413 message names it as a
+/// human unit plus the exact byte count, so a cap sitting just under a
+/// unit boundary (e.g. 2 MiB − 1) can't read as the boundary itself.
 pub(crate) fn body_error_response(err: BodyError, cap: usize) -> ProxyResponse {
   use hyper::StatusCode;
   match err {
     BodyError::TooLarge => super::router::error_response(
       StatusCode::PAYLOAD_TOO_LARGE,
       "payload_too_large",
-      &format!("request body exceeds the {} limit", format_bytes(cap)),
+      &format!(
+        "request body exceeds the {} ({} bytes) limit",
+        crate::init::detection::fmt_bytes(cap as u64),
+        cap
+      ),
     ),
     BodyError::Malformed { message } | BodyError::Read { message } => {
       super::router::error_response(StatusCode::BAD_REQUEST, "invalid_request", &message)
     }
   }
-}
-
-/// Render a byte cap for the 413 message: largest unit the value
-/// fits in, whole when exact (`16 MiB`), two decimals otherwise with
-/// trailing zeros trimmed (`976.57 KiB`, `2 MiB`, never `2.00 MiB`).
-/// Sub-KiB caps stay raw bytes.
-fn format_bytes(n: usize) -> String {
-  // Largest unit first, so 2 MiB + 16 B renders `2 MiB`, not
-  // `2048.02 KiB`.
-  const UNITS: [(&str, usize); 3] = [
-    ("GiB", 1024 * 1024 * 1024),
-    ("MiB", 1024 * 1024),
-    ("KiB", 1024),
-  ];
-  for (name, unit) in UNITS {
-    if n >= unit {
-      let v = n as f64 / unit as f64;
-      if v.fract() == 0.0 {
-        return format!("{:.0} {name}", v);
-      }
-      let s = format!("{v:.2}");
-      let trimmed = s.trim_end_matches('0').trim_end_matches('.');
-      return format!("{trimmed} {name}");
-    }
-  }
-  format!("{n} B")
 }
 
 /// Build a [`RouteDecision`] from the parsed body. Does no I/O
@@ -715,25 +695,11 @@ async fn collect_fallback_candidates(state: &Arc<ProxyState>) -> Vec<FallbackCan
 mod tests {
   use super::fallback_reason_for;
 
-  // ─── body cap rendering + 413 envelope ─────────────────────────
+  // ─── 413 envelope ──────────────────────────────────────────────
   //
-  // The 413 message names the in-force cap, so any configured value
-  // (not just whole MiB) must render sensibly.
-
-  #[test]
-  fn format_bytes_renders_whole_and_fractional_units() {
-    assert_eq!(super::format_bytes(512), "512 B");
-    assert_eq!(super::format_bytes(1024), "1 KiB");
-    assert_eq!(super::format_bytes(512 * 1024), "512 KiB");
-    assert_eq!(super::format_bytes(2 * 1024 * 1024 + 16), "2 MiB");
-    assert_eq!(
-      super::format_bytes(super::DEFAULT_BODY_LIMIT_BYTES),
-      "16 MiB",
-      "the default cap renders as 16 MiB"
-    );
-    assert_eq!(super::format_bytes(1000003), "976.57 KiB");
-    assert_eq!(super::format_bytes(1024 * 1024 * 1024), "1 GiB");
-  }
+  // The 413 message names the in-force cap as a human unit plus the
+  // exact byte count, so any configured value (not just whole MiB)
+  // reads honestly — including a cap just under a unit boundary.
 
   #[tokio::test]
   async fn too_large_message_names_the_configured_cap() {
@@ -748,6 +714,28 @@ mod tests {
     assert!(
       message.contains("512 KiB"),
       "message must name the configured cap, got: {message}"
+    );
+    assert!(
+      message.contains("524288 bytes"),
+      "message must carry the exact byte count, got: {message}"
+    );
+  }
+
+  #[tokio::test]
+  async fn too_large_message_keeps_a_sub_boundary_cap_honest() {
+    use http_body_util::BodyExt;
+    // 2 MiB − 1: a `{:.2}`-rounding formatter rendered this as "2 MiB",
+    // so a client sending exactly 2 MiB was told it "exceeds the 2 MiB
+    // limit" — a contradiction. The exact byte count keeps it honest.
+    let cap = 2 * 1024 * 1024 - 1;
+    let resp = super::body_error_response(super::BodyError::TooLarge, cap)
+      .expect("error response must build");
+    let collected = resp.into_body().collect().await.expect("body").to_bytes();
+    let v: serde_json::Value = serde_json::from_slice(&collected).expect("json envelope");
+    let message = v["error"]["message"].as_str().expect("message");
+    assert!(
+      message.contains(&format!("{} bytes", cap)),
+      "message must carry the exact sub-boundary cap, got: {message}"
     );
   }
 

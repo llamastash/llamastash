@@ -27,4 +27,5 @@ Row 1 + row 5 together close the reporter's actual path: a body between 2 MiB an
 ## Verdict
 
 - Proxy behaviour matches the plan at every stage: default 16 MiB passes what 2 MiB refused; configured cap (including a low one) refuses with the cap-naming message; `0`-and-small-cap semantics covered by the unit + integration suite (`make test` green, 44 binaries).
+- **Post-E2E refinement (PR #71 review):** the 413 message was changed from `request body exceeds the {cap} limit` to `request body exceeds the {human} ({raw} bytes) limit` (canonical `init::detection::fmt_bytes` + exact byte count), so a cap just under a unit boundary (e.g. 2 MiB − 1) no longer reads as the boundary itself. Row 2's quoted message is the pre-refinement form; a re-run now returns `... exceeds the 2.0 MiB (2097152 bytes) limit` (`fmt_bytes` renders whole MiB with one decimal).
 - The reporter's end-to-end failure (10 MiB body, lemond-routed 27B) is fixed at the proxy layer; the only remaining wall on that box is llama.cpp's own 1 MiB compile-time constant for chat traffic, which is now visible in the 413 (`server: llama.cpp`, empty body) rather than masquerading as the proxy's.

@@ -51,6 +51,15 @@ Each stage compiles + passes `make test`; commit per stage, docs ride with stage
 - Per-route caps (e.g. `/ui` separate from `/v1/*`).
 - Upstream (llama-server / ds4-server / lemond) body limits — verified against, never changed.
 
+## Decisions (pinned, not gaps)
+
+Raised at plan review, shipped as-is, and now locked in as decisions rather than open questions (PR #71 review):
+
+- **`0` means reject-all, not unlimited.** A `Limited` cap of `0` trips on the first byte, so `max_body_size: 0` refuses every non-empty body (HTTP 413). This is the opposite of how the sibling keys read (`idle_ttl_secs: 0` disables eviction, `--proxy-port 0` picks an ephemeral port), so a user reaching for `0` expecting "no limit" bricks their proxy. Deliberate: there is no "unlimited" mode, and `0` is the one value that can't be a real cap. Locked in by `proxy_config_max_body_size_zero_parses` and documented in `config.example.yaml` + `usage.md` + the `ProxyConfig` doc. If it ever moves, pre-1.0 is the cheap moment.
+- **No upper bound on the value.** `max_body_size: 99999999999` parses and is honoured — one request may buffer that much RAM. The cap is per request body, not a global pool, so N concurrent max-size bodies buffer up to N × the cap. On loopback that is a runaway-agent problem, not an attack; on a LAN-exposed proxy (`proxy.host`) a buggy authenticated client can OOM the daemon. Deliberate: no validation pass, no ceiling. `usage.md` states the per-request (not global) semantics.
+- **Key name is `max_body_size`, not `max_body_bytes`.** Every other unit-carrying key in `ProxyConfig` is suffixed (`header_read_timeout_secs`, `idle_ttl_secs`), so `max_body_bytes` would match. The issue proposed `max_body_size` and it is already in `config.example.yaml` + two docs, so the name stays; the inconsistency with its neighbours is accepted, not a gap.
+- **413 message carries the exact byte count** (refined post-plan, PR #71 review): `request body exceeds the {human} ({raw} bytes) limit`, where `{human}` is the canonical `init::detection::fmt_bytes`. The plan's private `format_bytes` (round-to-nearest, two decimals) rendered a cap just under a unit boundary as the boundary itself (2 MiB − 1 → "2 MiB"), so a client sending exactly 2 MiB was told it "exceeds the 2 MiB limit" — a contradiction. Carrying the raw count keeps it honest and reads better for agents parsing the error; it also drops the fourth byte formatter in the tree in favour of the shared `fmt_bytes` (whose doc comment exists precisely because earlier copies drifted on units and decimals).
+
 ## Verification
 
 1. `make test` (`--features test-fixtures`) + `make lint` after every stage.

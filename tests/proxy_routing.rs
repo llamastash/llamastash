@@ -590,11 +590,16 @@ async fn body_exceeding_cap_returns_413() {
   // code happens to match.
   let v: Value = serde_json::from_slice(&response).expect("json body");
   assert_eq!(v["error"]["type"], "payload_too_large");
-  // The message names the configured cap, not the default.
+  // The message names the configured cap (human unit + exact byte
+  // count), not the default.
   let message = v["error"]["message"].as_str().expect("message");
   assert!(
     message.contains("1 KiB"),
     "413 message must name the configured cap, got: {message}"
+  );
+  assert!(
+    message.contains("1024 bytes"),
+    "413 message must carry the exact byte count, got: {message}"
   );
   shutdown_listener(shutdown, listener_handle).await;
 }
