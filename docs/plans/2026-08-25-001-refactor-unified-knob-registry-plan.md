@@ -1,6 +1,6 @@
 # Unified knob registry — every backend declares its own knobs, every surface is generated
 
-**Status:** 🚧 planned (2026-08-25)
+**Status:** ✅ done (2026-08-29) — all eight stages landed on `feat/knob-parity` (PR #72). 52 declarations across 4 backends; CLI flags, TUI rows and preset keys all generated from them. E2E-verified against a real `llama-server` (build 10656, commit 732707dff) in an isolated daemon: a CLI launch, a preset launch and a TUI-cycled row produce byte-identical engine argv, read from `/proc/<pid>/cmdline`. Independent review at [`docs/reviews/pr-72.md`](../reviews/pr-72.md); its findings are addressed below.
 
 Supersedes the two-channel knob model (`TypedKnobs` IR + `native_knobs`). Origin: a
 CLI/TUI/preset parity audit (2026-08-25) that found seven parity gaps, all of them on
@@ -185,13 +185,19 @@ Launch params (ds4):
 | --- | --- | --- | --- | --- | --- |
 | ctx, reasoning, extras | ✅ gen | ✅ gen | ✅ gen | ✅ `knobs:` | ✅ layered |
 | 17 llama.cpp tuning knobs | ✅ gen | ✅ gen | ✅ gen | ✅ `knobs:` | ✅ layered |
-| mode | ✅ gen | ✅ gen | ✅ gen | ✅ `knobs:` | ✅ layered |
+| mode | ✅ gen | ✅ gen | ✅ gen | ✅ `knobs:` | ✅ default preset¹ |
 | backend | ✅ `--backend` | ✅ Server row | ✅ `--backend` | ✅ `backend:` | ✅ preset→last_params |
 | server | ✅ `--server` | ✅ Server row | ✅ `--server` | ✅ `server:` | ✅ preset→last_params |
 | **26 backend-native knobs** | ✅ gen | ✅ gen | ✅ gen | ✅ `knobs:` | ✅ layered |
 | mtp | ✅ gen | ✅ gen | ✅ gen | ✅ `knobs:` | ✅ layered |
 | mtp_draft_n | ✅ gen | ✅ gen | ✅ gen | ✅ `knobs:` | ✅ layered |
 | port | ✅ `--port` (strict) | — exempt (D7) | — exempt (D7) | — exempt (D7) | internal `prefer_port` |
+
+¹ From the model's `default:` preset only, never from `last_params`. A one-off
+`--mode embedding` must not be remembered: `--embeddings` makes llama-server refuse
+`/v1/chat/completions` for the supervisor's whole life, so a remembered mode would let
+one embedding request lock a chat model out of chat. The proxy's `resolve_auto_start_mode`
+already guards this on its own path; the daemon rung matches it.
 
 ## Breaking changes
 
@@ -261,3 +267,69 @@ replacing "Backend neutrality contract"'s IR half), `docs/usage.md`, `config.exa
 - Typing every flag every engine accepts — `extras` stays the escape hatch.
 - Per-knob arch defaults for native knobs beyond what the existing `arch_defaults` block
   already expresses.
+
+## Review follow-ups (pr-72, 2026-08-29)
+
+The independent review is [`docs/reviews/pr-72.md`](../reviews/pr-72.md). Its verdict held
+— the byte-identical-argv claim was reproduced on distinct pids — and every finding is
+resolved here.
+
+- [x] **1 (must-fix) — a preset's pinned `mode` never reached a launch.** Storage was
+  fixed by D5; the launch half was not, on all three surfaces. `start` resolved the mode
+  from `--mode` or the catalog hint before it had even fetched the preset; the daemon
+  took mode only off the wire, so a `default:` preset's mode was equally dead on proxy
+  auto-start; the TUI submitted the model's hint and ignored its own Mode row.
+
+  Fixing the three surfaces the review named was not enough, and the live E2E is what
+  caught it: **every caller sent the catalog's mode hint on the wire unconditionally**,
+  so `parsed.mode` was always `Some(..)` and the daemon's new preset rung was shadowed on
+  every launch anyway. The hint is the *model's* default and sits below the user's config
+  in the documented precedence; collapsing "the user chose" and "the model implies" into
+  one wire field was the actual defect. So the resolution moved to one place:
+
+  - `ResolvedIdentity` carries `mode_hint` (free — that header read already happened),
+    and `launch_service` resolves `explicit > default-preset pin > hint > chat`. The
+    preset rung sits beside the extras / mtp inheritance it mirrors, which meant hoisting
+    `effective_default` above the mode decision (mode also picks the backend, so it has
+    to settle first).
+  - `start` and the proxy now send a mode only when something genuinely chose one. The
+    CLI keeps its "unknown hint, pass `--mode`" refusal: the fix is a flag the user
+    types, so the message belongs on the surface they typed at.
+  - The TUI projects its own Mode row through `LaunchPickerState::mode_intent`, the same
+    shape `mtp_intent` already had.
+
+  The proxy's "an embeddings request must not lock a chat model out of chat" guard is
+  unchanged in behaviour — a *request* still cannot raise a chat-hinted model; only the
+  user's own config can, which is the point.
+
+  Regression tests: seven in `cli/start.rs`, one on the picker, two on the proxy
+  resolver, one daemon-level (`no_selection_start_applies_the_default_presets_pinned_mode`),
+  and E2E case 14 (four sub-cases against the real engine).
+- [x] **2 — the migration eats comments inside a preset entry body.** Documented as a
+  boundary rather than fixed: `rewrite_entry` regenerates the body from the folded value,
+  and the keys it renames leave an in-body comment nothing to anchor to. `upsert_block`
+  already documents the analogous loss. Pinned by
+  `a_comment_inside_a_migrated_entry_is_lost_but_the_backup_keeps_it`, which also asserts
+  the `.pre-knobs.bak` still carries it, so the loss is recoverable rather than silent.
+- [x] **3 — `parse_value` accepted `NaN` for float knobs.** `NaN` compares false against
+  both bounds, so it walked the range check and shipped verbatim; an unbounded knob took
+  `inf` the same way. Both kinds now require `is_finite`, `Ratio` included (`NaN,1` was a
+  valid tensor split).
+- [x] **Minor — no same-backend flag-collision check.** `registry::validate` now rejects
+  two self-emitting knobs of one backend claiming one flag spelling. `Emit::Custom` is
+  excluded: its backend consumes the value itself, so its derived flag is a name nothing
+  writes — which is exactly the real ds4 `mtp` / `mtp-model` pair.
+- [x] **Minor — a direct-hit `Auto` was not re-validated.** The layer loop stored `Auto`
+  from a direct id hit without asking whether the destination declares an auto state.
+  It now applies the same rule `carry_over` does and falls through to the next layer.
+- [x] **Minor — a kind-mismatched carry-over vanished silently.** A value `parse_value`
+  could not convert into the destination kind was neither set nor listed in `dropped`.
+  `carried` now requires the destination concept slot to actually hold a value.
+- [x] **Minor — legacy config reads before the first daemon start.** Kept as-is and
+  documented in `usage.md`: it is transitional, self-heals on the first `daemon start`
+  (which is what runs the migration), and a compatibility reader is the shim D10 exists
+  to avoid.
+- [ ] **Minor — CRLF configs go mixed-line-ending after one edit.** Cosmetic, not
+  addressed. `yaml_edit` renders `\n` replacement lines into a file whose other lines end
+  `\r\n`. Still valid YAML; the cost is diff noise on a Windows hand-edited config.
+  → `TODO.md`.

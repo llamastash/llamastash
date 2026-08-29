@@ -424,9 +424,12 @@ pub struct StartArgs {
   /// + smoke-test `<think>` collapse). Advanced panel can unbundle.
   #[arg(long, value_enum)]
   pub reasoning: Option<ReasoningFlag>,
-  /// Force the launch mode. `None` means "infer from GGUF metadata; error
-  /// out if the GGUF mode hint is `Unknown`" — handlers must NOT silently
-  /// default to `chat` when this is `None`.
+  /// Force the launch mode. `None` means "let the preset pin or the model's
+  /// own GGUF hint decide; error out if that hint is `Unknown`" — handlers
+  /// must NOT silently default to `chat` when this is `None`, and must NOT
+  /// resolve the hint themselves and put it on the wire as though the user
+  /// had chosen it (that shadowed every preset's `mode:`; the daemon resolves
+  /// the hint from the header it already parsed).
   #[arg(long, value_enum)]
   pub mode: Option<LaunchMode>,
   /// Advanced launch params, generated from the typed-knob spec table

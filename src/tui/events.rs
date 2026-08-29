@@ -1697,13 +1697,16 @@ fn apply_launch_submit(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) 
     .map(|s| s.to_string_lossy().into_owned())
     .collect();
 
+  use crate::gguf::metadata::ModeHint;
   use crate::launch::mode::LaunchMode;
-  let mode = app
+  let hint = app
     .models
     .iter()
     .find(|m| m.path == path)
     .and_then(|m| m.metadata.as_ref())
-    .and_then(|md| LaunchMode::resolve(None, md.mode_hint));
+    .map(|md| md.mode_hint)
+    .unwrap_or(ModeHint::Unknown);
+  let mode = LaunchMode::resolve(picker.mode_intent(), hint);
 
   // ctx and reasoning ride inside `knobs` now; the wire payload also
   // carries dedicated top-level fields for backward compat with

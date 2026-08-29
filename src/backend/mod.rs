@@ -1351,6 +1351,12 @@ pub struct ResolvedIdentity {
   /// owns that recipe, not us.
   pub arch: Option<String>,
   pub native_ctx: Option<u32>,
+  /// The model's own serving-mode hint, header-derived like `arch`. The
+  /// launcher's *lowest* mode rung: it is what the model defaults to, so it
+  /// sits below an explicit `--mode` and below a preset's `mode:` pin. Callers
+  /// used to resolve it themselves and send it as if it were a choice, which
+  /// is how it shadowed both.
+  pub mode_hint: crate::gguf::metadata::ModeHint,
   pub supported_backends: Vec<String>,
   pub mtp_embedded: Option<u32>,
 }
@@ -1412,6 +1418,8 @@ pub fn resolve_identity_for_path(
       claimed_by: Some(backend_id),
       arch: None,
       native_ctx: None,
+      // No header to infer from; the backend owns the recipe.
+      mode_hint: crate::gguf::metadata::ModeHint::Unknown,
       supported_backends: Vec::new(),
       mtp_embedded: None,
     });
@@ -1444,6 +1452,7 @@ pub fn resolve_identity_for_path(
     native_ctx: summary
       .native_ctx
       .map(|n| u32::try_from(n).unwrap_or(u32::MAX)),
+    mode_hint: summary.mode_hint,
     supported_backends: supported_backends_for(&header.header),
     mtp_embedded: summary.mtp,
   })

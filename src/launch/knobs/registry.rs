@@ -237,6 +237,15 @@ pub enum RegistryError {
     id: &'static str,
     stop: &'static str,
   },
+  /// Two self-emitting knobs of one backend claim the same flag spelling, so a
+  /// launch that sets both emits it twice and the engine's last-wins picks one
+  /// at random.
+  DuplicateFlag {
+    backend: &'static str,
+    flag: String,
+    first: &'static str,
+    second: &'static str,
+  },
 }
 
 impl std::fmt::Display for RegistryError {
@@ -260,6 +269,15 @@ impl std::fmt::Display for RegistryError {
       RegistryError::ReservedFlag { id, flag, reason } => {
         write!(f, "knob `{id}` claims `{flag}`, which {reason}")
       }
+      RegistryError::DuplicateFlag {
+        backend,
+        flag,
+        first,
+        second,
+      } => write!(
+        f,
+        "backend `{backend}` emits `{flag}` from both `{first}` and `{second}`"
+      ),
     }
   }
 }
@@ -295,6 +313,36 @@ fn id_is_wellformed(id: &str) -> bool {
     && id
       .chars()
       .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// Two self-emitting knobs of one backend converging on one flag spelling.
+///
+/// `KindConflict` covers the same id across backends; nothing covered this,
+/// and the emitter would happily write the flag twice and let the engine's
+/// last-wins pick between two layers that disagree. `Emit::Custom` is
+/// excluded: its backend consumes the value itself, so `emit_flag` there is a
+/// derived name nothing ever writes.
+fn duplicate_flags(backend_id: &'static str, defs: &[KnobDef]) -> Vec<RegistryError> {
+  let mut errors = Vec::new();
+  let mut flags: BTreeMap<String, &'static str> = BTreeMap::new();
+  for def in defs {
+    if def.emit == super::def::Emit::Custom {
+      continue;
+    }
+    let flag = def.emit_flag();
+    match flags.get(&flag) {
+      Some(first) => errors.push(RegistryError::DuplicateFlag {
+        backend: backend_id,
+        flag,
+        first,
+        second: def.id,
+      }),
+      None => {
+        flags.insert(flag, def.id);
+      }
+    }
+  }
+  errors
 }
 
 /// Validate the whole registry. Run by a test, so a malformed declaration
@@ -351,6 +399,8 @@ pub fn validate() -> Vec<RegistryError> {
   }
 
   for backend in Backends::all() {
+    errors.extend(duplicate_flags(backend.id(), backend.knobs()));
+
     let mut seen: BTreeMap<Concept, usize> = BTreeMap::new();
     for def in backend.knobs() {
       if let Some(c) = def.concept {
@@ -386,6 +436,53 @@ mod tests {
         .collect::<Vec<_>>()
         .join("\n")
     );
+  }
+
+  fn flag_def(
+    id: &'static str,
+    flag: Option<&'static str>,
+    emit: crate::launch::knobs::def::Emit,
+  ) -> KnobDef {
+    KnobDef {
+      id,
+      flag,
+      concept: None,
+      kind: crate::launch::knobs::def::KnobKind::U32 { max: None },
+      auto: None,
+      group: crate::launch::knobs::def::Group::Advanced,
+      label: "T",
+      help: "t",
+      aliases: &[],
+      fallback: crate::launch::params::LayerLabel::ServerDefault,
+      emit,
+      ring: crate::launch::knobs::def::Ring::None,
+      volatile: false,
+    }
+  }
+
+  #[test]
+  fn two_knobs_of_one_backend_cannot_claim_one_flag() {
+    use crate::launch::knobs::def::Emit;
+    // Distinct ids, one converging on the other's derived spelling.
+    let defs = [
+      flag_def("threads", None, Emit::FlagValue),
+      flag_def("worker-count", Some("--threads"), Emit::FlagValue),
+    ];
+    let errors = duplicate_flags("fake", &defs);
+    assert_eq!(errors.len(), 1, "expected one collision, got {errors:?}");
+    assert!(errors[0].to_string().contains("--threads"));
+  }
+
+  #[test]
+  fn a_custom_emit_knob_does_not_collide() {
+    use crate::launch::knobs::def::Emit;
+    // `Emit::Custom` never reaches argv, so its derived flag is a phantom —
+    // this is the real ds4 `mtp` / `mtp-model` shape.
+    let defs = [
+      flag_def("mtp", None, Emit::Custom),
+      flag_def("mtp-model", Some("--mtp"), Emit::FlagValue),
+    ];
+    assert!(duplicate_flags("fake", &defs).is_empty());
   }
 
   #[test]

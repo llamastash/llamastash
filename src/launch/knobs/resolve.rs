@@ -100,8 +100,12 @@ pub fn resolve_layered_with_disable_defaults(
   for def in defs {
     let id = def.knob_id();
     for (label, layer) in layers {
-      // Direct hit on this backend's own spelling.
-      if let Some(v) = layer.get(id) {
+      // Direct hit on this backend's own spelling. `Auto` carries only where
+      // the destination declares an auto state -- the same rule `carry_over`
+      // applies -- so a layer naming this id with `auto` against a knob that
+      // has none falls through to the next layer rather than storing a state
+      // the knob cannot mean.
+      if let Some(v) = layer.get(id).filter(|v| def.has_auto() || !v.is_auto()) {
         knobs.set(id, v.clone());
         sources.insert(id, *label);
         break;
@@ -117,13 +121,20 @@ pub fn resolve_layered_with_disable_defaults(
 
   // Anything a layer supplied that this backend cannot honour, in the order
   // the layers were consulted. Deduplicated: one id, one report.
+  //
+  // A shared concept only counts as carried when the destination knob actually
+  // ended up with a value. Sharing the concept is not enough: `carry_over`
+  // re-parses into the destination's kind and skips a value that kind cannot
+  // hold, which used to leave the id neither set nor reported -- silently gone.
   let mut dropped = Vec::new();
   for (_, layer) in layers {
     for id in layer.ids() {
       let honoured = registry::def_for_backend(backend_id, id).is_some();
-      let carried = defs
-        .iter()
-        .any(|d| d.concept.is_some() && registry::def_for(id).and_then(|s| s.concept) == d.concept);
+      let concept = registry::def_for(id).and_then(|s| s.concept);
+      let carried = concept.is_some()
+        && defs
+          .iter()
+          .any(|d| d.concept == concept && knobs.contains(d.knob_id()));
       if !honoured && !carried && !dropped.contains(&id) {
         dropped.push(id);
       }
@@ -233,6 +244,85 @@ mod tests {
     let mut s = KnobSet::new();
     s.set_scalar(id, Scalar::U32(v));
     s
+  }
+
+  /// A bool knob the default backend declares with **no** auto state, so
+  /// `Auto` is a value it cannot mean.
+  fn no_auto_bool_knob(backend: &str) -> Option<KnobId> {
+    registry::for_backend(backend)
+      .iter()
+      .find(|d| !d.has_auto() && matches!(d.kind, super::super::KnobKind::Bool))
+      .map(|d| d.knob_id())
+  }
+
+  /// `(source id, destination backend, destination id)` for two backends that
+  /// declare one concept under different ids where the destination has no auto
+  /// state. An `Auto` carried across that pair cannot land.
+  fn auto_less_concept_pair() -> Option<(KnobId, &'static str, KnobId)> {
+    for src_backend in Backends::all() {
+      for src in registry::for_backend(src_backend.id()) {
+        let Some(concept) = src.concept else {
+          continue;
+        };
+        for dst_backend in Backends::all() {
+          if dst_backend.id() == src_backend.id() {
+            continue;
+          }
+          let Some(dst) = registry::def_for_backend_concept(dst_backend.id(), concept) else {
+            continue;
+          };
+          if dst.id != src.id && !dst.has_auto() {
+            return Some((src.knob_id(), dst_backend.id(), dst.knob_id()));
+          }
+        }
+      }
+    }
+    None
+  }
+
+  #[test]
+  fn a_direct_auto_hit_falls_through_when_the_knob_has_no_auto_state() {
+    let backend = default_backend();
+    let id = no_auto_bool_knob(backend).expect("a bool knob with no auto state");
+    let mut user = KnobSet::new();
+    user.set_auto(id);
+    let mut lower = KnobSet::new();
+    lower.set_scalar(id, Scalar::Bool(true));
+
+    let r = resolve_layered_with_disable_defaults(
+      backend,
+      &[(LayerLabel::User, &user), (LayerLabel::LastUsed, &lower)],
+      false,
+    );
+    assert!(
+      !r.knobs.is_auto(id),
+      "`auto` is not a state {id:?} can hold, so it must not be stored"
+    );
+    assert_eq!(
+      r.knobs.bool(id),
+      Some(true),
+      "the hit falls through to the next layer instead of shadowing it"
+    );
+    assert_eq!(r.sources[&id], LayerLabel::LastUsed);
+  }
+
+  #[test]
+  fn a_concept_value_the_destination_cannot_hold_is_reported_dropped() {
+    let (src, dst_backend, dst) =
+      auto_less_concept_pair().expect("two backends sharing a concept, destination without auto");
+    let mut user = KnobSet::new();
+    user.set_auto(src);
+
+    let r = resolve_layered_with_disable_defaults(dst_backend, &[(LayerLabel::User, &user)], false);
+    assert!(
+      !r.knobs.contains(dst),
+      "{dst:?} has no auto state, so nothing should have landed"
+    );
+    assert!(
+      r.dropped.contains(&src),
+      "{src:?} went nowhere and must be surfaced, not vanish; dropped={:?}",
+      r.dropped
+    );
   }
 
   #[test]

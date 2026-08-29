@@ -11,7 +11,8 @@
 //! Mode resolution is strict: when the catalog reports `mode_hint =
 //! unknown` and the user didn't pass `--mode`, we error out rather
 //! than silently default to chat. The plan's `cli_args::StartArgs`
-//! comment is the authority.
+//! comment is the authority. A mode the hint merely implies is validated
+//! here but not *sent* — see `resolve_mode`.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -38,9 +39,6 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
     crate::cli::picker::pick_catalog_row(&rows, args.json).await?
   };
 
-  // Mode: explicit override > catalog hint (unless `unknown`).
-  let mode = resolve_mode(&row, args.mode)?;
-
   // Launch selection (drives daemon-side default-preset + last_params
   // inheritance). `--preset auto` is the reserved "pure fit" choice (no
   // preset fetch); a named `--preset` is an explicit baseline; a plain
@@ -60,6 +58,11 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
     }
     _ => PartialParams::default(),
   };
+
+  // Mode, resolved after the preset fetch so a `mode:` pin is in hand — a
+  // preset that says `mode: embedding` has to reach the launch, not just the
+  // config file. `None` means nothing chose one and the daemon decides.
+  let mode = resolve_mode(&row, args.mode, params.mode.as_deref())?;
 
   match args.ctx {
     // A pinned count rides the top-level `ctx` (emitted inline as `-c`).
@@ -377,6 +380,10 @@ struct PartialParams {
   extras: Vec<String>,
   mtp: Option<crate::launch::params::MtpEnable>,
   mtp_draft_n: Option<u32>,
+  /// Serving mode a preset pins. `Some("chat")` is *not* a pin: a preset
+  /// stores a mode only when it differs from chat, so a materialised `chat`
+  /// means the preset said nothing and the catalog hint still decides.
+  mode: Option<String>,
   /// Backend and server a preset pins. Launch *identity*, not tuning: they
   /// say which engine and which build run, so a preset that carries them and
   /// a launch that ignores them reproduce different runs. An explicit CLI
@@ -385,23 +392,50 @@ struct PartialParams {
   server: Option<String>,
 }
 
+/// Canonicalise a mode string onto the wire label, or `None` when it names no
+/// mode we serve.
+fn mode_label(s: &str) -> Option<&'static str> {
+  match s {
+    "chat" => Some("chat"),
+    "embedding" => Some("embedding"),
+    "rerank" => Some("rerank"),
+    _ => None,
+  }
+}
+
+/// The mode to put on the wire, or `None` to let the daemon resolve one.
+///
+/// Only a real *choice* is sent: an explicit `--mode`, or a preset's `mode:`
+/// pin. A mode the catalog hint merely implies is deliberately **not** sent —
+/// it is the model's own default, which sits below the user's config in the
+/// precedence order, and sending it as though it were a choice is what let it
+/// shadow a `default:` preset's pin on every plain `start`. The daemon reads
+/// the same hint off the header it already parses, so nothing is lost.
+///
+/// The `unknown` hint still errors here rather than server-side: the fix is a
+/// flag the user types, so the message belongs on the surface they typed at.
 fn resolve_mode(
   row: &CatalogRow,
   override_mode: Option<CliLaunchMode>,
-) -> Result<&'static str, CliExit> {
+  preset_mode: Option<&str>,
+) -> Result<Option<&'static str>, CliExit> {
   if let Some(m) = override_mode {
-    return Ok(m.as_label());
+    return Ok(Some(m.as_label()));
   }
   // A managed-multiplexer row is served by an umbrella that picks the recipe
   // from the model name; llama.cpp launch modes don't apply, so don't force
-  // `--mode`. The daemon ignores the mode for these, so default to chat.
+  // `--mode` and don't refuse a row whose hint we cannot read.
   if crate::backend::is_managed_multiplexer(crate::cli::output::backend_for_source(&row.source)) {
-    return Ok("chat");
+    return Ok(None);
+  }
+  // A preset's pin outranks the hint. `chat` is not a pin -- see
+  // `PartialParams::mode`.
+  if let Some(m) = preset_mode.filter(|m| *m != "chat").and_then(mode_label) {
+    return Ok(Some(m));
   }
   match row.mode_hint.as_deref() {
-    Some("chat") => Ok("chat"),
-    Some("embedding") => Ok("embedding"),
-    Some("rerank") => Ok("rerank"),
+    // A hint the daemon will read for itself.
+    Some("chat") | Some("embedding") | Some("rerank") => Ok(None),
     Some("unknown") | None => Err(CliExit::new(
       USAGE,
       format!(
@@ -471,6 +505,7 @@ fn partial_params_from_preset(preset: &Value) -> PartialParams {
       .get("mtp_draft_n")
       .and_then(Value::as_u64)
       .map(|n| n as u32),
+    mode: p.get("mode").and_then(Value::as_str).map(str::to_string),
     backend: p.get("backend").and_then(Value::as_str).map(str::to_string),
     server: p.get("server").and_then(Value::as_str).map(str::to_string),
   }
@@ -502,7 +537,7 @@ fn parse_cli_knobs(
 
 fn build_payload(
   model_path: &str,
-  mode: &str,
+  mode: Option<&str>,
   p: &PartialParams,
   backend: Option<&str>,
   server: Option<&str>,
@@ -513,7 +548,11 @@ fn build_payload(
     "model_path".into(),
     Value::String(PathBuf::from(model_path).display().to_string()),
   );
-  obj.insert("mode".into(), Value::String(mode.to_string()));
+  // Omitted when nothing chose one, so the daemon's own rungs (a `default:`
+  // preset's pin, then the model's header hint) decide.
+  if let Some(m) = mode {
+    obj.insert("mode".into(), Value::String(m.to_string()));
+  }
   // Drives whether the daemon applies the model's `default:` preset +
   // last_params inheritance. `default` (no selection) is the common case.
   obj.insert("selection".into(), Value::String(selection.to_string()));
@@ -758,15 +797,86 @@ mod tests {
   fn explicit_mode_wins_even_when_hint_present() {
     let r = row(Some("chat"));
     assert_eq!(
-      resolve_mode(&r, Some(CliLaunchMode::Embedding)).unwrap(),
-      "embedding"
+      resolve_mode(&r, Some(CliLaunchMode::Embedding), None).unwrap(),
+      Some("embedding")
+    );
+  }
+
+  #[test]
+  fn a_presets_pinned_mode_beats_the_catalog_hint() {
+    let r = row(Some("chat"));
+    assert_eq!(
+      resolve_mode(&r, None, Some("embedding")).unwrap(),
+      Some("embedding")
+    );
+  }
+
+  #[test]
+  fn a_presets_pinned_mode_answers_an_unknown_hint() {
+    // Without the pin this is the `pass --mode` usage error.
+    let r = row(Some("unknown"));
+    assert_eq!(
+      resolve_mode(&r, None, Some("rerank")).unwrap(),
+      Some("rerank")
+    );
+  }
+
+  #[test]
+  fn an_explicit_mode_flag_beats_the_presets_pin() {
+    let r = row(Some("chat"));
+    assert_eq!(
+      resolve_mode(&r, Some(CliLaunchMode::Rerank), Some("embedding")).unwrap(),
+      Some("rerank")
+    );
+  }
+
+  #[test]
+  fn a_materialised_chat_is_not_treated_as_a_pin() {
+    // A preset stores a mode only when it is non-chat, so `chat` off the wire
+    // means "the preset said nothing". Nothing chose, so nothing is sent and
+    // the daemon reads the same hint off the header it already parsed.
+    for hint in ["embedding", "chat", "rerank"] {
+      let r = row(Some(hint));
+      assert_eq!(
+        resolve_mode(&r, None, Some("chat")).unwrap(),
+        None,
+        "{hint}"
+      );
+      assert_eq!(resolve_mode(&r, None, None).unwrap(), None, "{hint}");
+    }
+  }
+
+  #[test]
+  fn a_payload_with_no_chosen_mode_omits_the_field() {
+    // The daemon distinguishes "no mode" from "chat"; sending the hint as if
+    // it were a choice is what shadowed a preset's pin.
+    let v = build_payload(
+      "/m/a.gguf",
+      None,
+      &PartialParams::default(),
+      None,
+      None,
+      "default",
+    );
+    assert!(v.get("mode").is_none(), "{v}");
+  }
+
+  #[test]
+  fn a_preset_mode_survives_the_rebuild() {
+    let preset = serde_json::json!({
+      "name": "emb",
+      "params": { "model_path": "/m/a.gguf", "mode": "embedding" },
+    });
+    assert_eq!(
+      partial_params_from_preset(&preset).mode.as_deref(),
+      Some("embedding")
     );
   }
 
   #[test]
   fn missing_hint_without_override_errors_with_usage() {
     let r = row(None);
-    let err = resolve_mode(&r, None).unwrap_err();
+    let err = resolve_mode(&r, None, None).unwrap_err();
     assert_eq!(err.code, USAGE);
     let msg = err.to_string();
     assert!(msg.contains("--mode"));
@@ -775,13 +885,20 @@ mod tests {
   #[test]
   fn unknown_hint_without_override_errors() {
     let r = row(Some("unknown"));
-    assert!(resolve_mode(&r, None).is_err());
+    assert!(resolve_mode(&r, None, None).is_err());
   }
 
   #[test]
   fn build_payload_includes_backend_override_when_set() {
     let p = PartialParams::default();
-    let v = build_payload("/m/a.gguf", "chat", &p, Some("llamacpp"), None, "explicit");
+    let v = build_payload(
+      "/m/a.gguf",
+      Some("chat"),
+      &p,
+      Some("llamacpp"),
+      None,
+      "explicit",
+    );
     assert_eq!(v["backend"], serde_json::json!("llamacpp"));
     assert_eq!(v["selection"], serde_json::json!("explicit"));
   }
@@ -790,7 +907,7 @@ mod tests {
   fn build_payload_omits_empty_backend_knobs() {
     let v = build_payload(
       "/m/a.gguf",
-      "chat",
+      Some("chat"),
       &PartialParams::default(),
       None,
       None,

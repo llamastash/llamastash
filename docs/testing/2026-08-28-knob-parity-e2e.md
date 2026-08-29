@@ -32,6 +32,7 @@ config before and after to prove it.
 | 11 | TUI | A row edited in the TUI lands in the same knob the CLI flag would |
 | 12 | migration | An old-shape config is rewritten in place, comments kept, backup written, idempotent |
 | 13 | safety | A denylisted flag in extras is stripped before spawn |
+| 14 | presets | A preset pins `mode:`; the real argv carries `--embeddings`, and an explicit `--mode` still beats it |
 
 ## Rule
 
@@ -59,11 +60,30 @@ Every argv assertion read `/proc/<pid>/cmdline`, never llamastash's own output.
 | 11 | **A row cycled in the TUI produced `--threads 6`**, rest of argv identical to the CLI and preset launches |
 | 12 | Old-shape config migrated in place: 6/6 comments kept, `{auto: true}` → `auto`, `backend_knobs:` → `knobs:`, backup written, idempotent on a second start |
 | 13 | `--host 0.0.0.0 --api-key …` in extras refused outright, both flags named |
+| 14 | Added 2026-08-29 for the pr-72 finding 1 fix; run through the real CLI against llama-server build 10666 (`4e97ac86e`). Four sub-cases, all green on a model whose GGUF hint is `chat`, so `--embeddings` can only have come from the preset: a plain `start` with `default: emb-mode` emitted it (`params.mode=embedding`); `--preset emb-mode` did too; `--mode chat` beat the pin (no `--embeddings`); `--preset auto` skipped the preset entirely and fell to the model's own chat hint (no `--embeddings`, ctx 262144 from pure fit) |
 
 Two defects found and fixed here rather than in a test:
 
 - the `mtp` row read `inherited` on a launch that was speculating
 - bools read `true`/`false` in the running view and `on`/`off` in the editor
+
+Case 14 found a third, and it is the reason the case exists: fixing the three surfaces
+the review named still left a preset's `mode:` pin dead on a plain `start`, because every
+caller sent the catalog's mode hint on the wire unconditionally and shadowed it. Only
+running the real binary showed that; the unit tests for each surface were all green. See
+the pr-72 follow-ups in
+[`../plans/2026-08-25-001-refactor-unified-knob-registry-plan.md`](../plans/2026-08-25-001-refactor-unified-knob-registry-plan.md).
+
+Two environment notes from the case-14 run, neither a code change:
+
+- The **debug** build's `start_model` took ~8 s on this host under load average 8-11, over
+  `DEFAULT_CALL_TIMEOUT` (5 s), so `target/debug/llamastash start` reported
+  `ipc call exceeded 5s` while the daemon completed the launch fine. `presets_list`, which
+  does the same catalog + preset resolution, returned in 0.03 s, so the time is in the
+  spawn path, not in anything this change touched. The case was re-run on
+  `target/release/llamastash` end to end, where it is well inside the budget.
+- `llama-server` here is build 10666 (`4e97ac86e`), 13 builds behind upstream `b10679`
+  (2026-08-28). Nothing case 14 asserts depends on anything newer.
 
 One pre-existing behaviour noted, not changed: `last_params` records only the
 user's own layer, so a bare launch after a preset launch records `{}` and the

@@ -298,7 +298,7 @@ async fn last_used_mode(state: &Arc<ProxyState>, model_id: &ModelId) -> Option<L
 }
 
 /// Launch mode for an auto-start: the endpoint that triggered it wins,
-/// then the recorded `last_params` mode, then the GGUF hint.
+/// then the recorded `last_params` mode.
 ///
 /// A non-chat mode is only ever adopted for a model the hint did *not*
 /// classify as chat: `--embeddings` / `--reranking` make llama-server
@@ -309,15 +309,18 @@ async fn last_used_mode(state: &Arc<ProxyState>, model_id: &ModelId) -> Option<L
 /// a supervisor that answers 501 to the very `/v1/rerank` call that
 /// started it.
 ///
-/// `None` (unknown / absent hint, no better signal) leaves the chat
-/// default to `compose_and_spawn`.
+/// `None` means "nothing here chose a mode" and hands the decision to the
+/// daemon, which applies the model's `default:` preset pin and then the same
+/// hint. The hint is deliberately not returned as if it were a choice: sending
+/// it shadowed every preset that pinned a mode. The guard above is unchanged —
+/// a *request* still cannot raise a chat-hinted model, only the user's own
+/// config can.
 fn resolve_auto_start_mode(
   hint: Option<&str>,
   endpoint_mode: Option<LaunchMode>,
   last_used: Option<LaunchMode>,
 ) -> Option<LaunchModeWire> {
-  let hint_mode = launch_mode_from_hint(hint);
-  if !matches!(hint_mode, Some(LaunchModeWire::Chat)) {
+  if !matches!(launch_mode_from_hint(hint), Some(LaunchModeWire::Chat)) {
     for m in [endpoint_mode, last_used].into_iter().flatten() {
       match m {
         LaunchMode::Embedding => return Some(LaunchModeWire::Embedding),
@@ -326,7 +329,7 @@ fn resolve_auto_start_mode(
       }
     }
   }
-  hint_mode
+  None
 }
 
 /// Map a catalog row's GGUF-derived `mode_hint` string onto the launch
@@ -449,24 +452,23 @@ mod tests {
   fn a_chat_model_is_never_forced_into_a_non_chat_mode() {
     // `--embeddings` makes llama-server refuse chat for the rest of the
     // supervisor's life, so an embeddings request must not lock a chat
-    // model out of chat.
-    assert!(matches!(
-      resolve_auto_start_mode(Some("chat"), Some(LaunchMode::Embedding), None),
-      Some(LaunchModeWire::Chat)
-    ));
-    assert!(matches!(
-      resolve_auto_start_mode(Some("chat"), None, Some(LaunchMode::Rerank)),
-      Some(LaunchModeWire::Chat)
-    ));
+    // model out of chat. Nothing is sent, and the daemon lands on the same
+    // hint (via a `default:` preset's pin, if the user wrote one).
+    assert!(resolve_auto_start_mode(Some("chat"), Some(LaunchMode::Embedding), None).is_none());
+    assert!(resolve_auto_start_mode(Some("chat"), None, Some(LaunchMode::Rerank)).is_none());
   }
 
   #[test]
-  fn hint_stands_when_nothing_better_is_known() {
-    assert!(matches!(
-      resolve_auto_start_mode(Some("embedding"), None, None),
-      Some(LaunchModeWire::Embedding)
-    ));
-    assert!(resolve_auto_start_mode(None, None, None).is_none());
+  fn a_hint_alone_chooses_nothing_and_is_left_to_the_daemon() {
+    // The hint is the *model's* default, below the user's config. Sending it
+    // as though the proxy had chosen it shadowed every preset that pinned a
+    // mode; the daemon reads the same hint off the header it already parsed.
+    for hint in [Some("embedding"), Some("chat"), Some("rerank"), None] {
+      assert!(
+        resolve_auto_start_mode(hint, None, None).is_none(),
+        "{hint:?}"
+      );
+    }
     // An unclassified model still adopts the endpoint's mode.
     assert!(matches!(
       resolve_auto_start_mode(None, Some(LaunchMode::Embedding), None),

@@ -242,6 +242,7 @@ pub(crate) async fn compose_and_spawn(
     identity,
     arch,
     native_ctx,
+    mode_hint,
     supported_backends,
     mtp_embedded,
     ..
@@ -273,14 +274,69 @@ pub(crate) async fn compose_and_spawn(
     }
   }
 
-  // Mode resolution: explicit override > catalog hint > default to chat.
-  // The CLI surface refuses to default silently when discovery says
-  // "Unknown" (cli_args.rs::StartArgs::mode comment), but the daemon
-  // is one layer down; a missing override here means the caller has
-  // already accepted the default.
+  // The model's configured `default:` preset (config-only), resolved
+  // server-side so it applies uniformly on CLI plain `start`, the TUI, and
+  // proxy auto-start. Only a no-selection launch consults it, so explicit /
+  // auto launches skip the preset-store snapshot + catalog projection. Read
+  // via the same `effective_presets` the IPC handlers use.
+  let is_default_sel = matches!(parsed.selection, LaunchSelection::Default);
+  let effective_default = if is_default_sel {
+    let store = ctx.presets.snapshot().await;
+    let rows = crate::ipc::methods::catalog_rows(ctx).await;
+    let key = crate::util::paths::path_basename(&parsed.model_path);
+    let path_str = parsed.model_path.display().to_string();
+    Some(crate::launch::presets::effective_presets(
+      &key,
+      &path_str,
+      arch.as_deref(),
+      &store,
+      &rows,
+    ))
+  } else {
+    None
+  };
+
+  // Collapse the launch into one resolution shape. `Auto` (explicit
+  // `--preset auto`) and a no-selection launch whose config default is
+  // `auto` both mean "pure fit": skip the default-preset and last_params
+  // layers entirely. A no-selection launch otherwise applies the effective
+  // default (the `PresetDefault` layer when `default:` names a preset, then
+  // last_params). An explicit launch carries its own flattened knobs/extras.
+  let default_is_auto = effective_default
+    .as_ref()
+    .is_some_and(|e| e.default_is_auto());
+  let pure_fit = matches!(parsed.selection, LaunchSelection::Auto) || default_is_auto;
+  let no_selection = is_default_sel && !pure_fit;
+
+  // Mode resolution, in precedence order: the caller's explicit choice > the
+  // effective default preset's `mode:` pin > the model's own header hint >
+  // chat.
+  //
+  // The last two rungs live here rather than on each caller on purpose. A
+  // hint-derived mode is the *model's* default, which sits below the user's
+  // config; callers that resolved the hint themselves and sent it as if it
+  // were a choice are exactly how a preset's pin got shadowed on every launch.
+  // A caller that genuinely chose (an explicit `--mode`, the proxy raising the
+  // mode for the endpoint that triggered the auto-start) still sends one and
+  // still wins.
+  //
+  // A materialised `Chat` on the preset rung is indistinguishable from "unset"
+  // (a preset only stores a non-chat mode) and lands on the same place the
+  // hint would anyway.
   let mode = parsed
     .mode
     .map(LaunchMode::from)
+    .or_else(|| {
+      if no_selection {
+        effective_default
+          .as_ref()
+          .and_then(|e| e.default_preset())
+          .map(|np| np.params.mode)
+      } else {
+        None
+      }
+    })
+    .or_else(|| LaunchMode::resolve(None, mode_hint))
     .unwrap_or(LaunchMode::Chat);
 
   // Reject pinned port values that would corrupt our internal state
@@ -466,40 +522,6 @@ pub(crate) async fn compose_and_spawn(
     .as_ref()
     .filter(|_| last_params_backend_ok)
     .map(|(p, _)| p.clone());
-
-  // The model's configured `default:` preset (config-only), resolved
-  // server-side so it applies uniformly on CLI plain `start`, the TUI, and
-  // proxy auto-start. Only a no-selection launch consults it, so explicit /
-  // auto launches skip the preset-store snapshot + catalog projection. Read
-  // via the same `effective_presets` the IPC handlers use.
-  let is_default_sel = matches!(parsed.selection, LaunchSelection::Default);
-  let effective_default = if is_default_sel {
-    let store = ctx.presets.snapshot().await;
-    let rows = crate::ipc::methods::catalog_rows(ctx).await;
-    let key = crate::util::paths::path_basename(&parsed.model_path);
-    let path_str = parsed.model_path.display().to_string();
-    Some(crate::launch::presets::effective_presets(
-      &key,
-      &path_str,
-      arch.as_deref(),
-      &store,
-      &rows,
-    ))
-  } else {
-    None
-  };
-
-  // Collapse the launch into one resolution shape. `Auto` (explicit
-  // `--preset auto`) and a no-selection launch whose config default is
-  // `auto` both mean "pure fit": skip the default-preset and last_params
-  // layers entirely. A no-selection launch otherwise applies the effective
-  // default (the `PresetDefault` layer when `default:` names a preset, then
-  // last_params). An explicit launch carries its own flattened knobs/extras.
-  let default_is_auto = effective_default
-    .as_ref()
-    .is_some_and(|e| e.default_is_auto());
-  let pure_fit = matches!(parsed.selection, LaunchSelection::Auto) || default_is_auto;
-  let no_selection = is_default_sel && !pure_fit;
 
   // Free-form extras (whole-list, no per-flag merge). Explicit inline extras
   // are always honored verbatim. Otherwise a no-selection launch inherits the

@@ -893,6 +893,83 @@ async fn no_selection_start_applies_configured_default_preset() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn no_selection_start_applies_the_default_presets_pinned_mode() {
+  // A `default:` preset pinning `mode:` has to reach the launch, not just the
+  // config file. This is the surface that made it a silent mis-launch: proxy
+  // auto-start and the TUI send no mode of their own, so the daemon's own
+  // `unwrap_or(Chat)` decided, and `--embeddings` never reached argv while
+  // `presets show` happily reported `mode: embedding`.
+  let state = unique_temp("default-preset-mode");
+  let model_dir = unique_temp("default-preset-mode-models");
+  let model_path = model_dir.join("m.gguf");
+  std::fs::write(&model_path, build_minimal_gguf("llama")).unwrap();
+  let model_path_canon = llamastash::util::paths::canonicalize(&model_path).unwrap();
+
+  let mut entries = BTreeMap::new();
+  entries.insert(
+    "emb".to_string(),
+    PresetBody {
+      knobs: llamastash::knobset! { mode: "embedding" },
+      ..PresetBody::default()
+    },
+  );
+  let mut presets = BTreeMap::new();
+  presets.insert(
+    "m.gguf".to_string(),
+    ConfigPresetBlock {
+      default: Some("emb".to_string()),
+      entries,
+    },
+  );
+
+  let opts = DaemonOptions {
+    binary: Some(fake_binary()),
+    port_range: allocate_port_range(),
+    presets,
+    ..DaemonOptions::rooted_at(state.clone())
+  };
+  let socket = opts.state_dir.clone();
+  let state_dir = opts.state_dir.clone();
+  let daemon = tokio::spawn(async move { run_foreground(opts).await });
+  wait_for_socket(&socket).await;
+  let mut client = Client::connect(&socket).await.expect("connect");
+
+  // No `mode` on the wire — exactly what proxy auto-start sends for a model
+  // whose hint is chat/unknown.
+  let resp = client
+    .call(
+      "start_model",
+      Some(json!({"model_path": &model_path_canon})),
+    )
+    .await
+    .expect("start_model");
+  let port = resp["port"].as_u64().unwrap() as u16;
+
+  let deadline = std::time::Instant::now() + Duration::from_secs(60);
+  let params = loop {
+    let s = state_store::load(&state_dir).expect("load state");
+    if let Some(r) = s.running.iter().find(|r| r.port == port) {
+      break r.params.clone();
+    }
+    if std::time::Instant::now() > deadline {
+      panic!("default-preset launch never recorded a running snapshot");
+    }
+    tokio::time::sleep(Duration::from_millis(40)).await;
+  };
+
+  assert_eq!(
+    params.mode,
+    llamastash::launch::mode::LaunchMode::Embedding,
+    "the default preset's pinned mode drives the launch"
+  );
+
+  let _ = client.call("shutdown", None).await;
+  let _ = timeout(Duration::from_secs(3), daemon).await;
+  std::fs::remove_dir_all(&state).ok();
+  std::fs::remove_dir_all(&model_dir).ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn auto_selection_start_inherits_nothing() {
   // `selection: auto` is pure fit: it skips last_params (and the default
   // preset), so a prior launch's extras are NOT carried forward. This is

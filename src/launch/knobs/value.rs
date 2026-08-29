@@ -508,6 +508,15 @@ pub fn parse_value(def: &KnobDef, raw: &str) -> Result<KnobValue, ParseError> {
         id,
         value: raw.to_string(),
       })?;
+      // `NaN` compares false against both bounds, so it walks through the
+      // range checks below and ships to the engine verbatim; an unbounded
+      // knob takes `inf` the same way. Neither is a value any engine means.
+      if !v.is_finite() {
+        return Err(ParseError::NotAFloat {
+          id,
+          value: raw.to_string(),
+        });
+      }
       if let Some(lo) = min {
         if v < lo {
           return Err(ParseError::OutOfRange {
@@ -562,10 +571,12 @@ pub fn parse_value(def: &KnobDef, raw: &str) -> Result<KnobValue, ParseError> {
     }
     KnobKind::Ratio => {
       let parts: Vec<&str> = raw.split(',').map(str::trim).collect();
+      // Each part must be a real number: `f32::parse` accepts `NaN` / `inf`,
+      // and a split of `NaN,1` would reach the engine as a device ratio.
       if parts.is_empty()
         || parts
           .iter()
-          .any(|p| p.is_empty() || p.parse::<f32>().is_err())
+          .any(|p| !p.parse::<f32>().is_ok_and(f32::is_finite))
       {
         return Err(ParseError::NotARatio {
           id,
@@ -622,6 +633,50 @@ mod tests {
       parse_value(&d, "11"),
       Err(ParseError::OutOfRange { .. })
     ));
+  }
+
+  #[test]
+  fn floats_reject_nan_and_infinity() {
+    // `NaN < lo` and `NaN > hi` are both false, so a range check alone waves
+    // it through and the engine gets `NaN` on its command line.
+    let bounded = def(
+      KnobKind::F32 {
+        min: Some(0.0),
+        max: Some(1.0),
+      },
+      None,
+    );
+    // Unbounded is the sharper case: with no `max` there is nothing at all
+    // between `inf` and argv.
+    let unbounded = def(
+      KnobKind::F32 {
+        min: None,
+        max: None,
+      },
+      None,
+    );
+    for d in [&bounded, &unbounded] {
+      for raw in ["NaN", "nan", "inf", "-inf", "infinity"] {
+        assert!(
+          matches!(parse_value(d, raw), Err(ParseError::NotAFloat { .. })),
+          "should reject {raw:?}"
+        );
+      }
+    }
+    assert!(parse_value(&bounded, "0.5").is_ok());
+    assert!(parse_value(&unbounded, "-2.5").is_ok());
+  }
+
+  #[test]
+  fn a_ratio_rejects_a_non_finite_part() {
+    let d = def(KnobKind::Ratio, None);
+    assert!(parse_value(&d, "0.6,0.4").is_ok());
+    for raw in ["NaN,1", "1,inf", "", "1,,2", "1,x"] {
+      assert!(
+        matches!(parse_value(&d, raw), Err(ParseError::NotARatio { .. })),
+        "should reject {raw:?}"
+      );
+    }
   }
 
   #[test]

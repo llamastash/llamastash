@@ -722,6 +722,24 @@ impl LaunchPickerState {
     }
   }
 
+  // ---------------------------------------------------------------- mode
+
+  /// The serving mode this form would launch with, or `None` when the row is
+  /// untouched and the model's own hint should decide.
+  ///
+  /// `mode` is an ordinary knob row (`Emit::Custom`, so nothing emits it from
+  /// the knob map) and the launch reads `LaunchParams.mode`. Same shape as
+  /// `mtp_intent` beside it: one projection point between the row and the
+  /// typed sibling. Without it a preset's pinned mode, and any edit the user
+  /// makes on that row, rode the wire as a knob nobody consumes while the
+  /// catalog hint silently decided the launch.
+  pub fn mode_intent(&self) -> Option<crate::launch::mode::LaunchMode> {
+    self
+      .user_knobs
+      .str_by_concept(self.active_backend_id(), knobs::Concept::Mode)
+      .and_then(crate::launch::mode::LaunchMode::from_label)
+  }
+
   // ----------------------------------------------------------------- mtp
 
   /// The speculation knob of the backend in scope, when it declares one.
@@ -2013,6 +2031,29 @@ mod tests {
         "`auto` must delegate {id} to the fitter"
       );
     }
+  }
+
+  #[test]
+  fn a_presets_pinned_mode_reaches_the_launch_payload() {
+    // The Mode row is a knob nothing emits from the knob map, so a preset that
+    // pins it only reaches argv through `mode_intent` -> `LaunchParams.mode`.
+    let mut s = LaunchPickerState::for_model("qwen");
+    assert_eq!(
+      s.mode_intent(),
+      None,
+      "an untouched row leaves it to the hint"
+    );
+
+    let pinned = PresetChoice {
+      name: "emb".into(),
+      knobs: crate::knobset! { mode: "embedding" },
+      extras: Vec::new(),
+    };
+    s.set_presets(vec![pinned], PresetStop::Named(0));
+    assert_eq!(
+      s.mode_intent(),
+      Some(crate::launch::mode::LaunchMode::Embedding)
+    );
   }
 
   #[test]

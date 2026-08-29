@@ -28,6 +28,15 @@
 //!    [`crate::config::yaml_edit`], which exists so app-driven writes preserve
 //!    hand-authored prose. Real configs carry measured tuning results and
 //!    "why this is pinned off" notes; losing those is worse than the break.
+//!
+//!    One boundary, chosen rather than stumbled into: a comment *above a key*
+//!    survives; a comment *between two knobs inside a migrated entry* does
+//!    not. `rewrite_entry` regenerates the entry body from the folded value,
+//!    and the keys it renames (`ctx` → `ctx-size`, `flash_attn` →
+//!    `flash-attn`) leave an in-body comment with nothing to anchor to.
+//!    `upsert_block` already documents the analogous key-line-comment loss.
+//!    The `.pre-knobs.bak` written in step 2 is what makes this recoverable
+//!    rather than lost. Pinned by `a_comment_inside_a_migrated_entry_is_lost`.
 //! 2. **The original is kept** — a `.pre-knobs.bak` sibling is written first,
 //!    and the migration aborts if it cannot be.
 //! 3. **It is announced** — the report names the backup and the entry count.
@@ -330,6 +339,40 @@ mod tests {
     }
     assert!(after.contains("ssd-streaming: false"), "{after}");
     assert!(after.contains("mtp: true"), "{after}");
+  }
+
+  /// The documented comment boundary (module doc, safety property 1). This
+  /// asserts the *loss* on purpose: the behaviour is a consequence of
+  /// regenerating the entry body, and a test that pins it keeps it a choice
+  /// instead of something a later reader "fixes" by accident — or worse,
+  /// believes does not happen because the other comment tests only ever place
+  /// comments above keys.
+  #[test]
+  fn a_comment_inside_a_migrated_entry_is_lost_but_the_backup_keeps_it() {
+    let p = write(
+      "in-body-comment",
+      concat!(
+        "presets:\n",
+        "  # above the model key: survives\n",
+        "  m.gguf:\n",
+        "    entries:\n",
+        "      # above the entry name: survives\n",
+        "      fast:\n",
+        "        ctx: 4096\n",
+        "        # keep memory pinned\n",
+        "        mlock: true\n",
+      ),
+    );
+    let report = migrate(&p).unwrap().expect("should migrate");
+    let after = read(&p);
+    assert!(after.contains("above the model key"), "{after}");
+    assert!(after.contains("above the entry name"), "{after}");
+    assert!(
+      !after.contains("keep memory pinned"),
+      "in-body comment unexpectedly survived; update the module doc:\n{after}"
+    );
+    // Not silently gone: the pre-migration file still carries it.
+    assert!(read(&report.backup).contains("keep memory pinned"));
   }
 
   /// `preflight` refuses a group- or world-writable parent directory. It
