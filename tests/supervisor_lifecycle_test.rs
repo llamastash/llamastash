@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use llamastash::backend::llama_cpp::{LlamaCppBackend, LLAMACPP_KNOB_FIT_CTX_FLOOR};
-use llamastash::config::KnobValue;
 use llamastash::daemon::probe::ProbeOptions;
 use llamastash::daemon::supervisor::{spawn, FitGate, ManagedSpawn, ManagedState};
 use llamastash::gguf::identity::ModelId;
@@ -113,10 +112,9 @@ async fn strict_fit_withholds_ready_when_ctx_clamped_to_floor() {
   let mut params = LaunchParams::new(PathBuf::from("/fixture/m.gguf"), LaunchMode::Chat);
   // ctx delegated to --fit; the floor is emitted as --fit-ctx.
   let floor = 16_384;
-  params.backend_knobs.insert(
-    LLAMACPP_KNOB_FIT_CTX_FLOOR.to_string(),
-    KnobValue::Set(floor.to_string()),
-  );
+  params
+    .launch_config
+    .insert(LLAMACPP_KNOB_FIT_CTX_FLOOR.to_string(), floor.to_string());
   let plan = LlamaCppBackend::new().process_spec(&params, port, fake_binary(), fast_probe());
   let model = spawn(ManagedSpawn {
     id: fake_id(40),
@@ -162,10 +160,9 @@ async fn non_strict_flags_clamp_but_stays_ready() {
   let port = allocate_port();
   let mut params = LaunchParams::new(PathBuf::from("/fixture/m.gguf"), LaunchMode::Chat);
   let floor = 16_384;
-  params.backend_knobs.insert(
-    LLAMACPP_KNOB_FIT_CTX_FLOOR.to_string(),
-    KnobValue::Set(floor.to_string()),
-  );
+  params
+    .launch_config
+    .insert(LLAMACPP_KNOB_FIT_CTX_FLOOR.to_string(), floor.to_string());
   let plan = LlamaCppBackend::new().process_spec(&params, port, fake_binary(), fast_probe());
   let model = spawn(ManagedSpawn {
     id: fake_id(41),
@@ -208,10 +205,9 @@ async fn ctx_at_model_max_is_not_flagged_as_clamped() {
   let port = allocate_port();
   let mut params = LaunchParams::new(PathBuf::from("/fixture/m.gguf"), LaunchMode::Chat);
   let floor = 16_384;
-  params.backend_knobs.insert(
-    LLAMACPP_KNOB_FIT_CTX_FLOOR.to_string(),
-    KnobValue::Set(floor.to_string()),
-  );
+  params
+    .launch_config
+    .insert(LLAMACPP_KNOB_FIT_CTX_FLOOR.to_string(), floor.to_string());
   let plan = LlamaCppBackend::new().process_spec(&params, port, fake_binary(), fast_probe());
   // Trained window == floor: settling at the floor is the model's own
   // ceiling, not memory pressure, so even strict mode must stay Ready.

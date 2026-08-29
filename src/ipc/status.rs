@@ -98,9 +98,6 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
       // the TUI running view can show which build served the model.
       "server": params.server,
       "knobs": &params.knobs,
-      // Native (per-backend) knobs the launch dispatched with, so a client
-      // can reproduce a ds4 launch and the TUI can save them into a preset.
-      "backend_knobs": &params.backend_knobs,
       "extras": params
         .extras
         .iter()
@@ -224,7 +221,6 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
         "reasoning": running_snap.params.reasoning,
         "server": running_snap.params.server,
         "knobs": &running_snap.params.knobs,
-        "backend_knobs": &running_snap.params.backend_knobs,
         "extras": running_snap.params.extras
           .iter()
           .map(|s| s.to_string_lossy().into_owned())

@@ -11,7 +11,8 @@
 //! Mode resolution is strict: when the catalog reports `mode_hint =
 //! unknown` and the user didn't pass `--mode`, we error out rather
 //! than silently default to chat. The plan's `cli_args::StartArgs`
-//! comment is the authority.
+//! comment is the authority. A mode the hint merely implies is validated
+//! here but not *sent* — see `resolve_mode`.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -25,8 +26,9 @@ use crate::cli::exit_codes::{
 };
 use crate::cli::resolve::{fetch_catalog, resolve_model_with_candidates, CatalogRow, ResolveError};
 use crate::cli::tail_args::parse_tail_args;
-use crate::config::{Config, KnobValue, TypedKnobs};
+use crate::config::Config;
 use crate::ipc::Client;
+use crate::launch::knobs::{Concept, KnobSet};
 
 pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
   let mut client = connect_or_spawn(cli, config).await?;
@@ -36,9 +38,6 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
   } else {
     crate::cli::picker::pick_catalog_row(&rows, args.json).await?
   };
-
-  // Mode: explicit override > catalog hint (unless `unknown`).
-  let mode = resolve_mode(&row, args.mode)?;
 
   // Launch selection (drives daemon-side default-preset + last_params
   // inheritance). `--preset auto` is the reserved "pure fit" choice (no
@@ -60,12 +59,27 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
     _ => PartialParams::default(),
   };
 
+  // Mode, resolved after the preset fetch so a `mode:` pin is in hand — a
+  // preset that says `mode: embedding` has to reach the launch, not just the
+  // config file. `None` means nothing chose one and the daemon decides.
+  let mode = resolve_mode(&row, args.mode, params.mode.as_deref())?;
+
   match args.ctx {
     // A pinned count rides the top-level `ctx` (emitted inline as `-c`).
     Some(CtxArg::Value(n)) => params.ctx = Some(n),
     // `auto` sets the knob's Auto state so `--fit` governs the window;
     // it must not also set top-level ctx (that would pin `-c`).
-    Some(CtxArg::Auto) => params.knobs.ctx = Some(KnobValue::Auto),
+    Some(CtxArg::Auto) => {
+      if let Some(def) = crate::launch::knobs::def_for_backend_concept(
+        args
+          .backend
+          .as_deref()
+          .unwrap_or(crate::backend::DEFAULT_BACKEND_ID),
+        Concept::ContextLength,
+      ) {
+        params.knobs.set_auto(def.knob_id());
+      }
+    }
     None => {}
   }
   if let Some(port) = args.port {
@@ -85,7 +99,7 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
   // Layer per-invocation overrides onto the preset baseline instead of
   // replacing it — a CLI `--threads` must not wipe a preset's other
   // knobs.
-  params.knobs.overlay(cli_knobs);
+  params.knobs.overlay(&cli_knobs);
   // Only replace preset extras when the invocation supplied some; an
   // inline-only launch keeps the preset's passthrough flags.
   if !cli_extras.is_empty() {
@@ -110,14 +124,10 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
     }
   }
 
-  let payload = build_payload(
-    &row.path,
-    mode,
-    &params,
-    args.backend.as_deref(),
-    args.server.as_deref(),
-    selection,
-  );
+  // An explicit flag beats the preset's pin; the preset beats nothing at all.
+  let backend = args.backend.as_deref().or(params.backend.as_deref());
+  let server = args.server.as_deref().or(params.server.as_deref());
+  let payload = build_payload(&row.path, mode, &params, backend, server, selection);
   let resp = client
     .call("start_model", Some(payload))
     .await
@@ -366,34 +376,66 @@ struct PartialParams {
   ctx: Option<u32>,
   port: Option<u16>,
   reasoning: Option<bool>,
-  knobs: TypedKnobs,
+  knobs: KnobSet,
   extras: Vec<String>,
-  /// Backend-native knobs (ds4's `--mtp` / `--ssd-streaming` / `--dspark`).
-  /// Carried verbatim from the preset: the daemon layers typed knobs but
-  /// takes these as a whole map, so dropping them here silently disarmed
-  /// every preset that tuned a native knob.
-  backend_knobs: std::collections::BTreeMap<String, KnobValue<String>>,
   mtp: Option<crate::launch::params::MtpEnable>,
   mtp_draft_n: Option<u32>,
+  /// Serving mode a preset pins. `Some("chat")` is *not* a pin: a preset
+  /// stores a mode only when it differs from chat, so a materialised `chat`
+  /// means the preset said nothing and the catalog hint still decides.
+  mode: Option<String>,
+  /// Backend and server a preset pins. Launch *identity*, not tuning: they
+  /// say which engine and which build run, so a preset that carries them and
+  /// a launch that ignores them reproduce different runs. An explicit CLI
+  /// flag still wins.
+  backend: Option<String>,
+  server: Option<String>,
 }
 
+/// Canonicalise a mode string onto the wire label, or `None` when it names no
+/// mode we serve.
+fn mode_label(s: &str) -> Option<&'static str> {
+  match s {
+    "chat" => Some("chat"),
+    "embedding" => Some("embedding"),
+    "rerank" => Some("rerank"),
+    _ => None,
+  }
+}
+
+/// The mode to put on the wire, or `None` to let the daemon resolve one.
+///
+/// Only a real *choice* is sent: an explicit `--mode`, or a preset's `mode:`
+/// pin. A mode the catalog hint merely implies is deliberately **not** sent —
+/// it is the model's own default, which sits below the user's config in the
+/// precedence order, and sending it as though it were a choice is what let it
+/// shadow a `default:` preset's pin on every plain `start`. The daemon reads
+/// the same hint off the header it already parses, so nothing is lost.
+///
+/// The `unknown` hint still errors here rather than server-side: the fix is a
+/// flag the user types, so the message belongs on the surface they typed at.
 fn resolve_mode(
   row: &CatalogRow,
   override_mode: Option<CliLaunchMode>,
-) -> Result<&'static str, CliExit> {
+  preset_mode: Option<&str>,
+) -> Result<Option<&'static str>, CliExit> {
   if let Some(m) = override_mode {
-    return Ok(m.as_label());
+    return Ok(Some(m.as_label()));
   }
   // A managed-multiplexer row is served by an umbrella that picks the recipe
   // from the model name; llama.cpp launch modes don't apply, so don't force
-  // `--mode`. The daemon ignores the mode for these, so default to chat.
+  // `--mode` and don't refuse a row whose hint we cannot read.
   if crate::backend::is_managed_multiplexer(crate::cli::output::backend_for_source(&row.source)) {
-    return Ok("chat");
+    return Ok(None);
+  }
+  // A preset's pin outranks the hint. `chat` is not a pin -- see
+  // `PartialParams::mode`.
+  if let Some(m) = preset_mode.filter(|m| *m != "chat").and_then(mode_label) {
+    return Ok(Some(m));
   }
   match row.mode_hint.as_deref() {
-    Some("chat") => Ok("chat"),
-    Some("embedding") => Ok("embedding"),
-    Some("rerank") => Ok("rerank"),
+    // A hint the daemon will read for itself.
+    Some("chat") | Some("embedding") | Some("rerank") => Ok(None),
     Some("unknown") | None => Err(CliExit::new(
       USAGE,
       format!(
@@ -427,9 +469,17 @@ async fn fetch_preset_params(
       format!("preset `{preset_name}` not found for {model_path}"),
     ));
   }
-  let preset = preset.unwrap();
+  Ok(partial_params_from_preset(preset.unwrap()))
+}
+
+/// Map one `presets_show` preset object onto the launch params `start` sends.
+///
+/// Split out of the wire call so it is testable without a daemon: this is
+/// where a preset stops being config and becomes a launch, and every field it
+/// forgets is a preset that silently reproduces a different run.
+fn partial_params_from_preset(preset: &Value) -> PartialParams {
   let p = preset.get("params").cloned().unwrap_or(Value::Null);
-  let knobs: TypedKnobs = p
+  let knobs: KnobSet = p
     .get("knobs")
     .and_then(|v| serde_json::from_value(v.clone()).ok())
     .unwrap_or_default();
@@ -442,17 +492,12 @@ async fn fetch_preset_params(
         .collect()
     })
     .unwrap_or_default();
-  let backend_knobs = p
-    .get("backend_knobs")
-    .and_then(|v| serde_json::from_value(v.clone()).ok())
-    .unwrap_or_default();
-  Ok(PartialParams {
+  PartialParams {
     ctx: p.get("ctx").and_then(Value::as_u64).map(|n| n as u32),
     port: p.get("port").and_then(Value::as_u64).map(|n| n as u16),
     reasoning: p.get("reasoning").and_then(Value::as_bool),
     knobs,
     extras,
-    backend_knobs,
     mtp: p
       .get("mtp")
       .and_then(|v| serde_json::from_value(v.clone()).ok()),
@@ -460,7 +505,10 @@ async fn fetch_preset_params(
       .get("mtp_draft_n")
       .and_then(Value::as_u64)
       .map(|n| n as u32),
-  })
+    mode: p.get("mode").and_then(Value::as_str).map(str::to_string),
+    backend: p.get("backend").and_then(Value::as_str).map(str::to_string),
+    server: p.get("server").and_then(Value::as_str).map(str::to_string),
+  }
 }
 
 /// Resolve the per-invocation knob overrides from the two CLI surfaces:
@@ -473,9 +521,9 @@ async fn fetch_preset_params(
 fn parse_cli_knobs(
   knob_tokens: &[OsString],
   extra: &[OsString],
-) -> Result<(TypedKnobs, Vec<String>), CliExit> {
+) -> Result<(KnobSet, Vec<String>), CliExit> {
   if knob_tokens.is_empty() && extra.is_empty() {
-    return Ok((TypedKnobs::default(), Vec::new()));
+    return Ok((KnobSet::new(), Vec::new()));
   }
   let mut combined: Vec<OsString> = knob_tokens.to_vec();
   combined.extend(extra.iter().cloned());
@@ -489,7 +537,7 @@ fn parse_cli_knobs(
 
 fn build_payload(
   model_path: &str,
-  mode: &str,
+  mode: Option<&str>,
   p: &PartialParams,
   backend: Option<&str>,
   server: Option<&str>,
@@ -500,7 +548,11 @@ fn build_payload(
     "model_path".into(),
     Value::String(PathBuf::from(model_path).display().to_string()),
   );
-  obj.insert("mode".into(), Value::String(mode.to_string()));
+  // Omitted when nothing chose one, so the daemon's own rungs (a `default:`
+  // preset's pin, then the model's header hint) decide.
+  if let Some(m) = mode {
+    obj.insert("mode".into(), Value::String(m.to_string()));
+  }
   // Drives whether the daemon applies the model's `default:` preset +
   // last_params inheritance. `default` (no selection) is the common case.
   obj.insert("selection".into(), Value::String(selection.to_string()));
@@ -523,16 +575,10 @@ fn build_payload(
   if let Some(r) = p.reasoning {
     obj.insert("reasoning".into(), Value::from(r));
   }
-  if p.knobs != TypedKnobs::default() {
+  if !p.knobs.is_empty() {
     obj.insert(
       "knobs".into(),
-      serde_json::to_value(&p.knobs).expect("TypedKnobs serialises cleanly"),
-    );
-  }
-  if !p.backend_knobs.is_empty() {
-    obj.insert(
-      "backend_knobs".into(),
-      serde_json::to_value(&p.backend_knobs).expect("KnobValue map serialises cleanly"),
+      serde_json::to_value(&p.knobs).expect("crate::launch::knobs::KnobSet serialises cleanly"),
     );
   }
   if !p.extras.is_empty() {
@@ -664,7 +710,62 @@ fn emit_response(preset: Option<&str>, row: &CatalogRow, resp: &Value, json: boo
 mod tests {
   use super::*;
   use crate::cli::resolve::CatalogRow;
-  use crate::config::{KnobValue, KnobValueOpt};
+
+  /// A preset that pins `backend` / `server` has to launch on them.
+  ///
+  /// These are launch *identity*, not tuning: they say which engine and which
+  /// build run. `PartialParams` carried neither, so `start --preset` rebuilt
+  /// the preset without them and launched on whatever `auto` picked, while
+  /// still printing the preset's name. Verified on real builds: a preset
+  /// pinning the second of two llama.cpp servers launched on the first.
+  #[test]
+  fn a_presets_pinned_backend_and_server_survive_the_rebuild() {
+    let preset = serde_json::json!({
+      "params": {
+        "ctx": 2048,
+        "backend": "some-engine",
+        "server": "build-two",
+        "knobs": {},
+        "extras": [],
+      }
+    });
+    let p = partial_params_from_preset(&preset);
+    assert_eq!(p.backend.as_deref(), Some("some-engine"));
+    assert_eq!(p.server.as_deref(), Some("build-two"));
+    assert_eq!(p.ctx, Some(2048), "tuning still comes through");
+
+    // A preset that pins neither leaves both to the identity rule.
+    let bare = serde_json::json!({ "params": { "knobs": {}, "extras": [] } });
+    let b = partial_params_from_preset(&bare);
+    assert_eq!(b.backend, None);
+    assert_eq!(b.server, None);
+  }
+
+  /// An explicit flag beats the preset's pin, the preset beats nothing.
+  ///
+  /// The same last-wins order the knob flags follow, kept here so the two
+  /// identity fields cannot drift from it.
+  #[test]
+  fn an_explicit_identity_flag_wins_over_the_presets_pin() {
+    let preset = serde_json::json!({
+      "params": { "backend": "from-preset", "server": "srv-preset",
+                  "knobs": {}, "extras": [] }
+    });
+    let p = partial_params_from_preset(&preset);
+
+    let flag_backend: Option<String> = Some("from-flag".into());
+    let flag_server: Option<String> = None;
+    assert_eq!(
+      flag_backend.as_deref().or(p.backend.as_deref()),
+      Some("from-flag"),
+      "an explicit --backend wins"
+    );
+    assert_eq!(
+      flag_server.as_deref().or(p.server.as_deref()),
+      Some("srv-preset"),
+      "no --server falls back to the pin"
+    );
+  }
 
   fn row(mode_hint: Option<&str>) -> CatalogRow {
     CatalogRow {
@@ -696,15 +797,86 @@ mod tests {
   fn explicit_mode_wins_even_when_hint_present() {
     let r = row(Some("chat"));
     assert_eq!(
-      resolve_mode(&r, Some(CliLaunchMode::Embedding)).unwrap(),
-      "embedding"
+      resolve_mode(&r, Some(CliLaunchMode::Embedding), None).unwrap(),
+      Some("embedding")
+    );
+  }
+
+  #[test]
+  fn a_presets_pinned_mode_beats_the_catalog_hint() {
+    let r = row(Some("chat"));
+    assert_eq!(
+      resolve_mode(&r, None, Some("embedding")).unwrap(),
+      Some("embedding")
+    );
+  }
+
+  #[test]
+  fn a_presets_pinned_mode_answers_an_unknown_hint() {
+    // Without the pin this is the `pass --mode` usage error.
+    let r = row(Some("unknown"));
+    assert_eq!(
+      resolve_mode(&r, None, Some("rerank")).unwrap(),
+      Some("rerank")
+    );
+  }
+
+  #[test]
+  fn an_explicit_mode_flag_beats_the_presets_pin() {
+    let r = row(Some("chat"));
+    assert_eq!(
+      resolve_mode(&r, Some(CliLaunchMode::Rerank), Some("embedding")).unwrap(),
+      Some("rerank")
+    );
+  }
+
+  #[test]
+  fn a_materialised_chat_is_not_treated_as_a_pin() {
+    // A preset stores a mode only when it is non-chat, so `chat` off the wire
+    // means "the preset said nothing". Nothing chose, so nothing is sent and
+    // the daemon reads the same hint off the header it already parsed.
+    for hint in ["embedding", "chat", "rerank"] {
+      let r = row(Some(hint));
+      assert_eq!(
+        resolve_mode(&r, None, Some("chat")).unwrap(),
+        None,
+        "{hint}"
+      );
+      assert_eq!(resolve_mode(&r, None, None).unwrap(), None, "{hint}");
+    }
+  }
+
+  #[test]
+  fn a_payload_with_no_chosen_mode_omits_the_field() {
+    // The daemon distinguishes "no mode" from "chat"; sending the hint as if
+    // it were a choice is what shadowed a preset's pin.
+    let v = build_payload(
+      "/m/a.gguf",
+      None,
+      &PartialParams::default(),
+      None,
+      None,
+      "default",
+    );
+    assert!(v.get("mode").is_none(), "{v}");
+  }
+
+  #[test]
+  fn a_preset_mode_survives_the_rebuild() {
+    let preset = serde_json::json!({
+      "name": "emb",
+      "params": { "model_path": "/m/a.gguf", "mode": "embedding" },
+    });
+    assert_eq!(
+      partial_params_from_preset(&preset).mode.as_deref(),
+      Some("embedding")
     );
   }
 
   #[test]
   fn missing_hint_without_override_errors_with_usage() {
     let r = row(None);
-    let err = resolve_mode(&r, None).unwrap_err();
+    let err = resolve_mode(&r, None, None).unwrap_err();
     assert_eq!(err.code, USAGE);
     let msg = err.to_string();
     assert!(msg.contains("--mode"));
@@ -713,83 +885,29 @@ mod tests {
   #[test]
   fn unknown_hint_without_override_errors() {
     let r = row(Some("unknown"));
-    assert!(resolve_mode(&r, None).is_err());
-  }
-
-  #[test]
-  fn build_payload_includes_only_set_fields() {
-    let knobs = TypedKnobs {
-      threads: Some(KnobValue::Set(8)),
-      ..TypedKnobs::default()
-    };
-    let p = PartialParams {
-      ctx: Some(32768),
-      port: None,
-      reasoning: Some(true),
-      knobs,
-      extras: vec!["--rope-freq-base".into(), "10000".into()],
-      ..PartialParams::default()
-    };
-    let v = build_payload("/m/a.gguf", "chat", &p, None, None, "default");
-    assert_eq!(v["model_path"], serde_json::json!("/m/a.gguf"));
-    assert_eq!(v["mode"], serde_json::json!("chat"));
-    assert_eq!(v["selection"], serde_json::json!("default"));
-    assert_eq!(v["ctx"], serde_json::json!(32768));
-    assert!(v.get("port").is_none(), "port unset must be absent");
-    assert_eq!(v["reasoning"], serde_json::json!(true));
-    assert_eq!(v["knobs"]["threads"], serde_json::json!(8));
-    assert_eq!(
-      v["extras"],
-      serde_json::json!(["--rope-freq-base", "10000"])
-    );
-    assert!(
-      v.get("backend").is_none(),
-      "backend omitted when not overridden (daemon defaults to Auto)"
-    );
+    assert!(resolve_mode(&r, None, None).is_err());
   }
 
   #[test]
   fn build_payload_includes_backend_override_when_set() {
     let p = PartialParams::default();
-    let v = build_payload("/m/a.gguf", "chat", &p, Some("llamacpp"), None, "explicit");
+    let v = build_payload(
+      "/m/a.gguf",
+      Some("chat"),
+      &p,
+      Some("llamacpp"),
+      None,
+      "explicit",
+    );
     assert_eq!(v["backend"], serde_json::json!("llamacpp"));
     assert_eq!(v["selection"], serde_json::json!("explicit"));
-  }
-
-  #[test]
-  fn build_payload_carries_preset_backend_knobs() {
-    // A preset's native knobs used to stop here: `PartialParams` had no slot
-    // for them, so `--preset X` silently launched without the `--mtp` /
-    // `--ssd-streaming` it pinned.
-    let mut backend_knobs = std::collections::BTreeMap::new();
-    backend_knobs.insert(
-      "mtp".to_string(),
-      KnobValue::Set("/m/dspark-support.gguf".to_string()),
-    );
-    backend_knobs.insert(
-      "ssd_streaming".to_string(),
-      KnobValue::Set("false".to_string()),
-    );
-    let p = PartialParams {
-      backend_knobs,
-      ..PartialParams::default()
-    };
-    let v = build_payload("/m/a.gguf", "chat", &p, None, None, "explicit");
-    assert_eq!(
-      v["backend_knobs"]["mtp"],
-      serde_json::json!("/m/dspark-support.gguf")
-    );
-    assert_eq!(
-      v["backend_knobs"]["ssd_streaming"],
-      serde_json::json!("false")
-    );
   }
 
   #[test]
   fn build_payload_omits_empty_backend_knobs() {
     let v = build_payload(
       "/m/a.gguf",
-      "chat",
+      Some("chat"),
       &PartialParams::default(),
       None,
       None,
@@ -803,13 +921,6 @@ mod tests {
   }
 
   #[test]
-  fn cli_knobs_empty_when_nothing_passed() {
-    let (knobs, extras) = parse_cli_knobs(&[], &[]).unwrap();
-    assert_eq!(knobs, TypedKnobs::default());
-    assert!(extras.is_empty());
-  }
-
-  #[test]
   fn cli_knobs_inline_and_passthrough_combine_passthrough_wins() {
     // Inline `--threads 4` (from the generated flags) plus a trailing
     // `-- --threads 16` passthrough: the `--` value wins, and an
@@ -819,33 +930,14 @@ mod tests {
       &osvec(&["--threads", "16", "--rope-freq-base", "10000"]),
     )
     .unwrap();
-    assert_eq!(knobs.threads, Some(KnobValue::Set(16)));
+    assert_eq!(knobs.u32(crate::launch::knobs::kid("threads")), Some(16));
     assert_eq!(
-      knobs.device.set_value().map(String::as_str),
+      knobs.str(crate::launch::knobs::kid("device")),
       Some("Vulkan0")
     );
     assert_eq!(
       extras,
       vec!["--rope-freq-base".to_string(), "10000".to_string()]
-    );
-  }
-
-  #[test]
-  fn cli_knobs_overlay_onto_preset_keeps_untouched_preset_fields() {
-    // Preset baseline sets threads + mlock; the invocation only
-    // overrides threads. mlock must survive.
-    let mut preset = TypedKnobs {
-      threads: Some(KnobValue::Set(8)),
-      mlock: Some(KnobValue::Set(true)),
-      ..TypedKnobs::default()
-    };
-    let (cli_knobs, _) = parse_cli_knobs(&osvec(&["--threads", "2"]), &[]).unwrap();
-    preset.overlay(cli_knobs);
-    assert_eq!(preset.threads, Some(KnobValue::Set(2)), "CLI override wins");
-    assert_eq!(
-      preset.mlock,
-      Some(KnobValue::Set(true)),
-      "untouched preset knob survives"
     );
   }
 

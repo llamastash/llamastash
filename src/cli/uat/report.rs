@@ -69,10 +69,10 @@ pub struct HostBlock {
   /// Non-fatal anomalies surfaced by the orchestrator. Notable
   /// inhabitants:
   ///
-  /// * "preserved tempdir at <path>" — emitted by the TempdirGuard on
+  /// * `"preserved tempdir at <path>"` — emitted by the TempdirGuard on
   ///   any non-success path so the maintainer can find the diagnostic
   ///   tree.
-  /// * "primary model fetch failed: <reason>; used fallback" — emitted
+  /// * `"primary model fetch failed: <reason>; used fallback"` — emitted
   ///   when the primary HF resolve errored and the fallback ran.
   /// * "reference model SHA unlocked (placeholder)" — emitted when
   ///   `model::is_unlocked` reports the placeholder SHA was used.

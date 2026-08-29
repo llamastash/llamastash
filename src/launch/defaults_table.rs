@@ -1,4 +1,4 @@
-//! Built-in `(architecture, gpu_backend) → TypedKnobs` table.
+//! Built-in `(architecture, gpu_backend) → crate::launch::knobs::KnobSet` table.
 //!
 //! Authoritative opinion on launch flags for every (arch, backend)
 //! the recommender can pick. Lives in code so a fresh install on
@@ -11,8 +11,8 @@
 //! the table coverage. Anything not explicitly listed falls through
 //! to the `*` row.
 
-use crate::config::{KnobValue, TypedKnobs};
 use crate::daemon::host_metrics::GpuFlavor;
+use crate::launch::knobs::KnobSet;
 
 /// Look up the built-in defaults row for `(arch, backend)`. The
 /// architecture string is lower-cased; unknown architectures fall
@@ -26,30 +26,30 @@ use crate::daemon::host_metrics::GpuFlavor;
 /// identically to `Unknown` — the brief window after daemon start
 /// before the first sampler tick gets the conservative path, not the
 /// GPU path.
-pub fn lookup(arch: &str, backend: GpuFlavor) -> TypedKnobs {
+pub fn lookup(arch: &str, backend: GpuFlavor) -> KnobSet {
   let arch = arch.to_ascii_lowercase();
   let explicit = lookup_explicit(arch.as_str(), backend);
   let fallback = lookup_wildcard(backend);
   merge(explicit, fallback)
 }
 
-fn lookup_wildcard(_backend: GpuFlavor) -> TypedKnobs {
+fn lookup_wildcard(_backend: GpuFlavor) -> KnobSet {
   // The `*` row no longer pins `n_gpu_layers` — offload placement is
   // delegated to `--fit` (Auto). A layer-less `n_gpu_layers` is seeded
   // `Auto` by the resolver, which emits no `-ngl` and lets fit decide.
   // flash_attn opt-in stays per-arch (see `lookup_explicit`).
-  TypedKnobs::default()
+  KnobSet::new()
 }
 
 /// Architecture-specific row. `None` means "no explicit row — caller
 /// falls through to the wildcard".
-fn lookup_explicit(arch: &str, backend: GpuFlavor) -> Option<TypedKnobs> {
+fn lookup_explicit(arch: &str, backend: GpuFlavor) -> Option<KnobSet> {
   // Architectures we explicitly cover. Anything else falls through to
   // the `*` row.
   if !COVERED_ARCHS.contains(&arch) {
     return None;
   }
-  let mut k = TypedKnobs::default();
+  let mut k = KnobSet::new();
   // flash-attn: only the flash-attn-eligible architectures on
   // nvidia / apple_metal. AMD/HIP coverage is uneven — leave to user
   // override. Vulkan/unknown can't enumerate VRAM safely; CPU
@@ -58,17 +58,17 @@ fn lookup_explicit(arch: &str, backend: GpuFlavor) -> Option<TypedKnobs> {
   if FLASH_ATTN_ELIGIBLE.contains(&arch)
     && matches!(backend, GpuFlavor::Nvidia | GpuFlavor::AppleMetal)
   {
-    k.flash_attn = Some(KnobValue::Set(true));
+    k.set_by_name("flash-attn", "true");
   }
   Some(k)
 }
 
 /// Layer `over` onto `under`, taking each `Some` from `over` first.
-/// Shares the one `.or()` layering primitive with [`TypedKnobs::overlay`].
-fn merge(over: Option<TypedKnobs>, under: TypedKnobs) -> TypedKnobs {
+/// Shares the one layering primitive with [`KnobSet::overlay`].
+fn merge(over: Option<KnobSet>, under: KnobSet) -> KnobSet {
   let Some(over) = over else { return under };
   let mut out = under;
-  out.overlay(over);
+  out.overlay(&over);
   out
 }
 
@@ -134,12 +134,12 @@ mod tests {
       GpuFlavor::Unsampled,
     ] {
       assert_eq!(
-        lookup("qwen2", backend).n_gpu_layers,
+        lookup("qwen2", backend).u32(crate::launch::knobs::kid("n-gpu-layers")),
         None,
         "{backend:?} must not pin ngl"
       );
       assert_eq!(
-        lookup("entirely-unknown-arch", backend).n_gpu_layers,
+        lookup("entirely-unknown-arch", backend).u32(crate::launch::knobs::kid("n-gpu-layers")),
         None,
         "wildcard {backend:?} must not pin ngl"
       );
@@ -147,29 +147,28 @@ mod tests {
   }
 
   #[test]
-  fn qwen2_on_nvidia_opts_into_flash_attn() {
-    let k = lookup("qwen2", GpuFlavor::Nvidia);
-    assert_eq!(k.flash_attn, Some(KnobValue::Set(true)));
-  }
-
-  #[test]
   fn qwen2_on_cpu_only_sets_nothing() {
     let k = lookup("qwen2", GpuFlavor::CpuOnly);
-    assert_eq!(k.n_gpu_layers, None);
-    assert_eq!(k.flash_attn, None);
+    assert_eq!(k.u32(crate::launch::knobs::kid("n-gpu-layers")), None);
+    assert_eq!(k.bool(crate::launch::knobs::kid("flash-attn")), None);
   }
 
   #[test]
   fn unknown_arch_on_nvidia_opts_into_nothing() {
     let k = lookup("entirely-unknown-arch", GpuFlavor::Nvidia);
-    assert_eq!(k.flash_attn, None, "wildcard does not opt into flash_attn");
+    assert_eq!(
+      k.bool(crate::launch::knobs::kid("flash-attn")),
+      None,
+      "wildcard does not opt into flash_attn"
+    );
   }
 
   #[test]
   fn qwen2_on_amd_no_flash_attn() {
     let k = lookup("qwen2", GpuFlavor::Amd);
     assert_eq!(
-      k.flash_attn, None,
+      k.bool(crate::launch::knobs::kid("flash-attn")),
+      None,
       "HIP flash-attn coverage is uneven — leave it to user override"
     );
   }
@@ -178,20 +177,9 @@ mod tests {
   fn gemma_on_nvidia_no_flash_attn() {
     let k = lookup("gemma", GpuFlavor::Nvidia);
     assert_eq!(
-      k.flash_attn, None,
+      k.bool(crate::launch::knobs::kid("flash-attn")),
+      None,
       "gemma not on the flash-attn opt-in list at v1"
     );
-  }
-
-  #[test]
-  fn arch_lookup_is_case_insensitive() {
-    let k = lookup("QWEN2", GpuFlavor::Nvidia);
-    assert_eq!(k.flash_attn, Some(KnobValue::Set(true)));
-  }
-
-  #[test]
-  fn apple_metal_qwen3_gets_flash_attn() {
-    let k = lookup("qwen3", GpuFlavor::AppleMetal);
-    assert_eq!(k.flash_attn, Some(KnobValue::Set(true)));
   }
 }

@@ -18,6 +18,7 @@ pub mod favorites;
 pub(crate) mod format;
 pub mod init;
 pub mod knob_flags;
+pub mod knobs_cmd;
 pub mod last_params;
 pub mod list;
 pub mod logs;
@@ -108,6 +109,8 @@ pub async fn dispatch(mut cli: Cli, config: LoadedConfig) -> Result<i32> {
     Some(Command::Presets(args)) => presets::handle(args, &cli, resolved_config).await,
     Some(Command::Favorites(args)) => favorites::handle(args, &cli, resolved_config).await,
     Some(Command::LastParams(args)) => last_params::handle(args, &cli, resolved_config).await,
+    // Registry-only: answers the same on any host, so it needs no daemon.
+    Some(Command::Knobs(args)) => knobs_cmd::handle(args).await,
     Some(Command::Show(args)) => show::handle(args, &cli, resolved_config).await,
     Some(Command::Pull(args)) => pull::handle(args, &cli, resolved_config).await,
     Some(Command::Init(args)) => init::handle(args, &cli, resolved_config).await,

@@ -8,6 +8,7 @@
 //! Plan: `docs/plans/2026-08-10-001-feat-vllm-backend-plan.md`.
 
 pub mod discovery;
+pub mod knobs;
 
 use std::path::{Path, PathBuf};
 
@@ -15,13 +16,11 @@ use serde::{Deserialize, Serialize};
 
 use super::identity::{BackendModelId, ModelIdentity};
 use super::{
-  Accelerator, AcceleratorSupport, Backend, KnobCapability, LaunchPlan, Lifecycle,
-  ProcessLaunchSpec, Readiness, CREDENTIAL_ENV_STRIP,
+  Accelerator, AcceleratorSupport, Backend, LaunchPlan, Lifecycle, ProcessLaunchSpec, Readiness,
+  CREDENTIAL_ENV_STRIP,
 };
 use crate::daemon::context::MethodContext;
 use crate::daemon::probe::ProbeOptions;
-use crate::launch::flag_aliases::KnobField;
-use crate::launch::native_knobs::{translate, NativeKnobDescriptor, NativeKnobKind};
 use crate::launch::params::LaunchParams;
 
 /// Stable backend id. The only place this string is authored.
@@ -116,88 +115,6 @@ pub const VLLM_FORBIDDEN_EXTRA_HEADS: &[&str] = &[
 /// decision from `backend.vllm.cors`, so it belongs nowhere near the picker.
 const VLLM_KNOB_CORS: &str = "cors";
 
-/// vLLM's tunables, on the per-backend native-knob channel.
-///
-/// Every flag here was checked against a live vLLM install (0.27.1) rather
-/// than the docs. The long tail stays on `extras` — this set is the part
-/// worth a picker row. Note vLLM has **no** `--swap-space`; CPU offload
-/// moved to its own config group.
-pub const VLLM_NATIVE_KNOBS: &[NativeKnobDescriptor] = &[
-  NativeKnobDescriptor {
-    id: "kv_cache_memory_bytes",
-    label: "KV cache size",
-    description: "hard cap on KV cache bytes (e.g. 8G); overrides the GPU memory fraction",
-    kind: NativeKnobKind::FreeText,
-  },
-  NativeKnobDescriptor {
-    id: "gpu_memory_utilization",
-    label: "GPU memory frac",
-    description: "fraction of GPU memory vLLM may claim, 0.0-1.0 (vLLM default 0.92)",
-    kind: NativeKnobKind::FreeText,
-  },
-  NativeKnobDescriptor {
-    id: "max_num_seqs",
-    label: "Max sequences",
-    description: "ceiling on concurrently batched sequences",
-    kind: NativeKnobKind::FreeText,
-  },
-  NativeKnobDescriptor {
-    id: "tensor_parallel_size",
-    label: "Tensor parallel",
-    description: "GPUs to shard the model across on this host",
-    kind: NativeKnobKind::FreeText,
-  },
-  NativeKnobDescriptor {
-    id: "dtype",
-    label: "Weight dtype",
-    description: "weight/activation dtype",
-    kind: NativeKnobKind::Cycle {
-      presets: &["auto", "half", "bfloat16", "float16", "float32"],
-    },
-  },
-  NativeKnobDescriptor {
-    id: "kv_cache_dtype",
-    label: "KV cache dtype",
-    description: "KV cache dtype; the fp8 stops trade accuracy for cache headroom",
-    kind: NativeKnobKind::Cycle {
-      presets: &["auto", "fp8", "fp8_e5m2", "fp8_e4m3"],
-    },
-  },
-  NativeKnobDescriptor {
-    id: "quantization",
-    label: "Quantization",
-    description: "quantization method; leave unset to read it from the repo config",
-    kind: NativeKnobKind::Cycle {
-      presets: &["awq", "gptq", "fp8", "bitsandbytes"],
-    },
-  },
-  NativeKnobDescriptor {
-    id: "enforce_eager",
-    label: "Eager mode",
-    description: "skip graph capture — faster startup, lower steady-state throughput",
-    kind: NativeKnobKind::Bool,
-  },
-  NativeKnobDescriptor {
-    id: "trust_remote_code",
-    label: "Trust remote code",
-    description: "execute custom model code shipped in the repo (only for repos you trust)",
-    kind: NativeKnobKind::Bool,
-  },
-];
-
-/// Native-knob id → `vllm serve` flag.
-const VLLM_KNOB_FLAGS: &[(&str, &str)] = &[
-  ("kv_cache_memory_bytes", "--kv-cache-memory-bytes"),
-  ("gpu_memory_utilization", "--gpu-memory-utilization"),
-  ("max_num_seqs", "--max-num-seqs"),
-  ("tensor_parallel_size", "--tensor-parallel-size"),
-  ("dtype", "--dtype"),
-  ("kv_cache_dtype", "--kv-cache-dtype"),
-  ("quantization", "--quantization"),
-  ("enforce_eager", "--enforce-eager"),
-  ("trust_remote_code", "--trust-remote-code"),
-];
-
 /// Resolve the launcher **by filesystem existence only — never by running it.**
 ///
 /// vLLM builds its argument parser through a device probe: on a host with no
@@ -220,9 +137,7 @@ pub fn resolve_vllm_binary(configured: Option<&Path>) -> Option<PathBuf> {
 
 /// The vLLM backend.
 #[derive(Debug, Clone)]
-pub struct VllmBackend {
-  capabilities: KnobCapability,
-}
+pub struct VllmBackend {}
 
 impl VllmBackend {
   pub fn new() -> Self {
@@ -231,7 +146,6 @@ impl VllmBackend {
       // spells `--max-model-len`. Everything else it tunes lives on the
       // per-backend native-knob channel, so the llama.cpp-shaped rows stay
       // filtered out of the picker for a vLLM model.
-      capabilities: KnobCapability::of(&[KnobField::Ctx]),
     }
   }
 }
@@ -243,20 +157,15 @@ impl Default for VllmBackend {
 }
 
 impl Backend for VllmBackend {
+  fn knobs(&self) -> &'static [crate::launch::knobs::KnobDef] {
+    knobs::KNOBS
+  }
   fn id(&self) -> &'static str {
     VLLM_BACKEND_ID
   }
 
   fn lifecycle(&self) -> Lifecycle {
     Lifecycle::ProcessPerModel
-  }
-
-  fn capabilities(&self) -> &KnobCapability {
-    &self.capabilities
-  }
-
-  fn native_knobs(&self) -> &'static [NativeKnobDescriptor] {
-    VLLM_NATIVE_KNOBS
   }
 
   fn enabled_in_config(
@@ -296,17 +205,6 @@ impl Backend for VllmBackend {
 
   fn forbidden_extra_heads(&self) -> &'static [&'static str] {
     VLLM_FORBIDDEN_EXTRA_HEADS
-  }
-
-  fn volatile_native_knobs(&self) -> &'static [&'static str] {
-    // Both memory knobs. Either one switches the automatic cap off (see
-    // `resolve_native_knobs`), so persisting one turns a single `--preset`
-    // experiment into a permanent opt-out of the guard that exists because an
-    // uncapped launch has taken a machine down. Measured: one preset launch at
-    // `gpu_memory_utilization 0.15`, and every bare `start` afterwards
-    // reserved 22 GB instead of the ~13 GB the cap would have allowed, with
-    // nothing on any surface saying why.
-    &["kv_cache_memory_bytes", "gpu_memory_utilization"]
   }
 
   fn accelerators(&self) -> AcceleratorSupport {
@@ -476,19 +374,19 @@ impl Backend for VllmBackend {
     // inherited: a value persisted in last_params must not outlive the config
     // flip that changed it. Written unconditionally so an absent key keeps
     // meaning "vLLM's own default", not "whatever was seeded last".
-    params.backend_knobs.insert(
+    params.launch_config.insert(
       VLLM_KNOB_CORS.to_string(),
-      crate::config::KnobValue::Set(ctx.backend.vllm.cors.to_string()),
+      ctx.backend.vllm.cors.to_string(),
     );
   }
 
-  async fn resolve_native_knobs(
+  async fn resolve_knobs(
     &self,
     ctx: &MethodContext,
     params: &mut LaunchParams,
     weights_bytes: u64,
-  ) -> super::NativeKnobResolution {
-    let mut out = super::NativeKnobResolution::default();
+  ) -> super::KnobResolution {
+    let mut out = super::KnobResolution::default();
     // Only an explicit byte cap opts out. A user-set *fraction* used to bail
     // here too, which left the knob unset AND the admission gate with no
     // figure to project from — so the one configuration that has frozen this
@@ -545,37 +443,32 @@ impl Backend for VllmBackend {
       }
     };
     log::info!("vllm: capping KV cache at {cap} bytes");
-    params.backend_knobs.insert(
-      "kv_cache_memory_bytes".to_string(),
-      crate::config::KnobValue::Set(cap.to_string()),
-    );
-    out.auto_set.insert("kv_cache_memory_bytes".to_string());
+    params
+      .knobs
+      .set_by_name_for(VLLM_BACKEND_ID, "kv-cache-memory-bytes", cap.to_string());
+    out.auto_set.insert("kv-cache-memory-bytes".to_string());
     out
   }
 }
 
 /// A knob's value parsed as a byte count (`8G`, `512M`, or a plain integer).
 fn knob_bytes(params: &LaunchParams, id: &str) -> Option<u64> {
-  match params.backend_knobs.get(id) {
-    Some(crate::config::KnobValue::Set(s)) => crate::launch::admission::parse_size_bytes(s),
-    _ => None,
-  }
+  crate::launch::admission::parse_size_bytes(&params.knobs.text_by_name_for(VLLM_BACKEND_ID, id)?)
 }
 
 /// A knob's value parsed as a fraction.
 fn knob_f64(params: &LaunchParams, id: &str) -> Option<f64> {
-  match params.backend_knobs.get(id) {
-    Some(crate::config::KnobValue::Set(s)) => s.trim().parse().ok(),
-    _ => None,
-  }
+  params
+    .knobs
+    .text_by_name_for(VLLM_BACKEND_ID, id)?
+    .trim()
+    .parse()
+    .ok()
 }
 
 /// Whether the user pinned this knob (as opposed to leaving it to us).
 fn user_set(params: &LaunchParams, id: &str) -> bool {
-  matches!(
-    params.backend_knobs.get(id),
-    Some(crate::config::KnobValue::Set(_))
-  )
+  params.knobs.is_set_by_name_for(VLLM_BACKEND_ID, id)
 }
 
 /// Default KV cache budget when nothing else bounds it. Generous for a single
@@ -716,21 +609,17 @@ fn vllm_argv(params: &LaunchParams, port: u16) -> Vec<std::ffi::OsString> {
   // (`allow_origins=["*"]`, added unconditionally). Emitted only then, so a
   // default launch stays byte-identical to raw `vllm serve`. The value is
   // parsed with `json.loads`, hence the literal empty array.
-  if matches!(
-    params.backend_knobs.get(VLLM_KNOB_CORS),
-    Some(crate::config::KnobValue::Set(v)) if v == "false"
-  ) {
+  if params.launch_config.get(VLLM_KNOB_CORS).map(String::as_str) == Some("false") {
     argv.push("--allowed-origins".into());
     argv.push("[]".into());
   }
+  let mut knobs = params.knobs.clone();
   if let Some(ctx) = params.ctx {
-    argv.push("--max-model-len".into());
-    argv.push(ctx.to_string().into());
+    knobs.set_by_name_for(VLLM_BACKEND_ID, "max-model-len", ctx.to_string());
   }
-  argv.extend(translate(
-    VLLM_NATIVE_KNOBS,
-    VLLM_KNOB_FLAGS,
-    &params.backend_knobs,
+  argv.extend(crate::launch::knobs::emit_argv(
+    VLLM_BACKEND_ID,
+    &knobs,
     VLLM_FORBIDDEN_EXTRA_HEADS,
   ));
   // The `-- <extras>` tail carries the ~230 flags that have no typed knob.
@@ -764,19 +653,25 @@ fn vllm_argv(params: &LaunchParams, port: u16) -> Vec<std::ffi::OsString> {
 mod tests {
   use super::*;
 
+  /// A backend declares only what it actually honors: declaring a knob is
+  /// claiming it, and a claimed knob renders an editor row and accepts a CLI
+  /// flag whose value would then go nowhere.
   #[test]
-  fn capabilities_cover_exactly_ctx() {
+  fn declares_a_context_knob_and_no_process_offload_knobs() {
     let b = VllmBackend::new();
-    assert!(b.capabilities().supports(KnobField::Ctx));
-    for f in [
-      KnobField::NGpuLayers,
-      KnobField::FlashAttn,
-      KnobField::Threads,
-      KnobField::SplitMode,
-    ] {
+    let ids: Vec<&str> = crate::backend::Backend::knobs(&b)
+      .iter()
+      .map(|d| d.id)
+      .collect();
+    assert!(crate::launch::knobs::def_for_backend_concept(
+      VLLM_BACKEND_ID,
+      crate::launch::knobs::Concept::ContextLength
+    )
+    .is_some());
+    for foreign in ["n-gpu-layers", "flash-attn", "split-mode"] {
       assert!(
-        !b.capabilities().supports(f),
-        "{f:?} is a llama.cpp knob and must not be claimed"
+        !ids.contains(&foreign),
+        "`{foreign}` belongs to a process-spawning engine this backend is not"
       );
     }
   }
@@ -842,10 +737,7 @@ mod tests {
   }
 
   fn set(p: &mut LaunchParams, id: &str, value: &str) {
-    p.backend_knobs.insert(
-      id.to_string(),
-      crate::config::KnobValue::Set(value.to_string()),
-    );
+    p.knobs.set_by_name_for(VLLM_BACKEND_ID, id, value);
   }
 
   #[test]
@@ -906,37 +798,37 @@ mod tests {
     assert_eq!(argv[i + 1], "8192");
   }
 
+  /// Every declared knob emits the flag it declares, with a value its own
+  /// kind accepts. Drives the declarations rather than a parallel flag table,
+  /// so a knob added to the backend is covered without touching this test.
   #[test]
-  fn every_native_knob_renders_its_verified_flag() {
-    for (id, flag) in VLLM_KNOB_FLAGS {
+  fn every_declared_knob_renders_its_flag() {
+    use crate::launch::knobs::KnobKind;
+    for def in crate::launch::knobs::for_backend(VLLM_BACKEND_ID) {
+      if matches!(def.emit, crate::launch::knobs::Emit::Custom) {
+        continue;
+      }
       let mut p = params("/c/models--o--n/snapshots/rev");
-      let is_bool = VLLM_NATIVE_KNOBS
-        .iter()
-        .find(|d| &d.id == id)
-        .expect("every flag-mapped id has a descriptor")
-        .is_bool();
-      set(&mut p, id, if is_bool { "true" } else { "7" });
+      let sample = match def.kind {
+        KnobKind::Bool => "true",
+        KnobKind::F32 { .. } => "0.5",
+        KnobKind::Enum { choices } | KnobKind::OpenEnum { choices, .. } => choices[0],
+        KnobKind::Ratio => "1",
+        _ => "7",
+      };
+      set(&mut p, def.id, sample);
       let argv = argv_strings(&p, 1);
-      assert!(argv.contains(&flag.to_string()), "{id} did not emit {flag}");
-      if is_bool {
+      let flag = def.emit_flag();
+      assert!(argv.contains(&flag), "{} did not emit {flag}", def.id);
+      if matches!(def.kind, KnobKind::Bool) {
+        // A bare flag carries no value of its own.
+        let i = argv.iter().position(|a| *a == flag).unwrap();
         assert!(
-          !argv.contains(&"true".to_string()),
-          "{id} is a bool and must emit a bare flag"
+          argv.get(i + 1).is_none_or(|n| n.starts_with('-')),
+          "{} is a bare flag: {argv:?}",
+          def.id
         );
       }
-    }
-  }
-
-  #[test]
-  fn every_descriptor_has_a_flag_mapping() {
-    // A descriptor with no mapping renders a picker row that silently does
-    // nothing — the failure mode `translate` cannot report.
-    for d in VLLM_NATIVE_KNOBS {
-      assert!(
-        VLLM_KNOB_FLAGS.iter().any(|(id, _)| *id == d.id),
-        "native knob `{}` has no flag mapping",
-        d.id
-      );
     }
   }
 
@@ -944,11 +836,11 @@ mod tests {
   fn unset_knobs_emit_nothing() {
     let p = params("/c/models--o--n/snapshots/rev");
     let argv = argv_strings(&p, 1);
-    for (_, flag) in VLLM_KNOB_FLAGS {
-      assert!(
-        !argv.contains(&flag.to_string()),
-        "{flag} leaked when unset"
-      );
+    for flag in crate::launch::knobs::for_backend(VLLM_BACKEND_ID)
+      .iter()
+      .map(|d| d.emit_flag())
+    {
+      assert!(!argv.contains(&flag), "{flag} leaked when unset");
     }
   }
 
@@ -1131,7 +1023,8 @@ mod tests {
   #[test]
   fn cors_config_decides_whether_the_origin_list_is_pinned() {
     let mut on = params("/c/models--o--n/snapshots/rev");
-    set(&mut on, VLLM_KNOB_CORS, "true");
+    on.launch_config
+      .insert(VLLM_KNOB_CORS.to_string(), "true".into());
     assert!(
       !argv_strings(&on, 1)
         .iter()
@@ -1140,7 +1033,9 @@ mod tests {
     );
 
     let mut off = params("/c/models--o--n/snapshots/rev");
-    set(&mut off, VLLM_KNOB_CORS, "false");
+    off
+      .launch_config
+      .insert(VLLM_KNOB_CORS.to_string(), "false".into());
     let argv = argv_strings(&off, 1);
     assert!(
       argv

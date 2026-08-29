@@ -11,8 +11,6 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::launch::flag_aliases::{knob_specs, KnobField};
-use crate::launch::mode::LaunchMode;
 use crate::theme::{CustomThemeConfig, ThemeName};
 use crate::util::paths::user_config_file;
 
@@ -22,7 +20,7 @@ use crate::util::paths::user_config_file;
 /// pathological YAML can't OOM the process.
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 
-/// Hard ceiling on any context-window value (`-c`, `knobs.ctx`, the
+/// Hard ceiling on any context-window value (`-c`, `knobs.u32(crate::launch::knobs::kid("ctx-size"))`, the
 /// `fit_ctx_floor` config). 2^20 tokens — far above any real model's
 /// trained window, low enough that a fat-fingered value is caught
 /// before it reaches `llama-server`. Centralised here so the CLI,
@@ -76,14 +74,14 @@ pub struct Config {
   /// Option on Apple Terminal) for ad-hoc selections.
   pub mouse_focus: bool,
   /// Per-architecture launch defaults — user escape hatch over the
-  /// built-in `(arch, gpu_backend) → TypedKnobs` table. Map keys are
+  /// built-in `(arch, gpu_backend) → crate::launch::knobs::KnobSet` table. Map keys are
   /// GGUF `general.architecture` strings (`llama`, `qwen2`, `mistral`,
   /// `gemma`, `phi`, `qwen3`, …). At launch time the daemon merges
   /// these layers in precedence order — preset > last_params >
   /// `arch_defaults` (this map) > built-in table > llama-server. The
   /// wizard no longer writes this field; it remains as a hand-edited
   /// escape hatch for users overriding a built-in row.
-  pub arch_defaults: BTreeMap<String, TypedKnobs>,
+  pub arch_defaults: BTreeMap<String, crate::launch::knobs::KnobSet>,
   /// OpenAI-compat proxy router. Enabled by default so agent clients
   /// (OpenCode, Pi) can attach to one stable URL and route by
   /// `body.model`. In normal mode the listener prefers
@@ -576,301 +574,6 @@ impl<T> KnobValueOpt<T> for Option<KnobValue<T>> {
   }
 }
 
-/// Typed launch knobs the supervisor argvifies into `llama-server`
-/// flags. Used everywhere a structured per-launch tuning surface is
-/// needed: persistence (`LaunchParams.knobs`), IPC wire shape, the
-/// built-in `(arch, gpu_backend)` defaults table, the YAML
-/// `arch_defaults` escape hatch, and the Settings-tab typed editor.
-///
-/// Every field is `Option<KnobValue<T>>` — a tri-state per knob:
-/// `None` means "inherit from the next layer down" in the layered
-/// resolver, `Some(KnobValue::Set(v))` pins an explicit value, and
-/// `Some(KnobValue::Auto)` delegates the knob to llama-server's
-/// `--fit`. Field names mirror llama-server's flag names (snake-cased)
-/// so they're grep-able directly against the binary's log output.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default, rename_all = "snake_case")]
-pub struct TypedKnobs {
-  /// Context window length. Maps to `-c` (`--ctx-size`). `None` means
-  /// no flag is sent — llama-server reads `context_length` from the
-  /// GGUF header.
-  pub ctx: Option<KnobValue<u32>>,
-  /// Reasoning toggle. `Some(true)` bundles `--jinja --reasoning-format
-  /// deepseek` at argv time; `Some(false)` / `None` send nothing and
-  /// let the model's chat template decide.
-  pub reasoning: Option<KnobValue<bool>>,
-  /// Layers offloaded to the GPU. Maps to `--n-gpu-layers`. Use 99
-  /// for "all" (llama-server caps internally).
-  pub n_gpu_layers: Option<KnobValue<u32>>,
-  /// MoE expert layers kept on CPU. Maps to `--n-cpu-moe`. Keeps the
-  /// MoE weights of the first N layers in system RAM while the rest
-  /// offload to GPU — the counterpart to `n_gpu_layers` for MoE
-  /// models that don't fit VRAM.
-  pub n_cpu_moe: Option<KnobValue<u32>>,
-  /// CPU threads. Maps to `--threads`.
-  pub threads: Option<KnobValue<u32>>,
-  /// K-cache quantisation tag (e.g. `q8_0`). Maps to `--cache-type-k`.
-  pub cache_type_k: Option<KnobValue<String>>,
-  /// V-cache quantisation tag. Maps to `--cache-type-v`.
-  pub cache_type_v: Option<KnobValue<String>>,
-  /// Flash-attention. Maps to `--flash-attn` (boolean flag).
-  pub flash_attn: Option<KnobValue<bool>>,
-  /// Lock model in RAM. Maps to `--mlock`.
-  pub mlock: Option<KnobValue<bool>>,
-  /// Disable mmap (forces full load into RAM). Maps to `--no-mmap`.
-  pub no_mmap: Option<KnobValue<bool>>,
-  /// Concurrent request slots. Maps to `--parallel`.
-  pub parallel: Option<KnobValue<u32>>,
-  /// Prompt batch size. Maps to `--batch-size`.
-  pub batch_size: Option<KnobValue<u32>>,
-  /// Physical (ubatch) batch size. Maps to `--ubatch-size`.
-  pub ubatch_size: Option<KnobValue<u32>>,
-  /// RoPE frequency scaling factor. Maps to `--rope-freq-scale`.
-  pub rope_freq_scale: Option<KnobValue<f32>>,
-  /// Tokens to retain on context shift. Maps to `--keep`.
-  pub keep: Option<KnobValue<u32>>,
-  /// GPU device to target (`--device`). `None` lets llama-server
-  /// auto-select (the default, which may split across all GPUs on
-  /// Vulkan). When set, the value is a real `llama-server` device
-  /// selector exactly as that binary's `--list-devices` reports it
-  /// (`"Vulkan0"`, `"CUDA0"`, `"ROCm0"`) — sourced from the launch
-  /// device catalog, never a bare index. The daemon spawns the binary
-  /// that owns the selector (see [`crate::backend::llama_cpp::list_devices`]).
-  pub device: Option<KnobValue<String>>,
-  /// Proportional split of the model across multiple GPUs. Maps to
-  /// `--tensor-split` (e.g. `"3,1"` puts 75% on GPU 0 and 25% on
-  /// GPU 1). Forwarded verbatim; one comma-separated value per GPU.
-  /// Only meaningful on multi-GPU hosts.
-  pub tensor_split: Option<KnobValue<String>>,
-  /// Primary GPU index that holds non-split tensors (and the KV cache
-  /// under `split_mode = row`). Maps to `--main-gpu`. Only meaningful
-  /// on multi-GPU hosts.
-  pub main_gpu: Option<KnobValue<u32>>,
-  /// How llama-server splits the model across GPUs. Maps to
-  /// `--split-mode` (`none` = single GPU, `layer` = llama-server's
-  /// default by-layer split, `row` = by-row split). Only meaningful
-  /// on multi-GPU hosts.
-  pub split_mode: Option<KnobValue<String>>,
-}
-
-/// A mutable reference to one [`TypedKnobs`] slot, tagged by its storage
-/// kind. [`TypedKnobs::slot_mut`] is the single point where a
-/// [`KnobField`] fans out to the heterogeneous fields, so every per-knob
-/// writer routes through here and a new `KnobField` whose slot is left
-/// unwired fails to compile (the `match` has no wildcard).
-pub enum KnobSlotMut<'a> {
-  U32(&'a mut Option<KnobValue<u32>>),
-  F32(&'a mut Option<KnobValue<f32>>),
-  Bool(&'a mut Option<KnobValue<bool>>),
-  Str(&'a mut Option<KnobValue<String>>),
-}
-
-/// Shared read view of one knob slot; counterpart to [`KnobSlotMut`].
-#[derive(Clone, Copy)]
-pub enum KnobSlotRef<'a> {
-  U32(&'a Option<KnobValue<u32>>),
-  F32(&'a Option<KnobValue<f32>>),
-  Bool(&'a Option<KnobValue<bool>>),
-  Str(&'a Option<KnobValue<String>>),
-}
-
-impl<'a> KnobSlotRef<'a> {
-  /// Any value present (Set or Auto) — the inverse of "inherited".
-  pub fn is_some(self) -> bool {
-    match self {
-      Self::U32(s) => s.is_some(),
-      Self::F32(s) => s.is_some(),
-      Self::Bool(s) => s.is_some(),
-      Self::Str(s) => s.is_some(),
-    }
-  }
-
-  /// Slot explicitly delegated to `--fit`.
-  pub fn is_auto(self) -> bool {
-    match self {
-      Self::U32(s) => s.is_auto(),
-      Self::F32(s) => s.is_auto(),
-      Self::Bool(s) => s.is_auto(),
-      Self::Str(s) => s.is_auto(),
-    }
-  }
-
-  /// Concrete `Set` value when the slot is the matching kind, else
-  /// `None` (covers wrong-kind, Inherited, and Auto alike).
-  pub fn as_u32(self) -> Option<u32> {
-    match self {
-      Self::U32(s) => s.set_value().copied(),
-      _ => None,
-    }
-  }
-
-  pub fn as_f32(self) -> Option<f32> {
-    match self {
-      Self::F32(s) => s.set_value().copied(),
-      _ => None,
-    }
-  }
-
-  pub fn as_bool(self) -> Option<bool> {
-    match self {
-      Self::Bool(s) => s.set_value().copied(),
-      _ => None,
-    }
-  }
-
-  pub fn as_str(self) -> Option<&'a str> {
-    match self {
-      Self::Str(s) => s.set_value().map(String::as_str),
-      _ => None,
-    }
-  }
-}
-
-impl KnobSlotMut<'_> {
-  /// Pin the slot to [`KnobValue::Auto`].
-  pub fn set_auto(self) {
-    match self {
-      Self::U32(s) => *s = Some(KnobValue::Auto),
-      Self::F32(s) => *s = Some(KnobValue::Auto),
-      Self::Bool(s) => *s = Some(KnobValue::Auto),
-      Self::Str(s) => *s = Some(KnobValue::Auto),
-    }
-  }
-
-  /// Drop the slot back to Inherited (`None`).
-  pub fn clear(self) {
-    match self {
-      Self::U32(s) => *s = None,
-      Self::F32(s) => *s = None,
-      Self::Bool(s) => *s = None,
-      Self::Str(s) => *s = None,
-    }
-  }
-
-  /// Write a concrete value (`Some` → `Set`, `None` → Inherited) when
-  /// the slot is the matching kind; a no-op otherwise. The Auto state is
-  /// set via [`Self::set_auto`], never here.
-  pub fn set_u32(self, v: Option<u32>) {
-    if let Self::U32(s) = self {
-      *s = v.map(KnobValue::Set);
-    }
-  }
-
-  pub fn set_f32(self, v: Option<f32>) {
-    if let Self::F32(s) = self {
-      *s = v.map(KnobValue::Set);
-    }
-  }
-
-  pub fn set_bool(self, v: Option<bool>) {
-    if let Self::Bool(s) = self {
-      *s = v.map(KnobValue::Set);
-    }
-  }
-
-  pub fn set_str(self, v: Option<String>) {
-    if let Self::Str(s) = self {
-      *s = v.map(KnobValue::Set);
-    }
-  }
-}
-
-impl TypedKnobs {
-  /// Read view of the slot backing `field`. The sole `&self` fan-out
-  /// from `KnobField` to the heterogeneous fields.
-  pub fn slot(&self, field: KnobField) -> KnobSlotRef<'_> {
-    use KnobField as F;
-    match field {
-      F::Ctx => KnobSlotRef::U32(&self.ctx),
-      F::Reasoning => KnobSlotRef::Bool(&self.reasoning),
-      F::NGpuLayers => KnobSlotRef::U32(&self.n_gpu_layers),
-      F::NCpuMoe => KnobSlotRef::U32(&self.n_cpu_moe),
-      F::Threads => KnobSlotRef::U32(&self.threads),
-      F::CacheTypeK => KnobSlotRef::Str(&self.cache_type_k),
-      F::CacheTypeV => KnobSlotRef::Str(&self.cache_type_v),
-      F::FlashAttn => KnobSlotRef::Bool(&self.flash_attn),
-      F::Mlock => KnobSlotRef::Bool(&self.mlock),
-      F::NoMmap => KnobSlotRef::Bool(&self.no_mmap),
-      F::Parallel => KnobSlotRef::U32(&self.parallel),
-      F::BatchSize => KnobSlotRef::U32(&self.batch_size),
-      F::UbatchSize => KnobSlotRef::U32(&self.ubatch_size),
-      F::RopeFreqScale => KnobSlotRef::F32(&self.rope_freq_scale),
-      F::Keep => KnobSlotRef::U32(&self.keep),
-      F::Device => KnobSlotRef::Str(&self.device),
-      F::TensorSplit => KnobSlotRef::Str(&self.tensor_split),
-      F::MainGpu => KnobSlotRef::U32(&self.main_gpu),
-      F::SplitMode => KnobSlotRef::Str(&self.split_mode),
-    }
-  }
-
-  /// Mutable view of the slot backing `field`. The sole `&mut self`
-  /// fan-out from `KnobField` to the heterogeneous fields.
-  pub fn slot_mut(&mut self, field: KnobField) -> KnobSlotMut<'_> {
-    use KnobField as F;
-    match field {
-      F::Ctx => KnobSlotMut::U32(&mut self.ctx),
-      F::Reasoning => KnobSlotMut::Bool(&mut self.reasoning),
-      F::NGpuLayers => KnobSlotMut::U32(&mut self.n_gpu_layers),
-      F::NCpuMoe => KnobSlotMut::U32(&mut self.n_cpu_moe),
-      F::Threads => KnobSlotMut::U32(&mut self.threads),
-      F::CacheTypeK => KnobSlotMut::Str(&mut self.cache_type_k),
-      F::CacheTypeV => KnobSlotMut::Str(&mut self.cache_type_v),
-      F::FlashAttn => KnobSlotMut::Bool(&mut self.flash_attn),
-      F::Mlock => KnobSlotMut::Bool(&mut self.mlock),
-      F::NoMmap => KnobSlotMut::Bool(&mut self.no_mmap),
-      F::Parallel => KnobSlotMut::U32(&mut self.parallel),
-      F::BatchSize => KnobSlotMut::U32(&mut self.batch_size),
-      F::UbatchSize => KnobSlotMut::U32(&mut self.ubatch_size),
-      F::RopeFreqScale => KnobSlotMut::F32(&mut self.rope_freq_scale),
-      F::Keep => KnobSlotMut::U32(&mut self.keep),
-      F::Device => KnobSlotMut::Str(&mut self.device),
-      F::TensorSplit => KnobSlotMut::Str(&mut self.tensor_split),
-      F::MainGpu => KnobSlotMut::U32(&mut self.main_gpu),
-      F::SplitMode => KnobSlotMut::Str(&mut self.split_mode),
-    }
-  }
-
-  /// Layer `over` on top of `self`: every `Some` field in `over` wins,
-  /// untouched fields keep `self`'s value. Used to apply per-invocation
-  /// CLI overrides onto a preset baseline without wiping the preset's
-  /// other knobs. The same `.or()` layering `crate::launch::defaults_table`
-  /// builds on.
-  pub fn overlay(&mut self, mut over: TypedKnobs) {
-    for field in knob_specs().iter().map(|s| s.field) {
-      overlay_slot(self.slot_mut(field), over.slot_mut(field));
-    }
-  }
-}
-
-/// `over` wins when present; otherwise `dst` keeps its value. Both slots
-/// address the same `KnobField`, so the kinds always match.
-fn overlay_slot(dst: KnobSlotMut<'_>, over: KnobSlotMut<'_>) {
-  use KnobSlotMut::*;
-  match (dst, over) {
-    (U32(d), U32(o)) => {
-      if o.is_some() {
-        *d = o.take();
-      }
-    }
-    (F32(d), F32(o)) => {
-      if o.is_some() {
-        *d = o.take();
-      }
-    }
-    (Bool(d), Bool(o)) => {
-      if o.is_some() {
-        *d = o.take();
-      }
-    }
-    (Str(d), Str(o)) => {
-      if o.is_some() {
-        *d = o.take();
-      }
-    }
-    _ => unreachable!("a KnobField maps to exactly one slot kind"),
-  }
-}
-
 /// One model-or-arch key's preset block in the config `presets:` map.
 ///
 /// `entries` is keyed by preset **name** (a map, not a sequence) so the
@@ -888,9 +591,9 @@ pub struct ConfigPresetBlock {
 /// A single named preset's launch settings, as authored in `config.yaml`.
 ///
 /// The typed knobs are flattened so `ctx: 65536` / `flash_attn: true` read
-/// flat under the entry. `ctx` and `reasoning` are part of [`TypedKnobs`]
+/// flat under the entry. `ctx` and `reasoning` are part of [`crate::launch::knobs::KnobSet`]
 /// already, so they ride in `knobs` here (a `ctx: 65536` is
-/// `knobs.ctx = Set(65536)`); materialisation pulls them into the
+/// `knobs.u32(crate::launch::knobs::kid("ctx-size")) = Set(65536)`); materialisation pulls them into the
 /// [`crate::launch::params::LaunchParams`] sibling fields so the IPC/CLI
 /// wire shape is unchanged. `mode` (launch mode) and `extras` (the
 /// free-form llama-server argv tail) are the only non-knob settings an
@@ -898,29 +601,27 @@ pub struct ConfigPresetBlock {
 /// pins.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PresetBody {
-  #[serde(default, skip_serializing_if = "Option::is_none")]
-  pub mode: Option<LaunchMode>,
-  #[serde(flatten)]
-  pub knobs: TypedKnobs,
-  #[serde(default, skip_serializing_if = "Option::is_none")]
-  pub extras: Option<Vec<String>>,
-  /// Per-backend native knobs (see [`crate::launch::native_knobs`]), keyed by
-  /// descriptor id. Parallel to `knobs`; empty for llama.cpp / Lemonade, so
-  /// `skip_serializing_if` keeps a preset without native knobs byte-stable in
-  /// `config.yaml`.
-  #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-  pub backend_knobs: BTreeMap<String, KnobValue<String>>,
-  /// MTP intent (KD2's tri-state, not a `KnobValue`). Skipped when `Auto` so a
-  /// preset that never touched MTP stays byte-stable in `config.yaml`.
+  /// Every knob this preset pins, keyed by the declaring backend's id.
+  ///
+  /// One map replaces what used to be four places: the flattened typed knobs,
+  /// the `backend_knobs:` sub-map, and the `mode:` / `mtp:` / `mtp_draft_n:`
+  /// siblings. A pre-registry config is rewritten into this shape once, on
+  /// daemon start (`crate::config::knob_migration`).
   #[serde(
     default,
-    skip_serializing_if = "crate::launch::params::MtpEnable::is_auto"
+    skip_serializing_if = "crate::launch::knobs::KnobSet::is_empty"
   )]
-  pub mtp: crate::launch::params::MtpEnable,
-  /// Draft tokens per speculation step; `None` leaves the backend on its own
-  /// default. Rides with `mtp` because the two are only meaningful together.
+  pub knobs: crate::launch::knobs::KnobSet,
   #[serde(default, skip_serializing_if = "Option::is_none")]
-  pub mtp_draft_n: Option<u32>,
+  pub extras: Option<Vec<String>>,
+  /// Backend this preset pins (`auto` when unset). Launch *identity*, not a
+  /// tunable — it chooses which backend's knobs even apply, so it cannot be
+  /// backend-declared.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub backend: Option<String>,
+  /// Server (build/binary) this preset pins. Identity, like `backend`.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub server: Option<String>,
 }
 
 /// How a knob *no layer supplied a value for* is seeded at launch
@@ -1295,109 +996,44 @@ mod tests {
   }
 
   #[test]
-  fn preset_body_deserialises_flattened_knobs() {
-    // The serde-flatten + KnobValue (untagged) combination is a known
-    // footgun; pin that ctx/reasoning/knobs flatten flat, integers stay
-    // integers, the Auto sentinel round-trips, and `mode` stays a sibling.
-    let body: PresetBody = yaml_serde::from_str(
-      "ctx: 65536\nreasoning: true\nmode: embedding\nflash_attn: true\nn_gpu_layers: { auto: true }\nthreads: 8\nextras: [--rope-freq-base, \"10000\"]\n",
-    )
-    .unwrap();
-    assert_eq!(body.mode, Some(LaunchMode::Embedding));
-    assert_eq!(body.knobs.ctx, Some(KnobValue::Set(65536)));
-    assert_eq!(body.knobs.reasoning, Some(KnobValue::Set(true)));
-    assert_eq!(body.knobs.flash_attn, Some(KnobValue::Set(true)));
-    assert_eq!(body.knobs.threads, Some(KnobValue::Set(8)));
-    assert_eq!(body.knobs.n_gpu_layers, Some(KnobValue::Auto));
-    assert_eq!(
-      body.extras.as_deref(),
-      Some(&["--rope-freq-base".to_string(), "10000".to_string()][..])
-    );
-  }
-
-  #[test]
-  fn preset_body_serialises_back_to_a_flat_mapping() {
-    let body = PresetBody {
-      mode: None,
-      knobs: TypedKnobs {
-        ctx: Some(KnobValue::Set(32768)),
-        flash_attn: Some(KnobValue::Set(true)),
-        n_gpu_layers: Some(KnobValue::Auto),
-        ..TypedKnobs::default()
-      },
-      extras: None,
-      backend_knobs: Default::default(),
-      ..PresetBody::default()
-    };
-    let value = serde_json::to_value(&body).unwrap();
-    let obj = value.as_object().unwrap();
-    assert_eq!(
-      obj.get("ctx").and_then(serde_json::Value::as_u64),
-      Some(32768)
-    );
-    assert_eq!(
-      obj.get("flash_attn").and_then(serde_json::Value::as_bool),
-      Some(true)
-    );
-    assert_eq!(
-      obj.get("n_gpu_layers").and_then(serde_json::Value::as_str),
-      Some("auto"),
-      "Auto serialises as the bare `auto` token through flatten"
-    );
-    assert!(obj.get("mode").is_none(), "None siblings are skipped");
-    assert!(obj.get("extras").is_none());
-    assert!(
-      obj.get("backend_knobs").is_none(),
-      "empty backend_knobs is skipped → byte-stable preset shape"
-    );
-  }
-
-  #[test]
-  fn preset_body_carries_backend_knobs_round_trip() {
-    // A preset with native knobs round-trips through YAML; the bare value
-    // is `Set`, the `auto` token is `Auto`.
-    let body: PresetBody = yaml_serde::from_str(
-      "ctx: 8192\nbackend_knobs:\n  kv_disk_dir: \"/tmp/kv\"\n  quality: auto\n",
-    )
-    .unwrap();
-    assert_eq!(body.knobs.ctx, Some(KnobValue::Set(8192)));
-    assert_eq!(
-      body.backend_knobs.get("kv_disk_dir"),
-      Some(&KnobValue::Set("/tmp/kv".to_string()))
-    );
-    assert_eq!(body.backend_knobs.get("quality"), Some(&KnobValue::Auto));
-    // Re-serialise and read back: equal.
-    let yaml = yaml_serde::to_string(&body).unwrap();
-    assert!(yaml.contains("backend_knobs"));
-    let back: PresetBody = yaml_serde::from_str(&yaml).unwrap();
-    assert_eq!(back, body);
-  }
-
-  #[test]
   fn config_presets_block_round_trips_through_yaml() {
     let yaml = "\
 presets:
   qwen-coder:
     default: long-ctx
     entries:
-      short-ctx: { ctx: 8192 }
-      long-ctx: { ctx: 65536, flash_attn: true }
+      short-ctx:
+        knobs: { ctx: 8192 }
+      long-ctx:
+        knobs: { ctx: 65536, flash_attn: true }
   qwen2:
     entries:
-      balanced: { ctx: 16384 }
+      balanced:
+        knobs: { ctx: 16384 }
 ";
     let cfg: Config = yaml_serde::from_str(yaml).unwrap();
     let block = cfg.presets.get("qwen-coder").unwrap();
     assert_eq!(block.default.as_deref(), Some("long-ctx"));
     assert_eq!(block.entries.len(), 2);
     let long = block.entries.get("long-ctx").unwrap();
-    assert_eq!(long.knobs.ctx, Some(KnobValue::Set(65536)));
-    assert_eq!(long.knobs.flash_attn, Some(KnobValue::Set(true)));
+    assert_eq!(
+      long.knobs.u32(crate::launch::knobs::kid("ctx-size")),
+      Some(65536)
+    );
+    assert_eq!(
+      long.knobs.bool(crate::launch::knobs::kid("flash-attn")),
+      Some(true)
+    );
     let arch = cfg.presets.get("qwen2").unwrap();
     assert!(arch.default.is_none());
     assert_eq!(
-      arch.entries.get("balanced").unwrap().knobs.ctx,
-      Some(KnobValue::Set(16384))
+      arch
+        .entries
+        .get("balanced")
+        .unwrap()
+        .knobs
+        .u32(crate::launch::knobs::kid("ctx-size")),
+      Some(16384)
     );
   }
 
@@ -1405,170 +1041,6 @@ presets:
   fn config_without_presets_key_defaults_to_empty() {
     let cfg: Config = yaml_serde::from_str("theme: latte\n").unwrap();
     assert!(cfg.presets.is_empty());
-  }
-
-  #[test]
-  fn field_name_matches_the_serde_keys_exactly() {
-    // The Settings label and any field-name display read `field_name()`;
-    // persistence reads the serde key. They must be the same string set,
-    // both directions — a renamed serde field or a stale `field_name()`
-    // arm fails here rather than silently mislabelling a saved knob.
-    use std::collections::BTreeSet;
-    let value = serde_json::to_value(TypedKnobs::default()).unwrap();
-    let serde_keys: BTreeSet<&str> = value
-      .as_object()
-      .unwrap()
-      .keys()
-      .map(String::as_str)
-      .collect();
-    let field_names: BTreeSet<&str> = knob_specs().iter().map(|s| s.field.field_name()).collect();
-    assert_eq!(
-      field_names, serde_keys,
-      "KnobField::field_name() must match the TypedKnobs serde keys exactly"
-    );
-  }
-
-  #[test]
-  fn overlay_takes_each_present_field_from_over_else_keeps_self() {
-    // Representative (over, under) pair across every slot kind, including
-    // a String knob (the take-vs-copy hazard the slot accessor unifies).
-    let mut base = TypedKnobs {
-      ctx: Some(KnobValue::Set(2048)),  // both set → over wins
-      threads: Some(KnobValue::Set(4)), // only base set → survives
-      cache_type_k: Some(KnobValue::Set("q4_0".into())), // both set → over wins
-      device: Some(KnobValue::Set("CUDA0".into())), // only base set → survives
-      flash_attn: Some(KnobValue::Set(false)), // both set → over wins
-      ..TypedKnobs::default()
-    };
-    let over = TypedKnobs {
-      ctx: Some(KnobValue::Set(8192)),
-      cache_type_k: Some(KnobValue::Set("q8_0".into())),
-      flash_attn: Some(KnobValue::Set(true)),
-      n_gpu_layers: Some(KnobValue::Auto), // only over set → applied
-      ..TypedKnobs::default()
-    };
-    base.overlay(over);
-    assert_eq!(base.ctx, Some(KnobValue::Set(8192)));
-    assert_eq!(base.threads, Some(KnobValue::Set(4)));
-    assert_eq!(base.cache_type_k, Some(KnobValue::Set("q8_0".into())));
-    assert_eq!(base.device, Some(KnobValue::Set("CUDA0".into())));
-    assert_eq!(base.flash_attn, Some(KnobValue::Set(true)));
-    assert_eq!(base.n_gpu_layers, Some(KnobValue::Auto));
-  }
-
-  #[test]
-  fn knob_value_set_serialises_as_bare_scalar() {
-    // The bare-scalar shape is the back-compat contract: a `Set` must
-    // serialise exactly as the old `Option<T>` value did.
-    assert_eq!(
-      serde_json::to_string(&KnobValue::Set(8192u32)).unwrap(),
-      "8192"
-    );
-    assert_eq!(
-      serde_json::to_string(&KnobValue::Set(true)).unwrap(),
-      "true"
-    );
-    assert_eq!(
-      serde_json::to_string(&KnobValue::Set("q8_0".to_string())).unwrap(),
-      "\"q8_0\""
-    );
-  }
-
-  #[test]
-  fn knob_value_auto_serialises_as_bare_token() {
-    assert_eq!(
-      serde_json::to_string(&KnobValue::<u32>::Auto).unwrap(),
-      "\"auto\""
-    );
-  }
-
-  #[test]
-  fn knob_value_round_trips_every_kind() {
-    // Set value, Auto token, and the legacy sentinel (read-only).
-    for json in ["8192", "\"auto\""] {
-      let v: KnobValue<u32> = serde_json::from_str(json).unwrap();
-      let back = serde_json::to_string(&v).unwrap();
-      assert_eq!(back, json, "u32 round-trip for {json}");
-    }
-    let set: KnobValue<u32> = serde_json::from_str("99").unwrap();
-    assert_eq!(set, KnobValue::Set(99));
-    let auto: KnobValue<bool> = serde_json::from_str("\"auto\"").unwrap();
-    assert_eq!(auto, KnobValue::Auto);
-    // Legacy `{ auto: true }` still loads.
-    let legacy: KnobValue<bool> = serde_json::from_str("{\"auto\":true}").unwrap();
-    assert_eq!(legacy, KnobValue::Auto);
-  }
-
-  #[test]
-  fn bare_auto_token_is_the_auto_state() {
-    // The bare token `auto` denotes the Auto state, on any knob type.
-    let v: KnobValue<u32> = serde_json::from_str("\"auto\"").unwrap();
-    assert_eq!(v, KnobValue::Auto);
-    assert_eq!(
-      serde_json::to_string(&KnobValue::<u32>::Auto).unwrap(),
-      "\"auto\""
-    );
-    // Legacy `{ auto: true }` is still read as Auto (lenient).
-    let legacy: KnobValue<u32> = serde_json::from_str(r#"{"auto":true}"#).unwrap();
-    assert_eq!(legacy, KnobValue::Auto);
-  }
-
-  #[test]
-  fn literal_auto_value_uses_the_value_escape() {
-    // To set a knob to the *literal* string "auto" (not the Auto state),
-    // use the `{ value: auto }` escape — which is also how it serialises.
-    let escaped: KnobValue<String> = serde_json::from_str(r#"{"value":"auto"}"#).unwrap();
-    assert_eq!(escaped, KnobValue::Set("auto".to_string()));
-    assert_eq!(
-      serde_json::to_string(&KnobValue::Set("auto".to_string())).unwrap(),
-      r#"{"value":"auto"}"#
-    );
-
-    // Full TypedKnobs round-trip: a string knob set to "auto" stays Set,
-    // distinct from a sibling delegated to Auto.
-    let knobs = TypedKnobs {
-      split_mode: Some(KnobValue::Set("auto".to_string())),
-      device: Some(KnobValue::Auto),
-      ..TypedKnobs::default()
-    };
-    let s = serde_json::to_string(&knobs).unwrap();
-    let back: TypedKnobs = serde_json::from_str(&s).unwrap();
-    assert_eq!(back.split_mode, Some(KnobValue::Set("auto".to_string())));
-    assert_eq!(back.device, Some(KnobValue::Auto));
-    // A non-"auto" string value still serialises bare (no escape).
-    assert_eq!(
-      serde_json::to_string(&KnobValue::Set("q8_0".to_string())).unwrap(),
-      r#""q8_0""#
-    );
-  }
-
-  #[test]
-  fn typed_knobs_tri_state_round_trips_through_json_and_yaml() {
-    let knobs = TypedKnobs {
-      ctx: Some(KnobValue::Set(16384)),
-      n_gpu_layers: Some(KnobValue::Auto),
-      flash_attn: None,
-      cache_type_k: Some(KnobValue::Set("q8_0".to_string())),
-      ..TypedKnobs::default()
-    };
-    let json = serde_json::to_string(&knobs).unwrap();
-    assert_eq!(serde_json::from_str::<TypedKnobs>(&json).unwrap(), knobs);
-    let yaml = yaml_serde::to_string(&knobs).unwrap();
-    assert_eq!(yaml_serde::from_str::<TypedKnobs>(&yaml).unwrap(), knobs);
-  }
-
-  #[test]
-  fn old_typed_knobs_file_with_bare_scalars_loads_as_set() {
-    // A pre-tri-state state.json / config.yaml carries bare scalars and
-    // omits unset fields. It must load unchanged: bare scalar → Set,
-    // absent → None. (Relies on TypedKnobs not setting
-    // `deny_unknown_fields`.)
-    let old = r#"{"ctx": 8192, "n_gpu_layers": 99, "cache_type_k": "q8_0"}"#;
-    let k: TypedKnobs = serde_json::from_str(old).unwrap();
-    assert_eq!(k.ctx, Some(KnobValue::Set(8192)));
-    assert_eq!(k.n_gpu_layers, Some(KnobValue::Set(99)));
-    assert_eq!(k.cache_type_k, Some(KnobValue::Set("q8_0".to_string())));
-    assert_eq!(k.flash_attn, None);
   }
 
   fn temp_test_dir(name: &str) -> PathBuf {
@@ -2055,14 +1527,20 @@ arch_defaults:
       .arch_defaults
       .get("qwen2")
       .expect("qwen2 entry present");
-    assert_eq!(qwen2.n_gpu_layers, Some(KnobValue::Set(99)));
-    assert_eq!(qwen2.flash_attn, Some(KnobValue::Set(true)));
     assert_eq!(
-      qwen2.cache_type_k.set_value().map(String::as_str),
+      qwen2.u32(crate::launch::knobs::kid("n-gpu-layers")),
+      Some(99)
+    );
+    assert_eq!(
+      qwen2.bool(crate::launch::knobs::kid("flash-attn")),
+      Some(true)
+    );
+    assert_eq!(
+      qwen2.str(crate::launch::knobs::kid("cache-type-k")),
       Some("q8_0")
     );
     assert_eq!(
-      qwen2.cache_type_v.set_value().map(String::as_str),
+      qwen2.str(crate::launch::knobs::kid("cache-type-v")),
       Some("q8_0")
     );
     let llama = loaded
@@ -2070,10 +1548,12 @@ arch_defaults:
       .arch_defaults
       .get("llama")
       .expect("llama entry present");
-    assert_eq!(llama.threads, Some(KnobValue::Set(8)));
-    assert_eq!(llama.parallel, Some(KnobValue::Set(4)));
+    assert_eq!(llama.u32(crate::launch::knobs::kid("threads")), Some(8));
+    assert_eq!(llama.u32(crate::launch::knobs::kid("parallel")), Some(4));
     assert!(
-      llama.n_gpu_layers.is_none(),
+      llama
+        .u32(crate::launch::knobs::kid("n-gpu-layers"))
+        .is_none(),
       "partial entry leaves rest None"
     );
 

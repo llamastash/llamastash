@@ -111,6 +111,12 @@ pub async fn handle(args: PresetsArgs, cli: &Cli, config: &Config) -> CliResult 
       ctx,
       reasoning,
       mode,
+      backend,
+      server,
+      mtp,
+      mtp_draft_n,
+      from_last,
+      knobs: knob_flags,
       extra,
       json: as_json,
     } => {
@@ -120,25 +126,60 @@ pub async fn handle(args: PresetsArgs, cli: &Cli, config: &Config) -> CliResult 
       let mut payload = serde_json::Map::new();
       payload.insert("model_path".into(), json!(&row.path));
       payload.insert("name".into(), json!(name));
-      if let Some(c) = ctx {
-        payload.insert("ctx".into(), json!(c));
+
+      // `--from-last` seeds from the model's last successful launch, so
+      // "save what I just ran" is one command rather than re-typing every
+      // flag. Explicit flags layer on top.
+      let mut knobs = if from_last {
+        last_params_knobs(&mut client, &row.path).await?
+      } else {
+        crate::launch::knobs::KnobSet::new()
+      };
+
+      // The generated flags and the `-- <raw>` tail feed the one parser, so a
+      // knob set either way lands identically. Passthrough comes last, so a
+      // flag given both ways resolves last-occurrence-wins.
+      let mut tokens = knob_flags.tokens.clone();
+      tokens.extend(extra.iter().cloned());
+      let (flag_knobs, extras_os) = crate::cli::tail_args::parse_tail_args(&tokens)?;
+      knobs.overlay(&flag_knobs);
+
+      // The knobs that keep a hand-written flag fold into the same map.
+      match ctx {
+        Some(crate::cli::cli_args::CtxArg::Value(n)) => {
+          knobs.set_by_name("ctx", n.to_string());
+        }
+        Some(crate::cli::cli_args::CtxArg::Auto) => {
+          knobs.set_auto(crate::launch::knobs::kid("ctx-size"));
+        }
+        None => {}
       }
       if let Some(r) = reasoning {
-        payload.insert("reasoning".into(), json!(matches!(r, ReasoningFlag::On)));
+        knobs.set_by_name("reasoning", matches!(r, ReasoningFlag::On).to_string());
       }
       if let Some(m) = mode {
-        payload.insert("mode".into(), json!(m.as_label()));
+        knobs.set_by_name("mode", m.as_label());
       }
-      // Route tail-args through the same parser as `start --` so the
-      // typed-knob slots get populated when the user passes
-      // recognised flags. Unknown flags land in extras and are
-      // forwarded as a JSON array.
-      let (knobs, extras_os) = crate::cli::tail_args::parse_tail_args(&extra)?;
-      if knobs != crate::config::TypedKnobs::default() {
+      if let Some(m) = mtp {
+        knobs.set_by_name("mtp", m.label());
+      }
+      if let Some(n) = mtp_draft_n {
+        knobs.set_by_name("mtp-draft-n", n.to_string());
+      }
+
+      if !knobs.is_empty() {
         payload.insert(
           "knobs".into(),
-          serde_json::to_value(&knobs).expect("TypedKnobs serialises cleanly"),
+          serde_json::to_value(&knobs).expect("KnobSet serialises cleanly"),
         );
+      }
+      // Launch identity: which backend / build this preset pins. Not knobs —
+      // they choose which backend's knobs even apply.
+      if let Some(b) = backend {
+        payload.insert("backend".into(), json!(b));
+      }
+      if let Some(sv) = server {
+        payload.insert("server".into(), json!(sv));
       }
       if !extras_os.is_empty() {
         let extras_str: Vec<String> = extras_os
@@ -176,6 +217,42 @@ pub async fn handle(args: PresetsArgs, cli: &Cli, config: &Config) -> CliResult 
       Ok(())
     }
   }
+}
+
+/// The model's last successful launch knobs, for `presets save --from-last`.
+///
+/// Reads `last_params_list` rather than re-deriving anything: the daemon
+/// already records exactly the user-set deltas a relaunch would replay, which
+/// is what "save what I just ran" should capture.
+async fn last_params_knobs(
+  client: &mut crate::ipc::Client,
+  model_path: &str,
+) -> Result<crate::launch::knobs::KnobSet, CliExit> {
+  let body = client
+    .call("last_params_list", None)
+    .await
+    .map_err(CliExit::from_client_error)?;
+  let rows = body
+    .get("last_params")
+    .and_then(Value::as_array)
+    .cloned()
+    .unwrap_or_default();
+  let row = rows
+    .iter()
+    .find(|r| r.get("model_path").and_then(Value::as_str) == Some(model_path));
+  let Some(row) = row else {
+    return Err(CliExit::new(
+      USAGE,
+      format!("no recorded launch for {model_path}; start it once before --from-last"),
+    ));
+  };
+  Ok(
+    row
+      .get("params")
+      .and_then(|p| p.get("knobs"))
+      .and_then(|k| serde_json::from_value(k.clone()).ok())
+      .unwrap_or_default(),
+  )
 }
 
 /// Pure renderer for `presets list` human output. Composes the empty

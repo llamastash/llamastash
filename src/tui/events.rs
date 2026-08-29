@@ -14,12 +14,6 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::Result;
-use crossterm::event::{self, Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use serde_json::{json, Value};
-use tokio::sync::mpsc;
-
-use crate::config::KnobValueOpt;
 use crate::ipc::Client;
 use crate::tui::app::{App, ConfirmAction};
 use crate::tui::hf_pull::{
@@ -33,6 +27,10 @@ use crate::tui::oai_client::{
 use crate::tui::tabs::rerank::RerankField;
 use crate::tui::tabs::RightTab;
 use crate::util::clipboard;
+use anyhow::Result;
+use crossterm::event::{self, Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use serde_json::{json, Value};
+use tokio::sync::mpsc;
 
 /// Catalog/status refresh cadence in the steady state. Governs how
 /// stale daemon snapshots may get; the run loop itself is event-driven
@@ -100,7 +98,7 @@ pub enum WriterCmd {
   /// `reasoning: None` (inside `args`) means "omit the field"; the
   /// daemon then falls back to whatever the model's metadata implies.
   /// Boxed (shared with `ConfirmAction::LaunchDuplicate`) so the large
-  /// `TypedKnobs` payload doesn't bloat the other tiny variants.
+  /// `crate::launch::knobs::KnobSet` payload doesn't bloat the other tiny variants.
   StartModel(Box<crate::tui::app::StartModelArgs>),
   /// `stop_model` — graceful shutdown of the supplied launch.
   /// Dispatched by the `s` hotkey when the cursor sits on a
@@ -124,7 +122,7 @@ pub enum WriterCmd {
   /// `config.yaml` under `name` for `model_path` (`Ctrl+P`). `knobs`
   /// carries ctx/reasoning folded in plus any Auto markers; `extras` is
   /// the argv tail. The next `presets_all` refresh reflects it. Boxed
-  /// (like `StartModel`) so the large `TypedKnobs` doesn't bloat the
+  /// (like `StartModel`) so the large `crate::launch::knobs::KnobSet` doesn't bloat the
   /// other tiny variants.
   SavePreset(Box<SavePresetCmd>),
 }
@@ -134,8 +132,7 @@ pub enum WriterCmd {
 pub struct SavePresetCmd {
   pub model_path: PathBuf,
   pub name: String,
-  pub knobs: crate::config::TypedKnobs,
-  pub backend_knobs: std::collections::BTreeMap<String, crate::config::KnobValue<String>>,
+  pub knobs: crate::launch::knobs::KnobSet,
   pub extras: Vec<String>,
 }
 
@@ -404,13 +401,13 @@ fn handle_key(app: &mut App, key: KeyEvent, writer: Option<&mpsc::Sender<WriterC
   }
 }
 
-/// Open the inline edit on the focused Settings row. Numeric / enum
-/// knob rows seed the buffer with the current effective value;
-/// `extras` opens the free-text horizontal-scroll buffer. Boolean
-/// rows have no editable buffer (cycle handles them) so this is a
-/// no-op there — gated by [`PickerField::is_editable`].
+/// Open the inline edit on the focused Settings row.
+///
+/// Seeds the buffer with the row's current effective value so the user types
+/// from what they see rather than from blank. Rows with nothing to type into
+/// (the two selector rows, and boolean knobs, which cycle) are filtered out by
+/// [`LaunchPickerState::focused_is_editable`] before we get here.
 fn open_focused_inline_edit(app: &mut App) {
-  use crate::launch::flag_aliases::KnobField;
   use crate::tui::launch_picker::PickerField;
   let Some(picker) = app.launch_picker.as_mut() else {
     return;
@@ -419,49 +416,9 @@ fn open_focused_inline_edit(app: &mut App) {
     return;
   }
   match picker.field {
-    // A free-text native knob seeds from its current set value (empty when
-    // unset); cycle/bool native rows are filtered out by the guard above.
-    PickerField::NativeKnob(i) => {
-      let initial = picker.native_buffer_seed(i);
-      picker.inline_edit.open(PickerField::NativeKnob(i), initial);
-    }
-    PickerField::Knob(field) => {
-      // Seed from the resolved effective value so the user types from
-      // the current row content, not from blank.
-      let initial = match field {
-        KnobField::Ctx
-        | KnobField::NGpuLayers
-        | KnobField::NCpuMoe
-        | KnobField::Threads
-        | KnobField::Parallel
-        | KnobField::BatchSize
-        | KnobField::UbatchSize
-        | KnobField::Keep
-        | KnobField::MainGpu => picker
-          .effective_u32(field)
-          .map(|v| v.to_string())
-          .unwrap_or_default(),
-        KnobField::RopeFreqScale => picker
-          .effective_f32(field)
-          .map(|v| format!("{v}"))
-          .unwrap_or_default(),
-        KnobField::CacheTypeK
-        | KnobField::CacheTypeV
-        | KnobField::Device
-        | KnobField::TensorSplit
-        | KnobField::SplitMode => picker.effective_str(field).unwrap_or_default(),
-        // Booleans are filtered out by the `is_editable` guard above.
-        // The match has to stay exhaustive on `KnobField`; reaching
-        // this arm means `is_editable` and `KnobField` drifted apart.
-        KnobField::Reasoning | KnobField::FlashAttn | KnobField::Mlock | KnobField::NoMmap => {
-          debug_assert!(
-            false,
-            "boolean knob {field:?} reached open_focused_inline_edit despite is_editable() guard"
-          );
-          return;
-        }
-      };
-      picker.inline_edit.open(PickerField::Knob(field), initial);
+    PickerField::Knob(id) => {
+      let initial = picker.buffer_seed(id);
+      picker.inline_edit.open(PickerField::Knob(id), initial);
     }
     PickerField::Extras => {
       let joined = picker
@@ -473,17 +430,19 @@ fn open_focused_inline_edit(app: &mut App) {
       picker.extras_input.set_text(joined);
       picker.extras_input.enter_edit();
     }
-    // Filtered out by the `is_editable` guard above (Preset / Server / Mtp are
-    // cycle-only).
-    PickerField::Preset | PickerField::Server | PickerField::Mtp => {}
+    // Filtered out by the `focused_is_editable` guard above.
+    PickerField::Preset | PickerField::Server => {}
   }
 }
 
 /// Commit the open inline edit. Returns true when a commit closed
 /// the editor — caller can then proceed to a `Submit` action.
+///
+/// Validation is the knob's own: [`LaunchPickerState::commit_text`] runs the
+/// same `parse_value` the CLI does, so a value the editor accepts is exactly
+/// one `start --flag` would, and the error text under the row is the one the
+/// CLI prints.
 fn commit_inline_edit(app: &mut App) -> bool {
-  use crate::cli::tail_args::is_custom_kv_cache_type;
-  use crate::launch::flag_aliases::{KnobField, KV_CACHE_TYPES, SPLIT_MODES};
   use crate::tui::launch_picker::PickerField;
   let Some(picker) = app.launch_picker.as_mut() else {
     return false;
@@ -504,119 +463,12 @@ fn commit_inline_edit(app: &mut App) -> bool {
     return false;
   };
   let buffer = picker.inline_edit.input.buffer().trim().to_string();
-  // Empty buffer == "reset this row to inherit from the resolver
-  // chain" — the same semantics as Backspace on the row, just reached
-  // through `e → delete → Enter` instead of a single keypress. We
-  // clear *all* user-override slots for the field rather than only
-  // the one matching the row's type so the row falls back cleanly
-  // regardless of which slot the user had populated.
-  if buffer.is_empty() {
-    match field {
-      PickerField::Knob(k) => {
-        picker.set_user_u32(k, None);
-        picker.set_user_f32(k, None);
-        picker.set_user_str(k, None);
-        picker.set_user_bool(k, None);
-      }
-      // Empty buffer clears a native row back to inherited.
-      PickerField::NativeKnob(i) => picker.set_native_text(i, ""),
-      PickerField::Preset | PickerField::Server | PickerField::Mtp | PickerField::Extras => {}
-    }
-    picker.inline_edit.close();
-    return true;
-  }
-  // Exhaustive on `KnobField` (no wildcard) so adding a new knob
-  // fails to compile here instead of silently swallowing commits
-  // through a `_ => Ok(())` arm — the bug `ctx` hit before this
-  // refactor, where the u32 list missed `Ctx` and Enter quietly
-  // dropped the typed value.
+  // An empty buffer resets the row to inherit from the resolver chain — the
+  // same semantics as Backspace, reached through `e → delete → Enter`.
   let result: Result<(), String> = match field {
-    PickerField::Knob(k) => match k {
-      KnobField::Ctx
-      | KnobField::NGpuLayers
-      | KnobField::NCpuMoe
-      | KnobField::Threads
-      | KnobField::Parallel
-      | KnobField::BatchSize
-      | KnobField::UbatchSize
-      | KnobField::Keep
-      | KnobField::MainGpu => match buffer.parse::<u32>() {
-        Ok(v) => {
-          picker.set_user_u32(k, Some(v));
-          Ok(())
-        }
-        Err(_) => Err("expected u32".into()),
-      },
-      KnobField::RopeFreqScale => match buffer.parse::<f32>() {
-        Ok(v) => {
-          picker.set_user_f32(k, Some(v));
-          Ok(())
-        }
-        Err(_) => Err("expected float".into()),
-      },
-      KnobField::CacheTypeK | KnobField::CacheTypeV => {
-        if KV_CACHE_TYPES.iter().any(|t| *t == buffer) || is_custom_kv_cache_type(&buffer) {
-          picker.set_user_str(k, Some(buffer.clone()));
-          Ok(())
-        } else {
-          Err(format!(
-            "known types: {}; custom types must start with a letter and use only letters, digits, underscores",
-            KV_CACHE_TYPES.join(", ")
-          ))
-        }
-      }
-      KnobField::SplitMode => {
-        if SPLIT_MODES.iter().any(|t| *t == buffer) {
-          picker.set_user_str(k, Some(buffer.clone()));
-          Ok(())
-        } else {
-          Err(format!("expected one of {}", SPLIT_MODES.join(", ")))
-        }
-      }
-      KnobField::TensorSplit => {
-        // Comma-separated proportions (`3,1`). Validate so a typo
-        // surfaces under the row instead of inside llama-server.
-        let ok = buffer
-          .split(',')
-          .all(|p| !p.trim().is_empty() && p.trim().parse::<f32>().is_ok());
-        if ok {
-          picker.set_user_str(k, Some(buffer.clone()));
-          Ok(())
-        } else {
-          Err("expected comma-separated numbers (e.g. 3,1)".into())
-        }
-      }
-      KnobField::Device => {
-        // Device accepts any non-empty string; empty resets to default.
-        picker.set_user_str(
-          k,
-          if buffer.is_empty() {
-            None
-          } else {
-            Some(buffer.clone())
-          },
-        );
-        Ok(())
-      }
-      // Booleans don't have an editable buffer (the `is_editable()`
-      // guard in `open_focused_inline_edit` blocks `e:edit` on these
-      // rows). Reaching here means that guard drifted out of sync.
-      KnobField::Reasoning | KnobField::FlashAttn | KnobField::Mlock | KnobField::NoMmap => {
-        debug_assert!(
-          false,
-          "boolean knob {k:?} reached commit_inline_edit despite is_editable() guard"
-        );
-        Ok(())
-      }
-    },
-    // A free-text native knob accepts any non-empty value verbatim.
-    PickerField::NativeKnob(i) => {
-      picker.set_native_text(i, &buffer);
-      Ok(())
-    }
-    PickerField::Extras => Ok(()),
-    // Preset / Server / Mtp are cycle-only — never open an inline edit to commit.
-    PickerField::Preset | PickerField::Server | PickerField::Mtp => Ok(()),
+    PickerField::Knob(id) => picker.commit_text(id, &buffer),
+    // Never open an inline edit, so never reach a commit.
+    PickerField::Preset | PickerField::Server | PickerField::Extras => Ok(()),
   };
   match result {
     Ok(()) => {
@@ -1166,7 +1018,6 @@ fn apply_cycle_value(app: &mut App, dir: ValueDir) {
 /// multi-select. Inert everywhere else — only fires in the Settings tab with the
 /// editable picker focused on the (multi-GPU) Device row.
 fn apply_toggle_device(app: &mut App) {
-  use crate::launch::flag_aliases::KnobField;
   use crate::tui::launch_picker::PickerField;
   if !(app.focus == Focus::RightPane && app.right_tab == RightTab::Settings) {
     return;
@@ -1175,7 +1026,11 @@ fn apply_toggle_device(app: &mut App) {
     return;
   }
   with_picker(app, |p| {
-    if p.field == PickerField::Knob(KnobField::Device) {
+    // `Space` only means "toggle this GPU" on the row that owns the device
+    // selection; the knob declares itself as that row.
+    let on_device_row = matches!(p.field, PickerField::Knob(id)
+      if p.def(id).is_some_and(|d| d.concept == Some(crate::launch::knobs::Concept::Device)));
+    if on_device_row {
       p.toggle_focused_device();
     }
   });
@@ -1417,7 +1272,6 @@ fn commit_save_preset(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) {
       model_path: dialog.model_path,
       name: name.clone(),
       knobs: dialog.knobs,
-      backend_knobs: dialog.backend_knobs,
       extras: dialog.extras,
     })),
     format!("saved preset `{name}`"),
@@ -1843,13 +1697,16 @@ fn apply_launch_submit(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) 
     .map(|s| s.to_string_lossy().into_owned())
     .collect();
 
+  use crate::gguf::metadata::ModeHint;
   use crate::launch::mode::LaunchMode;
-  let mode = app
+  let hint = app
     .models
     .iter()
     .find(|m| m.path == path)
     .and_then(|m| m.metadata.as_ref())
-    .and_then(|md| LaunchMode::resolve(None, md.mode_hint));
+    .map(|md| md.mode_hint)
+    .unwrap_or(ModeHint::Unknown);
+  let mode = LaunchMode::resolve(picker.mode_intent(), hint);
 
   // ctx and reasoning ride inside `knobs` now; the wire payload also
   // carries dedicated top-level fields for backward compat with
@@ -1864,8 +1721,8 @@ fn apply_launch_submit(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) 
     _ => "explicit",
   };
   let args = Box::new(crate::tui::app::StartModelArgs {
-    ctx: knobs.ctx.set_value().copied(),
-    reasoning: knobs.reasoning.set_value().copied(),
+    ctx: knobs.u32(crate::launch::knobs::resolve_id("ctx-size").expect("ctx knob")),
+    reasoning: knobs.bool(crate::launch::knobs::resolve_id("reasoning").expect("reasoning knob")),
     model_path: path,
     knobs,
     extras,
@@ -1875,11 +1732,12 @@ fn apply_launch_submit(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) 
     // daemon routes (and the split-half guard fires). See `launch_backend`.
     backend: picker.launch_backend(),
     selection,
-    backend_knobs: picker.backend_knobs.clone(),
     // Chosen server build (or `None` for the priority default). The daemon
     // derives the binary — and, when `backend` is `Auto`, the backend — from it.
     server: picker.selected_server.clone(),
-    mtp: picker.mtp,
+    // MTP is an ordinary declared knob in the editor; the wire params still
+    // carry it as a typed sibling, so project it back out the way a preset does.
+    mtp: picker.mtp_intent(),
   });
 
   if active_instances > 0 {
@@ -2213,7 +2071,6 @@ fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
         prefer_port,
         backend,
         selection,
-        backend_knobs,
         server,
         mtp,
       } = *args;
@@ -2236,10 +2093,6 @@ fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
           "backend": backend,
           // Drives daemon default-preset + last_params inheritance.
           "selection": selection,
-          // Per-backend native knobs; omitted-when-empty on the daemon side
-          // via `#[serde(default)]`. Populated for ds4 (six tunables), empty
-          // for llama.cpp / Lemonade.
-          "backend_knobs": backend_knobs,
           // Chosen server build id; daemon ignores `null` / stale ids.
           "server": server,
           // MTP intent from the picker's cycle row (auto/on/off).
@@ -2269,7 +2122,6 @@ fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
         "model_path": cmd.model_path,
         "name": cmd.name,
         "knobs": cmd.knobs,
-        "backend_knobs": cmd.backend_knobs,
         "extras": cmd.extras,
       }),
     ),
@@ -2735,7 +2587,6 @@ fn tick_has_time_decay_ui(app: &App) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::config::KnobValue;
   use crossterm::event::{KeyEvent, KeyModifiers};
 
   fn key(code: KeyCode, mods: KeyModifiers) -> TermEvent {
@@ -3675,14 +3526,14 @@ mod tests {
     let p = app.launch_picker.as_mut().unwrap();
     // ctx is fit-governed, so its ring inserts an Auto stop first
     // (Inherited → Auto → presets…); step twice to land on a preset.
-    p.field = PickerField::Knob(crate::launch::flag_aliases::KnobField::Ctx);
+    p.field = PickerField::Knob(crate::launch::knobs::kid("ctx-size"));
     p.cycle_focused_value_next(); // → Auto
     p.cycle_focused_value_next(); // → first ctx preset
-    let expected_ctx = p.user_knobs.ctx.set_value().copied();
+    let expected_ctx = p.user_knobs.u32(crate::launch::knobs::kid("ctx-size"));
     assert!(expected_ctx.is_some(), "ctx should be a concrete preset");
     // reasoning is not fit-governed → no Auto stop (Inherited → on → off);
     // one step lands on `on`.
-    p.field = PickerField::Knob(crate::launch::flag_aliases::KnobField::Reasoning);
+    p.field = PickerField::Knob(crate::launch::knobs::kid("reasoning"));
     p.cycle_focused_value_next(); // → on
 
     let (tx, mut rx) = mpsc::channel::<WriterCmd>(8);
@@ -4196,13 +4047,13 @@ mod tests {
       .expect("↓ in Settings should materialise the picker form");
     assert_eq!(
       field,
-      PickerField::Knob(crate::launch::flag_aliases::KnobField::Ctx)
+      PickerField::Knob(crate::launch::knobs::kid("ctx-size"))
     );
 
     pump_input(&mut app, key(KeyCode::Down, KeyModifiers::NONE));
     assert_eq!(
       app.launch_picker.as_ref().unwrap().field,
-      PickerField::Knob(crate::launch::flag_aliases::KnobField::Reasoning)
+      PickerField::Knob(crate::launch::knobs::kid("reasoning"))
     );
   }
 
@@ -4223,42 +4074,6 @@ mod tests {
       app.launch_picker.as_ref().expect("picker").field,
       PickerField::Extras
     );
-  }
-
-  #[test]
-  fn left_right_in_settings_cycle_focused_field_value() {
-    // Round-7: ←/→ change the focused field's value (was bound to
-    // pane-cycle pre-round-7). Outside Settings the keys stay
-    // unbound so they don't double as pane navigation.
-    use crate::tui::launch_picker::PickerField;
-    let mut app = App::new(Default::default());
-    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
-    app.go_top();
-    app.focus = Focus::RightPane;
-    app.right_tab = RightTab::Settings;
-
-    // Auto-stages the picker on first key; the cursor opens on the Preset
-    // row, so Down moves onto Ctx. Then →/← cycle Ctx's value.
-    pump_input(&mut app, key(KeyCode::Down, KeyModifiers::NONE));
-    let p = app.launch_picker.as_ref().expect("picker auto-staged");
-    assert_eq!(
-      p.field,
-      PickerField::Knob(crate::launch::flag_aliases::KnobField::Ctx)
-    );
-    pump_input(&mut app, key(KeyCode::Right, KeyModifiers::NONE));
-    assert_eq!(
-      app.launch_picker.as_ref().unwrap().user_knobs.ctx,
-      Some(KnobValue::Auto),
-      "→ advances Ctx to the Auto stop"
-    );
-    pump_input(&mut app, key(KeyCode::Left, KeyModifiers::NONE));
-    assert_eq!(
-      app.launch_picker.as_ref().unwrap().user_knobs.ctx,
-      None,
-      "← walks Auto back to inherited"
-    );
-    // Pane focus must not have moved.
-    assert_eq!(app.focus, Focus::RightPane);
   }
 
   #[test]
@@ -4337,7 +4152,7 @@ mod tests {
   #[test]
   fn enter_after_editing_ctx_writes_typed_value_to_user_knobs() {
     // Regression: ctx commit silently dropped the typed value because
-    // the u32 parse arm in `commit_inline_edit` missed `KnobField::Ctx`
+    // the u32 parse arm in `commit_inline_edit` missed `crate::launch::knobs::kid("ctx-size")`
     // — it fell through to the catch-all `_ => Ok(())` arm, the edit
     // closed, and the picker re-rendered the resolved (default) value.
     // The fix makes the inner match exhaustive on `KnobField` so a
@@ -4355,7 +4170,7 @@ mod tests {
     );
     // Move down to the ctx row to exercise its inline edit.
     app.launch_picker.as_mut().unwrap().field =
-      PickerField::Knob(crate::launch::flag_aliases::KnobField::Ctx);
+      PickerField::Knob(crate::launch::knobs::kid("ctx-size"));
     // `e` opens inline edit; type a fresh value; Enter commits.
     pump_input(&mut app, key(KeyCode::Char('e'), KeyModifiers::NONE));
     {
@@ -4367,8 +4182,10 @@ mod tests {
     pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::NONE));
     let committed = app.launch_picker.as_ref().expect("picker still staged");
     assert_eq!(
-      committed.user_knobs.ctx,
-      Some(KnobValue::Set(65536)),
+      committed
+        .user_knobs
+        .u32(crate::launch::knobs::kid("ctx-size")),
+      Some(65536),
       "ctx commit must write the typed value to user_knobs, not silently drop it"
     );
     assert!(

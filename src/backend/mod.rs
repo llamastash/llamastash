@@ -76,9 +76,7 @@ use crate::backend::vllm::VllmBackend;
 use crate::daemon::context::MethodContext;
 use crate::daemon::probe::ProbeOptions;
 use crate::gguf::header::GgufHeader;
-use crate::launch::flag_aliases::{knob_specs, KnobField};
 use crate::launch::mode::LaunchMode;
-use crate::launch::native_knobs::NativeKnobDescriptor;
 use crate::launch::params::{BackendChoice, LaunchParams};
 
 /// A speculative-decoding acceptance figure a backend reported for a launch —
@@ -217,8 +215,8 @@ pub struct ManagerModelRef {
 
 /// A hardware accelerator class a backend can run models on.
 ///
-/// Distinct from [`KnobCapability`] (which knob *fields* a backend honors):
-/// this is which *compute targets* it can use. Surfaced by `status` so a
+/// Distinct from the knobs a backend declares: this is which *compute targets*
+/// it can use. Surfaced by `status` so a
 /// user can see, per backend, what their host can actually run on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Accelerator {
@@ -274,59 +272,14 @@ impl AcceleratorSupport {
 }
 
 /// The set of knob IR fields a backend can honor.
-///
-/// llama.cpp supports every [`KnobField`]. Other backends declare a
-/// subset; fields outside the set are dropped from that backend's launch
-/// and surfaced as "not supported by `<backend>`" in Settings.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KnobCapability {
-  supported: BTreeSet<KnobField>,
-}
-
-impl KnobCapability {
-  /// Every knob the typed-knob surface defines — llama.cpp's full
-  /// vocabulary, derived from the canonical [`knob_specs`] table so it
-  /// can never drift from the flags `compose` actually emits.
-  pub fn all() -> Self {
-    Self {
-      supported: knob_specs().iter().map(|s| s.field).collect(),
-    }
-  }
-
-  /// No knobs honored. A managed-multiplexer backend takes a model name,
-  /// not llama.cpp launch flags, so the typed-knob IR mostly doesn't apply —
-  /// set knobs drop and surface as unsupported. Widen only with evidence
-  /// that the backend honors a specific field.
-  pub fn none() -> Self {
-    Self {
-      supported: BTreeSet::new(),
-    }
-  }
-
-  /// Exactly `fields` honored — for backends with a narrow, evidenced
-  /// surface (Lemonade honors `ctx` via `/api/v1/load`'s `ctx_size`).
-  pub fn of(fields: &[KnobField]) -> Self {
-    Self {
-      supported: fields.iter().copied().collect(),
-    }
-  }
-
-  /// Whether this backend honors `field`. A backend that honors
-  /// only a subset of the IR will construct a narrower set here; the
-  /// subset constructor lands with that first real consumer.
-  pub fn supports(&self, field: KnobField) -> bool {
-    self.supported.contains(&field)
-  }
-}
-
-/// One inference backend. All behavior currently hardwired to
-/// `llama-server` is expressed here so each backend owns its own
-/// translation from the neutral knob IR.
+/// One inference backend. Everything that would otherwise be hardwired to one
+/// engine is expressed here, so each backend owns its own translation from the
+/// knobs it declares.
 ///
 /// The outcome of a backend resolving its **Auto** native knobs for a launch
 /// with live host context. Default is no resolution.
 #[derive(Debug, Default, Clone)]
-pub struct NativeKnobResolution {
+pub struct KnobResolution {
   /// Native-knob keys the backend auto-resolved this launch (Auto → a concrete
   /// value). Stripped from the persisted `last_params` so they re-resolve from
   /// live conditions next launch — they are not user intent.
@@ -361,22 +314,17 @@ pub trait Backend {
   /// The lifecycle shape this backend uses.
   fn lifecycle(&self) -> Lifecycle;
 
-  /// Which knob IR fields this backend honors.
-  fn capabilities(&self) -> &KnobCapability;
-
-  /// The backend's own tunables, declared **outside** the llama.cpp
-  /// [`KnobField`] IR (R4) — rendered by the launch picker as native cycle
-  /// /edit rows and translated to flags in [`Self::prepare_launch`] via
-  /// [`crate::launch::native_knobs::translate`]. Orthogonal to
-  /// [`Self::capabilities`]: a backend can honor no `KnobField` and still
-  /// declare a native-knob set.
+  /// The knobs this backend declares — the single source every surface reads.
   ///
-  /// Defaults to empty: llama.cpp and Lemonade surface no native knobs, so
-  /// the picker + persistence are byte-identical for them. A backend opts in
-  /// by overriding this with a `&'static` descriptor slice (ds4 does).
-  fn native_knobs(&self) -> &'static [NativeKnobDescriptor] {
-    &[]
-  }
+  /// The CLI derives a flag from each, the TUI derives a row, and the preset /
+  /// persistence layer derives a key. Because all three are generated, a knob
+  /// cannot reach one surface and be missing from another; that is the whole
+  /// point of the registry (`crate::launch::knobs`).
+  ///
+  /// **No default on purpose.** A backend that declares nothing would accept no
+  /// flags and render an empty Settings pane, which is always an oversight
+  /// rather than a choice — so omitting this fails to compile.
+  fn knobs(&self) -> &'static [crate::launch::knobs::KnobDef];
 
   /// Network-affecting flag heads this backend refuses in `extras` /
   /// native-knob values **on top of** the base loopback/credential denylist
@@ -400,22 +348,6 @@ pub trait Backend {
   /// projects its `jinja` / `strict_fit` / `fit_ctx_floor` config here so the
   /// generic launch path carries no llama.cpp-specific launch scalars.
   fn seed_launch_knobs(&self, _ctx: &MethodContext, _params: &mut LaunchParams) {}
-
-  /// Native knobs that must **not** be replayed from `last_params`.
-  ///
-  /// For a knob whose value is a judgement about *this host, right now* rather
-  /// than a lasting preference. Persisting one makes a single experiment
-  /// permanent: the user passes it once through a preset, and every later bare
-  /// launch silently inherits it — including, for a memory knob, the launch
-  /// where the auto guard would have stepped in. The knob still applies to the
-  /// launch that asked for it, and still applies whenever its preset is named
-  /// again; it just is not remembered on the user's behalf.
-  ///
-  /// Distinct from [`NativeKnobResolution::auto_set`], which drops what the
-  /// *daemon* resolved. This drops what the *user* set. Default: none.
-  fn volatile_native_knobs(&self) -> &'static [&'static str] {
-    &[]
-  }
 
   /// Ctx floor to project admission memory demand against when `ctx` is unpinned,
   /// or `None` to use a neutral default. Default: `None`.
@@ -653,13 +585,13 @@ pub trait Backend {
   /// left untouched. Returns the auto-resolved keys (stripped from persistence)
   /// and any advisory. Keeps per-backend admission/knob logic out of the generic
   /// launch path.
-  async fn resolve_native_knobs(
+  async fn resolve_knobs(
     &self,
     _ctx: &MethodContext,
     _params: &mut LaunchParams,
     _weights_bytes: u64,
-  ) -> NativeKnobResolution {
-    NativeKnobResolution::default()
+  ) -> KnobResolution {
+    KnobResolution::default()
   }
 
   /// Bytes this launch will hold beyond its weights, for a model with no GGUF
@@ -681,7 +613,7 @@ pub trait Backend {
   /// Whether this launch bypasses the pre-spawn memory admission gate — a
   /// backend that streams weights from disk (bounded residency) skips the hard
   /// OOM refusal. Default `false`. Read on the *resolved* params (after
-  /// [`Self::resolve_native_knobs`]).
+  /// [`Self::resolve_knobs`]).
   fn bypasses_admission(&self, _params: &LaunchParams) -> bool {
     false
   }
@@ -1057,20 +989,12 @@ impl Backend for Backends {
     for_each_backend!(self, b => b.lifecycle())
   }
 
-  fn capabilities(&self) -> &KnobCapability {
-    for_each_backend!(self, b => b.capabilities())
-  }
-
-  fn native_knobs(&self) -> &'static [NativeKnobDescriptor] {
-    for_each_backend!(self, b => b.native_knobs())
+  fn knobs(&self) -> &'static [crate::launch::knobs::KnobDef] {
+    for_each_backend!(self, b => b.knobs())
   }
 
   fn forbidden_extra_heads(&self) -> &'static [&'static str] {
     for_each_backend!(self, b => b.forbidden_extra_heads())
-  }
-
-  fn volatile_native_knobs(&self) -> &'static [&'static str] {
-    for_each_backend!(self, b => b.volatile_native_knobs())
   }
 
   fn serves_web_ui(&self) -> bool {
@@ -1191,13 +1115,13 @@ impl Backend for Backends {
     for_each_backend!(self, b => b.resolve_launch_binary(ctx, default_binary, port))
   }
 
-  async fn resolve_native_knobs(
+  async fn resolve_knobs(
     &self,
     ctx: &MethodContext,
     params: &mut LaunchParams,
     weights_bytes: u64,
-  ) -> NativeKnobResolution {
-    for_each_backend!(self, b => b.resolve_native_knobs(ctx, params, weights_bytes).await)
+  ) -> KnobResolution {
+    for_each_backend!(self, b => b.resolve_knobs(ctx, params, weights_bytes).await)
   }
 
   fn bypasses_admission(&self, params: &LaunchParams) -> bool {
@@ -1427,6 +1351,12 @@ pub struct ResolvedIdentity {
   /// owns that recipe, not us.
   pub arch: Option<String>,
   pub native_ctx: Option<u32>,
+  /// The model's own serving-mode hint, header-derived like `arch`. The
+  /// launcher's *lowest* mode rung: it is what the model defaults to, so it
+  /// sits below an explicit `--mode` and below a preset's `mode:` pin. Callers
+  /// used to resolve it themselves and send it as if it were a choice, which
+  /// is how it shadowed both.
+  pub mode_hint: crate::gguf::metadata::ModeHint,
   pub supported_backends: Vec<String>,
   pub mtp_embedded: Option<u32>,
 }
@@ -1488,6 +1418,8 @@ pub fn resolve_identity_for_path(
       claimed_by: Some(backend_id),
       arch: None,
       native_ctx: None,
+      // No header to infer from; the backend owns the recipe.
+      mode_hint: crate::gguf::metadata::ModeHint::Unknown,
       supported_backends: Vec::new(),
       mtp_embedded: None,
     });
@@ -1520,6 +1452,7 @@ pub fn resolve_identity_for_path(
     native_ctx: summary
       .native_ctx
       .map(|n| u32::try_from(n).unwrap_or(u32::MAX)),
+    mode_hint: summary.mode_hint,
     supported_backends: supported_backends_for(&header.header),
     mtp_embedded: summary.mtp,
   })
@@ -1582,17 +1515,6 @@ pub fn is_managed_multiplexer(id: &str) -> bool {
   Backends::all()
     .iter()
     .any(|b| b.id() == id && b.lifecycle() == Lifecycle::ManagedMultiplexer)
-}
-
-/// The native-knob descriptors a backend (by id) declares, or an empty slice
-/// for an unknown / knob-less backend. Lets a client (the TUI running-knob view)
-/// render a backend's native knobs from just its id, without naming a backend.
-pub fn native_knobs_for(id: &str) -> &'static [NativeKnobDescriptor] {
-  Backends::all()
-    .iter()
-    .find(|b| b.id() == id)
-    .map(|b| b.native_knobs())
-    .unwrap_or(&[])
 }
 
 /// The process name for an adopted child recorded under `backend_id`, or the
@@ -1709,18 +1631,6 @@ mod tests {
   use crate::backend::lemonade::LEMONADE_BACKEND_ID;
 
   #[test]
-  fn capability_all_covers_every_knob_spec() {
-    let all = KnobCapability::all();
-    for spec in knob_specs() {
-      assert!(
-        all.supports(spec.field),
-        "KnobCapability::all() must cover {:?}",
-        spec.field
-      );
-    }
-  }
-
-  #[test]
   fn process_launch_spec_is_constructible_and_readable() {
     // Proves the process-per-model shape is usable end-to-end as a
     // value (the supervisor will consume exactly these fields).
@@ -1796,31 +1706,16 @@ mod tests {
     assert_eq!(BackendChoice::default(), BackendChoice::Auto);
   }
 
+  /// R13: a GGUF on disk binds the default backend, and that backend brings a
+  /// real tuning surface with it rather than an empty one.
   #[test]
-  fn resolve_backend_auto_exposes_full_capability_set_for_gguf() {
+  fn a_disk_gguf_resolves_to_the_default_backend_with_its_knobs() {
     use crate::gguf::identity::compute;
-    use crate::launch::flag_aliases::knob_specs;
     let gguf = ModelIdentity::Gguf(compute("/m/anything.gguf", b"hdr"));
     let b = resolve_backend(&gguf, BackendChoice::Auto);
-    assert_eq!(b.id(), "llamacpp");
+    assert_eq!(b.id(), DEFAULT_BACKEND_ID);
     assert_eq!(b.lifecycle(), Lifecycle::ProcessPerModel);
-    // The selected backend exposes the full capability set (R6 data seam).
-    for spec in knob_specs() {
-      assert!(b.capabilities().supports(spec.field));
-    }
-  }
-
-  #[test]
-  fn llama_and_lemonade_declare_no_native_knobs() {
-    // The native-knob channel is empty for llama.cpp and Lemonade, so the
-    // picker + persistence stay byte-identical for them. ds4 is the first
-    // backend to override `native_knobs()`.
-    assert!(Backends::LlamaCpp(LlamaCppBackend::new())
-      .native_knobs()
-      .is_empty());
-    assert!(Backends::Lemonade(LemonadeBackend::new())
-      .native_knobs()
-      .is_empty());
+    assert!(!b.knobs().is_empty());
   }
 
   #[test]

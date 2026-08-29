@@ -24,23 +24,23 @@
 //!   (confirmed under `--help runtime`), so the native-knob table is 9 entries.
 //!   `--quality` is ds4-CLI-only and excluded.
 
+pub mod knobs;
+
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use super::identity::ModelIdentity;
 use super::{
-  Accelerator, AcceleratorSupport, Backend, KnobCapability, LaunchPlan, Lifecycle,
-  NativeKnobResolution, ProcessLaunchSpec, Readiness, CREDENTIAL_ENV_STRIP,
+  Accelerator, AcceleratorSupport, Backend, KnobResolution, LaunchPlan, Lifecycle,
+  ProcessLaunchSpec, Readiness, CREDENTIAL_ENV_STRIP,
 };
 use crate::config::Config;
 use crate::daemon::context::MethodContext;
 use crate::daemon::probe::ProbeOptions;
 use crate::gguf::header::{GgufHeader, GgufValue};
 use crate::init::doctor::{Finding, Severity};
-use crate::launch::flag_aliases::KnobField;
 use crate::launch::mode::LaunchMode;
-use crate::launch::native_knobs::{translate, NativeKnobDescriptor, NativeKnobKind};
 use crate::launch::params::LaunchParams;
 
 /// The backend id — the stable string used in `BackendChoice`, `status`, the
@@ -150,11 +150,13 @@ const DSPARK_ARCH: &str = "deepseek4-dspark";
 /// Is DSpark switched on for this launch? `--dspark` and `--dspark-strict`
 /// both load the support model, so either one needs a paired `--mtp` file.
 fn dspark_on(params: &LaunchParams) -> bool {
-  ["dspark", "dspark_strict"].iter().any(|k| {
-    matches!(
-      params.backend_knobs.get(*k),
-      Some(crate::config::KnobValue::Set(v)) if v == "true"
-    )
+  ["dspark", "dspark-strict"].iter().any(|k| {
+    params
+      .knobs
+      .get_by_name_for(DS4_BACKEND_ID, k)
+      .and_then(|v| v.set_value())
+      .and_then(|s| s.as_bool())
+      == Some(true)
   })
 }
 
@@ -285,145 +287,6 @@ fn is_routed_expert_tensor(name: &str) -> bool {
   name.contains("_exps")
 }
 
-/// ds4's native-knob descriptor table — 14 tunables that have no llama.cpp IR
-/// slot. Ids are stable persistence keys; label/description drive the
-/// launch-picker rows. Only flags the real `ds4-server` binary accepts
-/// (verified via `--help runtime`, 2026-08-05 build): the MTP trio
-/// (`--mtp`/`--mtp-draft`/`--mtp-margin`), the SSD-streaming tuning family,
-/// and the `--warm-weights` / `--quality` bools are included.
-pub const DS4_NATIVE_KNOBS: &[NativeKnobDescriptor] = &[
-  NativeKnobDescriptor {
-    id: "power",
-    label: "GPU power %",
-    description: "GPU duty-cycle target, 1-100 (ds4 default 100)",
-    kind: NativeKnobKind::FreeText,
-  },
-  NativeKnobDescriptor {
-    id: "tokens",
-    label: "Default tokens",
-    description: "default max output tokens when a client omits a limit",
-    kind: NativeKnobKind::FreeText,
-  },
-  NativeKnobDescriptor {
-    id: "threads",
-    label: "CPU threads",
-    description: "CPU helper thread count for host-side work",
-    kind: NativeKnobKind::FreeText,
-  },
-  NativeKnobDescriptor {
-    id: "kv_disk_dir",
-    label: "KV disk dir",
-    description: "directory for ds4's persistent disk KV cache (user-owned, never cleaned)",
-    kind: NativeKnobKind::FreeText,
-  },
-  NativeKnobDescriptor {
-    id: "kv_disk_space_mb",
-    label: "KV disk cap",
-    description: "disk KV cache budget in MB (ds4 default 4096 when enabled)",
-    kind: NativeKnobKind::FreeText,
-  },
-  NativeKnobDescriptor {
-    id: "ssd_streaming",
-    label: "SSD streaming",
-    description: "stream weights from disk (below-RAM-floor mode; skips the admission gate)",
-    kind: NativeKnobKind::Bool,
-  },
-  NativeKnobDescriptor {
-    id: "ssd_streaming_cache_experts",
-    label: "SSD cache cap",
-    description: "SSD streaming: resident routed-expert cap — exact count N or routed memory budget NGB (ds4 auto: 80% of the working set)",
-    kind: NativeKnobKind::FreeText,
-  },
-  NativeKnobDescriptor {
-    id: "ssd_streaming_preload_experts",
-    label: "SSD preload",
-    description: "SSD streaming: upfront popularity preload count (DeepSeek auto-seeds when unset)",
-    kind: NativeKnobKind::FreeText,
-  },
-  NativeKnobDescriptor {
-    id: "ssd_streaming_cold",
-    label: "SSD cold start",
-    description: "SSD streaming: skip the default popularity-based expert-cache preload",
-    kind: NativeKnobKind::Bool,
-  },
-  NativeKnobDescriptor {
-    id: "warm_weights",
-    label: "Warm weights",
-    description: "touch mapped tensor pages at startup to reduce first-use stalls",
-    kind: NativeKnobKind::Bool,
-  },
-  NativeKnobDescriptor {
-    id: "quality",
-    label: "Exact kernels",
-    description: "prefer exact kernels where faster approximate paths exist",
-    kind: NativeKnobKind::Bool,
-  },
-  NativeKnobDescriptor {
-    id: "mtp",
-    label: "MTP sidecar",
-    description: "path to the MTP draft-head GGUF (auto-paired from a sibling when unset)",
-    kind: NativeKnobKind::FreeText,
-  },
-  NativeKnobDescriptor {
-    id: "mtp_draft",
-    label: "MTP draft",
-    description: "max autoregressive MTP draft tokens (ds4 default 1)",
-    kind: NativeKnobKind::FreeText,
-  },
-  NativeKnobDescriptor {
-    id: "mtp_margin",
-    label: "MTP margin",
-    description: "verifier confidence margin for fast MTP acceptance (ds4 default 3)",
-    kind: NativeKnobKind::FreeText,
-  },
-  NativeKnobDescriptor {
-    id: "dspark",
-    label: "DSpark",
-    description: "block speculative decoding off the DSpark support GGUF in `mtp` (greedy only)",
-    kind: NativeKnobKind::Bool,
-  },
-  NativeKnobDescriptor {
-    id: "dspark_confidence",
-    label: "DSpark confidence",
-    description: "prune proposals below this confidence, 0..1 (ds4 default 0.7; 0 = fixed blocks)",
-    kind: NativeKnobKind::FreeText,
-  },
-  NativeKnobDescriptor {
-    id: "dspark_strict",
-    label: "DSpark strict",
-    description: "load the DSpark support model but keep target-only decode (comparison baseline)",
-    kind: NativeKnobKind::Bool,
-  },
-];
-
-/// `id → ds4-server flag head` mapping consumed by
-/// [`crate::launch::native_knobs::translate`]. One row per descriptor.
-const DS4_FLAG_MAP: &[(&str, &str)] = &[
-  ("power", "--power"),
-  ("tokens", "--tokens"),
-  ("threads", "--threads"),
-  ("kv_disk_dir", "--kv-disk-dir"),
-  ("kv_disk_space_mb", "--kv-disk-space-mb"),
-  ("ssd_streaming", "--ssd-streaming"),
-  (
-    "ssd_streaming_cache_experts",
-    "--ssd-streaming-cache-experts",
-  ),
-  (
-    "ssd_streaming_preload_experts",
-    "--ssd-streaming-preload-experts",
-  ),
-  ("ssd_streaming_cold", "--ssd-streaming-cold"),
-  ("warm_weights", "--warm-weights"),
-  ("quality", "--quality"),
-  ("mtp", "--mtp"),
-  ("mtp_draft", "--mtp-draft"),
-  ("mtp_margin", "--mtp-margin"),
-  ("dspark", "--dspark"),
-  ("dspark_confidence", "--dspark-confidence"),
-  ("dspark_strict", "--dspark-strict"),
-];
-
 /// Resolve the `ds4-server` binary: an explicit `ds4.binary` config path
 /// (must exist), else the first `ds4-server` on `PATH`. Canonicalized.
 /// Mirrors [`crate::backend::lemonade::resolve_lemond_binary`].
@@ -462,18 +325,14 @@ pub fn resolve_ds4_binary(configured: Option<&Path>) -> Option<PathBuf> {
 
 /// The ds4 backend: direct, process-per-model, DeepSeek-V4-only.
 #[derive(Debug, Clone)]
-pub struct Ds4Backend {
-  capabilities: KnobCapability,
-}
+pub struct Ds4Backend {}
 
 impl Ds4Backend {
   pub fn new() -> Self {
     // ds4 honors exactly one IR knob — `Ctx` (→ `--ctx`). Everything else
     // llama.cpp-shaped is dropped per R6; ds4's own tunables ride the
     // native-knob channel.
-    Self {
-      capabilities: KnobCapability::of(&[KnobField::Ctx]),
-    }
+    Self {}
   }
 
   /// Effective free memory when a launch of `weights_bytes` needs SSD
@@ -550,15 +409,14 @@ pub fn ds4_argv(params: &LaunchParams, port: u16) -> Vec<std::ffi::OsString> {
     OsString::from("--port"),
     OsString::from(port.to_string()),
   ];
+  // Declared knobs, strip-checked against base ∪ ds4 forbidden heads.
+  let mut knobs = params.knobs.clone();
   if let Some(ctx) = params.ctx {
-    argv.push(OsString::from("--ctx"));
-    argv.push(OsString::from(ctx.to_string()));
+    knobs.set_by_name_for(DS4_BACKEND_ID, "ctx", ctx.to_string());
   }
-  // Native knobs, strip-checked against base ∪ ds4 forbidden heads.
-  argv.extend(translate(
-    DS4_NATIVE_KNOBS,
-    DS4_FLAG_MAP,
-    &params.backend_knobs,
+  argv.extend(crate::launch::knobs::emit_argv(
+    DS4_BACKEND_ID,
+    &knobs,
     DS4_FORBIDDEN_EXTRA_HEADS,
   ));
   // Free-form extras tail. The fail-fast `forbidden_in_extras_ext` in
@@ -608,20 +466,15 @@ async fn models_endpoint_reports_ds4_alias(port: u16, timeout: std::time::Durati
 }
 
 impl Backend for Ds4Backend {
+  fn knobs(&self) -> &'static [crate::launch::knobs::KnobDef] {
+    knobs::KNOBS
+  }
   fn id(&self) -> &'static str {
     DS4_BACKEND_ID
   }
 
   fn lifecycle(&self) -> Lifecycle {
     Lifecycle::ProcessPerModel
-  }
-
-  fn capabilities(&self) -> &KnobCapability {
-    &self.capabilities
-  }
-
-  fn native_knobs(&self) -> &'static [NativeKnobDescriptor] {
-    DS4_NATIVE_KNOBS
   }
 
   fn forbidden_extra_heads(&self) -> &'static [&'static str] {
@@ -786,13 +639,13 @@ impl Backend for Ds4Backend {
     }
   }
 
-  async fn resolve_native_knobs(
+  async fn resolve_knobs(
     &self,
     ctx: &MethodContext,
     params: &mut LaunchParams,
     weights_bytes: u64,
-  ) -> NativeKnobResolution {
-    let mut out = NativeKnobResolution::default();
+  ) -> KnobResolution {
+    let mut out = KnobResolution::default();
     // MTP auto-pair (KD7): an unset `mtp` knob resolves to a separate MTP
     // draft-head sidecar found next to the model (the same sibling detection
     // discovery uses on disk), paired as `--mtp <path>`. A user-set value wins.
@@ -802,10 +655,7 @@ impl Backend for Ds4Backend {
     // streaming gate; the auto-set key is stripped from `last_params` so it
     // re-resolves each launch.
     if !matches!(params.mtp, crate::launch::params::MtpEnable::Off)
-      && !matches!(
-        params.backend_knobs.get("mtp"),
-        Some(crate::config::KnobValue::Set(_))
-      )
+      && !params.knobs.is_set_by_name_for(DS4_BACKEND_ID, "mtp-model")
     {
       // ds4 serves one arch, so the head lookup can key on it directly instead
       // of re-reading the model header for a value already known here. With
@@ -819,10 +669,9 @@ impl Backend for Ds4Backend {
       };
       if let Some(head) = head {
         log::info!("ds4: auto-paired MTP sidecar {}", head.display());
-        params.backend_knobs.insert(
-          "mtp".to_string(),
-          crate::config::KnobValue::Set(head.display().to_string()),
-        );
+        params
+          .knobs
+          .set_by_name_for(DS4_BACKEND_ID, "mtp-model", head.display().to_string());
         out.auto_set.insert("mtp".to_string());
       }
     }
@@ -830,13 +679,13 @@ impl Backend for Ds4Backend {
     // surfaces after the multi-minute model load. Catch it here instead: no
     // support file resolved means the DSpark knobs come back off.
     if dspark_on(params)
-      && !matches!(
-        params.backend_knobs.get("mtp"),
-        Some(crate::config::KnobValue::Set(v)) if !v.is_empty()
-      )
+      && !params
+        .knobs
+        .text_by_name("mtp-model")
+        .is_some_and(|v| !v.is_empty())
     {
       for k in ["dspark", "dspark_confidence", "dspark_strict"] {
-        params.backend_knobs.remove(k);
+        params.knobs.remove_by_name_for(DS4_BACKEND_ID, k);
         out.auto_set.remove(k);
       }
       out.warnings.push(
@@ -851,19 +700,14 @@ impl Backend for Ds4Backend {
     // head is actually paired (the flag is meaningless without one) and the
     // native knob wasn't set directly, which wins.
     if let Some(n) = params.mtp_draft_n {
-      let head_paired = matches!(
-        params.backend_knobs.get("mtp"),
-        Some(crate::config::KnobValue::Set(_))
-      );
-      let knob_set_directly = matches!(
-        params.backend_knobs.get("mtp_draft"),
-        Some(crate::config::KnobValue::Set(_))
-      );
+      let head_paired = params.knobs.is_set_by_name_for(DS4_BACKEND_ID, "mtp-model");
+      let knob_set_directly = params
+        .knobs
+        .is_set_by_name_for(DS4_BACKEND_ID, "mtp-draft-n");
       if head_paired && !knob_set_directly {
-        params.backend_knobs.insert(
-          "mtp_draft".to_string(),
-          crate::config::KnobValue::Set(n.to_string()),
-        );
+        params
+          .knobs
+          .set_by_name_for(DS4_BACKEND_ID, "mtp-draft-n", n.to_string());
         out.auto_set.insert("mtp_draft".to_string());
       }
     }
@@ -872,14 +716,15 @@ impl Backend for Ds4Backend {
     // see (~1.25× weights), so a full-residency spawn OOM-kills mid-load
     // (ds4-server sets its own oom_score_adj=1000) — disk-stream instead. A user
     // on/off wins; only the unset/Auto knob resolves here.
-    let stream_pinned_on = matches!(
-      params.backend_knobs.get("ssd_streaming"),
-      Some(crate::config::KnobValue::Set(v)) if v == "true"
-    );
-    let stream_pinned = matches!(
-      params.backend_knobs.get("ssd_streaming"),
-      Some(crate::config::KnobValue::Set(_))
-    );
+    let stream_pinned_on = params
+      .knobs
+      .get_by_name_for(DS4_BACKEND_ID, "ssd-streaming")
+      .and_then(|v| v.set_value())
+      .and_then(|s| s.as_bool())
+      == Some(true);
+    let stream_pinned = params
+      .knobs
+      .is_set_by_name_for(DS4_BACKEND_ID, "ssd-streaming");
     // Free memory the auto path would stream against — `None` when the knob is
     // pinned (nothing to resolve) or residency fits.
     let auto_stream_free = if stream_pinned {
@@ -888,10 +733,10 @@ impl Backend for Ds4Backend {
       self.auto_stream_free_bytes(ctx, weights_bytes).await
     };
 
-    let head_paired = matches!(
-      params.backend_knobs.get("mtp"),
-      Some(crate::config::KnobValue::Set(v)) if !v.is_empty()
-    );
+    let head_paired = params
+      .knobs
+      .text_by_name("mtp-model")
+      .is_some_and(|v| !v.is_empty());
     match mtp_stream_conflict(
       head_paired,
       out.auto_set.contains("mtp"),
@@ -909,10 +754,12 @@ impl Backend for Ds4Backend {
         return out;
       }
       MtpStreamConflict::DropHead => {
-        params.backend_knobs.remove("mtp");
+        params.knobs.remove_by_name_for(DS4_BACKEND_ID, "mtp-model");
         out.auto_set.remove("mtp");
         if out.auto_set.remove("mtp_draft") {
-          params.backend_knobs.remove("mtp_draft");
+          params
+            .knobs
+            .remove_by_name_for(DS4_BACKEND_ID, "mtp-draft-n");
         }
         out.warnings.push(
           "ds4 cannot stream from disk with an MTP draft head — dropped the auto-paired \
@@ -933,11 +780,10 @@ impl Backend for Ds4Backend {
     }
 
     if let Some(free) = auto_stream_free {
-      params.backend_knobs.insert(
-        "ssd_streaming".to_string(),
-        crate::config::KnobValue::Set("true".to_string()),
-      );
-      out.auto_set.insert("ssd_streaming".to_string());
+      params
+        .knobs
+        .set_by_name_for(DS4_BACKEND_ID, "ssd-streaming", "true");
+      out.auto_set.insert("ssd-streaming".to_string());
       let gib = crate::init::detection::fmt_gib;
       out.warnings.push(format!(
         "ds4 needs ~{} resident but only {} is free — enabled SSD streaming to launch \
@@ -953,10 +799,10 @@ impl Backend for Ds4Backend {
     // ds4 speculates only when a draft head was paired into `--mtp` (auto from
     // a sidecar, or user-set) — an embedded nextn head alone does nothing here,
     // so the generic MTP directive is not the signal.
-    matches!(
-      params.backend_knobs.get("mtp"),
-      Some(crate::config::KnobValue::Set(v)) if !v.is_empty()
-    )
+    params
+      .knobs
+      .text_by_name("mtp-model")
+      .is_some_and(|v| !v.is_empty())
   }
 
   // `draft_acceptance` stays on the default `None`: ds4-server publishes no
@@ -967,10 +813,12 @@ impl Backend for Ds4Backend {
   fn bypasses_admission(&self, params: &LaunchParams) -> bool {
     // Streaming weights from disk skips the hard OOM refusal (on-disk bytes ≠
     // memory demand). Reads the resolved `ssd_streaming` knob.
-    matches!(
-      params.backend_knobs.get("ssd_streaming"),
-      Some(crate::config::KnobValue::Set(v)) if v == "true"
-    )
+    params
+      .knobs
+      .get_by_name_for(DS4_BACKEND_ID, "ssd-streaming")
+      .and_then(|v| v.set_value())
+      .and_then(|s| s.as_bool())
+      == Some(true)
   }
 
   /// ds4's `doctor` advisories (D-doctor). Three cases, keyed on the same
@@ -1121,7 +969,6 @@ fn ds4_env_forced() -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::config::KnobValue;
   use crate::gguf::header::{GgufHeader, GgufValue, TensorInfo};
   use crate::launch::mode::LaunchMode;
   use std::collections::HashMap;
@@ -1152,8 +999,7 @@ mod tests {
     let mut p = LaunchParams::new(PathBuf::from("/m/ds4flash.gguf"), LaunchMode::Chat);
     p.ctx = ctx;
     for (k, v) in knobs {
-      p.backend_knobs
-        .insert((*k).to_string(), KnobValue::Set((*v).to_string()));
+      p.knobs.set_by_name_for(DS4_BACKEND_ID, k, *v);
     }
     p
   }
@@ -1313,30 +1159,23 @@ mod tests {
     assert!(!a.iter().any(|s| s.contains("--cors")));
   }
 
-  // ---- descriptor table + capabilities ----
+  // ---- declared knobs ----
 
+  /// Ids are persistence keys, and label / help are the only prose a user sees
+  /// for a knob on any surface — an empty one renders a blank row.
   #[test]
-  fn native_knob_ids_are_unique_and_documented() {
+  fn declared_knob_ids_are_unique_and_documented() {
     let b = Ds4Backend::new();
-    let descs = b.native_knobs();
-    assert_eq!(
-      descs.len(),
-      17,
-      "ds4 exposes 17 native knobs (6 base + 3 ssd-streaming tuning + warm_weights/quality + the MTP trio + the DSpark trio)"
-    );
-    let mut ids: Vec<&str> = descs.iter().map(|d| d.id).collect();
-    ids.sort();
+    let defs = Backend::knobs(&b);
+    let mut ids: Vec<&str> = defs.iter().map(|d| d.id).collect();
+    let total = ids.len();
+    assert!(total > 0);
+    ids.sort_unstable();
     ids.dedup();
-    assert_eq!(ids.len(), 17, "ids are unique persistence keys");
-    for d in descs {
+    assert_eq!(ids.len(), total, "ids are unique persistence keys");
+    for d in defs {
       assert!(!d.label.is_empty(), "{} has a label", d.id);
-      assert!(!d.description.is_empty(), "{} has a description", d.id);
-      // Every descriptor id has a flag mapping.
-      assert!(
-        DS4_FLAG_MAP.iter().any(|(id, _)| *id == d.id),
-        "{} has a flag mapping",
-        d.id
-      );
+      assert!(!d.help.is_empty(), "{} has help text", d.id);
     }
   }
 
@@ -1374,8 +1213,8 @@ mod tests {
     let p = params_with(
       None,
       &[
-        ("mtp", "/m/DeepSeek-V4-Flash-mtp.gguf"),
-        ("mtp_draft", "3"),
+        ("mtp-model", "/m/DeepSeek-V4-Flash-mtp.gguf"),
+        ("mtp-draft-n", "3"),
         ("mtp_margin", "2.5"),
       ],
     );
@@ -1397,7 +1236,7 @@ mod tests {
     p.mtp_directive = Some(crate::launch::params::MtpDirective { draft_model: None });
     assert!(!b.mtp_active(&p), "no paired head → not speculating");
 
-    let paired = params_with(None, &[("mtp", "/m/DeepSeek-V4-Flash-mtp.gguf")]);
+    let paired = params_with(None, &[("mtp-model", "/m/DeepSeek-V4-Flash-mtp.gguf")]);
     assert!(b.mtp_active(&paired), "paired head → speculating");
   }
 
@@ -1410,12 +1249,27 @@ mod tests {
     assert!(b.draft_acceptance(&lines).is_none());
   }
 
+  /// A backend declares only what it actually honors: declaring a knob is
+  /// claiming it, and a claimed knob renders an editor row and accepts a CLI
+  /// flag whose value would then go nowhere.
   #[test]
-  fn capabilities_honor_only_ctx() {
+  fn declares_a_context_knob_and_no_process_offload_knobs() {
     let b = Ds4Backend::new();
-    assert!(b.capabilities().supports(KnobField::Ctx));
-    assert!(!b.capabilities().supports(KnobField::NGpuLayers));
-    assert!(!b.capabilities().supports(KnobField::FlashAttn));
+    let ids: Vec<&str> = crate::backend::Backend::knobs(&b)
+      .iter()
+      .map(|d| d.id)
+      .collect();
+    assert!(crate::launch::knobs::def_for_backend_concept(
+      DS4_BACKEND_ID,
+      crate::launch::knobs::Concept::ContextLength
+    )
+    .is_some());
+    for foreign in ["n-gpu-layers", "flash-attn", "split-mode"] {
+      assert!(
+        !ids.contains(&foreign),
+        "`{foreign}` belongs to a process-spawning engine this backend is not"
+      );
+    }
   }
 
   #[test]
@@ -1473,8 +1327,14 @@ mod tests {
   #[test]
   fn typed_knobs_outside_ctx_never_reach_argv() {
     let mut p = params_with(None, &[]);
-    p.knobs.n_gpu_layers = Some(KnobValue::Set(99));
-    p.knobs.flash_attn = Some(KnobValue::Set(true));
+    p.knobs.set_scalar(
+      crate::launch::knobs::kid("n-gpu-layers"),
+      crate::launch::knobs::Scalar::U32(99),
+    );
+    p.knobs.set_scalar(
+      crate::launch::knobs::kid("flash-attn"),
+      crate::launch::knobs::Scalar::Bool(true),
+    );
     let a = argv_strings(&p, 8000);
     assert!(!a.iter().any(|s| s == "-ngl" || s == "--n-gpu-layers"));
     // Precise flag check (the model path itself contains "flash").
@@ -1538,39 +1398,6 @@ mod tests {
     assert_eq!(mtp_stream_conflict(true, true, false, false), None);
     assert_eq!(mtp_stream_conflict(false, false, true, false), None);
     assert_eq!(mtp_stream_conflict(false, false, false, true), None);
-  }
-
-  #[test]
-  fn dspark_on_reads_either_switch() {
-    let mut p = LaunchParams::new(PathBuf::from("/m/a.gguf"), LaunchMode::Chat);
-    assert!(!dspark_on(&p));
-    p.backend_knobs
-      .insert("dspark".into(), KnobValue::Set("false".into()));
-    assert!(!dspark_on(&p), "an off switch is not on");
-    p.backend_knobs
-      .insert("dspark".into(), KnobValue::Set("true".into()));
-    assert!(dspark_on(&p));
-    // `--dspark-strict` loads the support model too, so it needs a head just
-    // the same.
-    p.backend_knobs.remove("dspark");
-    p.backend_knobs
-      .insert("dspark_strict".into(), KnobValue::Set("true".into()));
-    assert!(dspark_on(&p));
-  }
-
-  #[test]
-  fn dspark_knobs_translate_to_ds4_flags() {
-    let mut p = LaunchParams::new(PathBuf::from("/m/a.gguf"), LaunchMode::Chat);
-    p.backend_knobs
-      .insert("mtp".into(), KnobValue::Set("/m/support.gguf".into()));
-    p.backend_knobs
-      .insert("dspark".into(), KnobValue::Set("true".into()));
-    p.backend_knobs
-      .insert("dspark_confidence".into(), KnobValue::Set("0.5".into()));
-    let a = argv_strings(&p, 8000);
-    assert!(a.windows(2).any(|w| w == ["--mtp", "/m/support.gguf"]));
-    assert!(a.iter().any(|s| s == "--dspark"));
-    assert!(a.windows(2).any(|w| w == ["--dspark-confidence", "0.5"]));
   }
 
   /// Spin up a tiny single-shot HTTP responder on an OS-assigned loopback port,

@@ -108,18 +108,13 @@ impl ConfigPresetStore {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::config::{KnobValue, TypedKnobs};
   use std::path::Path;
 
   fn body(ctx: u32) -> PresetBody {
     PresetBody {
-      mode: None,
-      knobs: TypedKnobs {
-        ctx: Some(KnobValue::Set(ctx)),
-        ..TypedKnobs::default()
+      knobs: crate::knobset! {
+        ctx: ctx
       },
-      extras: None,
-      backend_knobs: Default::default(),
       ..PresetBody::default()
     }
   }
@@ -143,14 +138,18 @@ mod tests {
     // In-memory.
     let snap = store.snapshot().await;
     assert_eq!(
-      snap["coder.gguf"].entries["long"].knobs.ctx,
-      Some(KnobValue::Set(65536))
+      snap["coder.gguf"].entries["long"]
+        .knobs
+        .u32(crate::launch::knobs::kid("ctx-size")),
+      Some(65536)
     );
     // On disk — a fresh daemon would load this.
     let cfg = crate::config::load_config_from_path(&path).config;
     assert_eq!(
-      cfg.presets["coder.gguf"].entries["long"].knobs.ctx,
-      Some(KnobValue::Set(65536))
+      cfg.presets["coder.gguf"].entries["long"]
+        .knobs
+        .u32(crate::launch::knobs::kid("ctx-size")),
+      Some(65536)
     );
     cleanup(&path);
   }
@@ -161,10 +160,18 @@ mod tests {
     let store = ConfigPresetStore::new(BTreeMap::new(), Some(path.clone()));
     store.save("m", "p", body(1)).await.unwrap();
     let prev = store.save("m", "p", body(2)).await.unwrap();
-    assert_eq!(prev.unwrap().knobs.ctx, Some(KnobValue::Set(1)));
     assert_eq!(
-      store.snapshot().await["m"].entries["p"].knobs.ctx,
-      Some(KnobValue::Set(2))
+      prev
+        .unwrap()
+        .knobs
+        .u32(crate::launch::knobs::kid("ctx-size")),
+      Some(1)
+    );
+    assert_eq!(
+      store.snapshot().await["m"].entries["p"]
+        .knobs
+        .u32(crate::launch::knobs::kid("ctx-size")),
+      Some(2)
     );
     cleanup(&path);
   }
@@ -175,7 +182,13 @@ mod tests {
     let store = ConfigPresetStore::new(BTreeMap::new(), Some(path.clone()));
     store.save("m", "only", body(1)).await.unwrap();
     let removed = store.delete("m", "only").await.unwrap();
-    assert_eq!(removed.unwrap().knobs.ctx, Some(KnobValue::Set(1)));
+    assert_eq!(
+      removed
+        .unwrap()
+        .knobs
+        .u32(crate::launch::knobs::kid("ctx-size")),
+      Some(1)
+    );
     assert!(
       !store.snapshot().await.contains_key("m"),
       "empty model key pruned in memory"
@@ -198,8 +211,10 @@ mod tests {
     let store = ConfigPresetStore::empty();
     store.save("m", "p", body(1)).await.unwrap();
     assert_eq!(
-      store.snapshot().await["m"].entries["p"].knobs.ctx,
-      Some(KnobValue::Set(1))
+      store.snapshot().await["m"].entries["p"]
+        .knobs
+        .u32(crate::launch::knobs::kid("ctx-size")),
+      Some(1)
     );
   }
 }

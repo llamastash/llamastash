@@ -6,6 +6,7 @@
 //! 3. YAML config file (`config.yaml` under the OS config dir)
 //! 4. Built-in defaults
 
+pub mod knob_migration;
 pub mod loader;
 pub mod presets_writer;
 pub mod writer;
@@ -19,7 +20,6 @@ pub use crate::backend::BackendConfig;
 pub use loader::{
   config_path, config_path_from, load_config, load_config_from_path, validate_port_range,
   validate_scan_settings, CachePathsConfig, Config, ConfigPresetBlock, DaemonConfig,
-  DefaultLaunchMode, GpuConfig, KnobSlotMut, KnobSlotRef, KnobValue, KnobValueOpt, LoadedConfig,
-  PortRange, PortRangeError, PresetBody, ProxyConfig, ScanSettingsError, TypedKnobs,
-  DEFAULT_FIT_CTX_FLOOR, MAX_CTX_TOKENS,
+  DefaultLaunchMode, GpuConfig, KnobValue, KnobValueOpt, LoadedConfig, PortRange, PortRangeError,
+  PresetBody, ProxyConfig, ScanSettingsError, DEFAULT_FIT_CTX_FLOOR, MAX_CTX_TOKENS,
 };

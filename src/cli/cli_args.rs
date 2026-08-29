@@ -211,6 +211,10 @@ pub enum Command {
   Doctor(DoctorArgs),
   /// Mark, unmark, and list favorite models.
   Favorites(FavoritesArgs),
+  /// List every tunable each backend declares, with its flag, value shape and
+  /// `auto` behaviour. The discovery surface behind `start --help`'s flags —
+  /// needs no daemon, and `--json` gives an agent the whole tuning space.
+  Knobs(KnobsArgs),
   /// List and download the best-fit model for this hardware. Shortcut for
   /// `init --only models` that lets users grab a
   /// recommended GGUF without walking through the full first-run
@@ -420,9 +424,12 @@ pub struct StartArgs {
   /// + smoke-test `<think>` collapse). Advanced panel can unbundle.
   #[arg(long, value_enum)]
   pub reasoning: Option<ReasoningFlag>,
-  /// Force the launch mode. `None` means "infer from GGUF metadata; error
-  /// out if the GGUF mode hint is `Unknown`" — handlers must NOT silently
-  /// default to `chat` when this is `None`.
+  /// Force the launch mode. `None` means "let the preset pin or the model's
+  /// own GGUF hint decide; error out if that hint is `Unknown`" — handlers
+  /// must NOT silently default to `chat` when this is `None`, and must NOT
+  /// resolve the hint themselves and put it on the wire as though the user
+  /// had chosen it (that shadowed every preset's `mode:`; the daemon resolves
+  /// the hint from the header it already parsed).
   #[arg(long, value_enum)]
   pub mode: Option<LaunchMode>,
   /// Advanced launch params, generated from the typed-knob spec table
@@ -496,6 +503,17 @@ fn parse_backend_id(s: &str) -> Result<String, String> {
 fn parse_mtp_enable(s: &str) -> Result<crate::launch::params::MtpEnable, String> {
   crate::launch::params::MtpEnable::from_token(s)
     .ok_or_else(|| format!("invalid --mtp value `{s}`; expected auto, on, or off"))
+}
+
+#[derive(Args, Debug)]
+pub struct KnobsArgs {
+  /// Show only this backend's knobs. Omit for every compiled-in backend.
+  #[arg(long, value_parser = parse_backend_id)]
+  pub backend: Option<String>,
+  /// Emit JSON instead of the table. Stable shape:
+  /// `{"backends": [{"backend", "knobs": [{"id", "flag", "kind", …}]}]}`.
+  #[arg(long)]
+  pub json: bool,
 }
 
 #[derive(Args, Debug)]
@@ -589,14 +607,44 @@ pub enum PresetsAction {
     json: bool,
   },
   /// Save the current/passed launch params under `name`.
+  ///
+  /// Takes the **same** knob flags as `start`, generated from the same
+  /// registry, so anything you can launch with you can also save. Before that
+  /// the two surfaces diverged: `start` had first-class flags for every knob
+  /// while `save` accepted only ctx / reasoning / mode.
   Save {
     name: String,
-    #[arg(long, value_name = "TOKENS")]
-    ctx: Option<u32>,
+    /// Context length. A token count pins it; the literal `auto` delegates the
+    /// window to the engine's fitter.
+    #[arg(long, value_name = "TOKENS|auto", value_parser = parse_ctx_arg)]
+    ctx: Option<CtxArg>,
     #[arg(long, value_enum)]
     reasoning: Option<ReasoningFlag>,
     #[arg(long, value_enum)]
     mode: Option<LaunchMode>,
+    /// Backend this preset pins. `auto` (default) leaves the identity rule in
+    /// charge. Launch identity, so it is stored, not translated.
+    #[arg(long, value_parser = parse_backend_id)]
+    backend: Option<String>,
+    /// Server (a build/binary of a backend) this preset pins. Ids come from
+    /// `status` (`servers`).
+    #[arg(long)]
+    server: Option<String>,
+    /// MTP speculative decoding: `auto` (default), `on`, or `off`.
+    #[arg(long, value_name = "auto|on|off", value_parser = parse_mtp_enable)]
+    mtp: Option<crate::launch::params::MtpEnable>,
+    /// Tokens drafted per speculation step.
+    #[arg(long, value_name = "N")]
+    mtp_draft_n: Option<u32>,
+    /// Snapshot the model's last successful launch instead of building the
+    /// preset from flags — the "save what I just ran" gesture the TUI has had
+    /// as `Ctrl+P` all along. Flags layer on top of the snapshot.
+    #[arg(long)]
+    from_last: bool,
+    /// Advanced launch params, generated from the knob registry — the same
+    /// flag set `start` accepts.
+    #[command(flatten)]
+    knobs: crate::cli::knob_flags::KnobFlags,
     #[arg(last = true, value_name = "ARG")]
     extra: Vec<OsString>,
     /// Emit JSON. `{ "action": "save", "name": "...", "replaced":
@@ -2167,7 +2215,7 @@ mod tests {
             name, ctx, extra, ..
           } => {
             assert_eq!(name, "long-ctx");
-            assert_eq!(ctx, Some(131_072));
+            assert_eq!(ctx, Some(CtxArg::Value(131_072)));
             assert_eq!(extra, vec![OsString::from("--flash-attn")]);
           }
           other => panic!("expected Save, got {other:?}"),
@@ -2279,7 +2327,7 @@ mod tests {
     let cli = parse(&["presets", "qwen-coder", "save", "pinned", "--ctx", "32768"]);
     match cli.command {
       Some(Command::Presets(args)) => match args.action {
-        PresetsAction::Save { ctx, .. } => assert_eq!(ctx, Some(32_768)),
+        PresetsAction::Save { ctx, .. } => assert_eq!(ctx, Some(CtxArg::Value(32_768))),
         other => panic!("expected Save, got {other:?}"),
       },
       other => panic!("expected Presets, got {other:?}"),

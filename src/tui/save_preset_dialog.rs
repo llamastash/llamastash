@@ -8,7 +8,7 @@
 //! new per-model override.
 //!
 //! Auto / inherited markers ride through untouched: the captured
-//! [`crate::config::TypedKnobs`] keeps each knob's `Set` / `Auto` /
+//! [`crate::launch::knobs::KnobSet`] keeps each knob's `Set` / `Auto` /
 //! inherited state, so a `ctx: auto` saved here round-trips as `auto`.
 
 use std::path::PathBuf;
@@ -19,7 +19,6 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::config::TypedKnobs;
 use crate::theme::Palette;
 use crate::tui::app::App;
 use crate::tui::input_field::InputField;
@@ -42,11 +41,10 @@ pub struct SavePresetDialog {
   /// Display name shown in the dialog title.
   pub model_name: String,
   /// Captured launch knobs (ctx/reasoning folded in; Auto preserved).
-  pub knobs: TypedKnobs,
+  pub knobs: crate::launch::knobs::KnobSet,
   /// Captured native (per-backend) knobs — the six ds4 tunables when the
   /// captured launch is ds4-backed, so the preset stores them too. Empty for
-  /// llama.cpp / Lemonade launches.
-  pub backend_knobs: std::collections::BTreeMap<String, crate::config::KnobValue<String>>,
+  /// The knobs the dialog will write into the preset entry.
   /// Captured extras argv tail.
   pub extras: Vec<String>,
   /// The model's own (per-model) preset names — a save under one of these
@@ -68,8 +66,7 @@ impl SavePresetDialog {
   pub fn open(
     model_path: PathBuf,
     model_name: String,
-    knobs: TypedKnobs,
-    backend_knobs: std::collections::BTreeMap<String, crate::config::KnobValue<String>>,
+    knobs: crate::launch::knobs::KnobSet,
     extras: Vec<String>,
     existing: Vec<String>,
     arch_shadow: Vec<String>,
@@ -80,7 +77,6 @@ impl SavePresetDialog {
       model_path,
       model_name,
       knobs,
-      backend_knobs,
       extras,
       existing,
       arch_shadow,
@@ -254,8 +250,7 @@ mod tests {
     SavePresetDialog::open(
       PathBuf::from("/m/a.gguf"),
       "a.gguf".into(),
-      TypedKnobs::default(),
-      std::collections::BTreeMap::new(),
+      crate::launch::knobs::KnobSet::new(),
       Vec::new(),
       existing.iter().map(|s| s.to_string()).collect(),
       arch_shadow.iter().map(|s| s.to_string()).collect(),

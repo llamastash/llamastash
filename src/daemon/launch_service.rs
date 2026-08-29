@@ -22,7 +22,6 @@ use serde::{Deserialize, Serialize};
 use crate::backend::identity::ModelIdentity;
 use crate::backend::Backend;
 use crate::config::MAX_CTX_TOKENS;
-use crate::config::{KnobValue, KnobValueOpt};
 use crate::daemon::context::{MethodContext, PersistedState};
 use crate::daemon::registry::LaunchId;
 use crate::daemon::shutdown::ShutdownToken;
@@ -67,18 +66,11 @@ pub(crate) struct StartParams {
   /// on the `LayerLabel::User` layer of the resolver, outranking
   /// last_used / arch_default / built-in.
   #[serde(default)]
-  pub(crate) knobs: crate::config::TypedKnobs,
+  pub(crate) knobs: crate::launch::knobs::KnobSet,
   /// Free-form argv tail for `llama-server` flags the typed editor
   /// doesn't model. Appended after the resolved knobs.
   #[serde(default)]
   pub(crate) extras: Vec<String>,
-  /// Per-backend native-knob values, keyed by descriptor id (see
-  /// [`crate::launch::native_knobs`]). Passed through to the backend's
-  /// `prepare_launch`; not layered by the typed-knob resolver. Empty for
-  /// llama.cpp / Lemonade (`#[serde(default)]` keeps existing clients'
-  /// payloads byte-stable). ds4 is the first consumer.
-  #[serde(default)]
-  pub(crate) backend_knobs: std::collections::BTreeMap<String, crate::config::KnobValue<String>>,
   /// Optional path to a multimodal projector (mmproj) file. When
   /// `None`, the daemon auto-detects by scanning the parent
   /// directory of the model for a `mmproj-<stem>.gguf` companion.
@@ -194,16 +186,16 @@ pub struct LaunchExec {
   pub(crate) total_weight_bytes: u64,
   /// The user-supplied knob deltas to persist in `last_params` (not the full
   /// resolved set — keeps source chips meaningful).
-  pub(crate) user_knobs: crate::config::TypedKnobs,
+  pub(crate) user_knobs: crate::launch::knobs::KnobSet,
   /// Native-knob keys the backend auto-resolved this launch — stripped from the
   /// persisted `last_params` so they re-resolve next launch (see
-  /// [`crate::backend::Backend::resolve_native_knobs`]).
+  /// [`crate::backend::Backend::resolve_knobs`]).
   pub(crate) auto_set_knobs: std::collections::BTreeSet<String>,
   /// Native-knob keys the backend declares as here-and-now judgements — also
   /// stripped from the persisted `last_params`, so a one-off `--preset` cannot
   /// silently become permanent (see
-  /// [`crate::backend::Backend::volatile_native_knobs`]).
-  pub(crate) volatile_knobs: &'static [&'static str],
+  /// [`KnobDef::volatile`](crate::launch::knobs::KnobDef)).
+  pub(crate) volatile_knobs: Vec<&'static str>,
   /// Whether this launch bypasses the memory admission gate (streams from disk).
   pub(crate) bypasses_admission: bool,
   /// Advisories accumulated during composition, extended by the execution.
@@ -250,6 +242,7 @@ pub(crate) async fn compose_and_spawn(
     identity,
     arch,
     native_ctx,
+    mode_hint,
     supported_backends,
     mtp_embedded,
     ..
@@ -281,14 +274,69 @@ pub(crate) async fn compose_and_spawn(
     }
   }
 
-  // Mode resolution: explicit override > catalog hint > default to chat.
-  // The CLI surface refuses to default silently when discovery says
-  // "Unknown" (cli_args.rs::StartArgs::mode comment), but the daemon
-  // is one layer down; a missing override here means the caller has
-  // already accepted the default.
+  // The model's configured `default:` preset (config-only), resolved
+  // server-side so it applies uniformly on CLI plain `start`, the TUI, and
+  // proxy auto-start. Only a no-selection launch consults it, so explicit /
+  // auto launches skip the preset-store snapshot + catalog projection. Read
+  // via the same `effective_presets` the IPC handlers use.
+  let is_default_sel = matches!(parsed.selection, LaunchSelection::Default);
+  let effective_default = if is_default_sel {
+    let store = ctx.presets.snapshot().await;
+    let rows = crate::ipc::methods::catalog_rows(ctx).await;
+    let key = crate::util::paths::path_basename(&parsed.model_path);
+    let path_str = parsed.model_path.display().to_string();
+    Some(crate::launch::presets::effective_presets(
+      &key,
+      &path_str,
+      arch.as_deref(),
+      &store,
+      &rows,
+    ))
+  } else {
+    None
+  };
+
+  // Collapse the launch into one resolution shape. `Auto` (explicit
+  // `--preset auto`) and a no-selection launch whose config default is
+  // `auto` both mean "pure fit": skip the default-preset and last_params
+  // layers entirely. A no-selection launch otherwise applies the effective
+  // default (the `PresetDefault` layer when `default:` names a preset, then
+  // last_params). An explicit launch carries its own flattened knobs/extras.
+  let default_is_auto = effective_default
+    .as_ref()
+    .is_some_and(|e| e.default_is_auto());
+  let pure_fit = matches!(parsed.selection, LaunchSelection::Auto) || default_is_auto;
+  let no_selection = is_default_sel && !pure_fit;
+
+  // Mode resolution, in precedence order: the caller's explicit choice > the
+  // effective default preset's `mode:` pin > the model's own header hint >
+  // chat.
+  //
+  // The last two rungs live here rather than on each caller on purpose. A
+  // hint-derived mode is the *model's* default, which sits below the user's
+  // config; callers that resolved the hint themselves and sent it as if it
+  // were a choice are exactly how a preset's pin got shadowed on every launch.
+  // A caller that genuinely chose (an explicit `--mode`, the proxy raising the
+  // mode for the endpoint that triggered the auto-start) still sends one and
+  // still wins.
+  //
+  // A materialised `Chat` on the preset rung is indistinguishable from "unset"
+  // (a preset only stores a non-chat mode) and lands on the same place the
+  // hint would anyway.
   let mode = parsed
     .mode
     .map(LaunchMode::from)
+    .or_else(|| {
+      if no_selection {
+        effective_default
+          .as_ref()
+          .and_then(|e| e.default_preset())
+          .map(|np| np.params.mode)
+      } else {
+        None
+      }
+    })
+    .or_else(|| LaunchMode::resolve(None, mode_hint))
     .unwrap_or(LaunchMode::Chat);
 
   // Reject pinned port values that would corrupt our internal state
@@ -381,10 +429,31 @@ pub(crate) async fn compose_and_spawn(
   // → built-in `(arch, backend)` table → llama-server's own default.
   let mut launch_params = LaunchParams::new(parsed.model_path.clone(), mode);
   launch_params.port = Some(port);
+
+  // Launch *identity* — which backend, and which of its builds — inherited on
+  // a no-selection launch the same way extras and knobs are, so a plain
+  // `start` reproduces the run rather than silently dropping back to the
+  // priority-default build.
+  //
+  // This has to settle before backend resolution, because a server pick
+  // decides which backend runs. That rules out the backend-matched
+  // `last_params` gate the knob layers use (it needs the resolved backend,
+  // which needs this) — but the recorded server id names its own backend, so
+  // there is nothing to contaminate.
+  let identity_default = if matches!(parsed.selection, LaunchSelection::Default) {
+    inherited_launch_identity(ctx, &parsed, &identity, arch.as_deref()).await
+  } else {
+    InheritedIdentity::default()
+  };
+
   // Per-model backend override: `None` keeps the default `Auto`
   // (identity rule); an explicit choice from `start --backend` / the TUI
-  // picker overrides it.
-  launch_params.backend = parsed.backend.unwrap_or_default();
+  // picker overrides it, and a remembered one fills in behind both.
+  launch_params.backend = parsed
+    .backend
+    .clone()
+    .or(identity_default.backend)
+    .unwrap_or_default();
 
   // Chosen server (a build/binary of a backend). Resolve it from the catalog
   // once — it drives the launch binary below and, when the backend is still
@@ -392,13 +461,18 @@ pub(crate) async fn compose_and_spawn(
   // pick subsumes backend selection. An unknown id was already rejected before
   // the port reservation; the only `None` that reaches here is the empty-catalog
   // startup race, which falls back to the default binary.
-  launch_params.server = parsed.server.clone();
+  launch_params.server = parsed.server.clone().or(identity_default.server);
   let picked_server: Option<crate::backend::Server> = match &launch_params.server {
     Some(server_id) => {
       let servers = env.servers.read().await;
       let found = servers.iter().find(|s| &s.id == server_id).cloned();
       if found.is_none() {
-        log::warn!("server {server_id:?} not in catalog yet; using default binary");
+        // A typed `--server` was already rejected up front. Reaching here
+        // means the id came from a preset or a remembered launch and the
+        // build is gone (rebuilt llama.cpp, moved machine) — warn and take
+        // the default rather than failing a launch the user did not pin.
+        log::warn!("server {server_id:?} not in catalog; using the default binary");
+        launch_params.server = None;
       }
       found
     }
@@ -449,40 +523,6 @@ pub(crate) async fn compose_and_spawn(
     .filter(|_| last_params_backend_ok)
     .map(|(p, _)| p.clone());
 
-  // The model's configured `default:` preset (config-only), resolved
-  // server-side so it applies uniformly on CLI plain `start`, the TUI, and
-  // proxy auto-start. Only a no-selection launch consults it, so explicit /
-  // auto launches skip the preset-store snapshot + catalog projection. Read
-  // via the same `effective_presets` the IPC handlers use.
-  let is_default_sel = matches!(parsed.selection, LaunchSelection::Default);
-  let effective_default = if is_default_sel {
-    let store = ctx.presets.snapshot().await;
-    let rows = crate::ipc::methods::catalog_rows(ctx).await;
-    let key = crate::util::paths::path_basename(&parsed.model_path);
-    let path_str = parsed.model_path.display().to_string();
-    Some(crate::launch::presets::effective_presets(
-      &key,
-      &path_str,
-      arch.as_deref(),
-      &store,
-      &rows,
-    ))
-  } else {
-    None
-  };
-
-  // Collapse the launch into one resolution shape. `Auto` (explicit
-  // `--preset auto`) and a no-selection launch whose config default is
-  // `auto` both mean "pure fit": skip the default-preset and last_params
-  // layers entirely. A no-selection launch otherwise applies the effective
-  // default (the `PresetDefault` layer when `default:` names a preset, then
-  // last_params). An explicit launch carries its own flattened knobs/extras.
-  let default_is_auto = effective_default
-    .as_ref()
-    .is_some_and(|e| e.default_is_auto());
-  let pure_fit = matches!(parsed.selection, LaunchSelection::Auto) || default_is_auto;
-  let no_selection = is_default_sel && !pure_fit;
-
   // Free-form extras (whole-list, no per-flag merge). Explicit inline extras
   // are always honored verbatim. Otherwise a no-selection launch inherits the
   // effective default's extras (the default preset's when `default:` names one
@@ -510,22 +550,6 @@ pub(crate) async fn compose_and_spawn(
   // above (D-contamination), so a ds4 relaunch re-applies its `--power` /
   // `--kv-disk-*` while a cross-backend run inherits nothing. Empty for
   // llama.cpp / Lemonade.
-  launch_params.backend_knobs = if !parsed.backend_knobs.is_empty() {
-    parsed.backend_knobs.clone()
-  } else if no_selection {
-    // Same precedence as `extras` above: the default preset's native knobs
-    // outrank last_params, so a `default:` preset that pins `--mtp` /
-    // `--ssd-streaming` survives a plain `start`.
-    effective_default
-      .as_ref()
-      .and_then(|e| e.default_preset())
-      .map(|np| np.params.backend_knobs.clone())
-      .filter(|k| !k.is_empty())
-      .or_else(|| last_params.as_ref().map(|p| p.backend_knobs.clone()))
-      .unwrap_or_default()
-  } else {
-    std::collections::BTreeMap::new()
-  };
   // Seed the resolved backend's config-derived launch knobs into
   // `backend_knobs`, fresh each launch (config projection, not user intent) —
   // llama.cpp projects `jinja` / `strict_fit` / `fit_ctx_floor` here, so the
@@ -582,11 +606,23 @@ pub(crate) async fn compose_and_spawn(
   // they're projected onto the typed knob slots here, with explicit
   // `knobs.{ctx,reasoning}` overrides winning if the caller set both.
   let mut user_knobs = parsed.knobs.clone();
-  if user_knobs.ctx.is_none() {
-    user_knobs.ctx = parsed.ctx.map(KnobValue::Set);
+  use crate::launch::knobs::{Concept, KnobValue as KV, Scalar};
+  if let Some(c) = parsed.ctx {
+    if user_knobs
+      .by_concept(&resolved_backend_id, Concept::ContextLength)
+      .is_none()
+    {
+      user_knobs.set_by_concept(
+        &resolved_backend_id,
+        Concept::ContextLength,
+        KV::Set(Scalar::U32(c)),
+      );
+    }
   }
-  if user_knobs.reasoning.is_none() {
-    user_knobs.reasoning = parsed.reasoning.map(KnobValue::Set);
+  if let Some(r) = parsed.reasoning {
+    if user_knobs.get_by_name("reasoning").is_none() {
+      user_knobs.set_by_name("reasoning", r.to_string());
+    }
   }
 
   // Last-used knobs from the snapshot taken above, so a returning user
@@ -606,7 +642,7 @@ pub(crate) async fn compose_and_spawn(
   } else {
     None
   };
-  let empty_yaml = crate::config::TypedKnobs::default();
+  let empty_yaml = crate::launch::knobs::KnobSet::new();
   let yaml_knobs = arch
     .as_deref()
     .and_then(|a| env.arch_defaults.get(a))
@@ -621,7 +657,7 @@ pub(crate) async fn compose_and_spawn(
   // `LastUsed` is skipped under pure fit. yaml + built-in share the
   // `ArchDefault` chip — yaml wins per field via precedence order.
   use crate::launch::params::LayerLabel;
-  let mut layers: Vec<(LayerLabel, &crate::config::TypedKnobs)> =
+  let mut layers: Vec<(LayerLabel, &crate::launch::knobs::KnobSet)> =
     vec![(LayerLabel::User, &user_knobs)];
   if let Some(k) = default_preset_knobs.as_ref() {
     layers.push((LayerLabel::PresetDefault, k));
@@ -631,13 +667,26 @@ pub(crate) async fn compose_and_spawn(
   }
   layers.push((LayerLabel::ArchDefault, yaml_knobs));
   layers.push((LayerLabel::ArchDefault, &builtin_knobs));
-  let mut resolved = crate::launch::params::resolve_layered(&layers);
+  let mut resolved = crate::launch::knobs::resolve_layered(&resolved_backend_id, &layers);
   // Seed knobs no layer filled per the default launch mode: under
   // `Auto` a layer-less knob delegates to `--fit` (an Auto knob emits
   // nothing, exactly like the unset slot it replaces). The mode is
   // `Config.default_launch_mode` (+ `LLAMASTASH_DEFAULT_LAUNCH_MODE`),
   // threaded through `LaunchEnv`.
-  crate::launch::params::seed_layerless(&mut resolved, env.default_launch_mode);
+  crate::launch::knobs::seed_layerless(
+    &mut resolved,
+    &resolved_backend_id,
+    env.default_launch_mode,
+  );
+  // A knob some layer supplied that this backend cannot honour is dropped and
+  // surfaced rather than silently emitted (R6). The whole-map contamination
+  // gate the old shape needed is gone: the resolver carries values across a
+  // backend switch by concept instead of throwing the lot away.
+  for dropped_id in &resolved.dropped {
+    log::info!(
+      "{resolved_backend_id}: knob `{dropped_id}` is not honoured by this backend; dropped"
+    );
+  }
   // Project resolved ctx/reasoning back onto the top-level
   // `LaunchParams` fields — `compose` emits them inline (ctx as
   // `-c <N>`, reasoning as the `--jinja --reasoning-format deepseek`
@@ -645,17 +694,20 @@ pub(crate) async fn compose_and_spawn(
   // An `Auto` ctx/reasoning collapses to "no inline flag" here
   // (`set_value()` → `None`): `compose` emits nothing and `--fit`
   // governs ctx, the chat template governs reasoning.
-  launch_params.ctx = resolved.knobs.ctx.set_value().copied();
+  launch_params.ctx = resolved.knobs.u32_by_concept(
+    &resolved_backend_id,
+    crate::launch::knobs::Concept::ContextLength,
+  );
   launch_params.reasoning = resolved
     .knobs
-    .reasoning
-    .set_value()
-    .copied()
+    .get_by_name("reasoning")
+    .and_then(|v| v.set_value())
+    .and_then(|s| s.as_bool())
     .unwrap_or(false);
   launch_params.knobs = resolved.knobs;
-  // Close the `knobs.ctx` bypass of `MAX_CTX_TOKENS` (the early check
+  // Close the `knobs.u32(crate::launch::knobs::kid("ctx-size"))` bypass of `MAX_CTX_TOKENS` (the early check
   // only saw the top-level `parsed.ctx`): validate the *resolved* ctx,
-  // which folds in both `parsed.ctx` and a typed `knobs.ctx` set via the
+  // which folds in both `parsed.ctx` and a typed `knobs.u32(crate::launch::knobs::kid("ctx-size"))` set via the
   // editor or last-params.
   if let Some(c) = launch_params.ctx {
     if c > MAX_CTX_TOKENS {
@@ -707,11 +759,8 @@ pub(crate) async fn compose_and_spawn(
   // must spawn *that* binary or it is invalid); else the default binary.
   let selector = launch_params
     .knobs
-    .device
-    .set_value()
-    .map(String::as_str)
-    .filter(|s| !s.is_empty())
-    .map(str::to_string);
+    .text_by_name("device")
+    .filter(|s| !s.is_empty());
   let launch_binary = if let Some(server) = &picked_server {
     server.binary.clone()
   } else {
@@ -734,7 +783,7 @@ pub(crate) async fn compose_and_spawn(
           "device selector {sel:?} not in server catalog; dropping it and spawning default binary {}",
           env.binary.display()
         );
-        launch_params.knobs.device = None;
+        launch_params.knobs.remove_by_name("device");
         env.binary.clone()
       })
       }
@@ -775,6 +824,18 @@ pub(crate) async fn compose_and_spawn(
   // embedding / rerank launch never speculates. And the backend defers entirely
   // when the user is already hand-driving speculation through extras (KD3) —
   // asked, not matched here, so the resolution names no backend or flag.
+  // Fold the resolved knob into the typed sibling the backends compose from.
+  // `parsed.mtp_draft_n` is the wire field (CLI `--mtp-draft-n`); a preset or
+  // arch default supplies the same value as a knob instead, and only the
+  // resolver knows which layer won. Wire field first, so an explicit flag
+  // still beats an inherited layer.
+  if launch_params.mtp_draft_n.is_none() {
+    launch_params.mtp_draft_n = launch_params
+      .knobs
+      .get_by_name_for(&resolved_backend_id, "mtp-draft-n")
+      .and_then(|v| v.set_value())
+      .and_then(|s| s.as_u32());
+  }
   let user_drives_speculation =
     crate::backend::Backend::speculation_set_in_extras(&inference_backend, &launch_params.extras);
   launch_params.mtp_directive = if matches!(mode, LaunchMode::Chat) && !user_drives_speculation {
@@ -787,6 +848,41 @@ pub(crate) async fn compose_and_spawn(
   } else {
     None
   };
+  // Record what speculation actually resolved to on its own knob, so every
+  // surface reading `params.knobs` sees the truth. The knob emits nothing
+  // itself (`Emit::Custom` — the backend builds the flags from the directive),
+  // so argv is unchanged; without this the running view rendered `inherited`
+  // on a launch that was speculating.
+  if let Some(def) =
+    crate::launch::knobs::def_for_backend(&resolved_backend_id, crate::launch::knobs::kid("mtp"))
+  {
+    launch_params.knobs.set(
+      def.knob_id(),
+      crate::launch::knobs::KnobValue::Set(crate::launch::knobs::Scalar::Bool(
+        launch_params.mtp_directive.is_some(),
+      )),
+    );
+  }
+  // Same for the draft count, which no longer emits on its own: show what the
+  // launch is really drafting with, and drop a stale count on a launch that
+  // ended up not speculating.
+  if let Some(def) = crate::launch::knobs::def_for_backend(
+    &resolved_backend_id,
+    crate::launch::knobs::kid("mtp-draft-n"),
+  ) {
+    match launch_params
+      .mtp_draft_n
+      .filter(|_| launch_params.mtp_directive.is_some())
+    {
+      Some(n) => launch_params.knobs.set(
+        def.knob_id(),
+        crate::launch::knobs::KnobValue::Set(crate::launch::knobs::Scalar::U32(n)),
+      ),
+      None => {
+        launch_params.knobs.clear(def.knob_id());
+      }
+    }
+  }
   // Dropped-knob surfacing (R6): typed knobs the user set that the resolved
   // backend can't honor are silently dropped from argv — tell the user which.
   // ds4 honors only `Ctx`, so a `--flash-attn` on a ds4-routed model warns.
@@ -796,23 +892,6 @@ pub(crate) async fn compose_and_spawn(
   // so every launch on a narrow-capability backend warned that it had dropped a
   // knob the user never touched — noise on a bare `start`, on the surface where
   // a real dropped knob most needs to be noticed.
-  {
-    let caps = crate::backend::Backend::capabilities(&inference_backend);
-    let dropped: Vec<&str> = crate::launch::flag_aliases::knob_specs()
-      .iter()
-      .filter(|spec| !caps.supports(spec.field) && field_is_set(&user_knobs, spec.field))
-      .map(|spec| spec.canonical)
-      .collect();
-    if !dropped.is_empty() {
-      let msg = format!(
-        "{} does not support these knobs — dropped from the launch: {}",
-        crate::backend::Backend::id(&inference_backend),
-        dropped.join(", ")
-      );
-      log::warn!("{msg}");
-      warnings.push(msg);
-    }
-  }
 
   // Native-knob auto-resolution: a backend resolves its own **Auto** native
   // knobs from live host context (e.g. enabling disk streaming when residency
@@ -820,7 +899,7 @@ pub(crate) async fn compose_and_spawn(
   // auto-behavior, not a special case. A user on/off is left untouched.
   // Registry-driven, so this path names no backend or knob.
   let native_resolution = inference_backend
-    .resolve_native_knobs(ctx, &mut launch_params, total_weight_bytes)
+    .resolve_knobs(ctx, &mut launch_params, total_weight_bytes)
     .await;
   for msg in &native_resolution.warnings {
     log::warn!("{msg}");
@@ -855,7 +934,7 @@ pub(crate) async fn compose_and_spawn(
     total_weight_bytes,
     user_knobs,
     auto_set_knobs,
-    volatile_knobs: crate::backend::Backend::volatile_native_knobs(&inference_backend),
+    volatile_knobs: crate::launch::knobs::volatile_ids(&resolved_backend_id),
     bypasses_admission,
     warnings,
     resolved_backend_id,
@@ -897,6 +976,7 @@ pub(crate) async fn spawn_supervised(
     resolved_backend_id,
     default_binary: _,
   } = exec;
+  let resolved_backend_id = resolved_backend_id.clone();
   let launch_spec = spec;
 
   // Pre-spawn admission: project this launch's demand floor and refuse *before*
@@ -943,6 +1023,7 @@ pub(crate) async fn spawn_supervised(
         let weights_total = total_weight_bytes;
         let mtp_active = launch_params.mtp_directive.is_some();
         let demand = if identity.as_gguf().is_some() {
+          let demand_backend_id = resolved_backend_id.clone();
           tokio::task::spawn_blocking(move || {
             let header = read_gguf_header(&model_path, HeaderReadOptions::default())
               .ok()?
@@ -951,6 +1032,7 @@ pub(crate) async fn spawn_supervised(
               &header,
               arch_owned.as_deref(),
               &knobs,
+              &demand_backend_id,
               effective_ctx,
               &gpu_backend,
               weights_total,
@@ -1081,17 +1163,13 @@ pub(crate) async fn spawn_supervised(
   persist_params.knobs = user_knobs;
   persist_params.ctx = None;
   persist_params.reasoning = false;
-  persist_params.backend_knobs = backend_knobs_for_persist(
-    &launch_params.backend_knobs,
-    &auto_set_knobs,
-    volatile_knobs,
-  );
+  persist_params.knobs = knobs_for_persist(persist_params.knobs, &auto_set_knobs, &volatile_knobs);
   spawn_last_params_recorder(
     ctx.state.clone(),
     model.clone(),
     identity.clone(),
     persist_params,
-    resolved_backend_id,
+    resolved_backend_id.clone(),
     scaled_probe.timeout,
     ctx.shutdown.clone(),
   );
@@ -1205,27 +1283,6 @@ pub(crate) async fn backend_for_launch(
   }
 }
 
-/// Whether `field` holds a value that would actually have reached the argv —
-/// the view the dropped-knob warning needs. An `Auto` / unset knob emits
-/// nothing, so it is not "dropped" in any user-visible sense.
-///
-/// A `false` bool counts as nothing for the same reason: every backend emits a
-/// bare flag or nothing at all, so `false` was never going to appear and
-/// announcing it as dropped is a lie. It matters because `false` is also what
-/// an *absent* value round-trips to — `LaunchParams.reasoning` is a plain
-/// `bool`, so a preset that never mentions reasoning comes back from
-/// `presets_show` as `reasoning: false`, and every preset launch on a
-/// narrow-capability backend warned about a knob nobody set.
-fn field_is_set(
-  knobs: &crate::config::TypedKnobs,
-  field: crate::launch::flag_aliases::KnobField,
-) -> bool {
-  knobs.slot(field).as_u32().is_some()
-    || knobs.slot(field).as_f32().is_some()
-    || knobs.slot(field).as_bool() == Some(true)
-    || knobs.slot(field).as_str().is_some()
-}
-
 /// The `backend_knobs` to persist into `last_params`: the resolved set, minus
 /// the two kinds of knob that must not be replayed.
 ///
@@ -1233,20 +1290,72 @@ fn field_is_set(
 ///   to live conditions, not a user opt-in; freezing it would make the next
 ///   no-selection relaunch inherit it as explicit after conditions change.
 /// - `volatile` — what the *user* set, on a knob the backend declares as a
-///   here-and-now judgement ([`crate::backend::Backend::volatile_native_knobs`]).
+///   here-and-now judgement ([`KnobDef::volatile`](crate::launch::knobs::KnobDef)).
 ///   It applies to the launch that asked for it and to any launch that names
 ///   its preset again, but is not remembered on the user's behalf.
 ///
 /// Every other user-set knob is preserved. Pure so the invariant is unit-testable.
-fn backend_knobs_for_persist(
-  resolved: &std::collections::BTreeMap<String, KnobValue<String>>,
+fn knobs_for_persist(
+  resolved: crate::launch::knobs::KnobSet,
   auto_set: &std::collections::BTreeSet<String>,
   volatile: &[&str],
-) -> std::collections::BTreeMap<String, KnobValue<String>> {
-  // Generic — both key sets come from the backend.
-  let mut out = resolved.clone();
-  out.retain(|k, _| !auto_set.contains(k) && !volatile.contains(&k.as_str()));
+) -> crate::launch::knobs::KnobSet {
+  // Generic — both key sets come from the backend. A value llamastash
+  // resolved on the user's behalf must not come back as if they had asked
+  // for it, so it is stripped before the launch is remembered.
+  let mut out = resolved;
+  out.retain_ids(|id| !auto_set.contains(id.as_str()) && !volatile.contains(&id.as_str()));
   out
+}
+
+/// Launch identity carried over from the model's configured default preset or
+/// its last successful launch. Empty unless the caller made no selection.
+#[derive(Default)]
+struct InheritedIdentity {
+  backend: Option<crate::launch::params::BackendChoice>,
+  server: Option<String>,
+}
+
+/// The backend / server a no-selection launch should reuse.
+///
+/// Precedence matches every other inherited field: the model's `default:`
+/// preset outranks its last successful launch. Returns empties when neither
+/// pins anything, which leaves the identity rule and the priority-default
+/// build in charge exactly as before.
+async fn inherited_launch_identity(
+  ctx: &MethodContext,
+  parsed: &StartParams,
+  identity: &crate::backend::identity::ModelIdentity,
+  arch: Option<&str>,
+) -> InheritedIdentity {
+  let from_preset = {
+    let store = ctx.presets.snapshot().await;
+    let rows = crate::ipc::methods::catalog_rows(ctx).await;
+    let key = crate::util::paths::path_basename(&parsed.model_path);
+    let path_str = parsed.model_path.display().to_string();
+    crate::launch::presets::effective_presets(&key, &path_str, arch, &store, &rows)
+      .default_preset()
+      .map(|np| (np.params.backend.clone(), np.params.server.clone()))
+  };
+  let from_last = {
+    let snap = ctx.state.snapshot().await;
+    snap
+      .last_params
+      .iter()
+      .find(|e| &e.id == identity)
+      .map(|e| (e.params.backend.clone(), e.params.server.clone()))
+  };
+
+  let pick = |f: fn(&(crate::launch::params::BackendChoice, Option<String>)) -> bool| {
+    from_preset
+      .as_ref()
+      .filter(|v| f(v))
+      .or(from_last.as_ref().filter(|v| f(v)))
+  };
+  InheritedIdentity {
+    backend: pick(|(b, _)| b.explicit_id().is_some()).map(|(b, _)| b.clone()),
+    server: pick(|(_, s)| s.is_some()).and_then(|(_, s)| s.clone()),
+  }
 }
 
 /// Human-readable admission refusal: the effective free (post-headroom),
@@ -1497,102 +1606,20 @@ mod tests {
   use crate::daemon::probe::ProbeOptions;
   use crate::daemon::registry::SupervisorRegistry;
 
+  /// A volatile id has to be one `retain_ids` will actually see, which is the
+  /// knob's registry id. The guard used to read a hand-kept list that still
+  /// carried pre-registry spellings, so it matched nothing and silently stopped
+  /// guarding — one `--preset` run then disabled an automatic memory cap for
+  /// every launch after it.
   #[test]
-  fn auto_resolved_knobs_are_stripped_from_persisted_last_params() {
-    use crate::config::KnobValue;
-    let mut resolved = std::collections::BTreeMap::new();
-    resolved.insert("user_knob".to_string(), KnobValue::Set("80".to_string()));
-    resolved.insert("auto_knob".to_string(), KnobValue::Set("true".to_string()));
-
-    // A knob the backend auto-resolved this launch is stripped from what we
-    // persist, so a later no-selection relaunch re-evaluates from live conditions
-    // instead of inheriting a value the user never chose; unrelated (user-set /
-    // inherited) knobs survive verbatim.
-    let auto_set: std::collections::BTreeSet<String> =
-      ["auto_knob".to_string()].into_iter().collect();
-    let persisted = backend_knobs_for_persist(&resolved, &auto_set, &[]);
-    assert!(
-      !persisted.contains_key("auto_knob"),
-      "an auto-resolved knob must not be frozen into last_params"
-    );
-    assert_eq!(
-      persisted.get("user_knob"),
-      Some(&KnobValue::Set("80".to_string()))
-    );
-
-    // Nothing auto-resolved → every knob persists verbatim.
-    let none_auto = backend_knobs_for_persist(&resolved, &std::collections::BTreeSet::new(), &[]);
-    assert_eq!(
-      none_auto.get("auto_knob"),
-      Some(&KnobValue::Set("true".to_string())),
-      "with no auto-set keys, all knobs persist"
-    );
-
-    // A knob the backend declares volatile is dropped even though the *user*
-    // set it: replaying it turns a one-off `--preset` into a permanent
-    // opt-out of whatever guard the unset state arms.
-    let volatile = backend_knobs_for_persist(
-      &resolved,
-      &std::collections::BTreeSet::new(),
-      &["user_knob"],
-    );
-    assert!(
-      !volatile.contains_key("user_knob"),
-      "a volatile knob must not be replayed from last_params"
-    );
-    assert!(
-      volatile.contains_key("auto_knob"),
-      "every other knob still persists"
-    );
-  }
-
-  /// "Dropped" has to mean something was going to be emitted. A `false` bool
-  /// never reaches argv on any backend, and `false` is also what an unset
-  /// value round-trips to through a preset, so counting it warned on every
-  /// preset launch about a knob the user never touched.
-  #[test]
-  fn field_is_set_ignores_a_false_bool_but_counts_a_true_one() {
-    use crate::config::{KnobValue, TypedKnobs};
-    use crate::launch::flag_aliases::KnobField;
-
-    let mut knobs = TypedKnobs::default();
-    assert!(!field_is_set(&knobs, KnobField::Reasoning), "unset");
-
-    knobs.reasoning = Some(KnobValue::Set(false));
-    assert!(
-      !field_is_set(&knobs, KnobField::Reasoning),
-      "a false bool emits nothing, so nothing was dropped"
-    );
-
-    knobs.reasoning = Some(KnobValue::Set(true));
-    assert!(
-      field_is_set(&knobs, KnobField::Reasoning),
-      "a true bool would have reached argv"
-    );
-
-    let auto = TypedKnobs {
-      reasoning: Some(KnobValue::Auto),
-      ..Default::default()
-    };
-    assert!(
-      !field_is_set(&auto, KnobField::Reasoning),
-      "Auto emits nothing"
-    );
-  }
-
-  /// The guard is only as good as the declaration: a backend whose unset
-  /// memory knobs arm an automatic cap must list both, or one `--preset` run
-  /// disables the cap for every launch after it.
-  #[test]
-  fn a_backend_that_auto_caps_memory_declares_those_knobs_volatile() {
+  fn volatile_ids_are_registry_ids_that_persistence_can_match() {
     use crate::backend::Backend;
     for b in crate::backend::Backends::all() {
-      let volatile = Backend::volatile_native_knobs(&b);
-      let knobs: Vec<&str> = Backend::native_knobs(&b).iter().map(|d| d.id).collect();
-      for id in volatile {
+      let declared: Vec<&str> = Backend::knobs(&b).iter().map(|d| d.id).collect();
+      for id in crate::launch::knobs::volatile_ids(Backend::id(&b)) {
         assert!(
-          knobs.contains(id),
-          "{} declares `{id}` volatile but does not register it as a native knob",
+          declared.contains(&id),
+          "{} marks `{id}` volatile but never declares the knob itself",
           Backend::id(&b)
         );
       }

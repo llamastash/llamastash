@@ -195,7 +195,6 @@ mod tests {
         prefer_port: None,
         backend: Default::default(),
         selection: "explicit",
-        backend_knobs: Default::default(),
         server: None,
         mtp: Default::default(),
       }),

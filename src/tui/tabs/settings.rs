@@ -1,7 +1,7 @@
 //! Settings tab — typed-knob launch editor for the focused model.
 //!
 //! Renders a vertical list of rows: `ctx`, `reasoning`, every
-//! `TypedKnobs` field with a per-row source label, and an `extras`
+//! `crate::launch::knobs::KnobSet` field with a per-row source label, and an `extras`
 //! free-text row at the bottom. When the focused model has a
 //! running launch and the picker isn't open, shows the live params
 //! (read-only).
@@ -12,8 +12,6 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::config::{KnobValue, KnobValueOpt};
-use crate::launch::flag_aliases::{knob_display_groups, KnobField};
 use crate::theme::Palette;
 use crate::tui::app::{App, ManagedRow};
 use crate::tui::keybindings::{Action, Focus};
@@ -137,66 +135,66 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
     }
   }
 
-  // Every typed knob flows through the same `value (chip)` row shape in
-  // both views. The read-only view shows the *dispatched* values (`auto`
-  // for a fit-delegated row), with ctx overlaid by the `--fit`-resolved
-  // window read from `/props`; no chip, since a live value has no
-  // inheritance layer to name.
-  let resolved_ctx = managed.map(|m| m.resolved_ctx.or(m.knobs.ctx.set_value().copied()));
-  // A running model on a backend that has its own native knobs (not the
-  // llama.cpp typed IR) renders those native rows (ctx + its tunables) from the
-  // live params instead of the empty llama.cpp groups. Keyed on the launch's
-  // *actual* backend (not the routing prediction), so a compatible file launched
-  // with `--backend llamacpp` still shows the llama.cpp knobs it ran with.
-  // Registry-driven — names no backend. Editable launches keep the picker path.
-  let native_descriptors: &[crate::launch::native_knobs::NativeKnobDescriptor] = managed
-    .and_then(|m| m.backend.as_deref())
-    .map(crate::backend::native_knobs_for)
-    .unwrap_or(&[]);
-  let native_readonly = !native_descriptors.is_empty();
-  if native_readonly {
-    let m = managed.expect("native_readonly implies a managed row");
-    push_native_readonly_rows(
-      &mut lines,
-      m,
-      native_descriptors,
-      resolved_ctx.flatten(),
-      palette,
-      show_source,
-    );
-  }
-  for group in knob_display_groups() {
-    // The native read-only view rendered its rows above; skip the llama.cpp groups.
-    if native_readonly {
-      break;
+  // Every knob flows through the same `value (chip)` row shape in both views.
+  // The read-only view shows the *dispatched* values (`auto` for a fit-delegated
+  // row), with ctx overlaid by the `--fit`-resolved window read from `/props`;
+  // no chip, since a live value has no inheritance layer to name.
+  let resolved_ctx = managed.map(|m| {
+    m.resolved_ctx.or_else(|| {
+      let id = m
+        .backend
+        .as_deref()
+        .unwrap_or(crate::backend::DEFAULT_BACKEND_ID);
+      crate::launch::knobs::def_for_backend_concept(
+        id,
+        crate::launch::knobs::Concept::ContextLength,
+      )
+      .and_then(|d| m.knobs.u32(d.knob_id()))
+    })
+  });
+
+  // Rows are generated from whichever backend is in scope: the picker's active
+  // one while editing, the launch's *actual* backend when read-only (not the
+  // routing prediction, so a compatible file launched with `--backend llamacpp`
+  // shows the llama.cpp knobs it ran with). Names no backend.
+  let groups: Vec<(
+    crate::launch::knobs::Group,
+    Vec<&'static crate::launch::knobs::KnobDef>,
+  )> = match picker_view {
+    Some(pv) => pv.visible_groups(),
+    None => {
+      let m = managed.expect("read-only view implies a managed row");
+      let id = m
+        .backend
+        .as_deref()
+        .unwrap_or(crate::backend::DEFAULT_BACKEND_ID);
+      // The read-only view answers the same group gates the editor does, from
+      // the running launch rather than the form: a placement group is noise on
+      // a one-GPU host either way, and so is a speculation group on a model
+      // that cannot speculate.
+      let multi = app.multi_device();
+      let speculates = app.mtp_capable_for(&m.path);
+      crate::launch::knobs::registry::grouped_for_backend(id)
+        .into_iter()
+        .filter(|(g, _)| g.gate_open(multi, speculates))
+        .collect()
     }
-    // Skip the whole group — header included — when it has no visible row
-    // (the Multi-GPU placement group on single-GPU / CPU-only hosts).
-    let group_visible = match picker_view {
-      Some(pv) => group
-        .fields
-        .iter()
-        .any(|f| pv.field_visible(PickerField::Knob(*f))),
-      None => !group.multi_device_only || app.multi_device(),
-    };
-    if !group_visible {
-      continue;
-    }
-    lines.push(group_header(group.title, palette));
-    for field in group.fields {
-      let field = *field;
+  };
+
+  for (group, defs) in groups {
+    lines.push(group_header(group.title(), palette));
+    for def in defs {
+      let id = def.knob_id();
       match picker_view {
         Some(pv) => {
-          if !pv.field_visible(PickerField::Knob(field)) {
-            continue;
-          }
-          let focused = pv.field == PickerField::Knob(field);
+          let field = PickerField::Knob(id);
+          let focused = pv.field == field;
           if focused {
             focused_line = Some(lines.len() as u16);
           }
-          if pv.inline_edit.is_open() && pv.inline_edit.field == Some(PickerField::Knob(field)) {
+          if pv.inline_edit.is_open() && pv.inline_edit.field == Some(field) {
             lines.push(inline_edit_row(
-              field.field_name(),
+              def.id,
               pv.inline_edit.input.buffer(),
               focused,
               palette,
@@ -205,14 +203,14 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
               lines.push(inline_warning_row(err, palette));
             }
           } else {
-            let value = format_knob_value(pv, field);
-            let source = pv.source_for(field).label();
             lines.push(crate::tui::fmt::kv_row_focused(
-              field.field_name(),
-              value,
-              Some(source),
+              def.id,
+              pv.value_label(id),
+              Some(pv.source_for(id).label()),
               focused,
-              true,
+              // A bool has no ring to declare but always toggles.
+              def.kind == crate::launch::knobs::KnobKind::Bool
+                || def.ring() != crate::launch::knobs::Ring::None,
               palette,
               show_source,
             ));
@@ -220,25 +218,18 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
         }
         None => {
           let m = managed.expect("read-only view implies a managed row");
-          let value = match field {
-            KnobField::Ctx => resolved_ctx
-              .flatten()
-              .map(|v| {
-                // Flag a memory-driven clamp so the user knows the window
-                // was squeezed to the floor, not chosen freely.
-                if m.ctx_clamped {
-                  format!("{v} · clamped to floor")
-                } else {
-                  v.to_string()
-                }
-              })
-              .unwrap_or_else(|| format_persisted_knob_value(&m.knobs, KnobField::Ctx)),
-            _ => format_persisted_knob_value(&m.knobs, field),
+          let is_ctx = def.concept == Some(crate::launch::knobs::Concept::ContextLength);
+          let value = match (is_ctx, resolved_ctx.flatten()) {
+            // Flag a memory-driven clamp so the user knows the window was
+            // squeezed to the floor, not chosen freely.
+            (true, Some(v)) if m.ctx_clamped => format!("{v} · clamped to floor"),
+            (true, Some(v)) => v.to_string(),
+            _ => format_persisted_knob_value(&m.knobs, id),
           };
           // Not focused, not cyclable, no source chip — renders as a plain
           // `label  value` row through the shared formatter.
           lines.push(crate::tui::fmt::kv_row_focused(
-            field.field_name(),
+            def.id,
             value,
             None,
             false,
@@ -251,73 +242,9 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
     }
   }
 
-  // Per-backend native-knob rows, then the extras row — extras always last.
+  // The extras row — always last.
   match picker_view {
     Some(pv) => {
-      // Native knobs render under their own group header (matching the
-      // llama.cpp knob groups above), above extras. ds4 surfaces six rows
-      // here; llama.cpp / Lemonade have none.
-      let any_native =
-        (0..pv.native_descriptors.len()).any(|i| pv.field_visible(PickerField::NativeKnob(i)));
-      if any_native {
-        lines.push(group_header(
-          &format!("{} native", pv.active_backend_id()),
-          palette,
-        ));
-      }
-      for (i, descriptor) in pv.native_descriptors.iter().enumerate() {
-        let field = PickerField::NativeKnob(i);
-        if !pv.field_visible(field) {
-          continue;
-        }
-        let focused = pv.field == field;
-        if focused {
-          focused_line = Some(lines.len() as u16);
-        }
-        if pv.inline_edit.is_open() && pv.inline_edit.field == Some(field) {
-          lines.push(inline_edit_row(
-            descriptor.label,
-            pv.inline_edit.input.buffer(),
-            focused,
-            palette,
-          ));
-          if let Some(err) = &pv.inline_edit.error {
-            lines.push(inline_warning_row(err, palette));
-          }
-        } else {
-          lines.push(crate::tui::fmt::kv_row_focused(
-            descriptor.label,
-            pv.native_value_label(i),
-            None,
-            focused,
-            // Cycle / bool rows take ←/→; free-text rows are `e`-edited.
-            !descriptor.is_editable(),
-            palette,
-            show_source,
-          ));
-        }
-      }
-
-      // MTP enable row — shown only for an MTP-capable model, just above
-      // extras. A cycle-only tri-state (auto/on/off), honored by whichever
-      // backend runs the model.
-      if pv.field_visible(PickerField::Mtp) {
-        let mtp_focused = pv.field == PickerField::Mtp;
-        if mtp_focused {
-          focused_line = Some(lines.len() as u16);
-        }
-        lines.push(crate::tui::fmt::kv_row_focused(
-          "mtp",
-          pv.mtp_value_label().to_string(),
-          None,
-          mtp_focused,
-          // Cycle row: takes ←/→, not `e:edit`.
-          true,
-          palette,
-          show_source,
-        ));
-      }
-
       // Extras row — always the last field.
       let extras_focused = pv.field == PickerField::Extras;
       if extras_focused {
@@ -435,67 +362,6 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
 
   frame.render_widget(Paragraph::new(clipped).scroll((scroll, 0)), area);
 }
-
-/// Read-only ds4 running rows: the resolved ctx, then the six ds4 native
-/// knobs read from the recorded `last_params` (value or `inherited`). ds4
-/// ignores the llama.cpp typed knobs, so the running view shows these — the
-/// same set the launch picker offers — instead of a wall of `inherited`.
-fn push_native_readonly_rows(
-  lines: &mut Vec<Line<'static>>,
-  m: &ManagedRow,
-  descriptors: &[crate::launch::native_knobs::NativeKnobDescriptor],
-  resolved_ctx: Option<u32>,
-  palette: &Palette,
-  show_source: bool,
-) {
-  lines.push(group_header("Context", palette));
-  let ctx_value = resolved_ctx
-    .map(|v| {
-      if m.ctx_clamped {
-        format!("{v} · clamped to floor")
-      } else {
-        v.to_string()
-      }
-    })
-    .unwrap_or_else(|| format_persisted_knob_value(&m.knobs, KnobField::Ctx));
-  lines.push(crate::tui::fmt::kv_row_focused(
-    "ctx",
-    ctx_value,
-    None,
-    false,
-    false,
-    palette,
-    show_source,
-  ));
-  let header = m
-    .backend
-    .as_deref()
-    .map(|b| format!("{b} native"))
-    .unwrap_or_else(|| "native".to_string());
-  lines.push(group_header(&header, palette));
-  // Read the values from the launch's *live* `backend_knobs` (the running row,
-  // sourced from `status`), so the panel reflects what the server is actually
-  // running with — including an auto-enabled knob — rather than the saved
-  // `last_params` delta.
-  for d in descriptors {
-    let value = m
-      .backend_knobs
-      .get(d.id)
-      .and_then(KnobValue::as_set)
-      .cloned()
-      .unwrap_or_else(|| INHERITED_LABEL.to_string());
-    lines.push(crate::tui::fmt::kv_row_focused(
-      d.label,
-      value,
-      None,
-      false,
-      false,
-      palette,
-      show_source,
-    ));
-  }
-}
-
 /// Minimal scroll with margin: keep the focused row visible with
 /// `MARGIN` rows of context above and below where possible. Returns
 /// the new scroll offset. Clamped to `[0, max_scroll]`.
@@ -519,52 +385,15 @@ fn clamp_scroll_with_margin(current: u16, focused: u16, viewport: u16, total: u1
   next.min(max_scroll)
 }
 
-/// Read-only formatter for the running-launch view. Same vocabulary
-/// as `format_knob_value` (value or `inherited` / `on` / `off`) but
-/// reads straight from a persisted `TypedKnobs` instead of a picker
-/// state. Untouched fields render `inherited` — the user can open the
-/// editor (`e`) to see the resolved chip.
-/// Render a persisted knob slot: a pinned value verbatim, the literal
-/// `auto` for the Auto state, and `inherited` for an unset (Inherited)
-/// slot. Empty strings (cleared `device` / `tensor_split` / `split_mode`)
-/// read as `inherited` too.
-fn knob_value_label<T: std::fmt::Display>(slot: &Option<KnobValue<T>>) -> String {
-  match slot {
-    Some(KnobValue::Set(v)) => {
-      let s = v.to_string();
-      if s.is_empty() {
-        INHERITED_LABEL.into()
-      } else {
-        s
-      }
-    }
-    Some(KnobValue::Auto) => "auto".into(),
-    None => INHERITED_LABEL.into(),
-  }
-}
-
-fn format_persisted_knob_value(knobs: &crate::config::TypedKnobs, field: KnobField) -> String {
-  match field {
-    KnobField::Ctx => knob_value_label(&knobs.ctx),
-    KnobField::NGpuLayers => knob_value_label(&knobs.n_gpu_layers),
-    KnobField::NCpuMoe => knob_value_label(&knobs.n_cpu_moe),
-    KnobField::Threads => knob_value_label(&knobs.threads),
-    KnobField::Parallel => knob_value_label(&knobs.parallel),
-    KnobField::BatchSize => knob_value_label(&knobs.batch_size),
-    KnobField::UbatchSize => knob_value_label(&knobs.ubatch_size),
-    KnobField::Keep => knob_value_label(&knobs.keep),
-    KnobField::RopeFreqScale => knob_value_label(&knobs.rope_freq_scale),
-    KnobField::CacheTypeK => knob_value_label(&knobs.cache_type_k),
-    KnobField::CacheTypeV => knob_value_label(&knobs.cache_type_v),
-    KnobField::Reasoning => bool_label(&knobs.reasoning),
-    KnobField::FlashAttn => bool_label(&knobs.flash_attn),
-    KnobField::Mlock => bool_label(&knobs.mlock),
-    KnobField::NoMmap => bool_label(&knobs.no_mmap),
-    KnobField::Device => knob_value_label(&knobs.device),
-    KnobField::MainGpu => knob_value_label(&knobs.main_gpu),
-    KnobField::TensorSplit => knob_value_label(&knobs.tensor_split),
-    KnobField::SplitMode => knob_value_label(&knobs.split_mode),
-  }
+/// A persisted knob's value as the read-only running view renders it.
+///
+/// Delegates to the same renderer the editor's `value_label` uses, so one
+/// knob does not read `on` in the form and `true` two lines away here.
+fn format_persisted_knob_value(
+  knobs: &crate::launch::knobs::KnobSet,
+  id: crate::launch::knobs::KnobId,
+) -> String {
+  crate::launch::knobs::KnobValue::render(knobs.get(id), INHERITED_LABEL)
 }
 
 /// Read-only `server` row label for a running launch, or `None` when the model
@@ -588,55 +417,6 @@ fn running_server_label(app: &App, m: &ManagedRow) -> Option<String> {
     },
   };
   Some(label)
-}
-
-fn bool_label(v: &Option<KnobValue<bool>>) -> String {
-  match v.set_value().copied() {
-    Some(true) => "on".into(),
-    Some(false) => "off".into(),
-    None if v.is_auto() => "auto".into(),
-    None => INHERITED_LABEL.into(),
-  }
-}
-
-fn format_knob_value(state: &LaunchPickerState, field: KnobField) -> String {
-  // The Auto stop renders as `auto` regardless of value kind — fit
-  // governs the knob, so there is no concrete value to show.
-  if state.effective_is_auto(field) {
-    return "auto".into();
-  }
-  match field {
-    KnobField::Ctx
-    | KnobField::NGpuLayers
-    | KnobField::NCpuMoe
-    | KnobField::Threads
-    | KnobField::Parallel
-    | KnobField::BatchSize
-    | KnobField::UbatchSize
-    | KnobField::Keep
-    | KnobField::MainGpu => state
-      .effective_u32(field)
-      .map(|v| v.to_string())
-      .unwrap_or_else(|| INHERITED_LABEL.into()),
-    KnobField::RopeFreqScale => state
-      .effective_f32(field)
-      .map(|v| format!("{v}"))
-      .unwrap_or_else(|| INHERITED_LABEL.into()),
-    KnobField::CacheTypeK
-    | KnobField::CacheTypeV
-    | KnobField::TensorSplit
-    | KnobField::SplitMode => state
-      .effective_str(field)
-      .unwrap_or_else(|| INHERITED_LABEL.into()),
-    KnobField::Device => state.device_value_display(),
-    KnobField::Reasoning | KnobField::FlashAttn | KnobField::Mlock | KnobField::NoMmap => {
-      match state.effective_bool(field) {
-        Some(true) => "on".into(),
-        Some(false) => "off".into(),
-        None => INHERITED_LABEL.into(),
-      }
-    }
-  }
 }
 
 fn heading<'a>(text: &'a str, palette: &Palette) -> Line<'a> {
@@ -812,6 +592,7 @@ mod tests {
 
   fn fake_model(path: &str, parent: &str) -> crate::discovery::DiscoveredModel {
     crate::discovery::DiscoveredModel {
+      mtp_head: None,
       path: PathBuf::from(path),
       parent: PathBuf::from(parent),
       source: crate::discovery::ModelSource::UserPath,
@@ -821,7 +602,6 @@ mod tests {
       display_label: None,
       multimodal: None,
       supported_backends: Vec::new(),
-      mtp_head: None,
     }
   }
 
@@ -842,16 +622,14 @@ mod tests {
         // ctx/reasoning now live inside `knobs`; the picker seeds
         // `user_knobs` straight from `knobs` so a returning user
         // sees their last-shipped values with `(user)` chips.
-        knobs: crate::config::TypedKnobs {
-          ctx: Some(KnobValue::Set(16384)),
-          reasoning: Some(KnobValue::Set(true)),
-          ..Default::default()
+        knobs: crate::knobset! {
+          ctx: 16384,
+          reasoning: true
         },
-        backend_knobs: Default::default(),
         extras: vec!["--rope-freq-base".into(), "10000".into()],
         port: Some(41100),
-        server: None,
         mtp: Default::default(),
+        ..Default::default()
       },
     );
     app.list_cursor = 2;
@@ -874,14 +652,13 @@ mod tests {
   }
 
   #[test]
-  fn ds4_picker_groups_native_knobs_under_header_with_extras_last() {
+  fn a_non_default_backends_rows_render_under_the_shared_group_headers() {
     use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
     use ratatui::Terminal;
     let mut app = App::new(AppOptions::default());
     let mut picker = LaunchPickerState::for_model("DeepSeek-V4-Flash");
     picker.model_backend = crate::launch::params::BackendChoice::Explicit("ds4".into());
-    picker.native_descriptors = crate::backend::ds4::DS4_NATIVE_KNOBS;
     app.launch_picker = Some(picker);
     let palette = app.palette();
     let mut term = Terminal::new(TestBackend::new(60, 40)).unwrap();
@@ -897,68 +674,18 @@ mod tests {
       })
       .collect();
     let row_of = |needle: &str| rows.iter().position(|r| r.contains(needle));
-    // The native knobs carry their own separator group header, like the
-    // llama.cpp groups, and the free-text extras row is last of all.
-    let header = row_of("ds4 native").expect("ds4 native group header");
-    let ssd = row_of("SSD streaming").expect("a ds4 native knob row");
+    // ds4's own tunables are ordinary rows now: they sit under the same group
+    // headers llama.cpp's do, keyed by the flag ds4 itself takes, with the
+    // free-text extras row last of all.
+    let header = row_of(crate::launch::knobs::Group::Memory.title())
+      .expect("the shared group header ds4's memory knobs declare");
+    let ssd = row_of("ssd-streaming").expect("a ds4 knob row");
     let extras = row_of("extras").expect("extras row");
     assert!(header < ssd, "group header precedes its knobs");
-    assert!(ssd < extras, "extras comes after the ds4 native knobs");
-  }
-
-  #[test]
-  fn ds4_running_view_shows_native_knobs_not_llamacpp() {
-    use crate::tui::app::ManagedRow;
-    use ratatui::text::Line;
-    let app = App::new(AppOptions::default());
-    let path = PathBuf::from("/m/DeepSeek-V4-Flash.gguf");
-    // The running row carries the launch's live native knobs (from `status`)
-    // and the resolved `ds4` backend tag.
-    let mut backend_knobs = std::collections::BTreeMap::new();
-    backend_knobs.insert("ssd_streaming".into(), KnobValue::Set("true".into()));
-    backend_knobs.insert("power".into(), KnobValue::Set("80".into()));
-    let m = ManagedRow {
-      launch_id: "L1".into(),
-      path,
-      port: 41100,
-      backend_knobs,
-      backend: Some("ds4".into()),
-      ..Default::default()
-    };
-    let palette = app.palette();
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    push_native_readonly_rows(
-      &mut lines,
-      &m,
-      crate::backend::ds4::DS4_NATIVE_KNOBS,
-      Some(32768),
-      palette,
-      true,
-    );
-    let text: String = lines
-      .iter()
-      .flat_map(|l| l.spans.iter())
-      .map(|s| s.content.as_ref())
-      .collect::<Vec<_>>()
-      .join(" ");
-    // The ds4 native knobs render with their recorded values…
-    assert!(text.contains("ds4 native"), "{text}");
-    assert!(
-      text.contains("SSD streaming") && text.contains("true"),
-      "{text}"
-    );
-    assert!(
-      text.contains("GPU power %") && text.contains("80"),
-      "{text}"
-    );
-    assert!(
-      text.contains("CPU threads") && text.contains("inherited"),
-      "{text}"
-    );
-    // …the resolved ctx shows, but no llama.cpp typed knob leaks into it.
-    assert!(text.contains("32768"), "{text}");
-    assert!(!text.contains("n_gpu_layers"), "{text}");
-    assert!(!text.contains("flash_attn"), "{text}");
+    assert!(ssd < extras, "extras comes last");
+    // A llama.cpp-only knob has no row here — the editor renders what *this*
+    // backend declared, nothing more.
+    assert!(row_of("n-gpu-layers").is_none());
   }
 
   #[test]
@@ -980,15 +707,13 @@ mod tests {
         LastParamsRow {
           ctx: Some(16384),
           reasoning: false,
-          knobs: crate::config::TypedKnobs {
-            ctx: Some(KnobValue::Set(16384)),
-            ..Default::default()
+          knobs: crate::knobset! {
+            ctx: 16384
           },
-          backend_knobs: Default::default(),
           extras: vec![],
           port: Some(41100),
-          server: None,
           mtp: Default::default(),
+          ..Default::default()
         },
       );
       app.list_cursor = 2;
@@ -1017,75 +742,6 @@ mod tests {
     assert!(
       !narrow.contains("(user)"),
       "source chip must be hidden below 40 cols: {narrow}"
-    );
-  }
-
-  #[test]
-  fn running_view_shows_resolved_ctx_and_dispatched_auto_knobs() {
-    use crate::config::{KnobValue, TypedKnobs};
-    use crate::tui::app::ManagedRow;
-    use crate::tui::status_icons::SurfaceState;
-    use ratatui::backend::TestBackend;
-    use ratatui::layout::Rect;
-    use ratatui::Terminal;
-    let mut app = App::new(AppOptions::default());
-    let path = PathBuf::from("/m/gemma.gguf");
-    app.models = vec![fake_model("/m/gemma.gguf", "/m")];
-    // The managed row carries the *dispatched* knobs (what the server is
-    // running with) — all `auto` for an all-auto launch — plus the ctx
-    // `--fit` actually resolved, read from `/props`. `last_params` is
-    // deliberately left empty to prove the running view reads the live
-    // dispatch, not the saved delta.
-    app.managed = vec![ManagedRow {
-      launch_id: "L1".into(),
-      path: path.clone(),
-      port: 41101,
-      state: SurfaceState::Ready,
-      resolved_ctx: Some(262144),
-      knobs: TypedKnobs {
-        ctx: Some(KnobValue::Auto),
-        parallel: Some(KnobValue::Auto),
-        threads: Some(KnobValue::Auto),
-        ..Default::default()
-      },
-      ..Default::default()
-    }];
-    // Row 0 header, row 1 `▶ Running`, row 2 the running launch.
-    app.list_cursor = 2;
-    assert!(app.launch_picker.is_none());
-    assert!(
-      app.focused_managed().is_some(),
-      "cursor must land on the launch"
-    );
-    let palette = app.palette();
-    let mut term = Terminal::new(TestBackend::new(70, 40)).unwrap();
-    term
-      .draw(|f| render(f, Rect::new(0, 0, 70, 40), &app, palette))
-      .unwrap();
-    let buf = term.backend().buffer().clone();
-    let mut joined = String::new();
-    for y in 0..buf.area.height {
-      for x in 0..buf.area.width {
-        joined.push_str(buf.cell((x, y)).unwrap().symbol());
-      }
-      joined.push('\n');
-    }
-    // ctx shows the resolved number, NOT `default` and NOT `auto`.
-    assert!(joined.contains("262144"), "resolved ctx missing: {joined}");
-    // A fit-delegated knob reads `auto` (from the dispatched knobs),
-    // never `default` — even though `last_params` is empty.
-    let threads_line = joined.lines().find(|l| l.contains("threads")).unwrap_or("");
-    assert!(
-      threads_line.contains("auto"),
-      "dispatched auto knob should read auto, not default: {threads_line:?}"
-    );
-    let parallel_line = joined
-      .lines()
-      .find(|l| l.contains("parallel"))
-      .unwrap_or("");
-    assert!(
-      parallel_line.contains("auto"),
-      "parallel is fit-delegated and not read back, so it reads auto: {parallel_line:?}"
     );
   }
 

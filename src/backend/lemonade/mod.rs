@@ -9,6 +9,7 @@
 pub mod backend;
 pub mod client;
 pub mod discovery;
+pub mod knobs;
 pub mod orchestrate;
 
 use serde::{Deserialize, Serialize};

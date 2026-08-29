@@ -184,11 +184,11 @@ pub struct LaunchEnv {
   /// `(arch, gpu_backend)` table. The launch composition lands these
   /// on the `LayerLabel::ArchDefault` layer of the resolver, between
   /// `LastUsed` and `BuiltIn`. Empty map = no escape-hatch layer.
-  pub arch_defaults: std::collections::BTreeMap<String, crate::config::TypedKnobs>,
+  pub arch_defaults: std::collections::BTreeMap<String, crate::launch::knobs::KnobSet>,
   /// Neutral **server** catalog: every backend's configured servers (build /
   /// binary variants), each probed for its `--device` devices, with a derived
   /// stable id (see [`crate::backend::build_server_catalog`]). `start_model`
-  /// looks the chosen `knobs.device` selector up here to decide *which* server
+  /// looks the chosen `knobs.str(crate::launch::knobs::kid("device"))` selector up here to decide *which* server
   /// binary to spawn; `status` projects it so the TUI picker offers exactly the
   /// selectors `--device` will accept.
   ///

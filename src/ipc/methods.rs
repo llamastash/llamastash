@@ -671,15 +671,20 @@ struct PresetsSaveParams {
   #[serde(default)]
   mode: Option<LaunchModeWire>,
   #[serde(default)]
-  knobs: crate::config::TypedKnobs,
-  #[serde(default)]
-  backend_knobs: std::collections::BTreeMap<String, crate::config::KnobValue<String>>,
+  knobs: crate::launch::knobs::KnobSet,
   #[serde(default)]
   extras: Vec<String>,
   #[serde(default)]
   mtp: crate::launch::params::MtpEnable,
   #[serde(default)]
   mtp_draft_n: Option<u32>,
+  /// Backend this preset pins. Launch *identity*, not a knob — it decides
+  /// which backend's knobs apply at all, so it cannot be backend-declared.
+  #[serde(default)]
+  backend: Option<String>,
+  /// Server (build/binary) this preset pins. Identity, like `backend`.
+  #[serde(default)]
+  server: Option<String>,
 }
 
 async fn presets_save_handler(
@@ -705,13 +710,18 @@ async fn presets_save_handler(
   lp.ctx = parsed.ctx;
   lp.reasoning = parsed.reasoning.unwrap_or(false);
   lp.knobs = parsed.knobs;
-  // Carry the native (ds4) knobs into the preset — a ds4 launch's `--power` /
-  // `--ssd-streaming` are save-able, not just apply-able.
-  lp.backend_knobs = parsed.backend_knobs;
   // KD2 scoped MTP to "launch / TUI / preset"; the save path used to drop it,
   // so a preset could never pin speculation on or off.
   lp.mtp = parsed.mtp;
   lp.mtp_draft_n = parsed.mtp_draft_n;
+  // Identity: which backend and which of its builds this preset pins. Stored
+  // verbatim so a saved preset can reproduce the run it was captured from.
+  lp.backend = parsed
+    .backend
+    .as_deref()
+    .map(crate::launch::params::BackendChoice::from_id)
+    .unwrap_or_default();
+  lp.server = parsed.server.clone();
   lp.extras = parsed.extras.into_iter().map(OsString::from).collect();
   let body = preset_body_from_launch_params(&lp);
 
@@ -843,12 +853,12 @@ fn launch_params_row(p: &LaunchParams) -> Value {
     // reopens on the last-used build.
     "server": p.server,
   });
-  // Native knobs are additive and omitted when empty, so the row stays
-  // byte-stable for llama.cpp / Lemonade (neither declares native knobs).
-  if !p.backend_knobs.is_empty() {
-    if let Ok(v) = serde_json::to_value(&p.backend_knobs) {
-      row["backend_knobs"] = v;
-    }
+  // Pinned backend, omitted at its `Auto` default so non-pinned rows stay
+  // byte-stable. Same reason `mtp` below is additive: `start --preset` reads
+  // this back to rebuild the preset's launch params, and leaving it out
+  // silently dropped every `backend:` a preset declared.
+  if let Some(id) = p.backend.explicit_id() {
+    row["backend"] = Value::String(id.to_string());
   }
   // MTP intent, additive like the native knobs: omitted at its `Auto` default so
   // non-MTP rows stay byte-stable. The CLI reads this back off `presets_show` to
@@ -960,28 +970,56 @@ mod tests {
     MethodContext::new(ShutdownToken::new())
   }
 
+  /// A pinned backend has to survive onto the wire.
+  ///
+  /// It did not: the row carried `server` but never `backend`, so a preset
+  /// declaring one could not be read back by anything, and `start --preset`
+  /// launched on the default engine while reporting the preset's name.
+  #[test]
+  fn launch_params_row_carries_a_pinned_backend_and_omits_an_auto_one() {
+    use crate::launch::mode::LaunchMode;
+    use crate::launch::params::BackendChoice;
+    use std::path::PathBuf;
+
+    // Auto is the default, so the key stays absent and rows stay byte-stable.
+    let auto = LaunchParams::new(PathBuf::from("/m/a.gguf"), LaunchMode::Chat);
+    assert_eq!(auto.backend, BackendChoice::Auto);
+    assert!(
+      launch_params_row(&auto).get("backend").is_none(),
+      "an auto backend must not widen the row"
+    );
+
+    // Pinned rides the row as the bare id, matching `server` beside it.
+    let mut pinned = LaunchParams::new(PathBuf::from("/m/a.gguf"), LaunchMode::Chat);
+    pinned.backend = BackendChoice::from_id(crate::backend::DEFAULT_BACKEND_ID);
+    pinned.server = Some("build-two".into());
+    let row = launch_params_row(&pinned);
+    assert_eq!(
+      row["backend"].as_str(),
+      Some(crate::backend::DEFAULT_BACKEND_ID)
+    );
+    assert_eq!(row["server"].as_str(), Some("build-two"));
+  }
+
   #[test]
   fn launch_params_row_omits_empty_backend_knobs_and_emits_when_set() {
-    use crate::config::KnobValue;
     use crate::launch::mode::LaunchMode;
     use std::path::PathBuf;
     // Empty → the key is absent (byte-stable for llama.cpp / Lemonade).
     let lp = LaunchParams::new(PathBuf::from("/m/a.gguf"), LaunchMode::Chat);
     let row = launch_params_row(&lp);
     assert!(
-      row.get("backend_knobs").is_none(),
-      "empty backend_knobs must not appear: {row}"
+      row["knobs"].as_object().is_some_and(|m| m.is_empty()),
+      "an empty knob set renders as an empty map: {row}"
     );
     // Set → the key carries the map, with the same shape the TUI parses back.
     let mut lp2 = LaunchParams::new(PathBuf::from("/m/a.gguf"), LaunchMode::Chat);
-    lp2
-      .backend_knobs
-      .insert("kv_disk_dir".into(), KnobValue::Set("/tmp/kv".into()));
+    lp2.knobs.set_by_name("kv-disk-dir", "/tmp/kv");
     let row2 = launch_params_row(&lp2);
     assert_eq!(
-      row2["backend_knobs"]["kv_disk_dir"],
+      row2["knobs"]["kv-disk-dir"],
       serde_json::json!("/tmp/kv"),
-      "set backend_knobs round-trips into the row"
+      "a backend's own knob round-trips into the row like any other"
     );
   }
 

@@ -6,7 +6,6 @@
 //!
 //! - argv ← `compose::compose` (llama.cpp's own emitter, the `compose` submodule)
 //! - identity ← [`crate::gguf::identity::compute`]
-//! - capabilities ← every [`crate::launch::flag_aliases`] knob
 //! - the env strip ← [`LLAMA_ENV_STRIP`] (moved here from the supervisor)
 //!
 //! The golden parity tests below pin `prepare_launch`'s argv to
@@ -14,6 +13,7 @@
 
 mod actuals;
 mod compose;
+pub mod knobs;
 pub mod list_devices;
 mod telemetry;
 
@@ -26,20 +26,19 @@ use serde::{Deserialize, Serialize};
 
 use super::identity::ModelIdentity;
 use super::{
-  Accelerator, AcceleratorSupport, Backend, KnobCapability, LaunchPlan, Lifecycle,
-  ProcessLaunchSpec, Readiness,
+  Accelerator, AcceleratorSupport, Backend, LaunchPlan, Lifecycle, ProcessLaunchSpec, Readiness,
 };
-use crate::config::KnobValue;
 use crate::daemon::context::MethodContext;
 use crate::daemon::probe::ProbeOptions;
 use crate::launch::params::LaunchParams;
 
 /// Config-derived launch-knob keys llama.cpp carries in
-/// [`LaunchParams::backend_knobs`] (string-encoded, like ds4's native knobs).
-/// These are config projections seeded fresh each launch by
-/// [`LlamaCppBackend::seed_launch_knobs`], **not** [`Backend::native_knobs`]
-/// descriptors — they surface no TUI picker row. `compose` and the admission /
-/// readiness hooks read them straight out of the map.
+/// [`LaunchParams::launch_config`](crate::launch::params::LaunchParams), the
+/// [`LaunchParams::launch_config`](crate::launch::params::LaunchParams) — the
+/// config-projection channel, deliberately not knobs. Seeded fresh each launch
+/// by [`LlamaCppBackend::seed_launch_knobs`] from daemon config rather than
+/// from user intent, so they surface no editor row and no CLI flag. `compose`
+/// and the admission / readiness hooks read them straight out of the map.
 pub const LLAMACPP_KNOB_JINJA: &str = "jinja";
 pub const LLAMACPP_KNOB_STRICT_FIT: &str = "strict_fit";
 pub const LLAMACPP_KNOB_FIT_CTX_FLOOR: &str = "fit_ctx_floor";
@@ -48,9 +47,8 @@ pub const LLAMACPP_KNOB_FIT_CTX_FLOOR: &str = "fit_ctx_floor";
 /// unparsable. Shared by the admission-floor and readiness-gate hooks.
 fn fit_ctx_floor_knob(params: &LaunchParams) -> Option<u32> {
   params
-    .backend_knobs
+    .launch_config
     .get(LLAMACPP_KNOB_FIT_CTX_FLOOR)
-    .and_then(|kv| kv.as_set())
     .and_then(|s| s.parse::<u32>().ok())
 }
 
@@ -187,16 +185,12 @@ impl LlamaCppConfig {
 /// llama.cpp backend: direct, zero-overhead, fully-tuned. The product's
 /// reason to exist; never routed through a wrapper.
 #[derive(Debug, Clone)]
-pub struct LlamaCppBackend {
-  capabilities: KnobCapability,
-}
+pub struct LlamaCppBackend {}
 
 impl LlamaCppBackend {
   pub fn new() -> Self {
     // llama.cpp honors the full typed-knob vocabulary.
-    Self {
-      capabilities: KnobCapability::all(),
-    }
+    Self {}
   }
 }
 
@@ -240,16 +234,15 @@ impl LlamaCppBackend {
 }
 
 impl Backend for LlamaCppBackend {
+  fn knobs(&self) -> &'static [crate::launch::knobs::KnobDef] {
+    knobs::KNOBS
+  }
   fn id(&self) -> &'static str {
     "llamacpp"
   }
 
   fn lifecycle(&self) -> Lifecycle {
     Lifecycle::ProcessPerModel
-  }
-
-  fn capabilities(&self) -> &KnobCapability {
-    &self.capabilities
   }
 
   fn accelerators(&self) -> AcceleratorSupport {
@@ -372,22 +365,21 @@ impl Backend for LlamaCppBackend {
     let cfg = &ctx.backend.llamacpp;
     let jinja = cfg.jinja && !crate::launch::params::bench_disable_defaults_from_env();
     if jinja {
-      params.backend_knobs.insert(
-        LLAMACPP_KNOB_JINJA.to_string(),
-        KnobValue::Set("true".into()),
-      );
+      params
+        .launch_config
+        .insert(LLAMACPP_KNOB_JINJA.to_string(), "true".into());
     } else {
       // Jinja off (config `jinja: false` or bench parity): drop the key so
       // `compose` emits no `--jinja`.
-      params.backend_knobs.remove(LLAMACPP_KNOB_JINJA);
+      params.launch_config.remove(LLAMACPP_KNOB_JINJA);
     }
-    params.backend_knobs.insert(
+    params.launch_config.insert(
       LLAMACPP_KNOB_STRICT_FIT.to_string(),
-      KnobValue::Set(cfg.strict_fit.to_string()),
+      cfg.strict_fit.to_string(),
     );
-    params.backend_knobs.insert(
+    params.launch_config.insert(
       LLAMACPP_KNOB_FIT_CTX_FLOOR.to_string(),
-      KnobValue::Set(cfg.fit_ctx_floor.to_string()),
+      cfg.fit_ctx_floor.to_string(),
     );
   }
 
@@ -410,9 +402,8 @@ impl Backend for LlamaCppBackend {
     }
     let floor = fit_ctx_floor_knob(params).unwrap_or(crate::config::DEFAULT_FIT_CTX_FLOOR);
     let strict = params
-      .backend_knobs
+      .launch_config
       .get(LLAMACPP_KNOB_STRICT_FIT)
-      .and_then(|kv| kv.as_set())
       .is_some_and(|s| s == "true");
     native_ctx.map(|native| crate::daemon::supervisor::FitGate {
       floor,
@@ -457,8 +448,6 @@ impl Backend for LlamaCppBackend {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::config::{KnobValue, TypedKnobs};
-  use crate::launch::flag_aliases::knob_specs;
   use crate::launch::mode::LaunchMode;
   use std::ffi::OsString;
 
@@ -502,29 +491,28 @@ mod tests {
     }
   }
 
-  fn full_knobs() -> TypedKnobs {
+  fn full_knobs() -> crate::launch::knobs::KnobSet {
     // Mirror the canonical-order fixture in params.rs so the parity
     // assertion exercises every emitted flag.
-    TypedKnobs {
-      ctx: Some(KnobValue::Set(32768)),
-      reasoning: Some(KnobValue::Set(true)),
-      n_gpu_layers: Some(KnobValue::Set(99)),
-      n_cpu_moe: Some(KnobValue::Set(12)),
-      threads: Some(KnobValue::Set(8)),
-      cache_type_k: Some(KnobValue::Set("q8_0".into())),
-      cache_type_v: Some(KnobValue::Set("q8_0".into())),
-      flash_attn: Some(KnobValue::Set(true)),
-      mlock: Some(KnobValue::Set(true)),
-      no_mmap: Some(KnobValue::Set(true)),
-      parallel: Some(KnobValue::Set(4)),
-      batch_size: Some(KnobValue::Set(2048)),
-      ubatch_size: Some(KnobValue::Set(512)),
-      rope_freq_scale: Some(KnobValue::Set(1.0)),
-      keep: Some(KnobValue::Set(128)),
-      device: None,
-      tensor_split: Some(KnobValue::Set("3,1".into())),
-      main_gpu: Some(KnobValue::Set(0)),
-      split_mode: Some(KnobValue::Set("layer".into())),
+    crate::knobset! {
+      ctx: 32768,
+      reasoning: true,
+      n_gpu_layers: 99,
+      n_cpu_moe: 12,
+      threads: 8,
+      cache_type_k: "q8_0",
+      cache_type_v: "q8_0",
+      flash_attn: true,
+      mlock: true,
+      no_mmap: true,
+      parallel: 4,
+      batch_size: 2048,
+      ubatch_size: 512,
+      rope_freq_scale: 1.0,
+      keep: 128,
+      tensor_split: "3,1",
+      main_gpu: 0,
+      split_mode: "layer",
     }
   }
 
@@ -789,14 +777,6 @@ mod tests {
   }
 
   #[test]
-  fn capabilities_cover_every_knob() {
-    let b = LlamaCppBackend::new();
-    for spec in knob_specs() {
-      assert!(b.capabilities().supports(spec.field));
-    }
-  }
-
-  #[test]
   fn identify_delegates_to_gguf_identity() {
     let b = LlamaCppBackend::new();
     let bytes = b"GGUF\x03\x00\x00\x00 header";
@@ -810,139 +790,4 @@ mod tests {
   // parent module (`crate::backend`), where the enum now lives.
 
   // ---- config-derived launch knobs (jinja / strict_fit / fit_ctx_floor) ----
-
-  fn ctx_with_env(jinja: bool, strict_fit: bool, fit_ctx_floor: u32) -> MethodContext {
-    use crate::backend::BackendConfig;
-    use crate::daemon::shutdown::ShutdownToken;
-    // `seed_launch_knobs` reads its config from `ctx.backend.llamacpp`, so the
-    // launch-behaviour knobs ride the backend config, not a `LaunchEnv`.
-    let backend = BackendConfig {
-      llamacpp: LlamaCppConfig {
-        jinja,
-        strict_fit,
-        fit_ctx_floor,
-        ..Default::default()
-      },
-      ..Default::default()
-    };
-    MethodContext::new(ShutdownToken::new())
-      .with_backend(backend, std::collections::BTreeMap::new())
-  }
-
-  #[test]
-  fn seed_launch_knobs_projects_config_into_backend_knobs() {
-    let ctx = ctx_with_env(true, true, 8192);
-    let mut p = LaunchParams::new(PathBuf::from("/m/model.gguf"), LaunchMode::Chat);
-    LlamaCppBackend::new().seed_launch_knobs(&ctx, &mut p);
-    assert_eq!(
-      p.backend_knobs.get(LLAMACPP_KNOB_JINJA),
-      Some(&KnobValue::Set("true".into()))
-    );
-    assert_eq!(
-      p.backend_knobs.get(LLAMACPP_KNOB_STRICT_FIT),
-      Some(&KnobValue::Set("true".into()))
-    );
-    assert_eq!(
-      p.backend_knobs.get(LLAMACPP_KNOB_FIT_CTX_FLOOR),
-      Some(&KnobValue::Set("8192".into()))
-    );
-  }
-
-  #[test]
-  fn seed_launch_knobs_drops_jinja_when_config_off() {
-    let ctx = ctx_with_env(false, false, 16384);
-    // A stale inherited jinja knob must be removed, not left set.
-    let mut p = LaunchParams::new(PathBuf::from("/m/model.gguf"), LaunchMode::Chat);
-    p.backend_knobs.insert(
-      LLAMACPP_KNOB_JINJA.to_string(),
-      KnobValue::Set("true".into()),
-    );
-    LlamaCppBackend::new().seed_launch_knobs(&ctx, &mut p);
-    assert!(
-      !p.backend_knobs.contains_key(LLAMACPP_KNOB_JINJA),
-      "jinja off => no key seeded, so compose emits no --jinja"
-    );
-    assert_eq!(
-      p.backend_knobs.get(LLAMACPP_KNOB_STRICT_FIT),
-      Some(&KnobValue::Set("false".into()))
-    );
-  }
-
-  #[test]
-  fn seed_launch_knobs_overwrites_inherited_values() {
-    let ctx = ctx_with_env(true, false, 16384);
-    let mut p = LaunchParams::new(PathBuf::from("/m/model.gguf"), LaunchMode::Chat);
-    // Inherited (e.g. from last_params) values that must be re-projected.
-    p.backend_knobs.insert(
-      LLAMACPP_KNOB_STRICT_FIT.to_string(),
-      KnobValue::Set("true".into()),
-    );
-    p.backend_knobs.insert(
-      LLAMACPP_KNOB_FIT_CTX_FLOOR.to_string(),
-      KnobValue::Set("999".into()),
-    );
-    LlamaCppBackend::new().seed_launch_knobs(&ctx, &mut p);
-    assert_eq!(
-      p.backend_knobs.get(LLAMACPP_KNOB_STRICT_FIT),
-      Some(&KnobValue::Set("false".into())),
-      "config wins over an inherited strict_fit"
-    );
-    assert_eq!(
-      p.backend_knobs.get(LLAMACPP_KNOB_FIT_CTX_FLOOR),
-      Some(&KnobValue::Set("16384".into())),
-      "config wins over an inherited fit_ctx_floor"
-    );
-  }
-
-  #[test]
-  fn admission_ctx_floor_reads_the_seeded_knob() {
-    let b = LlamaCppBackend::new();
-    let mut p = LaunchParams::new(PathBuf::from("/m/model.gguf"), LaunchMode::Chat);
-    assert_eq!(b.admission_ctx_floor(&p), None, "no knob => no floor");
-    p.backend_knobs.insert(
-      LLAMACPP_KNOB_FIT_CTX_FLOOR.to_string(),
-      KnobValue::Set("16384".into()),
-    );
-    assert_eq!(b.admission_ctx_floor(&p), Some(16384));
-  }
-
-  #[test]
-  fn readiness_fit_gate_reproduces_the_launch_condition() {
-    let b = LlamaCppBackend::new();
-    let seed = |p: &mut LaunchParams, floor: u32, strict: bool| {
-      p.backend_knobs.insert(
-        LLAMACPP_KNOB_FIT_CTX_FLOOR.to_string(),
-        KnobValue::Set(floor.to_string()),
-      );
-      p.backend_knobs.insert(
-        LLAMACPP_KNOB_STRICT_FIT.to_string(),
-        KnobValue::Set(strict.to_string()),
-      );
-    };
-
-    // A pinned ctx suppresses the gate entirely (fit honors the pin).
-    let mut pinned = LaunchParams::new(PathBuf::from("/m/model.gguf"), LaunchMode::Chat);
-    pinned.ctx = Some(32768);
-    seed(&mut pinned, 16384, true);
-    assert!(b.readiness_fit_gate(&pinned, Some(65536)).is_none());
-
-    // Fit-delegated ctx but no trained window known => no gate.
-    let mut unpinned = LaunchParams::new(PathBuf::from("/m/model.gguf"), LaunchMode::Chat);
-    seed(&mut unpinned, 16384, true);
-    assert!(b.readiness_fit_gate(&unpinned, None).is_none());
-
-    // Fit-delegated ctx + known window => gate with the seeded floor/strict.
-    let gate = b
-      .readiness_fit_gate(&unpinned, Some(65536))
-      .expect("gate present");
-    assert_eq!(gate.floor, 16384);
-    assert_eq!(gate.native, 65536);
-    assert!(gate.strict);
-
-    // strict_fit knob off flips only the strict flag.
-    let mut soft = LaunchParams::new(PathBuf::from("/m/model.gguf"), LaunchMode::Chat);
-    seed(&mut soft, 16384, false);
-    let soft_gate = b.readiness_fit_gate(&soft, Some(65536)).expect("gate");
-    assert!(!soft_gate.strict);
-  }
 }

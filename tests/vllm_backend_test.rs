@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 const ALLOWED: &[&str] = &[
   "src/backend/vllm/mod.rs",
   "src/backend/vllm/discovery.rs",
+  "src/backend/vllm/knobs.rs",
   "src/backend/mod.rs",
   "src/config/mod.rs",
   // The daemon force-flag is user-facing CLI surface, so it names the backend

@@ -1111,7 +1111,7 @@ async fn run_config_step(
     });
   }
   // Round-9: the wizard no longer seeds `arch_defaults` — the
-  // built-in `(arch, gpu_backend) → TypedKnobs` table supersedes
+  // built-in `(arch, gpu_backend) → crate::launch::knobs::KnobSet` table supersedes
   // it. The YAML `arch_defaults` block remains an unmanaged escape
   // hatch users can hand-edit to override the built-in row. The
   // `_hardware` arg stays on the signature so re-introducing

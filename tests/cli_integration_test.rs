@@ -496,8 +496,14 @@ async fn presets_save_list_delete_round_trip() {
     Command::Presets(PresetsArgs {
       model: "m.gguf".into(),
       action: PresetsAction::Save {
+        knobs: Default::default(),
+        backend: None,
+        server: None,
+        mtp: None,
+        mtp_draft_n: None,
+        from_last: false,
         name: "long-ctx".into(),
-        ctx: Some(32768),
+        ctx: Some(llamastash::cli::cli_args::CtxArg::Value(32768)),
         reasoning: Some(ReasoningFlag::On),
         mode: Some(CliLaunchMode::Chat),
         extra: vec![OsString::from("--threads"), OsString::from("4")],
@@ -511,8 +517,10 @@ async fn presets_save_list_delete_round_trip() {
   // confirm via config.yaml (presets live there now, not state.json)
   let cfg = llamastash::config::load_config_from_path(&h.config_path).config;
   assert_eq!(
-    cfg.presets["m.gguf"].entries["long-ctx"].knobs.ctx,
-    Some(llamastash::config::KnobValue::Set(32768)),
+    cfg.presets["m.gguf"].entries["long-ctx"]
+      .knobs
+      .u32(llamastash::launch::knobs::kid("ctx-size")),
+    Some(32768),
     "preset should round-trip into config.yaml: {:?}",
     cfg.presets
   );
@@ -679,8 +687,14 @@ async fn presets_list_json_emits_array_for_agents() {
     Command::Presets(PresetsArgs {
       model: "m.gguf".into(),
       action: PresetsAction::Save {
+        knobs: Default::default(),
+        backend: None,
+        server: None,
+        mtp: None,
+        mtp_draft_n: None,
+        from_last: false,
         name: "coding".into(),
-        ctx: Some(32768),
+        ctx: Some(llamastash::cli::cli_args::CtxArg::Value(32768)),
         reasoning: Some(ReasoningFlag::On),
         mode: Some(CliLaunchMode::Chat),
         extra: vec![],
@@ -728,8 +742,14 @@ async fn start_preset_chain_seeds_supervisor_with_saved_params() {
     Command::Presets(PresetsArgs {
       model: "m.gguf".into(),
       action: PresetsAction::Save {
+        knobs: Default::default(),
+        backend: None,
+        server: None,
+        mtp: None,
+        mtp_draft_n: None,
+        from_last: false,
         name: "coding".into(),
-        ctx: Some(16384),
+        ctx: Some(llamastash::cli::cli_args::CtxArg::Value(16384)),
         reasoning: Some(ReasoningFlag::On),
         mode: Some(CliLaunchMode::Chat),
         extra: vec![OsString::from("--threads"), OsString::from("8")],
@@ -774,21 +794,19 @@ async fn start_preset_chain_seeds_supervisor_with_saved_params() {
   loop {
     let lp = client.call("last_params_list", None).await.unwrap();
     let arr = lp["last_params"].as_array().cloned().unwrap_or_default();
-    // U4 recorder contract: the daemon persists *user-set knobs only*,
-    // and stops persisting the resolved top-level `ctx`/`reasoning`
-    // (those are now Null/false). The preset's ctx/reasoning/threads
-    // live in the `knobs` sub-object.
+    // U4 recorder contract: the daemon persists *user-set knobs only*, and
+    // stops persisting the resolved top-level `ctx`/`reasoning` (those are
+    // Null/false). Everything the preset pinned lands in the one `knobs` map,
+    // under each knob's declared id.
     if arr.iter().any(|row| {
-      row["params"]["knobs"]["ctx"] == serde_json::json!(16384)
+      row["params"]["knobs"]["ctx-size"] == serde_json::json!(16384)
         && row["params"]["knobs"]["reasoning"] == serde_json::json!(true)
         && row["params"]["knobs"]["threads"] == serde_json::json!(8)
     }) {
       break;
     }
     if Instant::now() > deadline {
-      panic!(
-        "supervisor should have recorded preset knobs.ctx + knobs.reasoning + knobs.threads: {arr:?}",
-      );
+      panic!("supervisor should have recorded the preset's ctx + reasoning + threads: {arr:?}",);
     }
     tokio::time::sleep(Duration::from_millis(100)).await;
   }

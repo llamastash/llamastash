@@ -10,7 +10,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{ConfigPresetBlock, KnobValue, PresetBody};
+use crate::config::{ConfigPresetBlock, PresetBody};
+use crate::launch::knobs::{Concept, KnobValue, Scalar};
 use crate::launch::mode::LaunchMode;
 use crate::launch::params::LaunchParams;
 use crate::launch::resolve::CatalogRow;
@@ -72,18 +73,41 @@ impl Presets {
 }
 
 /// Fold a launch's settings into the config-layer [`PresetBody`]. `ctx`
-/// and `reasoning` live inside [`crate::config::TypedKnobs`] at the config
+/// and `reasoning` live inside [`crate::launch::knobs::KnobSet`] at the config
 /// layer (the flat `ctx:` / `reasoning:` keys), so a pinned ctx becomes
 /// `Set` and an `--ctx auto` keeps its `Auto`; `mode` is stored only when
 /// it differs from the default `Chat`, and `extras` only when non-empty.
 /// The inverse of [`materialize_preset`].
 pub fn preset_body_from_launch_params(params: &LaunchParams) -> PresetBody {
   let mut knobs = params.knobs.clone();
+  // `ctx` / `reasoning` / `mode` are still `LaunchParams` siblings on the
+  // wire; fold them into the knob map so a preset stores one shape.
+  let backend_id = params
+    .backend
+    .explicit_id()
+    .unwrap_or(crate::backend::DEFAULT_BACKEND_ID);
   if let Some(c) = params.ctx {
-    knobs.ctx = Some(KnobValue::Set(c));
+    knobs.set_by_concept(
+      backend_id,
+      Concept::ContextLength,
+      KnobValue::Set(Scalar::U32(c)),
+    );
   }
   if params.reasoning {
-    knobs.reasoning = Some(KnobValue::Set(true));
+    knobs.set_by_name("reasoning", "true");
+  }
+  if params.mode != LaunchMode::Chat {
+    knobs.set_by_concept(
+      backend_id,
+      Concept::Mode,
+      KnobValue::Set(Scalar::Str(params.mode.label().to_string())),
+    );
+  }
+  if !matches!(params.mtp, crate::launch::params::MtpEnable::Auto) {
+    knobs.set_by_name("mtp", params.mtp.label());
+  }
+  if let Some(n) = params.mtp_draft_n {
+    knobs.set_by_name("mtp-draft-n", n.to_string());
   }
   let extras: Vec<String> = params
     .extras
@@ -91,33 +115,65 @@ pub fn preset_body_from_launch_params(params: &LaunchParams) -> PresetBody {
     .map(|s| s.to_string_lossy().into_owned())
     .collect();
   PresetBody {
-    mode: (params.mode != LaunchMode::Chat).then_some(params.mode),
     knobs,
     extras: (!extras.is_empty()).then_some(extras),
-    backend_knobs: params.backend_knobs.clone(),
-    mtp: params.mtp,
-    mtp_draft_n: params.mtp_draft_n,
+    backend: params.backend.explicit_id().map(str::to_string),
+    server: params.server.clone(),
   }
 }
 
 /// Materialise a stored [`PresetBody`] back into a [`NamedPreset`] over
-/// `model_path`. `ctx` / `reasoning` move out of the knobs into the
-/// [`LaunchParams`] sibling fields so the IPC/CLI wire shape is unchanged;
-/// an `Auto` ctx stays in the knob so `--fit` still governs the window.
+/// `model_path`.
+///
+/// `ctx` / `reasoning` / `mode` / `mtp` are projected back out of the knob map
+/// onto their [`LaunchParams`] siblings so the IPC and CLI wire shapes are
+/// unchanged. An `Auto` ctx stays in the knob, so `--fit` still governs it.
 /// The inverse of [`preset_body_from_launch_params`].
 pub fn materialize_preset(name: &str, body: &PresetBody, model_path: PathBuf) -> NamedPreset {
   let mut knobs = body.knobs.clone();
-  let ctx = if let Some(KnobValue::Set(n)) = knobs.ctx {
-    knobs.ctx = None;
-    Some(n)
-  } else {
-    // Auto ctx stays in the knob (fit governs it); None stays None.
-    None
-  };
-  // Reasoning is a plain bool sibling on LaunchParams; pull it out so it
-  // doesn't double up with the knob.
-  let reasoning = matches!(knobs.reasoning.take(), Some(KnobValue::Set(true)));
-  let mut params = LaunchParams::new(model_path, body.mode.unwrap_or(LaunchMode::Chat));
+  let backend = body
+    .backend
+    .as_deref()
+    .map(crate::launch::params::BackendChoice::from_id)
+    .unwrap_or_default();
+  let backend_id = backend
+    .explicit_id()
+    .unwrap_or(crate::backend::DEFAULT_BACKEND_ID);
+
+  let mode = knobs
+    .str_by_concept(backend_id, Concept::Mode)
+    .and_then(LaunchMode::from_label)
+    .unwrap_or(LaunchMode::Chat);
+  if let Some(def) = crate::launch::knobs::def_for_backend_concept(backend_id, Concept::Mode) {
+    knobs.clear(def.knob_id());
+  }
+
+  // Only a pinned ctx moves out; an Auto ctx belongs to the fitter.
+  let ctx = knobs.u32_by_concept(backend_id, Concept::ContextLength);
+  if ctx.is_some() {
+    if let Some(def) =
+      crate::launch::knobs::def_for_backend_concept(backend_id, Concept::ContextLength)
+    {
+      knobs.clear(def.knob_id());
+    }
+  }
+  let reasoning = knobs
+    .get_by_name("reasoning")
+    .and_then(|v| v.set_value())
+    .and_then(|s| s.as_bool())
+    .unwrap_or(false);
+  knobs.remove_by_name("reasoning");
+
+  let mtp = knobs
+    .text_by_name("mtp")
+    .and_then(|v| crate::launch::params::MtpEnable::from_token(&v))
+    .unwrap_or_default();
+  let mtp_draft_n = knobs
+    .get_by_name("mtp-draft-n")
+    .and_then(|v| v.set_value())
+    .and_then(|s| s.as_u32());
+
+  let mut params = LaunchParams::new(model_path, mode);
   params.ctx = ctx;
   params.reasoning = reasoning;
   params.knobs = knobs;
@@ -128,9 +184,10 @@ pub fn materialize_preset(name: &str, body: &PresetBody, model_path: PathBuf) ->
     .into_iter()
     .map(OsString::from)
     .collect();
-  params.backend_knobs = body.backend_knobs.clone();
-  params.mtp = body.mtp;
-  params.mtp_draft_n = body.mtp_draft_n;
+  params.backend = backend;
+  params.server = body.server.clone();
+  params.mtp = mtp;
+  params.mtp_draft_n = mtp_draft_n;
   NamedPreset {
     name: name.to_string(),
     params,
@@ -285,6 +342,35 @@ fn merge_block(
 
 #[cfg(test)]
 mod tests {
+  /// A preset on a backend whose context knob is not the one a backend-blind
+  /// lookup matches first still gets its context window.
+  ///
+  /// `ctx:` in config.yaml resolves before the serving backend is known, so it
+  /// lands under whichever knob declares that alias — not necessarily the one
+  /// this preset's backend reads. `materialize_preset` then looked for its own
+  /// backend's spelling, found nothing, and dropped the window with no warning:
+  /// the preset launched at the engine default instead of the size asked for.
+  #[test]
+  fn a_preset_context_window_survives_whichever_key_it_lands_under() {
+    for (backend_id, yaml) in [
+      ("ds4", "knobs:\n  ctx: 8192\nbackend: ds4\n"),
+      ("llamacpp", "knobs:\n  ctx: 8192\nbackend: llamacpp\n"),
+    ] {
+      let body: crate::config::PresetBody = yaml_serde::from_str(yaml).expect("parse");
+      let np = materialize_preset("p", &body, PathBuf::from("/m/x.gguf"));
+      assert_eq!(
+        np.params.ctx,
+        Some(8192),
+        "{backend_id} preset lost its context window; stored under {:?}",
+        body
+          .knobs
+          .iter()
+          .map(|(id, _)| id.to_string())
+          .collect::<Vec<_>>()
+      );
+    }
+  }
+
   use super::*;
 
   use std::path::PathBuf;
@@ -334,10 +420,10 @@ mod tests {
 
   // ---- materialization / capture / resolution ----
 
-  use crate::config::TypedKnobs;
-
   fn catalog_row(path: &str, arch: &str) -> CatalogRow {
     CatalogRow {
+      mtp: None,
+      multimodal: None,
       path: path.to_string(),
       model_id: None,
       parent: String::new(),
@@ -357,8 +443,6 @@ mod tests {
       total_parameters: None,
       backend: None,
       supported_backends: Vec::new(),
-      multimodal: None,
-      mtp: None,
     }
   }
 
@@ -374,13 +458,9 @@ mod tests {
 
   fn body_ctx(ctx: u32) -> PresetBody {
     PresetBody {
-      mode: None,
-      knobs: TypedKnobs {
-        ctx: Some(KnobValue::Set(ctx)),
-        ..TypedKnobs::default()
+      knobs: crate::knobset! {
+        ctx: ctx
       },
-      extras: None,
-      backend_knobs: Default::default(),
       ..PresetBody::default()
     }
   }
@@ -388,15 +468,13 @@ mod tests {
   #[test]
   fn materialize_then_capture_round_trips_ctx_reasoning_extras() {
     let body = PresetBody {
-      mode: Some(LaunchMode::Embedding),
-      knobs: TypedKnobs {
-        ctx: Some(KnobValue::Set(65536)),
-        reasoning: Some(KnobValue::Set(true)),
-        flash_attn: Some(KnobValue::Set(true)),
-        ..TypedKnobs::default()
+      knobs: crate::knobset! {
+        ctx: 65536,
+        reasoning: true,
+        flash_attn: true,
+        mode: "embedding"
       },
       extras: Some(vec!["--rope-freq-base".into(), "10000".into()]),
-      backend_knobs: Default::default(),
       ..PresetBody::default()
     };
     let np = materialize_preset("p", &body, PathBuf::from("/m/a.gguf"));
@@ -404,9 +482,20 @@ mod tests {
     assert_eq!(np.params.ctx, Some(65536));
     assert!(np.params.reasoning);
     assert_eq!(np.params.mode, LaunchMode::Embedding);
-    assert_eq!(np.params.knobs.ctx, None);
-    assert_eq!(np.params.knobs.reasoning, None);
-    assert_eq!(np.params.knobs.flash_attn, Some(KnobValue::Set(true)));
+    assert_eq!(
+      np.params.knobs.u32(crate::launch::knobs::kid("ctx-size")),
+      None
+    );
+    assert_eq!(
+      np.params.knobs.bool(crate::launch::knobs::kid("reasoning")),
+      None
+    );
+    assert_eq!(
+      np.params
+        .knobs
+        .bool(crate::launch::knobs::kid("flash-attn")),
+      Some(true)
+    );
     assert_eq!(np.params.extras.len(), 2);
     // Capture is the inverse — back to a flat body with ctx/reasoning in knobs.
     let back = preset_body_from_launch_params(&np.params);
@@ -420,13 +509,9 @@ mod tests {
     // re-emitted. This pins the normalization so it's intentional, not a
     // silent surprise. Behaviorally identical — both collapse to "off".
     let body = PresetBody {
-      mode: Some(LaunchMode::Chat),
-      knobs: TypedKnobs {
-        reasoning: Some(KnobValue::Set(false)),
-        ..TypedKnobs::default()
+      knobs: crate::knobset! {
+        reasoning: false
       },
-      extras: None,
-      backend_knobs: Default::default(),
       ..PresetBody::default()
     };
     let np = materialize_preset("p", &body, PathBuf::from("/m/a.gguf"));
@@ -434,8 +519,11 @@ mod tests {
     assert_eq!(np.params.mode, LaunchMode::Chat);
     // Capture drops the inert defaults (reasoning false / chat mode).
     let back = preset_body_from_launch_params(&np.params);
-    assert_eq!(back.mode, None);
-    assert_eq!(back.knobs.reasoning, None);
+    assert_eq!(back.knobs.str(crate::launch::knobs::kid("mode")), None);
+    assert_eq!(
+      back.knobs.bool(crate::launch::knobs::kid("reasoning")),
+      None
+    );
   }
 
   #[test]
@@ -447,8 +535,14 @@ mod tests {
     lp.mtp = crate::launch::params::MtpEnable::Off;
     lp.mtp_draft_n = Some(4);
     let body = preset_body_from_launch_params(&lp);
-    assert_eq!(body.mtp, crate::launch::params::MtpEnable::Off);
-    assert_eq!(body.mtp_draft_n, Some(4));
+    assert_eq!(
+      body.knobs.bool(crate::launch::knobs::kid("mtp")),
+      Some(false)
+    );
+    assert_eq!(
+      body.knobs.u32(crate::launch::knobs::kid("mtp-draft-n")),
+      Some(4)
+    );
     let np = materialize_preset("p", &body, PathBuf::from("/m/a.gguf"));
     assert_eq!(np.params.mtp, crate::launch::params::MtpEnable::Off);
     assert_eq!(np.params.mtp_draft_n, Some(4));
@@ -464,27 +558,6 @@ mod tests {
     assert!(
       !yaml.contains("mtp"),
       "unset MTP must not serialise, got {yaml}"
-    );
-  }
-
-  #[test]
-  fn materialize_keeps_auto_ctx_in_the_knob() {
-    let body = PresetBody {
-      mode: None,
-      knobs: TypedKnobs {
-        ctx: Some(KnobValue::Auto),
-        ..TypedKnobs::default()
-      },
-      extras: None,
-      backend_knobs: Default::default(),
-      ..PresetBody::default()
-    };
-    let np = materialize_preset("p", &body, PathBuf::from("/m/a.gguf"));
-    assert_eq!(np.params.ctx, None, "Auto ctx never pins the -c sibling");
-    assert_eq!(
-      np.params.knobs.ctx,
-      Some(KnobValue::Auto),
-      "Auto stays for --fit"
     );
   }
 

@@ -21,6 +21,17 @@ pub enum LaunchMode {
 }
 
 impl LaunchMode {
+  /// Parse a mode back from its [`Self::label`]. The inverse used when a
+  /// stored knob value is projected onto the typed `LaunchParams.mode`.
+  pub fn from_label(s: &str) -> Option<Self> {
+    match s {
+      "chat" => Some(LaunchMode::Chat),
+      "embedding" => Some(LaunchMode::Embedding),
+      "rerank" => Some(LaunchMode::Rerank),
+      _ => None,
+    }
+  }
+
   pub fn label(&self) -> &'static str {
     match self {
       LaunchMode::Chat => "chat",

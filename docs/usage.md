@@ -340,9 +340,9 @@ llamastash start <ref> [--preset NAME] [--ctx N] [--port N] [--wait]
 
 `--server <id>` picks a specific **server** — one build/binary of a backend (`llamacpp-vulkan`, `llamacpp-cuda`, `ds4` or a named `ds4-rocm`). It determines which binary spawns and, when `--backend` is unset, which backend runs the model (the server's owning backend). Server ids auto-derive as `<backend>-<compute>` from each build's own device names (or the bare backend id for a device-less engine like ds4/lemonade), overridable with a per-server `name:`; list them from `status` (the `servers` array; `status --json` mirrors it). A `--device <selector>` already implies its owning server, so `--server` is for picking a build with no device pin. The pick persists in `last_params`, so a relaunch reuses it — in the TUI it reopens the launch picker's `server` row on that build.
 
-Every typed knob the Settings editor exposes is also a first-class `start` flag — `--n-gpu-layers`, `--threads`, `--device`, `--tensor-split`, `--main-gpu`, `--split-mode`, `--flash-attn`, `--cache-type-k`/`-v`, `--batch-size`, `--mlock`, … Run `start --help` for the full list under **Advanced launch params** (the flags are generated from the same spec table the TUI uses, so the two surfaces can't drift). Booleans take `--flash-attn` (= on) or `--flash-attn=false`. Anything `start` doesn't recognise as a knob — including `llama-server`'s single-dash shorts like `-ngl` — still works verbatim after `--`. A knob set both inline and after `--` resolves to the `--` value.
+Every knob any backend declares is a first-class `start` flag — `--n-gpu-layers`, `--threads`, `--device`, `--tensor-split`, `--main-gpu`, `--split-mode`, `--flash-attn`, `--cache-type-k`/`-v`, `--batch-size`, `--mlock`, and the same for every other backend's own tunables. The flag is spelled the way the engine spells it. Run `start --help` for the full list, grouped by the backend that declares each; `llamastash knobs` lists them with value ranges and choices. Flags, editor rows and preset keys are all generated from one declaration per knob, so no surface can be missing one. Booleans take `--flash-attn` (= on) or `--flash-attn=false`. Anything `start` doesn't recognise as a knob — including `llama-server`'s single-dash shorts like `-ngl` — still works verbatim after `--`. A knob set both inline and after `--` resolves to the `--` value.
 
-Modes are strict: when the catalog reports `mode_hint = unknown` and no `--mode` is passed, the CLI exits `64` rather than silently defaulting to chat.
+Modes are strict: when the catalog reports `mode_hint = unknown` and no `--mode` is passed, the CLI exits `64` rather than silently defaulting to chat. Otherwise the mode resolves as `--mode` > a preset's `mode:` pin > the model's own GGUF hint > chat, and the last two rungs are resolved by the daemon, so the same order applies to a plain `start`, the TUI, and proxy auto-start alike.
 
 `--ctx` above the model's native context length is allowed (the supervisor still tries, per R12); a warning prints to stderr. When `--preset` and inline knobs are combined, the inline knobs layer onto the preset — they override only the fields they set, leaving the rest of the preset intact.
 
@@ -432,7 +432,9 @@ A `default:` under a key is the model's **standing launch config** (hand-edited;
 
 Picking a preset explicitly (`start --preset <name>`, or the TUI cycle) overrides the default for that launch. `start --preset auto` is the clean per-launch "ignore everything, fit fresh" gesture. In the TUI, the preset cycle (`last used → auto → named…`) marks whichever stop is the configured default with `(default)` and opens on it, and the preset row shows the count of available presets (`preset (N)`).
 
-An entry knob set to `auto` delegates that knob to llama-server's `--fit` (e.g. `n_gpu_layers: auto`); `auto` is a reserved token, so to pin a knob to the *literal* string value `auto`, use the escape `{ value: auto }`. The app writes entries in block style (flow `{ ctx: 8192 }` is also accepted when you hand-author). Presets carry no `port` (it is per-launch, auto-assigned). Changes the CLI/TUI make are live immediately; hand-edits to `config.yaml` need a `llamastash daemon restart` to be picked up. See `config.example.yaml` for the full shape.
+Alongside its knobs an entry may pin launch **identity**: `mode:` (`chat` / `embedding` / `rerank`), `backend:`, and `server:` (a build id, as shown on the TUI's Server row). These say *what runs* rather than how it is tuned, and they apply on every surface: `start --preset`, a `default:` preset on plain `start` and on proxy auto-start, and the TUI preset cycle. An explicit `--mode` / `--backend` / `--server` still wins over the pin. A `mode:` pin also answers a model whose GGUF hint is `unknown`, which `start` would otherwise refuse with "pass `--mode`". Only a pinned preset carries a mode forward; a one-off `start --mode embedding` is not remembered for the next plain launch, so an embedding request can never lock a chat model out of chat.
+
+An entry knob set to `auto` delegates that knob to llama-server's `--fit` (e.g. `n_gpu_layers: auto`); `auto` is a reserved token, so to pin a knob to the *literal* string value `auto`, use the escape `{ value: auto }`. The app writes entries in block style (flow `{ ctx: 8192 }` is also accepted when you hand-author). Presets carry no `port` (it is per-launch, auto-assigned). Changes the CLI/TUI make are live immediately; hand-edits to `config.yaml` need a `llamastash daemon restart` to be picked up. See `config.example.yaml` for the full shape. On the first `daemon start` after upgrading, an older `config.yaml` is rewritten in place into the `knobs:` shape with a `.pre-knobs.bak` copy beside it; the daemon logs what it migrated. Comments above a key survive that rewrite, comments *between* two knobs inside a migrated entry do not (the entry body is regenerated), which is what the backup is for. Until that first start, a read that does not reach the daemon (`--no-spawn`) sees an unmigrated entry's knobs as empty.
 
 ### `llamastash favorites`
 
@@ -452,7 +454,7 @@ llamastash last-params [<ref>] [--json]
 
 `--json` wraps rows in `{"last_params": [...]}`. Exit `64` if `<ref>` resolves to a model with no recorded params yet — launch it once to populate.
 
-Each row's `params` object may carry an additive `backend_knobs` map (per-backend native tunables, keyed by descriptor id) — omitted when empty, so it is absent for llama.cpp and Lemonade rows and present on ds4 ones (see [ds4 native knobs](#ds4-native-knobs)). The same field rides the `start_model` IPC request body, also omitted when empty. See [`docs/architecture.md` § Backend-neutral substrate seams](architecture.md).
+Each row's `params` object carries a `knobs` map — every knob the launch dispatched with, keyed by its declared id and holding a scalar or the bare string `auto`. One map for every backend; omitted when empty. The same field rides the `start_model` IPC request body. See [`docs/architecture.md` § The knob registry](architecture.md).
 
 ### `llamastash daemon`
 
@@ -505,9 +507,9 @@ presets:
   DeepSeek-V4-Flash-...-0731.gguf:
     entries:
       dspark:
-        backend_knobs:
-          dspark: "true"
-          ssd_streaming: "false"   # streaming and a draft head are exclusive
+        knobs:
+          dspark: true
+          ssd-streaming: false   # streaming and a draft head are exclusive
 ```
 
 Leave `mtp` unset and llamastash auto-pairs the support GGUF sitting beside the model (it declares its own `deepseek4-dspark` architecture, so it is matched by header, not by filename). With `dspark` on and no support file resolvable, the DSpark knobs are dropped with a notice instead of handing ds4-server a `--dspark` it will reject after the full weight load.
@@ -562,9 +564,9 @@ Routing is automatic and keys on a header-level compatibility predicate — arch
 - `--mode embedding` / `--mode rerank` on a compatible model routes to llama.cpp — ds4 serves chat/completions only.
 - The split PRO half-files (`…-Layers00-30.gguf` / `…-Layers-31-output.gguf`) are refused before spawn with "ds4 distributed mode unsupported"; use a single-file DeepSeek-V4 GGUF. Single-file PRO quants (e.g. the `…-Pro-IQ2XXS-…-Instruct` variants) are fine.
 
-### ds4 native knobs
+### ds4 knobs
 
-ds4-server takes fourteen backend-specific tunables that have no llama.cpp equivalent. Set them per-launch in the TUI launch picker or persist them in a preset; ds4 honors exactly one typed knob from the shared set — `ctx` (→ `--ctx`).
+ds4 declares its own tunables, each named for the flag `ds4-server` itself takes. Every one is a `start --<flag>`, a row in the TUI launch picker, and a preset key — set it wherever suits and the same run reproduces from any of the three.
 
 | Knob             | ds4-server flag      | What it does |
 | ---------------- | -------------------- | ------------ |
@@ -620,7 +622,7 @@ Three behaviours differ from the GGUF backends and are worth knowing:
 - **Detection never runs the binary.** vLLM builds its argument parser through a device probe and fails with `Failed to infer device type` on a host with no usable accelerator, so LlamaStash checks only that the configured path exists. That is also why a container wrapper script works as the `binary`.
 - **Startup is slow and readiness waits for it.** Engine init (memory profiling plus KV-cache build) ran 10-27 s on a 0.5B and takes longer on real models. Readiness requires `/v1/models` to advertise the model, not just an answering port.
 
-`--ctx` maps to `--max-model-len`. Nine vLLM-specific tunables are native knobs (`kv_cache_memory_bytes`, `gpu_memory_utilization`, `max_num_seqs`, `tensor_parallel_size`, `dtype`, `kv_cache_dtype`, `quantization`, `enforce_eager`, `trust_remote_code`); the rest of vLLM's ~240 flags ride the `-- <extras>` tail, minus a denylist that keeps the launch loopback-only and reapable.
+`--ctx` maps to vLLM's own `--max-model-len`, which is the knob's declared name. Nine further vLLM tunables are declared (`kv-cache-memory-bytes`, `gpu-memory-utilization`, `max-num-seqs`, `tensor-parallel-size`, `dtype`, `kv-cache-dtype`, `quantization`, `enforce-eager`, `trust-remote-code`), each reachable from the CLI, the TUI and presets alike; the rest of vLLM's ~240 flags ride the `-- <extras>` tail, minus a denylist that keeps the launch loopback-only and reapable.
 
 **On unified-memory hosts (APUs), the KV cache is capped automatically.** GPU memory is system RAM there, and vLLM sizes its KV cache against the pool rather than the model — the default has exhausted RAM and frozen a 121 GB machine. When neither `kv_cache_memory_bytes` nor `gpu_memory_utilization` is set, the launcher caps the cache from live free memory. See [vLLM setup](vllm-setup.md#notes-and-limitations).
 
@@ -1252,7 +1254,7 @@ red inline warning with secret values redacted.
 ### Precedence chain
 
 When the daemon composes the argv for `start_model`, it walks the
-following layers top-down per typed knob; the first `Some` wins:
+following layers top-down per knob; the first `Some` wins:
 
 ```
 preset       (R21)

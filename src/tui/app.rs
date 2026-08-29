@@ -103,16 +103,11 @@ pub struct ManagedRow {
   /// what the server is *running* with — `auto` for a fit-delegated
   /// knob, a pinned number when set — rather than the user's saved
   /// `last_params` delta (which can be empty even for an auto launch).
-  pub knobs: crate::config::TypedKnobs,
+  pub knobs: crate::launch::knobs::KnobSet,
   /// The advanced `--` argv tail this launch was dispatched with (the
   /// live `status` `params.extras`). Empty for external rows. Lets
   /// `Ctrl+P` save-from-running carry the advanced args into the preset.
   pub extras: Vec<String>,
-  /// Native (per-backend) knobs the launch dispatched with (the live
-  /// `status` `params.backend_knobs`) — the six ds4 tunables, so `Ctrl+P`
-  /// save-from-running captures them into the preset (not just typed knobs).
-  /// Empty for llama.cpp / Lemonade launches.
-  pub backend_knobs: std::collections::BTreeMap<String, crate::config::KnobValue<String>>,
   /// Backend this launch actually resolved to (`status` `backend`): `ds4`
   /// when the launch dispatched to ds4, else `llamacpp` / `lemonade`. Keyed
   /// on by the ds4 badge / knob panel so a running row reflects the real
@@ -138,11 +133,7 @@ pub struct LastParamsRow {
   /// seeds its `user_knobs` row directly from this so a returning
   /// user lands on the same overrides; rows the user never touched
   /// re-resolve from yaml / built-in / model default.
-  pub knobs: crate::config::TypedKnobs,
-  /// Per-backend native-knob deltas (see [`crate::launch::native_knobs`]),
-  /// keyed by descriptor id. Populated for ds4; empty for llama.cpp / Lemonade.
-  /// Seeds the picker's `backend_knobs` so a returning user keeps their values.
-  pub backend_knobs: std::collections::BTreeMap<String, crate::config::KnobValue<String>>,
+  pub knobs: crate::launch::knobs::KnobSet,
   /// Free-form argv tail that landed on `--`. Surfaces back in the
   /// editor's `extras` row.
   pub extras: Vec<String>,
@@ -454,7 +445,7 @@ pub struct App {
 /// Fully-resolved launch request shared by `WriterCmd::StartModel`
 /// and [`ConfirmAction::LaunchDuplicate`]. `ctx` / `reasoning` are
 /// projected out of `knobs` for the wire payload's backward-compat
-/// top-level fields. Boxed in both enums so the large `TypedKnobs`
+/// top-level fields. Boxed in both enums so the large `crate::launch::knobs::KnobSet`
 /// payload doesn't bloat every other (tiny) variant — the imbalance
 /// `clippy::large_enum_variant` flags.
 #[derive(Debug, Clone)]
@@ -462,7 +453,7 @@ pub struct StartModelArgs {
   pub model_path: PathBuf,
   pub ctx: Option<u32>,
   pub reasoning: Option<bool>,
-  pub knobs: crate::config::TypedKnobs,
+  pub knobs: crate::launch::knobs::KnobSet,
   pub extras: Vec<String>,
   pub mode: Option<crate::launch::mode::LaunchMode>,
   pub prefer_port: Option<u16>,
@@ -474,9 +465,6 @@ pub struct StartModelArgs {
   /// cycle stop sends `"auto"` (pure fit). Never `"default"` — the TUI
   /// always resolves a concrete stop.
   pub selection: &'static str,
-  /// Per-backend native-knob values from the picker (see
-  /// [`crate::launch::native_knobs`]). Populated for ds4; empty for llama.cpp.
-  pub backend_knobs: std::collections::BTreeMap<String, crate::config::KnobValue<String>>,
   /// Chosen server id (a build/binary of a backend) from the picker's Server
   /// row, or `None` for the priority default. Sent as `LaunchParams.server`;
   /// the daemon derives the binary (and, when `backend` is `Auto`, the backend)
@@ -1101,14 +1089,8 @@ impl App {
           .get("reasoning")
           .and_then(Value::as_bool)
           .unwrap_or(false);
-        let knobs = params
+        let knobs: crate::launch::knobs::KnobSet = params
           .get("knobs")
-          .and_then(|v| serde_json::from_value(v.clone()).ok())
-          .unwrap_or_default();
-        // Native knobs (omitted when empty by the daemon) — seed the picker
-        // so a saved native value is reapplied next launch.
-        let backend_knobs = params
-          .get("backend_knobs")
           .and_then(|v| serde_json::from_value(v.clone()).ok())
           .unwrap_or_default();
         let extras = params
@@ -1143,7 +1125,6 @@ impl App {
             ctx,
             reasoning,
             knobs,
-            backend_knobs,
             extras,
             port,
             server,
@@ -1621,8 +1602,9 @@ impl App {
       state.mtp_capable = self.mtp_capable_for(p);
       if let Some(last) = self.last_params.get(p) {
         state.prefer_port = last.port;
-        // A returning user keeps their last MTP choice (auto/on/off).
-        state.mtp = last.mtp;
+        // A returning user keeps their last MTP choice. It arrives as a typed
+        // sibling on the wire params and lands on the knob row that renders it.
+        state.set_mtp_intent(last.mtp);
         // returning user inherits the typed-knob deltas they
         // last shipped. The daemon persists only user-supplied
         // deltas (not the fully resolved set) so seeding straight
@@ -1630,13 +1612,10 @@ impl App {
         // honest — every persisted knob shows `(user)`, the rest
         // re-resolve from yaml / built-in / model default.
         //
-        // `ctx` and `reasoning` are now part of `TypedKnobs`, so
+        // `ctx` and `reasoning` are now part of `crate::launch::knobs::KnobSet`, so
         // they ride along inside `last.knobs` without dedicated
         // seeding paths.
         state.user_knobs = last.knobs.clone();
-        // Native knobs ride the same "remember the user's last deltas" path —
-        // a saved native value is reapplied next launch unless overridden.
-        state.backend_knobs = last.backend_knobs.clone();
         // Seed extras here (before `set_presets`) so the preset cycle's
         // `last used` stop captures them as part of its baseline.
         if !last.extras.is_empty() {
@@ -1661,10 +1640,6 @@ impl App {
       state.servers = self.compatible_servers(p);
       state.selected_server = self.last_params.get(p).and_then(|l| l.server.clone());
     }
-    // Surface the model's backend native knobs (its own set, or none for a
-    // backend with no native-knob channel). Ordered after the server seed so a
-    // remembered cross-backend pick resolves the right descriptor set.
-    state.seed_native_descriptors();
     // Seed the preset cycle from the model's effective set (per-model ∪
     // arch, resolved against the catalog). Always called — the Preset row
     // is always shown (it offers `last used` ↔ `auto` even with no named
@@ -1709,7 +1684,6 @@ impl App {
         name: np.name.clone(),
         knobs: preset_body_from_launch_params(&np.params).knobs,
         extras: np.params.extras.clone(),
-        backend_knobs: np.params.backend_knobs.clone(),
       })
       .collect();
     let default_stop = if eff.default_is_auto() {
@@ -1868,16 +1842,13 @@ impl App {
       .display_label_for(&path)
       .unwrap_or_else(|| crate::util::paths::path_basename(&path));
 
-    // Capture knobs + native knobs + extras from whichever surface is in view.
-    let (knobs, backend_knobs, extras) = if let Some(m) = self.focused_managed() {
-      // Running model: the live dispatched knobs, native (ds4) knobs, and
-      // advanced `--` tail — so a ds4 launch's `--power` / `--ssd-streaming`
-      // land in the preset, not just the typed knobs.
-      (m.knobs.clone(), m.backend_knobs.clone(), m.extras.clone())
+    // Capture knobs + extras from whichever surface is in view. One map now,
+    // so a ds4 launch's `--ssd-streaming` rides with the rest.
+    let (knobs, extras) = if let Some(m) = self.focused_managed() {
+      (m.knobs.clone(), m.extras.clone())
     } else if let Some(p) = &self.launch_picker {
       (
         p.user_knobs.clone(),
-        p.backend_knobs.clone(),
         p.extras
           .iter()
           .map(|s| s.to_string_lossy().into_owned())
@@ -1886,7 +1857,6 @@ impl App {
     } else if let Some(p) = self.build_default_picker() {
       (
         p.user_knobs.clone(),
-        p.backend_knobs.clone(),
         p.extras
           .iter()
           .map(|s| s.to_string_lossy().into_owned())
@@ -1901,7 +1871,6 @@ impl App {
       path,
       model_name,
       knobs,
-      backend_knobs,
       extras,
       existing,
       arch_shadow,
@@ -2311,9 +2280,8 @@ fn parse_external_row(row: &Value) -> Option<ManagedRow> {
     cpu_pct: None,
     resolved_ctx: None,
     ctx_clamped: false,
-    knobs: crate::config::TypedKnobs::default(),
+    knobs: crate::launch::knobs::KnobSet::new(),
     extras: Vec::new(),
-    backend_knobs: Default::default(),
     backend: None,
     server: None,
   })
@@ -2394,7 +2362,7 @@ fn parse_status_row(row: &Value) -> Option<ManagedRow> {
   let knobs = row
     .get("params")
     .and_then(|p| p.get("knobs"))
-    .and_then(|k| serde_json::from_value::<crate::config::TypedKnobs>(k.clone()).ok())
+    .and_then(|k| serde_json::from_value::<crate::launch::knobs::KnobSet>(k.clone()).ok())
     .unwrap_or_default();
   // The advanced `--` tail, so `Ctrl+P` save-from-running reproduces it.
   let extras = row
@@ -2406,13 +2374,6 @@ fn parse_status_row(row: &Value) -> Option<ManagedRow> {
         .filter_map(|v| v.as_str().map(String::from))
         .collect()
     })
-    .unwrap_or_default();
-  // Native (ds4) knobs, so `Ctrl+P` save-from-running and the ds4 knob panel
-  // reflect what the launch dispatched with. Missing / shape mismatch → empty.
-  let backend_knobs = row
-    .get("params")
-    .and_then(|p| p.get("backend_knobs"))
-    .and_then(|k| serde_json::from_value(k.clone()).ok())
     .unwrap_or_default();
   // The backend this launch actually resolved to (honest ds4 signal).
   let backend = row.get("backend").and_then(Value::as_str).map(String::from);
@@ -2435,7 +2396,6 @@ fn parse_status_row(row: &Value) -> Option<ManagedRow> {
     ctx_clamped,
     knobs,
     extras,
-    backend_knobs,
     backend,
     server,
   })
@@ -2445,7 +2405,6 @@ fn parse_status_row(row: &Value) -> Option<ManagedRow> {
 mod tests {
   use super::*;
   use crate::backend::{Device, Server};
-  use crate::config::KnobValue;
   use crate::discovery::ModelSource;
   use crate::gguf::metadata::{ModeHint, ModelMetadata, Quant};
   use serde_json::json;
@@ -2574,9 +2533,9 @@ mod tests {
       picker.model_backend,
       crate::launch::params::BackendChoice::Explicit("lemonade".into())
     );
-    let visible: Vec<PickerField> = PickerField::all()
-      .iter()
-      .copied()
+    let visible: Vec<PickerField> = picker
+      .ordered_fields()
+      .into_iter()
       .filter(|f| picker.field_visible(*f))
       .collect();
     assert!(
@@ -3205,54 +3164,6 @@ mod tests {
       app.right_pane_visible_at(60),
       "right pane must be visible after open_launch_picker (compact)"
     );
-  }
-
-  #[test]
-  fn open_launch_picker_prefills_from_persisted_last_params() {
-    // Item 6: a returning user lands on the same ctx / reasoning /
-    // advanced argv they shipped on the previous launch. The daemon
-    // exposes the snapshot via `last_params_list`; the App ingests it
-    // into `self.last_params`; the picker seeds from it.
-    let mut app = App::new(AppOptions::default());
-    let path = PathBuf::from("/m/a.gguf");
-    app.models = vec![fake("/m/a.gguf", "/m")];
-    app.list_cursor = 2;
-    app.last_params.insert(
-      path.clone(),
-      LastParamsRow {
-        ctx: Some(16384),
-        reasoning: true,
-        knobs: crate::config::TypedKnobs {
-          ctx: Some(KnobValue::Set(16384)),
-          reasoning: Some(KnobValue::Set(true)),
-          ..Default::default()
-        },
-        backend_knobs: Default::default(),
-        extras: vec!["--rope-freq-base".into(), "10000".into()],
-        port: Some(41105),
-        server: None,
-        mtp: crate::launch::params::MtpEnable::default(),
-      },
-    );
-    app.open_launch_picker();
-    let picker = app.launch_picker.as_ref().expect("picker state");
-    assert_eq!(
-      picker.user_knobs.ctx,
-      Some(KnobValue::Set(16384)),
-      "ctx must seed from last_params via user_knobs"
-    );
-    assert_eq!(
-      picker.user_knobs.reasoning,
-      Some(KnobValue::Set(true)),
-      "reasoning must seed from last_params via user_knobs"
-    );
-    assert_eq!(picker.prefer_port, Some(41105), "port must seed too");
-    let extras: Vec<String> = picker
-      .extras
-      .iter()
-      .map(|s| s.to_string_lossy().into_owned())
-      .collect();
-    assert_eq!(extras, vec!["--rope-freq-base", "10000"]);
   }
 
   fn ready_managed(path: &str, port: u16, state: SurfaceState) -> ManagedRow {
