@@ -47,6 +47,13 @@ pub struct SavePresetDialog {
   /// The knobs the dialog will write into the preset entry.
   /// Captured extras argv tail.
   pub extras: Vec<String>,
+  /// Backend this preset pins — launch *identity*, not a knob. `None` when
+  /// the capture source had no resolved backend (an untagged / default launch),
+  /// so the daemon re-derives it rather than storing a guess.
+  pub backend: Option<String>,
+  /// Server (build/binary) this preset pins — identity, like `backend`.
+  /// `None` when the launch took the backend's default server.
+  pub server: Option<String>,
   /// The model's own (per-model) preset names — a save under one of these
   /// is a true overwrite.
   pub existing: Vec<String>,
@@ -68,6 +75,8 @@ impl SavePresetDialog {
     model_name: String,
     knobs: crate::launch::knobs::KnobSet,
     extras: Vec<String>,
+    backend: Option<String>,
+    server: Option<String>,
     existing: Vec<String>,
     arch_shadow: Vec<String>,
   ) -> Self {
@@ -78,6 +87,8 @@ impl SavePresetDialog {
       model_name,
       knobs,
       extras,
+      backend,
+      server,
       existing,
       arch_shadow,
       input,
@@ -252,6 +263,8 @@ mod tests {
       "a.gguf".into(),
       crate::launch::knobs::KnobSet::new(),
       Vec::new(),
+      None,
+      None,
       existing.iter().map(|s| s.to_string()).collect(),
       arch_shadow.iter().map(|s| s.to_string()).collect(),
     )

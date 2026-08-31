@@ -1842,10 +1842,19 @@ impl App {
       .display_label_for(&path)
       .unwrap_or_else(|| crate::util::paths::path_basename(&path));
 
-    // Capture knobs + extras from whichever surface is in view. One map now,
-    // so a ds4 launch's `--ssd-streaming` rides with the rest.
-    let (knobs, extras) = if let Some(m) = self.focused_managed() {
-      (m.knobs.clone(), m.extras.clone())
+    // Capture knobs + extras + launch identity from whichever surface is in
+    // view. One map now, so a ds4 launch's `--ssd-streaming` rides with the
+    // rest, and the identity (which engine / build) pins the preset to the
+    // run it was captured from. A running row carries the *resolved*
+    // identity; a picker carries the *intended* one (its concrete engine and
+    // chosen server build).
+    let (knobs, extras, backend, server) = if let Some(m) = self.focused_managed() {
+      (
+        m.knobs.clone(),
+        m.extras.clone(),
+        m.backend.clone(),
+        m.server.clone(),
+      )
     } else if let Some(p) = &self.launch_picker {
       (
         p.user_knobs.clone(),
@@ -1853,6 +1862,8 @@ impl App {
           .iter()
           .map(|s| s.to_string_lossy().into_owned())
           .collect(),
+        p.model_backend.explicit_id().map(str::to_string),
+        p.selected_server.clone(),
       )
     } else if let Some(p) = self.build_default_picker() {
       (
@@ -1861,6 +1872,8 @@ impl App {
           .iter()
           .map(|s| s.to_string_lossy().into_owned())
           .collect(),
+        p.model_backend.explicit_id().map(str::to_string),
+        p.selected_server.clone(),
       )
     } else {
       return;
@@ -1872,6 +1885,8 @@ impl App {
       model_name,
       knobs,
       extras,
+      backend,
+      server,
       existing,
       arch_shadow,
     ));
@@ -3274,10 +3289,13 @@ mod tests {
   }
 
   #[test]
-  fn save_preset_from_running_launch_carries_dispatched_extras() {
+  fn save_preset_from_running_launch_carries_dispatched_extras_and_identity() {
     // Regression: Ctrl+P on a running model must carry the advanced `--`
-    // tail (the live `status` `params.extras`) into the preset. It used to
-    // pass an empty list, dropping the advanced args off a running launch.
+    // tail (the live `status` `params.extras`) and the launch identity
+    // (`status` `backend` / `params.server`) into the preset. The extras
+    // half used to pass an empty list; the identity half used to be dropped
+    // entirely, so a TUI-saved preset read back `server: null` and fell to
+    // the daemon's default build.
     let mut app = App::new(AppOptions::default());
     app.models = vec![fake("/m/qwen.gguf", "/m")];
     let body = serde_json::json!({
@@ -3286,8 +3304,10 @@ mod tests {
         "id": { "path": "/m/qwen.gguf", "header_hash": "h" },
         "port": 41100,
         "state": { "state": "ready" },
+        "backend": "llamacpp",
         "params": {
           "model_path": "/m/qwen.gguf",
+          "server": "llamacpp-vulkan",
           "extras": ["--override-kv", "tokenizer.ggml.add_bos=bool:false"],
         },
       }]
@@ -3304,6 +3324,16 @@ mod tests {
       .find(|m| m.launch_id == "L1")
       .expect("managed row");
     assert_eq!(row.extras, want, "extras parsed from status params");
+    assert_eq!(
+      row.backend.as_deref(),
+      Some("llamacpp"),
+      "backend parsed from status"
+    );
+    assert_eq!(
+      row.server.as_deref(),
+      Some("llamacpp-vulkan"),
+      "server parsed from status params"
+    );
     // ...and captured by the save dialog when Ctrl+P fires on that row
     // (ingest_status snaps the cursor onto the newly appeared launch).
     app.open_save_preset_dialog();
@@ -3314,6 +3344,16 @@ mod tests {
     assert_eq!(
       dialog.extras, want,
       "advanced -- tail carried into the preset"
+    );
+    assert_eq!(
+      dialog.backend.as_deref(),
+      Some("llamacpp"),
+      "resolved backend carried into the preset"
+    );
+    assert_eq!(
+      dialog.server.as_deref(),
+      Some("llamacpp-vulkan"),
+      "resolved server build carried into the preset"
     );
   }
 
