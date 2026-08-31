@@ -94,8 +94,8 @@ pub struct ProxyState {
   /// Inbound body size cap in bytes, applied to every body the proxy
   /// buffers before forwarding (data plane + `/ui`). From
   /// [`crate::config::loader::ProxyConfig::max_body_size`] (default
-  /// [`super::route::DEFAULT_BODY_LIMIT_BYTES`], 16 MiB); `0` rejects
-  /// every non-empty body. Set once at daemon startup; never mutated
+  /// [`super::route::DEFAULT_BODY_LIMIT_BYTES`], 16 MiB); `0` disables
+  /// the check (no cap). Set once at daemon startup; never mutated
   /// thereafter.
   pub(crate) max_body_size: usize,
 }
