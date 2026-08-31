@@ -19,7 +19,7 @@ cat /sys/firmware/acpi/platform_profile
 rocm-smi --showpower                        # ~80 W under load, ~20 W throttled
 ```
 
-All three scripts record the power state next to every result for exactly this
+Every script here records the power state next to every result for exactly this
 reason. Stop stray daemons (`llamastash daemon stop`, `pkill -x ds4-server`)
 before a run so nothing competes for the GPU or the power budget.
 

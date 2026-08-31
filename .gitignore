@@ -21,3 +21,6 @@ VP_VULKANINFO_*.json
 
 # lemond writes its backend cache here when run from the repo root
 /backends/
+
+# skip local bench scripts
+scripts/bench/local/
