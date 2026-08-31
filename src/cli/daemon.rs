@@ -1178,9 +1178,7 @@ mod tests {
         fallback_enabled: true,
         header_read_timeout_secs: 45,
         idle_ttl_secs: 1800,
-        host: None,
-        api_key: None,
-        insecure_no_auth: false,
+        ..crate::config::loader::ProxyConfig::default()
       },
       ..Config::default()
     };
@@ -1387,9 +1385,7 @@ mod tests {
         fallback_enabled: true,
         header_read_timeout_secs: 30,
         idle_ttl_secs: 1800,
-        host: None,
-        api_key: None,
-        insecure_no_auth: false,
+        ..crate::config::loader::ProxyConfig::default()
       },
       ..Config::default()
     };

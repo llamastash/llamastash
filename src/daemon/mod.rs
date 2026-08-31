@@ -590,6 +590,7 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
         opts.proxy.ollama_compat,
         opts.proxy.fallback_enabled,
         opts.proxy.api_key.clone(),
+        opts.proxy.max_body_size,
       );
       let token_for_proxy = token.clone();
       let status_for_proxy = std::sync::Arc::clone(&proxy_status_cell);

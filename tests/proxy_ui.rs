@@ -30,6 +30,8 @@ use llamastash::launch::mode::LaunchMode;
 use llamastash::launch::params::LaunchParams;
 use llamastash::proxy::server::{loopback_addr, new_status_cell, serve, ProxyStatus, StatusCell};
 use llamastash::proxy::state::ProxyState;
+use llamastash::proxy::DEFAULT_BODY_LIMIT_BYTES;
+use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::sleep;
@@ -189,13 +191,31 @@ async fn build_state(
   supervisors: SupervisorRegistry,
   api_key: Option<&str>,
 ) -> Arc<ProxyState> {
+  build_state_with_cap(models, supervisors, api_key, DEFAULT_BODY_LIMIT_BYTES).await
+}
+
+/// Like [`build_state`] but with an explicit body cap — the
+/// `proxy.max_body_size` seam the daemon passes through
+/// `from_context_with_auth` in production.
+async fn build_state_with_cap(
+  models: Vec<DiscoveredModel>,
+  supervisors: SupervisorRegistry,
+  api_key: Option<&str>,
+  max_body_size: usize,
+) -> Arc<ProxyState> {
   let catalog = ModelCatalog::new();
   for m in models {
     catalog.upsert(m).await;
   }
   let ctx =
     MethodContext::with_catalog(ShutdownToken::new(), catalog).with_supervisors(supervisors);
-  ProxyState::from_context_with_auth(&ctx, false, true, api_key.map(str::to_string))
+  ProxyState::from_context_with_auth(
+    &ctx,
+    false,
+    true,
+    api_key.map(str::to_string),
+    max_body_size,
+  )
 }
 
 /// Send a raw HTTP/1.1 GET and return `(status, headers, body)`. Does
@@ -211,6 +231,30 @@ async fn http_get(
     req.push_str(&format!("{k}: {v}\r\n"));
   }
   req.push_str("\r\n");
+  sock.write_all(req.as_bytes()).await.expect("write");
+  let mut buf = Vec::new();
+  sock.read_to_end(&mut buf).await.expect("read");
+  parse_response(&buf)
+}
+
+/// Send a raw HTTP/1.1 POST and return `(status, headers, body)`. Closes
+/// the connection after.
+async fn http_post(
+  addr: SocketAddr,
+  path: &str,
+  body: &str,
+  extra_headers: &[(&str, &str)],
+) -> (u16, Vec<(String, String)>, Vec<u8>) {
+  let mut sock = TcpStream::connect(addr).await.expect("connect");
+  let mut req = format!(
+    "POST {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n",
+    body.len()
+  );
+  for (k, v) in extra_headers {
+    req.push_str(&format!("{k}: {v}\r\n"));
+  }
+  req.push_str("\r\n");
+  req.push_str(body);
   sock.write_all(req.as_bytes()).await.expect("write");
   let mut buf = Vec::new();
   sock.read_to_end(&mut buf).await.expect("read");
@@ -331,6 +375,44 @@ async fn single_running_serves_ui_and_forwards_paths() {
   assert!(
     text.contains("/fixture/solo.gguf"),
     "expected the forwarded /v1/models payload, got: {text}"
+  );
+
+  let _ = model.stop(Duration::from_secs(3)).await;
+  shutdown_listener(shutdown, handle).await;
+  std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ui_post_body_over_cap_returns_413() {
+  let dir = unique_temp("uicap");
+  let registry = SupervisorRegistry::new();
+  let model = spawn_fake("/fixture/solo.gguf", &dir).await;
+  registry.insert(registry.next_id(), model.clone()).await;
+  // A 1 KiB cap: the default (16 MiB) would let this body through, so
+  // the refusal proves the configured cap is enforced on the `/ui`
+  // forward path — the only `buffer_body` caller without a data-plane
+  // twin, so it needs its own cap case.
+  let state = build_state_with_cap(
+    vec![discovered("/fixture/solo.gguf", Some("solo"))],
+    registry,
+    None,
+    1024,
+  )
+  .await;
+  let (addr, shutdown, handle) = spawn_listener_with_state(state).await;
+
+  // A body just over the cap: `forward_ui` buffers it under the cap
+  // before forwarding, so the 413 fires here, not upstream.
+  let pad = "A".repeat(1024 + 16);
+  let body = format!(r#"{{"model":"solo","pad":"{pad}"}}"#);
+  let (status, _headers, response) = http_post(addr, "/ui/v1/chat/completions", &body, &[]).await;
+  assert_eq!(status, 413);
+  let v: Value = serde_json::from_slice(&response).expect("json body");
+  assert_eq!(v["error"]["type"], "payload_too_large");
+  let message = v["error"]["message"].as_str().expect("message");
+  assert!(
+    message.contains("1 KiB"),
+    "413 message must name the configured cap, got: {message}"
   );
 
   let _ = model.stop(Duration::from_secs(3)).await;

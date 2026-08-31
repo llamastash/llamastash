@@ -35,6 +35,7 @@ use llamastash::launch::mode::LaunchMode;
 use llamastash::launch::params::LaunchParams;
 use llamastash::proxy::server::{loopback_addr, new_status_cell, serve, ProxyStatus, StatusCell};
 use llamastash::proxy::state::ProxyState;
+use llamastash::proxy::DEFAULT_BODY_LIMIT_BYTES;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::sleep;
@@ -183,7 +184,7 @@ async fn build_state_with_fallback(
   let ctx = MethodContext::with_catalog(token, catalog)
     .with_supervisors(registry)
     .with_launch_env(env);
-  let state = ProxyState::from_context(&ctx, false, fallback_enabled);
+  let state = ProxyState::from_context(&ctx, false, fallback_enabled, DEFAULT_BODY_LIMIT_BYTES);
   (state, ctx)
 }
 

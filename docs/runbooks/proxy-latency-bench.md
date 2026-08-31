@@ -215,9 +215,9 @@ What to do when a target is missed (per the Unit 7 plan):
      search can be expensive.
    - `forward::forward_to_upstream` — `reqwest::Client` pool reuse,
      hop-by-hop header stripping, body-bytes cloning.
-   - `route::buffer_and_extract` — the 2 MiB cap means a small
-     body is always buffered in full; serde + `Limited` shouldn't
-     dominate but check.
+   - `route::buffer_and_extract` — the body cap (default 16 MiB,
+     `proxy.max_body_size`) means a small body is always buffered in
+     full; serde + `Limited` shouldn't dominate but check.
 4. **If the slip is real and unfixable**, update R160 in the
    brainstorm (
    [`docs/brainstorms/2026-05-21-proxy-router-requirements.md`](../brainstorms/2026-05-21-proxy-router-requirements.md))

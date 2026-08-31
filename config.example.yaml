@@ -384,6 +384,18 @@ proxy:
   # (Config field, CLI flag, and env are OR-ed — any one waives auth.)
   insecure_no_auth: false
 
+  # Cap in bytes on every request body the proxy buffers before
+  # forwarding (`/v1/*`, `/api/show`, `/ui`). The default 16 MiB
+  # covers vision payloads — a base64 image is ~33% larger than the
+  # source file, so one phone photo fits with room to spare — while
+  # still bounding worst-case per-request memory. Anything larger is
+  # refused with HTTP 413 `payload_too_large` naming this limit; `0`
+  # disables the check (no cap — one request can buffer arbitrary
+  # RAM; we buffer in memory, unlike nginx's disk-spooled 0).
+  #
+  # Sources — CLI: (none) · Env: (none).
+  max_body_size: 16777216
+
 # ─── Backend engines ──────────────────────────────────────────────
 #
 # All backend configuration lives under `backend:`. llama.cpp is the

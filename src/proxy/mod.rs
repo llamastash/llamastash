@@ -26,5 +26,6 @@ pub mod state;
 pub(crate) mod ui;
 
 pub use auth::{ProxyApiKey, ProxyAuth};
+pub use route::DEFAULT_BODY_LIMIT_BYTES;
 pub use server::{serve, ProxyStatus, StatusCell};
 pub use state::ProxyState;

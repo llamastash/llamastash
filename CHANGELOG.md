@@ -6,6 +6,7 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 ### Added
 
+- `proxy.max_body_size` — cap, in bytes, on every request body the proxy buffers before forwarding. Larger bodies are refused with HTTP 413 `payload_too_large` naming the limit; `0` disables the check (no cap). Closes [#65](https://github.com/llamastash/llamastash/issues/65).
 - `llamastash api-key` — print the proxy's bearer key on stdout, for client configs that resolve a credential by shelling out and for `$(...)` in scripts.
 - `llamastash integrations [tools...]` — patch your AI dev tools' configs without running the whole `init` wizard. Registers every **favorited** model, not just one, and names each the way `/v1/models` publishes it, so GGUF files and safetensors repos both resolve.
 
@@ -28,6 +29,7 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 ### Changed
 
 - **Config, preset and `--json` knob keys are now the engine's own flag spelling** (`ctx-size`, `n-gpu-layers`, `flash-attn`), and preset entries hold them under a `knobs:` map alongside optional `backend` / `server`. Existing `config.yaml` files are migrated in place on first start, with a `.pre-knobs.bak` beside them.
+- **Proxy body cap default raised from 2 MiB to 16 MiB.** Vision payloads (base64 images, ~33% larger than the source file) stopped 413ing out of the box; the cap is now configurable via `proxy.max_body_size`.
 - Repositioned from "launcher" to "local-LLM manager" across the README, `--help`, crate metadata, packaging manifests and the website. The binary already launches, supervises, routes and evicts; "launcher" only described the first of those.
 
 ### Security

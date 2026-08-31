@@ -29,6 +29,7 @@ use llamastash::launch::mode::LaunchMode;
 use llamastash::launch::params::LaunchParams;
 use llamastash::proxy::eviction;
 use llamastash::proxy::state::ProxyState;
+use llamastash::proxy::DEFAULT_BODY_LIMIT_BYTES;
 use tokio::time::sleep;
 
 fn unique_temp(label: &str) -> PathBuf {
@@ -115,7 +116,7 @@ async fn build_state(registry: SupervisorRegistry, log_dir: &Path) -> Arc<ProxyS
   let ctx = MethodContext::with_catalog(token, catalog)
     .with_supervisors(registry)
     .with_launch_env(env);
-  ProxyState::from_context(&ctx, false, true)
+  ProxyState::from_context(&ctx, false, true, DEFAULT_BODY_LIMIT_BYTES)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -91,6 +91,13 @@ pub struct ProxyState {
   /// returns `false`, so the router skips the check entirely. Set once
   /// at daemon startup; never mutated thereafter.
   pub(crate) auth: super::auth::ProxyAuth,
+  /// Inbound body size cap in bytes, applied to every body the proxy
+  /// buffers before forwarding (data plane + `/ui`). From
+  /// [`crate::config::loader::ProxyConfig::max_body_size`] (default
+  /// [`super::route::DEFAULT_BODY_LIMIT_BYTES`], 16 MiB); `0` disables
+  /// the check (no cap). Set once at daemon startup; never mutated
+  /// thereafter.
+  pub(crate) max_body_size: usize,
 }
 
 impl ProxyState {
@@ -108,15 +115,17 @@ impl ProxyState {
   /// The proxy task receives this handle from `run_foreground` after
   /// the rest of the daemon context has been assembled. `ollama_compat`
   /// and `fallback_enabled` reflect the resolved bools from
-  /// `ProxyConfig` (after the CLI / env OR-chain). Auth is disabled
-  /// (loopback, same-UID posture) — production uses
-  /// [`Self::from_context_with_auth`] to attach a bearer key.
+  /// `ProxyConfig` (after the CLI / env OR-chain); `max_body_size` the
+  /// resolved body cap. Auth is disabled (loopback, same-UID posture)
+  /// — production uses [`Self::from_context_with_auth`] to attach a
+  /// bearer key.
   pub fn from_context(
     ctx: &MethodContext,
     ollama_compat: bool,
     fallback_enabled: bool,
+    max_body_size: usize,
   ) -> Arc<Self> {
-    Self::from_context_with_auth(ctx, ollama_compat, fallback_enabled, None)
+    Self::from_context_with_auth(ctx, ollama_compat, fallback_enabled, None, max_body_size)
   }
 
   /// Like [`Self::from_context`] but with a resolved bearer `api_key`
@@ -128,6 +137,7 @@ impl ProxyState {
     ollama_compat: bool,
     fallback_enabled: bool,
     api_key: Option<String>,
+    max_body_size: usize,
   ) -> Arc<Self> {
     Arc::new(Self {
       http_client: Arc::new(build_http_client()),
@@ -139,6 +149,7 @@ impl ProxyState {
       ollama_compat,
       fallback_enabled,
       auth: super::auth::ProxyAuth::new(api_key),
+      max_body_size,
     })
   }
 }
