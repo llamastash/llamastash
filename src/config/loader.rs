@@ -342,9 +342,11 @@ pub struct ProxyConfig {
   /// Cap in bytes on every request body the proxy buffers before
   /// forwarding (`/v1/*`, `/api/show`, `/ui`). The default 16 MiB
   /// covers vision payloads (a base64 image is ~33% larger than the
-  /// source file) while still bounding worst-case memory; `0` rejects
-  /// every non-empty body (HTTP 413 on any body). Anything larger
-  /// returns HTTP 413 `payload_too_large` naming this limit.
+  /// source file) while still bounding worst-case memory. `0` disables
+  /// the check: one request can buffer arbitrary RAM — unlike nginx's
+  /// `client_max_body_size 0`, which spools to disk, we buffer in
+  /// memory. Anything larger returns HTTP 413 `payload_too_large`
+  /// naming this limit.
   ///
   /// Sources — CLI: (none) · Env: (none).
   #[serde(default = "ProxyConfig::default_max_body_size")]
@@ -1806,8 +1808,10 @@ proxy:
 
   #[test]
   fn proxy_config_max_body_size_zero_parses() {
-    // `0` is legal (it means "reject every non-empty body") — the
-    // loader must accept it rather than treating it as absent.
+    // `0` is legal (it means "no cap" — the check is disabled, like
+    // `idle_ttl_secs: 0`) — the loader must accept it rather than
+    // treating it as absent. The no-cap behaviour itself is covered
+    // by `proxy_routing::zero_cap_disables_the_body_check`.
     let dir = temp_test_dir("proxy-zero-cap");
     let path = dir.join("config.yaml");
     fs::write(&path, "proxy:\n  max_body_size: 0\n").expect("write failed");

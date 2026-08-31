@@ -605,6 +605,34 @@ async fn body_exceeding_cap_returns_413() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn zero_cap_disables_the_body_check() {
+  let registry = SupervisorRegistry::new();
+  // A cap of 0 disables the check: a body larger than the default
+  // (16 MiB) must be buffered in full, not 413'd at the default and
+  // not rejected on the first byte. The model is in the catalog but
+  // not running, so routing answers 503 _after_ the full buffer — a
+  // 413 anywhere would mean the check is still in force.
+  let state = proxy_state_with_cap(
+    vec![discovered("/m/qwen3.gguf", Some("qwen3"), "qwen3")],
+    registry,
+    0,
+  )
+  .await;
+  let (addr, shutdown, listener_handle) = spawn_listener_with_state(state).await;
+
+  let pad = "A".repeat(17 * 1024 * 1024 + 64);
+  let body = format!(r#"{{"model":"qwen3","pad":"{pad}"}}"#);
+  let (status, _headers, response) = http_post(addr, "/v1/chat/completions", &body, &[]).await;
+  assert_eq!(
+    status, 503,
+    "a 17 MiB body under a 0 cap must buffer fully and reach routing, got: {status}"
+  );
+  let v: Value = serde_json::from_slice(&response).expect("json body");
+  assert_eq!(v["error"]["type"], "launch_failed");
+  shutdown_listener(shutdown, listener_handle).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn body_between_old_and_new_default_passes_cap() {
   // 3 MiB: the pre-#65 hard cap was 2 MiB (413), the new default is
   // 16 MiB. No model is running, so the routing answer is 503

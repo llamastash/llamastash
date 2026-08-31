@@ -178,6 +178,18 @@ pub(crate) async fn buffer_and_extract(
 /// wraps the inner error in a `Box<dyn Error>`; the overflow case is
 /// exposed as `LengthLimitError`.
 pub(crate) async fn buffer_body(body: Incoming, cap: usize) -> Result<Bytes, BodyError> {
+  // A cap of 0 disables the check: `max_body_size: 0` means no cap
+  // (like `idle_ttl_secs: 0` and nginx's `client_max_body_size 0`),
+  // so the body is collected unwrapped rather than under `Limited`.
+  if cap == 0 {
+    return body
+      .collect()
+      .await
+      .map(|c| c.to_bytes())
+      .map_err(|err| BodyError::Read {
+        message: format!("failed to read request body: {err}"),
+      });
+  }
   match Limited::new(body, cap).collect().await {
     Ok(c) => Ok(c.to_bytes()),
     Err(err) => {
@@ -198,9 +210,11 @@ pub(crate) async fn buffer_body(body: Incoming, cap: usize) -> Result<Bytes, Bod
 /// Map a body-buffering [`BodyError`] to its proxy error response, so
 /// every surface that drains a request body (data plane + `/ui`) emits
 /// the same status + message for an oversized / unreadable / malformed
-/// payload. `cap` is the in-force limit — the 413 message names it as a
-/// human unit plus the exact byte count, so a cap sitting just under a
-/// unit boundary (e.g. 2 MiB − 1) can't read as the boundary itself.
+/// payload. `cap` is the in-force limit; the 413 message names it twice
+/// — a rounded human unit (`fmt_bytes` renders 2 MiB − 1 as `2.0 MiB`)
+/// plus the exact byte count. The human half still rounds at unit
+/// boundaries, so the raw count is the half that keeps a cap just under
+/// a boundary honest; it is not a redundant echo of it.
 pub(crate) fn body_error_response(err: BodyError, cap: usize) -> ProxyResponse {
   use hyper::StatusCode;
   match err {
@@ -697,9 +711,10 @@ mod tests {
 
   // ─── 413 envelope ──────────────────────────────────────────────
   //
-  // The 413 message names the in-force cap as a human unit plus the
-  // exact byte count, so any configured value (not just whole MiB)
-  // reads honestly — including a cap just under a unit boundary.
+  // The 413 message names the in-force cap twice: rounded human unit
+  // plus exact byte count. The human half still rounds at unit
+  // boundaries (`fmt_bytes`), so the raw count is what keeps any
+  // configured value — including a cap just under a boundary — honest.
 
   #[tokio::test]
   async fn too_large_message_names_the_configured_cap() {
@@ -724,18 +739,21 @@ mod tests {
   #[tokio::test]
   async fn too_large_message_keeps_a_sub_boundary_cap_honest() {
     use http_body_util::BodyExt;
-    // 2 MiB − 1: a `{:.2}`-rounding formatter rendered this as "2 MiB",
-    // so a client sending exactly 2 MiB was told it "exceeds the 2 MiB
-    // limit" — a contradiction. The exact byte count keeps it honest.
+    // 2 MiB − 1: `fmt_bytes` renders the human half as `2.0 MiB`, so
+    // without the exact byte count a client sending exactly 2 MiB is
+    // told it "exceeds the 2.0 MiB limit" with no way to tell where the
+    // real boundary is. Assert the whole message: swap `fmt_bytes` for
+    // a formatter that renders `2 MiB` (or drop the raw count) and
+    // this fails, which is the regression it exists to catch.
     let cap = 2 * 1024 * 1024 - 1;
     let resp = super::body_error_response(super::BodyError::TooLarge, cap)
       .expect("error response must build");
     let collected = resp.into_body().collect().await.expect("body").to_bytes();
     let v: serde_json::Value = serde_json::from_slice(&collected).expect("json envelope");
     let message = v["error"]["message"].as_str().expect("message");
-    assert!(
-      message.contains(&format!("{} bytes", cap)),
-      "message must carry the exact sub-boundary cap, got: {message}"
+    assert_eq!(
+      message, "request body exceeds the 2.0 MiB (2097151 bytes) limit",
+      "the whole message pins both halves — rounded human unit and exact byte count"
     );
   }
 

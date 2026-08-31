@@ -6,7 +6,7 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 ### Added
 
-- `proxy.max_body_size` — cap, in bytes, on every request body the proxy buffers before forwarding. `0` rejects every non-empty body (HTTP 413 `payload_too_large`, which names the configured limit). Closes [#65](https://github.com/llamastash/llamastash/issues/65).
+- `proxy.max_body_size` — cap, in bytes, on every request body the proxy buffers before forwarding. Larger bodies are refused with HTTP 413 `payload_too_large` naming the limit; `0` disables the check (no cap). Closes [#65](https://github.com/llamastash/llamastash/issues/65).
 - `llamastash api-key` — print the proxy's bearer key on stdout, for client configs that resolve a credential by shelling out and for `$(...)` in scripts.
 - `llamastash integrations [tools...]` — patch your AI dev tools' configs without running the whole `init` wizard. Registers every **favorited** model, not just one, and names each the way `/v1/models` publishes it, so GGUF files and safetensors repos both resolve.
 

@@ -390,7 +390,8 @@ proxy:
   # source file, so one phone photo fits with room to spare — while
   # still bounding worst-case per-request memory. Anything larger is
   # refused with HTTP 413 `payload_too_large` naming this limit; `0`
-  # rejects every non-empty body.
+  # disables the check (no cap — one request can buffer arbitrary
+  # RAM; we buffer in memory, unlike nginx's disk-spooled 0).
   #
   # Sources — CLI: (none) · Env: (none).
   max_body_size: 16777216
