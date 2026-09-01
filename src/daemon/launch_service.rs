@@ -110,7 +110,8 @@ pub(crate) struct StartParams {
 /// `compose_and_spawn`: `Default` applies the effective default
 /// (`PresetDefault` → `LastUsed`); `Explicit` means the caller already
 /// flattened a named preset / inline flags into `knobs`/`extras` (skip the
-/// default layer, let `last_params` fill knob gaps, extras verbatim);
+/// default layer *and* `last_params` — a preset is self-contained, so a stale
+/// `last_params` must not leak in; extras verbatim);
 /// `Auto` is pure fit (skip the default layer and `last_params`, no extras).
 #[derive(Deserialize, Serialize, Clone, Copy, Default, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -154,6 +155,11 @@ pub struct StartedLaunch {
   /// capability-dropped knobs, backend admission/knob-resolution notes, and the
   /// admission-bypass note. Empty on a clean launch.
   pub(crate) warnings: Vec<String>,
+  /// The layer each resolved knob value came from (provenance), surfaced on the
+  /// `start_model` IPC response and the CLI `--json` output. Empty when no knob
+  /// resolved from a real layer.
+  pub(crate) layer_sources:
+    std::collections::BTreeMap<crate::launch::knobs::KnobId, crate::launch::params::LayerLabel>,
 }
 
 /// Everything a backend's [`crate::backend::Backend::start`] needs to execute a
@@ -187,6 +193,11 @@ pub struct LaunchExec {
   /// The user-supplied knob deltas to persist in `last_params` (not the full
   /// resolved set — keeps source chips meaningful).
   pub(crate) user_knobs: crate::launch::knobs::KnobSet,
+  /// The layer each resolved knob value came from (provenance). Surfaced on the
+  /// `start_model` IPC response and the CLI `--json` output; empty when no knob
+  /// resolved from a real layer.
+  pub(crate) layer_sources:
+    std::collections::BTreeMap<crate::launch::knobs::KnobId, crate::launch::params::LayerLabel>,
   /// Native-knob keys the backend auto-resolved this launch — stripped from the
   /// persisted `last_params` so they re-resolve next launch (see
   /// [`crate::backend::Backend::resolve_knobs`]).
@@ -204,6 +215,14 @@ pub struct LaunchExec {
   pub(crate) resolved_backend_id: String,
 }
 
+/// Whether a launch resolves as "pure fit" — skipping the default-preset and
+/// `LastUsed` (last_params) layers. `Auto` (explicit `--preset auto`) and
+/// `Explicit` (named preset / TUI form, which already flattened a resolved
+/// preset into the `User` layer) are pure-fit by construction; a no-selection
+/// launch is pure-fit only when its configured default is `auto`.
+fn is_pure_fit(selection: LaunchSelection, default_is_auto: bool) -> bool {
+  matches!(selection, LaunchSelection::Auto | LaunchSelection::Explicit) || default_is_auto
+}
 /// Pick the launch binary and stamp the device-derived identity.
 ///
 /// Precedence: an explicit **server** pick (a chosen build/binary) wins
@@ -358,7 +377,11 @@ pub(crate) async fn compose_and_spawn(
   let default_is_auto = effective_default
     .as_ref()
     .is_some_and(|e| e.default_is_auto());
-  let pure_fit = matches!(parsed.selection, LaunchSelection::Auto) || default_is_auto;
+  // A named preset (CLI `start --preset <name>` or a TUI form launch) is
+  // self-contained: it must not inherit a stale `last_params`, so `Explicit`
+  // skips the `LastUsed` layer just like `Auto`. The inline-flag-only CLI path
+  // sends `Default`, so it keeps the `PresetDefault → LastUsed` fallback.
+  let pure_fit = is_pure_fit(parsed.selection, default_is_auto);
   let no_selection = is_default_sel && !pure_fit;
 
   // Mode resolution, in precedence order: the caller's explicit choice > the
@@ -966,6 +989,7 @@ pub(crate) async fn compose_and_spawn(
     native_ctx,
     total_weight_bytes,
     user_knobs,
+    layer_sources: resolved.sources,
     auto_set_knobs,
     volatile_knobs: crate::launch::knobs::volatile_ids(&resolved_backend_id),
     bypasses_admission,
@@ -1003,6 +1027,7 @@ pub(crate) async fn spawn_supervised(
     native_ctx: _,
     total_weight_bytes,
     user_knobs,
+    layer_sources,
     auto_set_knobs,
     volatile_knobs,
     bypasses_admission,
@@ -1225,6 +1250,7 @@ pub(crate) async fn spawn_supervised(
     model,
     log_path,
     warnings,
+    layer_sources,
   })
 }
 
@@ -1639,6 +1665,17 @@ mod tests {
   use crate::daemon::probe::ProbeOptions;
   use crate::daemon::registry::SupervisorRegistry;
 
+  /// A named preset / TUI form launch (`Explicit`) is self-contained: it must
+  /// not inherit a stale `last_params`, so it resolves as pure-fit and skips
+  /// the `LastUsed` layer. `Auto` is pure-fit by construction; a no-selection
+  /// launch is pure-fit only when its configured default is `auto`.
+  #[test]
+  fn explicit_selection_is_pure_fit_and_skips_last_used() {
+    assert!(is_pure_fit(LaunchSelection::Explicit, false));
+    assert!(is_pure_fit(LaunchSelection::Auto, false));
+    assert!(is_pure_fit(LaunchSelection::Default, true));
+    assert!(!is_pure_fit(LaunchSelection::Default, false));
+  }
   /// A `--device` selector that resolves to a server must stamp that server's
   /// id (and, when the backend is still `Auto`, its owning backend) so status
   /// and Ctrl+P capture report the real build instead of the default.

@@ -501,7 +501,8 @@ impl LaunchParams {
 /// (GGUF header for `ctx`, chat template for `reasoning`).
 /// `ServerDefault` means no flag is sent and llama-server falls back
 /// to its own hardcoded default.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LayerLabel {
   User,
   /// The model's configured `default:` preset, resolved server-side in

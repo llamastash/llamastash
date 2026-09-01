@@ -467,7 +467,9 @@ pub struct StartArgs {
 
   /// Emit JSON instead of human-readable success prose. Stable
   /// shape: `{ "name", "launch_id", "port", "pid", "preset",
-  /// "path" }`. With `--wait`, also carries `state` and `resolved_ctx`.
+  /// "path" }`. Also carries `layer_sources` (the layer each resolved knob
+  /// came from) when any knob resolved from a real layer. With `--wait`,
+  /// also carries `state` and `resolved_ctx`.
   #[arg(long)]
   pub json: bool,
   /// Block until the model finishes loading (reaches Ready or Error),

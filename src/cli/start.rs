@@ -225,6 +225,11 @@ async fn wait_and_emit(
     if let Some(cause) = settled.as_ref().and_then(|r| r.state_cause.clone()) {
       body["cause"] = Value::String(cause);
     }
+    // The daemon omits `layer_sources` when empty, so this is absent on a
+    // pure-fit launch and present otherwise.
+    if let Some(sources) = resp.get("layer_sources") {
+      body["layer_sources"] = sources.clone();
+    }
     println!("{}", crate::cli::output::pretty_json(&body));
   } else if !quiet {
     // Headline first (reuses the standard "started ..." prose), then the
@@ -661,7 +666,7 @@ fn emit_response(preset: Option<&str>, row: &CatalogRow, resp: &Value, json: boo
   let lid = resp.get("launch_id").and_then(Value::as_str);
   let pid = resp.get("pid").and_then(Value::as_u64);
   if json {
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
       "name": row.name(),
       "launch_id": lid,
       "port": port,
@@ -669,6 +674,11 @@ fn emit_response(preset: Option<&str>, row: &CatalogRow, resp: &Value, json: boo
       "preset": preset,
       "path": row.path,
     });
+    // The daemon omits `layer_sources` when empty, so this is absent on a
+    // pure-fit launch and present otherwise.
+    if let Some(sources) = resp.get("layer_sources") {
+      body["layer_sources"] = sources.clone();
+    }
     println!("{}", crate::cli::output::pretty_json(&body));
     return;
   }
