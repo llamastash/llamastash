@@ -13,7 +13,7 @@
 //! umbrella. This path never branches on lifecycle.
 
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -202,6 +202,59 @@ pub struct LaunchExec {
   pub(crate) warnings: Vec<String>,
   /// The backend id this launch resolved to, stamped on the persisted rows.
   pub(crate) resolved_backend_id: String,
+}
+
+/// Pick the launch binary and stamp the device-derived identity.
+///
+/// Precedence: an explicit **server** pick (a chosen build/binary) wins
+/// outright; else the binary that owns the chosen `--device` selector (the
+/// selector came from a specific binary's `--list-devices`, so we must spawn
+/// *that* binary or it is invalid); else the default binary. When the device
+/// selector resolves to a server, stamp its id (and, when the backend is still
+/// `Auto`, its owning backend) so status and Ctrl+P capture report it instead
+/// of falling back to the default.
+fn pick_launch_binary(
+  launch_params: &mut LaunchParams,
+  picked_server: Option<&crate::backend::Server>,
+  selector: Option<&str>,
+  servers: &[crate::backend::Server],
+  default_binary: &Path,
+) -> PathBuf {
+  if let Some(server) = picked_server {
+    return server.binary.clone();
+  }
+  match selector {
+    Some(sel) => match servers
+      .iter()
+      .find(|s| s.devices.iter().any(|d| d.selector == sel))
+    {
+      Some(srv) => {
+        // The device selector came from this server's `--list-devices`, so the
+        // launch is really on this build — stamp the id (and, when the backend
+        // is still `Auto`, its owning backend) so status and Ctrl+P capture
+        // report it instead of falling back to the default.
+        launch_params.server = Some(srv.id.clone());
+        if launch_params.backend == crate::launch::params::BackendChoice::Auto {
+          launch_params.backend = crate::launch::params::BackendChoice::from_id(&srv.backend_id);
+        }
+        srv.binary.clone()
+      }
+      None => {
+        // Stale persisted selector or the catalog probe failed. Drop the
+        // selector so the backend's argv emitter
+        // (`src/backend/llama_cpp/compose.rs`) doesn't emit an invalid
+        // `--device` the default binary would reject, and spawn the default
+        // binary with auto-select.
+        log::warn!(
+          "device selector {sel:?} not in server catalog; dropping it and spawning default binary {}",
+          default_binary.display()
+        );
+        launch_params.knobs.remove_by_name("device");
+        default_binary.to_path_buf()
+      }
+    },
+    None => default_binary.to_path_buf(),
+  }
 }
 
 /// The one launch-composition pipeline, for callers that already have a
@@ -761,35 +814,15 @@ pub(crate) async fn compose_and_spawn(
     .knobs
     .text_by_name("device")
     .filter(|s| !s.is_empty());
-  let launch_binary = if let Some(server) = &picked_server {
-    server.binary.clone()
-  } else {
-    match selector {
-      Some(sel) => {
-        let owning_binary = {
-          let servers = env.servers.read().await;
-          servers
-            .iter()
-            .find(|s| s.devices.iter().any(|d| d.selector == sel))
-            .map(|s| s.binary.clone())
-        };
-        owning_binary.unwrap_or_else(|| {
-        // Stale persisted selector or the catalog probe failed. Drop
-        // the selector so the backend's argv emitter
-        // (`src/backend/llama_cpp/compose.rs`) doesn't emit an invalid
-        // `--device` the default binary would reject, and spawn the
-        // default binary with auto-select.
-        log::warn!(
-          "device selector {sel:?} not in server catalog; dropping it and spawning default binary {}",
-          env.binary.display()
-        );
-        launch_params.knobs.remove_by_name("device");
-        env.binary.clone()
-      })
-      }
-      None => env.binary.clone(),
-    }
-  };
+  let servers_snapshot = env.servers.read().await;
+  let launch_binary = pick_launch_binary(
+    &mut launch_params,
+    picked_server.as_ref(),
+    selector.as_deref(),
+    &servers_snapshot[..],
+    &env.binary,
+  );
+  drop(servers_snapshot);
 
   // `inference_backend` was resolved up front (before the last_params gate).
   // The orchestrator owns the branch on plan shape below.
@@ -1605,6 +1638,86 @@ mod tests {
   use crate::daemon::context::LaunchEnv;
   use crate::daemon::probe::ProbeOptions;
   use crate::daemon::registry::SupervisorRegistry;
+
+  /// A `--device` selector that resolves to a server must stamp that server's
+  /// id (and, when the backend is still `Auto`, its owning backend) so status
+  /// and Ctrl+P capture report the real build instead of the default.
+  #[test]
+  fn pick_launch_binary_stamps_device_derived_identity() {
+    let mut params = LaunchParams::new(
+      PathBuf::from("/m/a.gguf"),
+      crate::launch::mode::LaunchMode::Chat,
+    );
+    let rocm = crate::backend::Server {
+      id: "llamacpp-rocm".into(),
+      backend_id: "llamacpp".into(),
+      binary: PathBuf::from("/bin/llama-server-rocm"),
+      name: "llamacpp-rocm".into(),
+      devices: vec![crate::backend::Device {
+        selector: "ROCm0".into(),
+        gpu_backend: "ROCm".into(),
+        name: "Radeon".into(),
+        total_mib: None,
+        free_mib: None,
+      }],
+    };
+    let default = PathBuf::from("/bin/llama-server");
+    let binary = pick_launch_binary(
+      &mut params,
+      None,
+      Some("ROCm0"),
+      std::slice::from_ref(&rocm),
+      &default,
+    );
+    assert_eq!(binary, PathBuf::from("/bin/llama-server-rocm"));
+    assert_eq!(params.server.as_deref(), Some("llamacpp-rocm"));
+    assert_eq!(
+      params.backend,
+      crate::launch::params::BackendChoice::from_id("llamacpp")
+    );
+  }
+
+  /// An explicit server pick wins outright and is not re-derived from the
+  /// device selector.
+  #[test]
+  fn pick_launch_binary_prefers_explicit_server() {
+    let mut params = LaunchParams::new(
+      PathBuf::from("/m/a.gguf"),
+      crate::launch::mode::LaunchMode::Chat,
+    );
+    let rocm = crate::backend::Server {
+      id: "llamacpp-rocm".into(),
+      backend_id: "llamacpp".into(),
+      binary: PathBuf::from("/bin/llama-server-rocm"),
+      name: "llamacpp-rocm".into(),
+      devices: vec![],
+    };
+    let default = PathBuf::from("/bin/llama-server");
+    let binary = pick_launch_binary(
+      &mut params,
+      Some(&rocm),
+      Some("ROCm0"),
+      std::slice::from_ref(&rocm),
+      &default,
+    );
+    assert_eq!(binary, PathBuf::from("/bin/llama-server-rocm"));
+  }
+
+  /// A stale selector (no server owns it) drops the `device` knob and falls
+  /// back to the default binary without inventing an identity.
+  #[test]
+  fn pick_launch_binary_drops_stale_selector() {
+    let mut params = LaunchParams::new(
+      PathBuf::from("/m/a.gguf"),
+      crate::launch::mode::LaunchMode::Chat,
+    );
+    params.knobs.set_by_name("device", "ROCm0");
+    let default = PathBuf::from("/bin/llama-server");
+    let binary = pick_launch_binary(&mut params, None, Some("ROCm0"), &[], &default);
+    assert_eq!(binary, default);
+    assert!(params.server.is_none());
+    assert!(params.knobs.text_by_name("device").is_none());
+  }
 
   /// A volatile id has to be one `retain_ids` will actually see, which is the
   /// knob's registry id. The guard used to read a hand-kept list that still

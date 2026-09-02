@@ -1856,40 +1856,65 @@ impl App {
         m.server.clone(),
       )
     } else if let Some(p) = &self.launch_picker {
-      (
-        p.user_knobs.clone(),
-        p.extras
-          .iter()
-          .map(|s| s.to_string_lossy().into_owned())
-          .collect(),
-        p.model_backend.explicit_id().map(str::to_string),
-        p.selected_server.clone(),
-      )
-    } else if let Some(p) = self.build_default_picker() {
-      (
-        p.user_knobs.clone(),
-        p.extras
-          .iter()
-          .map(|s| s.to_string_lossy().into_owned())
-          .collect(),
-        p.model_backend.explicit_id().map(str::to_string),
-        p.selected_server.clone(),
-      )
+      Self::picker_capture(p)
     } else {
-      return;
+      // No picker staged: capture the persisted last-used identity straight
+      // from the cheap sources (`last_params` + the daemon's per-row backend
+      // prediction + the compatible-server catalog), skipping
+      // `build_default_picker`'s full preset-cascade resolution — which
+      // `existing_preset_names` below reruns anyway.
+      let last = self.last_params.get(&path);
+      let knobs = last.map(|l| l.knobs.clone()).unwrap_or_default();
+      let extras = last.map(|l| l.extras.clone()).unwrap_or_default();
+      let selected_server = last.map(|l| l.server.clone()).unwrap_or_default();
+      let (backend, server) = crate::tui::launch_picker::launch_identity(
+        &selected_server,
+        &self.compatible_servers(&path),
+        &self
+          .predicted_backend(&path)
+          .map(crate::launch::params::BackendChoice::from_id)
+          .unwrap_or_default(),
+      );
+      (knobs, extras, backend, server)
     };
 
     let (existing, arch_shadow) = self.existing_preset_names(&path);
     self.save_preset_dialog = Some(crate::tui::save_preset_dialog::SavePresetDialog::open(
-      path,
-      model_name,
-      knobs,
-      extras,
+      crate::tui::save_preset_dialog::SavePresetArgs {
+        model_path: path,
+        model_name,
+        knobs,
+        extras,
+        backend,
+        server,
+        existing,
+        arch_shadow,
+      },
+    ));
+  }
+
+  /// The capture tuple (knobs, extras, backend, server) from a launch picker —
+  /// shared by the open-picker and default-picker branches so a future field
+  /// is added once. The identity comes from [`LaunchPickerState::launch_identity`]
+  /// so `backend` and `server` cannot disagree.
+  fn picker_capture(
+    p: &LaunchPickerState,
+  ) -> (
+    crate::launch::knobs::KnobSet,
+    Vec<String>,
+    Option<String>,
+    Option<String>,
+  ) {
+    let (backend, server) = p.launch_identity();
+    (
+      p.user_knobs.clone(),
+      p.extras
+        .iter()
+        .map(|s| s.to_string_lossy().into_owned())
+        .collect(),
       backend,
       server,
-      existing,
-      arch_shadow,
-    ));
+    )
   }
 
   pub fn open_filter(&mut self) {

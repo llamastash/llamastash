@@ -2126,24 +2126,30 @@ pub fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
     }
     WriterCmd::FavoriteAdd(p) => ("favorite_add", json!({ "model_path": p })),
     WriterCmd::FavoriteRemove(p) => ("favorite_remove", json!({ "model_path": p })),
-    WriterCmd::SavePreset(cmd) => (
-      "presets_save",
+    WriterCmd::SavePreset(cmd) => {
       // `knobs` already folds ctx/reasoning in; the daemon stores them
       // as-is (it only folds the separate ctx/reasoning params, which we
-      // omit here). Auto markers survive the round-trip. `backend` /
-      // `server` pin the launch identity (which engine / build this preset
-      // was captured against) — the same identity the CLI's `presets save`
-      // sends, so a TUI-captured preset reproduces its run instead of
-      // silently falling to the daemon's default server.
-      json!({
+      // omit here). Auto markers survive the round-trip.
+      let mut payload = json!({
         "model_path": cmd.model_path,
         "name": cmd.name,
         "knobs": cmd.knobs,
         "extras": cmd.extras,
-        "backend": cmd.backend,
-        "server": cmd.server,
-      }),
-    ),
+      });
+      // `backend` / `server` pin the launch identity (which engine / build
+      // this preset was captured against) — the same identity the CLI's
+      // `presets save` sends, so a TUI-captured preset reproduces its run
+      // instead of silently falling to the daemon's default server. Omit
+      // them when unset (matching the CLI) so "no identity" encodes the
+      // same way from both clients.
+      if let Some(b) = &cmd.backend {
+        payload["backend"] = json!(b);
+      }
+      if let Some(sv) = &cmd.server {
+        payload["server"] = json!(sv);
+      }
+      ("presets_save", payload)
+    }
   }
 }
 

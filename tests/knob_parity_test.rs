@@ -310,7 +310,9 @@ fn the_tui_save_payload_carries_the_launch_identity() {
   );
 
   // An untagged launch (no resolved identity) must not invent one — the
-  // daemon re-derives it rather than storing a guess.
+  // daemon re-derives it rather than storing a guess. "No identity" omits the
+  // keys entirely (matching the CLI's `presets save`), not explicit `null`, so
+  // both clients encode it the same way.
   let bare = SavePresetCmd {
     model_path: "/m/phi.gguf".into(),
     name: "bare".into(),
@@ -320,8 +322,14 @@ fn the_tui_save_payload_carries_the_launch_identity() {
     server: None,
   };
   let (_, bare_params) = encode_writer_cmd(WriterCmd::SavePreset(Box::new(bare)));
-  assert_eq!(bare_params.get("backend"), Some(&serde_json::Value::Null));
-  assert_eq!(bare_params.get("server"), Some(&serde_json::Value::Null));
+  assert!(
+    bare_params.get("backend").is_none(),
+    "unset backend must omit the key, not send explicit null"
+  );
+  assert!(
+    bare_params.get("server").is_none(),
+    "unset server must omit the key, not send explicit null"
+  );
 }
 
 /// The clap `Command` for one subcommand of the real CLI.

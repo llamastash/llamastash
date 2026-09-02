@@ -194,6 +194,41 @@ pub struct LaunchPickerState {
   pub scroll_offset: Cell<u16>,
 }
 
+/// The launch identity to pin on a saved preset, given a server pick, the
+/// server catalog, and the model's backend scope. A non-default server pick
+/// determines its own backend (its owning backend), so the two fields cannot
+/// disagree; with no (non-default) pick the backend falls back to the model's
+/// explicit choice (or `None` for `Auto`, letting the daemon re-derive).
+///
+/// Free (not a method) so the no-picker capture path can compute it from the
+/// cheap sources (`last_params.server` + `compatible_servers` + the predicted
+/// backend) without building a full [`LaunchPickerState`].
+pub fn launch_identity(
+  selected_server: &Option<String>,
+  servers: &[crate::backend::Server],
+  model_backend: &BackendChoice,
+) -> (Option<String>, Option<String>) {
+  // The default stop (unset, or an explicit pin of `servers[0]`) collapses to
+  // `None` so the daemon resolves the priority default.
+  let is_default = match selected_server {
+    None => true,
+    Some(id) => servers.first().is_some_and(|s| &s.id == id),
+  };
+  let server = if is_default {
+    None
+  } else {
+    selected_server.clone()
+  };
+  let backend = match &server {
+    Some(id) => servers
+      .iter()
+      .find(|s| &s.id == id)
+      .map(|s| s.backend_id.clone()),
+    None => model_backend.explicit_id().map(str::to_string),
+  };
+  (backend, server)
+}
+
 impl LaunchPickerState {
   pub fn for_model(model_name: impl Into<String>) -> Self {
     Self {
@@ -475,6 +510,13 @@ impl LaunchPickerState {
       None => true,
       Some(id) => self.servers.first().is_some_and(|s| &s.id == id),
     }
+  }
+
+  /// The launch identity this picker would pin on a saved preset — the chosen
+  /// server build and the backend it runs on, kept consistent by
+  /// [`launch_identity`].
+  pub fn launch_identity(&self) -> (Option<String>, Option<String>) {
+    launch_identity(&self.selected_server, &self.servers, &self.model_backend)
   }
 
   /// Cycle the Server row. The ring is the **default** stop (position 0, which
