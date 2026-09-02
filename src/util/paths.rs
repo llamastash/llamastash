@@ -57,11 +57,29 @@ pub fn model_display_name(path: &Path) -> String {
   if let Some(name) = crate::backend::lemonade::registry_name_from_path(path) {
     return name.to_string();
   }
-  path
+  let label = model_file_label(path);
+  Path::new(&label)
     .file_stem()
     .and_then(|s| s.to_str())
     .unwrap_or("model")
     .to_string()
+}
+
+/// The **file-shaped** label a model is shown by: the path's basename with a
+/// split set's `-NNNNN-of-NNNNN` marker collapsed, so four shards read as one
+/// model (`Qwen3.8-Flash-Next-UD-Q4_K_XL.gguf`, not `…-00001-of-00004.gguf`).
+///
+/// This is the single place the shard collapse happens. `CatalogRow::name`,
+/// the CLI's running / external rows, and [`model_display_name`] (which is
+/// this minus the extension) all delegate here, so a split model cannot read
+/// one way in `list` and another in `status` — it did, before they each
+/// derived a basename of their own.
+pub fn model_file_label(path: &Path) -> String {
+  let Some(file_name) = path.file_name().and_then(|s| s.to_str()) else {
+    return path.to_string_lossy().into_owned();
+  };
+  crate::discovery::split_gguf::collapsed_file_name(file_name)
+    .unwrap_or_else(|| file_name.to_string())
 }
 
 /// The one user-visible identifier for a model: `display_label` when the

@@ -76,10 +76,10 @@ pub struct RunningRow {
 }
 
 impl RunningRow {
-  /// Human-friendly basename (mirrors [`CatalogRow::name`]). Strips
-  /// the parent directory but keeps the extension so split-shard
-  /// files stay distinguishable. Falls back to the raw path when it
-  /// has no separator.
+  /// Human-friendly basename (mirrors [`CatalogRow::name`]). Strips the
+  /// parent directory, keeps the extension, and collapses a split set to its
+  /// base name so the row reads as one model. Falls back to the raw path when
+  /// it has no separator.
   pub fn name(&self) -> String {
     basename(&self.model_path)
   }
@@ -89,11 +89,14 @@ impl RunningRow {
 /// this module so the row impls stay self-contained — callers should
 /// use `RunningRow::name()` / `ExternalRow::name()`, not this
 /// function directly.
+///
+/// Delegates the actual naming rule to
+/// [`crate::util::paths::model_file_label`] so a `status` row and a `list`
+/// row cannot disagree: this used to derive its own basename and deliberately
+/// kept the `-NNNNN-of-NNNNN` suffix, which made one split model read two
+/// different ways depending on which command printed it.
 fn basename(path: &str) -> String {
-  std::path::Path::new(path)
-    .file_name()
-    .map(|s| s.to_string_lossy().into_owned())
-    .unwrap_or_else(|| path.to_string())
+  crate::util::paths::model_file_label(std::path::Path::new(path))
 }
 
 /// Fetch every catalog row via `list_models`. Centralised here so

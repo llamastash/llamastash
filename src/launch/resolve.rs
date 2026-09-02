@@ -284,10 +284,7 @@ impl CatalogRow {
     if let Some(label) = &self.display_label {
       return label.clone();
     }
-    std::path::Path::new(&self.path)
-      .file_name()
-      .map(|s| s.to_string_lossy().into_owned())
-      .unwrap_or_else(|| self.path.clone())
+    crate::util::paths::model_file_label(std::path::Path::new(&self.path))
   }
 
   /// The identifier this row answers to on the wire — what `/v1/models`

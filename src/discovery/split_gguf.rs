@@ -26,6 +26,16 @@ fn shard_regex() -> &'static Regex {
   })
 }
 
+/// The filename a split set is known by: shard 1's name with the
+/// `-NNNNN-of-NNNNN` marker removed, extension kept.
+///
+/// A split model is one model, so every user-visible surface names it this way
+/// rather than after whichever shard happens to be the entry point. `None` for
+/// a name that is not a shard, so callers fall back to the filename as-is.
+pub fn collapsed_file_name(file_name: &str) -> Option<String> {
+  parse_shard_name(file_name).map(|s| format!("{}.gguf", s.base))
+}
+
 /// One parsed shard filename. `index` is 1-based, matching the
 /// on-disk numbering.
 #[derive(Debug, Clone, PartialEq, Eq)]
