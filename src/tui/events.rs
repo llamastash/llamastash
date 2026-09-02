@@ -121,9 +121,10 @@ pub enum WriterCmd {
   /// `presets_save` — write the captured launch settings to
   /// `config.yaml` under `name` for `model_path` (`Ctrl+P`). `knobs`
   /// carries ctx/reasoning folded in plus any Auto markers; `extras` is
-  /// the argv tail. The next `presets_all` refresh reflects it. Boxed
-  /// (like `StartModel`) so the large `crate::launch::knobs::KnobSet` doesn't bloat the
-  /// other tiny variants.
+  /// the argv tail; `backend` / `server` pin the launch identity (which
+  /// engine and which build the preset was captured against). The next
+  /// `presets_all` refresh reflects it. Boxed (like `StartModel`) so the
+  /// large `crate::launch::knobs::KnobSet` doesn't bloat the other tiny variants.
   SavePreset(Box<SavePresetCmd>),
 }
 
@@ -134,6 +135,11 @@ pub struct SavePresetCmd {
   pub name: String,
   pub knobs: crate::launch::knobs::KnobSet,
   pub extras: Vec<String>,
+  /// Backend this preset pins — launch identity, like the CLI's
+  /// `presets save` sends. `None` leaves the daemon to re-derive it.
+  pub backend: Option<String>,
+  /// Server (build/binary) this preset pins — identity, like `backend`.
+  pub server: Option<String>,
 }
 
 /// One pump of input events. Returns `true` when the App is asking
@@ -1273,6 +1279,8 @@ fn commit_save_preset(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) {
       name: name.clone(),
       knobs: dialog.knobs,
       extras: dialog.extras,
+      backend: dialog.backend,
+      server: dialog.server,
     })),
     format!("saved preset `{name}`"),
     "save failed — writer offline",
@@ -2058,7 +2066,12 @@ async fn handle_restart_daemon(
   }
 }
 
-fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
+/// Encode a [`WriterCmd`] into the `(method, params)` JSON-RPC call the
+/// daemon writer task sends. Pure and total over the command — exposed so
+/// the knob-parity test can pin the wire payload a surface actually emits
+/// (the TUI save path dropped `backend` / `server` while every knob test
+/// stayed green, because nothing checked this shape).
+pub fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
   match cmd {
     WriterCmd::StartModel(args) => {
       let crate::tui::app::StartModelArgs {
@@ -2113,18 +2126,30 @@ fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
     }
     WriterCmd::FavoriteAdd(p) => ("favorite_add", json!({ "model_path": p })),
     WriterCmd::FavoriteRemove(p) => ("favorite_remove", json!({ "model_path": p })),
-    WriterCmd::SavePreset(cmd) => (
-      "presets_save",
+    WriterCmd::SavePreset(cmd) => {
       // `knobs` already folds ctx/reasoning in; the daemon stores them
       // as-is (it only folds the separate ctx/reasoning params, which we
       // omit here). Auto markers survive the round-trip.
-      json!({
+      let mut payload = json!({
         "model_path": cmd.model_path,
         "name": cmd.name,
         "knobs": cmd.knobs,
         "extras": cmd.extras,
-      }),
-    ),
+      });
+      // `backend` / `server` pin the launch identity (which engine / build
+      // this preset was captured against) — the same identity the CLI's
+      // `presets save` sends, so a TUI-captured preset reproduces its run
+      // instead of silently falling to the daemon's default server. Omit
+      // them when unset (matching the CLI) so "no identity" encodes the
+      // same way from both clients.
+      if let Some(b) = &cmd.backend {
+        payload["backend"] = json!(b);
+      }
+      if let Some(sv) = &cmd.server {
+        payload["server"] = json!(sv);
+      }
+      ("presets_save", payload)
+    }
   }
 }
 

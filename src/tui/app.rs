@@ -1842,39 +1842,85 @@ impl App {
       .display_label_for(&path)
       .unwrap_or_else(|| crate::util::paths::path_basename(&path));
 
-    // Capture knobs + extras from whichever surface is in view. One map now,
-    // so a ds4 launch's `--ssd-streaming` rides with the rest.
-    let (knobs, extras) = if let Some(m) = self.focused_managed() {
-      (m.knobs.clone(), m.extras.clone())
+    // Capture knobs + extras + launch identity from whichever surface is in
+    // view. One map now, so a ds4 launch's `--ssd-streaming` rides with the
+    // rest, and the identity (which engine / build) pins the preset to the
+    // run it was captured from. A running row carries the *resolved*
+    // identity; a picker carries the *intended* one (its concrete engine and
+    // chosen server build).
+    let (knobs, extras, backend, server) = if let Some(m) = self.focused_managed() {
+      (
+        m.knobs.clone(),
+        m.extras.clone(),
+        m.backend.clone(),
+        m.server.clone(),
+      )
     } else if let Some(p) = &self.launch_picker {
-      (
-        p.user_knobs.clone(),
-        p.extras
-          .iter()
-          .map(|s| s.to_string_lossy().into_owned())
-          .collect(),
-      )
-    } else if let Some(p) = self.build_default_picker() {
-      (
-        p.user_knobs.clone(),
-        p.extras
-          .iter()
-          .map(|s| s.to_string_lossy().into_owned())
-          .collect(),
-      )
+      Self::picker_capture(p)
     } else {
-      return;
+      // No picker staged: capture the persisted last-used identity straight
+      // from the cheap sources (`last_params` + the daemon's per-row backend
+      // prediction + the compatible-server catalog), skipping
+      // `build_default_picker`'s full preset-cascade resolution — which
+      // `existing_preset_names` below reruns anyway.
+      let last = self.last_params.get(&path);
+      let knobs = last.map(|l| l.knobs.clone()).unwrap_or_default();
+      let extras = last.map(|l| l.extras.clone()).unwrap_or_default();
+      let selected_server = last.map(|l| l.server.clone()).unwrap_or_default();
+      let (backend, server) = crate::tui::launch_picker::launch_identity(
+        &selected_server,
+        &self.compatible_servers(&path),
+        &self
+          .predicted_backend(&path)
+          .map(crate::launch::params::BackendChoice::from_id)
+          // Mirror `build_default_picker`: pin the explicit default backend
+          // (not `Auto`) when the row has no prediction yet, so a ds4-
+          // compatible GGUF saves the llamacpp build actually shown instead
+          // of letting the daemon's replay auto-routing pick ds4.
+          .unwrap_or_else(|| {
+            crate::launch::params::BackendChoice::from_id(crate::backend::DEFAULT_BACKEND_ID)
+          }),
+      );
+      (knobs, extras, backend, server)
     };
 
     let (existing, arch_shadow) = self.existing_preset_names(&path);
     self.save_preset_dialog = Some(crate::tui::save_preset_dialog::SavePresetDialog::open(
-      path,
-      model_name,
-      knobs,
-      extras,
-      existing,
-      arch_shadow,
+      crate::tui::save_preset_dialog::SavePresetArgs {
+        model_path: path,
+        model_name,
+        knobs,
+        extras,
+        backend,
+        server,
+        existing,
+        arch_shadow,
+      },
     ));
+  }
+
+  /// The capture tuple (knobs, extras, backend, server) from a launch picker —
+  /// shared by the open-picker and default-picker branches so a future field
+  /// is added once. The identity comes from [`LaunchPickerState::launch_identity`]
+  /// so `backend` and `server` cannot disagree.
+  fn picker_capture(
+    p: &LaunchPickerState,
+  ) -> (
+    crate::launch::knobs::KnobSet,
+    Vec<String>,
+    Option<String>,
+    Option<String>,
+  ) {
+    let (backend, server) = p.launch_identity();
+    (
+      p.user_knobs.clone(),
+      p.extras
+        .iter()
+        .map(|s| s.to_string_lossy().into_owned())
+        .collect(),
+      backend,
+      server,
+    )
   }
 
   pub fn open_filter(&mut self) {
@@ -3274,10 +3320,13 @@ mod tests {
   }
 
   #[test]
-  fn save_preset_from_running_launch_carries_dispatched_extras() {
+  fn save_preset_from_running_launch_carries_dispatched_extras_and_identity() {
     // Regression: Ctrl+P on a running model must carry the advanced `--`
-    // tail (the live `status` `params.extras`) into the preset. It used to
-    // pass an empty list, dropping the advanced args off a running launch.
+    // tail (the live `status` `params.extras`) and the launch identity
+    // (`status` `backend` / `params.server`) into the preset. The extras
+    // half used to pass an empty list; the identity half used to be dropped
+    // entirely, so a TUI-saved preset read back `server: null` and fell to
+    // the daemon's default build.
     let mut app = App::new(AppOptions::default());
     app.models = vec![fake("/m/qwen.gguf", "/m")];
     let body = serde_json::json!({
@@ -3286,8 +3335,10 @@ mod tests {
         "id": { "path": "/m/qwen.gguf", "header_hash": "h" },
         "port": 41100,
         "state": { "state": "ready" },
+        "backend": "llamacpp",
         "params": {
           "model_path": "/m/qwen.gguf",
+          "server": "llamacpp-vulkan",
           "extras": ["--override-kv", "tokenizer.ggml.add_bos=bool:false"],
         },
       }]
@@ -3304,6 +3355,16 @@ mod tests {
       .find(|m| m.launch_id == "L1")
       .expect("managed row");
     assert_eq!(row.extras, want, "extras parsed from status params");
+    assert_eq!(
+      row.backend.as_deref(),
+      Some("llamacpp"),
+      "backend parsed from status"
+    );
+    assert_eq!(
+      row.server.as_deref(),
+      Some("llamacpp-vulkan"),
+      "server parsed from status params"
+    );
     // ...and captured by the save dialog when Ctrl+P fires on that row
     // (ingest_status snaps the cursor onto the newly appeared launch).
     app.open_save_preset_dialog();
@@ -3314,6 +3375,66 @@ mod tests {
     assert_eq!(
       dialog.extras, want,
       "advanced -- tail carried into the preset"
+    );
+    assert_eq!(
+      dialog.backend.as_deref(),
+      Some("llamacpp"),
+      "resolved backend carried into the preset"
+    );
+    assert_eq!(
+      dialog.server.as_deref(),
+      Some("llamacpp-vulkan"),
+      "resolved server build carried into the preset"
+    );
+  }
+
+  #[test]
+  fn save_preset_no_picker_pins_default_backend_when_unpredicted() {
+    // Regression: the no-picker Ctrl+P path (no running launch, no picker
+    // staged) must pin the explicit default backend when the row has no
+    // prediction yet — mirroring `build_default_picker` — instead of falling
+    // to `Auto`, which on replay lets the daemon's auto-routing pick a
+    // different build (e.g. ds4) than the llamacpp one actually shown.
+    let mut app = App::new(AppOptions::default());
+    app.models = vec![fake("/m/phi.gguf", "/m")];
+    // A last-used launch with no server pick and no `backend` field on the
+    // row, so `predicted_backend` is `None`.
+    app.ingest_last_params(&serde_json::json!({
+      "last_params": [{
+        "model_path": "/m/phi.gguf",
+        "params": { "ctx": 4096 },
+      }],
+    }));
+    // Focus the catalog model row (no running launch, no picker).
+    let cursor = app
+      .rendered_rows()
+      .iter()
+      .position(|r| {
+        r.path()
+          .is_some_and(|p| p == std::path::Path::new("/m/phi.gguf"))
+      })
+      .expect("model row present");
+    app.list_cursor = cursor;
+    assert!(app.focused_managed().is_none(), "no running launch");
+    assert!(app.launch_picker.is_none(), "no picker staged");
+
+    app.open_save_preset_dialog();
+    let dialog = app
+      .save_preset_dialog
+      .as_ref()
+      .expect("save dialog opened on the catalog model");
+    // No server pick, so the backend falls back to the model's explicit
+    // choice — which, with no prediction yet, is the explicit default (not
+    // `Auto`), so a ds4-compatible GGUF saves the llamacpp build shown.
+    assert_eq!(
+      dialog.backend.as_deref(),
+      Some("llamacpp"),
+      "unpredicted row pins the default backend, not Auto"
+    );
+    assert_eq!(
+      dialog.server.as_deref(),
+      None,
+      "no server pick means no server pin"
     );
   }
 

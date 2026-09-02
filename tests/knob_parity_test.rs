@@ -226,11 +226,15 @@ fn every_identity_field_reaches_its_declared_surfaces() {
       })
       .unwrap_or_default()
   };
-  // TUI: the picker owns the field.
+  // TUI input surface: the picker owns the field. Necessary but *not
+  // sufficient* — `backend` / `server` passed this check while the Ctrl+P
+  // save payload still dropped them, because the picker owning a field and
+  // the save emitting it are two things. The save half is pinned separately
+  // by `the_tui_save_payload_carries_the_launch_identity`.
   let picker = llamastash::tui::launch_picker::LaunchPickerState::for_model("m");
   let tui_has = |name: &str| match name {
     "backend" => true, // `model_backend` / `launch_backend()`
-    "server" => picker.selected_server.is_none() || true, // the Server row
+    "server" => true,  // the Server row
     "extras" => picker
       .ordered_fields()
       .contains(&llamastash::tui::launch_picker::PickerField::Extras),
@@ -261,6 +265,71 @@ fn every_identity_field_reaches_its_declared_surfaces() {
       f.why
     );
   }
+}
+
+/// The TUI `Ctrl+P` save-preset payload carries the launch identity it was
+/// captured from.
+///
+/// The structural check above proves the picker *owns* `backend` / `server`,
+/// which passed while the wire payload still dropped them — the exact
+/// 2026-08-30 regression (a TUI-saved preset read back `server: null` and
+/// fell to the daemon's default build). This pins the shape that actually
+/// leaves the TUI: a `SavePresetCmd` encoding to `presets_save` must carry
+/// the identity when it is set, and must not invent one when it is not.
+#[test]
+fn the_tui_save_payload_carries_the_launch_identity() {
+  use llamastash::tui::events::{encode_writer_cmd, SavePresetCmd, WriterCmd};
+
+  // The captured command, as `commit_save_preset` builds it from a running
+  // launch: identity present.
+  let cmd = SavePresetCmd {
+    model_path: "/m/qwen.gguf".into(),
+    name: "pi-coding".into(),
+    knobs: knobs::KnobSet::new(),
+    extras: vec!["--override-kv".into()],
+    backend: Some("llamacpp".into()),
+    server: Some("llamacpp-vulkan".into()),
+  };
+  let (method, params) = encode_writer_cmd(WriterCmd::SavePreset(Box::new(cmd)));
+  assert_eq!(method, "presets_save");
+  assert_eq!(
+    params.get("backend"),
+    Some(&serde_json::json!("llamacpp")),
+    "backend must ride the save payload, or the preset re-pins to the wrong engine"
+  );
+  assert_eq!(
+    params.get("server"),
+    Some(&serde_json::json!("llamacpp-vulkan")),
+    "server must ride the save payload, or the preset falls to servers[0]"
+  );
+  // The pre-existing fields are untouched by the identity addition.
+  assert_eq!(params.get("name"), Some(&serde_json::json!("pi-coding")));
+  assert_eq!(
+    params.get("extras"),
+    Some(&serde_json::json!(vec!["--override-kv"]))
+  );
+
+  // An untagged launch (no resolved identity) must not invent one — the
+  // daemon re-derives it rather than storing a guess. "No identity" omits the
+  // keys entirely (matching the CLI's `presets save`), not explicit `null`, so
+  // both clients encode it the same way.
+  let bare = SavePresetCmd {
+    model_path: "/m/phi.gguf".into(),
+    name: "bare".into(),
+    knobs: knobs::KnobSet::new(),
+    extras: Vec::new(),
+    backend: None,
+    server: None,
+  };
+  let (_, bare_params) = encode_writer_cmd(WriterCmd::SavePreset(Box::new(bare)));
+  assert!(
+    bare_params.get("backend").is_none(),
+    "unset backend must omit the key, not send explicit null"
+  );
+  assert!(
+    bare_params.get("server").is_none(),
+    "unset server must omit the key, not send explicit null"
+  );
 }
 
 /// The clap `Command` for one subcommand of the real CLI.

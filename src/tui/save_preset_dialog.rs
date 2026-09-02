@@ -47,6 +47,13 @@ pub struct SavePresetDialog {
   /// The knobs the dialog will write into the preset entry.
   /// Captured extras argv tail.
   pub extras: Vec<String>,
+  /// Backend this preset pins — launch *identity*, not a knob. `None` when
+  /// the capture source had no resolved backend (an untagged / default launch),
+  /// so the daemon re-derives it rather than storing a guess.
+  pub backend: Option<String>,
+  /// Server (build/binary) this preset pins — identity, like `backend`.
+  /// `None` when the launch took the backend's default server.
+  pub server: Option<String>,
   /// The model's own (per-model) preset names — a save under one of these
   /// is a true overwrite.
   pub existing: Vec<String>,
@@ -60,26 +67,36 @@ pub struct SavePresetDialog {
   pub error: Option<String>,
 }
 
+/// The captured launch settings the `Ctrl+P` dialog opens with. A struct (not
+/// a positional arg list) so the two adjacent same-typed `Option<String>`
+/// identity fields (`backend`, `server`) can't be transposed at the call site
+/// with no compile error — the same struct-of-args shape as `AppOptions` /
+/// `StartModelArgs`.
+pub struct SavePresetArgs {
+  pub model_path: PathBuf,
+  pub model_name: String,
+  pub knobs: crate::launch::knobs::KnobSet,
+  pub extras: Vec<String>,
+  pub backend: Option<String>,
+  pub server: Option<String>,
+  pub existing: Vec<String>,
+  pub arch_shadow: Vec<String>,
+}
+
 impl SavePresetDialog {
   /// Open the dialog at the name stage with the input ready for typing.
-  #[allow(clippy::too_many_arguments)] // capture surface is inherently wide
-  pub fn open(
-    model_path: PathBuf,
-    model_name: String,
-    knobs: crate::launch::knobs::KnobSet,
-    extras: Vec<String>,
-    existing: Vec<String>,
-    arch_shadow: Vec<String>,
-  ) -> Self {
+  pub fn open(args: SavePresetArgs) -> Self {
     let mut input = InputField::new();
     input.enter_edit();
     Self {
-      model_path,
-      model_name,
-      knobs,
-      extras,
-      existing,
-      arch_shadow,
+      model_path: args.model_path,
+      model_name: args.model_name,
+      knobs: args.knobs,
+      extras: args.extras,
+      backend: args.backend,
+      server: args.server,
+      existing: args.existing,
+      arch_shadow: args.arch_shadow,
       input,
       stage: SaveStage::Name,
       error: None,
@@ -247,14 +264,16 @@ mod tests {
   }
 
   fn dialog_with(existing: &[&str], arch_shadow: &[&str]) -> SavePresetDialog {
-    SavePresetDialog::open(
-      PathBuf::from("/m/a.gguf"),
-      "a.gguf".into(),
-      crate::launch::knobs::KnobSet::new(),
-      Vec::new(),
-      existing.iter().map(|s| s.to_string()).collect(),
-      arch_shadow.iter().map(|s| s.to_string()).collect(),
-    )
+    SavePresetDialog::open(SavePresetArgs {
+      model_path: PathBuf::from("/m/a.gguf"),
+      model_name: "a.gguf".into(),
+      knobs: crate::launch::knobs::KnobSet::new(),
+      extras: Vec::new(),
+      backend: None,
+      server: None,
+      existing: existing.iter().map(|s| s.to_string()).collect(),
+      arch_shadow: arch_shadow.iter().map(|s| s.to_string()).collect(),
+    })
   }
 
   #[test]
