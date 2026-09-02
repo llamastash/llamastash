@@ -53,6 +53,19 @@ impl Resolved {
       .map(|src| src == def.fallback)
       .unwrap_or(true)
   }
+
+  /// The subset of `sources` a real layer actually supplied — knobs that fell
+  /// to their `fallback` (no layer set them) are dropped. This is what the IPC
+  /// `layer_sources` response carries, so a pure-fit launch (every knob at its
+  /// default) yields an empty map and the field is omitted.
+  pub fn real_sources(&self, backend_id: &str) -> BTreeMap<KnobId, LayerLabel> {
+    self
+      .sources
+      .iter()
+      .filter(|(id, _)| !self.is_layer_less(**id, backend_id))
+      .map(|(id, label)| (*id, *label))
+      .collect()
+  }
 }
 
 /// Resolve `layers` for `backend_id`, most-specific first.
@@ -348,6 +361,34 @@ mod tests {
     assert_eq!(r.knobs.u32(threads), Some(8), "lower layer fills the gap");
     assert_eq!(r.sources[&ctx], LayerLabel::User);
     assert_eq!(r.sources[&threads], LayerLabel::LastUsed);
+  }
+
+  #[test]
+  fn real_sources_drops_knobs_that_fell_to_their_fallback() {
+    let backend = default_backend();
+    let ctx = registry::def_for_backend_concept(backend, super::super::Concept::ContextLength)
+      .unwrap()
+      .knob_id();
+
+    // Pure-fit: no layer supplies anything, so every knob sits at its fallback
+    // and the provenance map is empty — the IPC `layer_sources` field is omitted.
+    let empty = KnobSet::new();
+    let pure = resolve_layered_with_disable_defaults(backend, &[(LayerLabel::User, &empty)], false);
+    assert!(
+      pure.real_sources(backend).is_empty(),
+      "a pure-fit launch resolves no real layer, so layer_sources must be empty"
+    );
+
+    // One real layer: only the knob it set survives the filter.
+    let user = set(ctx, 4096);
+    let r = resolve_layered_with_disable_defaults(backend, &[(LayerLabel::User, &user)], false);
+    let real = r.real_sources(backend);
+    assert_eq!(
+      real.len(),
+      1,
+      "only the user-set knob is a real layer: {real:?}"
+    );
+    assert_eq!(real[&ctx], LayerLabel::User);
   }
 
   #[test]

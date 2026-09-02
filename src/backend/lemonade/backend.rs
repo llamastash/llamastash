@@ -642,6 +642,7 @@ impl Backend for LemonadeBackend {
       log_path: exec.log_path,
       // Lemonade's delegated path carries no admission advisories.
       warnings: Vec::new(),
+      layer_sources: exec.layer_sources,
     })
   }
 }

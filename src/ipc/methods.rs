@@ -534,6 +534,11 @@ async fn start_model_handler(
   if !started.warnings.is_empty() {
     resp["warnings"] = json!(started.warnings);
   }
+  // Layer provenance per resolved knob. Omitted when empty (a pure-fit launch
+  // where every knob fell to the backend default resolves no real layer).
+  if !started.layer_sources.is_empty() {
+    resp["layer_sources"] = json!(started.layer_sources);
+  }
   Ok(resp)
 }
 

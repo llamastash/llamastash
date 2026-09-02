@@ -6,6 +6,7 @@
 //! on one surface and be missing from another.
 
 use crate::launch::params::LayerLabel;
+use serde::{Deserialize, Serialize};
 
 /// A knob's stable identity — its persistence key, wire key, and (by default)
 /// its flag spelling minus the leading dashes.
@@ -15,7 +16,8 @@ use crate::launch::params::LayerLabel;
 /// the registry knows can exist: parsing a config or wire key resolves it
 /// through [`super::registry::resolve_id`], which is what turns an unknown key
 /// into a warning instead of a silently-stored orphan.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct KnobId(pub &'static str);
 
 impl KnobId {
