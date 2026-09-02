@@ -34,14 +34,22 @@ use crate::daemon::context::MethodContext;
 ///
 /// Carries no owning-binary field — the [`Server`] that owns this device
 /// already knows its binary.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// The string fields default rather than reject: a client reading a `status`
+/// payload from an older daemon must still get a device it can count, and a
+/// nameless one takes its own slot in [`physical_device_count`] — the failure
+/// direction that keeps a real GPU visible.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Device {
   /// Exact `--device` selector (`Vulkan0`, `CUDA0`, `ROCm0`), passed verbatim.
+  #[serde(default)]
   pub selector: String,
   /// Compute backend inferred from the selector prefix (`Vulkan` / `CUDA` /
   /// `ROCm` / `Metal`). Display-only.
+  #[serde(default)]
   pub gpu_backend: String,
   /// Human-readable adapter name, parens and all.
+  #[serde(default)]
   pub name: String,
   /// Total device memory in MiB, when the probe carried it.
   pub total_mib: Option<u64>,

@@ -1495,17 +1495,22 @@ mod tests {
   }
 
   #[test]
-  fn navigation_skips_the_multi_gpu_group_on_a_single_gpu_host() {
-    // Empty catalog → the whole Multi-GPU placement group is gated off, so
-    // neither direction ever lands on one of its rows.
+  fn navigation_skips_the_device_and_placement_groups_on_a_single_gpu_host() {
+    // Empty catalog → both runtime-gated groups are off, so neither direction
+    // ever lands on one of their rows. Device and Multi-GPU placement gate
+    // independently, so both belong in the sweep.
     let mut s = LaunchPickerState::for_model("qwen");
     assert!(!s.multi_device());
+    assert!(!s.device_choice());
     let hidden: Vec<PickerField> = knobs::for_backend("llamacpp")
       .iter()
-      .filter(|d| d.group == Group::MultiGpu)
+      .filter(|d| matches!(d.group, Group::MultiGpu | Group::Device))
       .map(|d| PickerField::Knob(d.knob_id()))
       .collect();
-    assert!(!hidden.is_empty(), "llama.cpp declares placement knobs");
+    assert!(
+      hidden.contains(&PickerField::Knob(knobs::kid("device"))),
+      "the device row is one of the gated rows: {hidden:?}"
+    );
     let n = s.ordered_fields().len() + hidden.len();
     for _ in 0..n {
       s.next_field();

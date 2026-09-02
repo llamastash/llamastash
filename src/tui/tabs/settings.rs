@@ -399,25 +399,29 @@ fn format_persisted_knob_value(
 
 /// Read-only `server` row label for a running launch, or `None` when the model
 /// has one (or zero) compatible servers so there's nothing to disambiguate.
-/// Mirrors the editable picker's `server_value_label`: the priority-default
-/// server (catalog first) reads `<id> (default)`, an explicitly-picked
-/// non-default server reads its bare id. A launch that recorded no server pick
-/// took the default, so it renders the default label too.
+///
+/// Which build the launch is on comes from `App::server_for_managed` — the same
+/// resolver the knob gates below use, so this row can never name one server
+/// while the gates answer for another. A launch that recorded no pick resolves
+/// to the daemon's own default binary, which is not always the catalog-first
+/// entry. The `(default)` suffix keeps the editable picker's meaning
+/// (`server_value_label`): it marks the priority-default the picker offers, not
+/// merely "no explicit pick".
 fn running_server_label(app: &App, m: &ManagedRow) -> Option<String> {
   let servers = app.compatible_servers(&m.path);
   if servers.len() < 2 {
     return None;
   }
   let default_id = servers.first().map(|s| s.id.as_str());
-  let label = match m.server.as_deref() {
-    Some(id) if Some(id) != default_id => id.to_string(),
-    Some(id) => format!("{id} (default)"),
-    None => match default_id {
-      Some(id) => format!("{id} (default)"),
-      None => "default".to_string(),
-    },
-  };
-  Some(label)
+  let id = app
+    .server_for_managed(m)
+    .map(|s| s.id.as_str())
+    .or(default_id)?;
+  Some(if Some(id) == default_id {
+    format!("{id} (default)")
+  } else {
+    id.to_string()
+  })
 }
 
 fn heading<'a>(text: &'a str, palette: &Palette) -> Line<'a> {
@@ -588,6 +592,54 @@ mod tests {
       running_server_label(&app, &m),
       None,
       "a single server has nothing to disambiguate"
+    );
+  }
+
+  #[test]
+  fn running_server_row_and_the_knob_gates_name_the_same_build() {
+    use crate::tui::app::{DaemonInfo, ManagedRow};
+    let path = "/m/a.gguf";
+    let mut app = app_with_two_servers(path);
+    // The daemon's default binary is the *second* catalog entry, and it is the
+    // one with two GPUs. A launch that recorded no pick landed there.
+    app.daemon_info = DaemonInfo {
+      server_path: Some("/builds/llamacpp-vulkan/llama-server".into()),
+      ..Default::default()
+    };
+    app.servers[1].devices.push(crate::backend::Device {
+      selector: "ROCm1".into(),
+      gpu_backend: "ROCm".into(),
+      name: "Second GPU".into(),
+      total_mib: Some(24576),
+      free_mib: Some(24000),
+    });
+    app.managed = vec![ManagedRow {
+      launch_id: "L1".into(),
+      path: PathBuf::from(path),
+      state: crate::tui::status_icons::SurfaceState::Ready,
+      server: None,
+      backend: Some(crate::backend::DEFAULT_BACKEND_ID.into()),
+      ..Default::default()
+    }];
+    app.list_cursor = 2;
+
+    // Resolving to catalog-first instead would name `llamacpp-rocm` here while
+    // the placement rows below came from `llamacpp-vulkan` — one panel, two
+    // answers.
+    assert_eq!(
+      running_server_label(&app, &app.managed[0]),
+      Some("llamacpp-vulkan".to_string())
+    );
+    let rows = render_rows_for_running(&app, 60, 40);
+    assert!(
+      rows.iter().any(|r| r.contains("llamacpp-vulkan")),
+      "the server row names the build the launch is on:\n{rows:#?}"
+    );
+    assert!(
+      rows
+        .iter()
+        .any(|r| r.contains(crate::launch::knobs::Group::MultiGpu.title())),
+      "…and that same build's two GPUs open the placement group"
     );
   }
 

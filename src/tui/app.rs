@@ -1488,22 +1488,6 @@ impl App {
     self.focused_managed()
   }
 
-  /// The launch-device catalog entry for the focused running model,
-  /// but only when that model's binary differs from the daemon's
-  /// default `server_path`. The Daemon panel's `server` row uses this
-  /// to swap in (and highlight) the binary the hovered launch is
-  /// actually running on, so in multi-binary setups the operator can
-  /// see which backend each model uses as the cursor moves.
-  ///
-  /// Returns `None` when the cursor isn't on a running model, when the
-  /// row's `--device` selector has no catalog entry (stale/un-probed),
-  /// or when the resolved binary is the default — in every one of
-  /// those cases the row falls back to the plain default-path render.
-  /// Whether the host exposes more than one selectable GPU device.
-  /// Drives the multi-GPU UI gates: the launch picker's `device` row
-  /// and the model list's `Device` column only appear when `true`, so
-  /// single-GPU / CPU-only users aren't shown a control that can never
-  /// carry a choice.
   /// Gates the Models-list Device column and the multi-GPU placement knobs.
   /// True when **some single server** sees more than one physical GPU — a
   /// launch targets one server's devices, so cross-build selector variety (the

@@ -182,29 +182,18 @@ pub fn multi_device(servers: &Value) -> bool {
     .unwrap_or(false)
 }
 
-/// Wire `devices` → [`crate::backend::Device`], field by field rather than
-/// through `serde` so a row missing a key still counts. A device whose `name`
-/// didn't survive has no identity to dedup on and takes its own slot, which
-/// degrades to counting selectors — the safe direction, since the alternative
-/// is hiding a column on a genuine multi-GPU host.
+/// Wire `devices` → [`crate::backend::Device`]. Decoded per row, so one
+/// unreadable entry doesn't discard the rest of the list; whatever a row loses
+/// falls back to `Device`'s defaults. A device whose `name` didn't survive has
+/// no identity to dedup on and takes its own slot, which degrades to counting
+/// selectors — the safe direction, since the alternative is hiding a column on
+/// a genuine multi-GPU host.
 fn parse_devices(devices: Option<&Value>) -> Vec<crate::backend::Device> {
-  let str_field = |d: &Value, k: &str| {
-    d.get(k)
-      .and_then(Value::as_str)
-      .unwrap_or_default()
-      .to_string()
-  };
   devices
     .and_then(Value::as_array)
     .map(|ds| {
       ds.iter()
-        .map(|d| crate::backend::Device {
-          selector: str_field(d, "selector"),
-          gpu_backend: str_field(d, "gpu_backend"),
-          name: str_field(d, "name"),
-          total_mib: d.get("total_mib").and_then(Value::as_u64),
-          free_mib: d.get("free_mib").and_then(Value::as_u64),
-        })
+        .map(|d| serde_json::from_value(d.clone()).unwrap_or_default())
         .collect()
     })
     .unwrap_or_default()
@@ -650,6 +639,16 @@ mod tests {
     assert!(multi_device(&serde_json::json!([{
       "id": "llamacpp-rocm",
       "devices": [{"selector": "ROCm0"}, {"selector": "ROCm1"}]
+    }])));
+    // A row whose types don't decode degrades the same way, and only that row —
+    // decoding is per device, so one bad entry can't empty the list and hide
+    // the column.
+    assert!(multi_device(&serde_json::json!([{
+      "id": "llamacpp-rocm",
+      "devices": [
+        {"selector": 0, "name": "AMD Radeon 8060S Graphics"},
+        {"selector": "ROCm1", "gpu_backend": "ROCm", "name": "AMD Radeon 8060S Graphics"}
+      ]
     }])));
   }
 
