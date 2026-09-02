@@ -166,23 +166,48 @@ pub fn running_index(rows: &[RunningRow]) -> std::collections::HashMap<String, R
 }
 
 /// Multi-device gate for the `list` DEVICE column — mirrors the TUI's
-/// `App::multi_device`: true when **some single server** offers more than
-/// one device (a launch targets one server's devices, so cross-build
-/// selector variety must not trip this). `servers` is the verbatim
-/// `status.servers` wire value; anything else (older daemon, missing
-/// field) reads as single-device.
+/// `App::multi_device`: true when **some single server** sees more than one
+/// *physical* GPU (a launch targets one server's devices, so cross-build
+/// selector variety must not trip this, and neither does one build reporting
+/// the same card under two compute APIs). `servers` is the verbatim
+/// `status.servers` wire value; anything else (older daemon, missing or
+/// malformed field) reads as single-device.
 pub fn multi_device(servers: &Value) -> bool {
   servers
     .as_array()
     .map(|ss| {
-      ss.iter().any(|s| {
-        s.get("devices")
-          .and_then(Value::as_array)
-          .map(|d| d.len() > 1)
-          .unwrap_or(false)
-      })
+      ss.iter()
+        .any(|s| crate::backend::physical_device_count(&parse_devices(s.get("devices"))) > 1)
     })
     .unwrap_or(false)
+}
+
+/// Wire `devices` → [`crate::backend::Device`], field by field rather than
+/// through `serde` so a row missing a key still counts. A device whose `name`
+/// didn't survive has no identity to dedup on and takes its own slot, which
+/// degrades to counting selectors — the safe direction, since the alternative
+/// is hiding a column on a genuine multi-GPU host.
+fn parse_devices(devices: Option<&Value>) -> Vec<crate::backend::Device> {
+  let str_field = |d: &Value, k: &str| {
+    d.get(k)
+      .and_then(Value::as_str)
+      .unwrap_or_default()
+      .to_string()
+  };
+  devices
+    .and_then(Value::as_array)
+    .map(|ds| {
+      ds.iter()
+        .map(|d| crate::backend::Device {
+          selector: str_field(d, "selector"),
+          gpu_backend: str_field(d, "gpu_backend"),
+          name: str_field(d, "name"),
+          total_mib: d.get("total_mib").and_then(Value::as_u64),
+          free_mib: d.get("free_mib").and_then(Value::as_u64),
+        })
+        .collect()
+    })
+    .unwrap_or_default()
 }
 
 /// Fetch the supervisor + external snapshot via `status`.
@@ -585,6 +610,47 @@ mod tests {
       ("llamacpp-rocm", 1),
       ("llamacpp-vulkan", 3)
     ])));
+  }
+
+  #[test]
+  fn multi_device_ignores_one_card_reported_under_two_compute_apis() {
+    // A dual-API build (HIP + Vulkan) lists the same GPU twice. Two selectors,
+    // one card, nothing to place a model across — the DEVICE column stays
+    // hidden. Wire shape verbatim from a live `status` on such a host.
+    let one_card = serde_json::json!([{
+      "id": "llamacpp-ROCmFP4",
+      "backend_id": "llamacpp",
+      "devices": [
+        {"selector": "ROCm0", "gpu_backend": "ROCm",
+         "name": "AMD Radeon 8060S Graphics", "total_mib": 126976, "free_mib": 61394},
+        {"selector": "Vulkan0", "gpu_backend": "Vulkan",
+         "name": "AMD Radeon 8060S Graphics (RADV STRIX_HALO)",
+         "total_mib": 128505, "free_mib": 89217}
+      ]
+    }]);
+    assert!(!multi_device(&one_card));
+
+    // Same server, two real cards under one API → the column comes back.
+    let two_cards = serde_json::json!([{
+      "id": "llamacpp-rocm",
+      "backend_id": "llamacpp",
+      "devices": [
+        {"selector": "ROCm0", "gpu_backend": "ROCm", "name": "AMD Radeon AI PRO R9700"},
+        {"selector": "ROCm1", "gpu_backend": "ROCm", "name": "AMD Radeon AI PRO R9700"}
+      ]
+    }]);
+    assert!(multi_device(&two_cards));
+  }
+
+  #[test]
+  fn multi_device_falls_back_to_selector_count_when_names_are_missing() {
+    // A device row without `name` carries no identity. Counting it as its own
+    // card keeps a real multi-GPU host's column visible rather than hiding it
+    // on a partial payload.
+    assert!(multi_device(&serde_json::json!([{
+      "id": "llamacpp-rocm",
+      "devices": [{"selector": "ROCm0"}, {"selector": "ROCm1"}]
+    }])));
   }
 
   #[test]

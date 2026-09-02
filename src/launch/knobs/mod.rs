@@ -33,7 +33,9 @@ pub mod resolve;
 pub mod serde_impl;
 pub mod value;
 
-pub use def::{AutoKind, Concept, Emit, Group, GroupGate, KnobDef, KnobId, KnobKind, Ring, Shape};
+pub use def::{
+  AutoKind, Concept, Emit, GateFacts, Group, GroupGate, KnobDef, KnobId, KnobKind, Ring, Shape,
+};
 
 /// Resolve a knob name to its id, panicking when no backend declares it.
 ///

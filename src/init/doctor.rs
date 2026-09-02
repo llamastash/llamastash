@@ -453,10 +453,19 @@ fn check_servers(config: &Config) -> Vec<Finding> {
   }
   let summary = catalog
     .iter()
-    .map(|s| match s.devices.len() {
-      0 => s.id.clone(),
-      1 => format!("{} (1 GPU)", s.id),
-      n => format!("{} ({n} GPUs)", s.id),
+    .map(|s| {
+      // Selectors and GPUs differ when one build reports a card under two
+      // compute APIs; say so rather than claiming a second GPU.
+      let gpus = s.physical_device_count();
+      match (gpus, s.devices.len()) {
+        (0, _) => s.id.clone(),
+        (n, sel) if sel > n => {
+          let unit = if n == 1 { "GPU" } else { "GPUs" };
+          format!("{} ({n} {unit}, {sel} selectors)", s.id)
+        }
+        (1, _) => format!("{} (1 GPU)", s.id),
+        (n, _) => format!("{} ({n} GPUs)", s.id),
+      }
     })
     .collect::<Vec<_>>()
     .join(", ");

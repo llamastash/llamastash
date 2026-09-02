@@ -1198,7 +1198,8 @@ Knob set, grouped into labelled clusters in display order:
 | -------------------------------------------- | -------------------------------------------------- |
 | Context                                      | `ctx`, `reasoning`                                 |
 | GPU / CPU offload                            | `n_gpu_layers`, `n_cpu_moe`                        |
-| Multi-GPU placement _(multi-GPU hosts only)_ | `device`, `tensor_split`, `main_gpu`, `split_mode` |
+| Device _(servers offering more than one selector)_ | `device`                                     |
+| Multi-GPU placement _(multi-GPU servers only)_ | `tensor_split`, `main_gpu`, `split_mode`         |
 | Attention & KV cache                         | `flash_attn`, `cache_type_k`, `cache_type_v`       |
 | Throughput                                   | `threads`, `parallel`, `batch_size`, `ubatch_size` |
 | Memory loading                               | `mlock`, `no_mmap`                                 |
@@ -1241,11 +1242,26 @@ the server's binary exposes are offered — the list rescopes when you
 cycle the `server` row. On the CLI, `start --device ROCm0,ROCm1` takes
 the same comma-separated list.
 
-The whole **Multi-GPU placement** group (`device`, `tensor_split`,
-`main_gpu`, `split_mode`) — and the matching `Device` column in the
-model list — appear **only when more than one GPU device is detected**.
-Single-GPU and CPU-only hosts never see them, so the launcher stays
-uncluttered when there's no device choice to make. In the model list the
+Two gates decide whether any of this is shown, both scoped to the server
+the launch is on (the selected one while editing, the one serving the
+model in the read-only view). The **Device** group appears when that
+server offers **more than one `--device` selector**. The **Multi-GPU
+placement** group (`tensor_split`, `main_gpu`, `split_mode`) — and the
+matching `Device` column in the model list and in `list` — appear only
+when it sees **more than one physical GPU**.
+
+The two differ on one host shape: a build compiled with two compute APIs
+reports the same card once per API (`ROCm0` and `Vulkan0` for one
+Radeon). That is a real choice — the compute path changes throughput —
+so the `device` row stays, while the placement rows do not, because
+there is no second GPU to split a model across. Selectors are matched to
+cards by adapter name across compute families, so the same card named
+`AMD Radeon 8060S Graphics` by ROCm and
+`AMD Radeon 8060S Graphics (RADV STRIX_HALO)` by Vulkan counts once;
+two cards under one API always count separately, even with identical
+names. `doctor` spells the difference out (`llamacpp-fp4 (1 GPU, 2
+selectors)`). Single-GPU and CPU-only hosts see neither group, so the
+launcher stays uncluttered when there's no choice to make. In the model list the
 `Device` column reads `all` for a running launch that targets every GPU
 (no `--device`), so it never blanks out inconsistently next to launches
 that pinned a selector. Once a model is running, the read-only Settings

@@ -225,11 +225,31 @@ pub enum Ring {
 /// showing at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GroupGate {
-  /// The host exposes more than one selectable device.
+  /// The server offers more than one `--device` selector. Not the same as
+  /// [`Self::MultiDevice`]: a build carrying two compute APIs reports one card
+  /// twice (`ROCm0` + `Vulkan0`), which is a real choice of compute path but
+  /// nothing to place a model across.
+  DeviceChoice,
+  /// The server sees more than one physical GPU.
   MultiDevice,
   /// The model can actually speculate (an embedded draft head, or a drafter
   /// sibling on disk).
   SpeculationCapable,
+}
+
+/// The runtime facts the [`GroupGate`]s ask about, gathered once per render.
+///
+/// A struct rather than positional bools: `device_choice` and `multi_device`
+/// differ only on hosts where one card answers to two selectors, so a swapped
+/// pair of arguments would pass every test written on ordinary hardware.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct GateFacts {
+  /// The scoped server offers more than one `--device` selector.
+  pub device_choice: bool,
+  /// The scoped server sees more than one physical GPU.
+  pub multi_device: bool,
+  /// The model can speculate.
+  pub mtp_capable: bool,
 }
 
 /// Where a knob sits in the editor, and the `--help` heading it groups under.
@@ -238,6 +258,7 @@ pub enum GroupGate {
 pub enum Group {
   Context,
   Offload,
+  Device,
   MultiGpu,
   Attention,
   Throughput,
@@ -251,6 +272,7 @@ impl Group {
     match self {
       Group::Context => "Context",
       Group::Offload => "GPU / CPU offload",
+      Group::Device => "Device",
       Group::MultiGpu => "Multi-GPU placement",
       Group::Attention => "Attention & KV cache",
       Group::Throughput => "Throughput",
@@ -265,21 +287,23 @@ impl Group {
   /// a gate without the editor learning anything about it.
   pub fn gate(self) -> Option<GroupGate> {
     match self {
+      Group::Device => Some(GroupGate::DeviceChoice),
       Group::MultiGpu => Some(GroupGate::MultiDevice),
       Group::Speculation => Some(GroupGate::SpeculationCapable),
       _ => None,
     }
   }
 
-  /// Whether this group's runtime gate is satisfied, given the two runtime
-  /// facts a [`GroupGate`] can ask about. A group with no gate is always
-  /// open. Shared so an editable picker and a read-only summary of the same
-  /// backend's knobs can never answer a gate differently.
-  pub fn gate_open(self, multi_device: bool, mtp_capable: bool) -> bool {
+  /// Whether this group's runtime gate is satisfied, given the runtime facts a
+  /// [`GroupGate`] can ask about. A group with no gate is always open. Shared
+  /// so an editable picker and a read-only summary of the same backend's knobs
+  /// can never answer a gate differently.
+  pub fn gate_open(self, facts: GateFacts) -> bool {
     match self.gate() {
       None => true,
-      Some(GroupGate::MultiDevice) => multi_device,
-      Some(GroupGate::SpeculationCapable) => mtp_capable,
+      Some(GroupGate::DeviceChoice) => facts.device_choice,
+      Some(GroupGate::MultiDevice) => facts.multi_device,
+      Some(GroupGate::SpeculationCapable) => facts.mtp_capable,
     }
   }
 
@@ -288,6 +312,7 @@ impl Group {
     &[
       Group::Context,
       Group::Offload,
+      Group::Device,
       Group::MultiGpu,
       Group::Attention,
       Group::Throughput,

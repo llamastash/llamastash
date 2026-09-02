@@ -16,6 +16,12 @@
 //! `id` / display `name` per server. **No dedup across servers** — every
 //! configured binary is its own selectable server (devices *within* a server
 //! still dedup by selector, which is the probe's job).
+//!
+//! A device is a *launch option*, not a card: a build compiled with two compute
+//! APIs reports the same GPU once per API (`ROCm0` and `Vulkan0` for one
+//! Radeon). Both selectors are real choices and both survive the probe, so
+//! anything asking "how many GPUs?" must go through
+//! [`physical_device_count`] rather than counting selectors.
 
 use std::path::{Path, PathBuf};
 
@@ -68,6 +74,75 @@ pub struct Server {
   /// Devices this server can target (`--device` selectors). Empty for a
   /// backend with no device probe (ds4 / lemonade) or a CPU-only build.
   pub devices: Vec<Device>,
+}
+
+impl Server {
+  /// How many **physical GPUs** this server can see, as opposed to how many
+  /// selectors it offers. See [`physical_device_count`].
+  pub fn physical_device_count(&self) -> usize {
+    physical_device_count(&self.devices)
+  }
+}
+
+/// Adapter name reduced to a physical-identity key: lower-cased, every
+/// parenthetical dropped, whitespace collapsed. The same card is named
+/// `AMD Radeon 8060S Graphics` by ROCm and
+/// `AMD Radeon 8060S Graphics (RADV STRIX_HALO)` by Vulkan — the driver tag is
+/// the only difference, and `Intel(R) Arc(TM) A770` reduces the same way.
+fn physical_key(name: &str) -> String {
+  let mut out = String::with_capacity(name.len());
+  let mut depth = 0usize;
+  for c in name.chars() {
+    match c {
+      '(' => depth += 1,
+      ')' => depth = depth.saturating_sub(1),
+      _ if depth > 0 => {}
+      c if c.is_whitespace() => {
+        if !out.ends_with(' ') {
+          out.push(' ');
+        }
+      }
+      c => out.extend(c.to_lowercase()),
+    }
+  }
+  out.trim().to_string()
+}
+
+/// How many physical GPUs a device list represents.
+///
+/// Within one compute family every index is its own card (two identical
+/// `Vulkan0` / `Vulkan1` 3080s are two GPUs). Across families, equal adapter
+/// names are the same card seen twice — one card cannot appear twice under the
+/// same API, so each selector claims the first slot with a matching name that
+/// has no device from its family yet. `CUDA0,CUDA1,Vulkan0,Vulkan1` on two
+/// identical cards therefore pairs up into two slots, not one or four.
+///
+/// Memory size is deliberately not part of the identity: the same card reports
+/// 126976 MiB under ROCm and 128505 MiB under Vulkan, so requiring a match
+/// would defeat the dedup. A name that doesn't match counts as another card —
+/// the failure direction that keeps a real second GPU visible.
+pub fn physical_device_count(devices: &[Device]) -> usize {
+  // (identity key, families already occupying this slot). Linear scans over a
+  // handful of devices; a map would cost more than it saves.
+  let mut slots: Vec<(String, Vec<String>)> = Vec::new();
+  for d in devices {
+    let key = physical_key(&d.name);
+    let family = d.gpu_backend.to_ascii_lowercase();
+    // An empty name carries no identity to match on, so it always takes a new
+    // slot rather than colliding with every other unnamed device.
+    let slot = if key.is_empty() {
+      None
+    } else {
+      slots
+        .iter_mut()
+        .find(|(k, fams)| *k == key && !fams.contains(&family))
+    };
+    match slot {
+      Some((_, fams)) => fams.push(family),
+      None => slots.push((key, vec![family])),
+    }
+  }
+  slots.len()
 }
 
 /// A per-backend `servers: [{binary, name?}]` config entry.
@@ -322,6 +397,120 @@ mod tests {
       binary: PathBuf::from(binary),
       name: name.map(String::from),
     }
+  }
+
+  /// A device with an explicit adapter name — the identity input.
+  fn named(selector: &str, gpu: &str, name: &str) -> Device {
+    Device {
+      selector: selector.to_string(),
+      gpu_backend: gpu.to_string(),
+      name: name.to_string(),
+      total_mib: None,
+      free_mib: None,
+    }
+  }
+
+  #[test]
+  fn one_card_seen_by_two_compute_apis_counts_once() {
+    // Verbatim from `q38rocm-llama-server --list-devices` on a Strix Halo
+    // host: one iGPU, one binary, two compute backends. Note the memory
+    // totals differ (126976 vs 128505 MiB) for the same card.
+    let devices = vec![
+      Device {
+        total_mib: Some(126976),
+        free_mib: Some(61394),
+        ..named("ROCm0", "ROCm", "AMD Radeon 8060S Graphics")
+      },
+      Device {
+        total_mib: Some(128505),
+        free_mib: Some(89217),
+        ..named(
+          "Vulkan0",
+          "Vulkan",
+          "AMD Radeon 8060S Graphics (RADV STRIX_HALO)",
+        )
+      },
+    ];
+    assert_eq!(physical_device_count(&devices), 1);
+  }
+
+  #[test]
+  fn two_identical_cards_in_one_family_stay_two() {
+    let devices = vec![
+      named("Vulkan0", "Vulkan", "NVIDIA GeForce RTX 3080"),
+      named("Vulkan1", "Vulkan", "NVIDIA GeForce RTX 3080"),
+    ];
+    assert_eq!(
+      physical_device_count(&devices),
+      2,
+      "same API cannot show one card twice"
+    );
+  }
+
+  #[test]
+  fn two_identical_cards_across_two_families_pair_up() {
+    // 4 selectors, 2 cards: each Vulkan entry pairs with the CUDA slot that
+    // has no Vulkan yet, so the count is neither 1 nor 4.
+    let devices = vec![
+      named("CUDA0", "CUDA", "NVIDIA GeForce RTX 3080"),
+      named("CUDA1", "CUDA", "NVIDIA GeForce RTX 3080"),
+      named("Vulkan0", "Vulkan", "NVIDIA GeForce RTX 3080"),
+      named("Vulkan1", "Vulkan", "NVIDIA GeForce RTX 3080"),
+    ];
+    assert_eq!(physical_device_count(&devices), 2);
+  }
+
+  #[test]
+  fn different_cards_across_families_stay_distinct() {
+    let devices = vec![
+      named("ROCm0", "ROCm", "AMD Radeon AI PRO R9700"),
+      named("Vulkan0", "Vulkan", "NVIDIA GeForce RTX 3080"),
+    ];
+    assert_eq!(physical_device_count(&devices), 2);
+  }
+
+  #[test]
+  fn unnamed_devices_never_collapse_into_one() {
+    let devices = vec![named("ROCm0", "ROCm", ""), named("Vulkan0", "Vulkan", "")];
+    assert_eq!(
+      physical_device_count(&devices),
+      2,
+      "no name is no identity — fall back to counting selectors"
+    );
+    assert_eq!(physical_device_count(&[]), 0);
+  }
+
+  #[test]
+  fn physical_key_strips_driver_parentheticals() {
+    assert_eq!(
+      physical_key("AMD Radeon 8060S Graphics (RADV STRIX_HALO)"),
+      physical_key("AMD Radeon 8060S Graphics")
+    );
+    assert_eq!(physical_key("Intel(R)  Arc(TM) A770"), "intel arc a770");
+    assert_ne!(
+      physical_key("AMD Radeon 8060S"),
+      physical_key("AMD Radeon 8050S")
+    );
+  }
+
+  #[test]
+  fn server_physical_count_matches_the_free_function() {
+    let server = Server {
+      id: "llamacpp-fp4".into(),
+      backend_id: "llamacpp".into(),
+      binary: PathBuf::from("/bin/llama-server"),
+      name: "llamacpp-fp4".into(),
+      devices: vec![
+        named("ROCm0", "ROCm", "AMD Radeon 8060S Graphics"),
+        named(
+          "Vulkan0",
+          "Vulkan",
+          "AMD Radeon 8060S Graphics (RADV STRIX_HALO)",
+        ),
+      ],
+    };
+    assert_eq!(server.devices.len(), 2, "both selectors stay selectable");
+    assert_eq!(server.physical_device_count(), 1);
   }
 
   #[test]

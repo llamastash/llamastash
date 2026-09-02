@@ -96,7 +96,7 @@ pub const KNOBS: &[KnobDef] = &[
     concept: Some(Concept::Device),
     kind: KnobKind::Str,
     auto: None,
-    group: Group::MultiGpu,
+    group: Group::Device,
     label: "Device",
     help: "device selector(s), comma-separated (e.g. Vulkan0,Vulkan1)",
     aliases: &["-d"],

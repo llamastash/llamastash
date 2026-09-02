@@ -1504,14 +1504,67 @@ impl App {
   /// and the model list's `Device` column only appear when `true`, so
   /// single-GPU / CPU-only users aren't shown a control that can never
   /// carry a choice.
-  /// Gates the Models-list Device column and the picker's multi-GPU knob
-  /// group. True when **some single server** offers more than one device — a
+  /// Gates the Models-list Device column and the multi-GPU placement knobs.
+  /// True when **some single server** sees more than one physical GPU — a
   /// launch targets one server's devices, so cross-build selector variety (the
   /// same physical GPU seen as `ROCm0` by one build and `Vulkan0` by another)
-  /// is a *server* choice, not a device one, and must not trip this. A
-  /// single-GPU host with several llama.cpp builds stays single-device here.
+  /// is a *server* choice, not a device one, and must not trip this. Neither
+  /// does one build reporting that same card under two compute APIs, which is
+  /// why the count is physical (`Server::physical_device_count`) rather than
+  /// `devices.len()`.
   pub fn multi_device(&self) -> bool {
-    self.servers.iter().any(|s| s.devices.len() > 1)
+    self.servers.iter().any(|s| s.physical_device_count() > 1)
+  }
+
+  /// The server a running launch is actually on, resolved the way the daemon
+  /// resolves it (`launch_service::pick_launch_binary`): an explicit pick, else
+  /// the server owning the launch's device selector, else the backend's default
+  /// server — the catalog entry matching the daemon's `server_path`, or that
+  /// backend's first entry. `None` when the catalog can't place it (still
+  /// probing, or a rebuilt binary that has left the catalog), which callers
+  /// read as "fall back to the host-wide answer" rather than hiding rows.
+  pub fn server_for_managed(&self, row: &ManagedRow) -> Option<&crate::backend::Server> {
+    if let Some(id) = &row.server {
+      if let Some(s) = self.servers.iter().find(|s| &s.id == id) {
+        return Some(s);
+      }
+    }
+    if let Some(selector) = &row.device {
+      if let Some(s) = self
+        .servers
+        .iter()
+        .find(|s| s.devices.iter().any(|d| &d.selector == selector))
+      {
+        return Some(s);
+      }
+    }
+    let backend = row.backend.as_deref()?;
+    let mut of_backend = self.servers.iter().filter(|s| s.backend_id == backend);
+    let default_path = self.daemon_info.server_path.as_deref();
+    of_backend
+      .clone()
+      .find(|s| default_path.is_some_and(|def| s.binary == Path::new(def)))
+      .or_else(|| of_backend.next())
+  }
+
+  /// The knob-group gates for a running launch's read-only settings view,
+  /// scoped to the server that launch is on. A model on the default one-device
+  /// build must not show placement rows because some *other* configured build
+  /// has two selectors.
+  pub fn gate_facts_for_managed(&self, row: &ManagedRow) -> crate::launch::knobs::GateFacts {
+    let mtp_capable = self.mtp_capable_for(&row.path);
+    match self.server_for_managed(row) {
+      Some(server) => crate::launch::knobs::GateFacts {
+        device_choice: server.devices.len() > 1,
+        multi_device: server.physical_device_count() > 1,
+        mtp_capable,
+      },
+      None => crate::launch::knobs::GateFacts {
+        device_choice: self.servers.iter().any(|s| s.devices.len() > 1),
+        multi_device: self.multi_device(),
+        mtp_capable,
+      },
+    }
   }
 
   /// Binary + compute-backend label for the focused running model's device
@@ -3146,6 +3199,90 @@ mod tests {
     // No servers at all → single-device by definition.
     app.servers.clear();
     assert!(!app.multi_device());
+  }
+
+  #[test]
+  fn multi_device_ignores_one_card_reported_under_two_compute_apis() {
+    // A build compiled with both HIP and Vulkan reports the same card once per
+    // API. Two selectors on one server, but still one GPU — `dev()` gives both
+    // the same adapter name, which is what identifies them as one card.
+    let mut app = App::new(AppOptions::default());
+    app.servers = vec![srv(
+      "/opt/fp4/llama-server",
+      vec![dev("ROCm0", "ROCm"), dev("Vulkan0", "Vulkan")],
+    )];
+    assert!(
+      !app.multi_device(),
+      "one card under two compute APIs is not a multi-GPU host"
+    );
+  }
+
+  #[test]
+  fn gate_facts_for_managed_scope_to_the_launchs_server() {
+    let mut app = App::new(AppOptions::default());
+    let mut one_card_two_apis = srv(
+      "/opt/fp4/llama-server",
+      vec![dev("ROCm0", "ROCm"), dev("Vulkan0", "Vulkan")],
+    );
+    one_card_two_apis.id = "llamacpp-fp4".into();
+    let mut two_gpus = srv(
+      "/opt/hip/llama-server",
+      vec![dev("ROCm0", "ROCm"), dev("ROCm1", "ROCm")],
+    );
+    two_gpus.id = "llamacpp-rocm".into();
+    app.servers = vec![one_card_two_apis, two_gpus];
+
+    let row = |server: Option<&str>, device: Option<&str>| ManagedRow {
+      path: PathBuf::from("/m/a.gguf"),
+      server: server.map(String::from),
+      device: device.map(String::from),
+      backend: Some(crate::backend::DEFAULT_BACKEND_ID.into()),
+      ..Default::default()
+    };
+
+    // Dual-API build: a compute-path choice, but nothing to place across.
+    let fp4 = app.gate_facts_for_managed(&row(Some("llamacpp-fp4"), None));
+    assert!(fp4.device_choice);
+    assert!(!fp4.multi_device);
+
+    // Genuine two-GPU build: both open.
+    let two_gpu = app.gate_facts_for_managed(&row(Some("llamacpp-rocm"), None));
+    assert!(two_gpu.device_choice);
+    assert!(two_gpu.multi_device);
+
+    // No recorded pick: the selector identifies the owning server.
+    let by_selector = app.gate_facts_for_managed(&row(None, Some("ROCm1")));
+    assert!(
+      by_selector.multi_device,
+      "ROCm1 only exists on the two-GPU build"
+    );
+
+    // Neither pick nor selector: the backend's default server — the catalog
+    // entry matching the daemon's `server_path`.
+    app.daemon_info = DaemonInfo {
+      server_path: Some("/opt/fp4/llama-server".into()),
+      ..Default::default()
+    };
+    let by_default = app.gate_facts_for_managed(&row(None, None));
+    assert!(!by_default.multi_device, "default build here sees one card");
+
+    // A recorded id the catalog no longer has (binary rebuilt away) resolves
+    // like the daemon does — down to the backend's default server.
+    let stale = app.gate_facts_for_managed(&row(Some("llamacpp-gone"), None));
+    assert!(!stale.multi_device, "stale id falls to the default build");
+
+    // Nothing to place it with at all (untagged backend, catalog still
+    // probing) → host-wide answer, so rows that exist stay visible.
+    let untagged = ManagedRow {
+      path: PathBuf::from("/m/a.gguf"),
+      backend: None,
+      ..Default::default()
+    };
+    assert!(app.server_for_managed(&untagged).is_none());
+    assert!(
+      app.gate_facts_for_managed(&untagged).multi_device,
+      "host-wide fallback keeps rows visible"
+    );
   }
 
   #[test]

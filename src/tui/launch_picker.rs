@@ -272,7 +272,17 @@ impl LaunchPickerState {
   /// Whether a group's runtime gate is satisfied. A group with no gate is
   /// always open.
   fn group_gate_open(&self, group: Group) -> bool {
-    group.gate_open(self.multi_device(), self.mtp_capable)
+    group.gate_open(self.gate_facts())
+  }
+
+  /// The gate inputs for the editor, scoped to the selected server — cycling
+  /// the `server` row re-answers them.
+  fn gate_facts(&self) -> knobs::GateFacts {
+    knobs::GateFacts {
+      device_choice: self.device_choice(),
+      multi_device: self.multi_device(),
+      mtp_capable: self.mtp_capable,
+    }
   }
 
   /// All rows in render / navigation order: `Preset`, `Server`, every visible
@@ -947,10 +957,19 @@ impl LaunchPickerState {
 
   // -------------------------------------------------------------- device
 
-  /// Whether the host exposes more than one selectable device. The Multi-GPU
-  /// group is hidden when `false` so single-GPU / CPU-only users don't see
-  /// rows that can only ever hold `default`.
+  /// Whether the selected server sees more than one physical GPU. The
+  /// Multi-GPU placement group is hidden when `false` so single-GPU / CPU-only
+  /// users don't see rows that can only ever hold `default`. One card reported
+  /// under two compute APIs is still one GPU — see [`Self::device_choice`].
   pub fn multi_device(&self) -> bool {
+    crate::backend::physical_device_count(self.current_devices()) > 1
+  }
+
+  /// Whether the selected server offers a `--device` choice at all. True for a
+  /// genuine multi-GPU server *and* for a single card a dual-API build reports
+  /// twice (`ROCm0` + `Vulkan0`), where picking the compute path is a real
+  /// launch decision even though there is nothing to place a model across.
+  pub fn device_choice(&self) -> bool {
     self.current_devices().len() > 1
   }
 
@@ -1927,6 +1946,40 @@ mod tests {
     s.selected_server = Some("llamacpp-vulkan".into());
     assert_eq!(s.current_devices().len(), 2);
     assert!(s.multi_device());
+  }
+
+  #[test]
+  fn a_dual_api_build_keeps_the_device_row_but_hides_placement() {
+    // One card, one binary, two compute APIs: picking ROCm0 vs Vulkan0 is a
+    // real launch decision (measurably different throughput), but there is no
+    // second GPU to split a model across.
+    let mut s = LaunchPickerState::for_model("m");
+    s.servers = one_server(vec![
+      device("ROCm0", "ROCm", "AMD Radeon 8060S Graphics"),
+      device(
+        "Vulkan0",
+        "Vulkan",
+        "AMD Radeon 8060S Graphics (RADV STRIX_HALO)",
+      ),
+    ]);
+    assert!(s.device_choice(), "two selectors to choose between");
+    assert!(!s.multi_device(), "…but one physical GPU");
+
+    let rows: Vec<&str> = s
+      .ordered_fields()
+      .iter()
+      .filter_map(|f| match f {
+        PickerField::Knob(id) => Some(id.as_str()),
+        _ => None,
+      })
+      .collect();
+    assert!(rows.contains(&"device"), "device row survives: {rows:?}");
+    for placement in ["tensor-split", "main-gpu", "split-mode"] {
+      assert!(
+        !rows.contains(&placement),
+        "{placement} is noise on one GPU: {rows:?}"
+      );
+    }
   }
 
   #[test]

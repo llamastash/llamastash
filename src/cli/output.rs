@@ -49,8 +49,8 @@ pub fn row_path(v: &Value) -> Option<&str> {
 /// MODE shows the catalog row's `mode_hint` (`chat` / `embedding` /
 /// `rerank`), matching the TUI list's Mode column.
 ///
-/// DEVICE appears only when `multi_device` is set (some single server
-/// offers more than one device — the CLI mirror of the TUI's
+/// DEVICE appears only when `multi_device` is set (some single server sees
+/// more than one *physical* GPU — the CLI mirror of the TUI's
 /// `App::multi_device` gate). Cell semantics mirror the TUI's
 /// `column_value`: an explicit `--device` selector renders verbatim,
 /// `all` for a running row on the device-selecting default backend

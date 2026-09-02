@@ -54,8 +54,10 @@ fn emulates_multi_gpu_host() {
   assert_eq!(devs[1].selector, "Vulkan1");
   assert_eq!(devs[0].backend, "Vulkan");
   assert!(devs[0].total_mib.is_some(), "memory parsed: {:?}", devs[0]);
-  // catalog.len() > 1 is exactly the TUI's `multi_device()` gate.
+  // Distinct adapters in one compute family, so these are two cards, not one
+  // card seen twice — the TUI's `multi_device()` gate opens.
   assert!(devs.len() > 1);
+  assert_ne!(devs[0].name, devs[1].name);
 }
 
 #[test]

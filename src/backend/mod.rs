@@ -51,8 +51,8 @@ pub mod server;
 pub mod vllm;
 
 pub use server::{
-  build_server_catalog, config_server_catalog, missing_configured_servers, Device, Server,
-  ServerConfig, ServerSpec,
+  build_server_catalog, config_server_catalog, missing_configured_servers, physical_device_count,
+  Device, Server, ServerConfig, ServerSpec,
 };
 
 /// The default backend id — what a plain GGUF binds to (`backend_for_identity`)

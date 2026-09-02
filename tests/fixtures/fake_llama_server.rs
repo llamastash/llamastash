@@ -86,9 +86,11 @@ impl Mode {
 /// comes from `FAKE_LLAMA_DEVICES` (default `0`): `0` emulates a
 /// CPU-only host, `1` a single-GPU host, `2`+ a multi-GPU host. The
 /// `Vulkan<N>` selectors parse on every platform and feed the daemon's
-/// device catalog (which gates the TUI's Multi-GPU placement knobs on
-/// `catalog.len() > 1`). Memory numbers are arbitrary but descend per
-/// adapter so the rows are visibly distinct.
+/// device catalog, which the TUI's Multi-GPU placement knobs gate on
+/// (`Server::physical_device_count > 1` — one compute family and a
+/// distinct name per adapter, so N devices here are N cards). Memory
+/// numbers are arbitrary but descend per adapter so the rows are
+/// visibly distinct.
 fn print_fake_devices() {
   let n: u32 = std::env::var("FAKE_LLAMA_DEVICES")
     .ok()

@@ -170,13 +170,14 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
         .unwrap_or(crate::backend::DEFAULT_BACKEND_ID);
       // The read-only view answers the same group gates the editor does, from
       // the running launch rather than the form: a placement group is noise on
-      // a one-GPU host either way, and so is a speculation group on a model
-      // that cannot speculate.
-      let multi = app.multi_device();
-      let speculates = app.mtp_capable_for(&m.path);
+      // a one-GPU server either way, and so is a speculation group on a model
+      // that cannot speculate. Scoped to the server this launch is *on* — the
+      // editor scopes to the selected server, and a host-wide answer would show
+      // placement rows for a launch on a one-device build.
+      let facts = app.gate_facts_for_managed(m);
       crate::launch::knobs::registry::grouped_for_backend(id)
         .into_iter()
-        .filter(|(g, _)| g.gate_open(multi, speculates))
+        .filter(|(g, _)| g.gate_open(facts))
         .collect()
     }
   };
@@ -588,6 +589,72 @@ mod tests {
       None,
       "a single server has nothing to disambiguate"
     );
+  }
+
+  /// Render the read-only (running-launch) settings view and return its rows.
+  fn render_rows_for_running(app: &App, w: u16, h: u16) -> Vec<String> {
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+    use ratatui::Terminal;
+    let palette = app.palette();
+    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    term
+      .draw(|f| render(f, Rect::new(0, 0, w, h), app, palette))
+      .unwrap();
+    let buf = term.backend().buffer().clone();
+    (0..buf.area.height)
+      .map(|y| {
+        (0..buf.area.width)
+          .map(|x| buf.cell((x, y)).unwrap().symbol())
+          .collect()
+      })
+      .collect()
+  }
+
+  #[test]
+  fn running_view_gates_placement_on_the_launchs_own_server() {
+    use crate::tui::app::ManagedRow;
+    let path = "/m/a.gguf";
+    let mut app = app_with_two_servers(path);
+    // The catalog's *second* build sees two real GPUs; the launch below runs
+    // on the first, which sees one. Gating on the catalog would leak placement
+    // rows into a launch that can never use them.
+    app.servers[1].devices.push(crate::backend::Device {
+      selector: "ROCm1".into(),
+      gpu_backend: "ROCm".into(),
+      name: "Second GPU".into(),
+      total_mib: Some(24576),
+      free_mib: Some(24000),
+    });
+    app.managed = vec![ManagedRow {
+      launch_id: "L1".into(),
+      path: PathBuf::from(path),
+      state: crate::tui::status_icons::SurfaceState::Ready,
+      server: Some("llamacpp-rocm".into()),
+      backend: Some(crate::backend::DEFAULT_BACKEND_ID.into()),
+      ..Default::default()
+    }];
+    // Rows: [TableHeader, Header(▶ Running), Model(running)].
+    app.list_cursor = 2;
+
+    let rows = render_rows_for_running(&app, 60, 40);
+    let has = |needle: &str| rows.iter().any(|r| r.contains(needle));
+    assert!(
+      !has(crate::launch::knobs::Group::MultiGpu.title()),
+      "one-GPU server → no placement group, whatever the rest of the catalog has:\n{rows:#?}"
+    );
+    assert!(
+      !has(crate::launch::knobs::Group::Device.title()),
+      "one selector → no device row"
+    );
+    assert!(has("ctx-size"), "ungated rows still render");
+
+    // Same launch moved onto the two-GPU build → both groups come back.
+    app.managed[0].server = Some("llamacpp-vulkan".into());
+    let two_gpu_rows = render_rows_for_running(&app, 60, 40);
+    let shows = |needle: &str| two_gpu_rows.iter().any(|r| r.contains(needle));
+    assert!(shows(crate::launch::knobs::Group::MultiGpu.title()));
+    assert!(shows(crate::launch::knobs::Group::Device.title()));
   }
 
   fn fake_model(path: &str, parent: &str) -> crate::discovery::DiscoveredModel {
