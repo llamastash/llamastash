@@ -542,6 +542,20 @@ fn infer_mode_hint(header: &GgufHeader, arch: Option<&str>) -> ModeHint {
     return ModeHint::Chat;
   }
 
+  // A split set's first shard can carry metadata only (`split.no = 0`,
+  // every tensor in a later shard), and then "no output projection" says
+  // nothing about the model — the projection is simply in another file. The
+  // encoder fallback below would call such a model an embedding model on that
+  // silence, so decide on the chat template instead and leave the rest to the
+  // caller. Seen on Qwen3.8-Flash-Next, whose shard 1 holds 0 of 1224 tensors.
+  if header.tensors.is_empty() {
+    return if header.string(&["tokenizer.chat_template"]).is_some() {
+      ModeHint::Chat
+    } else {
+      ModeHint::Unknown
+    };
+  }
+
   // Older fallback: arch advertises embedding_length without any
   // output projection — almost certainly an encoder.
   if let Some(a) = arch {
