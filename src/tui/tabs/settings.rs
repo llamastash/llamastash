@@ -6,6 +6,8 @@
 //! running launch and the picker isn't open, shows the live params
 //! (read-only).
 
+use std::path::Path;
+
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -402,21 +404,28 @@ fn format_persisted_knob_value(
 ///
 /// Which build the launch is on comes from `App::server_for_managed` — the same
 /// resolver the knob gates below use, so this row can never name one server
-/// while the gates answer for another. A launch that recorded no pick resolves
-/// to the daemon's own default binary, which is not always the catalog-first
-/// entry. The `(default)` suffix keeps the editable picker's meaning
-/// (`server_value_label`): it marks the priority-default the picker offers, not
-/// merely "no explicit pick".
+/// while the gates answer for another.
+///
+/// `(default)` means the same thing here, in the editable picker
+/// (`server_value_label`) and in the daemon: the build a launch that pins none
+/// lands on, [`crate::backend::default_server`] within the launch's own
+/// backend. That is not always the catalog-first entry, so it is resolved
+/// rather than assumed.
 fn running_server_label(app: &App, m: &ManagedRow) -> Option<String> {
   let servers = app.compatible_servers(&m.path);
   if servers.len() < 2 {
     return None;
   }
-  let default_id = servers.first().map(|s| s.id.as_str());
-  let id = app
-    .server_for_managed(m)
-    .map(|s| s.id.as_str())
-    .or(default_id)?;
+  let resolved = app.server_for_managed(m);
+  let backend = resolved.map(|s| s.backend_id.as_str());
+  let default_id = crate::backend::default_server(
+    servers
+      .iter()
+      .filter(|s| backend.is_none_or(|b| s.backend_id == b)),
+    app.daemon_info.server_path.as_deref().map(Path::new),
+  )
+  .map(|s| s.id.as_str());
+  let id = resolved.map(|s| s.id.as_str()).or(default_id)?;
   Some(if Some(id) == default_id {
     format!("{id} (default)")
   } else {
@@ -625,10 +634,11 @@ mod tests {
 
     // Resolving to catalog-first instead would name `llamacpp-rocm` here while
     // the placement rows below came from `llamacpp-vulkan` — one panel, two
-    // answers.
+    // answers. `(default)` because that is what the daemon spawns with no pin,
+    // which is the same thing the editable picker's Server row offers.
     assert_eq!(
       running_server_label(&app, &app.managed[0]),
-      Some("llamacpp-vulkan".to_string())
+      Some("llamacpp-vulkan (default)".to_string())
     );
     let rows = render_rows_for_running(&app, 60, 40);
     assert!(

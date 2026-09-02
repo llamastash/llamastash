@@ -185,10 +185,12 @@ pub fn multi_device(servers: &Value) -> bool {
     .unwrap_or(false)
 }
 
-/// Wire `devices` → [`crate::backend::Device`]. Decoded per row, so one
-/// unreadable entry doesn't discard the rest of the list; whatever a row loses
-/// falls back to `Device`'s defaults. A device whose `name` didn't survive has
-/// no identity to dedup on and takes its own slot, which degrades to counting
+/// Wire `devices` → [`crate::backend::Device`]. Decoded per row, and within a
+/// row per field (`Device`'s fields each fall back to their default), so a key
+/// that is missing or carries the wrong type costs only itself — `name`, the
+/// identity `physical_device_count` dedups on, survives a bad sibling. Only a
+/// row that isn't an object at all decodes to nothing; a nameless device has no
+/// identity to match and takes its own slot, which degrades to counting
 /// selectors — the safe direction, since the alternative is hiding a column on
 /// a genuine multi-GPU host.
 fn parse_devices(devices: Option<&Value>) -> Vec<crate::backend::Device> {
@@ -643,13 +645,37 @@ mod tests {
       "id": "llamacpp-rocm",
       "devices": [{"selector": "ROCm0"}, {"selector": "ROCm1"}]
     }])));
-    // A row whose types don't decode degrades the same way, and only that row —
-    // decoding is per device, so one bad entry can't empty the list and hide
-    // the column.
+  }
+
+  #[test]
+  fn a_mistyped_field_costs_only_itself() {
+    // One card, seen once per compute API, with a mistyped `selector` and
+    // `total_mib` on the first row. The bad fields default; `name` survives, so
+    // the two rows still dedup to one card and the column stays off. Decoding
+    // the row as a unit would blank `name` too and read this single-GPU host as
+    // two cards — the exact bug the DEVICE column gate exists to avoid.
+    let one_card = serde_json::json!([{
+      "id": "llamacpp-rocm",
+      "devices": [
+        {"selector": 0, "gpu_backend": "Vulkan", "total_mib": "126976",
+         "name": "AMD Radeon 8060S Graphics (RADV STRIX_HALO)"},
+        {"selector": "ROCm0", "gpu_backend": "ROCm", "name": "AMD Radeon 8060S Graphics"}
+      ]
+    }]);
+    let devices = parse_devices(one_card[0].get("devices"));
+    assert_eq!(devices.len(), 2, "neither row is dropped");
+    assert_eq!(devices[0].selector, "", "the mistyped field defaults");
+    assert_eq!(devices[0].total_mib, None, "and so does the other one");
+    assert_eq!(
+      devices[0].name, "AMD Radeon 8060S Graphics (RADV STRIX_HALO)",
+      "the identity the dedup runs on survives its bad siblings"
+    );
+    assert!(!multi_device(&one_card));
+    // Two genuinely different cards still count as two through the same row.
     assert!(multi_device(&serde_json::json!([{
       "id": "llamacpp-rocm",
       "devices": [
-        {"selector": 0, "name": "AMD Radeon 8060S Graphics"},
+        {"selector": 0, "gpu_backend": "ROCm", "name": "AMD Radeon AI PRO R9700"},
         {"selector": "ROCm1", "gpu_backend": "ROCm", "name": "AMD Radeon 8060S Graphics"}
       ]
     }])));

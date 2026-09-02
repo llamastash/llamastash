@@ -159,9 +159,15 @@ pub struct LaunchPickerState {
   /// `supported_backends`. Each carries its own probed `--device` selectors;
   /// the Device row + multi-GPU gating scope to the [`Self::current_server`].
   /// Empty when the daemon hasn't probed any binary.
+  ///
+  /// **`servers[0]` is the build the daemon spawns when a launch pins none** —
+  /// `App::compatible_servers` puts [`crate::backend::default_server`] at the
+  /// head of each backend's group. Everything below reads "default" as
+  /// position 0, so a list seeded in some other order would make the row name
+  /// one build while the daemon launched another.
   pub servers: Vec<crate::backend::Server>,
   /// The user's chosen server id (`llamacpp-vulkan`, `ds4`), or `None` for
-  /// the priority default (`servers[0]`). Sent verbatim as
+  /// the default build ([`Self::servers`]`[0]`). Sent verbatim as
   /// [`crate::launch::params::LaunchParams::server`]; seeded from last_params.
   pub selected_server: Option<String>,
   /// Walk cursor over the scoped server's devices — the GPU `Space` toggles.
@@ -202,14 +208,16 @@ pub struct LaunchPickerState {
 ///
 /// Free (not a method) so the no-picker capture path can compute it from the
 /// cheap sources (`last_params.server` + `compatible_servers` + the predicted
-/// backend) without building a full [`LaunchPickerState`].
+/// backend) without building a full [`LaunchPickerState`]. `servers` must carry
+/// [`LaunchPickerState::servers`]' default-first ordering.
 pub fn launch_identity(
   selected_server: &Option<String>,
   servers: &[crate::backend::Server],
   model_backend: &BackendChoice,
 ) -> (Option<String>, Option<String>) {
   // The default stop (unset, or an explicit pin of `servers[0]`) collapses to
-  // `None` so the daemon resolves the priority default.
+  // `None` so the daemon resolves the default itself — the same build, since
+  // `servers[0]` is what it resolves to.
   let is_default = match selected_server {
     None => true,
     Some(id) => servers.first().is_some_and(|s| &s.id == id),
@@ -493,8 +501,8 @@ impl LaunchPickerState {
   // ------------------------------------------------------------- servers
 
   /// The server whose devices + backend scope the form: the explicitly
-  /// selected one, else the priority default (`servers[0]`). `None` only when
-  /// no server was probed.
+  /// selected one, else the default build ([`Self::servers`]`[0]`). `None` only
+  /// when no server was probed.
   pub fn current_server(&self) -> Option<&crate::backend::Server> {
     match &self.selected_server {
       Some(id) => self.servers.iter().find(|s| &s.id == id),
@@ -512,8 +520,8 @@ impl LaunchPickerState {
       .unwrap_or(&[])
   }
 
-  /// Whether the current pick resolves to the priority default: either unset,
-  /// or an explicit pin of `servers[0]`. Pinning `servers[0]` is identical to
+  /// Whether the current pick resolves to the default build: either unset, or
+  /// an explicit pin of [`Self::servers`]`[0]`. Pinning it is identical to
   /// leaving it unset, so the two collapse into one cycle stop.
   fn server_is_default(&self) -> bool {
     match &self.selected_server {
@@ -565,9 +573,10 @@ impl LaunchPickerState {
     self.rescope_knobs_to_backend();
   }
 
-  /// Value-column label for the Server row: `"<id> (default)"` naming the
-  /// priority default the daemon resolves when the pick is the default stop,
-  /// else the pinned server id. `"default"` alone when no server was probed.
+  /// Value-column label for the Server row: `"<id> (default)"` naming the build
+  /// the daemon spawns when the pick is the default stop ([`Self::servers`]`[0]`
+  /// — resolved, not the catalog's first entry), else the pinned server id.
+  /// `"default"` alone when no server was probed.
   pub fn server_value_label(&self) -> String {
     if self.server_is_default() {
       return match self.servers.first() {
@@ -1502,15 +1511,22 @@ mod tests {
     let mut s = LaunchPickerState::for_model("qwen");
     assert!(!s.multi_device());
     assert!(!s.device_choice());
-    let hidden: Vec<PickerField> = knobs::for_backend("llamacpp")
-      .iter()
-      .filter(|d| matches!(d.group, Group::MultiGpu | Group::Device))
-      .map(|d| PickerField::Knob(d.knob_id()))
-      .collect();
+    let rows_of = |group: Group| -> Vec<PickerField> {
+      knobs::for_backend("llamacpp")
+        .iter()
+        .filter(|d| d.group == group)
+        .map(|d| PickerField::Knob(d.knob_id()))
+        .collect()
+    };
+    let placement = rows_of(Group::MultiGpu);
+    let device = rows_of(Group::Device);
+    // Both guards, so neither half can empty out and leave the sweep vacuous.
+    assert!(!placement.is_empty(), "llama.cpp declares placement knobs");
     assert!(
-      hidden.contains(&PickerField::Knob(knobs::kid("device"))),
-      "the device row is one of the gated rows: {hidden:?}"
+      device.contains(&PickerField::Knob(knobs::kid("device"))),
+      "the device row is one of the gated rows: {device:?}"
     );
+    let hidden: Vec<PickerField> = placement.into_iter().chain(device).collect();
     let n = s.ordered_fields().len() + hidden.len();
     for _ in 0..n {
       s.next_field();

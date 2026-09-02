@@ -35,26 +35,44 @@ use crate::daemon::context::MethodContext;
 /// Carries no owning-binary field — the [`Server`] that owns this device
 /// already knows its binary.
 ///
-/// The string fields default rather than reject: a client reading a `status`
-/// payload from an older daemon must still get a device it can count, and a
-/// nameless one takes its own slot in [`physical_device_count`] — the failure
-/// direction that keeps a real GPU visible.
+/// Every field defaults rather than rejects, so a client reading a `status`
+/// payload from an older daemon still gets a device it can count.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Device {
   /// Exact `--device` selector (`Vulkan0`, `CUDA0`, `ROCm0`), passed verbatim.
-  #[serde(default)]
+  #[serde(default, deserialize_with = "lenient")]
   pub selector: String,
   /// Compute backend inferred from the selector prefix (`Vulkan` / `CUDA` /
   /// `ROCm` / `Metal`). Display-only.
-  #[serde(default)]
+  #[serde(default, deserialize_with = "lenient")]
   pub gpu_backend: String,
   /// Human-readable adapter name, parens and all.
-  #[serde(default)]
+  #[serde(default, deserialize_with = "lenient")]
   pub name: String,
   /// Total device memory in MiB, when the probe carried it.
+  #[serde(default, deserialize_with = "lenient")]
   pub total_mib: Option<u64>,
   /// Free device memory in MiB, when the probe carried it.
+  #[serde(default, deserialize_with = "lenient")]
   pub free_mib: Option<u64>,
+}
+
+/// Decode one field, falling back to its default when the wire value has the
+/// wrong *type* (a missing key is already `serde(default)`'s job). The value is
+/// read as JSON first so exactly one value is consumed either way and the rest
+/// of the row keeps decoding.
+///
+/// Per-field rather than per-row because rejecting a [`Device`] takes `name`
+/// with it, and a nameless device has no identity to dedup on — it claims its
+/// own slot in [`physical_device_count`], so one mistyped sibling field would
+/// be enough to put the multi-GPU UI back on a single-GPU host.
+fn lenient<'de, D, T>(de: D) -> Result<T, D::Error>
+where
+  D: serde::Deserializer<'de>,
+  T: serde::de::DeserializeOwned + Default,
+{
+  let raw = serde_json::Value::deserialize(de)?;
+  Ok(serde_json::from_value(raw).unwrap_or_default())
 }
 
 /// A configured server binary **before** device probing — what
@@ -90,6 +108,30 @@ impl Server {
   pub fn physical_device_count(&self) -> usize {
     physical_device_count(&self.devices)
   }
+}
+
+/// The server a launch spawns on when it pins none: the entry whose binary is
+/// the daemon's default (`daemon.server_path`), else the first in catalog
+/// order.
+///
+/// This is the client-side mirror of the daemon's own fallback — with no
+/// `--server` pick and no device selector, `launch_service::pick_launch_binary`
+/// spawns the daemon's default binary, which is not always the catalog-first
+/// build. Callers pass **one backend's** servers: a backend that ships its own
+/// binary overrides that fallback in [`Backend::resolve_launch_binary`], so its
+/// group's catalog-first entry is its default.
+///
+/// Everything that says "default" about a server goes through here — the launch
+/// picker's ring, the running view's `server` row, and the knob gates beside
+/// it — so one panel cannot name one build while another answers for a second.
+pub fn default_server<'a, I>(mut servers: I, default_binary: Option<&Path>) -> Option<&'a Server>
+where
+  I: Iterator<Item = &'a Server> + Clone,
+{
+  let mut catalog_first = servers.clone();
+  servers
+    .find(|s| default_binary.is_some_and(|d| s.binary.as_path() == d))
+    .or_else(|| catalog_first.next())
 }
 
 /// Adapter name reduced to a physical-identity key: lower-cased, every
@@ -416,6 +458,66 @@ mod tests {
       total_mib: None,
       free_mib: None,
     }
+  }
+
+  #[test]
+  fn a_field_of_the_wrong_type_defaults_without_taking_the_row_with_it() {
+    let d: Device = serde_json::from_value(serde_json::json!({
+      "selector": 0,
+      "gpu_backend": "ROCm",
+      "name": "AMD Radeon 8060S Graphics",
+      "total_mib": "126976",
+      "free_mib": 61394
+    }))
+    .expect("a row with bad field types still decodes");
+    assert_eq!(d.selector, "");
+    assert_eq!(d.total_mib, None);
+    // The fields that were readable are all still here — losing `name` would
+    // cost the row its identity in `physical_device_count`.
+    assert_eq!(d.gpu_backend, "ROCm");
+    assert_eq!(d.name, "AMD Radeon 8060S Graphics");
+    assert_eq!(d.free_mib, Some(61394));
+    // A payload from an older daemon that never wrote the keys reads the same.
+    let sparse: Device =
+      serde_json::from_value(serde_json::json!({"selector": "ROCm0"})).expect("missing keys");
+    assert_eq!(
+      sparse,
+      Device {
+        selector: "ROCm0".into(),
+        ..Default::default()
+      }
+    );
+  }
+
+  #[test]
+  fn the_default_server_is_the_daemons_binary_not_the_catalog_head() {
+    let srv = |id: &str, binary: &str| Server {
+      id: id.to_string(),
+      backend_id: "llamacpp".to_string(),
+      binary: PathBuf::from(binary),
+      name: id.to_string(),
+      devices: Vec::new(),
+    };
+    let servers = [
+      srv("llamacpp-rocm", "/b/rocm/llama-server"),
+      srv("llamacpp-vulkan", "/b/vulkan/llama-server"),
+    ];
+    assert_eq!(
+      default_server(servers.iter(), Some(Path::new("/b/vulkan/llama-server"))).map(|s| &s.id),
+      Some(&"llamacpp-vulkan".to_string()),
+      "the daemon's own binary wins over catalog order"
+    );
+    // No default configured, or one that has left the catalog (rebuilt binary)
+    // → catalog order, which is what the daemon falls back to as well.
+    assert_eq!(
+      default_server(servers.iter(), None).map(|s| &s.id),
+      Some(&"llamacpp-rocm".to_string())
+    );
+    assert_eq!(
+      default_server(servers.iter(), Some(Path::new("/b/gone/llama-server"))).map(|s| &s.id),
+      Some(&"llamacpp-rocm".to_string())
+    );
+    assert!(default_server([].iter(), None).is_none());
   }
 
   #[test]

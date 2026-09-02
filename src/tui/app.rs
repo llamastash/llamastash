@@ -1523,12 +1523,10 @@ impl App {
       }
     }
     let backend = row.backend.as_deref()?;
-    let mut of_backend = self.servers.iter().filter(|s| s.backend_id == backend);
-    let default_path = self.daemon_info.server_path.as_deref();
-    of_backend
-      .clone()
-      .find(|s| default_path.is_some_and(|def| s.binary == Path::new(def)))
-      .or_else(|| of_backend.next())
+    crate::backend::default_server(
+      self.servers.iter().filter(|s| s.backend_id == backend),
+      self.daemon_info.server_path.as_deref().map(Path::new),
+    )
   }
 
   /// The knob-group gates for a running launch's read-only settings view,
@@ -1586,9 +1584,18 @@ impl App {
 
   /// Servers compatible with `path`'s model, priority-ordered: for each backend
   /// in the model's `supported_backends` (priority order), every catalog server
-  /// of that backend (in catalog order). Falls back to the whole catalog when
-  /// the model declares no supported backends (older daemon / no metadata).
-  /// Feeds the launch picker's Server row.
+  /// of that backend. Falls back to every backend in the catalog when the model
+  /// declares no supported backends (older daemon / no metadata).
+  ///
+  /// Within a backend the build the daemon spawns with no pin
+  /// ([`crate::backend::default_server`]) leads its group, so `servers[0]` *is*
+  /// the default — which is what the picker's cycle ring,
+  /// `server_value_label` and `launch_identity` all read position 0 as. The
+  /// catalog already arrives that way (each backend's `configured_servers`
+  /// leads with the binary the daemon resolved), so this re-sort changes
+  /// nothing today; it makes the picker depend on a property of the list it
+  /// was handed instead of on that distant guarantee. Feeds the launch
+  /// picker's Server row.
   pub(crate) fn compatible_servers(&self, path: &Path) -> Vec<crate::backend::Server> {
     let supported: Vec<String> = self
       .models
@@ -1596,14 +1603,26 @@ impl App {
       .find(|m| m.path == path)
       .map(|m| m.supported_backends.clone())
       .unwrap_or_default();
-    if supported.is_empty() {
-      return self.servers.clone();
-    }
-    let mut out = Vec::new();
-    for backend_id in &supported {
-      for s in self.servers.iter().filter(|s| &s.backend_id == backend_id) {
-        out.push(s.clone());
+    let backends: Vec<String> = if supported.is_empty() {
+      let mut seen: Vec<String> = Vec::new();
+      for s in &self.servers {
+        if !seen.contains(&s.backend_id) {
+          seen.push(s.backend_id.clone());
+        }
       }
+      seen
+    } else {
+      supported
+    };
+    let default_binary = self.daemon_info.server_path.as_deref().map(Path::new);
+    let mut out = Vec::new();
+    for backend_id in &backends {
+      let of_backend = || self.servers.iter().filter(|s| &s.backend_id == backend_id);
+      let default_id = crate::backend::default_server(of_backend(), default_binary)
+        .map(|s| s.id.clone())
+        .unwrap_or_default();
+      out.extend(of_backend().filter(|s| s.id == default_id).cloned());
+      out.extend(of_backend().filter(|s| s.id != default_id).cloned());
     }
     out
   }
@@ -3291,6 +3310,45 @@ mod tests {
     let servers = app.compatible_servers(Path::new("/m/qwen.gguf"));
     assert_eq!(servers.len(), 1, "scoped to the one lemonade server");
     assert_eq!(servers[0].backend_id, "lemonade");
+  }
+
+  #[test]
+  fn compatible_servers_lead_each_backend_with_the_build_the_daemon_defaults_to() {
+    // Two llama.cpp builds; the daemon's default binary is the second one in
+    // catalog order. The picker reads `servers[0]` as "the default" — if that
+    // stayed catalog-first, the Server row would offer `llamacpp-rocm
+    // (default)` while a launch with no pick actually spawned the Vulkan build.
+    let mut app = App::new(AppOptions::default());
+    let mut m = fake("/m/qwen.gguf", "/m");
+    m.supported_backends = vec![crate::backend::DEFAULT_BACKEND_ID.into()];
+    app.models = vec![m];
+    app.servers = vec![
+      srv("/b/rocm/llama-server", vec![dev("ROCm0", "ROCm")]),
+      srv("/b/vulkan/llama-server", vec![dev("Vulkan0", "Vulkan")]),
+    ];
+    app.daemon_info = DaemonInfo {
+      server_path: Some("/b/vulkan/llama-server".into()),
+      ..Default::default()
+    };
+    let servers = app.compatible_servers(Path::new("/m/qwen.gguf"));
+    assert_eq!(
+      servers.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+      vec![
+        "llamacpp-/b/vulkan/llama-server",
+        "llamacpp-/b/rocm/llama-server"
+      ],
+      "the default build leads; the rest keep catalog order"
+    );
+    // And it agrees with the resolver the running view uses.
+    let row = ManagedRow {
+      path: PathBuf::from("/m/qwen.gguf"),
+      backend: Some(crate::backend::DEFAULT_BACKEND_ID.into()),
+      ..Default::default()
+    };
+    assert_eq!(
+      app.server_for_managed(&row).map(|s| s.id.as_str()),
+      Some(servers[0].id.as_str())
+    );
   }
 
   #[test]
