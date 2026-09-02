@@ -1083,6 +1083,120 @@ async fn auto_selection_start_inherits_nothing() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn named_preset_launch_does_not_inherit_stale_last_params() {
+  // The PR's namesake scenario, end-to-end: an inline launch persists a knob
+  // (`threads`) into `last_params`; a subsequent *named-preset* launch
+  // (`selection: explicit`, whose preset does not set `threads`) must NOT
+  // inherit that stale knob from the `LastUsed` layer. A preset is
+  // self-contained — before the fix it leaked `last_used` here. The unit test
+  // on `is_pure_fit` guards the gate in isolation; this drives the real
+  // resolver + recorder through the daemon.
+  let state = unique_temp("named-preset-no-leak");
+  let model_dir = unique_temp("named-preset-no-leak-models");
+  let model_path = model_dir.join("m.gguf");
+  std::fs::write(&model_path, build_minimal_gguf("llama")).unwrap();
+  let model_path_canon = llamastash::util::paths::canonicalize(&model_path).unwrap();
+
+  let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
+  let p0 = probe.local_addr().unwrap().port();
+  drop(probe);
+  let probe2 = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
+  let p1 = probe2.local_addr().unwrap().port();
+  drop(probe2);
+  let (lo, hi) = if p0 < p1 { (p0, p1) } else { (p1, p0) };
+
+  let opts = DaemonOptions {
+    binary: Some(fake_binary()),
+    port_range: PortRange { start: lo, end: hi },
+    ..DaemonOptions::rooted_at(state.clone())
+  };
+  let socket = opts.state_dir.clone();
+  let state_dir = opts.state_dir.clone();
+  let daemon = tokio::spawn(async move { run_foreground(opts).await });
+  wait_for_socket(&socket).await;
+  let mut client = Client::connect(&socket).await.expect("connect");
+
+  // Call 1 (inline, no selection): user supplies `threads = 4`. After Ready,
+  // the recorder persists it so a later launch's resolver would see it under
+  // the `LastUsed` layer.
+  let first = client
+    .call(
+      "start_model",
+      Some(json!({
+        "model_path": &model_path_canon,
+        "knobs": {"threads": 4},
+      })),
+    )
+    .await
+    .expect("start_model call 1");
+  let first_launch = first["launch_id"].as_str().unwrap().to_string();
+
+  let deadline = std::time::Instant::now() + Duration::from_secs(60);
+  loop {
+    let s = state_store::load(&state_dir).expect("load state");
+    if !s.last_params.is_empty()
+      && s.last_params[0]
+        .params
+        .knobs
+        .u32(llamastash::launch::knobs::kid("threads"))
+        == Some(4)
+    {
+      break;
+    }
+    if std::time::Instant::now() > deadline {
+      panic!("call 1 last_params.threads never persisted");
+    }
+    tokio::time::sleep(Duration::from_millis(40)).await;
+  }
+
+  // Stop call 1 so its port is free and the second start doesn't collide.
+  let _ = client
+    .call(
+      "stop_model",
+      Some(json!({"launch_id": &first_launch, "grace_secs": 5})),
+    )
+    .await
+    .expect("stop_model");
+
+  // Call 2 (named preset): `selection: explicit` with the preset's flattened
+  // knobs. The preset sets `ctx-size` but NOT `threads`, so a stale
+  // `last_params.threads` must not leak in from the `LastUsed` layer.
+  let resp = client
+    .call(
+      "start_model",
+      Some(json!({
+        "model_path": &model_path_canon,
+        "selection": "explicit",
+        "knobs": {"ctx-size": 8192},
+      })),
+    )
+    .await
+    .expect("start_model call 2");
+
+  let sources = resp.get("layer_sources").cloned().unwrap_or(json!({}));
+  // The preset's own knob resolves from the user layer — proves the preset was
+  // actually applied (guards against a false pass where nothing resolved).
+  assert_eq!(
+    sources.get("ctx-size").and_then(|v| v.as_str()),
+    Some("user"),
+    "the named preset's ctx-size must resolve from the user layer; got {:?}",
+    sources.get("ctx-size")
+  );
+  // The stale last_params knob must NOT leak in from the LastUsed layer.
+  assert_ne!(
+    sources.get("threads").and_then(|v| v.as_str()),
+    Some("last_used"),
+    "a named-preset launch must not inherit a stale last_params knob; got {:?}",
+    sources.get("threads")
+  );
+
+  let _ = client.call("shutdown", None).await;
+  let _ = timeout(Duration::from_secs(3), daemon).await;
+  std::fs::remove_dir_all(&state).ok();
+  std::fs::remove_dir_all(&model_dir).ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn start_model_returns_error_when_binary_unconfigured() {
   // Production daemon resolves the binary at startup; if it wasn't
   // resolved (e.g. user has no `llama-server` on PATH), `start_model`
