@@ -1050,6 +1050,14 @@ async fn auto_selection_start_inherits_nothing() {
     .expect("start_model call 2");
   let port = resp["port"].as_u64().unwrap() as u16;
 
+  // Pure-fit (selection=auto, no user knobs, no arch defaults for this model)
+  // resolves no real layer, so the provenance field is omitted from the response.
+  assert!(
+    resp.get("layer_sources").is_none(),
+    "a pure-fit launch must omit layer_sources; got {:?}",
+    resp.get("layer_sources")
+  );
+
   let deadline = std::time::Instant::now() + Duration::from_secs(60);
   let params = loop {
     let s = state_store::load(&state_dir).expect("load state");

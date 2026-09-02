@@ -780,6 +780,9 @@ pub(crate) async fn compose_and_spawn(
     .and_then(|v| v.set_value())
     .and_then(|s| s.as_bool())
     .unwrap_or(false);
+  // Provenance for the IPC/CLI response (only knobs a real layer supplied),
+  // computed before `resolved.knobs` moves out below.
+  let layer_sources = resolved.real_sources(&resolved_backend_id);
   launch_params.knobs = resolved.knobs;
   // Close the `knobs.u32(crate::launch::knobs::kid("ctx-size"))` bypass of `MAX_CTX_TOKENS` (the early check
   // only saw the top-level `parsed.ctx`): validate the *resolved* ctx,
@@ -989,7 +992,7 @@ pub(crate) async fn compose_and_spawn(
     native_ctx,
     total_weight_bytes,
     user_knobs,
-    layer_sources: resolved.sources,
+    layer_sources,
     auto_set_knobs,
     volatile_knobs: crate::launch::knobs::volatile_ids(&resolved_backend_id),
     bypasses_admission,
