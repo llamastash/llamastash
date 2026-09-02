@@ -516,25 +516,94 @@ pub fn find_mtp_head(model_path: &Path, model_arch: Option<&str>) -> Option<Path
 /// `<model arch>_mtp_support` shape — DSpark's support GGUF declares
 /// `deepseek4-dspark` yet drafts for `deepseek4` through the same slot.
 pub fn find_draft_head(model_path: &Path, head_arch: Option<&str>) -> Option<PathBuf> {
-  let parent = model_path.parent()?;
-  let model_filename = model_path.file_name()?.to_str()?;
-  let model_stem = model_path.file_stem()?.to_str()?;
   // A head file has no head of its own.
   if is_mtp_head_file(model_path) {
     return None;
   }
+  let parent = model_path.parent()?;
+  if let Some(hit) = search_dir_for_head(parent, model_path, head_arch, true) {
+    return Some(hit);
+  }
+  // Publishers routinely lay a repo out as one directory per quant plus a
+  // shared companion directory, so the head never sits beside the weights
+  // (`UD-Q4_K_XL/…gguf` vs `MTP/mtp-….gguf`) and a parent-only search can
+  // never find it. Widen to the rest of the snapshot — but only for an HF
+  // cache layout, where the revision directory is a real boundary. A flat
+  // models directory has no such bound, and widening there would pair heads
+  // across unrelated models.
+  for dir in hf_snapshot_sibling_dirs(model_path) {
+    if let Some(hit) = search_dir_for_head(&dir, model_path, head_arch, false) {
+      return Some(hit);
+    }
+  }
+  None
+}
 
-  let model_base = canonical_base(model_stem);
+/// The other directories of the HF snapshot `model_path` lives in: the
+/// revision root plus its immediate subdirectories, minus the model's own.
+/// Empty for any path not inside `.../snapshots/<rev>/`, which is what keeps
+/// the widened search from escaping into a plain models directory.
+fn hf_snapshot_sibling_dirs(model_path: &Path) -> Vec<PathBuf> {
+  let Some(parent) = model_path.parent() else {
+    return Vec::new();
+  };
+  let snapshots = std::ffi::OsStr::new("snapshots");
+  let root = parent
+    .ancestors()
+    .find(|a| a.parent().and_then(|p| p.file_name()) == Some(snapshots));
+  let Some(root) = root else {
+    return Vec::new();
+  };
+  let mut dirs: Vec<PathBuf> = Vec::new();
+  if root != parent {
+    dirs.push(root.to_path_buf());
+  }
+  if let Ok(entries) = std::fs::read_dir(root) {
+    for e in entries.flatten() {
+      let p = e.path();
+      if p.is_dir() && p != parent {
+        dirs.push(p);
+      }
+    }
+  }
+  // Deterministic order so an ambiguous snapshot resolves the same way twice.
+  dirs.sort();
+  dirs
+}
+
+/// Search one directory for a head that drafts for `model_path`, applying the
+/// tier order documented on [`find_mtp_head`].
+///
+/// `is_model_dir` says whether `dir` is the model's own folder. It only
+/// changes the unnamed-pair tier: there, "the only model beside the only head"
+/// is the evidence they belong together, while a companion folder holds no
+/// models at all by construction, so a head standing alone in one is the
+/// evidence instead. Without the distinction the widened search could never
+/// pair anything, which is the whole point of widening.
+fn search_dir_for_head(
+  dir: &Path,
+  model_path: &Path,
+  head_arch: Option<&str>,
+  is_model_dir: bool,
+) -> Option<PathBuf> {
+  let model_filename = model_path.file_name()?.to_str()?;
+  // Compare on the collapsed name: a split set is one model, and its
+  // `-NNNNN-of-NNNNN` suffix is not part of the name a head is published
+  // under, so `foo-Q4_K_M-00001-of-00002` has to match `mtp-foo`.
+  let model_label = crate::util::paths::model_file_label(model_path);
+  let model_base = canonical_base(Path::new(&model_label).file_stem()?.to_str()?);
 
   let mut all_heads: Vec<PathBuf> = Vec::new();
   let mut arch_matches: Vec<PathBuf> = Vec::new();
   let mut base_matches: Vec<PathBuf> = Vec::new();
   let mut anonymous: Vec<PathBuf> = Vec::new();
-  // Count launchable model files (neither an MTP head nor a projector) so the
-  // single-head fallback only fires when this is the only model in the folder.
-  let mut model_file_count = 0usize;
+  // Launchable models in the folder (neither an MTP head nor a projector), so
+  // the single-head fallback only fires when this is the only one. Counted as
+  // *shard sets*, not files: four shards of one split model are one model, and
+  // counting files meant the fallback could never fire for a split set.
+  let mut model_files: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
-  for entry in std::fs::read_dir(parent).ok()?.flatten() {
+  for entry in std::fs::read_dir(dir).ok()?.flatten() {
     let path = entry.path();
     if !path.is_file() {
       continue;
@@ -547,7 +616,7 @@ pub fn find_draft_head(model_path: &Path, head_arch: Option<&str>) -> Option<Pat
     }
     if !is_mtp_head_file(&path) {
       if !is_projector_companion(&path) {
-        model_file_count += 1;
+        model_files.insert(crate::util::paths::model_file_label(&path));
       }
       continue;
     }
@@ -586,8 +655,14 @@ pub fn find_draft_head(model_path: &Path, head_arch: Option<&str>) -> Option<Pat
     base_matches.sort();
     return base_matches.into_iter().next();
   }
-  // 2. Single model + single head → pair them regardless of name.
-  if model_file_count == 1 && all_heads.len() == 1 {
+  // 2. An unambiguous pair, regardless of name: the only model beside the only
+  //    head in the model's own folder, or the only head in a companion folder.
+  let lone_pair = if is_model_dir {
+    model_files.len() == 1 && all_heads.len() == 1
+  } else {
+    all_heads.len() == 1
+  };
+  if lone_pair {
     return all_heads.into_iter().next();
   }
   // 3. Lone anonymous catch-all, else ambiguous → give up.
@@ -1000,6 +1075,126 @@ mod tests {
       None
     );
     fs::remove_dir_all(&dir).ok();
+  }
+
+  #[test]
+  fn split_model_name_matches_a_head_published_without_the_shard_suffix() {
+    // A head is published against the model's name, never against shard 1's
+    // filename, so the comparison has to collapse `-NNNNN-of-NNNNN` first.
+    // A second model in the folder keeps the lone-pair tier from covering it,
+    // so only the name match can succeed here.
+    let dir = temp_dir("mtp-split-name");
+    for i in 1..=2 {
+      fs::write(
+        dir.join(format!("gemma-4-Q4_K_M-0000{i}-of-00002.gguf")),
+        build_minimal_gguf("gemma4"),
+      )
+      .unwrap();
+    }
+    fs::write(dir.join("other-model.gguf"), build_minimal_gguf("gemma4")).unwrap();
+    fs::write(
+      dir.join("mtp-gemma-4-Q8_0.gguf"),
+      build_minimal_gguf("gemma4"),
+    )
+    .unwrap();
+    let found = find_mtp_head(
+      &dir.join("gemma-4-Q4_K_M-00001-of-00002.gguf"),
+      Some("gemma4"),
+    );
+    assert_eq!(
+      found.and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())),
+      Some("mtp-gemma-4-Q8_0.gguf".to_string()),
+      "shard suffix must not defeat the name match"
+    );
+    fs::remove_dir_all(&dir).ok();
+  }
+
+  #[test]
+  fn a_split_set_counts_as_one_model_for_the_lone_pair_tier() {
+    // Four shards are one model. Counting files made the count 4, so a head
+    // whose name did not match could never pair with a split model.
+    let dir = temp_dir("mtp-split-count");
+    for i in 1..=4 {
+      fs::write(
+        dir.join(format!("gemma-4-Q4_K_M-0000{i}-of-00004.gguf")),
+        build_minimal_gguf("gemma4"),
+      )
+      .unwrap();
+    }
+    fs::write(
+      dir.join("mtp-unrelated-name.gguf"),
+      build_minimal_gguf("gemma4"),
+    )
+    .unwrap();
+    let found = find_mtp_head(
+      &dir.join("gemma-4-Q4_K_M-00001-of-00004.gguf"),
+      Some("gemma4"),
+    );
+    assert_eq!(
+      found.and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())),
+      Some("mtp-unrelated-name.gguf".to_string()),
+      "a split set is one model, so the lone-pair tier must fire"
+    );
+    fs::remove_dir_all(&dir).ok();
+  }
+
+  #[test]
+  fn head_pairs_from_a_companion_directory_of_the_same_snapshot() {
+    // HF repos lay out one directory per quant plus a companion directory, so
+    // the head is never beside the weights. Only paths inside a
+    // `snapshots/<rev>/` tree widen, and only to that tree.
+    let root = temp_dir("mtp-snapshot");
+    let snap = root.join("snapshots").join("abc123");
+    let quant = snap.join("UD-Q4_K_XL");
+    let mtp = snap.join("MTP");
+    fs::create_dir_all(&quant).unwrap();
+    fs::create_dir_all(&mtp).unwrap();
+    for i in 1..=2 {
+      fs::write(
+        quant.join(format!("gemma-4-UD-Q4_K_XL-0000{i}-of-00002.gguf")),
+        build_minimal_gguf("gemma4"),
+      )
+      .unwrap();
+    }
+    fs::write(
+      mtp.join("mtp-gemma-4-Q8_0.gguf"),
+      build_minimal_gguf("gemma4"),
+    )
+    .unwrap();
+    let found = find_mtp_head(
+      &quant.join("gemma-4-UD-Q4_K_XL-00001-of-00002.gguf"),
+      Some("gemma4"),
+    );
+    assert_eq!(
+      found.and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())),
+      Some("mtp-gemma-4-Q8_0.gguf".to_string()),
+      "a head in a sibling snapshot directory must pair"
+    );
+    fs::remove_dir_all(&root).ok();
+  }
+
+  #[test]
+  fn the_widened_search_does_not_escape_a_plain_models_directory() {
+    // Outside an HF snapshot there is no boundary to widen within, so a head
+    // in an unrelated sibling folder must stay unpaired rather than be
+    // guessed at.
+    let root = temp_dir("mtp-no-widen");
+    let a = root.join("model-a");
+    let b = root.join("model-b");
+    fs::create_dir_all(&a).unwrap();
+    fs::create_dir_all(&b).unwrap();
+    fs::write(a.join("gemma-4.gguf"), build_minimal_gguf("gemma4")).unwrap();
+    fs::write(
+      b.join("mtp-something-else.gguf"),
+      build_minimal_gguf("gemma4"),
+    )
+    .unwrap();
+    assert_eq!(
+      find_mtp_head(&a.join("gemma-4.gguf"), Some("gemma4")),
+      None,
+      "must not pair across unrelated directories"
+    );
+    fs::remove_dir_all(&root).ok();
   }
 
   /// A draft head shaped like antirez's published DeepSeek-V4 head: its own
