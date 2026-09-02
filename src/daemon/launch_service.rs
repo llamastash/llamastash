@@ -1081,7 +1081,15 @@ pub(crate) async fn spawn_supervised(
         let model_path = launch_params.model_path.clone();
         let knobs = launch_params.knobs.clone();
         let arch_owned = arch.clone();
-        let weights_total = total_weight_bytes;
+        // Weights the launch actually has to hold. Tensors the loader streams
+        // row-by-row from the mapping never become resident, and counting them
+        // refuses launches that fit with room to spare (a 103.7 GiB
+        // Qwen3.8-Flash-Next projected 133.5 GiB on a 121 GiB host but needs
+        // ~77 GiB). Zero for every model without such a tensor, and for any
+        // launch pinning `no-mmap`.
+        let lazy_bytes =
+          launch_lazy_bytes(ctx, &launch_params.model_path, &launch_params.knobs).await;
+        let weights_total = total_weight_bytes.saturating_sub(lazy_bytes);
         let mtp_active = launch_params.mtp_directive.is_some();
         let demand = if identity.as_gguf().is_some() {
           let demand_backend_id = resolved_backend_id.clone();
@@ -1596,6 +1604,44 @@ fn extras_manage_mmproj(extras: &[OsString]) -> bool {
     let head = lossy.split('=').next().unwrap_or(&lossy);
     head.eq_ignore_ascii_case("--mmproj") || head.eq_ignore_ascii_case("--no-mmproj")
   })
+}
+
+/// Bytes the engine will stream from the mapping rather than hold resident,
+/// summed over every file of the model.
+///
+/// Mirrors [`launch_total_bytes`]'s catalog-first lookup so the gate subtracts
+/// over exactly the file set it measured. Returns `0` — leaving the projection
+/// untouched — when the launch pins `no-mmap` (the loader's lazy path needs
+/// mmap), or when no shard carries a lazy-flagged tensor, which is every model
+/// without a per-layer embedding table.
+///
+/// Reads sibling shards because the tensor lives in one of them: a split set's
+/// first shard is often metadata-only, so the header the gate already has says
+/// nothing about it.
+async fn launch_lazy_bytes(
+  ctx: &MethodContext,
+  model_path: &std::path::Path,
+  knobs: &crate::launch::knobs::KnobSet,
+) -> u64 {
+  if knobs.bool(crate::launch::knobs::kid("no-mmap")) == Some(true) {
+    return 0;
+  }
+  let snap = ctx.catalog.snapshot().await;
+  let paths: Vec<std::path::PathBuf> = match snap.iter().find(|m| m.path == model_path) {
+    Some(row) => std::iter::once(row.path.clone())
+      .chain(row.split_siblings.iter().cloned())
+      .collect(),
+    None => vec![model_path.to_path_buf()],
+  };
+  tokio::task::spawn_blocking(move || {
+    paths
+      .iter()
+      .filter_map(|p| read_gguf_header(p, HeaderReadOptions::default()).ok())
+      .map(|r| crate::gguf::memory::lazy_streamed_bytes(&r.header))
+      .fold(0u64, u64::saturating_add)
+  })
+  .await
+  .unwrap_or(0)
 }
 
 /// Total on-disk weight bytes for the model the launch handler is

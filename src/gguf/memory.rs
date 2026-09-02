@@ -172,6 +172,37 @@ pub fn weights_bytes(header: &GgufHeader) -> u64 {
     .fold(0u64, u64::saturating_add)
 }
 
+/// Per-layer embedding tables that llama.cpp marks `TENSOR_READ_LAZY` and
+/// reads row-by-row from the mapping instead of keeping resident.
+///
+/// Kept as a name list rather than an arch list because the flag travels with
+/// the tensor: `qwen4exp` and `gemma4` both use this one, and a new arch
+/// reusing the same table gets the same treatment for free.
+const LAZY_TENSOR_NAMES: &[&str] = &["per_layer_token_embd.weight"];
+
+/// llama.cpp's `--lazy-mode auto` threshold: only lazy-flagged tensors larger
+/// than this stream, smaller ones stay resident (`llama-model-loader.cpp`).
+const AUTO_LAZY_MIN_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
+/// Bytes this header's tensors will stream from disk rather than occupy in
+/// memory, under llama.cpp's default `--lazy-mode auto`.
+///
+/// Subtract from a weight total before projecting a launch's demand: counting
+/// them refuses launches that comfortably fit. Qwen3.8-Flash-Next carries a
+/// 26.8 GiB `per_layer_token_embd`, so a 103.7 GiB file needs ~77 GiB resident.
+///
+/// **Only valid when the launch uses mmap** — `--no-mmap` disables the lazy
+/// path in the loader, and then the full figure is the honest one.
+pub fn lazy_streamed_bytes(header: &GgufHeader) -> u64 {
+  header
+    .tensors
+    .iter()
+    .filter(|t| LAZY_TENSOR_NAMES.contains(&t.name.as_str()))
+    .map(|t| Quant::from_ggml_tag(t.ggml_type).tensor_storage_bytes(&t.dims))
+    .filter(|b| *b > AUTO_LAZY_MIN_BYTES)
+    .fold(0u64, u64::saturating_add)
+}
+
 /// Closed-form KV cache bytes:
 /// `2 (K+V) * n_layers * n_kv_heads * head_dim * ctx_len * bpe(cache_type)`,
 /// but with separate K and V terms because llama-server lets the two be set
