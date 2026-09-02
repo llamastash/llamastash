@@ -1873,7 +1873,13 @@ impl App {
         &self
           .predicted_backend(&path)
           .map(crate::launch::params::BackendChoice::from_id)
-          .unwrap_or_default(),
+          // Mirror `build_default_picker`: pin the explicit default backend
+          // (not `Auto`) when the row has no prediction yet, so a ds4-
+          // compatible GGUF saves the llamacpp build actually shown instead
+          // of letting the daemon's replay auto-routing pick ds4.
+          .unwrap_or_else(|| {
+            crate::launch::params::BackendChoice::from_id(crate::backend::DEFAULT_BACKEND_ID)
+          }),
       );
       (knobs, extras, backend, server)
     };
@@ -3379,6 +3385,56 @@ mod tests {
       dialog.server.as_deref(),
       Some("llamacpp-vulkan"),
       "resolved server build carried into the preset"
+    );
+  }
+
+  #[test]
+  fn save_preset_no_picker_pins_default_backend_when_unpredicted() {
+    // Regression: the no-picker Ctrl+P path (no running launch, no picker
+    // staged) must pin the explicit default backend when the row has no
+    // prediction yet — mirroring `build_default_picker` — instead of falling
+    // to `Auto`, which on replay lets the daemon's auto-routing pick a
+    // different build (e.g. ds4) than the llamacpp one actually shown.
+    let mut app = App::new(AppOptions::default());
+    app.models = vec![fake("/m/phi.gguf", "/m")];
+    // A last-used launch with no server pick and no `backend` field on the
+    // row, so `predicted_backend` is `None`.
+    app.ingest_last_params(&serde_json::json!({
+      "last_params": [{
+        "model_path": "/m/phi.gguf",
+        "params": { "ctx": 4096 },
+      }],
+    }));
+    // Focus the catalog model row (no running launch, no picker).
+    let cursor = app
+      .rendered_rows()
+      .iter()
+      .position(|r| {
+        r.path()
+          .is_some_and(|p| p == std::path::Path::new("/m/phi.gguf"))
+      })
+      .expect("model row present");
+    app.list_cursor = cursor;
+    assert!(app.focused_managed().is_none(), "no running launch");
+    assert!(app.launch_picker.is_none(), "no picker staged");
+
+    app.open_save_preset_dialog();
+    let dialog = app
+      .save_preset_dialog
+      .as_ref()
+      .expect("save dialog opened on the catalog model");
+    // No server pick, so the backend falls back to the model's explicit
+    // choice — which, with no prediction yet, is the explicit default (not
+    // `Auto`), so a ds4-compatible GGUF saves the llamacpp build shown.
+    assert_eq!(
+      dialog.backend.as_deref(),
+      Some("llamacpp"),
+      "unpredicted row pins the default backend, not Auto"
+    );
+    assert_eq!(
+      dialog.server.as_deref(),
+      None,
+      "no server pick means no server pin"
     );
   }
 
