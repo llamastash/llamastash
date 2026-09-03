@@ -4557,6 +4557,22 @@ mod tests {
   }
 
   #[test]
+  fn tab_from_an_unreachable_right_tab_lands_in_the_reachable_set() {
+    // `right_tab` can hold a tab the focused row no longer offers
+    // (the model dropped out of Ready, or the cursor moved to an
+    // unlaunched row). Tabbing from there must snap into the
+    // reachable list rather than stepping off the end of it.
+    let mut app = App::new(Default::default());
+    // No models → focused_managed() is None → tabs = [Settings].
+    app.right_tab = RightTab::Chat;
+    pump_input(&mut app, key(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(app.right_tab, RightTab::Settings);
+    app.right_tab = RightTab::Logs;
+    pump_input(&mut app, key(KeyCode::BackTab, KeyModifiers::SHIFT));
+    assert_eq!(app.right_tab, RightTab::Settings);
+  }
+
+  #[test]
   fn enter_on_settings_without_prior_arrow_press_still_launches() {
     // Repro the user-reported bug: focus a model, Tab/Left/Shift+S
     // to land on the Settings tab, press Enter — must launch.

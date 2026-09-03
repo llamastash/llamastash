@@ -408,10 +408,11 @@ fn ready_chat_model_exposes_chat_tab_via_cycle() {
   app.go_top();
   let tabs = app.available_right_tabs();
   assert!(tabs.contains(&RightTab::Chat));
-  // Tab order is [Settings, Logs, Chat] now; default lands on
-  // Settings, so two cycle steps reach Chat (Settings → Logs → Chat).
-  app.cycle_right_tab();
-  app.cycle_right_tab();
+  // The focus chain is [List, Settings, Logs, Chat] and the cursor
+  // starts on the list, so three Tabs reach Chat.
+  for _ in 0..3 {
+    pump_input(&mut app, key(KeyCode::Tab, KeyModifiers::NONE));
+  }
   assert_eq!(app.right_tab, RightTab::Chat);
   let frame = render_to_string(&mut app, 120, 24);
   assert!(

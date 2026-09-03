@@ -2116,32 +2116,6 @@ impl App {
     }
   }
 
-  /// Advance the right-pane tab. Skips tabs that aren't reachable
-  /// for the current focus (e.g. Chat when the model isn't Ready).
-  pub fn cycle_right_tab(&mut self) {
-    let tabs = self.available_right_tabs();
-    let Some(first) = tabs.first().copied() else {
-      self.right_tab = RightTab::Settings;
-      return;
-    };
-    let pos = tabs.iter().position(|t| *t == self.right_tab).unwrap_or(0);
-    let next = (pos + 1) % tabs.len();
-    self.right_tab = tabs.get(next).copied().unwrap_or(first);
-  }
-
-  /// Cycle to the previous right-pane tab — used by `Left` arrow
-  /// alongside [`Self::cycle_right_tab`] (`Right` arrow / Tab).
-  pub fn cycle_right_tab_prev(&mut self) {
-    let tabs = self.available_right_tabs();
-    let Some(first) = tabs.first().copied() else {
-      self.right_tab = RightTab::Settings;
-      return;
-    };
-    let pos = tabs.iter().position(|t| *t == self.right_tab).unwrap_or(0);
-    let prev = (pos + tabs.len() - 1) % tabs.len();
-    self.right_tab = tabs.get(prev).copied().unwrap_or(first);
-  }
-
   /// Clamp `right_tab` back to a reachable choice if the focused
   /// model's available tabs shrink (e.g. the model dropped from
   /// Ready to Stopped, or the cursor moved to an unlaunched row).
@@ -3919,30 +3893,6 @@ mod tests {
     assert!(
       fresh.len() > baseline.len(),
       "post-clear render reflects the mutation"
-    );
-  }
-
-  #[test]
-  fn cycle_right_tab_falls_back_to_settings_when_unreachable() {
-    // F1 #2: the cycle helpers used to hardcode `Logs` as the
-    // empty-set fallback, contradicting `ensure_right_tab_reachable`
-    // which lands on Settings. Now both helpers walk the reachable
-    // list and snap to its first entry (Settings is universal).
-    let mut app = App::new(AppOptions::default());
-    // No models loaded → focused_managed() is None → tabs = [Settings]
-    app.right_tab = RightTab::Logs;
-    app.cycle_right_tab();
-    assert_eq!(
-      app.right_tab,
-      RightTab::Settings,
-      "cycle_right_tab must land in the reachable set"
-    );
-    app.right_tab = RightTab::Chat;
-    app.cycle_right_tab_prev();
-    assert_eq!(
-      app.right_tab,
-      RightTab::Settings,
-      "cycle_right_tab_prev must land in the reachable set"
     );
   }
 
