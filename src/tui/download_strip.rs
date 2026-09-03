@@ -28,6 +28,17 @@ use crate::tui::hf_dialog::PickerRow;
 /// flow to logs" guidance.
 pub const ERROR_LINGER: Duration = Duration::from_secs(5);
 
+/// Smoothing factor for the throughput EMA — quick enough to track
+/// real swings without flickering on every chunk.
+const THROUGHPUT_ALPHA: f64 = 0.3;
+
+/// One EMA step for a transfer rate. Shared with the CLI `pull`
+/// progress line so both surfaces smooth the same way.
+pub fn ema_bps(prev_bps: f64, delta_bytes: u64, elapsed: Duration) -> f64 {
+  let secs = elapsed.as_secs_f64().max(1e-6);
+  THROUGHPUT_ALPHA * (delta_bytes as f64 / secs) + (1.0 - THROUGHPUT_ALPHA) * prev_bps
+}
+
 /// Outcome of [`DownloadStripState::cancel_active`] — fold the
 /// "active vs idle" branch into a single returned value so callers
 /// (event dispatch, tests) read one source of truth.
@@ -175,15 +186,9 @@ impl DownloadStripState {
       return;
     }
     let now = Instant::now();
-    let elapsed = now
-      .saturating_duration_since(active.last_progress_at)
-      .as_secs_f64()
-      .max(1e-6);
-    let delta = bytes_done.saturating_sub(active.bytes_done) as f64;
-    let instant_bps = delta / elapsed;
-    // EMA with α = 0.3 — quick enough to track throughput swings
-    // without flicker.
-    active.throughput_bps = 0.3 * instant_bps + 0.7 * active.throughput_bps;
+    let elapsed = now.saturating_duration_since(active.last_progress_at);
+    let delta = bytes_done.saturating_sub(active.bytes_done);
+    active.throughput_bps = ema_bps(active.throughput_bps, delta, elapsed);
     active.bytes_done = bytes_done;
     active.bytes_total = bytes_total.max(active.bytes_total);
     active.last_progress_at = now;
@@ -284,24 +289,13 @@ pub fn render(
   palette: &Palette,
 ) {
   if let Some(active) = state.active.as_ref() {
-    let percent = if active.bytes_total > 0 {
-      (active.bytes_done as f64 / active.bytes_total as f64 * 100.0) as u32
-    } else {
-      0
-    };
+    let percent = crate::tui::fmt::percent_of(active.bytes_done, active.bytes_total);
     let bytes = format!(
       "{} / {}",
       crate::tui::fmt::format_bytes(active.bytes_done),
       crate::tui::fmt::format_bytes(active.bytes_total)
     );
-    let throughput = if active.throughput_bps > 0.0 {
-      format!(
-        "{}/s",
-        crate::tui::fmt::format_bytes(active.throughput_bps as u64)
-      )
-    } else {
-      "—".into()
-    };
+    let throughput = crate::tui::fmt::format_rate(active.throughput_bps);
     let queue_tail = if state.queue.is_empty() {
       String::new()
     } else {

@@ -690,11 +690,9 @@ pub struct PullArgs {
   /// Emit a structured JSON summary on success instead of a
   /// human-readable stream. Shape:
   /// `{repo, revision, files: [...absolute paths], total_bytes}`.
-  /// Per-shard progress JSON in `--verbose` mode is not yet
-  /// implemented — v2 emits a single summary line on success;
-  /// download progress goes to stderr unstructured. v2.1 backlog
-  /// tracks line-buffered progress events for long multi-shard
-  /// pulls.
+  /// Does not change what reaches stdout mid-pull: progress is an
+  /// unstructured stderr line, painted only on a terminal. Structured
+  /// per-shard progress events are still backlog.
   #[arg(long)]
   pub json: bool,
   /// Disable outbound network. Equivalent to `LLAMASTASH_OFFLINE=1`.

@@ -12,6 +12,7 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 - `llamastash start --force` — launch through a memory admission refusal. The projection prints as a warning instead of refusing; nothing catches you if it was right.
 - A `REPO` column in `llamastash list` (and a `repo` field in `list --json`) showing where a model lives in short form — `unsloth/Qwen3.8-27B-GGUF` for a cache entry, the parent directory's name otherwise.
 - Wildcards in `presets:` keys — `*` and `?`, so `unsloth/*` sets presets for a whole repo and `Qwen3.8-27B-*` for every quant of one model. An exact key still beats a wildcard one.
+- Progress for `llamastash pull`: one line on stderr carrying the file, percent, bytes and transfer rate, the same figures the TUI's download strip shows. It prints only to a terminal, so `--json` and piped output are unchanged.
 - `layer_sources` on the `start_model` IPC response and `start --json` — the layer each resolved knob value came from (`user`, `preset_default`, `last_used`, `arch_default`, …), so a caller can tell where a value originated. Omitted when empty (a pure-fit launch where every knob fell to the backend default).
 - `llamastash run` — alias for `start`, and a launch file: `run model.yml` starts the file's one model with its own preset, without saving anything to `config.yaml`. A hand-authored file is checked strictly: an undeclared knob, an unparseable knob value or a misspelled field exits 64 rather than launching without it.
 

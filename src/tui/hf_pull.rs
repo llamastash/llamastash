@@ -314,7 +314,7 @@ pub(crate) fn spawn_download_task(
     let progress = std::sync::Arc::new(StripProgress {
       tx: tx.clone(),
       repo_id: pull.repo_id.clone(),
-      inner: std::sync::Mutex::new(StripProgressInner::default()),
+      totals: std::sync::Mutex::new(Default::default()),
     });
     let options = DownloadOptions {
       // A whole-repo pull takes the model's full file set — weights plus the
@@ -358,15 +358,13 @@ pub(crate) fn spawn_download_task(
 /// across multi-shard pulls. Byte-level progress flows via
 /// `on_bytes_progress` — driven by `HfHubProgressAdapter` bridging
 /// hf-hub's `Progress::update(size)` chunk callbacks into our
-/// cumulative `(filename, bytes_in_file)` shape. The `bytes_total`
-/// clamp inside [`StripProgressInner`] protects against the
-/// (theoretical) race where a late `update` chunk lands after the
-/// per-file `Finished` callback — `bytes_done.saturating_add` is
-/// clamped to `bytes_total` so the strip can't overshoot 100%.
+/// cumulative `(filename, bytes_in_file)` shape. The running totals
+/// live in [`crate::init::download::PullTotals`], shared with the CLI
+/// `pull` progress line.
 struct StripProgress {
   tx: mpsc::Sender<Event>,
   repo_id: String,
-  inner: std::sync::Mutex<StripProgressInner>,
+  totals: std::sync::Mutex<crate::init::download::PullTotals>,
 }
 
 impl StripProgress {
@@ -387,30 +385,15 @@ impl StripProgress {
   fn push(&self, evt: crate::tui::download_strip::DownloadEvent) {
     let _ = self.tx.try_send(Event::Download(evt));
   }
-}
 
-#[derive(Default)]
-struct StripProgressInner {
-  /// `filename → size_bytes` snapshot captured at
-  /// `on_files_resolved` time.
-  file_sizes: std::collections::HashMap<String, u64>,
-  bytes_total: u64,
-  bytes_done: u64,
-  /// Bytes credited so far for the file currently downloading.
-  /// Replaces the running per-file counter every `on_bytes_progress`;
-  /// reset to zero at `on_file_finished` so the next file starts
-  /// fresh.
-  bytes_in_current_file: u64,
+  fn totals(&self) -> std::sync::MutexGuard<'_, crate::init::download::PullTotals> {
+    self.totals.lock().unwrap_or_else(|e| e.into_inner())
+  }
 }
 
 impl crate::init::download::DownloadProgress for StripProgress {
   fn on_files_resolved(&self, files: &[(String, u64)]) {
-    let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-    inner.file_sizes = files.iter().cloned().collect();
-    inner.bytes_total = files.iter().map(|(_, n)| *n).sum();
-    inner.bytes_done = 0;
-    let bytes_total = inner.bytes_total;
-    drop(inner);
+    let bytes_total = self.totals().resolve_files(files);
     self.push(crate::tui::download_strip::DownloadEvent::Started {
       repo_id: self.repo_id.clone(),
       bytes_total,
@@ -418,27 +401,11 @@ impl crate::init::download::DownloadProgress for StripProgress {
   }
 
   fn on_file_started(&self, _filename: &str, _size: u64, _index: usize, _total: usize) {
-    // Per-file byte counter resets on every file boundary; the
-    // hf-hub adapter then drives `on_bytes_progress` as chunks land.
-    let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-    inner.bytes_in_current_file = 0;
+    self.totals().start_file();
   }
 
   fn on_file_finished(&self, filename: &str, _index: usize, _total: usize) {
-    let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-    let size = inner.file_sizes.get(filename).copied().unwrap_or(0);
-    let prior_in_file = inner.bytes_in_current_file;
-    // Aggregate the file's full size into the pull total (subtract any
-    // partial credit `on_bytes_progress` already attributed so we don't
-    // double-count).
-    let credit = size.saturating_sub(prior_in_file);
-    inner.bytes_done = inner
-      .bytes_total
-      .min(inner.bytes_done.saturating_add(credit));
-    inner.bytes_in_current_file = 0;
-    let bytes_done = inner.bytes_done;
-    let bytes_total = inner.bytes_total;
-    drop(inner);
+    let (bytes_done, bytes_total) = self.totals().finish_file(filename);
     self.push(crate::tui::download_strip::DownloadEvent::Progress {
       repo_id: self.repo_id.clone(),
       bytes_done,
@@ -447,19 +414,7 @@ impl crate::init::download::DownloadProgress for StripProgress {
   }
 
   fn on_bytes_progress(&self, _filename: &str, bytes_in_file: u64) {
-    let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-    // Replace the running per-file count with the new cumulative
-    // value. Subtract the previous in-file credit so the pull's
-    // aggregate `bytes_done` only ever grows monotonically.
-    let prior = inner.bytes_in_current_file;
-    let delta = bytes_in_file.saturating_sub(prior);
-    inner.bytes_in_current_file = bytes_in_file;
-    inner.bytes_done = inner
-      .bytes_total
-      .min(inner.bytes_done.saturating_add(delta));
-    let bytes_done = inner.bytes_done;
-    let bytes_total = inner.bytes_total;
-    drop(inner);
+    let (bytes_done, bytes_total) = self.totals().credit_bytes(bytes_in_file);
     self.push(crate::tui::download_strip::DownloadEvent::Progress {
       repo_id: self.repo_id.clone(),
       bytes_done,
@@ -910,16 +865,16 @@ mod tests {
     let strip = Arc::new(StripProgress {
       tx,
       repo_id: "owner/repo".into(),
-      inner: std::sync::Mutex::new(StripProgressInner::default()),
+      totals: std::sync::Mutex::new(Default::default()),
     });
     // Poison the cell: a worker thread panics mid-update.
     let poisoner = Arc::clone(&strip);
     let _ = std::thread::spawn(move || {
-      let _guard = poisoner.inner.lock().expect("first lock is clean");
+      let _guard = poisoner.totals.lock().expect("first lock is clean");
       panic!("simulated download-thread panic");
     })
     .join();
-    assert!(strip.inner.is_poisoned(), "lock should be poisoned now");
+    assert!(strip.totals.is_poisoned(), "lock should be poisoned now");
     // Every trait method must recover the inner value, not propagate the panic.
     strip.on_files_resolved(&[("f.gguf".to_string(), 10)]);
     strip.on_file_started("f.gguf", 10, 0, 1);

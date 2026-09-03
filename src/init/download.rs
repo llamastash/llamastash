@@ -295,6 +295,68 @@ pub trait DownloadProgress: Send + Sync {
   fn on_retry(&self, _filename: &str, _attempt: u32) {}
 }
 
+/// Turns the per-file [`DownloadProgress`] callbacks into a running
+/// `(bytes_done, bytes_total)` for the whole pull. Shared by the TUI
+/// download strip and the CLI `pull` line so the two report the same
+/// numbers.
+///
+/// Progress is recomputed from `finished files + the current file's
+/// own cumulative count`, never accumulated as deltas: a retry replays
+/// the current file from its committed offset (hf-hub re-`init`s the
+/// adapter, then jumps it to the resume point), so a delta-based total
+/// would permanently over-count every byte the failed attempt reported
+/// but never committed.
+#[derive(Debug, Default)]
+pub struct PullTotals {
+  /// `filename → size_bytes` snapshot captured at resolve time.
+  file_sizes: std::collections::HashMap<String, u64>,
+  bytes_total: u64,
+  /// Summed sizes of the files already finished.
+  bytes_completed: u64,
+  /// Cumulative bytes reported for the file currently downloading.
+  bytes_in_current_file: u64,
+}
+
+impl PullTotals {
+  /// Record the resolved file list. Returns the pull's total bytes.
+  pub fn resolve_files(&mut self, files: &[(String, u64)]) -> u64 {
+    self.file_sizes = files.iter().cloned().collect();
+    self.bytes_total = files.iter().map(|(_, n)| *n).sum();
+    self.bytes_completed = 0;
+    self.bytes_in_current_file = 0;
+    self.bytes_total
+  }
+
+  pub fn start_file(&mut self) {
+    self.bytes_in_current_file = 0;
+  }
+
+  pub fn finish_file(&mut self, filename: &str) -> (u64, u64) {
+    self.bytes_completed = self
+      .bytes_completed
+      .saturating_add(self.file_sizes.get(filename).copied().unwrap_or(0));
+    self.bytes_in_current_file = 0;
+    self.snapshot()
+  }
+
+  /// Apply a cumulative per-file byte count from the hf-hub adapter.
+  pub fn credit_bytes(&mut self, bytes_in_file: u64) -> (u64, u64) {
+    self.bytes_in_current_file = bytes_in_file;
+    self.snapshot()
+  }
+
+  /// `(bytes_done, bytes_total)`, capped at the total so a chunk
+  /// landing after its file's finish callback can't read past 100%.
+  fn snapshot(&self) -> (u64, u64) {
+    let done = self.bytes_total.min(
+      self
+        .bytes_completed
+        .saturating_add(self.bytes_in_current_file),
+    );
+    (done, self.bytes_total)
+  }
+}
+
 /// Bridge between hf-hub's chunk-level `Progress` trait and our
 /// [`DownloadProgress::on_bytes_progress`] callback. Holds a running
 /// byte counter (Arc'd so hf-hub's parallel chunk workers all add to
@@ -1083,11 +1145,17 @@ pub async fn run(args: PullArgs, _cli: &Cli, _config: &Config) -> CliResult {
   } else {
     CompanionPolicy::OnePerKind
   };
+  // The line paints only on a terminal, so `--json` on stdout and
+  // piped output are unchanged.
+  let line = crate::cli::pull::ProgressLine::for_stderr();
   let options = DownloadOptions {
     companions,
+    progress: Some(line.clone() as std::sync::Arc<dyn DownloadProgress>),
     ..DownloadOptions::default()
   };
-  match download_repo(&spec, &fetch, &options).await {
+  let outcome = download_repo(&spec, &fetch, &options).await;
+  line.finish();
+  match outcome {
     Ok(result) => {
       if args.json {
         let body = serde_json::json!({

@@ -123,6 +123,26 @@ pub(crate) fn format_bytes(bytes: u64) -> String {
   }
 }
 
+/// Completion percent for a transfer, guarded against a total that
+/// has not resolved yet.
+pub(crate) fn percent_of(done: u64, total: u64) -> u32 {
+  if total == 0 {
+    return 0;
+  }
+  ((done as f64 / total as f64) * 100.0) as u32
+}
+
+/// Transfer rate for the download surfaces. Reads `—` until the
+/// smoothed sample is above zero, so a just-started pull doesn't
+/// claim `0B/s`.
+pub(crate) fn format_rate(bytes_per_sec: f64) -> String {
+  if bytes_per_sec > 0.0 {
+    format!("{}/s", format_bytes(bytes_per_sec as u64))
+  } else {
+    "—".into()
+  }
+}
+
 /// Truncate `s` to `max` **characters**, replacing the dropped tail
 /// with a single `…`. Char-count based (not display width) — used by
 /// the fixed-column HF picker rows where every glyph is one cell.
