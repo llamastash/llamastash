@@ -555,8 +555,10 @@ fn label_base(label: &str) -> String {
   )
 }
 
-/// Launchable models in `dir` as shard sets. Name-only, no header reads, so
-/// the widen guard costs one `read_dir` per directory.
+/// Launchable models in `dir` as shard sets. Skips the arch header reads
+/// [`collect_candidates`] does, so the widen guard can reject a multi-model
+/// snapshot before paying for them. Not free: `is_mtp_head_file` still reads
+/// the header of a file whose name mentions `mtp`.
 fn dir_model_labels(dir: &Path) -> std::collections::BTreeSet<String> {
   let mut out = std::collections::BTreeSet::new();
   let Ok(entries) = std::fs::read_dir(dir) else {
