@@ -232,7 +232,7 @@ Or install `ds4-server` so compatible GGUFs route to ds4 instead. (On a b9840+ l
 
 **Fix:** free memory first — stop a resident model (`llamastash stop <ref>`), pin a smaller `--ctx`, or lower `backend.llamacpp.fit_ctx_floor`. The projection is weights + KV cache at the effective context + the backend's overhead band, so a smaller window is usually the cheapest lever.
 
-If you know the projection is wrong for your setup, `llamastash start <model> --force` launches anyway and prints the refusal as a warning. There is no safety net behind it: if the projection was right, the host runs out of memory and the kernel's OOM killer picks a victim, which may be a different process entirely.
+If you know the projection is wrong for your setup, `llamastash start <model> --force` launches anyway and prints the refusal as a warning (also carried in `--json` as `warnings`). There is no safety net behind it: if the projection was right, the host runs out of memory and the kernel's OOM killer picks a victim, which may be a different process entirely.
 
 Weights the engine streams from the mapping rather than holding resident are already subtracted — a 103.7 GiB `Qwen3.8-Flash-Next` is priced at about 77 GiB, because its 26.8 GiB per-layer embedding table never becomes resident. Pinning `-- --lazy-mode off` turns that streaming off, and the gate then prices the whole file.
 

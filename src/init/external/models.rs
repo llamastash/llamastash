@@ -29,20 +29,37 @@ pub struct ResolvedModels {
 /// Build the registration list. Favorites are read through the daemon, so a
 /// daemon that can't be reached costs favorites but not the step: whatever
 /// the download step produced is still registered, with a note.
+///
+/// One catalog read serves both sources. The downloaded file's id has to be
+/// decided against the same catalog the favorites' are: a basename shared
+/// with another model publishes qualified, so the bare stem alone would
+/// register a `body.model` that always answers `400 ambiguous_model`.
 pub async fn resolve(
   cli: &Cli,
   config: &Config,
   downloaded: Option<&ModelSummary>,
 ) -> ResolvedModels {
+  let (catalog, read_error) = match load_catalog(cli, config).await {
+    Ok(catalog) => (Some(catalog), None),
+    Err(e) => (
+      None,
+      Some(format!(
+        "could not read favorites ({e}) — registering without them"
+      )),
+    ),
+  };
+
   let mut models: Vec<PatchModel> = Vec::new();
   let mut seen: HashSet<String> = HashSet::new();
-  if let Some(m) = downloaded.and_then(from_download) {
+  if let Some(m) = downloaded.and_then(|d| from_download(d, catalog.as_ref())) {
     seen.insert(m.id.clone());
     models.push(m);
   }
 
-  let note = match favorites(cli, config).await {
-    Ok(favs) => {
+  let note = match &catalog {
+    Some(catalog) => {
+      let mut favs = catalog.favorites();
+      favs.sort_by(|a, b| a.id.cmp(&b.id));
       let count = favs.len();
       for f in favs {
         if seen.insert(f.id.clone()) {
@@ -54,41 +71,91 @@ pub async fn resolve(
           .to_string()
       })
     }
-    Err(e) => Some(format!(
-      "could not read favorites ({e}) — registering without them"
-    )),
+    None => read_error,
   };
 
   ResolvedModels { models, note }
 }
 
+/// The daemon's catalog plus which of its rows are starred, and the id each
+/// row publishes under. Held together because the publishing rule is
+/// catalog-wide: no row's id can be decided on its own.
+struct Catalog {
+  rows: Vec<crate::launch::resolve::CatalogRow>,
+  ids: Vec<String>,
+  favorited: HashSet<String>,
+}
+
+impl Catalog {
+  /// Every starred row that still resolves, under its published id.
+  ///
+  /// The catalog filter is the same one `favorites list` applies: a favorite
+  /// whose file was deleted or moved out of a watched directory is dropped
+  /// rather than written into a tool config as an unservable name.
+  fn favorites(&self) -> Vec<PatchModel> {
+    self
+      .rows
+      .iter()
+      .zip(&self.ids)
+      .filter(|(r, _)| self.favorited.contains(&r.path))
+      .map(|(r, id)| PatchModel::from_catalog_row(r, id.clone()))
+      .collect()
+  }
+
+  /// The id this catalog publishes `path` under, or `None` for a path it has
+  /// no row for.
+  fn published_id(&self, path: &str) -> Option<&str> {
+    self
+      .rows
+      .iter()
+      .zip(&self.ids)
+      .find(|(r, _)| r.path == path)
+      .map(|(_, id)| id.as_str())
+  }
+}
+
 /// Name what the download step fetched.
 ///
 /// A GGUF pull lands one or more `.gguf` files and the catalog will key on
-/// the file, so the id is the file's stem. A safetensors pull lands a whole
-/// repo whose snapshot directory is named for the revision hash — the repo
-/// id is what discovery labels that row with, so it is the id here too.
-fn from_download(summary: &ModelSummary) -> Option<PatchModel> {
+/// the file, so the id is whatever that row publishes under. A safetensors
+/// pull lands a whole repo whose snapshot directory is named for the revision
+/// hash — the repo id is what discovery labels that row with, so it is the id
+/// here too.
+fn from_download(summary: &ModelSummary, catalog: Option<&Catalog>) -> Option<PatchModel> {
   let gguf = summary.files.iter().find(|f| {
     f.extension()
       .and_then(|e| e.to_str())
       .is_some_and(|e| e.eq_ignore_ascii_case("gguf"))
   });
   match gguf {
-    Some(path) => Some(PatchModel::from_id(crate::util::paths::model_public_id(
-      path, None,
-    ))),
+    Some(path) => Some(PatchModel::from_id(downloaded_id(path, catalog))),
     // No GGUF but files landed: a safetensors repo, pulled whole.
     None => (!summary.files.is_empty()).then(|| PatchModel::from_id(summary.repo.clone())),
   }
 }
 
-/// Every favorite that still resolves to a catalog row, sorted by id.
+/// The id the proxy publishes the just-downloaded file under.
 ///
-/// The catalog filter is the same one `favorites list` applies: a favorite
-/// whose file was deleted or moved out of a watched directory is dropped
-/// rather than written into a tool config as an unservable name.
-async fn favorites(cli: &Cli, config: &Config) -> Result<Vec<PatchModel>, String> {
+/// Resolved through the catalog because the file's own name cannot decide it:
+/// a basename shared with another model publishes qualified, and the bare
+/// stem then answers `400 ambiguous_model` forever. Falls back to that stem
+/// when there is no catalog (daemon unreachable) or no row for the file yet
+/// (the scan has not caught up) — which is still the right answer whenever
+/// the name is unique, and the best guess available otherwise.
+fn downloaded_id(path: &std::path::Path, catalog: Option<&Catalog>) -> String {
+  let stem = || crate::util::paths::model_public_id(path, None);
+  let Some(catalog) = catalog else {
+    return stem();
+  };
+  let reference = path.to_string_lossy();
+  crate::launch::resolve::resolve_model_with_candidates(&catalog.rows, &reference)
+    .ok()
+    .and_then(|row| catalog.published_id(&row.path).map(ToOwned::to_owned))
+    .unwrap_or_else(stem)
+}
+
+/// The daemon's catalog and favorites in one read.
+async fn load_catalog(cli: &Cli, config: &Config) -> Result<Catalog, String> {
   let mut client = crate::cli::client::connect_or_spawn(cli, config)
     .await
     .map_err(|e| e.message.unwrap_or_else(|| format!("exit {}", e.code)))?;
@@ -96,35 +163,29 @@ async fn favorites(cli: &Cli, config: &Config) -> Result<Vec<PatchModel>, String
     .call("favorite_list", None)
     .await
     .map_err(|e| e.to_string())?;
-  let favorited: HashSet<&str> = body
+  let favorited: HashSet<String> = body
     .get("favorites")
     .and_then(Value::as_array)
     .map(|arr| {
       arr
         .iter()
         .filter_map(crate::cli::output::row_path)
+        .map(ToOwned::to_owned)
         .collect()
     })
     .unwrap_or_default();
-  if favorited.is_empty() {
-    return Ok(Vec::new());
-  }
   let rows = crate::cli::resolve::fetch_catalog(&mut client)
     .await
     .map_err(|e| e.message.unwrap_or_else(|| format!("exit {}", e.code)))?;
   // Ids come from the whole catalog, not from the favorited subset: two
-  // same-named GGUFs disambiguate against each other whether or not both
-  // are starred, so what lands in a tool config is the id `/v1/models`
-  // answers to.
+  // same-named GGUFs disambiguate against each other whether or not both are
+  // starred, so what lands in a tool config is the id `/v1/models` answers to.
   let ids = crate::launch::resolve::published_ids(&rows);
-  let mut models: Vec<PatchModel> = rows
-    .iter()
-    .zip(ids)
-    .filter(|(r, _)| favorited.contains(r.path.as_str()))
-    .map(|(r, id)| PatchModel::from_catalog_row(r, id))
-    .collect();
-  models.sort_by(|a, b| a.id.cmp(&b.id));
-  Ok(models)
+  Ok(Catalog {
+    rows,
+    ids,
+    favorited,
+  })
 }
 
 #[cfg(test)]
@@ -143,10 +204,13 @@ mod tests {
 
   #[test]
   fn gguf_download_is_named_by_file_stem() {
-    let m = from_download(&summary(
-      "unsloth/Qwen3-Coder-30B-GGUF",
-      &["/m/README.md", "/m/Qwen3-Coder-30B-Q4_K_M.gguf"],
-    ))
+    let m = from_download(
+      &summary(
+        "unsloth/Qwen3-Coder-30B-GGUF",
+        &["/m/README.md", "/m/Qwen3-Coder-30B-Q4_K_M.gguf"],
+      ),
+      None,
+    )
     .expect("model");
     assert_eq!(m.id, "Qwen3-Coder-30B-Q4_K_M");
     assert!(!m.is_embed);
@@ -156,25 +220,88 @@ mod tests {
   fn safetensors_download_is_named_by_repo_id() {
     // No GGUF in the file set — the whole repo is the model, and its
     // snapshot dir is a revision hash, so the repo id is the only usable id.
-    let m = from_download(&summary(
-      "Qwen/Qwen3-0.6B",
-      &["/m/model.safetensors", "/m/config.json"],
-    ))
+    let m = from_download(
+      &summary(
+        "Qwen/Qwen3-0.6B",
+        &["/m/model.safetensors", "/m/config.json"],
+      ),
+      None,
+    )
     .expect("model");
     assert_eq!(m.id, "Qwen/Qwen3-0.6B");
   }
 
   #[test]
   fn download_with_no_files_registers_nothing() {
-    assert!(from_download(&summary("owner/repo", &[])).is_none());
+    assert!(from_download(&summary("owner/repo", &[]), None).is_none());
+  }
+
+  /// The download path used to write the bare stem straight into the tool
+  /// config, so a pull whose basename another cached model already carries
+  /// registered a `body.model` that answered `400 ambiguous_model` forever.
+  #[test]
+  fn gguf_download_takes_the_published_id_when_its_name_collides() {
+    let cat = catalog(&[
+      ("/hf/demo-model-Q4_K_M.gguf", "huggingface"),
+      ("/lms/demo-model-Q4_K_M.gguf", "lm-studio"),
+    ]);
+    let m = from_download(
+      &summary("acme/Demo-GGUF", &["/hf/demo-model-Q4_K_M.gguf"]),
+      Some(&cat),
+    )
+    .expect("model");
+    assert_eq!(m.id, "hf/demo-model-Q4_K_M");
+
+    // A name nothing else claims still registers as the plain stem, and a
+    // file the catalog has not seen yet falls back to it.
+    let solo = catalog(&[("/hf/demo-model-Q4_K_M.gguf", "huggingface")]);
+    assert_eq!(
+      from_download(
+        &summary("acme/Demo-GGUF", &["/hf/demo-model-Q4_K_M.gguf"]),
+        Some(&solo),
+      )
+      .expect("model")
+      .id,
+      "demo-model-Q4_K_M"
+    );
+    assert_eq!(
+      from_download(
+        &summary("acme/Demo-GGUF", &["/elsewhere/unscanned.gguf"]),
+        Some(&solo),
+      )
+      .expect("model")
+      .id,
+      "unscanned"
+    );
+  }
+
+  fn catalog(rows: &[(&str, &str)]) -> Catalog {
+    let rows: Vec<crate::launch::resolve::CatalogRow> = rows
+      .iter()
+      .map(|(path, source)| {
+        let mut r =
+          crate::launch::resolve::CatalogRow::for_resolution(path.to_string(), None, None);
+        r.source = source.to_string();
+        r
+      })
+      .collect();
+    let ids = crate::launch::resolve::published_ids(&rows);
+    Catalog {
+      rows,
+      ids,
+      favorited: HashSet::new(),
+    }
   }
 
   #[test]
   fn embedder_download_is_flagged_from_its_name() {
-    let m = from_download(&summary(
-      "nomic-ai/nomic-embed-text-v1.5-GGUF",
-      &["/m/nomic-embed-text-v1.5.Q8_0.gguf"],
-    ))
+    let m = from_download(
+      &summary(
+        "nomic-ai/nomic-embed-text-v1.5-GGUF",
+        &["/m/nomic-embed-text-v1.5.Q8_0.gguf"],
+      ),
+      None,
+    )
     .expect("model");
     assert!(m.is_embed);
   }

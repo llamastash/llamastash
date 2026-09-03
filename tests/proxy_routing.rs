@@ -554,6 +554,55 @@ async fn ambiguous_matches_name_each_candidate_distinctly() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_published_plain_id_is_not_ambiguous_against_a_longer_name() {
+  // `demo-model` publishes plain — nothing else claims that string — but the
+  // resolver's last tier is a substring match, so it fanned out against
+  // `demo-model-Q4_K_M` and the proxy 400'd on an id it had just handed out.
+  // Worse, `matches` then listed `demo-model` itself, so a client following
+  // the error message looped forever.
+  let registry = SupervisorRegistry::new();
+  let state = proxy_state_with(
+    vec![
+      discovered("/m/demo-model.gguf", None, "llama"),
+      discovered("/hf/demo-model-Q4_K_M.gguf", None, "llama"),
+      discovered("/lms/demo-model-Q4_K_M.gguf", None, "llama"),
+    ],
+    registry,
+  )
+  .await;
+  let (addr, shutdown, listener_handle) = spawn_listener_with_state(state).await;
+
+  let body = r#"{"model":"demo-model","messages":[]}"#;
+  let (status, _headers, response) = http_post(addr, "/v1/chat/completions", body, &[]).await;
+  let v: Value = serde_json::from_slice(&response).unwrap_or(Value::Null);
+  assert_ne!(
+    v["error"]["type"], "ambiguous_model",
+    "a published plain id must resolve: {status} {v}"
+  );
+
+  // And the bare shared name still is ambiguous, with no dead entry in the
+  // list the client is told to resend from.
+  let shared = r#"{"model":"demo-model-Q4_K_M","messages":[]}"#;
+  let (status, _headers, response) = http_post(addr, "/v1/chat/completions", shared, &[]).await;
+  assert_eq!(status, 400);
+  let v: Value = serde_json::from_slice(&response).expect("json");
+  assert_eq!(v["error"]["type"], "ambiguous_model");
+  let mut names: Vec<&str> = v["error"]["matches"]
+    .as_array()
+    .expect("matches array")
+    .iter()
+    .filter_map(|x| x.as_str())
+    .collect();
+  names.sort_unstable();
+  assert_eq!(
+    names,
+    vec!["hf/demo-model-Q4_K_M", "lms/demo-model-Q4_K_M"],
+    "only the two real candidates, each resendable verbatim"
+  );
+  shutdown_listener(shutdown, listener_handle).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn missing_model_field_returns_400_model_required() {
   let registry = SupervisorRegistry::new();
   let state = proxy_state_with(Vec::new(), registry).await;

@@ -306,7 +306,7 @@ Row shape:
 - `metadata` — GGUF-derived: `arch`, `quant`, `native_ctx`, `mode_hint`, `parameter_label`, `weights_bytes`, `total_parameters`, `tokenizer_kind`, `has_chat_template`, `has_reasoning_hint`. (These are **not** top-level keys; read `has_reasoning_hint`, there is no `reasoning_hint` alias.)
 - `mtp` — `{embedded_layers, separate_head}`; `multimodal` — `{vision, audio}`.
 
-The table columns are `NAME [REPO] ARCH PARAMS QUANT CTX SIZE MODE [BACKEND] STATUS [DEVICE]` — the same columns as the TUI Models list, with `DEVICE` gated on the same "some single server offers more than one device" rule the TUI uses (`cli::resolve::multi_device`). `MODE` shows the catalog's mode hint (`chat` / `embedding` / `rerank`). `REPO` is where the model lives in short form — `unsloth/Qwen3.8-27B-GGUF` for an HF or LM Studio cache entry, the parent directory's name for anything else; it is empty for a source that names its own origin (Ollama, Lemonade), and the column is dropped when no row has one. It is also the prefix of the repo-qualified id the proxy publishes when two models share a file name (see [Model ids on the proxy](#model-ids-on-the-proxy)). `BACKEND` appears only when some model is served by more than one backend (or a non-default one); `DEVICE` appears only on multi-GPU hosts and reads `all` for a running launch that targets every GPU (no `--device`), the explicit selector when pinned, and `?` otherwise — matching the TUI's Device column. When piped, the same columns print as tab-separated rows.
+The table columns are `NAME [REPO] ARCH PARAMS QUANT CTX SIZE MODE [BACKEND] STATUS [DEVICE]` — the TUI Models list shows the same set minus `REPO`, which is CLI-only (the TUI groups rows under a repo section header instead), with `DEVICE` gated on the same "some single server offers more than one device" rule the TUI uses (`cli::resolve::multi_device`). `MODE` shows the catalog's mode hint (`chat` / `embedding` / `rerank`). `REPO` is where the model lives in short form — `unsloth/Qwen3.8-27B-GGUF` for an HF or LM Studio cache entry, the parent directory's name for anything else; it is empty for a source that names its own origin (Ollama, Lemonade), and the column is dropped when no row has one. It is also the prefix of the repo-qualified id the proxy publishes when two models share a file name (see [Model ids on the proxy](#model-ids-on-the-proxy)). `BACKEND` appears only when some model is served by more than one backend (or a non-default one); `DEVICE` appears only on multi-GPU hosts and reads `all` for a running launch that targets every GPU (no `--device`), the explicit selector when pinned, and `?` otherwise — matching the TUI's Device column. When piped, the same columns print as tab-separated rows.
 
 ### `llamastash show <model-ref>`
 
@@ -418,9 +418,11 @@ llamastash start <model> --force
   ! --force overrode the memory admission gate — launch refused: needs 90.6 GiB but only 16.9 GiB is free ...
 ```
 
-Use it when you know the projection is wrong for your setup — an engine build that holds less than LlamaStash models, weights that page in from a filesystem the gate cannot see. If the projection was right, the host runs out of memory and the kernel's OOM killer picks the victim, which may well be a different process. The warning is always printed, on both the human and `--wait` paths.
+Use it when you know the projection is wrong for your setup — an engine build that holds less than LlamaStash models, weights that page in from a filesystem the gate cannot see. If the projection was right, the host runs out of memory and the kernel's OOM killer picks the victim, which may well be a different process.
 
-`--force` overrides only the memory gate. It does not skip validation, mode resolution, or a backend refusing a knob combination, and the proxy's auto-start path can never set it: a request from the network must not be able to OOM the host.
+The warning reaches every output path: the human line above (on both plain `start` and `--wait`), and a `warnings` array in `--json`. Only `--quiet` drops the human line, and it still rides the JSON. A forced launch also holds its projected demand on the reservation ledger, so a second launch started while it loads is priced against the memory it is taking rather than against a free reading that has not caught up yet.
+
+`--force` overrides only LlamaStash's own admission gate. It does not skip validation, mode resolution, or a backend's refusal — including a backend's own memory refusal, like a KV-cache cap that cannot be met, which has its own override knob named in the error. And the proxy's auto-start path can never set it: a request from the network must not be able to OOM the host.
 
 #### `--wait` (block until the launch settles)
 
@@ -431,6 +433,8 @@ Use it when you know the projection is wrong for your setup — an engine build 
 - A 15-minute safety ceiling caps the wait; the daemon's own size-scaled probe budget normally flips a stuck load to Error well before that, after which it prints `waiting timed out → still loading; check llamastash status`.
 
 `--wait --json` emits a single combined object — the launch fields plus `state`, `resolved_ctx`, `ctx_clamped`, and `cause` (on error) — instead of the immediate accept-time object.
+
+Both `--json` shapes carry a `warnings` array when the daemon raised any advisory (dropped knobs, an admission bypass, a `--force` override), and omit the field entirely when it did not.
 
 ### `llamastash stop <target>` / `llamastash stop --all`
 
@@ -710,9 +714,13 @@ Routes served: `/v1/models`, `/v1/chat/completions`, `/v1/completions`, `/v1/emb
 
 Every model `/v1/models` (and `/api/tags`) lists carries an id that resolves back to exactly that model. Normally that is the plain name: a GGUF's file stem (`Qwen3.8-27B-Q8_0`), a safetensors repo's id (`Qwen/Qwen3-0.6B`), an Ollama model's `<name>:<tag>`.
 
-When two models would publish the same plain id — the same GGUF cached under two roots, say `gemma-4-E2B-it-Q4_K_M.gguf` in both the HF and LM Studio caches — each one is published under its **repo-qualified** form instead: the `REPO` label `llamastash list` shows, a `/`, then the plain id (`lmstudio-community/gemma-4-E2B-it-GGUF/gemma-4-E2B-it-Q4_K_M`). Models whose plain id is already unique are untouched, so ids in existing tool configs keep working. In the rare case where the qualified form also collides (the same file name in two subdirectories of one repo), the model is published under its full canonical path.
+When two models would publish the same plain id, each takes the shortest longer form that nothing else in the catalog claims. Models whose plain id is already unique are untouched, so ids in existing tool configs keep working. The escalation, in order:
 
-The resolver accepts the qualified form for every model, collision or not, in both the published spelling and the `.gguf` filename spelling. It also accepts a partial repo reference (`unsloth/Qwen3.8`), which the raw cache path (`models--unsloth--Qwen3.8-…`) never matched. Sending the bare, shared name still returns `400 ambiguous_model`, and its `matches` array now lists the published id of each candidate — resend one of those verbatim.
+1. **Repo-qualified** — the `REPO` label `llamastash list` shows, a `/`, then the plain id: `unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-Q4_K_M`. Enough whenever the two copies live in different repos.
+2. **Source-qualified** — the discovery source in front of that: `huggingface/lmstudio-community/gemma-4-E2B-it-GGUF/gemma-4-E2B-it-Q4_K_M` vs `lm-studio/lmstudio-community/…`. This is the rung the ordinary duplicate needs — one repo cached by two different tools derives the *same* `owner/repo` from both roots, so step 1 cannot separate them.
+3. **The full canonical path**, when even that collides — the same file name in two subdirectories of one repo, reached through one source.
+
+The resolver accepts every form for every model, collision or not, and each qualified form in both the published spelling and the `.gguf` filename spelling. It also accepts a partial repo reference (`unsloth/Qwen3.8`), which the raw cache path (`models--unsloth--Qwen3.8-…`) never matched. Sending the bare, shared name still returns `400 ambiguous_model`, and its `matches` array lists the published id of each candidate — every one of which routes, so resend one verbatim.
 
 ### Anthropic-shape clients (Claude Code)
 

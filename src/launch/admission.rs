@@ -98,6 +98,25 @@ impl Ledger {
     Ok(())
   }
 
+  /// Record a reservation without checking it against the budget.
+  ///
+  /// For a launch that goes ahead in spite of a refusal (`start --force`):
+  /// [`try_admit`](Self::try_admit) reserves nothing when it refuses, so the
+  /// forced launch's demand would be invisible to the next launch's check and
+  /// a second one could be admitted against memory the first is already
+  /// taking. Overcommitting once is the user's call; doing it twice by
+  /// accident is not.
+  pub fn reserve(&self, launch_id: u64, demand_bytes: u64) {
+    self
+      .inner
+      .lock()
+      .expect("admission ledger poisoned")
+      .push(Reservation {
+        launch_id,
+        bytes: demand_bytes,
+      });
+  }
+
   /// Drop the reservation for `launch_id` (on Ready / Error / Stopped, or
   /// when a refused launch releases its port). Idempotent.
   pub fn release(&self, launch_id: u64) {
@@ -215,14 +234,17 @@ pub fn effective_free_bytes(snap: &HostMetricsSnapshot) -> u64 {
 /// geometry yields a KV of 0, so demand degrades to weights + band
 /// rather than refusing on missing data.
 ///
-/// `weights_total_bytes` is the **shard-aware** on-disk weight total
-/// (from `discovery::shard_sizes` via the catalog row), not
-/// `weights_bytes(header)` — the latter only sums the tensors in the
-/// header it is handed, which for a split GGUF is just the primary shard
-/// (`…-00001-of-000NN.gguf`) and silently drops every trailing shard. A
-/// split model would otherwise be under-projected by the size of those
-/// shards and wrongly admitted. The header is still used for the KV term
-/// (all attention geometry lives in the primary shard's metadata).
+/// `resident_weight_bytes` is what the launch actually **holds** — the
+/// shard-aware weight total minus the tensors the engine streams from the
+/// mapping — measured once per launch by
+/// [`launch_resident_bytes`](crate::daemon::launch_service) so the gate, the
+/// probe scaler and the backend's cache cap all price the same figure. It is
+/// deliberately not `weights_bytes(header)`: that only sums the tensors in
+/// the header it is handed, which for a split GGUF is just the primary shard
+/// (`…-00001-of-000NN.gguf`) and silently drops every trailing shard, so a
+/// split model would be under-projected by the size of those shards and
+/// wrongly admitted. The header is still used for the KV term (all attention
+/// geometry lives in the primary shard's metadata).
 ///
 /// **It is a floor, not a ceiling.** Under Auto the caller passes
 /// `fit_ctx_floor` as `effective_ctx` (a pinned `--ctx` passes the pin),
@@ -242,7 +264,7 @@ pub fn project_demand(
   backend_id: &str,
   effective_ctx: u32,
   backend: &str,
-  weights_total_bytes: u64,
+  resident_weight_bytes: u64,
   mtp_active: bool,
 ) -> u64 {
   let opts = EstimateOptions {
@@ -258,10 +280,10 @@ pub fn project_demand(
     // ignored downstream. Left unset rather than threaded in.
     n_gpu_layers: None,
   };
-  weights_total_bytes
+  resident_weight_bytes
     .saturating_add(kv_bytes(header, arch, opts))
     .saturating_add(overhead_band_bytes(backend))
-    .saturating_add(mtp_band_bytes(weights_total_bytes, mtp_active))
+    .saturating_add(mtp_band_bytes(resident_weight_bytes, mtp_active))
 }
 
 /// A conservative memory band for MTP speculative decoding, so the local OOM
@@ -272,10 +294,13 @@ pub fn project_demand(
 /// Calibrated from a measured idle delta of ~11% of weights (MTP on vs off on
 /// Qwen3.5-4B-MTP: +320 MiB on 2.7 GiB weights), rounded up to ~16.7%
 /// (`weights / 6`) to leave headroom for the active draft context under load.
-/// Zero when MTP is off. Saturating.
-fn mtp_band_bytes(weights_total_bytes: u64, mtp_active: bool) -> u64 {
+/// A fraction of the **resident** weights, not the on-disk total: the draft
+/// head is an ordinary resident tensor, so it scales with what the engine
+/// holds rather than with what the file weighs. Zero when MTP is off.
+/// Saturating.
+fn mtp_band_bytes(resident_weight_bytes: u64, mtp_active: bool) -> u64 {
   if mtp_active {
-    weights_total_bytes / 6
+    resident_weight_bytes / 6
   } else {
     0
   }

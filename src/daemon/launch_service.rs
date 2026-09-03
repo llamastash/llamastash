@@ -1143,15 +1143,23 @@ pub(crate) async fn spawn_supervised(
         if let Some(demand) = demand {
           if let Err(refusal) = ctx.admission.try_admit(u64::from(port), demand, free) {
             if force_admission {
-              // Always surfaced, never suppressed: the caller asked for this,
-              // and the projection is the only warning they get before the
-              // host decides for them.
+              // Never suppressed by another advisory the way the bypass note
+              // is: the caller asked for this, and the projection is the only
+              // warning they get before the host decides for them. It reaches
+              // both the human output and the `--json` body; only `-q` drops
+              // the human line.
               let msg = format!(
                 "--force overrode the memory admission gate — {}",
                 format_admission_refusal(&refusal)
               );
               log::warn!("{msg}");
               warnings.push(msg);
+              // Reserve anyway. `try_admit` records nothing when it refuses,
+              // so without this the forced launch's demand is invisible to the
+              // next launch's check and a second one is admitted against
+              // memory this one is already taking.
+              ctx.admission.reserve(u64::from(port), demand);
+              admitted = true;
             } else if bypasses_admission {
               if !bypass_note_suppressed {
                 let msg = format!(
@@ -2356,6 +2364,54 @@ mod tests {
       ErrorCode::ResourceExhausted.as_i32(),
       "the gate must not be what refused: {}",
       err.message
+    );
+  }
+
+  /// The warning is the whole user-facing contract of `--force`: it is the
+  /// only signal that a launch went through a refusal, and nothing asserted
+  /// it reached the caller. Needs a binary that actually spawns, so the
+  /// launch gets far enough to return its advisories.
+  #[cfg(unix)]
+  #[tokio::test]
+  async fn force_surfaces_the_projection_as_a_warning() {
+    let (mut ctx, model_path, dir) = ctx_with_env_and_gguf().await;
+    starve_host(&mut ctx);
+    // A child that spawns and exits at once. The probe then flips the launch
+    // to Error on its own schedule; `spawn_supervised` is fire-and-forget and
+    // has already handed back the warnings by then.
+    let binary = dir.path().join("noop-server");
+    std::fs::write(&binary, "#!/bin/sh\nexit 0\n").expect("write stub");
+    std::fs::set_permissions(&binary, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+      .expect("chmod stub");
+    if let Some(env) = ctx.launch.as_mut() {
+      env.binary = binary;
+    }
+
+    let started = compose_and_spawn(
+      &ctx,
+      StartParams {
+        model_path,
+        mode: Some(LaunchModeWire::Chat),
+        force: true,
+        ..StartParams::default()
+      },
+      crate::daemon::supervisor::LaunchOrigin::Manual,
+    )
+    .await
+    .expect("a forced launch spawns");
+    assert!(
+      started
+        .warnings
+        .iter()
+        .any(|w| w.contains("--force overrode the memory admission gate")),
+      "no --force advisory in {:?}",
+      started.warnings
+    );
+    // And its demand is on the ledger, so a second launch is priced against
+    // the memory this one is taking rather than against a stale free reading.
+    assert!(
+      ctx.admission.reserved_bytes() > 0,
+      "a forced launch has to hold a reservation"
     );
   }
 

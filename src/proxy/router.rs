@@ -395,11 +395,13 @@ fn model_id_for(m: &DiscoveredModel) -> String {
 /// The disambiguation needs the whole catalog, so every listing surface
 /// builds this once and reads ids out of it.
 fn published_ids(snap: &[DiscoveredModel]) -> HashMap<String, String> {
-  crate::util::paths::published_id_index(
-    snap
-      .iter()
-      .map(|m| (m.path.as_path(), m.display_label.as_deref())),
-  )
+  crate::util::paths::published_id_index(snap.iter().map(|m| {
+    (
+      m.path.as_path(),
+      m.display_label.as_deref(),
+      m.source.label(),
+    )
+  }))
 }
 
 /// One model's published id, falling back to the bare id for a model that

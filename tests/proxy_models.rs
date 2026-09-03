@@ -255,6 +255,53 @@ async fn two_models_sharing_a_basename_publish_two_reachable_ids() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn one_repo_cached_by_two_tools_publishes_source_qualified_ids() {
+  // The ordinary duplicate, and the case the repo qualifier alone could not
+  // separate: both roots derive `lmstudio-community/gemma-4-E2B-it-GGUF`, so
+  // both rows used to fall through to raw absolute paths — machine-specific
+  // ids that then went into tool configs.
+  let mut hf = make_model(
+    "/w/huggingface/hub/models--lmstudio-community--gemma-4-E2B-it-GGUF/snapshots/1/gemma-4-E2B-it-Q4_K_M.gguf",
+    None,
+  );
+  hf.source = ModelSource::HuggingFace;
+  let mut lms = make_model(
+    "/w/lmstudio-models/lmstudio-community/gemma-4-E2B-it-GGUF/gemma-4-E2B-it-Q4_K_M.gguf",
+    None,
+  );
+  lms.source = ModelSource::LmStudio;
+
+  let state = proxy_state_with_models(vec![hf, lms]).await;
+  let (addr, shutdown, listener_handle) = spawn_listener_with_state(state).await;
+
+  let (status, body) = http_get(addr, "/v1/models").await;
+  assert_eq!(status, 200);
+  let v: Value = serde_json::from_slice(&body).expect("json body");
+  let ids: Vec<&str> = v["data"]
+    .as_array()
+    .expect("data array")
+    .iter()
+    .map(|r| r["id"].as_str().unwrap())
+    .collect();
+  assert_eq!(
+    ids,
+    vec![
+      "huggingface/lmstudio-community/gemma-4-E2B-it-GGUF/gemma-4-E2B-it-Q4_K_M",
+      "lm-studio/lmstudio-community/gemma-4-E2B-it-GGUF/gemma-4-E2B-it-Q4_K_M",
+    ],
+    "the source separates them, so neither falls back to a path: {v}"
+  );
+  for id in &ids {
+    assert!(
+      !id.starts_with('/'),
+      "`{id}` is an absolute path, not an id"
+    );
+  }
+
+  shutdown_listener(shutdown, listener_handle).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn empty_catalog_returns_empty_data_not_error() {
   let state = proxy_state_with_models(Vec::new()).await;
   let (addr, shutdown, listener_handle) = spawn_listener_with_state(state).await;

@@ -315,6 +315,18 @@ impl CatalogRow {
     )
   }
 
+  /// The source-qualified form of [`Self::qualified_id`]
+  /// (`huggingface/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-Q4_K_M`) — the rung
+  /// the proxy publishes when one repo is cached by two different tools and
+  /// the repo qualifier reads identically for both.
+  pub fn source_qualified_id(&self) -> String {
+    crate::util::paths::model_source_qualified_id(
+      std::path::Path::new(&self.path),
+      self.display_label.as_deref(),
+      &self.source,
+    )
+  }
+
   /// Where the model lives, repo-shaped (`unsloth/Qwen3.8-27B-GGUF`) — the
   /// `list` REPO column and the prefix [`Self::qualified_id`] carries.
   ///
@@ -326,6 +338,23 @@ impl CatalogRow {
       return String::new();
     }
     crate::util::paths::model_group_label(std::path::Path::new(&self.path)).unwrap_or_default()
+  }
+
+  /// Every string this row answers to as an exact reference, beyond its path
+  /// and file name: the two qualified rungs the proxy can publish, each in
+  /// both the extensionless spelling `/v1/models` uses and the `.gguf`
+  /// spelling `list` shows.
+  fn qualified_aliases(&self) -> Vec<String> {
+    let mut out = vec![self.qualified_id(), self.source_qualified_id()];
+    let group = self.group_label();
+    if !group.is_empty() {
+      let name = self.name();
+      out.push(format!("{group}/{name}"));
+      if !self.source.is_empty() {
+        out.push(format!("{source}/{group}/{name}", source = self.source));
+      }
+    }
+    out
   }
 }
 
@@ -343,11 +372,13 @@ pub fn published_ids(rows: &[CatalogRow]) -> Vec<String> {
 /// of one repo), and the client is being told to send one of these back, so
 /// they have to be resolved against the whole catalog.
 pub fn published_ids_for(catalog: &[CatalogRow], subset: &[CatalogRow]) -> Vec<String> {
-  let index = crate::util::paths::published_id_index(
-    catalog
-      .iter()
-      .map(|r| (std::path::Path::new(&r.path), r.display_label.as_deref())),
-  );
+  let index = crate::util::paths::published_id_index(catalog.iter().map(|r| {
+    (
+      std::path::Path::new(&r.path),
+      r.display_label.as_deref(),
+      r.source.as_str(),
+    )
+  }));
   subset
     .iter()
     .map(|r| {
@@ -392,9 +423,9 @@ pub(crate) fn collapse_shard_reference(needle: &str) -> Option<String> {
 /// substring matcher themselves. The CLI's `resolve_model` wraps this,
 /// folding every failure into a single `MODEL_NOT_FOUND` exit.
 ///
-/// Precedence: exact path → exact name → repo-qualified id → a split
-/// model's pre-rename shard-1 name → case-insensitive substring of name,
-/// parent, or qualified id.
+/// Precedence: exact path → exact name → exact published id → repo- or
+/// source-qualified id → a split model's pre-rename shard-1 name →
+/// case-insensitive substring of name, parent, or qualified id.
 pub fn resolve_model_with_candidates(
   rows: &[CatalogRow],
   reference: &str,
@@ -414,18 +445,30 @@ pub fn resolve_model_with_candidates(
   if exact_name.len() == 1 {
     return Ok(exact_name[0].clone());
   }
-  // The proxy publishes a repo-qualified id for a model whose bare name
-  // collides with another row's, so that id has to route back here. Accepted
-  // for every row, collision or not, in both the extensionless form
-  // `/v1/models` publishes and the filename form `list` shows.
+  // The plain id `/v1/models` publishes: the file stem, which `name()` above
+  // never matches because it keeps the extension. Without this tier a
+  // published *unique* id still fell through to the substring tier and fanned
+  // out against any longer name containing it — `demo-model` matching
+  // `demo-model-Q4_K_M` — so the proxy 400'd `ambiguous_model` on an id it
+  // had just published, and listed that same dead id in `matches`.
+  let exact_public: Vec<&CatalogRow> = rows
+    .iter()
+    .filter(|r| r.public_id().eq_ignore_ascii_case(needle))
+    .collect();
+  if exact_public.len() == 1 {
+    return Ok(exact_public[0].clone());
+  }
+  // The proxy publishes a qualified id for a model whose bare name collides
+  // with another row's, so that id has to route back here. Accepted for every
+  // row, collision or not, at both qualification rungs and in both the
+  // extensionless form `/v1/models` publishes and the filename form `list`
+  // shows.
   let qualified: Vec<&CatalogRow> = rows
     .iter()
     .filter(|r| {
-      if r.qualified_id().eq_ignore_ascii_case(needle) {
-        return true;
-      }
-      let group = r.group_label();
-      !group.is_empty() && format!("{group}/{}", r.name()).eq_ignore_ascii_case(needle)
+      r.qualified_aliases()
+        .iter()
+        .any(|a| a.eq_ignore_ascii_case(needle))
     })
     .collect();
   if qualified.len() == 1 {
@@ -461,10 +504,11 @@ pub fn resolve_model_with_candidates(
     .filter(|r| {
       r.name().to_lowercase().contains(&lower)
         || r.parent.to_lowercase().contains(&lower)
-        // The repo-qualified id, so `unsloth/Qwen3.8` matches: the raw parent
-        // spells an HF repo `models--unsloth--Qwen3.8-…`, which no reference
-        // a user reads off `list` or `/v1/models` looks like.
-        || r.qualified_id().to_lowercase().contains(&lower)
+        // The source-qualified id, which carries the repo-qualified one as a
+        // suffix, so `unsloth/Qwen3.8` matches: the raw parent spells an HF
+        // repo `models--unsloth--Qwen3.8-…`, which no reference a user reads
+        // off `list` or `/v1/models` looks like.
+        || r.source_qualified_id().to_lowercase().contains(&lower)
     })
     .collect();
   match candidates.len() {
@@ -592,6 +636,62 @@ mod tests {
       row("/m/y.gguf", "/m"),
     ];
     assert_eq!(published_ids(&rows), vec!["hf/x", "lms/x", "y"]);
+  }
+
+  /// The invariant the whole published-id scheme exists for, asserted over
+  /// one catalog that exercises every rung of the ladder at once. It did not
+  /// hold: `demo-model` published as a unique plain id but 400'd
+  /// `ambiguous_model` because the substring tier fanned it out against
+  /// `demo-model-Q4_K_M`, and the two mirrored copies of one repo published
+  /// absolute paths because their repo qualifiers read identically.
+  #[test]
+  fn every_published_id_resolves_back_to_its_own_row() {
+    let mut hf = row(
+      "/w/huggingface/hub/models--lms-community--Demo-GGUF/snapshots/1/demo-model-Q4_K_M.gguf",
+      "/w/huggingface/hub/models--lms-community--Demo-GGUF/snapshots/1",
+    );
+    hf.source = "huggingface".to_string();
+    let mut lms = row(
+      "/w/lmstudio-models/lms-community/Demo-GGUF/demo-model-Q4_K_M.gguf",
+      "/w/lmstudio-models/lms-community/Demo-GGUF",
+    );
+    lms.source = "lm-studio".to_string();
+    // Plain-unique, but a substring of both names above.
+    let plain = row("/m/demo-model.gguf", "/m");
+    // Every rung identical to another row's: only the path is left.
+    let mut sub_a = row(
+      "/w/huggingface/hub/models--o--r/snapshots/1/UD-Q4_K_XL/w.gguf",
+      "/w/huggingface/hub/models--o--r/snapshots/1/UD-Q4_K_XL",
+    );
+    sub_a.source = "huggingface".to_string();
+    let mut sub_b = row(
+      "/w/huggingface/hub/models--o--r/snapshots/1/Q8_0/w.gguf",
+      "/w/huggingface/hub/models--o--r/snapshots/1/Q8_0",
+    );
+    sub_b.source = "huggingface".to_string();
+    let mut ollama = row("/o/blobs/sha256-abc", "/o/blobs");
+    ollama.display_label = Some("llama3:8b".to_string());
+    ollama.source = "ollama".to_string();
+
+    let rows = vec![hf, lms, plain, sub_a, sub_b, ollama];
+    let ids = published_ids(&rows);
+    let unique: std::collections::HashSet<&String> = ids.iter().collect();
+    assert_eq!(unique.len(), ids.len(), "published ids collide: {ids:?}");
+    for (row, id) in rows.iter().zip(&ids) {
+      let got = resolve_model_with_candidates(&rows, id)
+        .unwrap_or_else(|e| panic!("published id `{id}` does not resolve: {e:?}"));
+      assert_eq!(got.path, row.path, "`{id}` routed to the wrong row");
+    }
+    // The two mirrored copies read as their source, not as absolute paths.
+    assert_eq!(
+      ids[0],
+      "huggingface/lms-community/Demo-GGUF/demo-model-Q4_K_M"
+    );
+    assert_eq!(
+      ids[1],
+      "lm-studio/lms-community/Demo-GGUF/demo-model-Q4_K_M"
+    );
+    assert_eq!(ids[2], "demo-model");
   }
 
   #[test]

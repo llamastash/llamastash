@@ -262,6 +262,7 @@ async fn wait_and_emit(
     if let Some(sources) = resp.get("layer_sources") {
       body["layer_sources"] = sources.clone();
     }
+    copy_warnings(resp, &mut body);
     println!("{}", crate::cli::output::pretty_json(&body));
   } else if !quiet {
     // Headline first (reuses the standard "started ..." prose), then the
@@ -710,6 +711,21 @@ fn map_start_error(e: crate::ipc::ClientError, row: &CatalogRow) -> CliExit {
   }
 }
 
+/// Carry the daemon's non-fatal advisories onto a `--json` body.
+///
+/// `--force`'s "overrode the memory admission gate" line rides this list, and
+/// it is the only signal that a launch went through a refusal — an agent
+/// driving `start --force --json` has to be able to see it. Omitted when the
+/// daemon sent none, so a clean launch's shape is unchanged.
+fn copy_warnings(resp: &Value, body: &mut Value) {
+  if let Some(ws) = resp
+    .get("warnings")
+    .filter(|w| w.as_array().map(|a| !a.is_empty()).unwrap_or(!w.is_null()))
+  {
+    body["warnings"] = ws.clone();
+  }
+}
+
 fn emit_response(preset: Option<&str>, row: &CatalogRow, resp: &Value, json: bool, quiet: bool) {
   let port = resp.get("port").and_then(Value::as_u64);
   let lid = resp.get("launch_id").and_then(Value::as_str);
@@ -728,6 +744,7 @@ fn emit_response(preset: Option<&str>, row: &CatalogRow, resp: &Value, json: boo
     if let Some(sources) = resp.get("layer_sources") {
       body["layer_sources"] = sources.clone();
     }
+    copy_warnings(resp, &mut body);
     println!("{}", crate::cli::output::pretty_json(&body));
     return;
   }

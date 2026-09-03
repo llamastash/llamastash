@@ -192,7 +192,7 @@ The MTP path names no backend: llama.cpp's flags and log parse live in `backend/
 
 The streamed sizes ride on `ModelMetadata::lazy_tensor_bytes`, per tensor rather than pre-summed, because `--lazy-mode auto` applies a 4 GiB size threshold per tensor and the mode is a launch-time argument (`on` drops the threshold, `off` disables streaming and the subtraction with it). For a split GGUF the scanner concatenates every shard's list: the tensor usually lives in a later shard while only shard 1 is parsed, so a shard-1-only list reports none. mmap is irrelevant to any of this — see `gguf::memory::streamed_bytes`.
 
-`--force` on `start` turns an admission refusal into a warning and launches anyway. It rides `StartParams::force` and is CLI-only by construction: the proxy's auto-start path builds `StartParams::default()`, so a request from the network can never set it.
+`--force` on `start` turns an admission refusal into a warning and launches anyway, and reserves the projected demand on the ledger regardless (`Ledger::reserve`) so a second launch is not admitted against memory the forced one is already taking. The warning reaches the human output and the `--json` `warnings` array alike. It rides `StartParams::force` and is CLI-only by construction: the proxy's auto-start path builds `StartParams::default()`, so a request from the network can never set it.
 
 ### ds4 admission and knobs
 
@@ -299,9 +299,12 @@ The discovery scanner emits one entry per canonical path — symlinks dedupe to 
 | `model_display_name` | that minus the extension | TUI titles, favorites |
 | `model_public_id` | `display_label` where the source has one, else `model_display_name` | the plain `/v1/models` id |
 | `model_group_label` | `owner/repo` for a recognized cache layout, else the parent directory's name | `list` REPO, the `repo` wire field |
-| `model_qualified_id` | `<group>/<public id>` | the disambiguated `/v1/models` id |
+| `model_qualified_id` | `<group>/<public id>` | the repo-disambiguated `/v1/models` id |
+| `model_source_qualified_id` | `<source label>/<group>/<public id>` | the source-disambiguated `/v1/models` id |
 
-`published_id_index` picks one of the last two **per catalog**, not per row: a plain id unique across the catalog is published as-is, one that collides is published qualified, and a collision surviving that falls back to the canonical path. Two same-named GGUFs in different cache roots used to publish one id twice, so every request for it 400'd `ambiguous_model` and neither model was reachable — and `integrations` wrote that dead id into tool configs. The proxy's listing surfaces, the `ambiguous_model` `matches` array, and `init`'s tool-config patcher all read ids out of this one index. `resolve_model_with_candidates` accepts the qualified form for every row (both the published stem and the `.gguf` spelling) and matches it as a substring too, so a partial repo reference works where the raw `models--owner--repo` path never did.
+`published_id_index` decides **per catalog**, not per row: each model takes the shortest rung of its id ladder — plain, repo-qualified, source-qualified — that no other model claims, and falls back to the canonical path when every rung collides. All rungs share one namespace, so a longer form can never shadow another row's shorter one. The source rung exists because the ordinary duplicate is one repo cached by two tools, which derives the *same* `owner/repo` from both roots: without it that pair fell all the way through to absolute paths, which then went into tool configs. Two same-named GGUFs used to publish one id twice, so every request for it 400'd `ambiguous_model` and neither model was reachable. The proxy's listing surfaces, the `ambiguous_model` `matches` array, and `init`'s tool-config patcher (for the download step as well as for favorites) all read ids out of this one index.
+
+`resolve_model_with_candidates` is the inverse and has to accept everything the index can publish, or the proxy 400s on an id it just handed out. Its tiers: exact path → exact file name → exact plain id → either qualified rung (each in both the published stem and the `.gguf` spelling) → a split model's pre-rename shard-1 name → case-insensitive substring of name, parent or qualified id. The plain-id tier is load-bearing: `name()` keeps the extension, so without it a published stem fell through to the substring tier and fanned out against any longer name containing it (`demo-model` against `demo-model-Q4_K_M`). `tests/proxy_models.rs` and `launch::resolve`'s `every_published_id_resolves_back_to_its_own_row` pin the round trip.
 
 ## Backend-neutral substrate seams
 

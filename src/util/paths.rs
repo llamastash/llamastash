@@ -120,52 +120,79 @@ pub fn model_qualified_id(path: &Path, display_label: Option<&str>) -> String {
   }
 }
 
-/// Published ids for a whole catalog, keyed by canonical path.
+/// The source-qualified form of [`model_qualified_id`]:
+/// `huggingface/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-Q4_K_M`, where the head
+/// is a [`ModelSource`](crate::discovery::ModelSource) label.
 ///
-/// A model whose [`model_public_id`] is unique across the catalog keeps it;
-/// one that collides is published under [`model_qualified_id`]; a collision
-/// that survives that falls back to the canonical path, unique by
-/// construction. So every row `/v1/models` lists is reachable — before this,
-/// two same-named GGUFs in different roots published one id that 400'd with
-/// `ambiguous_model` for both — and an id already written into a tool config
-/// keeps working for as long as it stays unambiguous.
-pub fn published_id_index<'a, I>(models: I) -> std::collections::HashMap<String, String>
-where
-  I: IntoIterator<Item = (&'a Path, Option<&'a str>)>,
-{
-  use std::collections::HashMap;
-  // Both forms share one namespace, so a qualified id can never shadow some
-  // other row's plain one. A row whose two forms are identical (any source
-  // carrying a `display_label`) contributes a single count, or nothing would
-  // ever read as unique.
-  let forms: Vec<(&Path, String, String)> = models
-    .into_iter()
-    .map(|(path, label)| {
-      (
-        path,
-        model_public_id(path, label),
-        model_qualified_id(path, label),
-      )
-    })
-    .collect();
-  let mut taken: HashMap<&str, usize> = HashMap::new();
-  for (_, plain, qualified) in &forms {
-    *taken.entry(plain.as_str()).or_insert(0) += 1;
-    if qualified != plain {
-      *taken.entry(qualified.as_str()).or_insert(0) += 1;
+/// The rung the repo qualifier cannot cover: one repo cached by two different
+/// tools derives the *same* `owner/repo` from two different roots, so
+/// `models--lmstudio-community--gemma-4-E2B-it-GGUF` in the HF cache and
+/// `lmstudio-community/gemma-4-E2B-it-GGUF` under LM Studio qualify
+/// identically. That is the ordinary shape of a duplicate, not a corner case,
+/// and without this rung both fell through to absolute paths.
+///
+/// `display_label` sources are returned unchanged, like the rung below. An
+/// empty `source` (a row projected without one) degrades to that rung rather
+/// than publishing a leading `/`.
+pub fn model_source_qualified_id(path: &Path, display_label: Option<&str>, source: &str) -> String {
+  let qualified = model_qualified_id(path, display_label);
+  if display_label.is_some() || source.is_empty() {
+    return qualified;
+  }
+  format!("{source}/{qualified}")
+}
+
+/// The forms one model can publish under, shortest first, with duplicates
+/// collapsed so a row never counts the same string twice.
+fn id_ladder(path: &Path, display_label: Option<&str>, source: &str) -> Vec<String> {
+  let mut forms = vec![model_public_id(path, display_label)];
+  for next in [
+    model_qualified_id(path, display_label),
+    model_source_qualified_id(path, display_label, source),
+  ] {
+    if !forms.contains(&next) {
+      forms.push(next);
     }
   }
   forms
+}
+
+/// Published ids for a whole catalog, keyed by canonical path.
+///
+/// Each model takes the shortest form of its id ladder that no other
+/// model in the catalog claims — plain [`model_public_id`], else
+/// [`model_qualified_id`], else [`model_source_qualified_id`] — and falls
+/// back to the canonical path, unique by construction, when even the longest
+/// collides. So every row `/v1/models` lists is reachable: before this, two
+/// same-named GGUFs in different roots published one id that 400'd with
+/// `ambiguous_model` for both, and an id already written into a tool config
+/// keeps working for as long as it stays unambiguous.
+///
+/// Every form shares one namespace, so a longer form can never shadow some
+/// other row's shorter one.
+pub fn published_id_index<'a, I>(models: I) -> std::collections::HashMap<String, String>
+where
+  I: IntoIterator<Item = (&'a Path, Option<&'a str>, &'a str)>,
+{
+  use std::collections::HashMap;
+  let ladders: Vec<(&Path, Vec<String>)> = models
+    .into_iter()
+    .map(|(path, label, source)| (path, id_ladder(path, label, source)))
+    .collect();
+  let mut taken: HashMap<&str, usize> = HashMap::new();
+  for (_, forms) in &ladders {
+    for form in forms {
+      *taken.entry(form.as_str()).or_insert(0) += 1;
+    }
+  }
+  ladders
     .iter()
-    .map(|(path, plain, qualified)| {
-      let unique = |id: &str| taken.get(id).copied().unwrap_or(0) == 1;
-      let id = if unique(plain) {
-        plain.clone()
-      } else if unique(qualified) {
-        qualified.clone()
-      } else {
-        path.to_string_lossy().into_owned()
-      };
+    .map(|(path, forms)| {
+      let id = forms
+        .iter()
+        .find(|f| taken.get(f.as_str()).copied().unwrap_or(0) == 1)
+        .cloned()
+        .unwrap_or_else(|| path.to_string_lossy().into_owned());
       (path.to_string_lossy().into_owned(), id)
     })
     .collect()
@@ -712,19 +739,31 @@ mod tests {
   #[test]
   fn published_id_index_qualifies_only_what_collides() {
     let ids = published_id_index([
-      (Path::new("/hf/gemma-4-E2B-it-Q4_K_M.gguf"), None),
-      (Path::new("/lms/gemma-4-E2B-it-Q4_K_M.gguf"), None),
-      (Path::new("/m/llama.gguf"), None),
-      (Path::new("/o/blobs/sha256-abc"), Some("llama3:8b")),
+      (
+        Path::new("/hf/gemma-4-E2B-it-Q4_K_M.gguf"),
+        None,
+        "huggingface",
+      ),
+      (
+        Path::new("/lms/gemma-4-E2B-it-Q4_K_M.gguf"),
+        None,
+        "lm-studio",
+      ),
+      (Path::new("/m/llama.gguf"), None, "user"),
+      (
+        Path::new("/o/blobs/sha256-abc"),
+        Some("llama3:8b"),
+        "ollama",
+      ),
     ]);
     assert_eq!(ids["/m/llama.gguf"], "llama", "unique id is left alone");
     assert_eq!(
       ids["/o/blobs/sha256-abc"], "llama3:8b",
-      "a labelled row whose two forms are identical still reads as unique"
+      "a labelled row whose forms are all identical still reads as unique"
     );
     assert_eq!(
-      ids["/hf/gemma-4-E2B-it-Q4_K_M.gguf"],
-      "hf/gemma-4-E2B-it-Q4_K_M"
+      ids["/hf/gemma-4-E2B-it-Q4_K_M.gguf"], "hf/gemma-4-E2B-it-Q4_K_M",
+      "the repo qualifier already separates these, so the source rung is not spent"
     );
     assert_eq!(
       ids["/lms/gemma-4-E2B-it-Q4_K_M.gguf"],
@@ -733,14 +772,58 @@ mod tests {
   }
 
   #[test]
-  fn published_id_index_falls_back_to_the_path_when_qualifying_still_collides() {
-    // Same basename in two subdirs of one HF repo: both qualify to the same
-    // `owner/repo/name`, so the only remaining unique handle is the path.
+  fn published_id_index_adds_the_source_when_the_repo_label_is_shared() {
+    // The ordinary duplicate: one repo cached by both tools. Each root
+    // derives the *same* `owner/repo`, so the repo rung cannot separate
+    // them and the source rung has to — these published as raw absolute
+    // paths before it existed.
+    let hf = Path::new(
+      "/w/huggingface/hub/models--lmstudio-community--gemma-4-E2B-it-GGUF/snapshots/1/gemma-4-E2B-it-Q4_K_M.gguf",
+    );
+    let lms = Path::new(
+      "/w/lmstudio-models/lmstudio-community/gemma-4-E2B-it-GGUF/gemma-4-E2B-it-Q4_K_M.gguf",
+    );
+    assert_eq!(
+      model_qualified_id(hf, None),
+      model_qualified_id(lms, None),
+      "the premise: both qualify identically"
+    );
+    let ids = published_id_index([(hf, None, "huggingface"), (lms, None, "lm-studio")]);
+    assert_eq!(
+      ids[&hf.to_string_lossy().to_string()],
+      "huggingface/lmstudio-community/gemma-4-E2B-it-GGUF/gemma-4-E2B-it-Q4_K_M"
+    );
+    assert_eq!(
+      ids[&lms.to_string_lossy().to_string()],
+      "lm-studio/lmstudio-community/gemma-4-E2B-it-GGUF/gemma-4-E2B-it-Q4_K_M"
+    );
+  }
+
+  #[test]
+  fn published_id_index_falls_back_to_the_path_when_every_rung_collides() {
+    // Same basename in two subdirs of one repo, reached through one source:
+    // every rung of the ladder is identical, so the only remaining unique
+    // handle is the path.
     let a = Path::new("/c/hub/models--o--r/snapshots/1/UD-Q4_K_XL/w.gguf");
     let b = Path::new("/c/hub/models--o--r/snapshots/1/Q8_0/w.gguf");
-    let ids = published_id_index([(a, None), (b, None)]);
+    let ids = published_id_index([(a, None, "huggingface"), (b, None, "huggingface")]);
     assert_eq!(ids[&a.to_string_lossy().to_string()], a.to_string_lossy());
     assert_eq!(ids[&b.to_string_lossy().to_string()], b.to_string_lossy());
+  }
+
+  #[test]
+  fn model_source_qualified_id_degrades_without_a_source() {
+    let p = Path::new("/m/x.gguf");
+    assert_eq!(model_source_qualified_id(p, None, "user"), "user/m/x");
+    assert_eq!(
+      model_source_qualified_id(p, None, ""),
+      model_qualified_id(p, None),
+      "no leading slash when the row carries no source"
+    );
+    assert_eq!(
+      model_source_qualified_id(Path::new("/o/blobs/sha"), Some("llama3:8b"), "ollama"),
+      "llama3:8b"
+    );
   }
 
   #[test]
