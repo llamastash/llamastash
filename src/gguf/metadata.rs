@@ -550,16 +550,24 @@ fn infer_mode_hint(header: &GgufHeader, arch: Option<&str>) -> ModeHint {
   // tensors in shard 1 but the projection later.
   let is_split = header.u64(&["split.count"]).is_some_and(|n| n > 1);
   if is_split || header.tensors.is_empty() {
-    // Multi-template tokenizers store this as an array, which `string` skips,
-    // so check presence rather than type or a chat model reads as Unknown.
+    // Chat-template presence, in the three shapes `gguf_writer.py` actually
+    // emits. `tokenizer.chat_template` is always written with `add_string`, so
+    // it is never an array; the multi-template case writes the *names* to
+    // `tokenizer.chat_templates` and each body to `tokenizer.chat_template.<name>`.
+    // And when the source list carries no `default` entry, `add_chat_template`
+    // returns before writing the singular key at all — that model has templates
+    // but no default, and reading only the singular key calls it template-less.
     let has_template = header
-      .metadata
-      .get("tokenizer.chat_template")
-      .is_some_and(|v| match v {
-        GgufValue::String(t) => !t.is_empty(),
-        GgufValue::Array(items) => !items.is_empty(),
-        _ => false,
-      });
+      .string(&["tokenizer.chat_template"])
+      .is_some_and(|t| !t.is_empty())
+      || header
+        .metadata
+        .get("tokenizer.chat_templates")
+        .is_some_and(|v| matches!(v, GgufValue::Array(items) if !items.is_empty()))
+      || header
+        .metadata
+        .keys()
+        .any(|k| k.starts_with("tokenizer.chat_template."));
     // Judgement, twice-reviewed, recorded so it is not re-litigated blind: a
     // chat template is weak evidence, but `Unknown` is worse. The CLI refuses
     // an unknown hint outright (`cli::start`), so `Unknown` would make every
@@ -576,7 +584,10 @@ fn infer_mode_hint(header: &GgufHeader, arch: Option<&str>) -> ModeHint {
       log::debug!(
         "{}: split shard has no output projection; inferring chat from the \
          chat template",
-        arch.unwrap_or("?")
+        header
+          .string(&["general.name"])
+          .or(arch)
+          .unwrap_or("<unnamed>")
       );
       ModeHint::Chat
     } else {
@@ -769,17 +780,23 @@ mod tests {
   }
 
   #[test]
-  fn a_split_shard_with_an_array_chat_template_still_reads_as_chat() {
-    // Multi-template tokenizers store `tokenizer.chat_template` as an array,
-    // which the string accessor skips -- the model then fell to Unknown and
-    // the CLI demanded an explicit --mode.
+  fn a_split_shard_with_named_templates_and_no_default_reads_as_chat() {
+    // gguf-py writes `tokenizer.chat_template` only when the source list has a
+    // `default` entry; otherwise the bodies land under
+    // `tokenizer.chat_template.<name>` with the names in
+    // `tokenizer.chat_templates`, and the singular key is absent entirely.
+    // Reading only the singular key called such a model template-less.
     let bytes = FixtureBuilder::new()
       .with_arch("llama")
       .with_embedding_length(4096)
       .with_kv("split.count", GgufValue::U16(3))
       .with_kv(
-        "tokenizer.chat_template",
-        GgufValue::Array(vec![GgufValue::String("{{ messages }}".to_string())]),
+        "tokenizer.chat_templates",
+        GgufValue::Array(vec![GgufValue::String("tool_use".to_string())]),
+      )
+      .with_kv(
+        "tokenizer.chat_template.tool_use",
+        GgufValue::String("{{ messages }}".to_string()),
       )
       .build();
     assert_eq!(parse(bytes).mode_hint, ModeHint::Chat);

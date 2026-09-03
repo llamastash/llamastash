@@ -318,7 +318,7 @@ pub enum ResolveError {
 /// Collapse a user-supplied model reference that names shard 1 of a split set,
 /// preserving whether the caller wrote the extension. `None` when the
 /// reference is not a shard name, so callers skip the alias entirely.
-fn collapse_shard_reference(needle: &str) -> Option<String> {
+pub(crate) fn collapse_shard_reference(needle: &str) -> Option<String> {
   if needle.to_lowercase().ends_with(".gguf") {
     let c = crate::util::paths::model_file_label(std::path::Path::new(needle));
     return (c != needle).then_some(c);
@@ -334,8 +334,8 @@ fn collapse_shard_reference(needle: &str) -> Option<String> {
 /// substring matcher themselves. The CLI's `resolve_model` wraps this,
 /// folding every failure into a single `MODEL_NOT_FOUND` exit.
 ///
-/// Precedence: exact path → exact name → case-insensitive substring of
-/// name or parent.
+/// Precedence: exact path → exact name → a split model's pre-rename shard-1
+/// name → case-insensitive substring of name or parent.
 pub fn resolve_model_with_candidates(
   rows: &[CatalogRow],
   reference: &str,
@@ -397,6 +397,9 @@ pub fn resolve_model_with_candidates(
 
 #[cfg(test)]
 mod tests {
+
+  use super::*;
+
   #[test]
   fn a_split_models_old_shard_name_still_resolves() {
     // 0.2.0 published `…-00001-of-00004` as the model id and wrote preset keys
@@ -420,8 +423,6 @@ mod tests {
       );
     }
   }
-
-  use super::*;
 
   fn row(path: &str, parent: &str) -> CatalogRow {
     CatalogRow {

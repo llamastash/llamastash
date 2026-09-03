@@ -223,7 +223,10 @@ pub fn classify_preset_key(key: &str, catalog: &[CatalogRow]) -> KeyClass {
   }
   // A key written before split models were named after their shard set still
   // reads `…-00001-of-00004.gguf`; collapse it so those presets keep applying.
-  let key_collapsed = crate::util::paths::model_file_label(std::path::Path::new(key));
+  // Same helper the reference resolver uses, so the two cannot drift — and it
+  // handles an extension-less key, which a bare `model_file_label` does not.
+  let key_collapsed =
+    crate::launch::resolve::collapse_shard_reference(key).unwrap_or_else(|| key.to_string());
   let mut named = catalog.iter().filter(|r| {
     r.name().eq_ignore_ascii_case(key) || r.name().eq_ignore_ascii_case(&key_collapsed)
   });

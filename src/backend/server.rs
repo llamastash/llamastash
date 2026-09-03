@@ -431,6 +431,8 @@ fn fan_out_devices(devices: Vec<Device>, n: usize) -> Vec<Device> {
 #[cfg(test)]
 mod tests {
 
+  use super::*;
+
   #[test]
   fn a_wrong_typed_numeric_field_does_not_blank_the_rest_of_the_device() {
     // Whole-row decode with `unwrap_or_default()` used to zero every field when
@@ -450,7 +452,6 @@ mod tests {
     assert_eq!(d.total_mib, None, "the wrong-typed field alone falls back");
     assert_eq!(d.free_mib, Some(123), "well-typed siblings still decode");
   }
-  use super::*;
 
   fn dev(selector: &str, gpu: &str) -> Device {
     Device {

@@ -1611,30 +1611,58 @@ fn extras_manage_mmproj(extras: &[OsString]) -> bool {
   })
 }
 
-/// The `--lazy-mode` / `-lzm` value the extras tail pins, lowercased.
+/// What the extras tail pins for the two things the lazy path depends on:
+/// lazy mode itself, and whether mmap survives.
 ///
-/// The gate subtracts tensors the loader streams, which is only true while
-/// lazy reading is on. There is no lazy-mode knob, and extras reach argv
-/// unfiltered, so `-- --lazy-mode off` would otherwise keep a 26.8 GiB tensor
-/// resident while the projection still discounted it — under-projecting into
-/// an OOM. Matches space and equals forms, like [`extras_manage_mmproj`].
-fn extras_lazy_mode(extras: &[OsString]) -> Option<String> {
-  let is_head = |h: &str| h.eq_ignore_ascii_case("--lazy-mode") || h.eq_ignore_ascii_case("-lzm");
-  for (i, e) in extras.iter().enumerate() {
-    let lossy = e.to_string_lossy();
-    if let Some((head, val)) = lossy.split_once('=') {
-      if is_head(head) {
-        return Some(val.to_ascii_lowercase());
+/// The gate subtracts tensors the loader streams, which needs mmap *and* lazy
+/// reading on. Neither has a knob, and extras reach argv unfiltered, so
+/// `-- --no-mmap` or `-- --lazy-mode off` would otherwise leave a 26.8 GiB
+/// tensor resident while the projection still discounted it, under-projecting
+/// into an OOM.
+///
+/// **Last occurrence wins**, because that is what the engine does: each flag's
+/// handler assigns unconditionally on every occurrence (`common/arg.cpp`), and
+/// llama.cpp warns as much when these are combined.
+#[derive(Debug, Default, PartialEq)]
+struct ExtrasLoadPins {
+  /// `--lazy-mode` / `-lzm`, lowercased. `None` when the tail does not set it.
+  lazy_mode: Option<String>,
+  /// `Some(false)` when the tail leaves mmap off. `None` when untouched.
+  mmap: Option<bool>,
+}
+
+fn extras_load_pins(extras: &[OsString]) -> ExtrasLoadPins {
+  let mut pins = ExtrasLoadPins::default();
+  let mut i = 0;
+  while i < extras.len() {
+    let lossy = extras[i].to_string_lossy().to_ascii_lowercase();
+    let (head, inline) = match lossy.split_once('=') {
+      Some((h, v)) => (h.to_string(), Some(v.to_string())),
+      None => (lossy.clone(), None),
+    };
+    let value = || {
+      inline.clone().or_else(|| {
+        extras
+          .get(i + 1)
+          .map(|v| v.to_string_lossy().to_ascii_lowercase())
+      })
+    };
+    match head.as_str() {
+      "--lazy-mode" | "-lzm" => pins.lazy_mode = value(),
+      "--no-mmap" => pins.mmap = Some(false),
+      "--mmap" => pins.mmap = Some(true),
+      // `none`, `mlock` and `dio` all load without mmap; `auto`, `mmap` and
+      // `mmap+mlock` keep it.
+      "--load-mode" | "-lm" => {
+        pins.mmap = value().map(|v| matches!(v.as_str(), "auto" | "mmap" | "mmap+mlock"));
       }
-      continue;
+      // Both spellings leave a load mode without mmap (DirectIO, or none).
+      "-dio" | "--direct-io" | "-ndio" | "--no-direct-io" => pins.mmap = Some(false),
+      _ => {}
     }
-    if is_head(&lossy) {
-      return extras
-        .get(i + 1)
-        .map(|v| v.to_string_lossy().to_ascii_lowercase());
-    }
+    i += 1;
   }
-  None
+  pins
 }
 
 /// Bytes the engine will stream from the mapping rather than hold resident,
@@ -1655,12 +1683,13 @@ async fn launch_lazy_bytes(
   knobs: &crate::launch::knobs::KnobSet,
   extras: &[OsString],
 ) -> u64 {
-  if knobs.bool(crate::launch::knobs::kid("no-mmap")) == Some(true) {
+  let pins = extras_load_pins(extras);
+  if knobs.bool(crate::launch::knobs::kid("no-mmap")) == Some(true) || pins.mmap == Some(false) {
     return 0;
   }
   // `auto` (the engine default) streams only tensors past the size threshold;
   // `on` streams every lazy-flagged tensor; `off` streams none.
-  let all_sizes = match extras_lazy_mode(extras).as_deref() {
+  let all_sizes = match pins.lazy_mode.as_deref() {
     Some("off") => return 0,
     Some("on") => true,
     _ => false,
@@ -1992,22 +2021,50 @@ mod tests {
   }
 
   #[test]
-  fn extras_lazy_mode_reads_both_flag_forms() {
-    let off = vec![OsString::from("--lazy-mode"), OsString::from("off")];
-    assert_eq!(extras_lazy_mode(&off).as_deref(), Some("off"), "space form");
-    let eq = vec![OsString::from("-LZM=ON")];
+  fn extras_load_pins_take_the_last_occurrence_like_the_engine() {
+    let pin = |v: &[&str]| extras_load_pins(&v.iter().map(OsString::from).collect::<Vec<_>>());
+    // Every handler assigns on each occurrence, so the tail wins.
     assert_eq!(
-      extras_lazy_mode(&eq).as_deref(),
-      Some("on"),
-      "equals form, short alias, case-insensitive"
+      pin(&["--lazy-mode", "on", "--lazy-mode", "off"])
+        .lazy_mode
+        .as_deref(),
+      Some("off"),
+      "last --lazy-mode wins"
     );
-    assert_eq!(extras_lazy_mode(&[]).as_deref(), None);
-    // A flag that merely starts the same must not match.
-    let other = vec![OsString::from("--lazy-mode-extra"), OsString::from("off")];
-    assert_eq!(extras_lazy_mode(&other).as_deref(), None);
-    // Trailing flag with no value: nothing to read, so no pin.
-    let dangling = vec![OsString::from("--lazy-mode")];
-    assert_eq!(extras_lazy_mode(&dangling).as_deref(), None);
+    assert_eq!(
+      pin(&["-LZM=ON"]).lazy_mode.as_deref(),
+      Some("on"),
+      "short, equals, case"
+    );
+    // mmap survives `auto` / `mmap` / `mmap+mlock`, dies on the rest.
+    assert_eq!(pin(&["--no-mmap"]).mmap, Some(false));
+    assert_eq!(
+      pin(&["--no-mmap", "--mmap"]).mmap,
+      Some(true),
+      "re-enabled by a later flag"
+    );
+    for m in ["none", "mlock", "dio"] {
+      assert_eq!(
+        pin(&["--load-mode", m]).mmap,
+        Some(false),
+        "--load-mode {m} drops mmap"
+      );
+    }
+    for m in ["auto", "mmap", "mmap+mlock"] {
+      assert_eq!(
+        pin(&["-lm", m]).mmap,
+        Some(true),
+        "--load-mode {m} keeps mmap"
+      );
+    }
+    // DirectIO in either spelling leaves a load mode without mmap.
+    assert_eq!(pin(&["-dio"]).mmap, Some(false));
+    assert_eq!(pin(&["--no-direct-io"]).mmap, Some(false));
+    assert_eq!(
+      pin(&[]),
+      ExtrasLoadPins::default(),
+      "untouched tail pins nothing"
+    );
   }
 
   #[test]

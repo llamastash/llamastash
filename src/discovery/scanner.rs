@@ -487,67 +487,110 @@ impl Candidates {
 /// otherwise hand the 9B head to the 27B model, which drafts garbage. Quants
 /// of one model share a base, so the common single-model repo still pairs.
 fn find_companion(model_path: &Path, kind: &CompanionKind<'_>) -> Option<PathBuf> {
-  let parent = model_path.parent()?;
-  let own = collect_candidates(parent, model_path, kind);
-  if let Some(hit) = pick(&own, true) {
+  let own = collect_candidates(model_path.parent()?, model_path, kind);
+  if let Some(hit) = pick(&own, true, kind, model_path) {
     return Some(hit);
   }
 
-  let dirs = hf_snapshot_sibling_dirs(model_path);
-  if dirs.is_empty() {
-    return None;
-  }
   let mut wide = Candidates::default();
-  for dir in &dirs {
-    wide.merge(collect_candidates(dir, model_path, kind));
-  }
-  // Every model in the snapshot, this one included, must be the same model.
-  let mut bases: std::collections::BTreeSet<String> = wide
-    .model_labels
-    .iter()
-    .chain(own.model_labels.iter())
-    .map(|l| {
-      canonical_base(
-        Path::new(l)
-          .file_stem()
-          .map_or(l.as_str(), |s| s.to_str().unwrap_or(l)),
+  let dirs = hf_snapshot_sibling_dirs(model_path);
+  if !dirs.is_empty() {
+    // Cheap listing first: the guard rejects most multi-model snapshots, and
+    // collecting would header-read every arch candidate before we threw it away.
+    let mut bases: std::collections::BTreeSet<String> = own
+      .model_labels
+      .iter()
+      .chain(
+        dirs
+          .iter()
+          .flat_map(|d| dir_model_labels(d))
+          .collect::<Vec<_>>()
+          .iter(),
       )
-    })
-    .collect();
-  bases.remove("");
-  if bases.len() > 1 {
-    log::debug!(
-      "{}: snapshot holds {} distinct models; not widening the {} search",
-      model_path.display(),
-      bases.len(),
-      kind.label
-    );
-    return None;
-  }
-  let hit = pick(&wide, false);
-  if hit.is_none() {
-    let mut seen: Vec<PathBuf> = own.all.clone();
-    seen.extend(wide.all.iter().cloned());
-    if !seen.is_empty() {
-      // Say so: a silent `None` here reads as "this model has no companion",
-      // when the truth is that several were equally plausible.
-      log::warn!(
-        "{}: {} candidates found but none match {}; pass one explicitly: {:?}",
-        kind.label,
-        seen.len(),
-        crate::util::paths::model_file_label(model_path),
-        companion_names(&seen),
+      .map(|l| label_base(l))
+      .collect();
+    bases.remove("");
+    if bases.len() > 1 {
+      log::debug!(
+        "{}: snapshot holds {} distinct models; not widening the {} search",
+        model_path.display(),
+        bases.len(),
+        kind.label
       );
+    } else {
+      for dir in &dirs {
+        wide.merge(collect_candidates(dir, model_path, kind));
+      }
+      if let Some(hit) = pick(&wide, false, kind, model_path) {
+        return Some(hit);
+      }
     }
   }
-  hit
+
+  // Reached on every empty-handed path, the flat-directory one included: a
+  // silent `None` reads as "this model has no companion" when the truth is
+  // that several were equally plausible.
+  let mut seen: Vec<PathBuf> = own.all.clone();
+  seen.extend(wide.all.iter().cloned());
+  if !seen.is_empty() {
+    log::warn!(
+      "{}: {} {} candidates found but none match {}; pass one explicitly: {:?}",
+      model_path.display(),
+      seen.len(),
+      kind.label,
+      crate::util::paths::model_file_label(model_path),
+      companion_names(&seen),
+    );
+  }
+  None
+}
+
+/// Quant-stripped base of a model filename, for "is this the same model".
+fn label_base(label: &str) -> String {
+  canonical_base(
+    Path::new(label)
+      .file_stem()
+      .and_then(|s| s.to_str())
+      .unwrap_or(label),
+  )
+}
+
+/// Launchable models in `dir` as shard sets. Name-only, no header reads, so
+/// the widen guard costs one `read_dir` per directory.
+fn dir_model_labels(dir: &Path) -> std::collections::BTreeSet<String> {
+  let mut out = std::collections::BTreeSet::new();
+  let Ok(entries) = std::fs::read_dir(dir) else {
+    return out;
+  };
+  for e in entries.flatten() {
+    let path = e.path();
+    if !path.is_file() {
+      continue;
+    }
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+      continue;
+    };
+    if !name.to_lowercase().ends_with(".gguf") {
+      continue;
+    }
+    if is_projector_companion(&path) || is_mtp_head_file(&path) {
+      continue;
+    }
+    out.insert(crate::util::paths::model_file_label(&path));
+  }
+  out
 }
 
 /// Choose from classified candidates. `own_dir` enables the two unnamed tiers:
 /// they rest on "the only model beside the only companion", which a companion
 /// directory cannot show, and across directories would pair on nothing but
 /// proximity.
-fn pick(c: &Candidates, own_dir: bool) -> Option<PathBuf> {
+fn pick(
+  c: &Candidates,
+  own_dir: bool,
+  kind: &CompanionKind<'_>,
+  model_path: &Path,
+) -> Option<PathBuf> {
   let first = |v: &Vec<PathBuf>| {
     let mut v = v.clone();
     v.sort();
@@ -559,6 +602,18 @@ fn pick(c: &Candidates, own_dir: bool) -> Option<PathBuf> {
   }
   // 1. Name match.
   if !c.base.is_empty() {
+    if c.base.len() > 1 {
+      let mut sorted = c.base.clone();
+      sorted.sort();
+      log::warn!(
+        "{}: {} {} candidates match by name; using {:?}: {:?}",
+        model_path.display(),
+        sorted.len(),
+        kind.label,
+        sorted[0].file_name().unwrap_or_default().to_string_lossy(),
+        companion_names(&sorted),
+      );
+    }
     return first(&c.base);
   }
   if !own_dir {
