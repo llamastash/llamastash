@@ -92,7 +92,7 @@ pub(crate) enum RouteDecision {
   /// `model_not_found` with `matches: []`.
   NotFound { requested_model: String },
   /// `resolve_model` returned > 1 matches. Emits 400
-  /// `ambiguous_model` with the candidate names.
+  /// `ambiguous_model` with the candidates' repo-qualified ids.
   Ambiguous {
     requested_model: String,
     candidates: Vec<String>,
@@ -257,9 +257,12 @@ pub(crate) async fn decide(state: &Arc<ProxyState>, body_model: Option<String>) 
       };
     }
     Err(ResolveError::Many(candidates)) => {
+      // The ids `/v1/models` publishes, not the bare names: two same-named
+      // GGUFs in different roots listed the identical string twice, leaving
+      // the client nothing to refine with. Every entry here routes.
       return RouteDecision::Ambiguous {
         requested_model: requested,
-        candidates: candidates.into_iter().map(|r| r.name()).collect(),
+        candidates: crate::launch::resolve::published_ids_for(&rows, &candidates),
       };
     }
   };

@@ -103,6 +103,74 @@ pub fn model_public_id(path: &Path, display_label: Option<&str>) -> String {
   }
 }
 
+/// The repo-qualified form of [`model_public_id`]:
+/// `unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-Q4_K_M`. Used to publish a model
+/// whose bare id collides with another row's, so both stay reachable.
+///
+/// A source that supplies its own `display_label` already carries a
+/// repo-scoped id (`Qwen/Qwen3-0.6B`, `llama3:8b`), so it is returned
+/// unchanged — qualifying it would only stutter.
+pub fn model_qualified_id(path: &Path, display_label: Option<&str>) -> String {
+  if let Some(label) = display_label {
+    return label.to_string();
+  }
+  match model_group_label(path) {
+    Some(group) => format!("{group}/{}", model_display_name(path)),
+    None => model_display_name(path),
+  }
+}
+
+/// Published ids for a whole catalog, keyed by canonical path.
+///
+/// A model whose [`model_public_id`] is unique across the catalog keeps it;
+/// one that collides is published under [`model_qualified_id`]; a collision
+/// that survives that falls back to the canonical path, unique by
+/// construction. So every row `/v1/models` lists is reachable — before this,
+/// two same-named GGUFs in different roots published one id that 400'd with
+/// `ambiguous_model` for both — and an id already written into a tool config
+/// keeps working for as long as it stays unambiguous.
+pub fn published_id_index<'a, I>(models: I) -> std::collections::HashMap<String, String>
+where
+  I: IntoIterator<Item = (&'a Path, Option<&'a str>)>,
+{
+  use std::collections::HashMap;
+  // Both forms share one namespace, so a qualified id can never shadow some
+  // other row's plain one. A row whose two forms are identical (any source
+  // carrying a `display_label`) contributes a single count, or nothing would
+  // ever read as unique.
+  let forms: Vec<(&Path, String, String)> = models
+    .into_iter()
+    .map(|(path, label)| {
+      (
+        path,
+        model_public_id(path, label),
+        model_qualified_id(path, label),
+      )
+    })
+    .collect();
+  let mut taken: HashMap<&str, usize> = HashMap::new();
+  for (_, plain, qualified) in &forms {
+    *taken.entry(plain.as_str()).or_insert(0) += 1;
+    if qualified != plain {
+      *taken.entry(qualified.as_str()).or_insert(0) += 1;
+    }
+  }
+  forms
+    .iter()
+    .map(|(path, plain, qualified)| {
+      let unique = |id: &str| taken.get(id).copied().unwrap_or(0) == 1;
+      let id = if unique(plain) {
+        plain.clone()
+      } else if unique(qualified) {
+        qualified.clone()
+      } else {
+        path.to_string_lossy().into_owned()
+      };
+      (path.to_string_lossy().into_owned(), id)
+    })
+    .collect()
+}
+
 /// Follow `path` through any symlinks to the real file that would be
 /// written.
 ///
@@ -314,11 +382,19 @@ fn trailing_path_label(path: &Path, keep_segments: usize) -> String {
 /// (`…/models/qwen`) so user-configured `model_paths` stay scannable
 /// instead of burning the whole left-pane width on an absolute path.
 pub fn friendly_group_label(parent: &Path) -> String {
+  cache_repo_label(parent).unwrap_or_else(|| trailing_path_label(parent, 2))
+}
+
+/// The `owner/repo`-shaped label for a path under a recognized model cache,
+/// or `None` for anything else. Split out of [`friendly_group_label`] so the
+/// id qualifier can fall back to a bare directory name instead of the
+/// elided `…/a/b` form, which a user cannot type back.
+fn cache_repo_label(parent: &Path) -> Option<String> {
   for comp in parent.components() {
     if let Some(s) = comp.as_os_str().to_str() {
       if let Some(rest) = s.strip_prefix("models--") {
         if let Some((owner, repo)) = rest.split_once("--") {
-          return format!("{owner}/{repo}");
+          return Some(format!("{owner}/{repo}"));
         }
       }
     }
@@ -330,7 +406,7 @@ pub fn friendly_group_label(parent: &Path) -> String {
   // so the group header only needs to advertise the cache.
   let last = parent.file_name().and_then(|n| n.to_str());
   if last == Some("blobs") && (s.contains("ollama") || s.contains(".ollama")) {
-    return "Ollama".to_string();
+    return Some("Ollama".to_string());
   }
   if let Some(idx) = s.find("registry.ollama.ai/library/") {
     let tail = &s[idx + "registry.ollama.ai/library/".len()..];
@@ -338,11 +414,11 @@ pub fn friendly_group_label(parent: &Path) -> String {
     let name = parts.next().unwrap_or("");
     let tag = parts.next().unwrap_or("");
     if !name.is_empty() {
-      return if tag.is_empty() {
+      return Some(if tag.is_empty() {
         name.to_string()
       } else {
         format!("{name}:{tag}")
-      };
+      });
     }
   }
   for marker in ["lmstudio-models/", ".lmstudio/models/"] {
@@ -352,11 +428,31 @@ pub fn friendly_group_label(parent: &Path) -> String {
       let owner = parts.next().unwrap_or("");
       let repo = parts.next().unwrap_or("");
       if !owner.is_empty() && !repo.is_empty() {
-        return format!("{owner}/{repo}");
+        return Some(format!("{owner}/{repo}"));
       }
     }
   }
-  trailing_path_label(parent, 2)
+  None
+}
+
+/// The repo-shaped label for where a **model file** lives: `owner/repo` for
+/// a recognized cache layout, otherwise the name of its own parent
+/// directory. `None` when the path has no parent segment to name.
+///
+/// This is the `list` REPO column and the qualifier that disambiguates a
+/// published model id. Deliberately not [`friendly_group_label`]: that one
+/// elides a long generic path to `…/a/b`, which reads fine as a TUI section
+/// header but cannot be typed back as part of a model id.
+pub fn model_group_label(path: &Path) -> Option<String> {
+  let parent = path.parent()?;
+  if let Some(repo) = cache_repo_label(parent) {
+    return Some(repo);
+  }
+  parent
+    .file_name()
+    .and_then(|s| s.to_str())
+    .filter(|s| !s.is_empty())
+    .map(ToOwned::to_owned)
 }
 
 #[cfg(test)]
@@ -568,6 +664,83 @@ mod tests {
     // Non-drive verbatim forms are left untouched.
     let dev = PathBuf::from(r"\\?\Volume{abc}\m.gguf");
     assert_eq!(strip_verbatim_prefix(dev.clone()), dev);
+  }
+
+  #[test]
+  fn model_group_label_is_the_repo_for_a_cache_and_the_parent_dir_otherwise() {
+    assert_eq!(
+      model_group_label(Path::new(
+        "/home/a/.cache/huggingface/hub/models--unsloth--Qwen3.8-27B-GGUF/snapshots/1/UD-Q4_K_XL/w.gguf"
+      ))
+      .as_deref(),
+      Some("unsloth/Qwen3.8-27B-GGUF"),
+      "a quant subdir still reports its repo"
+    );
+    assert_eq!(
+      model_group_label(Path::new(
+        "/home/a/.lmstudio/models/lmstudio-community/Phi-4-GGUF/p.gguf"
+      ))
+      .as_deref(),
+      Some("lmstudio-community/Phi-4-GGUF")
+    );
+    // Not a known cache: the parent's own name, never the elided `…/a/b`
+    // form — the qualifier has to be typeable back as part of a model id.
+    assert_eq!(
+      model_group_label(Path::new("/very/long/model/cache/custom/qwen/w.gguf")).as_deref(),
+      Some("qwen")
+    );
+    assert_eq!(model_group_label(Path::new("w.gguf")), None);
+  }
+
+  #[test]
+  fn model_qualified_id_prefixes_a_gguf_but_leaves_a_labelled_row_alone() {
+    let hf = Path::new(
+      "/c/huggingface/hub/models--unsloth--Qwen3.8-27B-GGUF/snapshots/1/Qwen3.8-27B-Q4_K_M.gguf",
+    );
+    assert_eq!(
+      model_qualified_id(hf, None),
+      "unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-Q4_K_M"
+    );
+    // An Ollama blob's label is already a repo-scoped id; qualifying it with
+    // the content-addressed blob dir would only stutter.
+    assert_eq!(
+      model_qualified_id(Path::new("/o/blobs/sha256-abc"), Some("llama3:8b")),
+      "llama3:8b"
+    );
+  }
+
+  #[test]
+  fn published_id_index_qualifies_only_what_collides() {
+    let ids = published_id_index([
+      (Path::new("/hf/gemma-4-E2B-it-Q4_K_M.gguf"), None),
+      (Path::new("/lms/gemma-4-E2B-it-Q4_K_M.gguf"), None),
+      (Path::new("/m/llama.gguf"), None),
+      (Path::new("/o/blobs/sha256-abc"), Some("llama3:8b")),
+    ]);
+    assert_eq!(ids["/m/llama.gguf"], "llama", "unique id is left alone");
+    assert_eq!(
+      ids["/o/blobs/sha256-abc"], "llama3:8b",
+      "a labelled row whose two forms are identical still reads as unique"
+    );
+    assert_eq!(
+      ids["/hf/gemma-4-E2B-it-Q4_K_M.gguf"],
+      "hf/gemma-4-E2B-it-Q4_K_M"
+    );
+    assert_eq!(
+      ids["/lms/gemma-4-E2B-it-Q4_K_M.gguf"],
+      "lms/gemma-4-E2B-it-Q4_K_M"
+    );
+  }
+
+  #[test]
+  fn published_id_index_falls_back_to_the_path_when_qualifying_still_collides() {
+    // Same basename in two subdirs of one HF repo: both qualify to the same
+    // `owner/repo/name`, so the only remaining unique handle is the path.
+    let a = Path::new("/c/hub/models--o--r/snapshots/1/UD-Q4_K_XL/w.gguf");
+    let b = Path::new("/c/hub/models--o--r/snapshots/1/Q8_0/w.gguf");
+    let ids = published_id_index([(a, None), (b, None)]);
+    assert_eq!(ids[&a.to_string_lossy().to_string()], a.to_string_lossy());
+    assert_eq!(ids[&b.to_string_lossy().to_string()], b.to_string_lossy());
   }
 
   #[test]

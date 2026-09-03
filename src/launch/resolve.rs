@@ -131,6 +131,10 @@ impl CatalogRow {
       // Friendly label (display_label or path basename). Additive to the raw
       // IPC shape so CLI `--json` consumers keep a `name` field.
       "name": self.name(),
+      // Repo-shaped location (`unsloth/Qwen3.8-27B-GGUF`), derived like
+      // `name` rather than stored. Empty string, not null, when the row has
+      // none — the `list` REPO column renders it verbatim.
+      "repo": self.group_label(),
       "path": self.path,
       "parent": self.parent,
       "source": self.source,
@@ -299,6 +303,60 @@ impl CatalogRow {
       self.display_label.as_deref(),
     )
   }
+
+  /// The repo-qualified form of [`Self::public_id`]
+  /// (`unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-Q4_K_M`). What the proxy
+  /// publishes for a row whose bare id collides with another's, and what
+  /// this resolver accepts for every row so that id routes back.
+  pub fn qualified_id(&self) -> String {
+    crate::util::paths::model_qualified_id(
+      std::path::Path::new(&self.path),
+      self.display_label.as_deref(),
+    )
+  }
+
+  /// Where the model lives, repo-shaped (`unsloth/Qwen3.8-27B-GGUF`) — the
+  /// `list` REPO column and the prefix [`Self::qualified_id`] carries.
+  ///
+  /// Empty for a source that supplies its own `display_label`: that label
+  /// already names the origin, and the synthetic path behind it has no
+  /// directory worth showing. Also empty when the path has no parent.
+  pub fn group_label(&self) -> String {
+    if self.display_label.is_some() {
+      return String::new();
+    }
+    crate::util::paths::model_group_label(std::path::Path::new(&self.path)).unwrap_or_default()
+  }
+}
+
+/// Published ids for a whole catalog, aligned with `rows`: unique by
+/// construction, so every row is reachable by the id it is listed under.
+/// See [`crate::util::paths::published_id_index`] for the escalation rule.
+pub fn published_ids(rows: &[CatalogRow]) -> Vec<String> {
+  published_ids_for(rows, rows)
+}
+
+/// The ids `catalog` publishes `subset` under, aligned with `subset`.
+///
+/// What an `ambiguous_model` body must list: a candidate's own
+/// [`CatalogRow::qualified_id`] can still collide (two quant subdirectories
+/// of one repo), and the client is being told to send one of these back, so
+/// they have to be resolved against the whole catalog.
+pub fn published_ids_for(catalog: &[CatalogRow], subset: &[CatalogRow]) -> Vec<String> {
+  let index = crate::util::paths::published_id_index(
+    catalog
+      .iter()
+      .map(|r| (std::path::Path::new(&r.path), r.display_label.as_deref())),
+  );
+  subset
+    .iter()
+    .map(|r| {
+      index
+        .get(&r.path)
+        .cloned()
+        .unwrap_or_else(|| r.qualified_id())
+    })
+    .collect()
 }
 
 /// Distinguishes the three resolver failure modes the HTTP proxy needs
@@ -334,8 +392,9 @@ pub(crate) fn collapse_shard_reference(needle: &str) -> Option<String> {
 /// substring matcher themselves. The CLI's `resolve_model` wraps this,
 /// folding every failure into a single `MODEL_NOT_FOUND` exit.
 ///
-/// Precedence: exact path → exact name → a split model's pre-rename shard-1
-/// name → case-insensitive substring of name or parent.
+/// Precedence: exact path → exact name → repo-qualified id → a split
+/// model's pre-rename shard-1 name → case-insensitive substring of name,
+/// parent, or qualified id.
 pub fn resolve_model_with_candidates(
   rows: &[CatalogRow],
   reference: &str,
@@ -354,6 +413,23 @@ pub fn resolve_model_with_candidates(
   let exact_name: Vec<&CatalogRow> = rows.iter().filter(|r| r.name() == needle).collect();
   if exact_name.len() == 1 {
     return Ok(exact_name[0].clone());
+  }
+  // The proxy publishes a repo-qualified id for a model whose bare name
+  // collides with another row's, so that id has to route back here. Accepted
+  // for every row, collision or not, in both the extensionless form
+  // `/v1/models` publishes and the filename form `list` shows.
+  let qualified: Vec<&CatalogRow> = rows
+    .iter()
+    .filter(|r| {
+      if r.qualified_id().eq_ignore_ascii_case(needle) {
+        return true;
+      }
+      let group = r.group_label();
+      !group.is_empty() && format!("{group}/{}", r.name()).eq_ignore_ascii_case(needle)
+    })
+    .collect();
+  if qualified.len() == 1 {
+    return Ok(qualified[0].clone());
   }
   // Split models used to be named after shard 1, and that string is still out
   // there: in 0.2.0 tool configs, saved `body.model` values, and preset keys.
@@ -383,7 +459,12 @@ pub fn resolve_model_with_candidates(
   let candidates: Vec<&CatalogRow> = rows
     .iter()
     .filter(|r| {
-      r.name().to_lowercase().contains(&lower) || r.parent.to_lowercase().contains(&lower)
+      r.name().to_lowercase().contains(&lower)
+        || r.parent.to_lowercase().contains(&lower)
+        // The repo-qualified id, so `unsloth/Qwen3.8` matches: the raw parent
+        // spells an HF repo `models--unsloth--Qwen3.8-…`, which no reference
+        // a user reads off `list` or `/v1/models` looks like.
+        || r.qualified_id().to_lowercase().contains(&lower)
     })
     .collect();
   match candidates.len() {
@@ -448,6 +529,69 @@ mod tests {
       multimodal: None,
       mtp: None,
     }
+  }
+
+  #[test]
+  fn a_shared_basename_is_reachable_by_its_repo_qualified_id() {
+    // The bare name is genuinely ambiguous and stays a `Many`; the qualified
+    // id `/v1/models` publishes for each row resolves to exactly that row.
+    let rows = vec![
+      row("/hf/gemma-4-E2B-it-Q4_K_M.gguf", "/hf"),
+      row("/lms/gemma-4-E2B-it-Q4_K_M.gguf", "/lms"),
+    ];
+    assert!(
+      matches!(
+        resolve_model_with_candidates(&rows, "gemma-4-E2B-it-Q4_K_M"),
+        Err(ResolveError::Many(_))
+      ),
+      "the bare name still names two models"
+    );
+    for (needle, want) in [
+      ("hf/gemma-4-E2B-it-Q4_K_M", "/hf/gemma-4-E2B-it-Q4_K_M.gguf"),
+      (
+        "lms/gemma-4-E2B-it-Q4_K_M",
+        "/lms/gemma-4-E2B-it-Q4_K_M.gguf",
+      ),
+      // The filename spelling `list` shows, not just the published stem.
+      (
+        "lms/gemma-4-E2B-it-Q4_K_M.gguf",
+        "/lms/gemma-4-E2B-it-Q4_K_M.gguf",
+      ),
+    ] {
+      let got = resolve_model_with_candidates(&rows, needle)
+        .unwrap_or_else(|e| panic!("`{needle}` must resolve; got {e:?}"));
+      assert_eq!(got.path, want, "`{needle}`");
+    }
+  }
+
+  #[test]
+  fn a_partial_repo_reference_matches_through_the_qualified_id() {
+    // The raw parent spells an HF repo `models--unsloth--…`, which is not
+    // what a user reads off `list` or `/v1/models`.
+    let rows = vec![row(
+      "/c/hub/models--unsloth--Qwen3.8-27B-GGUF/snapshots/1/Qwen3.8-27B-Q4_K_M.gguf",
+      "/c/hub/models--unsloth--Qwen3.8-27B-GGUF/snapshots/1",
+    )];
+    assert!(resolve_model_with_candidates(&rows, "unsloth/Qwen3.8").is_ok());
+  }
+
+  #[test]
+  fn group_label_is_empty_for_a_source_that_labels_itself() {
+    let mut ollama = row("/o/blobs/sha256-abc", "/o/blobs");
+    ollama.display_label = Some("llama3:8b".to_string());
+    assert_eq!(ollama.group_label(), "");
+    assert_eq!(ollama.qualified_id(), "llama3:8b");
+    assert_eq!(row("/m/x.gguf", "/m").group_label(), "m");
+  }
+
+  #[test]
+  fn published_ids_are_unique_across_the_catalog() {
+    let rows = vec![
+      row("/hf/x.gguf", "/hf"),
+      row("/lms/x.gguf", "/lms"),
+      row("/m/y.gguf", "/m"),
+    ];
+    assert_eq!(published_ids(&rows), vec!["hf/x", "lms/x", "y"]);
   }
 
   #[test]

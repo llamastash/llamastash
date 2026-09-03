@@ -112,10 +112,15 @@ impl PatchModel {
     self.context_window.unwrap_or(DEFAULT_CONTEXT_WINDOW)
   }
 
-  /// Project a catalog row. Prefers the parsed `mode_hint` over the name
-  /// heuristic — a header that says `embedding` is not a guess.
-  pub fn from_catalog_row(row: &crate::launch::resolve::CatalogRow) -> Self {
-    let id = row.public_id();
+  /// Project a catalog row under the id the proxy publishes it as. Prefers
+  /// the parsed `mode_hint` over the name heuristic — a header that says
+  /// `embedding` is not a guess.
+  ///
+  /// `id` is passed in rather than read off the row because
+  /// disambiguating a shared basename takes the whole catalog
+  /// ([`crate::launch::resolve::published_ids`]); a row's own
+  /// `public_id()` can be a string that always 400s.
+  pub fn from_catalog_row(row: &crate::launch::resolve::CatalogRow, id: String) -> Self {
     let is_embed = match row.mode_hint.as_deref() {
       Some(hint) => hint == "embedding",
       None => Self::from_id(id.clone()).is_embed,
@@ -437,9 +442,9 @@ mod tests {
       None,
     );
     row.mode_hint = Some("embedding".into());
-    assert!(PatchModel::from_catalog_row(&row).is_embed);
+    assert!(PatchModel::from_catalog_row(&row, row.public_id()).is_embed);
     row.mode_hint = Some("chat".into());
-    assert!(!PatchModel::from_catalog_row(&row).is_embed);
+    assert!(!PatchModel::from_catalog_row(&row, row.public_id()).is_embed);
   }
 
   #[test]
@@ -451,13 +456,13 @@ mod tests {
     );
     row.native_ctx = Some(262_144);
     assert_eq!(
-      PatchModel::from_catalog_row(&row).declared_context(),
+      PatchModel::from_catalog_row(&row, row.public_id()).declared_context(),
       262_144
     );
     // No figure in the catalog: fall back rather than guess high.
     row.native_ctx = None;
     assert_eq!(
-      PatchModel::from_catalog_row(&row).declared_context(),
+      PatchModel::from_catalog_row(&row, row.public_id()).declared_context(),
       DEFAULT_CONTEXT_WINDOW
     );
   }
@@ -471,7 +476,7 @@ mod tests {
       None,
     );
     assert_eq!(
-      PatchModel::from_catalog_row(&gguf).id,
+      PatchModel::from_catalog_row(&gguf, gguf.public_id()).id,
       "Qwen3-Coder-30B-Q4_K_M"
     );
     let repo = crate::launch::resolve::CatalogRow::for_resolution(
@@ -479,7 +484,10 @@ mod tests {
       Some("Qwen/Qwen3-0.6B".into()),
       None,
     );
-    assert_eq!(PatchModel::from_catalog_row(&repo).id, "Qwen/Qwen3-0.6B");
+    assert_eq!(
+      PatchModel::from_catalog_row(&repo, repo.public_id()).id,
+      "Qwen/Qwen3-0.6B"
+    );
   }
 
   #[cfg(unix)]

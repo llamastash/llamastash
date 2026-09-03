@@ -3,6 +3,7 @@ pub mod clipboard;
 pub mod config_patch;
 pub mod datetime;
 pub mod file_security;
+pub mod glob;
 pub mod hex;
 pub mod http_auth;
 pub mod logging;

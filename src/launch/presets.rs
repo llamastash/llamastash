@@ -203,10 +203,56 @@ pub enum KeyClass {
   /// Matches no discovered model — read as a GGUF `general.architecture`
   /// id that applies to every model of that arch.
   Arch,
-  /// Names more than one discovered model (a shared basename). Read as a
-  /// per-model key applying to all of them — never as an arch id. Only used
-  /// to keep such a key out of the arch layer.
+  /// Names more than one discovered model (a shared basename), or is a
+  /// wildcard pattern that currently names none. Read as a per-model key
+  /// applying to all of them — never as an arch id. Only used to keep such
+  /// a key out of the arch layer.
   Ambiguous,
+}
+
+/// Whether a `presets:` key names this model.
+///
+/// A key carrying `*` or `?` is a glob ([`crate::util::glob`]) over the
+/// model's filename, its extensionless form, its canonical path, and both
+/// of those repo-qualified — so `unsloth/*` covers a whole HF repo and
+/// `*-Q4_K_M` covers one quant across every repo. A key without a wildcard
+/// is the exact path or the case-insensitive filename it always was, plus
+/// the pre-rename shard-1 spelling of a split set.
+pub fn preset_key_matches(key: &str, model_name: &str, model_path: &str) -> bool {
+  if crate::util::glob::is_pattern(key) {
+    return glob_candidates(model_name, model_path)
+      .iter()
+      .any(|c| crate::util::glob::matches(key, c));
+  }
+  if key == model_path || key.eq_ignore_ascii_case(model_name) {
+    return true;
+  }
+  // A key written before split models were named after their shard set still
+  // reads `…-00001-of-00004.gguf`; collapse it so those presets keep applying.
+  // Same helper the reference resolver uses, so the two cannot drift. Bare
+  // filenames only: that helper drops directories too, so a full-path key
+  // would otherwise capture every model sharing its basename.
+  if key.contains(['/', '\\']) {
+    return false;
+  }
+  crate::launch::resolve::collapse_shard_reference(key)
+    .is_some_and(|c| c.eq_ignore_ascii_case(model_name))
+}
+
+/// The strings a wildcard preset key is matched against.
+fn glob_candidates(model_name: &str, model_path: &str) -> Vec<String> {
+  let path = std::path::Path::new(model_path);
+  let stem = std::path::Path::new(model_name)
+    .file_stem()
+    .and_then(|s| s.to_str())
+    .unwrap_or(model_name)
+    .to_string();
+  let mut out = vec![model_name.to_string(), stem.clone(), model_path.to_string()];
+  if let Some(group) = crate::util::paths::model_group_label(path) {
+    out.push(format!("{group}/{model_name}"));
+    out.push(format!("{group}/{stem}"));
+  }
+  out
 }
 
 /// Classify a config `presets:` key against the live catalog. Matching is
@@ -221,19 +267,17 @@ pub fn classify_preset_key(key: &str, catalog: &[CatalogRow]) -> KeyClass {
       path: row.path.clone(),
     };
   }
-  // A key written before split models were named after their shard set still
-  // reads `…-00001-of-00004.gguf`; collapse it so those presets keep applying.
-  // Same helper the reference resolver uses, so the two cannot drift.
-  let key_collapsed =
-    crate::launch::resolve::collapse_shard_reference(key).unwrap_or_else(|| key.to_string());
-  let mut named = catalog.iter().filter(|r| {
-    r.name().eq_ignore_ascii_case(key) || r.name().eq_ignore_ascii_case(&key_collapsed)
-  });
+  let mut named = catalog
+    .iter()
+    .filter(|r| preset_key_matches(key, &r.name(), &r.path));
   match (named.next(), named.next()) {
     (Some(row), None) => KeyClass::Model {
       path: row.path.clone(),
     },
     (Some(_), Some(_)) => KeyClass::Ambiguous,
+    // A wildcard key naming nothing today is a model pattern with no matches,
+    // not an arch id — a GGUF `general.architecture` never contains `*` / `?`.
+    (None, _) if crate::util::glob::is_pattern(key) => KeyClass::Ambiguous,
     (None, _) => KeyClass::Arch,
   }
 }
@@ -284,6 +328,10 @@ impl EffectivePresets {
 /// resolves its own presets. The catalog is consulted only for the arch
 /// layer — to keep a key that is actually some discovered model's name from
 /// being read as a shared arch id.
+///
+/// Precedence, highest first: an exact per-model key, a wildcard per-model
+/// key, then the arch layer. Both `default:` and individual preset names
+/// follow it.
 pub fn effective_presets(
   model_name: &str,
   model_path: &str,
@@ -295,6 +343,7 @@ pub fn effective_presets(
   // unordered map, so a deterministic order is the right surface).
   let mut merged: BTreeMap<String, NamedPreset> = BTreeMap::new();
   let mut arch_default = None;
+  let mut pattern_default = None;
   let mut model_default = None;
 
   // Arch layer first (lower precedence): a key equal to this model's arch
@@ -307,14 +356,25 @@ pub fn effective_presets(
       }
     }
   }
-  // Per-model layer (higher precedence) — a key naming this model, by full
-  // path or by basename. A basename key applies to *every* discovered model
-  // with that basename: a filename collision in practice means the same GGUF
-  // cached in two roots (e.g. the HF cache and the LM Studio cache), so they
+  // Per-model layer — a key naming this model, by full path, by basename, or
+  // by wildcard. A basename key applies to *every* discovered model with that
+  // basename: a filename collision in practice means the same GGUF cached in
+  // two roots (e.g. the HF cache and the LM Studio cache), so they
   // intentionally share one preset set rather than being disambiguated by
   // path.
+  //
+  // Two passes, because a wildcard is a family fallback and an exact key is a
+  // decision about this one model: exact must win regardless of where the two
+  // keys sort in the config map. Within a pass, several matching keys merge in
+  // key order.
   for (key, block) in store {
-    if key == model_path || key.eq_ignore_ascii_case(model_name) {
+    if crate::util::glob::is_pattern(key) && preset_key_matches(key, model_name, model_path) {
+      merge_block(&mut merged, block, model_path);
+      pattern_default = pattern_default.or_else(|| block.default.clone());
+    }
+  }
+  for (key, block) in store {
+    if !crate::util::glob::is_pattern(key) && preset_key_matches(key, model_name, model_path) {
       merge_block(&mut merged, block, model_path);
       model_default = model_default.or_else(|| block.default.clone());
     }
@@ -327,6 +387,7 @@ pub fn effective_presets(
   // `auto` is the reserved "pure-fit default" sentinel and is kept verbatim;
   // any other name is kept only when it matches a present entry.
   let default = model_default
+    .or(pattern_default)
     .or(arch_default)
     .filter(|d| d.eq_ignore_ascii_case(AUTO_DEFAULT) || presets.get(d).is_some());
   EffectivePresets { presets, default }
@@ -753,6 +814,122 @@ mod tests {
     assert_eq!(eff.presets.len(), 1);
     assert_eq!(eff.presets.get("p").unwrap().params.ctx, Some(42));
     assert_eq!(eff.default.as_deref(), Some("p"));
+  }
+
+  #[test]
+  fn a_wildcard_key_covers_a_family_and_an_exact_key_still_wins() {
+    let catalog = vec![
+      catalog_row("/m/Qwen3.8-27B-Q4_K_M.gguf", "qwen3"),
+      catalog_row("/m/Qwen3.8-27B-Q8_0.gguf", "qwen3"),
+      catalog_row("/m/llama-8b.gguf", "llama"),
+    ];
+    let mut store = BTreeMap::new();
+    store.insert(
+      "Qwen3.8-27B-*".to_string(),
+      block(
+        &[("family", body_ctx(1)), ("shared", body_ctx(1))],
+        Some("family"),
+      ),
+    );
+    store.insert(
+      "Qwen3.8-27B-Q8_0.gguf".to_string(),
+      block(&[("shared", body_ctx(2))], Some("shared")),
+    );
+
+    let q4 = effective_presets(
+      "Qwen3.8-27B-Q4_K_M.gguf",
+      "/m/Qwen3.8-27B-Q4_K_M.gguf",
+      Some("qwen3"),
+      &store,
+      &catalog,
+    );
+    let names: Vec<_> = q4.presets.iter().map(|p| p.name.clone()).collect();
+    assert_eq!(
+      names,
+      vec!["family", "shared"],
+      "wildcard covers the family"
+    );
+    assert_eq!(q4.default.as_deref(), Some("family"));
+
+    // The exact key must beat the wildcard on both the shared entry and
+    // `default:`, whichever way the two keys happen to sort.
+    let q8 = effective_presets(
+      "Qwen3.8-27B-Q8_0.gguf",
+      "/m/Qwen3.8-27B-Q8_0.gguf",
+      Some("qwen3"),
+      &store,
+      &catalog,
+    );
+    assert_eq!(q8.default.as_deref(), Some("shared"));
+    assert_eq!(
+      q8.presets.get("shared").and_then(|p| p.params.ctx),
+      Some(2),
+      "exact key's body wins over the wildcard's"
+    );
+
+    let other = effective_presets(
+      "llama-8b.gguf",
+      "/m/llama-8b.gguf",
+      Some("llama"),
+      &store,
+      &catalog,
+    );
+    assert!(
+      other.presets.iter().next().is_none(),
+      "wildcard is anchored"
+    );
+  }
+
+  #[test]
+  fn a_wildcard_key_can_name_a_whole_repo() {
+    let path =
+      "/c/hub/models--unsloth--Qwen3.8-27B-GGUF/snapshots/1/UD-Q4_K_XL/Qwen3.8-27B-Q4_K_M.gguf";
+    let catalog = vec![catalog_row(path, "qwen3")];
+    let mut store = BTreeMap::new();
+    store.insert("unsloth/*".to_string(), block(&[("p", body_ctx(1))], None));
+    let eff = effective_presets(
+      "Qwen3.8-27B-Q4_K_M.gguf",
+      path,
+      Some("qwen3"),
+      &store,
+      &catalog,
+    );
+    assert!(
+      eff.presets.get("p").is_some(),
+      "`unsloth/*` covers the repo"
+    );
+  }
+
+  #[test]
+  fn a_wildcard_key_is_never_read_as_an_arch_id() {
+    // A `general.architecture` cannot contain `*`, so a pattern matching no
+    // model today must not fall into the arch layer and apply to everything.
+    let catalog = vec![catalog_row("/m/llama-8b.gguf", "llama")];
+    assert_eq!(classify_preset_key("qwen3*", &catalog), KeyClass::Ambiguous);
+    assert_eq!(classify_preset_key("llama", &catalog), KeyClass::Arch);
+    assert_eq!(
+      classify_preset_key("llama-*", &catalog),
+      KeyClass::Model {
+        path: "/m/llama-8b.gguf".to_string()
+      }
+    );
+  }
+
+  #[test]
+  fn a_full_path_key_never_leaks_onto_another_models_shared_basename() {
+    // `collapse_shard_reference` drops directories as well as the shard
+    // suffix, so routing a path key through it would have matched every row
+    // with that basename.
+    assert!(preset_key_matches(
+      "/a/model.gguf",
+      "model.gguf",
+      "/a/model.gguf"
+    ));
+    assert!(!preset_key_matches(
+      "/a/model.gguf",
+      "model.gguf",
+      "/b/model.gguf"
+    ));
   }
 
   #[test]

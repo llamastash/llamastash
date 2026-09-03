@@ -217,6 +217,43 @@ async fn three_models_return_in_alphabetical_order() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_models_sharing_a_basename_publish_two_reachable_ids() {
+  // The same GGUF cached under two roots used to publish one id twice, and
+  // a request for it 400'd `ambiguous_model` listing that id twice — the
+  // model was unreachable from any OpenAI client, and the id `init` wrote
+  // into tool configs always failed. Each row now publishes its
+  // repo-qualified form; the row that shares nothing keeps its bare id.
+  let models = vec![
+    make_model("/hf/gemma-4-E2B-it-Q4_K_M.gguf", None),
+    make_model("/lmstudio/gemma-4-E2B-it-Q4_K_M.gguf", None),
+    make_model("/m/llama.gguf", None),
+  ];
+  let state = proxy_state_with_models(models).await;
+  let (addr, shutdown, listener_handle) = spawn_listener_with_state(state).await;
+
+  let (status, body) = http_get(addr, "/v1/models").await;
+  assert_eq!(status, 200);
+  let v: Value = serde_json::from_slice(&body).expect("json body");
+  let ids: Vec<&str> = v["data"]
+    .as_array()
+    .expect("data array")
+    .iter()
+    .map(|r| r["id"].as_str().unwrap())
+    .collect();
+  assert_eq!(
+    ids,
+    vec![
+      "hf/gemma-4-E2B-it-Q4_K_M",
+      "llama",
+      "lmstudio/gemma-4-E2B-it-Q4_K_M",
+    ],
+    "colliding rows qualify, the unique row does not: {v}"
+  );
+
+  shutdown_listener(shutdown, listener_handle).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn empty_catalog_returns_empty_data_not_error() {
   let state = proxy_state_with_models(Vec::new()).await;
   let (addr, shutdown, listener_handle) = spawn_listener_with_state(state).await;

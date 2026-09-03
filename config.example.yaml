@@ -805,6 +805,17 @@ presets:
         server: llamacpp-vulkan
         knobs:
           ctx-size: 8192
+  # wildcard per-model preset: `*` spans any run of characters (`/`
+  # included), `?` exactly one. Matched case-insensitively against the
+  # file name, its stem, the full path, and both prefixed with the REPO
+  # label `llamastash list` shows — so this covers a whole HF repo.
+  # A wildcard key is never read as an arch id, and an exact key for one
+  # model beats it (for entries and `default:` alike).
+  "unsloth/*":
+    entries:
+      repo-wide:
+        knobs:
+          ctx-size: 32768
   # arch preset, keyed by `general.architecture` — applies to every
   # qwen3 model that has no per-model entry of the same name
   qwen3:

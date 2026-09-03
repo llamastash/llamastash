@@ -38,8 +38,15 @@ pub fn row_path(v: &Value) -> Option<&str> {
 
 /// Render `list_models` rows as a padded table on TTY, or
 /// tab-separated rows when colors are disabled (piped / `--no-colors` /
-/// `NO_COLOR`). Columns: `NAME ARCH PARAMS QUANT CTX SIZE MODE [BACKEND]
-/// STATUS [DEVICE]` — the bracketed two are conditional (see below).
+/// `NO_COLOR`). Columns: `NAME [REPO] ARCH PARAMS QUANT CTX SIZE MODE
+/// [BACKEND] STATUS [DEVICE]` — the bracketed three are conditional (see
+/// below).
+///
+/// REPO is the model's location in short form — `unsloth/Qwen3.8-27B-GGUF`
+/// for an HF cache entry, the parent directory's name for anything else. It
+/// replaces the PATH column that was dropped for width, and it is the
+/// prefix of the repo-qualified id the proxy publishes when two models
+/// share a basename. Omitted when no row has one.
 ///
 /// SIZE displays the GGUF weights footprint (matches the TUI list
 /// pane's SIZE column) — PATH was dropped because the canonical paths
@@ -88,7 +95,17 @@ pub fn list_human(
         .as_deref()
         .is_some_and(|b| b != crate::backend::DEFAULT_BACKEND_ID)
   });
-  let mut header: Vec<&str> = vec!["NAME", "ARCH", "PARAMS", "QUANT", "CTX", "SIZE", "MODE"];
+  // REPO is the short form of where the model lives (`unsloth/Qwen3.8-27B-GGUF`
+  // for an HF cache, the parent directory's name otherwise). Shown whenever
+  // any row has one — a catalog of registry-sourced rows only (Ollama,
+  // Lemonade) has nothing to put in it, since their `name` already names the
+  // origin.
+  let show_repo = rows.iter().any(|r| !r.group_label().is_empty());
+  let mut header: Vec<&str> = vec!["NAME"];
+  if show_repo {
+    header.push("REPO");
+  }
+  header.extend(["ARCH", "PARAMS", "QUANT", "CTX", "SIZE", "MODE"]);
   if show_backend {
     header.push("BACKEND");
   }
@@ -117,7 +134,11 @@ pub fn list_human(
       let size = display_size(r);
       let mode = crate::tui::fmt::list_cell(r.mode_hint.as_deref(), "?");
       let status = running_status_cell(running.get(&r.path));
-      let mut cells = vec![r.name(), arch, params, quant, ctx, size, mode];
+      let mut cells = vec![r.name()];
+      if show_repo {
+        cells.push(r.group_label());
+      }
+      cells.extend([arch, params, quant, ctx, size, mode]);
       if show_backend {
         cells.push(backend_badge(r, "?"));
       }
@@ -856,7 +877,35 @@ mod tests {
     let s = list_human(&rows, &HashMap::new(), false);
     assert_eq!(
       s,
-      "NAME\tARCH\tPARAMS\tQUANT\tCTX\tSIZE\tMODE\tSTATUS\nqwen.gguf\tqwen2\t7B\tQ4_K\t8192\t3.9G\tchat\t\n"
+      "NAME\tREPO\tARCH\tPARAMS\tQUANT\tCTX\tSIZE\tMODE\tSTATUS\nqwen.gguf\tm\tqwen2\t7B\tQ4_K\t8192\t3.9G\tchat\t\n"
+    );
+  }
+
+  #[test]
+  fn list_human_repo_column_shows_the_short_repo_and_hides_when_unusable() {
+    let _g = ColorGuard::set(false);
+    let mut hf = row("Qwen3.8-27B-Q4_K_M", "qwen3", "Q4_K", 8192);
+    hf.path =
+      "/c/hub/models--unsloth--Qwen3.8-27B-GGUF/snapshots/1/Qwen3.8-27B-Q4_K_M.gguf".to_string();
+    let out = list_human(&[hf], &HashMap::new(), false);
+    assert!(
+      out.contains("NAME\tREPO\tARCH"),
+      "REPO sits next to NAME: {out:?}"
+    );
+    assert!(
+      out.contains("\tunsloth/Qwen3.8-27B-GGUF\t"),
+      "HF cache reads as owner/repo, not the raw path: {out:?}"
+    );
+
+    // A catalog of registry rows only: their `name` already names the
+    // origin, so there is nothing to put in the column.
+    let mut ollama = row("llama3:8b", "llama", "Q4_K", 8192);
+    ollama.path = "/o/blobs/sha256-abc".to_string();
+    ollama.display_label = Some("llama3:8b".to_string());
+    let registry = list_human(&[ollama], &HashMap::new(), false);
+    assert!(
+      !registry.contains("REPO"),
+      "column dropped when no row has one: {registry:?}"
     );
   }
 

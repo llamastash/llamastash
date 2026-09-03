@@ -22,6 +22,7 @@
 //!   compat endpoints for actual inference. Tier 2 (`/api/chat`,
 //!   `/api/generate`, `/api/embed`) is tracked under TODO §R2.
 
+use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::sync::Arc;
 
@@ -276,7 +277,7 @@ async fn forward_request(state: Arc<ProxyState>, req: Request<Incoming>) -> Prox
       candidates,
     } => {
       let message = format!(
-        "`{requested_model}` matched {n} models; refine the reference (full path or unique substring)",
+        "`{requested_model}` matched {n} models; send one of `matches` (the repo-qualified id `/v1/models` publishes), a full path, or a unique substring",
         n = candidates.len()
       );
       error_with_matches(
@@ -357,9 +358,10 @@ async fn count_ready(state: &ProxyState) -> usize {
 /// `{"object":"list","data":[]}` (not a 404, not an error).
 async fn list_models(state: Arc<ProxyState>) -> ProxyResponse {
   let snap = state.ctx.catalog.snapshot().await;
+  let ids = published_ids(&snap);
   let mut rows: Vec<ModelObject> = snap
     .iter()
-    .map(|m| ModelObject::new(model_id_for(m)))
+    .map(|m| ModelObject::new(published_id(&ids, m)))
     .collect();
   // ASCII-lexicographic sort: stable, deterministic across runs, and
   // independent of the catalog's underlying BTreeMap key (canonical
@@ -385,6 +387,30 @@ fn model_id_for(m: &DiscoveredModel) -> String {
   crate::util::paths::model_public_id(&m.path, m.display_label.as_deref())
 }
 
+/// Published ids for a catalog snapshot, keyed by canonical path.
+///
+/// [`model_id_for`] alone cannot decide: two GGUFs with the same basename in
+/// different roots derive the same id, publish it twice, and every request
+/// for it 400s `ambiguous_model` — the model is unreachable from any client.
+/// The disambiguation needs the whole catalog, so every listing surface
+/// builds this once and reads ids out of it.
+fn published_ids(snap: &[DiscoveredModel]) -> HashMap<String, String> {
+  crate::util::paths::published_id_index(
+    snap
+      .iter()
+      .map(|m| (m.path.as_path(), m.display_label.as_deref())),
+  )
+}
+
+/// One model's published id, falling back to the bare id for a model that
+/// is not in the snapshot the index was built from.
+fn published_id(ids: &HashMap<String, String>, m: &DiscoveredModel) -> String {
+  ids
+    .get(m.path.to_string_lossy().as_ref())
+    .cloned()
+    .unwrap_or_else(|| model_id_for(m))
+}
+
 // === Ollama-compat handlers ============================================
 //
 // Tier 1: read-only discovery endpoints. All four share `model_id_for`
@@ -396,7 +422,11 @@ fn model_id_for(m: &DiscoveredModel) -> String {
 /// catalog returns `{"models":[]}` (not a 404).
 async fn ollama_tags(state: Arc<ProxyState>) -> ProxyResponse {
   let snap = state.ctx.catalog.snapshot().await;
-  let mut models: Vec<TagModel> = snap.iter().map(ollama_tag_from_discovered).collect();
+  let ids = published_ids(&snap);
+  let mut models: Vec<TagModel> = snap
+    .iter()
+    .map(|m| ollama_tag_from_discovered(m, published_id(&ids, m)))
+    .collect();
   models.sort_by(|a, b| a.name.cmp(&b.name));
   let body = TagsResponse { models };
   let bytes = serde_json::to_vec(&body).expect("json encoding of fixed shape");
@@ -419,6 +449,7 @@ fn ollama_version() -> ProxyResponse {
 async fn ollama_ps(state: Arc<ProxyState>) -> ProxyResponse {
   let sup_snap = state.ctx.supervisors.snapshot().await;
   let cat_snap = state.ctx.catalog.snapshot().await;
+  let ids = published_ids(&cat_snap);
   let by_path = route::index_catalog_by_path(&cat_snap);
   let mut models: Vec<PsModel> = Vec::new();
   for (launch_id, sup) in sup_snap.into_iter() {
@@ -434,7 +465,7 @@ async fn ollama_ps(state: Arc<ProxyState>) -> ProxyResponse {
     let id = sup.id().clone();
     let path_key = id.path.to_string_lossy().into_owned();
     let name = if let Some(d) = by_path.get(&path_key) {
-      model_id_for(d)
+      published_id(&ids, d)
     } else {
       crate::util::paths::model_display_name(&id.path)
     };
@@ -539,13 +570,13 @@ async fn ollama_show(state: Arc<ProxyState>, req: Request<Incoming>) -> ProxyRes
       Vec::<String>::new(),
     ),
     Err(ResolveError::Many(candidates)) => {
-      let names: Vec<String> = candidates.iter().map(|r| r.name()).collect();
+      let names = crate::launch::resolve::published_ids_for(&rows, &candidates);
       let n = names.len();
       error_with_matches(
         StatusCode::BAD_REQUEST,
         "ambiguous_model",
         &format!(
-          "`{reference}` matched {n} models; refine the reference (full path or unique substring)"
+          "`{reference}` matched {n} models; send one of `matches` (the repo-qualified id `/api/tags` publishes), a full path, or a unique substring"
         ),
         names,
       )
@@ -592,8 +623,7 @@ fn ollama_details_unknown() -> ModelDetails {
 }
 
 /// Project a [`DiscoveredModel`] onto an Ollama `/api/tags` row.
-fn ollama_tag_from_discovered(m: &DiscoveredModel) -> TagModel {
-  let name = model_id_for(m);
+fn ollama_tag_from_discovered(m: &DiscoveredModel, name: String) -> TagModel {
   let size = m
     .metadata
     .as_ref()

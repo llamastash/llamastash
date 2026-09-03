@@ -509,8 +509,46 @@ async fn ambiguous_substring_returns_400_with_candidates() {
     .iter()
     .filter_map(|x| x.as_str())
     .collect();
-  assert!(names.contains(&"qwen-coder-7b.gguf"), "got: {names:?}");
-  assert!(names.contains(&"qwen-coder-13b.gguf"), "got: {names:?}");
+  // These two ids are already unique, so they publish plain — `matches` must
+  // not gratuitously qualify a model a client can name as-is.
+  assert!(names.contains(&"qwen-coder-7b"), "got: {names:?}");
+  assert!(names.contains(&"qwen-coder-13b"), "got: {names:?}");
+  shutdown_listener(shutdown, listener_handle).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ambiguous_matches_name_each_candidate_distinctly() {
+  // The regression: two rows sharing a basename listed the identical string
+  // twice, so the 400 told the client to "refine the reference" with nothing
+  // to refine to. Every entry is now the id `/v1/models` publishes.
+  let registry = SupervisorRegistry::new();
+  let state = proxy_state_with(
+    vec![
+      discovered("/hf/gemma-4-E2B-it-Q4_K_M.gguf", None, "gemma4"),
+      discovered("/lms/gemma-4-E2B-it-Q4_K_M.gguf", None, "gemma4"),
+    ],
+    registry,
+  )
+  .await;
+  let (addr, shutdown, listener_handle) = spawn_listener_with_state(state).await;
+
+  let body = r#"{"model":"gemma-4-E2B-it-Q4_K_M","messages":[]}"#;
+  let (status, _headers, response) = http_post(addr, "/v1/chat/completions", body, &[]).await;
+  assert_eq!(status, 400);
+  let v: Value = serde_json::from_slice(&response).expect("json");
+  assert_eq!(v["error"]["type"], "ambiguous_model");
+  let mut names: Vec<&str> = v["error"]["matches"]
+    .as_array()
+    .expect("matches array")
+    .iter()
+    .filter_map(|x| x.as_str())
+    .collect();
+  names.sort_unstable();
+  assert_eq!(
+    names,
+    vec!["hf/gemma-4-E2B-it-Q4_K_M", "lms/gemma-4-E2B-it-Q4_K_M"],
+    "each candidate is named distinctly and can be sent back verbatim"
+  );
   shutdown_listener(shutdown, listener_handle).await;
 }
 

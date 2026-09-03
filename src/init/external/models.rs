@@ -2,10 +2,11 @@
 //!
 //! Two sources, in preference order: the model `init`'s download step just
 //! fetched (when it ran), then every favorite in the daemon's catalog. The
-//! ids come from [`crate::util::paths::model_public_id`], the same rule
+//! ids come from [`crate::launch::resolve::published_ids`], the same rule
 //! `/v1/models` publishes under, so what a tool sends back as `body.model`
 //! is a name the proxy already answers to — for a GGUF file, a safetensors
-//! repo, an Ollama blob, or a Lemonade registry entry alike.
+//! repo, an Ollama blob, or a Lemonade registry entry alike, and for two
+//! same-named GGUFs cached in different roots.
 
 use std::collections::HashSet;
 
@@ -111,10 +112,16 @@ async fn favorites(cli: &Cli, config: &Config) -> Result<Vec<PatchModel>, String
   let rows = crate::cli::resolve::fetch_catalog(&mut client)
     .await
     .map_err(|e| e.message.unwrap_or_else(|| format!("exit {}", e.code)))?;
+  // Ids come from the whole catalog, not from the favorited subset: two
+  // same-named GGUFs disambiguate against each other whether or not both
+  // are starred, so what lands in a tool config is the id `/v1/models`
+  // answers to.
+  let ids = crate::launch::resolve::published_ids(&rows);
   let mut models: Vec<PatchModel> = rows
     .iter()
-    .filter(|r| favorited.contains(r.path.as_str()))
-    .map(PatchModel::from_catalog_row)
+    .zip(ids)
+    .filter(|(r, _)| favorited.contains(r.path.as_str()))
+    .map(|(r, id)| PatchModel::from_catalog_row(r, id))
     .collect();
   models.sort_by(|a, b| a.id.cmp(&b.id));
   Ok(models)
