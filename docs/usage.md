@@ -1154,7 +1154,7 @@ llamastash pull <repo> [--json] [--offline]
 
 `pull` performs a disk-space precheck by HEADing each file before download, so an out-of-space failure surfaces before any bytes hit disk. It refuses to write the HF token to disk in cache-file modes that would persist it insecurely.
 
-On a terminal, `pull` paints one progress line on **stderr**, in the shape `⬇ <file> (2/4)  42%  1.2G / 4.1G · 85M/s`. The percent, bytes and rate cover the whole pull, not just the current file. The line repaints in place and clears itself before the summary. Redirect stderr, or pipe it, and nothing is written: stdout (including `--json`) is identical either way.
+On a terminal, `pull` paints one progress line on **stderr**, in the shape `⬇ <file> (2/4)  42%  1.2G / 4.1G · 85M/s`. The percent, bytes and rate cover the whole pull, not just the current file. The rate counts bytes off the wire, so files served from the HF cache advance the percent without inflating it. The line is trimmed to the terminal width — a long filename loses its middle, keeping the directory and the shard suffix — and it repaints in place and clears itself before the summary. Redirect stderr, or pipe it, and nothing is written: stdout (including `--json`) is identical either way.
 
 ## Exit codes
 
