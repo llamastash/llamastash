@@ -1013,3 +1013,267 @@ async fn pull_subcommand_exits_pull_failed_until_unit_9_lands() {
   assert_eq!(code, exit_codes::PULL_FAILED);
   std::fs::remove_dir_all(&model_dir).ok();
 }
+
+// ---------------------------------------------------------------------------
+// `run` alias + YAML launch files
+// ---------------------------------------------------------------------------
+
+/// Spawn the real binary against this test's daemon. The in-process harness
+/// can't cover the clap-level alias or capture `--json` stdout.
+///
+/// Fully isolated: state, config, cache and HF home all point inside the
+/// per-test temp dir, `--no-spawn` refuses to start a second daemon, and
+/// `--no-scan` keeps the CLI off the real model roots. The daemon itself runs
+/// the `fake_llama_server` fixture, so no real model is ever loaded.
+fn run_cli(state_dir: &Path, args: &[&str]) -> (i32, serde_json::Value, String) {
+  let out = std::process::Command::new(env!("CARGO_BIN_EXE_llamastash"))
+    .arg("--no-spawn")
+    .arg("--no-scan")
+    .args(args)
+    .env("LLAMASTASH_STATE_DIR", state_dir)
+    .env("LLAMASTASH_CONFIG_DIR", state_dir)
+    .env("LLAMASTASH_CACHE_DIR", state_dir)
+    .env("HF_HOME", state_dir)
+    .env("NO_COLOR", "1")
+    .output()
+    .expect("spawn llamastash");
+  let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+  let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+  let json = serde_json::from_str(&stdout).unwrap_or(serde_json::Value::Null);
+  (out.status.code().unwrap_or(-1), json, stderr)
+}
+
+/// A launch file in the daemon's temp dir (removed with it on drop).
+fn launch_file(h: &DaemonHandle, name: &str, body: &str) -> PathBuf {
+  let path = h.state.join(name);
+  std::fs::write(&path, body).unwrap();
+  path
+}
+
+/// Poll until the seeded model is Ready, then return its recorded
+/// `last_params` row. The recorder writes ~200 ms after Ready.
+async fn ready_last_params(h: &DaemonHandle) -> serde_json::Value {
+  let mut client = h.client().await;
+  let deadline = Instant::now() + READY_TIMEOUT;
+  loop {
+    let lp = client.call("last_params_list", None).await.unwrap();
+    if let Some(row) = lp["last_params"].as_array().unwrap().first() {
+      return row.clone();
+    }
+    assert!(Instant::now() < deadline, "last_params never recorded");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+  }
+}
+
+const ONE_MODEL: &str = r#"
+presets:
+  m.gguf:
+    default: fast
+    entries:
+      fast:
+        knobs:
+          n_gpu_layers: 99
+          ctx_size: 8192
+"#;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_alias_starts_a_model() {
+  let h = spawn_daemon_with_model("run-alias", "m.gguf", "llama").await;
+  let (code, json, err) = run_cli(&h.socket, &["run", "m.gguf", "--mode", "chat", "--json"]);
+  assert_eq!(code, exit_codes::SUCCESS, "stderr: {err}");
+  assert_eq!(json["name"], "m.gguf");
+  assert!(json["launch_id"].is_string(), "got {json}");
+  assert!(json["port"].as_u64().is_some(), "got {json}");
+  // `run` is shorthand, not a mode: nothing applied a preset.
+  assert!(json["preset"].is_null(), "got {json}");
+
+  let (code, _, err) = run_cli(&h.socket, &["stop", "--all", "--yes"]);
+  assert_eq!(code, exit_codes::SUCCESS, "stderr: {err}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn start_accepts_a_launch_file_like_run() {
+  let h = spawn_daemon_with_model("run-file-eq", "m.gguf", "llama").await;
+  let file = launch_file(&h, "one.yml", ONE_MODEL);
+  let f = file.to_str().unwrap();
+
+  let (run_code, run_json, err) = run_cli(&h.socket, &["run", f, "--mode", "chat", "--json"]);
+  assert_eq!(run_code, exit_codes::SUCCESS, "stderr: {err}");
+  let (code, _, err) = run_cli(&h.socket, &["stop", "--all", "--yes"]);
+  assert_eq!(code, exit_codes::SUCCESS, "stderr: {err}");
+
+  let (start_code, start_json, err) = run_cli(&h.socket, &["start", f, "--mode", "chat", "--json"]);
+  assert_eq!(start_code, exit_codes::SUCCESS, "stderr: {err}");
+
+  // Detection is not alias-gated: the two bodies agree on everything a
+  // second launch can't control.
+  for key in ["name", "path", "preset"] {
+    assert_eq!(run_json[key], start_json[key], "{key} differs");
+  }
+  assert_eq!(run_json["preset"], "fast");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_launch_file_uses_the_files_default_preset() {
+  let h = spawn_daemon_with_model("run-file-default", "m.gguf", "llama").await;
+  let file = launch_file(&h, "one.yml", ONE_MODEL);
+  let (code, json, err) = run_cli(
+    &h.socket,
+    &["run", file.to_str().unwrap(), "--mode", "chat", "--json"],
+  );
+  assert_eq!(code, exit_codes::SUCCESS, "stderr: {err}");
+  assert_eq!(json["preset"], "fast");
+
+  let row = ready_last_params(&h).await;
+  let knobs = row["params"]["knobs"].as_object().expect("knob map");
+  assert_eq!(knobs.get("n-gpu-layers"), Some(&serde_json::json!(99)));
+  assert_eq!(knobs.get("ctx-size"), Some(&serde_json::json!(8192)));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_launch_file_preset_flag_selects_from_the_file() {
+  let h = spawn_daemon_with_model("run-file-flag", "m.gguf", "llama").await;
+  // No `default:`, and `slow` exists nowhere in the daemon's config.
+  let file = launch_file(
+    &h,
+    "two.yml",
+    r#"
+presets:
+  m.gguf:
+    entries:
+      fast:
+        knobs:
+          n_gpu_layers: 99
+      slow:
+        knobs:
+          n_gpu_layers: 1
+"#,
+  );
+  let (code, json, err) = run_cli(
+    &h.socket,
+    &[
+      "run",
+      file.to_str().unwrap(),
+      "--preset",
+      "slow",
+      "--mode",
+      "chat",
+      "--json",
+    ],
+  );
+  assert_eq!(code, exit_codes::SUCCESS, "stderr: {err}");
+  assert_eq!(json["preset"], "slow");
+
+  let row = ready_last_params(&h).await;
+  assert_eq!(
+    row["params"]["knobs"]["n-gpu-layers"],
+    serde_json::json!(1),
+    "the file's `slow` entry, not `fast`"
+  );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_launch_file_cli_flags_layer_over_the_files_preset() {
+  let h = spawn_daemon_with_model("run-file-layer", "m.gguf", "llama").await;
+  let file = launch_file(
+    &h,
+    "layer.yml",
+    r#"
+presets:
+  m.gguf:
+    default: fast
+    entries:
+      fast:
+        knobs:
+          n_gpu_layers: 99
+          ctx_size: 8192
+        extras: ["--rope-freq-base", "1000000"]
+"#,
+  );
+  let (code, json, err) = run_cli(
+    &h.socket,
+    &[
+      "run",
+      file.to_str().unwrap(),
+      "--mode",
+      "chat",
+      "--ctx",
+      "4096",
+      "--json",
+      "--",
+      "--temp",
+      "0.2",
+    ],
+  );
+  assert_eq!(code, exit_codes::SUCCESS, "stderr: {err}");
+  assert_eq!(
+    json["preset"], "fast",
+    "the file's entry still names the launch"
+  );
+
+  let row = ready_last_params(&h).await;
+  let params = &row["params"];
+  assert_eq!(
+    params["knobs"]["ctx-size"],
+    serde_json::json!(4096),
+    "--ctx wins over the file"
+  );
+  assert_eq!(
+    params["knobs"]["n-gpu-layers"],
+    serde_json::json!(99),
+    "untouched file knobs survive"
+  );
+  // Asymmetric on purpose: inline extras replace the list, they don't merge.
+  assert_eq!(
+    params["extras"],
+    serde_json::json!(["--temp", "0.2"]),
+    "inline extras replace the file's list"
+  );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_launch_file_with_an_unresolvable_model_key_exits_66() {
+  let h = spawn_daemon_with_model("run-file-66", "m.gguf", "llama").await;
+  let file = launch_file(
+    &h,
+    "ghost.yml",
+    r#"
+presets:
+  ghost.gguf:
+    default: fast
+    entries:
+      fast:
+        knobs:
+          n_gpu_layers: 1
+"#,
+  );
+  let (code, _, err) = run_cli(&h.socket, &["run", file.to_str().unwrap(), "--json"]);
+  assert_eq!(code, exit_codes::MODEL_NOT_FOUND, "stderr: {err}");
+  assert!(err.contains("ghost.gguf"), "stderr: {err}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_launch_file_with_two_models_exits_64() {
+  let h = spawn_daemon_with_model("run-file-64", "m.gguf", "llama").await;
+  let file = launch_file(
+    &h,
+    "multi.yml",
+    r#"
+presets:
+  a.gguf:
+    default: a
+    entries:
+      a:
+        knobs:
+          n_gpu_layers: 1
+  b.gguf:
+    entries:
+      b:
+        knobs:
+          n_gpu_layers: 2
+"#,
+  );
+  let (code, _, err) = run_cli(&h.socket, &["run", file.to_str().unwrap(), "--json"]);
+  assert_eq!(code, exit_codes::USAGE, "stderr: {err}");
+  assert!(err.contains("must name exactly one"), "stderr: {err}");
+}

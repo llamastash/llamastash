@@ -325,9 +325,9 @@ llamastash show <model-ref> [--json]
 
 The human output shows the same content as aligned key/value sections, including `multimodal` (`vision + audio`) and `mtp` (`embedded (N layers)` / `separate head`) rows under `metadata`.
 
-### `llamastash start <model-ref>`
+### `llamastash start <model-ref> | llamastash run <model-ref>`
 
-Launch a model. Layered resolution: catalog row → optional preset → per-invocation flags → trailing raw `llama-server` flags after `--`.
+Launch a model. `run` is a visible alias for `start` — same flags, same behavior; it exists as the shorter way to say "launch this". Layered resolution: catalog row → optional preset → per-invocation flags → trailing raw `llama-server` flags after `--`.
 
 ```
 llamastash start <ref> [--preset NAME] [--ctx N] [--port N] [--wait]
@@ -357,6 +357,53 @@ Every knob has three states:
 - unset (Inherited) — falls through presets / arch defaults / the server default.
 
 `backend.llamacpp.fit_ctx_floor` (default 16384) is the minimum context `--fit` is told to keep. Set `default_launch_mode: inherited` to opt the whole machine back to the pre-Auto behavior (knobs you never touch fall through to llama-server's own defaults instead of `--fit`). See the config schema and the environment-variable table above for `default_launch_mode`, `backend.llamacpp.fit_ctx_floor`, and `backend.llamacpp.strict_fit`.
+
+#### Launch files (`llamastash run qwen3.8.yml`)
+
+The positional also takes a `.yaml`/`.yml` file naming **one** model and the presets to run it with:
+
+```
+llamastash run qwen3.8.yml                 # the file's `default:` preset
+llamastash run qwen3.8.yml --preset slow   # a named entry from the file
+llamastash run qwen3.8.yml --ctx 4096      # flags still layer on top
+```
+
+The file is a `presets:` block in `config.yaml`'s own shape, narrowed to one model — no new preset types:
+
+```yaml
+presets:
+  Qwen3-8B-Q4_K_M.gguf:      # model key: substring / exact name / catalog path
+    default: fast            # optional; required with >1 entry and no --preset
+    entries:
+      fast:
+        knobs:
+          n_gpu_layers: 99
+          ctx_size: 32768
+        backend: llamacpp
+        extras: ["--rope-freq-base", "1000000"]
+      slow:
+        knobs:
+          n_gpu_layers: 40
+```
+
+It is **not** self-contained: the model key resolves against the running daemon's catalog exactly like a `start` argument, so a key that matches nothing exits `66`. And it writes nothing — no `config.yaml` entry, no `state.json`, no restart. `presets save` still targets `config.yaml`; a launch file is an input, never an output.
+
+Detection reads the positional, not the alias: a value ending in `.yaml`/`.yml` **that exists as a file** is a launch file, so `start file.yml` behaves identically, and a model actually named `foo.yml` that isn't on disk still resolves as a model reference.
+
+The file's preset is a self-contained baseline, identical to `--preset <name>`: the daemon skips both the default-preset and last-used layers, so nothing leaks in from a previous run. Per-flag layering is unchanged — `--ctx 4096` overrides the file's `ctx_size` and leaves its other knobs alone. Extras are the one asymmetry, as everywhere else on the CLI: flags after `--` **replace** the file's whole `extras:` list rather than merging into it.
+
+Validation is stricter than `config.yaml`'s, because a hand-authored file has no inspection surface — you never see its parsed form. Each of these exits `64` with the problem named:
+
+| The file | Result |
+|---|---|
+| no `presets:` entries, or 2+ model keys | must name exactly one model |
+| a model key with no `entries:` | must define at least one preset |
+| 2+ entries, no `default:`, no `--preset` | ambiguous; the message names the entries |
+| `default:` naming no entry | dangling default (`config.yaml` ignores this one silently; a launch file does not) |
+| `--preset auto`, or `default: auto` | `auto` means "apply no preset", which a launch file cannot mean |
+| a knob no backend declares | names it and points at `llamastash knobs` |
+
+The knob row is the deliberate difference from `config.yaml`, where an undeclared knob is dropped with a line in the daemon's log file. Only the selected entry's knobs are checked — an undeclared knob in an entry you didn't launch stays silent.
 
 #### `--wait` (block until the launch settles)
 

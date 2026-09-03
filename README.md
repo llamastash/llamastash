@@ -88,6 +88,10 @@ llamastash list --json | jq
 # Launch a model by name, name substring, path, or canonical id.
 llamastash start qwen-coder --ctx 16384 --reasoning on
 
+# `run` is an alias for `start`, and the positional takes a YAML
+# launch file: one model, its presets, nothing saved to config.yaml.
+llamastash run qwen-coder.yml
+
 # Drive a smoke-test request against the running endpoint.
 curl -s http://127.0.0.1:41100/v1/chat/completions \
   -H 'Content-Type: application/json' \

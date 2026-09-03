@@ -184,6 +184,7 @@ pub enum Command {
   /// List discovered models.
   List(ListArgs),
   /// Start a model.
+  #[command(visible_alias = "run")]
   Start(StartArgs),
   /// Stop a running model.
   Stop(StopArgs),
@@ -1363,6 +1364,27 @@ mod tests {
   fn parse(args: &[&str]) -> Cli {
     Cli::try_parse_from(std::iter::once("llamastash").chain(args.iter().copied()))
       .expect("argv should parse")
+  }
+
+  /// `run` is shorthand for `start`, not a mode: it has to reach the same
+  /// handler with the same positional, and stay visible in `--help`.
+  #[test]
+  fn run_is_a_visible_alias_for_start() {
+    use clap::CommandFactory;
+    match parse(&["run", "qwen.yml"]).command {
+      Some(Command::Start(args)) => assert_eq!(args.model.as_deref(), Some("qwen.yml")),
+      other => panic!("expected start, got {other:?}"),
+    }
+    let cmd = Cli::command();
+    let help = cmd
+      .find_subcommand("start")
+      .expect("start")
+      .get_visible_aliases()
+      .collect::<Vec<&str>>();
+    assert!(
+      help.contains(&"run"),
+      "`run` must show up in --help: {help:?}"
+    );
   }
 
   #[test]

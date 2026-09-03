@@ -836,46 +836,13 @@ pub(crate) fn preset_hint(
 fn preset_row(p: &NamedPreset, is_default: bool) -> Value {
   json!({
     "name": p.name,
-    "params": launch_params_row(&p.params),
+    "params": p.params.to_wire(),
     // Presets live in config.yaml now; the provenance is constant but
     // surfaced so agents can distinguish a config preset from any future
     // source without re-deriving it.
     "source": "config",
     "is_default": is_default,
   })
-}
-
-fn launch_params_row(p: &LaunchParams) -> Value {
-  let mut row = json!({
-    "model_path": p.model_path,
-    "mode": p.mode.label(),
-    "ctx": p.ctx,
-    "port": p.port,
-    "reasoning": p.reasoning,
-    "knobs": &p.knobs,
-    "extras": p.extras.iter().map(|s| s.to_string_lossy().into_owned()).collect::<Vec<_>>(),
-    // Chosen server build (`null` when none) so the TUI picker's Server row
-    // reopens on the last-used build.
-    "server": p.server,
-  });
-  // Pinned backend, omitted at its `Auto` default so non-pinned rows stay
-  // byte-stable. Same reason `mtp` below is additive: `start --preset` reads
-  // this back to rebuild the preset's launch params, and leaving it out
-  // silently dropped every `backend:` a preset declared.
-  if let Some(id) = p.backend.explicit_id() {
-    row["backend"] = Value::String(id.to_string());
-  }
-  // MTP intent, additive like the native knobs: omitted at its `Auto` default so
-  // non-MTP rows stay byte-stable. The CLI reads this back off `presets_show` to
-  // rebuild a preset's launch params, so leaving it out silently disarmed every
-  // `mtp:` a preset declared.
-  if !p.mtp.is_auto() {
-    row["mtp"] = Value::String(p.mtp.label().to_string());
-  }
-  if let Some(n) = p.mtp_draft_n {
-    row["mtp_draft_n"] = Value::from(n);
-  }
-  row
 }
 
 #[derive(Deserialize)]
@@ -950,7 +917,7 @@ async fn last_params_list_handler(ctx: &MethodContext) -> Result<Value, ErrorObj
       json!({
         "id": &entry.id,
         "model_path": entry.id.as_gguf().map(|g| &g.path),
-        "params": launch_params_row(&entry.params),
+        "params": entry.params.to_wire(),
       })
     })
     .collect();
@@ -973,81 +940,6 @@ mod tests {
 
   fn ctx() -> MethodContext {
     MethodContext::new(ShutdownToken::new())
-  }
-
-  /// A pinned backend has to survive onto the wire.
-  ///
-  /// It did not: the row carried `server` but never `backend`, so a preset
-  /// declaring one could not be read back by anything, and `start --preset`
-  /// launched on the default engine while reporting the preset's name.
-  #[test]
-  fn launch_params_row_carries_a_pinned_backend_and_omits_an_auto_one() {
-    use crate::launch::mode::LaunchMode;
-    use crate::launch::params::BackendChoice;
-    use std::path::PathBuf;
-
-    // Auto is the default, so the key stays absent and rows stay byte-stable.
-    let auto = LaunchParams::new(PathBuf::from("/m/a.gguf"), LaunchMode::Chat);
-    assert_eq!(auto.backend, BackendChoice::Auto);
-    assert!(
-      launch_params_row(&auto).get("backend").is_none(),
-      "an auto backend must not widen the row"
-    );
-
-    // Pinned rides the row as the bare id, matching `server` beside it.
-    let mut pinned = LaunchParams::new(PathBuf::from("/m/a.gguf"), LaunchMode::Chat);
-    pinned.backend = BackendChoice::from_id(crate::backend::DEFAULT_BACKEND_ID);
-    pinned.server = Some("build-two".into());
-    let row = launch_params_row(&pinned);
-    assert_eq!(
-      row["backend"].as_str(),
-      Some(crate::backend::DEFAULT_BACKEND_ID)
-    );
-    assert_eq!(row["server"].as_str(), Some("build-two"));
-  }
-
-  #[test]
-  fn launch_params_row_omits_empty_backend_knobs_and_emits_when_set() {
-    use crate::launch::mode::LaunchMode;
-    use std::path::PathBuf;
-    // Empty → the key is absent (byte-stable for llama.cpp / Lemonade).
-    let lp = LaunchParams::new(PathBuf::from("/m/a.gguf"), LaunchMode::Chat);
-    let row = launch_params_row(&lp);
-    assert!(
-      row["knobs"].as_object().is_some_and(|m| m.is_empty()),
-      "an empty knob set renders as an empty map: {row}"
-    );
-    // Set → the key carries the map, with the same shape the TUI parses back.
-    let mut lp2 = LaunchParams::new(PathBuf::from("/m/a.gguf"), LaunchMode::Chat);
-    lp2.knobs.set_by_name("kv-disk-dir", "/tmp/kv");
-    let row2 = launch_params_row(&lp2);
-    assert_eq!(
-      row2["knobs"]["kv-disk-dir"],
-      serde_json::json!("/tmp/kv"),
-      "a backend's own knob round-trips into the row like any other"
-    );
-  }
-
-  #[test]
-  fn launch_params_row_carries_server_pick_for_the_tui() {
-    // Regression: the server pick is persisted in `last_params` but was
-    // dropped from the `last_params_list` projection, so the TUI picker's
-    // Server row never reopened on the last-used build.
-    use crate::launch::mode::LaunchMode;
-    use std::path::PathBuf;
-    let lp = LaunchParams::new(PathBuf::from("/m/a.gguf"), LaunchMode::Chat);
-    assert_eq!(
-      launch_params_row(&lp)["server"],
-      serde_json::Value::Null,
-      "no pick → null"
-    );
-    let mut lp2 = LaunchParams::new(PathBuf::from("/m/a.gguf"), LaunchMode::Chat);
-    lp2.server = Some("llamacpp-vulkan".into());
-    assert_eq!(
-      launch_params_row(&lp2)["server"],
-      serde_json::json!("llamacpp-vulkan"),
-      "the picked server build round-trips into the row for the TUI"
-    );
   }
 
   #[tokio::test]
