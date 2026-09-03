@@ -849,6 +849,7 @@ mod tests {
         native_ctx: Some(4096),
         parameter_label: Some("7B".into()),
         weights_bytes: Some(100),
+        lazy_tensor_bytes: Vec::new(),
         mtp: None,
         chat_template: None,
         tokenizer_kind: Some("llama".into()),

@@ -104,6 +104,12 @@ pub(crate) struct StartParams {
   /// serving backend on its own default.
   #[serde(default)]
   pub(crate) mtp_draft_n: Option<u32>,
+  /// Launch even when the memory admission gate refuses. Set by
+  /// `start --force`; the projection is surfaced as a warning instead. Never
+  /// set by the proxy's auto-start path, which must not be able to OOM the
+  /// host on a request from the network.
+  #[serde(default)]
+  pub(crate) force: bool,
 }
 
 /// How a launch chose its parameters. See the resolver rule in
@@ -188,8 +194,11 @@ pub struct LaunchExec {
   pub(crate) arch: Option<String>,
   /// Trained context window, for the strict-fit ctx-clamp gate.
   pub(crate) native_ctx: Option<u32>,
-  /// Shard-aware total weight bytes (admission + probe scaling).
-  pub(crate) total_weight_bytes: u64,
+  /// Shard-aware weight bytes this launch holds resident — the on-disk total
+  /// minus what the engine streams. Drives the probe budget, the backend's
+  /// cache cap, and the admission projection alike; see
+  /// [`launch_resident_bytes`].
+  pub(crate) resident_weight_bytes: u64,
   /// The user-supplied knob deltas to persist in `last_params` (not the full
   /// resolved set — keeps source chips meaningful).
   pub(crate) user_knobs: crate::launch::knobs::KnobSet,
@@ -209,6 +218,9 @@ pub struct LaunchExec {
   pub(crate) volatile_knobs: Vec<&'static str>,
   /// Whether this launch bypasses the memory admission gate (streams from disk).
   pub(crate) bypasses_admission: bool,
+  /// Whether the caller asked to launch through an admission refusal
+  /// (`start --force`).
+  pub(crate) force_admission: bool,
   /// Advisories accumulated during composition, extended by the execution.
   pub(crate) warnings: Vec<String>,
   /// The backend id this launch resolved to, stamped on the persisted rows.
@@ -823,14 +835,13 @@ pub(crate) async fn compose_and_spawn(
   // Per-launch log file under cache_dir/logs/<short-id>-<ts>.log.
   let log_path = build_log_path(&env.log_dir, &id);
 
-  // Scale the probe budget by total weight bytes so a slow load
-  // (large multipart GGUF, HIP/ROCm upload, cold disk) doesn't trip
-  // the default 120 s timeout. The catalog row carries the
-  // multipart-aware total via `discovery::shard_sizes`. Fall back to
-  // the path's on-disk total when the model isn't in the catalog
-  // (direct-path launches that bypass scan).
-  let total_weight_bytes = launch_total_bytes(ctx, &launch_params.model_path).await;
-  let scaled_probe = env.probe.scale_for_model(total_weight_bytes);
+  // The one weight figure this launch is priced against: what it holds
+  // resident. Feeds the probe budget (so a slow load of a large multipart GGUF
+  // over a HIP/ROCm upload doesn't trip the default 120 s timeout), the
+  // backend's cache-cap arithmetic, and the admission projection alike.
+  let resident_weight_bytes =
+    launch_resident_bytes(ctx, &launch_params.model_path, &launch_params.extras).await;
+  let scaled_probe = env.probe.scale_for_model(resident_weight_bytes);
 
   // Pick the launch binary. Precedence: an explicit **server** pick (a chosen
   // build/binary) wins outright; else the binary that owns the chosen `--device`
@@ -958,7 +969,7 @@ pub(crate) async fn compose_and_spawn(
   // auto-behavior, not a special case. A user on/off is left untouched.
   // Registry-driven, so this path names no backend or knob.
   let native_resolution = inference_backend
-    .resolve_knobs(ctx, &mut launch_params, total_weight_bytes)
+    .resolve_knobs(ctx, &mut launch_params, resident_weight_bytes)
     .await;
   for msg in &native_resolution.warnings {
     log::warn!("{msg}");
@@ -973,6 +984,7 @@ pub(crate) async fn compose_and_spawn(
   let auto_set_knobs = native_resolution.auto_set;
   // Whether this launch skips the memory admission gate (streams from disk).
   let bypasses_admission = inference_backend.bypasses_admission(&launch_params);
+  let force_admission = parsed.force;
 
   // Hand the launch to the resolved backend: it decides *how* to start — a
   // supervised child process (the default `start`) or a delegation to its
@@ -990,12 +1002,13 @@ pub(crate) async fn compose_and_spawn(
     origin,
     arch,
     native_ctx,
-    total_weight_bytes,
+    resident_weight_bytes,
     user_knobs,
     layer_sources,
     auto_set_knobs,
     volatile_knobs: crate::launch::knobs::volatile_ids(&resolved_backend_id),
     bypasses_admission,
+    force_admission,
     warnings,
     resolved_backend_id,
   };
@@ -1028,12 +1041,13 @@ pub(crate) async fn spawn_supervised(
     origin,
     arch,
     native_ctx: _,
-    total_weight_bytes,
+    resident_weight_bytes,
     user_knobs,
     layer_sources,
     auto_set_knobs,
     volatile_knobs,
     bypasses_admission,
+    force_admission,
     resolved_backend_id,
     default_binary: _,
   } = exec;
@@ -1081,15 +1095,6 @@ pub(crate) async fn spawn_supervised(
         let model_path = launch_params.model_path.clone();
         let knobs = launch_params.knobs.clone();
         let arch_owned = arch.clone();
-        // Weights the launch actually has to hold. Tensors the loader streams
-        // row-by-row from the mapping never become resident, and counting them
-        // refuses launches that fit with room to spare (a 103.7 GiB
-        // Qwen3.8-Flash-Next projected 133.5 GiB on a 121 GiB host but needs
-        // ~77 GiB). Zero for every model without such a tensor, and for any
-        // launch pinning `--lazy-mode off`.
-        let lazy_bytes =
-          launch_lazy_bytes(ctx, &launch_params.model_path, &launch_params.extras).await;
-        let weights_total = total_weight_bytes.saturating_sub(lazy_bytes);
         let mtp_active = launch_params.mtp_directive.is_some();
         let demand = if identity.as_gguf().is_some() {
           let demand_backend_id = resolved_backend_id.clone();
@@ -1104,7 +1109,7 @@ pub(crate) async fn spawn_supervised(
               &demand_backend_id,
               effective_ctx,
               &gpu_backend,
-              weights_total,
+              resident_weight_bytes,
               mtp_active,
             ))
           })
@@ -1113,10 +1118,10 @@ pub(crate) async fn spawn_supervised(
           .flatten()
         } else {
           // No header, so no per-layer KV estimate. Weights come from
-          // `launch_total_bytes`, which measures a directory when neither the
-          // catalog nor `stat` can size it — the same figure the backend priced
-          // its cache against, so the gate and the cap cannot disagree.
-          if weights_total == 0 {
+          // `launch_resident_bytes`, which measures a directory when neither
+          // the catalog nor `stat` can size it — the same figure the backend
+          // priced its cache against, so the gate and the cap cannot disagree.
+          if resident_weight_bytes == 0 {
             log::warn!(
               "admission: no weight size for {} — gate cannot engage",
               model_path.display()
@@ -1128,16 +1133,26 @@ pub(crate) async fn spawn_supervised(
             .into_iter()
             .find(|b| crate::backend::Backend::id(b) == resolved_backend_id)
             .and_then(|b| crate::backend::Backend::projected_cache_bytes(&b, &launch_params, free))
-            .filter(|_| weights_total > 0)
+            .filter(|_| resident_weight_bytes > 0)
             .map(|cache| {
-              weights_total
+              resident_weight_bytes
                 .saturating_add(cache)
                 .saturating_add(crate::launch::headroom::overhead_band_bytes(&gpu_backend))
             })
         };
         if let Some(demand) = demand {
           if let Err(refusal) = ctx.admission.try_admit(u64::from(port), demand, free) {
-            if bypasses_admission {
+            if force_admission {
+              // Always surfaced, never suppressed: the caller asked for this,
+              // and the projection is the only warning they get before the
+              // host decides for them.
+              let msg = format!(
+                "--force overrode the memory admission gate — {}",
+                format_admission_refusal(&refusal)
+              );
+              log::warn!("{msg}");
+              warnings.push(msg);
+            } else if bypasses_admission {
               if !bypass_note_suppressed {
                 let msg = format!(
                   "this launch bypasses the memory admission gate (streaming from disk) — {}",
@@ -1644,87 +1659,86 @@ fn extras_lazy_mode(extras: &[OsString]) -> Option<String> {
   found
 }
 
-/// Bytes the engine will stream from the mapping rather than hold resident,
-/// summed over every file of the model.
+/// Weight bytes the launch will actually hold resident: the model's total
+/// tensor footprint minus the tensors the engine streams from the mapping
+/// row-by-row. Measured once, here, so every consumer agrees — the probe
+/// scaler, the backend's own cache-cap arithmetic in
+/// [`Backend::resolve_knobs`](crate::backend::Backend::resolve_knobs), and the
+/// admission projection all take this one figure.
 ///
-/// Mirrors [`launch_total_bytes`]'s catalog-first lookup so the gate subtracts
-/// over exactly the file set it measured. Returns `0` — leaving the projection
-/// untouched — when the launch pins `--lazy-mode off`, or when no shard carries
-/// a lazy-flagged tensor, which is every model without a per-layer embedding
-/// table. mmap is irrelevant; see [`extras_lazy_mode`].
+/// The total prefers the catalog row (which carries split-shard aggregation via
+/// `discovery::shard_sizes`), falls back to `shard_sizes::on_disk_total` on the
+/// bare path for direct launches that bypass scan, and finally measures the
+/// directory. `stat` on a directory reports its inode size, not its contents,
+/// so a directory-shaped model launched by absolute path from outside the scan
+/// roots measured 0 — and 0 is the figure that disarms the memory guards. The
+/// admission gate used to patch that up privately, which left the backend's
+/// cache cap still working from 0: one launch, two different weights. `0` when
+/// nothing can size it at all; the probe scaler treats that as "no signal, keep
+/// the default".
 ///
-/// Reads sibling shards because the tensor lives in one of them: a split set's
-/// first shard is often metadata-only, so the header the gate already has says
-/// nothing about it.
-async fn launch_lazy_bytes(
+/// The streamed subtraction comes from the catalog row's
+/// [`ModelMetadata::lazy_tensor_bytes`](crate::gguf::metadata::ModelMetadata),
+/// which the scanner already summed across every shard — the tensor usually
+/// lives in a later shard, and only shard 1 is parsed. A launch of a model the
+/// catalog has never seen reads its header here instead. Nothing is subtracted
+/// when the launch pins `--lazy-mode off`, or for the overwhelming majority of
+/// models, which carry no lazy-flagged tensor at all. mmap is irrelevant; see
+/// [`extras_lazy_mode`].
+///
+/// Off the runtime — a stat per shard, following the HF cache's symlinks.
+async fn launch_resident_bytes(
   ctx: &MethodContext,
   model_path: &std::path::Path,
   extras: &[OsString],
 ) -> u64 {
   // `auto` (the engine default) streams only tensors past the size threshold;
   // `on` streams every lazy-flagged tensor; `off` streams none.
-  let all_sizes = match extras_lazy_mode(extras).as_deref() {
-    Some("off") => return 0,
-    Some("on") => true,
-    _ => false,
+  let lazy_mode = extras_lazy_mode(extras);
+  let all_sizes = match lazy_mode.as_deref() {
+    Some("on") => Some(true),
+    Some("off") => None,
+    _ => Some(false),
   };
-  let snap = ctx.catalog.snapshot().await;
-  let paths: Vec<std::path::PathBuf> = match snap.iter().find(|m| m.path == model_path) {
-    Some(row) => std::iter::once(row.path.clone())
-      .chain(row.split_siblings.iter().cloned())
-      .collect(),
-    None => vec![model_path.to_path_buf()],
-  };
-  tokio::task::spawn_blocking(move || {
-    paths
-      .iter()
-      .filter_map(|p| read_gguf_header(p, HeaderReadOptions::default()).ok())
-      .map(|r| crate::gguf::memory::lazy_streamed_bytes(&r.header, all_sizes))
-      .fold(0u64, u64::saturating_add)
-  })
-  .await
-  .unwrap_or(0)
-}
 
-/// Total on-disk weight bytes for the model the launch handler is
-/// about to spawn. Prefers the catalog row (which already includes
-/// split-shard aggregation via `discovery::shard_sizes`); falls back
-/// to `shard_sizes::on_disk_total` on the bare path for direct
-/// launches that bypass scan. `0` when neither path is reachable —
-/// the probe scaler treats that as "no signal, keep the default".
-async fn launch_total_bytes(ctx: &MethodContext, model_path: &std::path::Path) -> u64 {
   let snap = ctx.catalog.snapshot().await;
   if let Some(row) = snap.iter().find(|m| m.path == model_path) {
+    let lazy = match (all_sizes, row.metadata.as_ref()) {
+      (Some(all), Some(md)) => crate::gguf::memory::streamed_bytes(&md.lazy_tensor_bytes, all),
+      _ => 0,
+    };
     if let Some(b) = row.metadata.as_ref().and_then(|md| md.weights_bytes) {
-      return b;
+      return b.saturating_sub(lazy);
     }
     let total = crate::discovery::shard_sizes::on_disk_total(&row.path, &row.split_siblings);
     if total > 0 {
-      return total;
+      return total.saturating_sub(lazy);
     }
   }
-  let total = crate::discovery::shard_sizes::on_disk_total(model_path, &[]);
-  if total > 0 {
-    return total;
-  }
-  // `stat` on a directory reports its inode size, not its contents, so a
-  // directory-shaped model launched by absolute path from outside the scan
-  // roots measured 0 here — and 0 is the figure that disarms the memory
-  // guards. The admission gate used to patch this up privately, which left the
-  // backend's own cache-cap arithmetic still working from 0: one launch, two
-  // different weights. Measured once, here, so every consumer agrees.
-  // Off the runtime — a stat per shard, following the HF cache's symlinks.
-  //
-  // Caveat since the lazy-tensor gate landed: the admission projection alone
-  // subtracts `launch_lazy_bytes` from this figure. The probe scaler and the
-  // backends' cache caps still price against the full total, which is the
-  // fail-safe direction (bigger weights → smaller caps) but does mean the
-  // "every consumer agrees" claim above no longer holds. TODO.md tracks
-  // reconciling them by carrying per-tensor lazy data on `ModelMetadata`.
-  let p = model_path.to_path_buf();
-  tokio::task::spawn_blocking(move || crate::launch::admission::dir_weight_bytes(&p))
-    .await
-    .unwrap_or(0)
+
+  // Outside the catalog: no metadata to read the streamed bytes off, so the
+  // header answers for them. Only this file — a direct-path launch has no
+  // sibling list, the same limit the total below carries.
+  let path = model_path.to_path_buf();
+  let (total, lazy) = tokio::task::spawn_blocking(move || {
+    let lazy = all_sizes
+      .and_then(|all| {
+        let read = read_gguf_header(&path, HeaderReadOptions::default()).ok()?;
+        Some(crate::gguf::memory::streamed_bytes(
+          &crate::gguf::memory::lazy_tensor_sizes(&read.header),
+          all,
+        ))
+      })
+      .unwrap_or(0);
+    let total = crate::discovery::shard_sizes::on_disk_total(&path, &[]);
+    if total > 0 {
+      return (total, lazy);
+    }
+    (crate::launch::admission::dir_weight_bytes(&path), lazy)
+  })
+  .await
+  .unwrap_or((0, 0));
+  total.saturating_sub(lazy)
 }
 
 /// Live GPU-backend flavor — keys the built-in defaults table.
@@ -2175,6 +2189,174 @@ mod tests {
       .with_supervisors(SupervisorRegistry::new())
       .with_launch_env(env);
     (ctx, model_path, dir)
+  }
+
+  /// A catalog row for `path` carrying an explicit weight total and lazy list,
+  /// so `launch_resident_bytes` reads the metadata path rather than `stat`.
+  async fn catalog_with(
+    path: &std::path::Path,
+    weights_bytes: u64,
+    lazy_tensor_bytes: Vec<u64>,
+  ) -> crate::discovery::ModelCatalog {
+    use crate::gguf::metadata::{ModeHint, ModelMetadata, Quant};
+
+    let catalog = crate::discovery::ModelCatalog::new();
+    catalog
+      .upsert(crate::discovery::DiscoveredModel {
+        path: path.to_path_buf(),
+        parent: path
+          .parent()
+          .unwrap_or(std::path::Path::new("/"))
+          .to_path_buf(),
+        source: crate::discovery::ModelSource::UserPath,
+        metadata: Some(ModelMetadata {
+          arch: Some("qwen4exp".to_string()),
+          total_parameters: None,
+          parameter_label: None,
+          quant: Quant::Q4_K,
+          quant_label: None,
+          native_ctx: None,
+          chat_template: None,
+          tokenizer_kind: None,
+          reasoning_hint: false,
+          mode_hint: ModeHint::Chat,
+          weights_bytes: Some(weights_bytes),
+          lazy_tensor_bytes,
+          mtp: None,
+        }),
+        parse_error: None,
+        split_siblings: Vec::new(),
+        display_label: None,
+        multimodal: None,
+        supported_backends: Vec::new(),
+        mtp_head: None,
+      })
+      .await;
+    catalog
+  }
+
+  const GIB: u64 = 1024 * 1024 * 1024;
+
+  #[tokio::test]
+  async fn resident_bytes_subtracts_what_the_engine_streams() {
+    // The figure every consumer prices against: the probe budget, the
+    // backend's cache cap, and the admission gate. Counting the streamed
+    // tensor is what refused a 103.7 GiB model needing ~77 GiB resident.
+    let path = std::path::Path::new("/m/big.gguf");
+    let ctx = MethodContext::with_catalog(
+      ShutdownToken::new(),
+      catalog_with(path, 104 * GIB, vec![27 * GIB]).await,
+    );
+    assert_eq!(
+      launch_resident_bytes(&ctx, path, &[]).await,
+      104 * GIB - 27 * GIB
+    );
+  }
+
+  #[tokio::test]
+  async fn resident_bytes_honours_the_lazy_mode_extras() {
+    let path = std::path::Path::new("/m/big.gguf");
+    // One tensor over the `auto` threshold, one under it.
+    let ctx = MethodContext::with_catalog(
+      ShutdownToken::new(),
+      catalog_with(path, 104 * GIB, vec![27 * GIB, GIB]).await,
+    );
+    let extras = |v: &[&str]| -> Vec<OsString> { v.iter().map(OsString::from).collect() };
+    // `auto` (no pin) streams only the tensor past the threshold.
+    assert_eq!(
+      launch_resident_bytes(&ctx, path, &[]).await,
+      104 * GIB - 27 * GIB
+    );
+    // `on` streams both.
+    assert_eq!(
+      launch_resident_bytes(&ctx, path, &extras(&["--lazy-mode", "on"])).await,
+      104 * GIB - 28 * GIB
+    );
+    // `off` streams neither, so the launch is priced against the whole file.
+    assert_eq!(
+      launch_resident_bytes(&ctx, path, &extras(&["--lazy-mode=off"])).await,
+      104 * GIB
+    );
+  }
+
+  #[tokio::test]
+  async fn resident_bytes_leaves_an_ordinary_model_alone() {
+    let path = std::path::Path::new("/m/plain.gguf");
+    let ctx = MethodContext::with_catalog(
+      ShutdownToken::new(),
+      catalog_with(path, 8 * GIB, Vec::new()).await,
+    );
+    assert_eq!(launch_resident_bytes(&ctx, path, &[]).await, 8 * GIB);
+  }
+
+  /// The admission gate needs a host sample to price against. Nothing free
+  /// refuses every launch, including the tiny fixture GGUF: its weights are a
+  /// few hundred bytes but the backend's overhead band is not.
+  fn starve_host(ctx: &mut MethodContext) {
+    let snapshot = crate::daemon::host_metrics::HostMetricsSnapshot {
+      ram_total_bytes: 8 * GIB,
+      ram_used_bytes: 8 * GIB,
+      gpu_backend: "cpu_only".to_string(),
+      ..Default::default()
+    };
+    ctx.host_metrics = Some(Arc::new(RwLock::new(snapshot)));
+  }
+
+  #[tokio::test]
+  async fn a_launch_that_will_not_fit_is_refused() {
+    let (mut ctx, model_path, _dir) = ctx_with_env_and_gguf().await;
+    starve_host(&mut ctx);
+    let parsed = StartParams {
+      model_path,
+      mode: Some(LaunchModeWire::Chat),
+      ..StartParams::default()
+    };
+    let err = match compose_and_spawn(
+      &ctx,
+      parsed,
+      crate::daemon::supervisor::LaunchOrigin::Manual,
+    )
+    .await
+    {
+      Ok(_) => panic!("a starved host must refuse"),
+      Err(e) => e,
+    };
+    assert_eq!(err.code, ErrorCode::ResourceExhausted.as_i32());
+    assert_eq!(
+      err.data.as_ref().and_then(|d| d.get("cause")),
+      Some(&serde_json::json!("launch_refused"))
+    );
+  }
+
+  #[tokio::test]
+  async fn force_launches_through_an_admission_refusal() {
+    // `--force` turns the refusal into a warning and lets the launch run. It
+    // still fails here, on the nonexistent binary — which is the point: the
+    // gate is no longer what stopped it.
+    let (mut ctx, model_path, _dir) = ctx_with_env_and_gguf().await;
+    starve_host(&mut ctx);
+    let parsed = StartParams {
+      model_path,
+      mode: Some(LaunchModeWire::Chat),
+      force: true,
+      ..StartParams::default()
+    };
+    let err = match compose_and_spawn(
+      &ctx,
+      parsed,
+      crate::daemon::supervisor::LaunchOrigin::Manual,
+    )
+    .await
+    {
+      Ok(_) => panic!("the fake binary cannot spawn"),
+      Err(e) => e,
+    };
+    assert_ne!(
+      err.code,
+      ErrorCode::ResourceExhausted.as_i32(),
+      "the gate must not be what refused: {}",
+      err.message
+    );
   }
 
   async fn expect_invalid_params(ctx: &MethodContext, parsed: StartParams) -> String {

@@ -525,6 +525,7 @@ mod tests {
         reasoning_hint: false,
         mode_hint: ModeHint::Chat,
         weights_bytes: Some(4_200_000_000),
+        lazy_tensor_bytes: Vec::new(),
         mtp: None,
       }),
       parse_error: None,

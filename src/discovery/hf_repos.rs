@@ -293,6 +293,7 @@ pub fn config_to_metadata(summary: &ConfigSummary, repo_id: &str) -> ModelMetada
     mode_hint,
     // The leaf sums `*.safetensors` file sizes for the SIZE column.
     weights_bytes: None,
+    lazy_tensor_bytes: Vec::new(),
     // Embedded-MTP is a GGUF header key; `config.json` has no equivalent.
     mtp: None,
   }
@@ -318,6 +319,7 @@ pub fn metadata_without_config() -> ModelMetadata {
     reasoning_hint: false,
     mode_hint: ModeHint::Unknown,
     weights_bytes: None,
+    lazy_tensor_bytes: Vec::new(),
     mtp: None,
   }
 }

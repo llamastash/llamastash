@@ -52,6 +52,19 @@ pub struct ModelMetadata {
   /// 80B model as ~half its real footprint in `list`, `show`, and
   /// the recommender's VRAM-fit predicate.
   pub weights_bytes: Option<u64>,
+  /// Per-tensor storage bytes of the tensors llama.cpp marks `TENSOR_READ_LAZY`
+  /// and streams from the mapping instead of holding resident (today, the
+  /// per-layer embedding table `qwen4exp` and `gemma4` carry). Empty for every
+  /// model without one, which is nearly all of them.
+  ///
+  /// Sizes rather than a single total because the `--lazy-mode auto` threshold
+  /// is a per-tensor test and the mode is a launch-time argument; see
+  /// [`crate::gguf::memory::streamed_bytes`]. The admission gate subtracts
+  /// these from `weights_bytes` to get what the launch actually holds, so this
+  /// has to cover the same file set: for a split GGUF the scanner concatenates
+  /// every shard's list, since the lazy tensor usually lives in a later shard
+  /// while only shard 1 is parsed here.
+  pub lazy_tensor_bytes: Vec<u64>,
   /// Embedded multi-token-prediction (MTP / NextN) draft-head layer count,
   /// read from `{arch}.nextn_predict_layers` (`LLM_KV_NEXTN_PREDICT_LAYERS`).
   /// `Some(n>0)` means the file carries its own speculative draft head and so
@@ -378,6 +391,7 @@ pub fn summarise(header: &GgufHeader) -> ModelMetadata {
     reasoning_hint,
     mode_hint,
     weights_bytes,
+    lazy_tensor_bytes: crate::gguf::memory::lazy_tensor_sizes(header),
     mtp,
   }
 }

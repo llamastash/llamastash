@@ -69,6 +69,7 @@ fn row_for(entry: &ModelEntry) -> DiscoveredModel {
       reasoning_hint: false,
       mode_hint: mode_hint_from_labels(&entry.labels),
       weights_bytes: entry.size.map(|gb| (gb * 1e9) as u64),
+      lazy_tensor_bytes: Vec::new(),
       mtp: None,
     }),
     parse_error: None,

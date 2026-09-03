@@ -98,6 +98,7 @@ fn fake_metadata(arch: &str) -> ModelMetadata {
     reasoning_hint: false,
     mode_hint: ModeHint::Chat,
     weights_bytes: Some(4_000_000_000),
+    lazy_tensor_bytes: Vec::new(),
     mtp: None,
   }
 }

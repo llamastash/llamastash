@@ -226,6 +226,16 @@ llamastash status --json | jq -r '.daemon.server_path'
 
 Or install `ds4-server` so compatible GGUFs route to ds4 instead. (On a b9840+ llama.cpp, Flash Attention is currently auto-disabled for the deepseek4 graph — the model still loads and runs.)
 
+## `launch refused: needs N GiB but only M is free`
+
+**Symptom:** `start` exits before spawning anything, naming the projected demand and the effective free memory.
+
+**Fix:** free memory first — stop a resident model (`llamastash stop <ref>`), pin a smaller `--ctx`, or lower `backend.llamacpp.fit_ctx_floor`. The projection is weights + KV cache at the effective context + the backend's overhead band, so a smaller window is usually the cheapest lever.
+
+If you know the projection is wrong for your setup, `llamastash start <model> --force` launches anyway and prints the refusal as a warning. There is no safety net behind it: if the projection was right, the host runs out of memory and the kernel's OOM killer picks a victim, which may be a different process entirely.
+
+Weights the engine streams from the mapping rather than holding resident are already subtracted — a 103.7 GiB `Qwen3.8-Flash-Next` is priced at about 77 GiB, because its 26.8 GiB per-layer embedding table never becomes resident. Pinning `-- --lazy-mode off` turns that streaming off, and the gate then prices the whole file.
+
 ## ds4 model out-of-memories at load
 
 **Symptom:** a DeepSeek-V4 launch is admitted, then the backend dies allocating VRAM/RAM. These GGUFs are 81–300+ GB; the practical floor is ~128 GB (CUDA/ROCm) / ~96 GB (Metal).

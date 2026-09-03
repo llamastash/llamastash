@@ -184,7 +184,25 @@ const LAZY_TENSOR_NAMES: &[&str] = &["per_layer_token_embd.weight"];
 /// than this stream, smaller ones stay resident (`llama-model-loader.cpp`).
 const AUTO_LAZY_MIN_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
-/// Bytes this header's tensors will stream from disk rather than occupy in
+/// Per-tensor storage bytes of every lazy-flagged tensor in this header.
+///
+/// Kept as a list rather than a single sum because the `--lazy-mode auto`
+/// threshold is a per-tensor test, and the launch does not know which mode it
+/// will run in until it reads its extras. Carried on
+/// [`ModelMetadata::lazy_tensor_bytes`](crate::gguf::metadata::ModelMetadata)
+/// so the admission path applies the threshold without re-reading headers.
+/// Names are not kept: nothing displays them, and the flag is decided by
+/// `LAZY_TENSOR_NAMES` at parse time.
+pub fn lazy_tensor_sizes(header: &GgufHeader) -> Vec<u64> {
+  header
+    .tensors
+    .iter()
+    .filter(|t| LAZY_TENSOR_NAMES.contains(&t.name.as_str()))
+    .map(|t| Quant::from_ggml_tag(t.ggml_type).tensor_storage_bytes(&t.dims))
+    .collect()
+}
+
+/// Bytes these lazy-flagged tensors stream from disk rather than occupy in
 /// memory, under llama.cpp's default `--lazy-mode auto`.
 ///
 /// Subtract from a weight total before projecting a launch's demand: counting
@@ -200,12 +218,10 @@ const AUTO_LAZY_MIN_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 /// mmap off the *non-lazy* tensors are read into RAM instead of mapped, so
 /// residency is still total minus these bytes. Only `--lazy-mode off` changes
 /// that.
-pub fn lazy_streamed_bytes(header: &GgufHeader, all_sizes: bool) -> u64 {
-  header
-    .tensors
+pub fn streamed_bytes(sizes: &[u64], all_sizes: bool) -> u64 {
+  sizes
     .iter()
-    .filter(|t| LAZY_TENSOR_NAMES.contains(&t.name.as_str()))
-    .map(|t| Quant::from_ggml_tag(t.ggml_type).tensor_storage_bytes(&t.dims))
+    .copied()
     .filter(|b| all_sizes || *b > AUTO_LAZY_MIN_BYTES)
     .fold(0u64, u64::saturating_add)
 }
@@ -591,6 +607,47 @@ mod tests {
       .build();
     let h = parse(bytes);
     assert_eq!(weights_bytes(&h), 1000 * 2 + 2000 * 2);
+  }
+
+  #[test]
+  fn lazy_tensor_sizes_picks_only_the_flagged_tensor() {
+    // F16, 2 bytes/elem. Only `per_layer_token_embd.weight` is lazy-flagged;
+    // the token embedding beside it is an ordinary resident tensor with a
+    // confusingly similar name.
+    let bytes = FixtureBuilder::new()
+      .with_arch("gemma4")
+      .with_tensor("token_embd.weight", &[1000], 1)
+      .with_tensor("per_layer_token_embd.weight", &[3000], 1)
+      .build();
+    let h = parse(bytes);
+    assert_eq!(lazy_tensor_sizes(&h), vec![3000 * 2]);
+    assert_eq!(
+      weights_bytes(&h),
+      1000 * 2 + 3000 * 2,
+      "the total keeps both"
+    );
+  }
+
+  #[test]
+  fn lazy_tensor_sizes_is_empty_for_an_ordinary_model() {
+    let bytes = FixtureBuilder::new()
+      .with_arch("llama")
+      .with_tensor("token_embd.weight", &[1000], 1)
+      .build();
+    assert!(lazy_tensor_sizes(&parse(bytes)).is_empty());
+  }
+
+  #[test]
+  fn streamed_bytes_applies_the_auto_threshold_per_tensor() {
+    let small = AUTO_LAZY_MIN_BYTES - 1;
+    let big = AUTO_LAZY_MIN_BYTES + 1;
+    // `auto` (the engine default) streams only what is over the threshold...
+    assert_eq!(streamed_bytes(&[small, big], false), big);
+    // ...`on` drops the threshold and streams every flagged tensor.
+    assert_eq!(streamed_bytes(&[small, big], true), small + big);
+    // Exactly at the threshold stays resident: llama.cpp's test is `>`.
+    assert_eq!(streamed_bytes(&[AUTO_LAZY_MIN_BYTES], false), 0);
+    assert_eq!(streamed_bytes(&[], false), 0);
   }
 
   #[test]

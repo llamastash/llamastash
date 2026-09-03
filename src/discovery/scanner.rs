@@ -877,7 +877,7 @@ async fn parse_into_model(
     if let Some(hit) = c.get(&path, mtime, size).await {
       let mut hit_metadata = hit.metadata;
       apply_split_total_weights(&mut hit_metadata, &path, &siblings).await;
-      apply_split_total_parameters(&mut hit_metadata, &path, &siblings).await;
+      apply_split_shard_aggregates(&mut hit_metadata, &path, &siblings).await;
       return DiscoveredModel {
         path,
         parent,
@@ -946,7 +946,7 @@ async fn parse_into_model(
   }
   let mut metadata = cached.metadata;
   apply_split_total_weights(&mut metadata, &path, &siblings).await;
-  apply_split_total_parameters(&mut metadata, &path, &siblings).await;
+  apply_split_shard_aggregates(&mut metadata, &path, &siblings).await;
   DiscoveredModel {
     path,
     parent,
@@ -996,16 +996,22 @@ async fn apply_split_total_weights(
   }
 }
 
-/// For split-GGUF entries, replace the shard-1-only parameter count with
-/// the sum across every shard. `summarise_metadata` only parses the
-/// canonical shard, so a tensor-summed count (no explicit
-/// `general.parameter_count` in the header) covers one shard — a 2-shard
-/// 80B model was reporting ~56B in the `Params` column of `list` / `show`.
-/// Mirrors [`apply_split_total_weights`], but tensor element counts aren't
-/// derivable from file size, so each sibling's tensor table is read.
-/// Skipped when the header declares an explicit count (already the
-/// whole-model figure) or when `siblings` is empty.
-async fn apply_split_total_parameters(
+/// For split-GGUF entries, apply the two aggregates that need every shard's
+/// tensor table read: the total parameter count and the lazy-tensor size list.
+///
+/// `summarise_metadata` only parses the canonical shard, so a tensor-summed
+/// count covers one shard (a 2-shard 80B model reported ~56B in the `Params`
+/// column) and the lazy-tensor list misses a `per_layer_token_embd` that lives
+/// in a later shard, which is where a split set usually keeps it. Both matter
+/// to the admission gate, and both need the same sibling headers, so they share
+/// one blocking hop rather than walking the shards twice.
+///
+/// Sibling sizes aren't derivable from file size the way
+/// [`apply_split_total_weights`] gets its total, hence the reads. The parameter
+/// half is skipped when the header declares an explicit count (already the
+/// whole-model figure, so summing shards would double it); the lazy half runs
+/// either way. No-op when `siblings` is empty.
+async fn apply_split_shard_aggregates(
   metadata: &mut Option<ModelMetadata>,
   path: &Path,
   siblings: &[PathBuf],
@@ -1018,26 +1024,28 @@ async fn apply_split_total_parameters(
   };
   let primary = path.to_path_buf();
   let sibling_paths: Vec<PathBuf> = siblings.to_vec();
-  let summed = tokio::task::spawn_blocking(move || {
+  let Some((summed, lazy)) = tokio::task::spawn_blocking(move || {
     let read = read_path(&primary, HeaderReadOptions::default()).ok()?;
-    // An explicit count is model-level, so summing shards would double it.
-    if crate::gguf::metadata::explicit_parameter_count(&read.header).is_some() {
-      return None;
-    }
+    let explicit = crate::gguf::metadata::explicit_parameter_count(&read.header).is_some();
     let mut total = crate::gguf::metadata::tensor_param_sum(&read.header);
+    let mut lazy = crate::gguf::memory::lazy_tensor_sizes(&read.header);
     for s in &sibling_paths {
       if let Ok(sr) = read_path(s, HeaderReadOptions::default()) {
         total = total.saturating_add(crate::gguf::metadata::tensor_param_sum(&sr.header));
+        lazy.extend(crate::gguf::memory::lazy_tensor_sizes(&sr.header));
       }
     }
-    Some(total)
+    Some(((!explicit).then_some(total), lazy))
   })
   .await
-  .unwrap_or(None);
+  .unwrap_or(None) else {
+    return;
+  };
   if let Some(total) = summed.filter(|t| *t > 0) {
     meta.total_parameters = Some(total);
     meta.parameter_label = crate::gguf::metadata::label_for_param_count(total);
   }
+  meta.lazy_tensor_bytes = lazy;
 }
 
 #[cfg(test)]
@@ -1712,6 +1720,43 @@ mod tests {
       weights,
       per_shard * 2,
       "split weights_bytes must equal sum of every shard's on-disk size"
+    );
+    fs::remove_dir_all(&dir).ok();
+  }
+
+  #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+  async fn split_shards_collect_lazy_tensors_from_every_shard() {
+    // The admission gate subtracts these from the weight total, and only
+    // shard 1 is parsed for metadata. A split set keeps its per-layer
+    // embedding table in a later shard, so a shard-1-only list reports no
+    // lazy tensors and the gate prices bytes that never become resident —
+    // which is what refused a 103.7 GiB model on a 121 GiB host.
+    use crate::gguf::test_fixtures::FixtureBuilder;
+
+    let dir = temp_dir("split-lazy");
+    let shard1 = FixtureBuilder::new()
+      .with_arch("qwen4exp")
+      .with_tensor("token_embd.weight", &[1000], 1)
+      .build();
+    let shard2 = FixtureBuilder::new()
+      .with_arch("qwen4exp")
+      .with_tensor("per_layer_token_embd.weight", &[3000], 1)
+      .build();
+    fs::write(dir.join("m-00001-of-00002.gguf"), &shard1).unwrap();
+    fs::write(dir.join("m-00002-of-00002.gguf"), &shard2).unwrap();
+    let roots = vec![ScanRoot {
+      path: dir.clone(),
+      source: ModelSource::UserPath,
+    }];
+    let mut rx = scan(roots, ScanOptions::default());
+    let m = rx.recv().await.expect("one grouped entry");
+    assert_eq!(
+      m.metadata
+        .as_ref()
+        .expect("metadata present")
+        .lazy_tensor_bytes,
+      vec![3000 * 2],
+      "the shard-2 lazy tensor has to reach the shard-1 row"
     );
     fs::remove_dir_all(&dir).ok();
   }

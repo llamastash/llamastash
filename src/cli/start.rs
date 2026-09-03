@@ -157,7 +157,9 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
   // An explicit flag beats the preset's pin; the preset beats nothing at all.
   let backend = args.backend.as_deref().or(params.backend.as_deref());
   let server = args.server.as_deref().or(params.server.as_deref());
-  let payload = build_payload(&row.path, mode, &params, backend, server, selection);
+  let payload = build_payload(
+    &row.path, mode, &params, backend, server, selection, args.force,
+  );
   let resp = client
     .call("start_model", Some(payload))
     .await
@@ -587,6 +589,7 @@ fn build_payload(
   backend: Option<&str>,
   server: Option<&str>,
   selection: &str,
+  force: bool,
 ) -> Value {
   let mut obj = serde_json::Map::new();
   obj.insert(
@@ -601,6 +604,12 @@ fn build_payload(
   // Drives whether the daemon applies the model's `default:` preset +
   // last_params inheritance. `default` (no selection) is the common case.
   obj.insert("selection".into(), Value::String(selection.to_string()));
+  // Omitted unless asked for: the daemon defaults it to `false`, and an
+  // always-present `"force": false` would read as a knob rather than an
+  // escape hatch in a captured payload.
+  if force {
+    obj.insert("force".into(), Value::Bool(true));
+  }
   // Per-model backend override. Omitted when unset so the daemon
   // applies its default (`Auto` → identity rule).
   if let Some(b) = backend {
@@ -955,6 +964,7 @@ mod tests {
       None,
       None,
       "default",
+      false,
     );
     assert!(v.get("mode").is_none(), "{v}");
   }
@@ -996,6 +1006,7 @@ mod tests {
       Some("llamacpp"),
       None,
       "explicit",
+      false,
     );
     assert_eq!(v["backend"], serde_json::json!("llamacpp"));
     assert_eq!(v["selection"], serde_json::json!("explicit"));
@@ -1010,6 +1021,7 @@ mod tests {
       None,
       None,
       "default",
+      false,
     );
     assert!(v.get("backend_knobs").is_none());
   }
@@ -1067,6 +1079,7 @@ mod tests {
       mtp_draft_n: None,
       json: false,
       wait: false,
+      force: false,
     };
     let err = direct_path_candidate(&model, &args).unwrap_err();
     assert_eq!(err.code, USAGE);
@@ -1094,6 +1107,7 @@ mod tests {
       mtp_draft_n: None,
       json: false,
       wait: false,
+      force: false,
     };
     let resolved = direct_path_candidate(&model, &args).unwrap();
     assert_eq!(resolved, Some(path));
@@ -1127,6 +1141,7 @@ mod tests {
       mtp_draft_n: None,
       json: false,
       wait: false,
+      force: false,
     };
     let model = args.model.clone().unwrap();
     let row = select_start_row(&[], &args, &model).unwrap();
@@ -1177,6 +1192,7 @@ mod tests {
       mtp_draft_n: None,
       json: false,
       wait: false,
+      force: false,
     };
     let model = args.model.clone().unwrap();
     let selected = select_start_row(std::slice::from_ref(&row), &args, &model).unwrap();

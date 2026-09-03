@@ -372,6 +372,7 @@ async fn agent_script_round_trip_list_start_status_logs_stop() {
       mtp_draft_n: None,
       json: false,
       wait: false,
+      force: false,
     }),
   )
   .await;
@@ -477,6 +478,7 @@ async fn list_filter_and_unknown_ref_exit_codes() {
       mtp_draft_n: None,
       json: false,
       wait: false,
+      force: false,
     }),
   )
   .await;
@@ -780,6 +782,7 @@ async fn start_preset_chain_seeds_supervisor_with_saved_params() {
       mtp_draft_n: None,
       json: false,
       wait: false,
+      force: false,
     }),
   )
   .await;
@@ -840,6 +843,7 @@ async fn start_ctx_above_native_succeeds_and_duplicate_launch_uses_new_port() {
       mtp_draft_n: None,
       json: false,
       wait: false,
+      force: false,
     }),
   )
   .await;
@@ -870,6 +874,7 @@ async fn start_ctx_above_native_succeeds_and_duplicate_launch_uses_new_port() {
       mtp_draft_n: None,
       json: false,
       wait: false,
+      force: false,
     }),
   )
   .await;
@@ -922,6 +927,7 @@ async fn logs_follow_returns_daemon_unreachable_when_daemon_dies() {
       mtp_draft_n: None,
       json: false,
       wait: false,
+      force: false,
     }),
   )
   .await;

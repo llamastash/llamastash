@@ -2324,6 +2324,7 @@ fn discovered_from_catalog_row(cr: &crate::launch::resolve::CatalogRow) -> Disco
     reasoning_hint: cr.has_reasoning_hint,
     mode_hint: parse_mode_hint(cr.mode_hint.as_deref()),
     weights_bytes: cr.weights_bytes,
+    lazy_tensor_bytes: Vec::new(),
     mtp: mtp_embedded,
   });
   DiscoveredModel {
@@ -2553,6 +2554,7 @@ mod tests {
         reasoning_hint: false,
         mode_hint: ModeHint::Chat,
         weights_bytes: Some(4_200_000_000),
+        lazy_tensor_bytes: Vec::new(),
         mtp: None,
       }),
       parse_error: None,

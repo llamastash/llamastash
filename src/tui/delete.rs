@@ -378,6 +378,7 @@ mod tests {
       reasoning_hint: false,
       mode_hint: ModeHint::Unknown,
       weights_bytes: None,
+      lazy_tensor_bytes: Vec::new(),
       mtp: None,
     });
     m

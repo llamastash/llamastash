@@ -330,7 +330,7 @@ The human output shows the same content as aligned key/value sections, including
 Launch a model. `run` is a visible alias for `start` — same flags, same behavior; it exists as the shorter way to say "launch this". Layered resolution: catalog row → optional preset → per-invocation flags → trailing raw `llama-server` flags after `--`.
 
 ```
-llamastash start <ref> [--preset NAME] [--ctx N] [--port N] [--wait]
+llamastash start <ref> [--preset NAME] [--ctx N] [--port N] [--wait] [--force]
                      [--reasoning on|off] [--mode chat|embedding|rerank]
                      [--backend auto|ds4|llamacpp|lemonade|vllm] [--server <id>]
                      [--<advanced-knob> ...] [-- <llama-server-flags>...]
@@ -408,6 +408,19 @@ Validation is stricter than `config.yaml`'s, because a hand-authored file has no
 The last three rows are the deliberate difference from `config.yaml`, where each of them is dropped with a line in the daemon's log file and the launch goes ahead without it. A misspelled `backend:` is the worst of the set: it silently picks a different engine and still reports success. Only the selected entry is checked — a typo in an entry you didn't launch stays silent, though a bad field on the `default:` / `entries:` block itself is always caught.
 
 YAML merge keys work: `<<: *base` is expanded before the file is validated or parsed, so a shared anchor contributes its knobs to the entry that merges it, and a typo riding in through an anchor is caught like any other. Merges are shallow, per key, as YAML defines them — an entry with its own `knobs:` map replaces the anchor's rather than extending it.
+
+#### `--force` (launch through an admission refusal)
+
+A launch whose projected demand exceeds the sampled free memory is refused before spawn, with the demand, the effective free, and what to do about it. `--force` turns that refusal into a warning and launches anyway:
+
+```
+llamastash start <model> --force
+  ! --force overrode the memory admission gate — launch refused: needs 90.6 GiB but only 16.9 GiB is free ...
+```
+
+Use it when you know the projection is wrong for your setup — an engine build that holds less than LlamaStash models, weights that page in from a filesystem the gate cannot see. If the projection was right, the host runs out of memory and the kernel's OOM killer picks the victim, which may well be a different process. The warning is always printed, on both the human and `--wait` paths.
+
+`--force` overrides only the memory gate. It does not skip validation, mode resolution, or a backend refusing a knob combination, and the proxy's auto-start path can never set it: a request from the network must not be able to OOM the host.
 
 #### `--wait` (block until the launch settles)
 

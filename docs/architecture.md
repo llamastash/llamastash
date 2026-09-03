@@ -186,6 +186,14 @@ Surfaces: a `↯` capability glyph in the TUI (`discovery::MTP_LEGEND`), a gener
 
 The MTP path names no backend: llama.cpp's flags and log parse live in `backend/llama_cpp/` (`compose.rs` + `telemetry`), ds4's in `backend/ds4/`, and detection is generic and header-keyed. `pull`'s `download_repo` grabs mmproj and MTP-head siblings alongside the model (one per kind by default; `--no-companions` / `--all-companions`, same-repo name-pattern only). See [`plans/2026-07-14-001-feat-mtp-speculative-decoding-plan.md`](plans/2026-07-14-001-feat-mtp-speculative-decoding-plan.md).
 
+### One weight figure per launch
+
+`launch_service::launch_resident_bytes` measures a launch's weights once, and every consumer takes that one number: the probe-timeout scaler, the backend's own cache-cap arithmetic in `Backend::resolve_knobs`, and the admission projection. The figure is what the launch **holds resident** — the model's on-disk total minus the tensors llama.cpp marks `TENSOR_READ_LAZY` and reads row-by-row from the mapping (today the per-layer embedding table `qwen4exp` and `gemma4` carry; 26.8 GiB of `unsloth/Qwen3.8-Flash-Next-UD-Q4_K_XL`'s 103.7 GiB).
+
+The streamed sizes ride on `ModelMetadata::lazy_tensor_bytes`, per tensor rather than pre-summed, because `--lazy-mode auto` applies a 4 GiB size threshold per tensor and the mode is a launch-time argument (`on` drops the threshold, `off` disables streaming and the subtraction with it). For a split GGUF the scanner concatenates every shard's list: the tensor usually lives in a later shard while only shard 1 is parsed, so a shard-1-only list reports none. mmap is irrelevant to any of this — see `gguf::memory::streamed_bytes`.
+
+`--force` on `start` turns an admission refusal into a warning and launches anyway. It rides `StartParams::force` and is CLI-only by construction: the proxy's auto-start path builds `StartParams::default()`, so a request from the network can never set it.
+
 ### ds4 admission and knobs
 
 Declares 19 knobs in `src/backend/ds4/knobs.rs`, keyed by the flag `ds4-server` itself takes: `ctx`, `power`, `tokens`, `threads`, `kv-disk-dir`, `kv-disk-space-mb`, `ssd-streaming` and its tuning family (`ssd-streaming-cache-experts` / `ssd-streaming-preload-experts` / `ssd-streaming-cold`), the bools `warm-weights` / `quality`, the MTP set `mtp` / `mtp-model` / `mtp-draft-n` / `mtp-margin`, and the DSpark trio `dspark` / `dspark-confidence` / `dspark-strict`. Each gets a `start` flag, an editor row and a preset key with no per-surface wiring. The long tail of `ds4-server` flags rides `extras`. ds4 extends the loopback/credential denylist with `--cors` and `--dist-` (`DS4_FORBIDDEN_EXTRA_HEADS`).

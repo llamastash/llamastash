@@ -830,6 +830,7 @@ mod tests {
         native_ctx: Some(2048),
         parameter_label: Some("0.5B".into()),
         weights_bytes: Some(100_000_000),
+        lazy_tensor_bytes: Vec::new(),
         mtp: None,
         chat_template: None,
         tokenizer_kind: Some("bert".into()),

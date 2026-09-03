@@ -52,6 +52,7 @@ fn fake_model(path: &str, parent: &str, arch: &str, ctx: u64, weights: u64) -> D
       reasoning_hint: false,
       mode_hint: ModeHint::Chat,
       weights_bytes: Some(weights),
+      lazy_tensor_bytes: Vec::new(),
       mtp: None,
     }),
     parse_error: None,

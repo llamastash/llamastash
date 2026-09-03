@@ -480,6 +480,14 @@ pub struct StartArgs {
   /// where you want the resolved ctx without a follow-up `status`.
   #[arg(long)]
   pub wait: bool,
+  /// Launch even when the memory admission gate says the model will not
+  /// fit. The gate's projection is printed as a warning instead of
+  /// refusing, and the launch proceeds. Use it when you know the
+  /// projection is wrong for your setup; if it was right, the host runs
+  /// out of memory and the OOM killer picks the victim, which may not be
+  /// this model.
+  #[arg(long)]
+  pub force: bool,
 }
 
 /// Validate a `--backend <id>` value against the live registry (plus `auto`),
