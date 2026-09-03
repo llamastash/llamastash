@@ -2168,13 +2168,18 @@ mod tests {
     assert_eq!(reclaimed, port);
   }
 
-  /// A `MethodContext` wired with a real (single-port) launch env and a
-  /// minimal GGUF on disk, so `compose_and_spawn` clears identity
-  /// resolution and reaches the post-header validation seams (port / ctx
-  /// bounds) without ever spawning a process. Returns `(ctx, model_path,
-  /// _tempdir-guard)`; keep the guard alive for the test's duration.
+  /// A `MethodContext` wired with a real launch env and a minimal GGUF on
+  /// disk, so `compose_and_spawn` clears identity resolution and reaches the
+  /// post-header validation seams (port / ctx bounds) without ever spawning a
+  /// process. Returns `(ctx, model_path, _tempdir-guard)`; keep the guard
+  /// alive for the test's duration.
+  ///
+  /// The port range is probed per call rather than fixed: `ports::allocate`
+  /// resolves a range by really binding each candidate, so a hardcoded
+  /// single port made every caller race every other caller in the same test
+  /// binary. The loser got `no free port in N-N` and `compose_and_spawn`
+  /// returned `-32603` before it reached the seam under test.
   async fn ctx_with_env_and_gguf() -> (MethodContext, PathBuf, tempfile::TempDir) {
-    use crate::config::loader::PortRange;
     use crate::gguf::test_fixtures::build_minimal_gguf;
 
     let dir = tempfile::tempdir().expect("tempdir");
@@ -2183,10 +2188,7 @@ mod tests {
 
     let env = LaunchEnv {
       binary: PathBuf::from("/nonexistent/llama-server"),
-      port_range: PortRange {
-        start: 41000,
-        end: 41000,
-      },
+      port_range: crate::test_support::allocate_port_range(8),
       log_dir: dir.path().to_path_buf(),
       probe: ProbeOptions::default(),
       arch_defaults: Default::default(),
