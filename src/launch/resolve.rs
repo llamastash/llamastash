@@ -471,8 +471,17 @@ pub fn resolve_model_with_candidates(
         .any(|a| a.eq_ignore_ascii_case(needle))
     })
     .collect();
-  if qualified.len() == 1 {
-    return Ok(qualified[0].clone());
+  match qualified.len() {
+    1 => return Ok(qualified[0].clone()),
+    // Two rows answering to the same qualified string is the collision the
+    // source rung exists for, and the caller has to be told which. Falling
+    // through instead reached the substring tier, where the `.gguf` spelling
+    // matches nothing — no published id carries the extension — so
+    // `unsloth/Demo-GGUF/demo-Q4_K_M.gguf`, the form assembled from `list`'s
+    // REPO and NAME columns, came back as "no such model" for a string
+    // naming two real ones.
+    n if n > 1 => return Err(ResolveError::Many(qualified.into_iter().cloned().collect())),
+    _ => {}
   }
   // Split models used to be named after shard 1, and that string is still out
   // there: in 0.2.0 tool configs, saved `body.model` values, and preset keys.
@@ -692,6 +701,61 @@ mod tests {
       "lm-studio/lms-community/Demo-GGUF/demo-model-Q4_K_M"
     );
     assert_eq!(ids[2], "demo-model");
+  }
+
+  /// Both qualification rungs, in both spellings, for a pair no rung below
+  /// the source can separate. The `.gguf` spelling of a shared rung used to
+  /// come back `None` — a 404 for a string naming two real models, with no
+  /// candidates to retry from — because it fell through to the substring
+  /// tier and no published id carries the extension.
+  #[test]
+  fn a_qualified_form_two_rows_share_is_ambiguous_not_missing() {
+    let mut hf = row(
+      "/w/huggingface/hub/models--lms-community--Demo-GGUF/snapshots/1/demo-model-Q4_K_M.gguf",
+      "/w/huggingface/hub/models--lms-community--Demo-GGUF/snapshots/1",
+    );
+    hf.source = "huggingface".to_string();
+    let mut lms = row(
+      "/w/lmstudio-models/lms-community/Demo-GGUF/demo-model-Q4_K_M.gguf",
+      "/w/lmstudio-models/lms-community/Demo-GGUF",
+    );
+    lms.source = "lm-studio".to_string();
+    let rows = vec![hf, lms];
+
+    // Shared: the repo rung, in the form `/v1/models` would publish and the
+    // form assembled from `list`'s REPO and NAME columns.
+    for shared in [
+      "lms-community/Demo-GGUF/demo-model-Q4_K_M",
+      "lms-community/Demo-GGUF/demo-model-Q4_K_M.gguf",
+    ] {
+      match resolve_model_with_candidates(&rows, shared) {
+        Err(ResolveError::Many(c)) => {
+          let ids = published_ids_for(&rows, &c);
+          assert_eq!(ids.len(), 2, "`{shared}` listed {ids:?}");
+          for id in ids {
+            resolve_model_with_candidates(&rows, &id)
+              .unwrap_or_else(|e| panic!("`{shared}` offered `{id}`, which fails: {e:?}"));
+          }
+        }
+        other => panic!("`{shared}` should be ambiguous, got {other:?}"),
+      }
+    }
+
+    // Distinct: the source rung, same two spellings.
+    for (needle, want) in [
+      ("huggingface/lms-community/Demo-GGUF/demo-model-Q4_K_M", 0),
+      (
+        "lm-studio/lms-community/Demo-GGUF/demo-model-Q4_K_M.gguf",
+        1,
+      ),
+    ] {
+      let got = resolve_model_with_candidates(&rows, needle)
+        .unwrap_or_else(|e| panic!("`{needle}` does not resolve: {e:?}"));
+      assert_eq!(
+        got.path, rows[want].path,
+        "`{needle}` routed to the wrong row"
+      );
+    }
   }
 
   #[test]
