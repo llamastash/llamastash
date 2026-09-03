@@ -565,6 +565,27 @@ mod tests {
   }
 
   #[test]
+  fn a_preset_key_written_under_the_old_shard_name_still_classifies() {
+    // 0.2.0 wrote per-model preset keys as shard 1's filename. After split
+    // models started reading by their base name, those keys matched nothing
+    // and the preset silently stopped applying.
+    let catalog = vec![catalog_row("/m/foo-Q4_K_M-00001-of-00004.gguf", "llama")];
+    let expected = KeyClass::Model {
+      path: "/m/foo-Q4_K_M-00001-of-00004.gguf".into(),
+    };
+    assert_eq!(
+      classify_preset_key("foo-Q4_K_M-00001-of-00004.gguf", &catalog),
+      expected,
+      "the old shard-suffixed key must still resolve"
+    );
+    assert_eq!(
+      classify_preset_key("foo-Q4_K_M.gguf", &catalog),
+      expected,
+      "and so must the collapsed key it is written under now"
+    );
+  }
+
+  #[test]
   fn classify_exact_name_is_per_model_arch_id_is_arch() {
     let catalog = vec![catalog_row("/m/qwen2.5-7b.gguf", "qwen2")];
     // An arch id must NOT be captured by a substring of a model file name.

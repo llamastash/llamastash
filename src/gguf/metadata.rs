@@ -560,7 +560,24 @@ fn infer_mode_hint(header: &GgufHeader, arch: Option<&str>) -> ModeHint {
         GgufValue::Array(items) => !items.is_empty(),
         _ => false,
       });
+    // Judgement, twice-reviewed, recorded so it is not re-litigated blind: a
+    // chat template is weak evidence, but `Unknown` is worse. The CLI refuses
+    // an unknown hint outright (`cli::start`), so `Unknown` would make every
+    // split chat model without a preset fail `start` — and split is the norm
+    // for large GGUFs. The daemon and proxy resolve `Unknown` to Chat anyway,
+    // so it would not even stop a decoder-arch embedder being served as chat
+    // there; it only moves the failure to the CLI. An *unsplit* model of that
+    // kind already reads Chat here via `output_norm.weight`, so this keeps
+    // split and unsplit consistent rather than making split stricter.
+    // The residual miss is a split decoder finetuned for embeddings that ships
+    // a chat template and carries no embed/pooling/rerank signal; log it so it
+    // is at least visible in daemon logs.
     return if has_template {
+      log::debug!(
+        "{}: split shard has no output projection; inferring chat from the \
+         chat template",
+        arch.unwrap_or("?")
+      );
       ModeHint::Chat
     } else {
       ModeHint::Unknown
@@ -749,6 +766,23 @@ mod tests {
         "split shard (tensors={tensors}) must not read as an embedding model"
       );
     }
+  }
+
+  #[test]
+  fn a_split_shard_with_an_array_chat_template_still_reads_as_chat() {
+    // Multi-template tokenizers store `tokenizer.chat_template` as an array,
+    // which the string accessor skips -- the model then fell to Unknown and
+    // the CLI demanded an explicit --mode.
+    let bytes = FixtureBuilder::new()
+      .with_arch("llama")
+      .with_embedding_length(4096)
+      .with_kv("split.count", GgufValue::U16(3))
+      .with_kv(
+        "tokenizer.chat_template",
+        GgufValue::Array(vec![GgufValue::String("{{ messages }}".to_string())]),
+      )
+      .build();
+    assert_eq!(parse(bytes).mode_hint, ModeHint::Chat);
   }
 
   #[test]
