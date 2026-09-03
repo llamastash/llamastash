@@ -355,7 +355,7 @@ pub(crate) async fn compose_and_spawn(
   let effective_default = if is_default_sel {
     let store = ctx.presets.snapshot().await;
     let rows = crate::ipc::methods::catalog_rows(ctx).await;
-    let key = crate::util::paths::path_basename(&parsed.model_path);
+    let key = crate::util::paths::model_file_label(&parsed.model_path);
     let path_str = parsed.model_path.display().to_string();
     Some(crate::launch::presets::effective_presets(
       &key,
@@ -1401,7 +1401,7 @@ async fn inherited_launch_identity(
   let from_preset = {
     let store = ctx.presets.snapshot().await;
     let rows = crate::ipc::methods::catalog_rows(ctx).await;
-    let key = crate::util::paths::path_basename(&parsed.model_path);
+    let key = crate::util::paths::model_file_label(&parsed.model_path);
     let path_str = parsed.model_path.display().to_string();
     crate::launch::presets::effective_presets(&key, &path_str, arch, &store, &rows)
       .default_preset()

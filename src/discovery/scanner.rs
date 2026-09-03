@@ -339,116 +339,11 @@ fn strip_mtp_markers(name: &str) -> String {
 }
 
 /// Collect projector filenames for a diagnostic log line.
-fn projector_names(paths: &[PathBuf]) -> Vec<String> {
+fn companion_names(paths: &[PathBuf]) -> Vec<String> {
   paths
     .iter()
     .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
     .collect()
-}
-
-/// Find the multimodal projector (mmproj) companion file for a given
-/// model path. The projector file is expected to be in the same
-/// directory.
-///
-/// Matching ignores quantization labels in both filenames. The rules,
-/// in order:
-///
-/// 1. A projector whose quant-stripped base name equals the model's
-///    wins. If several match (multiple models share the directory and
-///    their bases collide after quant-stripping), one is picked
-///    deterministically with a warning.
-/// 2. No name match, but the directory holds exactly one model and one
-///    projector → pair them. One model + one projector per folder is
-///    the dominant layout (HuggingFace snapshots, LM Studio), and
-///    upstream repos routinely name the projector generically
-///    (`mmproj-model-f16.gguf`) or after a different quant than the
-///    model, so a strict name match would miss the common case. Gating
-///    on a single model in the directory keeps a flat multi-model
-///    folder from cross-assigning one model's projector to another.
-/// 3. Otherwise, a lone "anonymous" projector (`mmproj.gguf`,
-///    `mmproj-f16.gguf`) is the directory's catch-all and is used.
-///    Anything else is genuinely ambiguous: emit nothing and let the
-///    user pass `--mmproj` rather than load a mismatched projector.
-pub fn find_mmproj(model_path: &Path) -> Option<PathBuf> {
-  let parent = model_path.parent()?;
-  let model_filename = model_path.file_name()?.to_str()?;
-  let model_stem = model_path.file_stem()?.to_str()?;
-  // Launching a projector directly has no projector of its own.
-  if is_projector_companion(model_path) {
-    return None;
-  }
-
-  let model_base = canonical_base(model_stem);
-
-  let mut all_projectors: Vec<PathBuf> = Vec::new();
-  let mut base_matches: Vec<PathBuf> = Vec::new();
-  let mut anonymous: Vec<PathBuf> = Vec::new();
-  // Count sibling model files (non-projector `.gguf`s, including the
-  // model itself) so the single-projector fallback only fires when this
-  // is the only model in the directory.
-  let mut model_file_count = 0usize;
-
-  for entry in std::fs::read_dir(parent).ok()?.flatten() {
-    let path = entry.path();
-    if !path.is_file() {
-      continue;
-    }
-    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-      continue;
-    };
-    if !name.to_lowercase().ends_with(".gguf") {
-      continue;
-    }
-    if !is_projector_companion(&path) {
-      model_file_count += 1;
-      continue;
-    }
-    if name == model_filename {
-      continue;
-    }
-    let proj_base = canonical_base(&strip_mmproj_markers(name));
-    if proj_base.is_empty() {
-      anonymous.push(path.clone());
-    } else if proj_base == model_base {
-      base_matches.push(path.clone());
-    }
-    all_projectors.push(path);
-  }
-
-  // 1. Name match wins.
-  if !base_matches.is_empty() {
-    base_matches.sort();
-    if base_matches.len() > 1 {
-      log::warn!(
-        "multiple mmproj candidates match model {model_filename}; using {}: {:?}",
-        base_matches[0]
-          .file_name()
-          .unwrap_or_default()
-          .to_string_lossy(),
-        projector_names(&base_matches),
-      );
-    }
-    return base_matches.into_iter().next();
-  }
-
-  // 2. Single model + single projector → pair them regardless of name.
-  if model_file_count == 1 && all_projectors.len() == 1 {
-    return all_projectors.into_iter().next();
-  }
-
-  // 3. Lone anonymous catch-all, else ambiguous → give up.
-  if anonymous.len() == 1 {
-    return anonymous.into_iter().next();
-  }
-  if !all_projectors.is_empty() {
-    log::warn!(
-      "multiple mmproj files in {} but none match model {model_filename}; \
-       skipping auto-detection (pass --mmproj to choose): {:?}",
-      parent.display(),
-      projector_names(&all_projectors),
-    );
-  }
-  None
 }
 
 /// Resolve the multimodal capability a model's mmproj projector
@@ -511,38 +406,9 @@ pub fn find_mtp_head(model_path: &Path, model_arch: Option<&str>) -> Option<Path
   find_draft_head(model_path, head_arch.as_deref())
 }
 
-/// [`find_mtp_head`] with the head architecture supplied verbatim instead of
-/// derived from the model's. Lets a backend pair a head whose arch is not the
-/// `<model arch>_mtp_support` shape — DSpark's support GGUF declares
-/// `deepseek4-dspark` yet drafts for `deepseek4` through the same slot.
-pub fn find_draft_head(model_path: &Path, head_arch: Option<&str>) -> Option<PathBuf> {
-  // A head file has no head of its own.
-  if is_mtp_head_file(model_path) {
-    return None;
-  }
-  let parent = model_path.parent()?;
-  if let Some(hit) = search_dir_for_head(parent, model_path, head_arch, true) {
-    return Some(hit);
-  }
-  // Publishers routinely lay a repo out as one directory per quant plus a
-  // shared companion directory, so the head never sits beside the weights
-  // (`UD-Q4_K_XL/…gguf` vs `MTP/mtp-….gguf`) and a parent-only search can
-  // never find it. Widen to the rest of the snapshot — but only for an HF
-  // cache layout, where the revision directory is a real boundary. A flat
-  // models directory has no such bound, and widening there would pair heads
-  // across unrelated models.
-  for dir in hf_snapshot_sibling_dirs(model_path) {
-    if let Some(hit) = search_dir_for_head(&dir, model_path, head_arch, false) {
-      return Some(hit);
-    }
-  }
-  None
-}
-
-/// The other directories of the HF snapshot `model_path` lives in: the
-/// revision root plus its immediate subdirectories, minus the model's own.
-/// Empty for any path not inside `.../snapshots/<rev>/`, which is what keeps
-/// the widened search from escaping into a plain models directory.
+/// The rest of the HF snapshot `model_path` sits in: revision root plus its
+/// immediate subdirectories, minus the model's own. Empty outside a
+/// `.../snapshots/<rev>/` tree, which is what bounds the widened search.
 fn hf_snapshot_sibling_dirs(model_path: &Path) -> Vec<PathBuf> {
   let Some(parent) = model_path.parent() else {
     return Vec::new();
@@ -571,36 +437,62 @@ fn hf_snapshot_sibling_dirs(model_path: &Path) -> Vec<PathBuf> {
   dirs
 }
 
-/// Search one directory for a head that drafts for `model_path`, applying the
-/// tier order documented on [`find_mtp_head`].
+/// The two companion kinds (`mmproj` projectors, MTP draft heads) differ only
+/// in recognition and name-stripping, so they share one search.
+struct CompanionKind<'a> {
+  is_companion: fn(&Path) -> bool,
+  strip_markers: fn(&str) -> String,
+  /// Draft heads only: arch a companion may declare to claim this model
+  /// outright. `None` skips the header read.
+  want_arch: Option<&'a str>,
+  label: &'static str,
+}
+
+/// A companion for `model_path`: its own directory first, then the rest of the
+/// HF snapshot, since repos routinely put weights and companions in separate
+/// subdirectories. Bounded to a `snapshots/<rev>/` tree because a flat models
+/// directory has no such boundary and would pair across unrelated models.
+fn find_companion(model_path: &Path, kind: &CompanionKind<'_>) -> Option<PathBuf> {
+  let parent = model_path.parent()?;
+  if let Some(hit) = search_dir_for_companion(parent, model_path, kind, true) {
+    return Some(hit);
+  }
+  for dir in hf_snapshot_sibling_dirs(model_path) {
+    if let Some(hit) = search_dir_for_companion(&dir, model_path, kind, false) {
+      return Some(hit);
+    }
+  }
+  None
+}
+
+/// Tier order: a companion declaring our arch, then a name match, then an
+/// unambiguous pair, then a lone anonymous catch-all. Anything else is
+/// genuinely ambiguous and pairs nothing.
 ///
-/// `is_model_dir` says whether `dir` is the model's own folder. It only
-/// changes the unnamed-pair tier: there, "the only model beside the only head"
-/// is the evidence they belong together, while a companion folder holds no
-/// models at all by construction, so a head standing alone in one is the
-/// evidence instead. Without the distinction the widened search could never
-/// pair anything, which is the whole point of widening.
-fn search_dir_for_head(
+/// `is_model_dir` only changes the unambiguous-pair tier: a companion folder
+/// holds no models by construction, so "the only companion here" replaces "the
+/// only model beside the only companion". Without that the widened search
+/// could never pair anything.
+fn search_dir_for_companion(
   dir: &Path,
   model_path: &Path,
-  head_arch: Option<&str>,
+  kind: &CompanionKind<'_>,
   is_model_dir: bool,
 ) -> Option<PathBuf> {
   let model_filename = model_path.file_name()?.to_str()?;
   // Compare on the collapsed name: a split set is one model, and its
-  // `-NNNNN-of-NNNNN` suffix is not part of the name a head is published
+  // `-NNNNN-of-NNNNN` suffix is not part of the name a companion is published
   // under, so `foo-Q4_K_M-00001-of-00002` has to match `mtp-foo`.
   let model_label = crate::util::paths::model_file_label(model_path);
   let model_base = canonical_base(Path::new(&model_label).file_stem()?.to_str()?);
 
-  let mut all_heads: Vec<PathBuf> = Vec::new();
+  let mut all: Vec<PathBuf> = Vec::new();
   let mut arch_matches: Vec<PathBuf> = Vec::new();
   let mut base_matches: Vec<PathBuf> = Vec::new();
   let mut anonymous: Vec<PathBuf> = Vec::new();
-  // Launchable models in the folder (neither an MTP head nor a projector), so
-  // the single-head fallback only fires when this is the only one. Counted as
-  // *shard sets*, not files: four shards of one split model are one model, and
-  // counting files meant the fallback could never fire for a split set.
+  // Launchable models in the folder, counted as *shard sets* rather than
+  // files: four shards of one split model are one model, and counting files
+  // meant the unnamed-pair tier could never fire for a split set.
   let mut model_files: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
   for entry in std::fs::read_dir(dir).ok()?.flatten() {
@@ -614,8 +506,9 @@ fn search_dir_for_head(
     if !name.to_lowercase().ends_with(".gguf") {
       continue;
     }
-    if !is_mtp_head_file(&path) {
-      if !is_projector_companion(&path) {
+    if !(kind.is_companion)(&path) {
+      // A companion of the *other* kind is not a model either.
+      if !is_projector_companion(&path) && !is_mtp_head_file(&path) {
         model_files.insert(crate::util::paths::model_file_label(&path));
       }
       continue;
@@ -623,7 +516,7 @@ fn search_dir_for_head(
     if name == model_filename {
       continue;
     }
-    if let Some(want) = head_arch {
+    if let Some(want) = kind.want_arch {
       if read_path(&path, HeaderReadOptions::default())
         .ok()
         .and_then(|r| {
@@ -636,16 +529,16 @@ fn search_dir_for_head(
         arch_matches.push(path.clone());
       }
     }
-    let head_base = canonical_base(&strip_mtp_markers(name));
-    if head_base.is_empty() {
+    let base = canonical_base(&(kind.strip_markers)(name));
+    if base.is_empty() {
       anonymous.push(path.clone());
-    } else if head_base == model_base {
+    } else if base == model_base {
       base_matches.push(path.clone());
     }
-    all_heads.push(path);
+    all.push(path);
   }
 
-  // 0. Arch match wins: the head declares which arch it drafts for.
+  // 0. A companion that declares which arch it serves wins outright.
   if !arch_matches.is_empty() {
     arch_matches.sort();
     return arch_matches.into_iter().next();
@@ -653,23 +546,81 @@ fn search_dir_for_head(
   // 1. Name match next.
   if !base_matches.is_empty() {
     base_matches.sort();
+    if base_matches.len() > 1 {
+      log::warn!(
+        "multiple {} candidates match model {model_filename}; using {}: {:?}",
+        kind.label,
+        base_matches[0]
+          .file_name()
+          .unwrap_or_default()
+          .to_string_lossy(),
+        companion_names(&base_matches),
+      );
+    }
     return base_matches.into_iter().next();
   }
-  // 2. An unambiguous pair, regardless of name: the only model beside the only
-  //    head in the model's own folder, or the only head in a companion folder.
+  // 2. An unambiguous pair regardless of name: the only model beside the only
+  //    companion in the model's own folder, or the only companion in a
+  //    companion folder.
   let lone_pair = if is_model_dir {
-    model_files.len() == 1 && all_heads.len() == 1
+    model_files.len() == 1 && all.len() == 1
   } else {
-    all_heads.len() == 1
+    all.len() == 1
   };
   if lone_pair {
-    return all_heads.into_iter().next();
+    return all.into_iter().next();
   }
-  // 3. Lone anonymous catch-all, else ambiguous → give up.
+  // 3. Lone anonymous catch-all, else genuinely ambiguous → emit nothing.
   if anonymous.len() == 1 {
     return anonymous.into_iter().next();
   }
+  if !all.is_empty() {
+    log::warn!(
+      "multiple {} files in {} but none match model {model_filename}; \
+       skipping auto-detection: {:?}",
+      kind.label,
+      dir.display(),
+      companion_names(&all),
+    );
+  }
   None
+}
+
+/// The `mmproj` projector paired with `model_path`. `None` when there is none,
+/// or when several are equally plausible and the user should pass `--mmproj`.
+pub fn find_mmproj(model_path: &Path) -> Option<PathBuf> {
+  // Launching a projector directly has no projector of its own.
+  if is_projector_companion(model_path) {
+    return None;
+  }
+  find_companion(
+    model_path,
+    &CompanionKind {
+      is_companion: is_projector_companion,
+      strip_markers: strip_mmproj_markers,
+      want_arch: None,
+      label: "mmproj",
+    },
+  )
+}
+
+/// [`find_mtp_head`] with the head arch supplied verbatim rather than derived:
+/// DSpark's support GGUF declares `deepseek4-dspark` yet drafts for
+/// `deepseek4` through the same slot.
+pub fn find_draft_head(model_path: &Path, head_arch: Option<&str>) -> Option<PathBuf> {
+  // A head file has no head of its own.
+  if is_mtp_head_file(model_path) {
+    return None;
+  }
+  find_companion(
+    model_path,
+    &CompanionKind {
+      is_companion: is_mtp_head_file,
+      strip_markers: strip_mtp_markers,
+      want_arch: head_arch,
+      label: "MTP draft head",
+    },
+  )
 }
 
 /// Concurrency cap for [`walk_root`]'s per-file parse. Default to
@@ -1976,6 +1927,32 @@ mod tests {
       b = b.with_kv("clip.has_audio_encoder", GgufValue::Bool(true));
     }
     fs::write(path, b.build()).unwrap();
+  }
+
+  #[test]
+  fn mmproj_pairs_from_the_snapshot_root_of_a_quant_subdir() {
+    // unsloth-style layout: weights under a per-quant directory, the projector
+    // at the snapshot root. A parent-only search left these models with
+    // multimodal: null despite the projector sitting on disk.
+    let root = temp_dir("mmproj-snapshot");
+    let snap = root.join("snapshots").join("abc123");
+    let quant = snap.join("UD-Q4_K_XL");
+    fs::create_dir_all(&quant).unwrap();
+    for i in 1..=2 {
+      fs::write(
+        quant.join(format!("gemma-4-UD-Q4_K_XL-0000{i}-of-00002.gguf")),
+        build_minimal_gguf("gemma4"),
+      )
+      .unwrap();
+    }
+    fs::write(snap.join("mmproj-F16.gguf"), build_minimal_gguf("gemma4")).unwrap();
+    let found = find_mmproj(&quant.join("gemma-4-UD-Q4_K_XL-00001-of-00002.gguf"));
+    assert_eq!(
+      found.and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())),
+      Some("mmproj-F16.gguf".to_string()),
+      "a projector at the snapshot root must pair with a model in a quant subdir"
+    );
+    fs::remove_dir_all(&root).ok();
   }
 
   #[test]

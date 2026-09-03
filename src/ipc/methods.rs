@@ -611,7 +611,7 @@ async fn model_key_arch_rows(
   let (key, arch) = match rows.iter().find(|r| r.path == path_str) {
     Some(r) => (r.name(), r.arch.clone()),
     None => (
-      crate::util::paths::path_basename(model_path),
+      crate::util::paths::model_file_label(model_path),
       resolve_model_id_and_arch(model_path)
         .ok()
         .and_then(|(_, a, _, _, _)| a),
@@ -827,7 +827,7 @@ pub(crate) fn preset_hint(
   let row = rows.iter().find(|r| r.path == model_path);
   let name = row
     .map(|r| r.name())
-    .unwrap_or_else(|| crate::util::paths::path_basename(std::path::Path::new(model_path)));
+    .unwrap_or_else(|| crate::util::paths::model_file_label(std::path::Path::new(model_path)));
   let arch = row.and_then(|r| r.arch.clone());
   let eff = effective_presets(&name, model_path, arch.as_deref(), store, rows);
   (eff.presets.len() as u32, eff.default)

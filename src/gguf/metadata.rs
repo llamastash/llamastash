@@ -542,13 +542,14 @@ fn infer_mode_hint(header: &GgufHeader, arch: Option<&str>) -> ModeHint {
     return ModeHint::Chat;
   }
 
-  // A split set's first shard can carry metadata only (`split.no = 0`,
-  // every tensor in a later shard), and then "no output projection" says
-  // nothing about the model — the projection is simply in another file. The
-  // encoder fallback below would call such a model an embedding model on that
-  // silence, so decide on the chat template instead and leave the rest to the
-  // caller. Seen on Qwen3.8-Flash-Next, whose shard 1 holds 0 of 1224 tensors.
-  if header.tensors.is_empty() {
+  // Only shard 1 of a split set is parsed, and the output projection may sit
+  // in any shard, so "no output projection here" says nothing about the model.
+  // The encoder fallback below would read that silence as an embedding model.
+  // Covers both shapes seen in the wild: a metadata-only first shard
+  // (Qwen3.8-Flash-Next, 0 of 1224 tensors) and llama-gguf-split's, which puts
+  // tensors in shard 1 but the projection later.
+  let is_split = header.u64(&["split.count"]).is_some_and(|n| n > 1);
+  if is_split || header.tensors.is_empty() {
     return if header.string(&["tokenizer.chat_template"]).is_some() {
       ModeHint::Chat
     } else {
@@ -715,6 +716,29 @@ mod tests {
       .build();
     let m = parse(bytes);
     assert_eq!(m.mode_hint, ModeHint::Unknown);
+  }
+
+  #[test]
+  fn a_split_shard_without_the_output_projection_is_not_an_embedding_model() {
+    // Only shard 1 is parsed and the projection may live in a later shard, so
+    // its absence here proves nothing. Both wild shapes: llama-gguf-split
+    // leaves tensors in shard 1, Qwen3.8-Flash-Next leaves none.
+    for tensors in [true, false] {
+      let mut b = FixtureBuilder::new()
+        .with_arch("llama")
+        .with_embedding_length(4096)
+        .with_chat_template("{{ messages }}")
+        .with_kv("split.count", GgufValue::U16(3));
+      if tensors {
+        b = b.with_tensor("blk.0.attn_q.weight", &[64, 64], 1);
+      }
+      let m = parse(b.build());
+      assert_eq!(
+        m.mode_hint,
+        ModeHint::Chat,
+        "split shard (tensors={tensors}) must not read as an embedding model"
+      );
+    }
   }
 
   #[test]

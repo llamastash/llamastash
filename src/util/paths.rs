@@ -69,6 +69,11 @@ pub fn model_display_name(path: &Path) -> String {
 /// split set's `-NNNNN-of-NNNNN` marker collapsed, so four shards read as one
 /// model (`Qwen3.8-Flash-Next-UD-Q4_K_XL.gguf`, not `…-00001-of-00004.gguf`).
 ///
+/// Also the per-model preset key the CLI and TUI write under, and the
+/// catalog-fallback name wherever a model is not in the live catalog. It has
+/// to collapse for those too: the `default:` preset silently stopped applying
+/// to split models when the key was derived raw here but collapsed elsewhere.
+///
 /// This is the single place the shard collapse happens. `CatalogRow::name`,
 /// the CLI's running / external rows, and [`model_display_name`] (which is
 /// this minus the extension) all delegate here, so a split model cannot read
@@ -140,19 +145,6 @@ pub fn resolve_symlinks(path: &Path) -> PathBuf {
 /// Cap on symlink hops in [`resolve_symlinks`]. Linux's own limit is 40;
 /// a config path nested deeper than this is a loop, not a setup.
 const SYMLINK_HOPS: usize = 8;
-
-/// File basename of `path`, extension included (`qwen-coder.gguf`),
-/// falling back to the full path display when there is no final
-/// component. This is the per-model preset key the CLI/TUI write under,
-/// and the catalog-fallback name wherever a model isn't in the live
-/// catalog (see [`crate::launch::presets`]). Distinct from
-/// [`model_display_name`], which drops the extension for a human label.
-pub fn path_basename(path: &Path) -> String {
-  path
-    .file_name()
-    .map(|s| s.to_string_lossy().into_owned())
-    .unwrap_or_else(|| path.display().to_string())
-}
 
 /// Best-effort home directory resolution. Returns `None` only when the
 /// platform can't supply one (i.e. broken `$HOME` and no equivalent in

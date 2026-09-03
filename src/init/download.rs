@@ -455,6 +455,11 @@ fn build_api(cache_dir: PathBuf) -> Result<Api, DownloadError> {
     .with_token(token)
     .with_user_agent("llamastash", env!("CARGO_PKG_VERSION"))
     .with_progress(false)
+    // hf-hub chunks each file but gates the chunks on `max_files`, which its
+    // builder defaults to 1 -- measured 6.4 MiB/s against 18.7 for a parallel
+    // downloader on the same link. Bounded rather than its `.high()`
+    // (= num_cpus), which its own docs warn saturates CPUs.
+    .with_max_files(8)
     .build()
     .map_err(DownloadError::from)
 }

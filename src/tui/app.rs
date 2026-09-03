@@ -1784,7 +1784,7 @@ impl App {
     let row = rows.iter().find(|r| r.path == path_str);
     let name = row
       .map(|r| r.name())
-      .unwrap_or_else(|| crate::util::paths::path_basename(path));
+      .unwrap_or_else(|| crate::util::paths::model_file_label(path));
     let arch = row.and_then(|r| r.arch.clone());
     (rows, name, arch)
   }
@@ -1896,7 +1896,7 @@ impl App {
     };
     let model_name = self
       .display_label_for(&path)
-      .unwrap_or_else(|| crate::util::paths::path_basename(&path));
+      .unwrap_or_else(|| crate::util::paths::model_file_label(&path));
 
     // Capture knobs + extras + launch identity from whichever surface is in
     // view. One map now, so a ds4 launch's `--ssd-streaming` rides with the
