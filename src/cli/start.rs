@@ -31,12 +31,10 @@ use crate::ipc::Client;
 use crate::launch::knobs::{Concept, KnobSet};
 
 pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
-  let mut client = connect_or_spawn(cli, config).await?;
-  let rows = fetch_catalog(&mut client).await?;
-
   // A launch file supplies both the model reference and the preset, so it
   // replaces the `--preset` → `presets_show` round trip rather than adding a
-  // path beside it.
+  // path beside it. Read before the daemon: `load` needs nothing from it, and a
+  // file with a typo in it should not spawn a daemon to be told so.
   let from_file = match args.model.as_deref() {
     Some(m) if crate::cli::launch_file::is_launch_file(m) => Some(crate::cli::launch_file::load(
       std::path::Path::new(m),
@@ -44,6 +42,9 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
     )?),
     _ => None,
   };
+
+  let mut client = connect_or_spawn(cli, config).await?;
+  let rows = fetch_catalog(&mut client).await?;
 
   let row = match (&from_file, args.model.as_deref()) {
     (Some(sel), _) => select_start_row(&rows, &args, &sel.model_key)?,

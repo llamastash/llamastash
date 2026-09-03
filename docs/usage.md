@@ -386,7 +386,7 @@ presets:
           n_gpu_layers: 40
 ```
 
-It is **not** self-contained: the model key resolves against the running daemon's catalog exactly like a `start` argument, so a key that matches nothing exits `66`. And it writes nothing — no `config.yaml` entry, no `state.json`, no restart. `presets save` still targets `config.yaml`; a launch file is an input, never an output.
+It is **not** self-contained: the model key resolves against the running daemon's catalog exactly like a `start` argument, so a key that matches nothing exits `66`. **Arch keys do not carry over.** In `config.yaml` a top-level key that names no discovered model is read as an arch id; a launch file resolves catalog-only, so a block copied out of a config under `qwen3` exits `66` (no match, or an ambiguity list) rather than applying to every Qwen. Name one model. And it writes nothing — no `config.yaml` entry, no `state.json`, no restart. `presets save` still targets `config.yaml`; a launch file is an input, never an output.
 
 Detection reads the positional, not the alias: a value ending in `.yaml`/`.yml` **that exists as a file** is a launch file, so `start file.yml` behaves identically, and a model actually named `foo.yml` that isn't on disk still resolves as a model reference.
 
@@ -402,8 +402,12 @@ Validation is stricter than `config.yaml`'s, because a hand-authored file has no
 | `default:` naming no entry | dangling default (`config.yaml` ignores this one silently; a launch file does not) |
 | `--preset auto`, or `default: auto` | `auto` means "apply no preset", which a launch file cannot mean |
 | a knob no backend declares | names it and points at `llamastash knobs` |
+| a knob value the backend can't parse (`ctx_size: 8k`) | names it (`config.yaml` drops a bad value as silently as a bad id) |
+| a field no preset block reads (`backendd:`, or `mode:` written beside `knobs:` instead of inside it) | names it and lists what a preset takes |
 
-The knob row is the deliberate difference from `config.yaml`, where an undeclared knob is dropped with a line in the daemon's log file. Only the selected entry's knobs are checked — an undeclared knob in an entry you didn't launch stays silent.
+The last three rows are the deliberate difference from `config.yaml`, where each of them is dropped with a line in the daemon's log file and the launch goes ahead without it. A misspelled `backend:` is the worst of the set: it silently picks a different engine and still reports success. Only the selected entry is checked — a typo in an entry you didn't launch stays silent, though a bad field on the `default:` / `entries:` block itself is always caught.
+
+YAML merge keys work: `<<: *base` is expanded before the file is validated or parsed, so a shared anchor contributes its knobs to the entry that merges it, and a typo riding in through an anchor is caught like any other. Merges are shallow, per key, as YAML defines them — an entry with its own `knobs:` map replaces the anchor's rather than extending it.
 
 #### `--wait` (block until the launch settles)
 

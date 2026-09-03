@@ -10,7 +10,7 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 - `llamastash api-key` — print the proxy's bearer key on stdout, for client configs that resolve a credential by shelling out and for `$(...)` in scripts.
 - `llamastash integrations [tools...]` — patch your AI dev tools' configs without running the whole `init` wizard. Registers every **favorited** model, not just one, and names each the way `/v1/models` publishes it, so GGUF files and safetensors repos both resolve.
 - `layer_sources` on the `start_model` IPC response and `start --json` — the layer each resolved knob value came from (`user`, `preset_default`, `last_used`, `arch_default`, …), so a caller can tell where a value originated. Omitted when empty (a pure-fit launch where every knob fell to the backend default).
-- `llamastash run` — alias for `start`, and a launch file: `run model.yml` starts the file's one model with its own preset, without saving anything to `config.yaml`.
+- `llamastash run` — alias for `start`, and a launch file: `run model.yml` starts the file's one model with its own preset, without saving anything to `config.yaml`. A hand-authored file is checked strictly: an undeclared knob, an unparseable knob value or a misspelled field exits 64 rather than launching without it.
 
 ### Fixed
 

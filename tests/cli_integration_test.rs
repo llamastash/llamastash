@@ -1277,3 +1277,99 @@ presets:
   assert_eq!(code, exit_codes::USAGE, "stderr: {err}");
   assert!(err.contains("must name exactly one"), "stderr: {err}");
 }
+
+/// A bad value on a good knob id dropped as silently as a bad id until the
+/// validator asked whether each key survived into the parsed set.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_launch_file_with_a_bad_knob_value_exits_64() {
+  let h = spawn_daemon_with_model("run-file-value", "m.gguf", "llama").await;
+  let file = launch_file(
+    &h,
+    "value.yml",
+    r#"
+presets:
+  m.gguf:
+    entries:
+      fast:
+        knobs:
+          n_gpu_layers: 99
+          ctx_size: 8k
+"#,
+  );
+  let (code, _, err) = run_cli(&h.socket, &["run", file.to_str().unwrap(), "--json"]);
+  assert_eq!(code, exit_codes::USAGE, "stderr: {err}");
+  assert!(err.contains("ctx_size"), "stderr: {err}");
+}
+
+/// `<<: *anchor` has to reach the launch, not parse as an empty preset that
+/// still reports the entry's name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_launch_file_merge_keys_launch_the_merged_config() {
+  let h = spawn_daemon_with_model("run-file-merge", "m.gguf", "llama").await;
+  let file = launch_file(
+    &h,
+    "merge.yml",
+    r#"
+presets:
+  m.gguf:
+    default: slow
+    entries:
+      fast: &base
+        knobs:
+          n_gpu_layers: 99
+          ctx_size: 8192
+      slow:
+        <<: *base
+"#,
+  );
+  let (code, json, err) = run_cli(
+    &h.socket,
+    &["run", file.to_str().unwrap(), "--mode", "chat", "--json"],
+  );
+  assert_eq!(code, exit_codes::SUCCESS, "stderr: {err}");
+  assert_eq!(json["preset"], "slow");
+
+  let knobs = ready_last_params(&h).await["params"]["knobs"]
+    .as_object()
+    .expect("knob map")
+    .clone();
+  assert_eq!(knobs.get("n-gpu-layers"), Some(&serde_json::json!(99)));
+  assert_eq!(knobs.get("ctx-size"), Some(&serde_json::json!(8192)));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_launch_file_with_an_unknown_entry_field_exits_64() {
+  let h = spawn_daemon_with_model("run-file-field", "m.gguf", "llama").await;
+  let file = launch_file(
+    &h,
+    "field.yml",
+    r#"
+presets:
+  m.gguf:
+    entries:
+      fast:
+        knobs:
+          n_gpu_layers: 99
+        backendd: llamacpp
+"#,
+  );
+  let (code, _, err) = run_cli(&h.socket, &["run", file.to_str().unwrap(), "--json"]);
+  assert_eq!(code, exit_codes::USAGE, "stderr: {err}");
+  assert!(err.contains("backendd"), "stderr: {err}");
+}
+
+/// The file is rejected before the daemon is contacted, so a typo costs no
+/// spawn and no catalog fetch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_launch_file_rejects_a_bad_file_with_no_daemon_running() {
+  let dir = tempfile::tempdir().unwrap();
+  let file = dir.path().join("typo.yml");
+  std::fs::write(
+    &file,
+    "presets:\n  m.gguf:\n    entries:\n      fast:\n        knobs:\n          n_gpu_layerz: 1\n",
+  )
+  .unwrap();
+  let (code, _, err) = run_cli(dir.path(), &["run", file.to_str().unwrap(), "--json"]);
+  assert_eq!(code, exit_codes::USAGE, "stderr: {err}");
+  assert!(err.contains("n_gpu_layerz"), "stderr: {err}");
+}

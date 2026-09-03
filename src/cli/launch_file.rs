@@ -49,12 +49,19 @@ pub fn is_launch_file(value: &str) -> bool {
 pub fn load(path: &Path, preset_flag: Option<&str>) -> Result<LaunchFileSelection, CliExit> {
   let text = std::fs::read_to_string(path)
     .map_err(|e| usage(format!("cannot read launch file `{}`: {e}", path.display())))?;
-  let raw: yaml_serde::Value = yaml_serde::from_str(&text)
+  // One parse feeds both the validator and the typed doc, so the two cannot
+  // disagree about what the file says. `apply_merge` has to run first: without
+  // it `yaml_serde` leaves `<<` in the tree, `PresetBody` reads it as an unknown
+  // key, and a merged entry launches an empty preset while reporting its name.
+  let mut raw: yaml_serde::Value = yaml_serde::from_str(&text)
     .map_err(|e| usage(format!("invalid YAML in `{}`: {e}", path.display())))?;
-  let doc: LaunchFileDoc = yaml_serde::from_str(&text)
+  raw
+    .apply_merge()
+    .map_err(|e| usage(format!("invalid merge keys in `{}`: {e}", path.display())))?;
+  let doc: LaunchFileDoc = yaml_serde::from_value(raw.clone())
     .map_err(|e| usage(format!("invalid launch file `{}`: {e}", path.display())))?;
   let sel = select_launch(doc.presets, preset_flag)?;
-  reject_unknown_knobs(&raw, &sel)?;
+  validate_selection(&raw, &sel)?;
   Ok(sel)
 }
 
@@ -141,35 +148,127 @@ pub fn select_launch(
   })
 }
 
-/// Error on any knob key in the *selected* entry that no backend declares.
+/// What a `presets:` block and a preset entry may carry. Everything else in a
+/// launch file is a typo.
 ///
-/// The shared `KnobSet` deserializer drops these with a log line the CLI never
-/// shows, so the raw document is consulted for the one entry that launches.
-fn reject_unknown_knobs(raw: &yaml_serde::Value, sel: &LaunchFileSelection) -> Result<(), CliExit> {
-  let Some(knobs) = raw
+/// `ConfigPresetBlock` and `PresetBody` ignore unknown keys on purpose, so
+/// `config.yaml` keeps loading across versions. A hand-authored file gets no
+/// such pass: it has no `presets show` to reveal what survived.
+const BLOCK_FIELDS: [&str; 2] = ["default", "entries"];
+const ENTRY_FIELDS: [&str; 4] = ["knobs", "extras", "backend", "server"];
+
+/// Error on anything in the *selected* entry that would not reach the launch.
+///
+/// Four doors, all of which drop with a `log::warn!` the CLI never shows: an
+/// unknown field on the block or the entry, a knob id no backend declares, and a
+/// bad value on a good knob id. The last one is invisible to an id check, so
+/// each raw knob key is asked whether it resolved *and* survived into the parsed
+/// set; a key that resolved but is absent is a rejected value.
+fn validate_selection(raw: &yaml_serde::Value, sel: &LaunchFileSelection) -> Result<(), CliExit> {
+  let block = raw
     .get("presets")
     .and_then(|v| v.get(&sel.model_key))
-    .and_then(|v| v.get("entries"))
-    .and_then(|v| v.get(&sel.preset_name))
-    .and_then(|v| v.get("knobs"))
     .and_then(|v| v.as_mapping())
-  else {
+    .ok_or_else(|| {
+      usage(format!(
+        "model `{}`: its `presets:` entry is not a mapping, so the launch file cannot be validated",
+        sel.model_key
+      ))
+    })?;
+  reject_unknown_fields(block, &BLOCK_FIELDS, &format!("model `{}`", sel.model_key))?;
+  let entry = block
+    .get("entries")
+    .and_then(|v| v.get(&sel.preset_name))
+    .and_then(|v| v.as_mapping())
+    .ok_or_else(|| {
+      usage(format!(
+        "preset `{}`: its `entries:` entry is not a mapping, so the launch file cannot be validated",
+        sel.preset_name
+      ))
+    })?;
+  reject_unknown_fields(
+    entry,
+    &ENTRY_FIELDS,
+    &format!("preset `{}`", sel.preset_name),
+  )?;
+  let Some(knobs) = entry.get("knobs") else {
     return Ok(());
   };
-  let mut unknown: Vec<String> = knobs
-    .iter()
-    .filter_map(|(k, _)| k.as_str())
-    .filter(|k| crate::launch::knobs::resolve_id(k).is_none())
+  let knobs = knobs.as_mapping().ok_or_else(|| {
+    usage(format!(
+      "preset `{}` sets `knobs:` to something other than a map",
+      sel.preset_name
+    ))
+  })?;
+
+  let mut undeclared: Vec<String> = Vec::new();
+  let mut rejected: Vec<String> = Vec::new();
+  for (key, _) in knobs.iter() {
+    // A non-string key (a bare number) can never name a knob.
+    let Some(name) = key.as_str() else {
+      rejected.push(format!("{key:?}"));
+      continue;
+    };
+    match crate::launch::knobs::resolve_id(name) {
+      None => undeclared.push(name.to_string()),
+      Some(id) if !sel.body.knobs.contains(id) => rejected.push(name.to_string()),
+      Some(_) => {}
+    }
+  }
+  if !undeclared.is_empty() {
+    undeclared.sort_unstable();
+    return Err(usage(format!(
+      "preset `{}` sets knobs no backend declares: {}\nrun `llamastash knobs` for the declared list",
+      sel.preset_name,
+      undeclared.join(", ")
+    )));
+  }
+  if !rejected.is_empty() {
+    rejected.sort_unstable();
+    return Err(usage(format!(
+      "preset `{}` sets knob values the backend rejects: {}\nrun `llamastash knobs` for each knob's type and range",
+      sel.preset_name,
+      rejected.join(", ")
+    )));
+  }
+  Ok(())
+}
+
+/// Error on any key of `map` outside `allowed`, naming the typo'd ones and the
+/// set that is legal. A key that is itself a knob id gets an extra pointer to
+/// `knobs:`, which is where `mode:` and a bare `ctx:` actually belong.
+fn reject_unknown_fields(
+  map: &yaml_serde::Mapping,
+  allowed: &[&str],
+  what: &str,
+) -> Result<(), CliExit> {
+  let mut unknown: Vec<String> = map
+    .keys()
+    .filter_map(|k| k.as_str())
+    .filter(|k| !allowed.contains(k))
     .map(str::to_string)
     .collect();
   if unknown.is_empty() {
     return Ok(());
   }
   unknown.sort_unstable();
+  let hint = if unknown
+    .iter()
+    .any(|k| crate::launch::knobs::resolve_id(k).is_some())
+  {
+    "\nknobs go under `knobs:`, not beside it"
+  } else {
+    ""
+  };
+  let noun = if unknown.len() > 1 {
+    "fields"
+  } else {
+    "a field"
+  };
   Err(usage(format!(
-    "preset `{}` sets knobs no backend declares: {}\nrun `llamastash knobs` for the declared list",
-    sel.preset_name,
-    unknown.join(", ")
+    "{what} has {noun} no preset block reads: {}\na preset takes: {}{hint}",
+    unknown.join(", "),
+    allowed.join(", ")
   )))
 }
 
@@ -387,5 +486,117 @@ mod tests {
     let bad = write(dir.path(), "bad.yml", "presets: [oops\n  - : :");
     let yaml_err = load(&bad, None).unwrap_err();
     assert_eq!(yaml_err.code, USAGE);
+  }
+
+  /// The deserializer drops a bad value on a good id as silently as a bad id,
+  /// so a key that resolved but did not survive into the parsed set is an error.
+  #[test]
+  fn a_bad_value_on_a_good_knob_id_is_usage() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(
+      dir.path(),
+      "v.yml",
+      "presets:\n  m.gguf:\n    entries:\n      fast:\n        knobs:\n          n_gpu_layers: 99\n          ctx_size: 8k\n",
+    );
+    let e = load(&path, None).unwrap_err();
+    assert_eq!(e.code, USAGE);
+    let msg = e.message.unwrap();
+    assert!(msg.contains("ctx_size"), "{msg}");
+    assert!(msg.contains("rejects"), "{msg}");
+  }
+
+  #[test]
+  fn merge_keys_reach_the_selected_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(
+      dir.path(),
+      "m.yml",
+      "presets:\n  m.gguf:\n    default: slow\n    entries:\n      fast: &base\n        knobs:\n          n_gpu_layers: 99\n        backend: engine-x\n      slow:\n        <<: *base\n",
+    );
+    let sel = load(&path, None).expect("merged entry loads");
+    assert_eq!(sel.preset_name, "slow");
+    assert_eq!(sel.body.backend.as_deref(), Some("engine-x"));
+    assert_eq!(sel.body.knobs.len(), 1, "the anchor's knob must survive");
+  }
+
+  /// The stacked case: a typo'd knob riding in through an anchor. Applying
+  /// merges before validating is what makes it visible.
+  #[test]
+  fn a_bad_knob_inside_a_merged_anchor_is_usage() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(
+      dir.path(),
+      "m.yml",
+      "presets:\n  m.gguf:\n    default: slow\n    entries:\n      fast: &base\n        knobs:\n          n_gpu_layers: 99\n          n_gpu_layerz: 1\n      slow:\n        <<: *base\n",
+    );
+    let e = load(&path, None).unwrap_err();
+    assert_eq!(e.code, USAGE);
+    assert!(e.message.unwrap().contains("n_gpu_layerz"));
+  }
+
+  /// `backend:` and `server:` are launch identity. A typo there picks a
+  /// different engine and still reports success, which is worse than a typo'd
+  /// knob, not better.
+  #[test]
+  fn an_unknown_entry_field_is_usage() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(
+      dir.path(),
+      "f.yml",
+      "presets:\n  m.gguf:\n    entries:\n      fast:\n        knobs:\n          n_gpu_layers: 99\n        backendd: engine-x\n        extra: [--flash-attn]\n",
+    );
+    let e = load(&path, None).unwrap_err();
+    assert_eq!(e.code, USAGE);
+    let msg = e.message.unwrap();
+    assert!(msg.contains("backendd") && msg.contains("extra"), "{msg}");
+    assert!(msg.contains("has fields"), "{msg}");
+    assert!(msg.contains("knobs, extras, backend, server"), "{msg}");
+  }
+
+  /// `mode:` is a knob now, so beside `knobs:` it is an unknown field. The
+  /// message says where it belongs, since `docs/architecture.md` said otherwise
+  /// until this fix.
+  #[test]
+  fn a_knob_written_beside_knobs_is_usage_with_a_pointer() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(
+      dir.path(),
+      "f.yml",
+      "presets:\n  m.gguf:\n    entries:\n      fast:\n        knobs:\n          n_gpu_layers: 99\n        mode: embedding\n",
+    );
+    let e = load(&path, None).unwrap_err();
+    assert_eq!(e.code, USAGE);
+    let msg = e.message.unwrap();
+    assert!(msg.contains("mode"), "{msg}");
+    assert!(msg.contains("has a field"), "{msg}");
+    assert!(msg.contains("knobs go under `knobs:`"), "{msg}");
+  }
+
+  #[test]
+  fn an_unknown_block_field_is_usage() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(
+      dir.path(),
+      "b.yml",
+      "presets:\n  m.gguf:\n    defualt: fast\n    entries:\n      fast:\n        knobs:\n          n_gpu_layers: 99\n",
+    );
+    let e = load(&path, None).unwrap_err();
+    assert_eq!(e.code, USAGE);
+    let msg = e.message.unwrap();
+    assert!(msg.contains("defualt"), "{msg}");
+    assert!(msg.contains("default, entries"), "{msg}");
+  }
+
+  /// Only the selected entry is checked, so a typo in the entry you did not
+  /// launch stays silent. The block-level fields are shared, so they are not.
+  #[test]
+  fn an_unselected_entry_keeps_its_own_typo_quiet() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(
+      dir.path(),
+      "u.yml",
+      "presets:\n  m.gguf:\n    default: fast\n    entries:\n      fast:\n        knobs:\n          n_gpu_layers: 99\n      slow:\n        backendd: engine-y\n",
+    );
+    assert_eq!(load(&path, None).unwrap().preset_name, "fast");
   }
 }
