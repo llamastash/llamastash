@@ -315,6 +315,18 @@ pub enum ResolveError {
   /// `ambiguous_model` with the candidate list in `matches`.
   Many(Vec<CatalogRow>),
 }
+/// Collapse a user-supplied model reference that names shard 1 of a split set,
+/// preserving whether the caller wrote the extension. `None` when the
+/// reference is not a shard name, so callers skip the alias entirely.
+fn collapse_shard_reference(needle: &str) -> Option<String> {
+  if needle.to_lowercase().ends_with(".gguf") {
+    let c = crate::util::paths::model_file_label(std::path::Path::new(needle));
+    return (c != needle).then_some(c);
+  }
+  let c = crate::util::paths::model_file_label(std::path::Path::new(&format!("{needle}.gguf")));
+  let stem = c.strip_suffix(".gguf").unwrap_or(&c).to_string();
+  (stem != needle).then_some(stem)
+}
 
 /// Resolve a model reference, preserving the distinction between "zero
 /// candidates" and "many candidates" so callers (the HTTP proxy emits
@@ -343,6 +355,28 @@ pub fn resolve_model_with_candidates(
   if exact_name.len() == 1 {
     return Ok(exact_name[0].clone());
   }
+  // Split models used to be named after shard 1, and that string is still out
+  // there: in 0.2.0 tool configs, saved `body.model` values, and preset keys.
+  // Accept it as an alias for the collapsed name so an upgrade does not 404.
+  // Both spellings matter — `list` shows the filename, `/v1/models` publishes
+  // the stem — and the shard parser only recognises the `.gguf` form.
+  if let Some(collapsed) = collapse_shard_reference(needle) {
+    let aliased: Vec<&CatalogRow> = rows
+      .iter()
+      .filter(|r| {
+        let name = r.name();
+        let stem = std::path::Path::new(&name)
+          .file_stem()
+          .and_then(|s| s.to_str())
+          .unwrap_or(&name)
+          .to_string();
+        name == collapsed || stem == collapsed
+      })
+      .collect();
+    if aliased.len() == 1 {
+      return Ok(aliased[0].clone());
+    }
+  }
 
   // Tier 2: case-insensitive substring of name OR parent.
   let lower = needle.to_lowercase();
@@ -363,6 +397,30 @@ pub fn resolve_model_with_candidates(
 
 #[cfg(test)]
 mod tests {
+  #[test]
+  fn a_split_models_old_shard_name_still_resolves() {
+    // 0.2.0 published `…-00001-of-00004` as the model id and wrote preset keys
+    // under it. Those strings live in tool configs, so they must keep working
+    // after the rename.
+    let row = CatalogRow::for_resolution(
+      "/m/UD-Q4_K_XL/foo-UD-Q4_K_XL-00001-of-00004.gguf".to_string(),
+      None,
+      Some("llama".to_string()),
+    );
+    let rows = vec![row];
+    assert_eq!(rows[0].name(), "foo-UD-Q4_K_XL.gguf", "collapsed name");
+    for needle in [
+      "foo-UD-Q4_K_XL-00001-of-00004.gguf",
+      "foo-UD-Q4_K_XL-00001-of-00004",
+      "foo-UD-Q4_K_XL.gguf",
+    ] {
+      assert!(
+        resolve_model_with_candidates(&rows, needle).is_ok(),
+        "`{needle}` must resolve"
+      );
+    }
+  }
+
   use super::*;
 
   fn row(path: &str, parent: &str) -> CatalogRow {

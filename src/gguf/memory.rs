@@ -191,15 +191,18 @@ const AUTO_LAZY_MIN_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 /// them refuses launches that comfortably fit. Qwen3.8-Flash-Next carries a
 /// 26.8 GiB `per_layer_token_embd`, so a 103.7 GiB file needs ~77 GiB resident.
 ///
+/// `all_sizes` mirrors `--lazy-mode on`, which drops the size threshold that
+/// `auto` applies.
+///
 /// **Only valid when the launch uses mmap** — `--no-mmap` disables the lazy
 /// path in the loader, and then the full figure is the honest one.
-pub fn lazy_streamed_bytes(header: &GgufHeader) -> u64 {
+pub fn lazy_streamed_bytes(header: &GgufHeader, all_sizes: bool) -> u64 {
   header
     .tensors
     .iter()
     .filter(|t| LAZY_TENSOR_NAMES.contains(&t.name.as_str()))
     .map(|t| Quant::from_ggml_tag(t.ggml_type).tensor_storage_bytes(&t.dims))
-    .filter(|b| *b > AUTO_LAZY_MIN_BYTES)
+    .filter(|b| all_sizes || *b > AUTO_LAZY_MIN_BYTES)
     .fold(0u64, u64::saturating_add)
 }
 

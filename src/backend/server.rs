@@ -430,6 +430,26 @@ fn fan_out_devices(devices: Vec<Device>, n: usize) -> Vec<Device> {
 
 #[cfg(test)]
 mod tests {
+
+  #[test]
+  fn a_wrong_typed_numeric_field_does_not_blank_the_rest_of_the_device() {
+    // Whole-row decode with `unwrap_or_default()` used to zero every field when
+    // any one had the wrong type, and a nameless device still takes a physical
+    // slot — so one malformed row beside one real GPU re-enabled the multi-GPU
+    // UI on a single-GPU host.
+    let v = serde_json::json!({
+      "selector": "ROCm0",
+      "gpu_backend": "ROCm",
+      "name": "AMD Radeon 8060S Graphics",
+      "total_mib": "24576",
+      "free_mib": 123
+    });
+    let d: Device = serde_json::from_value(v).unwrap_or_default();
+    assert_eq!(d.name, "AMD Radeon 8060S Graphics", "name must survive");
+    assert_eq!(d.selector, "ROCm0");
+    assert_eq!(d.total_mib, None, "the wrong-typed field alone falls back");
+    assert_eq!(d.free_mib, Some(123), "well-typed siblings still decode");
+  }
   use super::*;
 
   fn dev(selector: &str, gpu: &str) -> Device {

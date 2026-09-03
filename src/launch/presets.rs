@@ -221,9 +221,12 @@ pub fn classify_preset_key(key: &str, catalog: &[CatalogRow]) -> KeyClass {
       path: row.path.clone(),
     };
   }
-  let mut named = catalog
-    .iter()
-    .filter(|r| r.name().eq_ignore_ascii_case(key));
+  // A key written before split models were named after their shard set still
+  // reads `…-00001-of-00004.gguf`; collapse it so those presets keep applying.
+  let key_collapsed = crate::util::paths::model_file_label(std::path::Path::new(key));
+  let mut named = catalog.iter().filter(|r| {
+    r.name().eq_ignore_ascii_case(key) || r.name().eq_ignore_ascii_case(&key_collapsed)
+  });
   match (named.next(), named.next()) {
     (Some(row), None) => KeyClass::Model {
       path: row.path.clone(),

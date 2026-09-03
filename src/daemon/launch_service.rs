@@ -1087,8 +1087,13 @@ pub(crate) async fn spawn_supervised(
         // Qwen3.8-Flash-Next projected 133.5 GiB on a 121 GiB host but needs
         // ~77 GiB). Zero for every model without such a tensor, and for any
         // launch pinning `no-mmap`.
-        let lazy_bytes =
-          launch_lazy_bytes(ctx, &launch_params.model_path, &launch_params.knobs).await;
+        let lazy_bytes = launch_lazy_bytes(
+          ctx,
+          &launch_params.model_path,
+          &launch_params.knobs,
+          &launch_params.extras,
+        )
+        .await;
         let weights_total = total_weight_bytes.saturating_sub(lazy_bytes);
         let mtp_active = launch_params.mtp_directive.is_some();
         let demand = if identity.as_gguf().is_some() {
@@ -1606,6 +1611,32 @@ fn extras_manage_mmproj(extras: &[OsString]) -> bool {
   })
 }
 
+/// The `--lazy-mode` / `-lzm` value the extras tail pins, lowercased.
+///
+/// The gate subtracts tensors the loader streams, which is only true while
+/// lazy reading is on. There is no lazy-mode knob, and extras reach argv
+/// unfiltered, so `-- --lazy-mode off` would otherwise keep a 26.8 GiB tensor
+/// resident while the projection still discounted it — under-projecting into
+/// an OOM. Matches space and equals forms, like [`extras_manage_mmproj`].
+fn extras_lazy_mode(extras: &[OsString]) -> Option<String> {
+  let is_head = |h: &str| h.eq_ignore_ascii_case("--lazy-mode") || h.eq_ignore_ascii_case("-lzm");
+  for (i, e) in extras.iter().enumerate() {
+    let lossy = e.to_string_lossy();
+    if let Some((head, val)) = lossy.split_once('=') {
+      if is_head(head) {
+        return Some(val.to_ascii_lowercase());
+      }
+      continue;
+    }
+    if is_head(&lossy) {
+      return extras
+        .get(i + 1)
+        .map(|v| v.to_string_lossy().to_ascii_lowercase());
+    }
+  }
+  None
+}
+
 /// Bytes the engine will stream from the mapping rather than hold resident,
 /// summed over every file of the model.
 ///
@@ -1622,10 +1653,18 @@ async fn launch_lazy_bytes(
   ctx: &MethodContext,
   model_path: &std::path::Path,
   knobs: &crate::launch::knobs::KnobSet,
+  extras: &[OsString],
 ) -> u64 {
   if knobs.bool(crate::launch::knobs::kid("no-mmap")) == Some(true) {
     return 0;
   }
+  // `auto` (the engine default) streams only tensors past the size threshold;
+  // `on` streams every lazy-flagged tensor; `off` streams none.
+  let all_sizes = match extras_lazy_mode(extras).as_deref() {
+    Some("off") => return 0,
+    Some("on") => true,
+    _ => false,
+  };
   let snap = ctx.catalog.snapshot().await;
   let paths: Vec<std::path::PathBuf> = match snap.iter().find(|m| m.path == model_path) {
     Some(row) => std::iter::once(row.path.clone())
@@ -1637,7 +1676,7 @@ async fn launch_lazy_bytes(
     paths
       .iter()
       .filter_map(|p| read_gguf_header(p, HeaderReadOptions::default()).ok())
-      .map(|r| crate::gguf::memory::lazy_streamed_bytes(&r.header))
+      .map(|r| crate::gguf::memory::lazy_streamed_bytes(&r.header, all_sizes))
       .fold(0u64, u64::saturating_add)
   })
   .await
@@ -1672,6 +1711,13 @@ async fn launch_total_bytes(ctx: &MethodContext, model_path: &std::path::Path) -
   // backend's own cache-cap arithmetic still working from 0: one launch, two
   // different weights. Measured once, here, so every consumer agrees.
   // Off the runtime — a stat per shard, following the HF cache's symlinks.
+  //
+  // Caveat since the lazy-tensor gate landed: the admission projection alone
+  // subtracts `launch_lazy_bytes` from this figure. The probe scaler and the
+  // backends' cache caps still price against the full total, which is the
+  // fail-safe direction (bigger weights → smaller caps) but does mean the
+  // "every consumer agrees" claim above no longer holds. TODO.md tracks
+  // reconciling them by carrying per-tensor lazy data on `ModelMetadata`.
   let p = model_path.to_path_buf();
   tokio::task::spawn_blocking(move || crate::launch::admission::dir_weight_bytes(&p))
     .await
@@ -1943,6 +1989,25 @@ mod tests {
 
     drop_running_snapshots(&ctx, &[(LaunchId("L1".to_string()), 41100)]).await;
     assert!(ctx.state.snapshot().await.running.is_empty());
+  }
+
+  #[test]
+  fn extras_lazy_mode_reads_both_flag_forms() {
+    let off = vec![OsString::from("--lazy-mode"), OsString::from("off")];
+    assert_eq!(extras_lazy_mode(&off).as_deref(), Some("off"), "space form");
+    let eq = vec![OsString::from("-LZM=ON")];
+    assert_eq!(
+      extras_lazy_mode(&eq).as_deref(),
+      Some("on"),
+      "equals form, short alias, case-insensitive"
+    );
+    assert_eq!(extras_lazy_mode(&[]).as_deref(), None);
+    // A flag that merely starts the same must not match.
+    let other = vec![OsString::from("--lazy-mode-extra"), OsString::from("off")];
+    assert_eq!(extras_lazy_mode(&other).as_deref(), None);
+    // Trailing flag with no value: nothing to read, so no pin.
+    let dangling = vec![OsString::from("--lazy-mode")];
+    assert_eq!(extras_lazy_mode(&dangling).as_deref(), None);
   }
 
   #[test]

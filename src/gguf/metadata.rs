@@ -550,7 +550,17 @@ fn infer_mode_hint(header: &GgufHeader, arch: Option<&str>) -> ModeHint {
   // tensors in shard 1 but the projection later.
   let is_split = header.u64(&["split.count"]).is_some_and(|n| n > 1);
   if is_split || header.tensors.is_empty() {
-    return if header.string(&["tokenizer.chat_template"]).is_some() {
+    // Multi-template tokenizers store this as an array, which `string` skips,
+    // so check presence rather than type or a chat model reads as Unknown.
+    let has_template = header
+      .metadata
+      .get("tokenizer.chat_template")
+      .is_some_and(|v| match v {
+        GgufValue::String(t) => !t.is_empty(),
+        GgufValue::Array(items) => !items.is_empty(),
+        _ => false,
+      });
+    return if has_template {
       ModeHint::Chat
     } else {
       ModeHint::Unknown

@@ -406,37 +406,6 @@ pub fn find_mtp_head(model_path: &Path, model_arch: Option<&str>) -> Option<Path
   find_draft_head(model_path, head_arch.as_deref())
 }
 
-/// The rest of the HF snapshot `model_path` sits in: revision root plus its
-/// immediate subdirectories, minus the model's own. Empty outside a
-/// `.../snapshots/<rev>/` tree, which is what bounds the widened search.
-fn hf_snapshot_sibling_dirs(model_path: &Path) -> Vec<PathBuf> {
-  let Some(parent) = model_path.parent() else {
-    return Vec::new();
-  };
-  let snapshots = std::ffi::OsStr::new("snapshots");
-  let root = parent
-    .ancestors()
-    .find(|a| a.parent().and_then(|p| p.file_name()) == Some(snapshots));
-  let Some(root) = root else {
-    return Vec::new();
-  };
-  let mut dirs: Vec<PathBuf> = Vec::new();
-  if root != parent {
-    dirs.push(root.to_path_buf());
-  }
-  if let Ok(entries) = std::fs::read_dir(root) {
-    for e in entries.flatten() {
-      let p = e.path();
-      if p.is_dir() && p != parent {
-        dirs.push(p);
-      }
-    }
-  }
-  // Deterministic order so an ambiguous snapshot resolves the same way twice.
-  dirs.sort();
-  dirs
-}
-
 /// The two companion kinds (`mmproj` projectors, MTP draft heads) differ only
 /// in recognition and name-stripping, so they share one search.
 struct CompanionKind<'a> {
@@ -446,144 +415,6 @@ struct CompanionKind<'a> {
   /// outright. `None` skips the header read.
   want_arch: Option<&'a str>,
   label: &'static str,
-}
-
-/// A companion for `model_path`: its own directory first, then the rest of the
-/// HF snapshot, since repos routinely put weights and companions in separate
-/// subdirectories. Bounded to a `snapshots/<rev>/` tree because a flat models
-/// directory has no such boundary and would pair across unrelated models.
-fn find_companion(model_path: &Path, kind: &CompanionKind<'_>) -> Option<PathBuf> {
-  let parent = model_path.parent()?;
-  if let Some(hit) = search_dir_for_companion(parent, model_path, kind, true) {
-    return Some(hit);
-  }
-  for dir in hf_snapshot_sibling_dirs(model_path) {
-    if let Some(hit) = search_dir_for_companion(&dir, model_path, kind, false) {
-      return Some(hit);
-    }
-  }
-  None
-}
-
-/// Tier order: a companion declaring our arch, then a name match, then an
-/// unambiguous pair, then a lone anonymous catch-all. Anything else is
-/// genuinely ambiguous and pairs nothing.
-///
-/// `is_model_dir` only changes the unambiguous-pair tier: a companion folder
-/// holds no models by construction, so "the only companion here" replaces "the
-/// only model beside the only companion". Without that the widened search
-/// could never pair anything.
-fn search_dir_for_companion(
-  dir: &Path,
-  model_path: &Path,
-  kind: &CompanionKind<'_>,
-  is_model_dir: bool,
-) -> Option<PathBuf> {
-  let model_filename = model_path.file_name()?.to_str()?;
-  // Compare on the collapsed name: a split set is one model, and its
-  // `-NNNNN-of-NNNNN` suffix is not part of the name a companion is published
-  // under, so `foo-Q4_K_M-00001-of-00002` has to match `mtp-foo`.
-  let model_label = crate::util::paths::model_file_label(model_path);
-  let model_base = canonical_base(Path::new(&model_label).file_stem()?.to_str()?);
-
-  let mut all: Vec<PathBuf> = Vec::new();
-  let mut arch_matches: Vec<PathBuf> = Vec::new();
-  let mut base_matches: Vec<PathBuf> = Vec::new();
-  let mut anonymous: Vec<PathBuf> = Vec::new();
-  // Launchable models in the folder, counted as *shard sets* rather than
-  // files: four shards of one split model are one model, and counting files
-  // meant the unnamed-pair tier could never fire for a split set.
-  let mut model_files: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-
-  for entry in std::fs::read_dir(dir).ok()?.flatten() {
-    let path = entry.path();
-    if !path.is_file() {
-      continue;
-    }
-    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-      continue;
-    };
-    if !name.to_lowercase().ends_with(".gguf") {
-      continue;
-    }
-    if !(kind.is_companion)(&path) {
-      // A companion of the *other* kind is not a model either.
-      if !is_projector_companion(&path) && !is_mtp_head_file(&path) {
-        model_files.insert(crate::util::paths::model_file_label(&path));
-      }
-      continue;
-    }
-    if name == model_filename {
-      continue;
-    }
-    if let Some(want) = kind.want_arch {
-      if read_path(&path, HeaderReadOptions::default())
-        .ok()
-        .and_then(|r| {
-          r.header
-            .string(&["general.architecture"])
-            .map(str::to_string)
-        })
-        .is_some_and(|a| a == want)
-      {
-        arch_matches.push(path.clone());
-      }
-    }
-    let base = canonical_base(&(kind.strip_markers)(name));
-    if base.is_empty() {
-      anonymous.push(path.clone());
-    } else if base == model_base {
-      base_matches.push(path.clone());
-    }
-    all.push(path);
-  }
-
-  // 0. A companion that declares which arch it serves wins outright.
-  if !arch_matches.is_empty() {
-    arch_matches.sort();
-    return arch_matches.into_iter().next();
-  }
-  // 1. Name match next.
-  if !base_matches.is_empty() {
-    base_matches.sort();
-    if base_matches.len() > 1 {
-      log::warn!(
-        "multiple {} candidates match model {model_filename}; using {}: {:?}",
-        kind.label,
-        base_matches[0]
-          .file_name()
-          .unwrap_or_default()
-          .to_string_lossy(),
-        companion_names(&base_matches),
-      );
-    }
-    return base_matches.into_iter().next();
-  }
-  // 2. An unambiguous pair regardless of name: the only model beside the only
-  //    companion in the model's own folder, or the only companion in a
-  //    companion folder.
-  let lone_pair = if is_model_dir {
-    model_files.len() == 1 && all.len() == 1
-  } else {
-    all.len() == 1
-  };
-  if lone_pair {
-    return all.into_iter().next();
-  }
-  // 3. Lone anonymous catch-all, else genuinely ambiguous → emit nothing.
-  if anonymous.len() == 1 {
-    return anonymous.into_iter().next();
-  }
-  if !all.is_empty() {
-    log::warn!(
-      "multiple {} files in {} but none match model {model_filename}; \
-       skipping auto-detection: {:?}",
-      kind.label,
-      dir.display(),
-      companion_names(&all),
-    );
-  }
-  None
 }
 
 /// The `mmproj` projector paired with `model_path`. `None` when there is none,
@@ -621,6 +452,233 @@ pub fn find_draft_head(model_path: &Path, head_arch: Option<&str>) -> Option<Pat
       label: "MTP draft head",
     },
   )
+}
+
+/// Companions found in one directory, classified but not yet chosen. Tiers are
+/// applied by the caller so a hit in an early directory cannot outrank a
+/// stronger hit in a later one.
+#[derive(Default)]
+struct Candidates {
+  arch: Vec<PathBuf>,
+  base: Vec<PathBuf>,
+  anonymous: Vec<PathBuf>,
+  all: Vec<PathBuf>,
+  /// Launchable models here, as shard *sets*.
+  model_labels: std::collections::BTreeSet<String>,
+}
+
+impl Candidates {
+  fn merge(&mut self, o: Candidates) {
+    self.arch.extend(o.arch);
+    self.base.extend(o.base);
+    self.anonymous.extend(o.anonymous);
+    self.all.extend(o.all);
+    self.model_labels.extend(o.model_labels);
+  }
+}
+
+/// A companion for `model_path`: its own directory first, then the rest of the
+/// HF snapshot, since repos routinely put weights and companions in separate
+/// subdirectories.
+///
+/// Widening is deliberately narrow. It needs a real `models--owner--repo`
+/// cache tree, and it stops unless every model in that snapshot shares one
+/// canonical base: a repo shipping `9B/` and `27B/` beside one `MTP/` would
+/// otherwise hand the 9B head to the 27B model, which drafts garbage. Quants
+/// of one model share a base, so the common single-model repo still pairs.
+fn find_companion(model_path: &Path, kind: &CompanionKind<'_>) -> Option<PathBuf> {
+  let parent = model_path.parent()?;
+  let own = collect_candidates(parent, model_path, kind);
+  if let Some(hit) = pick(&own, true) {
+    return Some(hit);
+  }
+
+  let dirs = hf_snapshot_sibling_dirs(model_path);
+  if dirs.is_empty() {
+    return None;
+  }
+  let mut wide = Candidates::default();
+  for dir in &dirs {
+    wide.merge(collect_candidates(dir, model_path, kind));
+  }
+  // Every model in the snapshot, this one included, must be the same model.
+  let mut bases: std::collections::BTreeSet<String> = wide
+    .model_labels
+    .iter()
+    .chain(own.model_labels.iter())
+    .map(|l| {
+      canonical_base(
+        Path::new(l)
+          .file_stem()
+          .map_or(l.as_str(), |s| s.to_str().unwrap_or(l)),
+      )
+    })
+    .collect();
+  bases.remove("");
+  if bases.len() > 1 {
+    log::debug!(
+      "{}: snapshot holds {} distinct models; not widening the {} search",
+      model_path.display(),
+      bases.len(),
+      kind.label
+    );
+    return None;
+  }
+  let hit = pick(&wide, false);
+  if hit.is_none() {
+    let mut seen: Vec<PathBuf> = own.all.clone();
+    seen.extend(wide.all.iter().cloned());
+    if !seen.is_empty() {
+      // Say so: a silent `None` here reads as "this model has no companion",
+      // when the truth is that several were equally plausible.
+      log::warn!(
+        "{}: {} candidates found but none match {}; pass one explicitly: {:?}",
+        kind.label,
+        seen.len(),
+        crate::util::paths::model_file_label(model_path),
+        companion_names(&seen),
+      );
+    }
+  }
+  hit
+}
+
+/// Choose from classified candidates. `own_dir` enables the two unnamed tiers:
+/// they rest on "the only model beside the only companion", which a companion
+/// directory cannot show, and across directories would pair on nothing but
+/// proximity.
+fn pick(c: &Candidates, own_dir: bool) -> Option<PathBuf> {
+  let first = |v: &Vec<PathBuf>| {
+    let mut v = v.clone();
+    v.sort();
+    v.into_iter().next()
+  };
+  // 0. A companion declaring the architecture it serves.
+  if !c.arch.is_empty() {
+    return first(&c.arch);
+  }
+  // 1. Name match.
+  if !c.base.is_empty() {
+    return first(&c.base);
+  }
+  if !own_dir {
+    // Cross-directory: a lone companion in the snapshot, now that every model
+    // in it is known to be the same one.
+    return (c.all.len() == 1).then(|| c.all[0].clone());
+  }
+  // 2. The only model beside the only companion.
+  if c.model_labels.len() == 1 && c.all.len() == 1 {
+    return first(&c.all);
+  }
+  // 3. A lone anonymous catch-all, else genuinely ambiguous.
+  if c.anonymous.len() == 1 {
+    return first(&c.anonymous);
+  }
+  None
+}
+
+/// The rest of the HF snapshot `model_path` sits in: revision root plus its
+/// immediate subdirectories, minus the model's own.
+///
+/// Requires a real `models--owner--repo/snapshots/<rev>/` tree. Keying on a
+/// directory merely *named* `snapshots` would widen inside any user scan root
+/// that happens to use the name.
+fn hf_snapshot_sibling_dirs(model_path: &Path) -> Vec<PathBuf> {
+  let Some(parent) = model_path.parent() else {
+    return Vec::new();
+  };
+  let snapshots = std::ffi::OsStr::new("snapshots");
+  let root = parent.ancestors().find(|a| {
+    a.parent().and_then(|p| p.file_name()) == Some(snapshots)
+      && a.ancestors().any(|x| {
+        x.file_name()
+          .and_then(|n| n.to_str())
+          .is_some_and(|n| n.starts_with("models--") && n.contains("--"))
+      })
+  });
+  let Some(root) = root else {
+    return Vec::new();
+  };
+  let mut dirs: Vec<PathBuf> = Vec::new();
+  if root != parent {
+    dirs.push(root.to_path_buf());
+  }
+  if let Ok(entries) = std::fs::read_dir(root) {
+    for e in entries.flatten() {
+      let p = e.path();
+      if p.is_dir() && p != parent {
+        dirs.push(p);
+      }
+    }
+  }
+  dirs.sort();
+  dirs
+}
+
+/// Classify every `.gguf` in one directory against `model_path`.
+fn collect_candidates(dir: &Path, model_path: &Path, kind: &CompanionKind<'_>) -> Candidates {
+  let mut c = Candidates::default();
+  let Some(model_filename) = model_path.file_name().and_then(|n| n.to_str()) else {
+    return c;
+  };
+  // Compare on the collapsed name: a split set is one model, and its
+  // `-NNNNN-of-NNNNN` suffix is not part of the name a companion is published
+  // under, so `foo-Q4_K_M-00001-of-00002` has to match `mtp-foo`.
+  let model_label = crate::util::paths::model_file_label(model_path);
+  let model_base = canonical_base(
+    Path::new(&model_label)
+      .file_stem()
+      .and_then(|s| s.to_str())
+      .unwrap_or(&model_label),
+  );
+
+  let Ok(entries) = std::fs::read_dir(dir) else {
+    return c;
+  };
+  for entry in entries.flatten() {
+    let path = entry.path();
+    if !path.is_file() {
+      continue;
+    }
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+      continue;
+    };
+    if !name.to_lowercase().ends_with(".gguf") {
+      continue;
+    }
+    if !(kind.is_companion)(&path) {
+      // A companion of the *other* kind is not a model either.
+      if !is_projector_companion(&path) && !is_mtp_head_file(&path) {
+        c.model_labels
+          .insert(crate::util::paths::model_file_label(&path));
+      }
+      continue;
+    }
+    if name == model_filename {
+      continue;
+    }
+    if let Some(want) = kind.want_arch {
+      if read_path(&path, HeaderReadOptions::default())
+        .ok()
+        .and_then(|r| {
+          r.header
+            .string(&["general.architecture"])
+            .map(str::to_string)
+        })
+        .is_some_and(|a| a == want)
+      {
+        c.arch.push(path.clone());
+      }
+    }
+    let base = canonical_base(&(kind.strip_markers)(name));
+    if base.is_empty() {
+      c.anonymous.push(path.clone());
+    } else if base == model_base {
+      c.base.push(path.clone());
+    }
+    c.all.push(path);
+  }
+  c
 }
 
 /// Concurrency cap for [`walk_root`]'s per-file parse. Default to
@@ -1095,7 +1153,10 @@ mod tests {
     // the head is never beside the weights. Only paths inside a
     // `snapshots/<rev>/` tree widen, and only to that tree.
     let root = temp_dir("mtp-snapshot");
-    let snap = root.join("snapshots").join("abc123");
+    let snap = root
+      .join("models--org--repo")
+      .join("snapshots")
+      .join("abc123");
     let quant = snap.join("UD-Q4_K_XL");
     let mtp = snap.join("MTP");
     fs::create_dir_all(&quant).unwrap();
@@ -1120,6 +1181,103 @@ mod tests {
       found.and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())),
       Some("mtp-gemma-4-Q8_0.gguf".to_string()),
       "a head in a sibling snapshot directory must pair"
+    );
+    fs::remove_dir_all(&root).ok();
+  }
+
+  #[test]
+  fn a_name_match_in_a_later_directory_beats_a_lone_companion_in_an_earlier_one() {
+    // Tiers are global across the snapshot. Returning the first hit from the
+    // first directory let `Extras/` (sorted first, one head, no name relation)
+    // outrank the real `MTP/` match and hand the model a foreign drafter.
+    let root = temp_dir("mtp-tier-order");
+    let snap = root.join("models--org--repo").join("snapshots").join("r1");
+    let quant = snap.join("Quant");
+    for d in [&quant, &snap.join("Extras"), &snap.join("MTP")] {
+      fs::create_dir_all(d).unwrap();
+    }
+    for i in 1..=2 {
+      fs::write(
+        quant.join(format!("gemma-4-Q4_K_M-0000{i}-of-00002.gguf")),
+        build_minimal_gguf("gemma4"),
+      )
+      .unwrap();
+    }
+    fs::write(
+      snap.join("Extras").join("mtp-random.gguf"),
+      build_minimal_gguf("gemma4"),
+    )
+    .unwrap();
+    fs::write(
+      snap.join("MTP").join("mtp-gemma-4-Q8_0.gguf"),
+      build_minimal_gguf("gemma4"),
+    )
+    .unwrap();
+    let found = find_mtp_head(
+      &quant.join("gemma-4-Q4_K_M-00001-of-00002.gguf"),
+      Some("gemma4"),
+    );
+    assert_eq!(
+      found.and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())),
+      Some("mtp-gemma-4-Q8_0.gguf".to_string()),
+      "the name match must win over a lone head in an earlier directory"
+    );
+    fs::remove_dir_all(&root).ok();
+  }
+
+  #[test]
+  fn a_snapshot_holding_two_models_does_not_widen() {
+    // One repo, two models, one shared head: pairing it onto either is a guess
+    // that drafts garbage. Only the model's own directory may answer.
+    let root = temp_dir("mtp-two-models");
+    let snap = root.join("models--org--repo").join("snapshots").join("r1");
+    let nine = snap.join("9B");
+    let twentyseven = snap.join("27B");
+    for d in [&nine, &twentyseven, &snap.join("MTP")] {
+      fs::create_dir_all(d).unwrap();
+    }
+    fs::write(
+      nine.join("gemma-4-9B-Q4_K_M.gguf"),
+      build_minimal_gguf("gemma4"),
+    )
+    .unwrap();
+    fs::write(
+      twentyseven.join("gemma-4-27B-Q4_K_M.gguf"),
+      build_minimal_gguf("gemma4"),
+    )
+    .unwrap();
+    fs::write(
+      snap.join("MTP").join("mtp-gemma-4-9B.gguf"),
+      build_minimal_gguf("gemma4"),
+    )
+    .unwrap();
+    assert_eq!(
+      find_mtp_head(&twentyseven.join("gemma-4-27B-Q4_K_M.gguf"), Some("gemma4")),
+      None,
+      "must not hand the 9B head to the 27B model"
+    );
+    fs::remove_dir_all(&root).ok();
+  }
+
+  #[test]
+  fn widening_needs_a_real_hf_cache_tree_not_just_a_snapshots_directory() {
+    // A user scan root that happens to contain a directory called `snapshots`
+    // is not an HF repo and carries no model boundary.
+    let root = temp_dir("mtp-fake-snapshots");
+    let snap = root.join("snapshots").join("collection");
+    let a = snap.join("model-a");
+    fs::create_dir_all(&a).unwrap();
+    fs::create_dir_all(snap.join("model-b")).unwrap();
+    fs::write(a.join("gemma-4.gguf"), build_minimal_gguf("gemma4")).unwrap();
+    fs::write(
+      snap.join("model-b").join("mtp-other.gguf"),
+      build_minimal_gguf("gemma4"),
+    )
+    .unwrap();
+    assert_eq!(
+      find_mtp_head(&a.join("gemma-4.gguf"), Some("gemma4")),
+      None,
+      "a directory merely named `snapshots` must not enable widening"
     );
     fs::remove_dir_all(&root).ok();
   }
@@ -1935,7 +2093,10 @@ mod tests {
     // at the snapshot root. A parent-only search left these models with
     // multimodal: null despite the projector sitting on disk.
     let root = temp_dir("mmproj-snapshot");
-    let snap = root.join("snapshots").join("abc123");
+    let snap = root
+      .join("models--org--repo")
+      .join("snapshots")
+      .join("abc123");
     let quant = snap.join("UD-Q4_K_XL");
     fs::create_dir_all(&quant).unwrap();
     for i in 1..=2 {
