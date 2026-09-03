@@ -194,8 +194,12 @@ const AUTO_LAZY_MIN_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 /// `all_sizes` mirrors `--lazy-mode on`, which drops the size threshold that
 /// `auto` applies.
 ///
-/// **Only valid when the launch uses mmap** — `--no-mmap` disables the lazy
-/// path in the loader, and then the full figure is the honest one.
+/// Independent of mmap. Verified at llama.cpp `e750b887a`: `init_mappings`
+/// maps when `use_mmap || lazy.any()`, per-tensor reads take
+/// `use_mmap || lazy.has(cur)`, and lazy tensors are skipped by `mlock`. With
+/// mmap off the *non-lazy* tensors are read into RAM instead of mapped, so
+/// residency is still total minus these bytes. Only `--lazy-mode off` changes
+/// that.
 pub fn lazy_streamed_bytes(header: &GgufHeader, all_sizes: bool) -> u64 {
   header
     .tensors

@@ -1086,14 +1086,9 @@ pub(crate) async fn spawn_supervised(
         // refuses launches that fit with room to spare (a 103.7 GiB
         // Qwen3.8-Flash-Next projected 133.5 GiB on a 121 GiB host but needs
         // ~77 GiB). Zero for every model without such a tensor, and for any
-        // launch pinning `no-mmap`.
-        let lazy_bytes = launch_lazy_bytes(
-          ctx,
-          &launch_params.model_path,
-          &launch_params.knobs,
-          &launch_params.extras,
-        )
-        .await;
+        // launch pinning `--lazy-mode off`.
+        let lazy_bytes =
+          launch_lazy_bytes(ctx, &launch_params.model_path, &launch_params.extras).await;
         let weights_total = total_weight_bytes.saturating_sub(lazy_bytes);
         let mtp_active = launch_params.mtp_directive.is_some();
         let demand = if identity.as_gguf().is_some() {
@@ -1611,58 +1606,42 @@ fn extras_manage_mmproj(extras: &[OsString]) -> bool {
   })
 }
 
-/// What the extras tail pins for the two things the lazy path depends on:
-/// lazy mode itself, and whether mmap survives.
+/// The `--lazy-mode` / `-lzm` value the extras tail pins, lowercased.
 ///
-/// The gate subtracts tensors the loader streams, which needs mmap *and* lazy
-/// reading on. Neither has a knob, and extras reach argv unfiltered, so
-/// `-- --no-mmap` or `-- --lazy-mode off` would otherwise leave a 26.8 GiB
-/// tensor resident while the projection still discounted it, under-projecting
-/// into an OOM.
+/// The gate subtracts tensors the loader streams, and only this flag turns
+/// streaming off. There is no knob for it and extras reach argv unfiltered, so
+/// `-- --lazy-mode off` would otherwise leave a 26.8 GiB tensor resident while
+/// the projection still discounted it, under-projecting into an OOM.
 ///
-/// **Last occurrence wins**, because that is what the engine does: each flag's
-/// handler assigns unconditionally on every occurrence (`common/arg.cpp`), and
-/// llama.cpp warns as much when these are combined.
-#[derive(Debug, Default, PartialEq)]
-struct ExtrasLoadPins {
-  /// `--lazy-mode` / `-lzm`, lowercased. `None` when the tail does not set it.
-  lazy_mode: Option<String>,
-  /// `Some(false)` when the tail leaves mmap off. `None` when untouched.
-  mmap: Option<bool>,
-}
-
-fn extras_load_pins(extras: &[OsString]) -> ExtrasLoadPins {
-  let mut pins = ExtrasLoadPins::default();
-  let mut i = 0;
-  while i < extras.len() {
-    let lossy = extras[i].to_string_lossy().to_ascii_lowercase();
-    let (head, inline) = match lossy.split_once('=') {
-      Some((h, v)) => (h.to_string(), Some(v.to_string())),
-      None => (lossy.clone(), None),
-    };
-    let value = || {
-      inline.clone().or_else(|| {
-        extras
+/// **Last occurrence wins**, because that is what the engine does: the handler
+/// assigns unconditionally on every occurrence (`common/arg.cpp`).
+///
+/// Deliberately does *not* look at mmap. Verified at llama.cpp `e750b887a`:
+/// `ml.lazy.mode` is assigned independently of `load_mode` (`llama.cpp`),
+/// `init_mappings` maps when `use_mmap || lazy.any()` with the upstream comment
+/// spelling out that lazy reading stays usable without `--load-mode mmap`,
+/// per-tensor reads take `use_mmap || lazy.has(cur)`, and lazy tensors are
+/// excluded from `mlock`. So `--no-mmap` / `--load-mode none` / `--direct-io`
+/// leave streaming on, and treating them as disabling it refused launches that
+/// fit. (Engines before `257813839` did require mmap here, but the lazy path
+/// did not work on those builds anyway.)
+fn extras_lazy_mode(extras: &[OsString]) -> Option<String> {
+  let is_head = |h: &str| h == "--lazy-mode" || h == "-lzm";
+  let mut found = None;
+  for (i, e) in extras.iter().enumerate() {
+    let lossy = e.to_string_lossy().to_ascii_lowercase();
+    match lossy.split_once('=') {
+      Some((head, val)) if is_head(head) => found = Some(val.to_string()),
+      Some(_) => {}
+      None if is_head(&lossy) => {
+        found = extras
           .get(i + 1)
-          .map(|v| v.to_string_lossy().to_ascii_lowercase())
-      })
-    };
-    match head.as_str() {
-      "--lazy-mode" | "-lzm" => pins.lazy_mode = value(),
-      "--no-mmap" => pins.mmap = Some(false),
-      "--mmap" => pins.mmap = Some(true),
-      // `none`, `mlock` and `dio` all load without mmap; `auto`, `mmap` and
-      // `mmap+mlock` keep it.
-      "--load-mode" | "-lm" => {
-        pins.mmap = value().map(|v| matches!(v.as_str(), "auto" | "mmap" | "mmap+mlock"));
+          .map(|v| v.to_string_lossy().to_ascii_lowercase());
       }
-      // Both spellings leave a load mode without mmap (DirectIO, or none).
-      "-dio" | "--direct-io" | "-ndio" | "--no-direct-io" => pins.mmap = Some(false),
-      _ => {}
+      None => {}
     }
-    i += 1;
   }
-  pins
+  found
 }
 
 /// Bytes the engine will stream from the mapping rather than hold resident,
@@ -1670,9 +1649,9 @@ fn extras_load_pins(extras: &[OsString]) -> ExtrasLoadPins {
 ///
 /// Mirrors [`launch_total_bytes`]'s catalog-first lookup so the gate subtracts
 /// over exactly the file set it measured. Returns `0` — leaving the projection
-/// untouched — when the launch pins `no-mmap` (the loader's lazy path needs
-/// mmap), or when no shard carries a lazy-flagged tensor, which is every model
-/// without a per-layer embedding table.
+/// untouched — when the launch pins `--lazy-mode off`, or when no shard carries
+/// a lazy-flagged tensor, which is every model without a per-layer embedding
+/// table. mmap is irrelevant; see [`extras_lazy_mode`].
 ///
 /// Reads sibling shards because the tensor lives in one of them: a split set's
 /// first shard is often metadata-only, so the header the gate already has says
@@ -1680,16 +1659,11 @@ fn extras_load_pins(extras: &[OsString]) -> ExtrasLoadPins {
 async fn launch_lazy_bytes(
   ctx: &MethodContext,
   model_path: &std::path::Path,
-  knobs: &crate::launch::knobs::KnobSet,
   extras: &[OsString],
 ) -> u64 {
-  let pins = extras_load_pins(extras);
-  if knobs.bool(crate::launch::knobs::kid("no-mmap")) == Some(true) || pins.mmap == Some(false) {
-    return 0;
-  }
   // `auto` (the engine default) streams only tensors past the size threshold;
   // `on` streams every lazy-flagged tensor; `off` streams none.
-  let all_sizes = match pins.lazy_mode.as_deref() {
+  let all_sizes = match extras_lazy_mode(extras).as_deref() {
     Some("off") => return 0,
     Some("on") => true,
     _ => false,
@@ -2021,50 +1995,28 @@ mod tests {
   }
 
   #[test]
-  fn extras_load_pins_take_the_last_occurrence_like_the_engine() {
-    let pin = |v: &[&str]| extras_load_pins(&v.iter().map(OsString::from).collect::<Vec<_>>());
-    // Every handler assigns on each occurrence, so the tail wins.
+  fn extras_lazy_mode_takes_the_last_occurrence_like_the_engine() {
+    let pin = |v: &[&str]| extras_lazy_mode(&v.iter().map(OsString::from).collect::<Vec<_>>());
+    // The handler assigns on each occurrence, so the tail wins.
     assert_eq!(
-      pin(&["--lazy-mode", "on", "--lazy-mode", "off"])
-        .lazy_mode
-        .as_deref(),
-      Some("off"),
-      "last --lazy-mode wins"
+      pin(&["--lazy-mode", "on", "--lazy-mode", "off"]).as_deref(),
+      Some("off")
     );
     assert_eq!(
-      pin(&["-LZM=ON"]).lazy_mode.as_deref(),
+      pin(&["-LZM=ON"]).as_deref(),
       Some("on"),
       "short, equals, case"
     );
-    // mmap survives `auto` / `mmap` / `mmap+mlock`, dies on the rest.
-    assert_eq!(pin(&["--no-mmap"]).mmap, Some(false));
+    assert_eq!(pin(&[]), None);
     assert_eq!(
-      pin(&["--no-mmap", "--mmap"]).mmap,
-      Some(true),
-      "re-enabled by a later flag"
+      pin(&["--lazy-mode-extra", "off"]),
+      None,
+      "prefix must not match"
     );
-    for m in ["none", "mlock", "dio"] {
-      assert_eq!(
-        pin(&["--load-mode", m]).mmap,
-        Some(false),
-        "--load-mode {m} drops mmap"
-      );
-    }
-    for m in ["auto", "mmap", "mmap+mlock"] {
-      assert_eq!(
-        pin(&["-lm", m]).mmap,
-        Some(true),
-        "--load-mode {m} keeps mmap"
-      );
-    }
-    // DirectIO in either spelling leaves a load mode without mmap.
-    assert_eq!(pin(&["-dio"]).mmap, Some(false));
-    assert_eq!(pin(&["--no-direct-io"]).mmap, Some(false));
-    assert_eq!(
-      pin(&[]),
-      ExtrasLoadPins::default(),
-      "untouched tail pins nothing"
-    );
+    assert_eq!(pin(&["--lazy-mode"]), None, "trailing flag pins nothing");
+    // mmap flags are not lazy flags: disabling mmap leaves streaming on.
+    assert_eq!(pin(&["--no-mmap"]), None);
+    assert_eq!(pin(&["--load-mode", "none"]), None);
   }
 
   #[test]
