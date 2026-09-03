@@ -1,4 +1,5 @@
-//! Shared helpers for integration tests under `tests/`.
+//! Shared helpers for tests: the integration suites under `tests/`
+//! and the inline `#[cfg(test)]` modules that need the same isolation.
 //!
 //! Gated behind the `test-fixtures` feature so consumer builds of the
 //! library don't carry test-only utilities.
