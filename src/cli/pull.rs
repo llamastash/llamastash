@@ -4,7 +4,7 @@
 
 use std::io::{IsTerminal, Write};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use unicode_width::UnicodeWidthStr;
 
@@ -12,16 +12,12 @@ use crate::cli::cli_args::{Cli, PullArgs};
 use crate::cli::exit_codes::CliResult;
 use crate::config::Config;
 use crate::init::download::{DownloadProgress, PullProgress, PullTotals};
-use crate::tui::download_strip::RateMeter;
+use crate::tui::download_strip::{RateMeter, PROGRESS_REPAINT};
 use crate::tui::fmt::{format_bytes, format_rate, percent_of, take_head_by_width, truncate_middle};
 
 pub async fn handle(args: PullArgs, cli: &Cli, config: &Config) -> CliResult {
   crate::init::download::run(args, cli, config).await
 }
-
-/// Repaint interval. Fast enough to read as live, slow enough that a
-/// multi-gigabyte pull isn't spending its time writing escape codes.
-const REPAINT: Duration = Duration::from_millis(100);
 
 /// Longest filename kept on the line before the middle is elided.
 /// A narrow terminal shrinks it further; see [`render_line`].
@@ -92,7 +88,7 @@ impl ProgressLine {
     self.state.lock().unwrap_or_else(|e| e.into_inner())
   }
 
-  /// Repaint unless the last one was under [`REPAINT`] ago. `force`
+  /// Repaint unless the last one was under [`PROGRESS_REPAINT`] ago. `force`
   /// skips the throttle for file boundaries, which are rare and worth
   /// showing immediately.
   fn paint(&self, force: bool) {
@@ -104,7 +100,7 @@ impl ProgressLine {
     if !force
       && s
         .last_paint
-        .is_some_and(|t| now.duration_since(t) < REPAINT)
+        .is_some_and(|t| now.duration_since(t) < PROGRESS_REPAINT)
     {
       return;
     }

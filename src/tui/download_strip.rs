@@ -40,10 +40,14 @@ const THROUGHPUT_ALPHA: f64 = 0.3;
 /// GiB/s at peak.
 const RATE_WINDOW: Duration = Duration::from_millis(250);
 
+/// How often a download surface repaints. Fast enough to read as
+/// live, slow enough that a multi-gigabyte pull isn't spending its
+/// time writing escape codes.
+pub const PROGRESS_REPAINT: Duration = Duration::from_millis(100);
+
 /// EMA-smoothed transfer rate, folded once per 250 ms window. Shared
-/// by the TUI download strip and the CLI `pull` line so both report
-/// the same figure. (The init wizard still carries its own copy of
-/// the old per-callback math — see `TODO.md`.)
+/// by the TUI download strip, the CLI `pull` line and the init
+/// wizard so all three report the same figure.
 #[derive(Debug, Default, Clone)]
 pub struct RateMeter {
   bps: f64,
