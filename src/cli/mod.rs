@@ -20,6 +20,7 @@ pub mod init;
 pub mod knob_flags;
 pub mod knobs_cmd;
 pub mod last_params;
+pub mod launch_file;
 pub mod list;
 pub mod logs;
 pub mod output;

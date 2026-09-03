@@ -31,12 +31,32 @@ use crate::ipc::Client;
 use crate::launch::knobs::{Concept, KnobSet};
 
 pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
+  // A launch file supplies both the model reference and the preset, so it
+  // replaces the `--preset` → `presets_show` round trip rather than adding a
+  // path beside it. Read before the daemon: `load` needs nothing from it, and a
+  // file with a typo in it should not spawn a daemon to be told so.
+  let from_file = match args.model.as_deref() {
+    Some(m) if crate::cli::launch_file::is_launch_file(m) => Some(crate::cli::launch_file::load(
+      std::path::Path::new(m),
+      args.preset.as_deref(),
+    )?),
+    _ => None,
+  };
+
   let mut client = connect_or_spawn(cli, config).await?;
   let rows = fetch_catalog(&mut client).await?;
-  let row = if args.model.is_some() {
-    select_start_row(&rows, &args)?
-  } else {
-    crate::cli::picker::pick_catalog_row(&rows, args.json).await?
+
+  let row = match (&from_file, args.model.as_deref()) {
+    (Some(sel), _) => select_start_row(&rows, &args, &sel.model_key)?,
+    (None, Some(m)) => select_start_row(&rows, &args, m)?,
+    (None, None) => crate::cli::picker::pick_catalog_row(&rows, args.json).await?,
+  };
+
+  // The preset that actually applied. A launch file's `default:` picks one
+  // without `--preset` ever being typed, and the success line must say so.
+  let applied_preset: Option<String> = match &from_file {
+    Some(sel) => Some(sel.preset_name.clone()),
+    None => args.preset.clone(),
   };
 
   // Launch selection (drives daemon-side default-preset + last_params
@@ -44,16 +64,26 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
   // preset fetch); a named `--preset` is an explicit baseline; a plain
   // `start` makes no selection, so the daemon applies the model's `default:`.
   let preset_is_auto = args.preset.as_deref() == Some(crate::launch::presets::AUTO_DEFAULT);
-  let selection = match args.preset.as_deref() {
-    Some(p) if p == crate::launch::presets::AUTO_DEFAULT => "auto",
-    Some(_) => "explicit",
-    None => "default",
+  let selection = match (&from_file, args.preset.as_deref()) {
+    // A launch file's preset is a self-contained baseline.
+    (Some(_), _) => "explicit",
+    (None, Some(p)) if p == crate::launch::presets::AUTO_DEFAULT => "auto",
+    (None, Some(_)) => "explicit",
+    (None, None) => "default",
   };
 
   // Preset baseline → IPC params. `presets_show` returns the saved
   // params so the daemon doesn't have to re-resolve the model id.
-  let mut params = match args.preset.as_ref() {
-    Some(preset_name) if !preset_is_auto => {
+  let mut params = match (&from_file, args.preset.as_ref()) {
+    (Some(sel), _) => partial_params_from_launch(
+      &crate::launch::presets::materialize_preset(
+        &sel.preset_name,
+        &sel.body,
+        std::path::PathBuf::from(&row.path),
+      )
+      .params,
+    ),
+    (None, Some(preset_name)) if !preset_is_auto => {
       fetch_preset_params(&mut client, &row.path, preset_name).await?
     }
     _ => PartialParams::default(),
@@ -135,7 +165,7 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
   if args.wait {
     return wait_and_emit(
       &mut client,
-      args.preset.as_deref(),
+      applied_preset.as_deref(),
       &row,
       &resp,
       args.json,
@@ -143,7 +173,7 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
     )
     .await;
   }
-  emit_response(args.preset.as_deref(), &row, &resp, args.json, cli.quiet);
+  emit_response(applied_preset.as_deref(), &row, &resp, args.json, cli.quiet);
   Ok(())
 }
 
@@ -279,11 +309,11 @@ fn print_wait_followup(settled: Option<&crate::cli::resolve::RunningRow>) {
   }
 }
 
-fn select_start_row(rows: &[CatalogRow], args: &StartArgs) -> Result<CatalogRow, CliExit> {
-  let model = args
-    .model
-    .as_deref()
-    .expect("select_start_row is only entered when args.model is Some");
+fn select_start_row(
+  rows: &[CatalogRow],
+  args: &StartArgs,
+  model: &str,
+) -> Result<CatalogRow, CliExit> {
   match resolve_model_with_candidates(rows, model) {
     Ok(row) => Ok(row),
     Err(ResolveError::Empty) => Err(CliExit::new(
@@ -475,6 +505,16 @@ async fn fetch_preset_params(
     ));
   }
   Ok(partial_params_from_preset(preset.unwrap()))
+}
+
+/// A materialized preset's params, taken through the same projection a
+/// `presets_show` baseline takes.
+///
+/// Routed through the wire shape on purpose: it is the one definition of
+/// `LaunchParams` → `PartialParams`, so a launch file and `--preset <name>`
+/// cannot resolve the same preset differently.
+fn partial_params_from_launch(p: &crate::launch::params::LaunchParams) -> PartialParams {
+  partial_params_from_preset(&json!({ "params": p.to_wire() }))
 }
 
 /// Map one `presets_show` preset object onto the launch params `start` sends.
@@ -812,6 +852,54 @@ mod tests {
     );
   }
 
+  /// Every field a preset can carry has to survive the launch-file route too.
+  ///
+  /// The projection is shared with `--preset`, so a field dropped on either
+  /// side means a launch file and the same saved preset resolve differently.
+  #[test]
+  fn partial_params_from_launch_carries_every_preset_field() {
+    use crate::config::PresetBody;
+    use crate::launch::knobs::KnobSet;
+
+    let mut knobs = KnobSet::new();
+    for (name, value) in [
+      ("n-gpu-layers", "99"),
+      ("ctx-size", "4096"),
+      ("mode", "embedding"),
+      ("mtp", "true"),
+      ("mtp-draft-n", "4"),
+      ("reasoning", "true"),
+    ] {
+      assert!(knobs.set_by_name(name, value), "{name} is declared");
+    }
+    let body = PresetBody {
+      knobs,
+      extras: Some(vec!["--rope-freq-base".into(), "1000000".into()]),
+      backend: Some(crate::backend::DEFAULT_BACKEND_ID.to_string()),
+      server: Some("llamacpp-vulkan".into()),
+    };
+    let named =
+      crate::launch::presets::materialize_preset("fast", &body, PathBuf::from("/m/a.gguf"));
+    let p = partial_params_from_launch(&named.params);
+
+    assert_eq!(p.ctx, Some(4096));
+    assert_eq!(
+      p.knobs.u32(crate::launch::knobs::kid("n-gpu-layers")),
+      Some(99),
+      "a plain tuning knob stays in the knob set"
+    );
+    assert_eq!(p.extras, vec!["--rope-freq-base", "1000000"]);
+    assert_eq!(
+      p.backend.as_deref(),
+      Some(crate::backend::DEFAULT_BACKEND_ID)
+    );
+    assert_eq!(p.server.as_deref(), Some("llamacpp-vulkan"));
+    assert_eq!(p.mode.as_deref(), Some("embedding"));
+    assert_eq!(p.mtp, Some(crate::launch::params::MtpEnable::On));
+    assert_eq!(p.mtp_draft_n, Some(4));
+    assert_eq!(p.reasoning, Some(true));
+  }
+
   #[test]
   fn a_presets_pinned_mode_beats_the_catalog_hint() {
     let r = row(Some("chat"));
@@ -1040,7 +1128,8 @@ mod tests {
       json: false,
       wait: false,
     };
-    let row = select_start_row(&[], &args).unwrap();
+    let model = args.model.clone().unwrap();
+    let row = select_start_row(&[], &args, &model).unwrap();
     assert_eq!(row.path, path.display().to_string());
     assert_eq!(row.mode_hint.as_deref(), Some("chat"));
   }
@@ -1089,7 +1178,8 @@ mod tests {
       json: false,
       wait: false,
     };
-    let selected = select_start_row(std::slice::from_ref(&row), &args).unwrap();
+    let model = args.model.clone().unwrap();
+    let selected = select_start_row(std::slice::from_ref(&row), &args, &model).unwrap();
     assert_eq!(selected.display_label.as_deref(), Some("known-model"));
     assert_eq!(selected.mode_hint.as_deref(), Some("embedding"));
   }

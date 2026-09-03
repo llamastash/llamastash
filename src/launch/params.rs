@@ -485,6 +485,44 @@ impl LaunchParams {
       mtp_directive: None,
     }
   }
+
+  /// This launch's params in the wire shape `presets_show` and
+  /// `last_params_list` publish — and that `start` reads back to rebuild a
+  /// preset's params. The one definition of that projection, kept beside the
+  /// type it projects (as `CatalogRow::to_wire_value` is).
+  pub(crate) fn to_wire(&self) -> serde_json::Value {
+    use serde_json::{json, Value};
+    let mut row = json!({
+      "model_path": self.model_path,
+      "mode": self.mode.label(),
+      "ctx": self.ctx,
+      "port": self.port,
+      "reasoning": self.reasoning,
+      "knobs": &self.knobs,
+      "extras": self.extras.iter().map(|s| s.to_string_lossy().into_owned()).collect::<Vec<_>>(),
+      // Chosen server build (`null` when none) so the TUI picker's Server row
+      // reopens on the last-used build.
+      "server": self.server,
+    });
+    // Pinned backend, omitted at its `Auto` default so non-pinned rows stay
+    // byte-stable. Same reason `mtp` below is additive: `start --preset` reads
+    // this back to rebuild the preset's launch params, and leaving it out
+    // silently dropped every `backend:` a preset declared.
+    if let Some(id) = self.backend.explicit_id() {
+      row["backend"] = Value::String(id.to_string());
+    }
+    // MTP intent, additive like the native knobs: omitted at its `Auto` default so
+    // non-MTP rows stay byte-stable. The CLI reads this back off `presets_show` to
+    // rebuild a preset's launch params, so leaving it out silently disarmed every
+    // `mtp:` a preset declared.
+    if !self.mtp.is_auto() {
+      row["mtp"] = Value::String(self.mtp.label().to_string());
+    }
+    if let Some(n) = self.mtp_draft_n {
+      row["mtp_draft_n"] = Value::from(n);
+    }
+    row
+  }
 }
 
 /// One layer in the precedence chain. The label is reported
@@ -779,6 +817,70 @@ mod tests {
     let json = serde_json::to_string(&p).unwrap();
     let back: LaunchParams = serde_json::from_str(&json).unwrap();
     assert_eq!(back, p);
+  }
+
+  /// A pinned backend has to survive onto the wire.
+  ///
+  /// It did not: the row carried `server` but never `backend`, so a preset
+  /// declaring one could not be read back by anything, and `start --preset`
+  /// launched on the default engine while reporting the preset's name.
+  #[test]
+  fn to_wire_carries_a_pinned_backend_and_omits_an_auto_one() {
+    // Auto is the default, so the key stays absent and rows stay byte-stable.
+    let auto = base_params();
+    assert_eq!(auto.backend, BackendChoice::Auto);
+    assert!(
+      auto.to_wire().get("backend").is_none(),
+      "an auto backend must not widen the row"
+    );
+
+    // Pinned rides the row as the bare id, matching `server` beside it.
+    let mut pinned = base_params();
+    pinned.backend = BackendChoice::from_id(crate::backend::DEFAULT_BACKEND_ID);
+    pinned.server = Some("build-two".into());
+    let row = pinned.to_wire();
+    assert_eq!(
+      row["backend"].as_str(),
+      Some(crate::backend::DEFAULT_BACKEND_ID)
+    );
+    assert_eq!(row["server"].as_str(), Some("build-two"));
+  }
+
+  #[test]
+  fn to_wire_omits_empty_knobs_and_emits_when_set() {
+    // Empty → an empty map (byte-stable for backends declaring no knobs).
+    let row = base_params().to_wire();
+    assert!(
+      row["knobs"].as_object().is_some_and(|m| m.is_empty()),
+      "an empty knob set renders as an empty map: {row}"
+    );
+    // Set → the key carries the map, with the same shape the TUI parses back.
+    let mut with_knob = base_params();
+    with_knob.knobs.set_by_name("kv-disk-dir", "/tmp/kv");
+    assert_eq!(
+      with_knob.to_wire()["knobs"]["kv-disk-dir"],
+      serde_json::json!("/tmp/kv"),
+      "a backend's own knob round-trips into the row like any other"
+    );
+  }
+
+  #[test]
+  fn to_wire_carries_server_pick_for_the_tui() {
+    // Regression: the server pick is persisted in `last_params` but was
+    // dropped from the `last_params_list` projection, so the TUI picker's
+    // Server row never reopened on the last-used build.
+    assert_eq!(
+      base_params().to_wire()["server"],
+      serde_json::Value::Null,
+      "no pick → null"
+    );
+    let mut picked = base_params();
+    picked.server = Some("llamacpp-vulkan".into());
+    assert_eq!(
+      picked.to_wire()["server"],
+      serde_json::json!("llamacpp-vulkan"),
+      "the picked server build round-trips into the row for the TUI"
+    );
   }
 
   #[test]
