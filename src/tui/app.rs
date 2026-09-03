@@ -2044,12 +2044,13 @@ impl App {
   }
 
   /// Tabs the right pane should expose for the currently focused
-  /// model. The rule is binary: a *running* selection (Launching /
-  /// Loading / Ready) gets Logs + the mode-appropriate input tab +
-  /// Settings; an unlaunched / stopped / errored / unfocused
-  /// selection gets only Settings. There's no sticky fallback —
-  /// what the user sees in the right pane is the model under the
-  /// cursor, nothing else.
+  /// model. Every *managed* selection gets Logs, whatever its
+  /// lifecycle state — the daemon's ring buffer outlives the child
+  /// process. What varies is the rest: a Ready selection adds the
+  /// mode-appropriate input tab, everything else pairs Logs with
+  /// Settings, and an unlaunched / unfocused row gets Settings
+  /// alone. There's no sticky fallback — what the user sees in the
+  /// right pane is the model under the cursor, nothing else.
   pub fn available_right_tabs(&self) -> Vec<RightTab> {
     if let Some(cached) = self.right_tabs_cache.as_ref() {
       return cached.clone();
@@ -2100,12 +2101,17 @@ impl App {
       SurfaceState::Launching | SurfaceState::Loading => {
         vec![RightTab::Settings, RightTab::Logs]
       }
-      // Error: surface Logs alongside Settings so the user can
-      // read the failure tail without re-launching. The daemon
-      // keeps the per-launch log buffer around after the spawn
-      // fails, and the poller still hits it because the entry
-      // remains in `state.running` until the user clears it.
-      SurfaceState::Error => vec![RightTab::Settings, RightTab::Logs],
+      // Error / Stopped: the daemon holds the ring buffer for as long as
+      // the registry entry lives, and `status` only reports rows that are
+      // still in the registry — so the tail is always fetchable here. It
+      // is the only surface that explains *why* the launch died: a
+      // post-Ready death (external kill, OOM) is recorded as plain
+      // `Stopped` with no cause, so the log is the whole story. A clean
+      // `stop` deregisters the launch, so a `Stopped` row the TUI can see
+      // is always an unexpected exit.
+      SurfaceState::Error | SurfaceState::Stopped => {
+        vec![RightTab::Settings, RightTab::Logs]
+      }
       _ => vec![RightTab::Settings],
     }
   }
@@ -3444,6 +3450,37 @@ mod tests {
     assert!(
       app.available_right_tabs().contains(&RightTab::Logs),
       "Error rows must expose the Logs tab"
+    );
+  }
+
+  #[test]
+  fn stopped_row_exposes_the_logs_tab() {
+    // A `stopped` row only ever reaches the TUI when the child died
+    // without going through `stop` (external kill, OOM, post-Ready
+    // crash) — a clean stop deregisters the launch and the row
+    // disappears. Such an exit is recorded with no cause, so the log
+    // tail is the only place the reason shows up; the tab used to be
+    // unreachable, stranding it behind `llamastash logs`.
+    let mut app = App::new(AppOptions::default());
+    app.models = vec![fake("/m/qwen.gguf", "/m")];
+    app.ingest_status(&serde_json::json!({
+      "models": [{
+        "launch_id": "L1",
+        "id": { "path": "/m/qwen.gguf", "header_hash": "h" },
+        "port": 41100,
+        "state": { "state": "stopped" },
+      }]
+    }));
+    app.list_cursor = 2;
+    assert_eq!(
+      app.focused_managed().map(|m| m.state),
+      Some(SurfaceState::Stopped),
+      "cursor must land on the stopped launch row"
+    );
+    assert_eq!(
+      app.available_right_tabs(),
+      vec![RightTab::Settings, RightTab::Logs],
+      "stopped rows must expose the Logs tab alongside Settings"
     );
   }
 

@@ -1098,14 +1098,15 @@ fn running_view_is_locked(app: &App) -> bool {
 }
 
 /// `L` quick-jump: park focus on the Logs tab when it's reachable.
-/// Logs is only available for running launches, so we toast and
-/// stay put for an unlaunched selection.
+/// Every managed row has a log buffer — including a stopped or
+/// errored one — so the toast is for a selection with no launch at
+/// all.
 fn apply_focus_logs_tab(app: &mut App) {
   if app.available_right_tabs().contains(&RightTab::Logs) {
     app.right_tab = RightTab::Logs;
     app.focus = Focus::RightPane;
   } else {
-    app.show_toast("Logs unavailable — focus a running model");
+    app.show_toast("Logs unavailable — this model has no launch");
   }
 }
 
