@@ -196,6 +196,7 @@ fn handle_mouse(
   if app.hf_dialog.is_some()
     || app.confirm_dialog.is_some()
     || app.save_preset_dialog.is_some()
+    || app.launch_name_dialog.is_some()
     || app.show_help
   {
     return;
@@ -324,6 +325,12 @@ fn handle_key(app: &mut App, key: KeyEvent, writer: Option<&mpsc::Sender<WriterC
   // confirm). Routed here, ahead of focus dispatch, like the HF dialog.
   if app.save_preset_dialog.is_some() {
     handle_save_preset_input(app, key, writer);
+    return;
+  }
+  // Launch-name dialog steals input while open (single text-entry stage).
+  // Routed here, ahead of focus dispatch, like the save-preset dialog.
+  if app.launch_name_dialog.is_some() {
+    handle_launch_name_input(app, key, writer);
     return;
   }
   // An open Settings inline edit owns input. All keys route to the
@@ -810,6 +817,15 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
         app.open_save_preset_dialog();
       }
     }
+    Action::LaunchNamed => {
+      // `Alt+⏎` on the Models list: name the focused model before launching.
+      // A plain `⏎` (OpenLaunchPicker) is untouched and launches unnamed.
+      if app.focused_path().is_none() {
+        app.show_toast("no model focused — nothing to launch");
+      } else {
+        app.open_launch_name_dialog();
+      }
+    }
     Action::EnterEdit => {
       // Tab-aware:
       //  - Chat / Embed / Rerank: shift focus into the input buffer
@@ -1289,6 +1305,59 @@ fn commit_save_preset(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) {
   );
 }
 
+/// Route a key to the open launch-name dialog. Single text-entry stage:
+/// typing edits the buffer, `Enter` accepts (an empty name is fine — it
+/// launches unnamed, same as a plain `⏎`), `Esc` cancels.
+fn handle_launch_name_input(
+  app: &mut App,
+  key: KeyEvent,
+  writer: Option<&mpsc::Sender<WriterCmd>>,
+) {
+  use crate::tui::input_field::InputOutcome;
+  let Some(dialog) = app.launch_name_dialog.as_mut() else {
+    return;
+  };
+  // Esc cancels the whole dialog (ahead of the input's exit-edit).
+  if matches!(key.code, KeyCode::Esc) {
+    app.launch_name_dialog = None;
+    return;
+  }
+  match dialog.input.handle_key(key) {
+    InputOutcome::Submit => {
+      dialog.error = None;
+      // Borrow released below; open the picker carrying the typed name.
+    }
+    InputOutcome::Handled => {
+      dialog.error = None;
+      return;
+    }
+    InputOutcome::PassThrough => return,
+  }
+  commit_launch_name(app, writer);
+}
+
+/// Open the normal launch picker carrying the typed name and close the
+/// dialog. An empty name launches unnamed, exactly like a plain `⏎`.
+fn commit_launch_name(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) {
+  let Some(dialog) = app.launch_name_dialog.take() else {
+    return;
+  };
+  let name = dialog.name();
+  let launch_name = if name.is_empty() { None } else { Some(name) };
+  // Seed the picker for the focused model, then stamp the name onto it so
+  // the launch dispatches as `<model-id>@<name>`.
+  if let Some(picker) = app.build_default_picker() {
+    let mut picker = picker;
+    picker.launch_name = launch_name;
+    app.launch_picker = Some(picker);
+    app.focus = Focus::RightPane;
+  } else {
+    // No picker could be built (model vanished) — drop the dialog.
+    app.show_toast("no model focused — nothing to launch");
+  }
+  let _ = writer;
+}
+
 /// Apply a confirmed [`ConfirmAction`] — dispatches the writer
 /// command and shows an outcome toast. Called from [`handle_key`]
 /// when the user presses `y` / Enter in the confirm dialog.
@@ -1747,6 +1816,9 @@ fn apply_launch_submit(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) 
     // MTP is an ordinary declared knob in the editor; the wire params still
     // carry it as a typed sibling, so project it back out the way a preset does.
     mtp: picker.mtp_intent(),
+    // User-chosen launch name (from the `Alt+⏎` dialog), or `None` for a
+    // plain `⏎` launch. Distinct from the model display `name` above.
+    name: picker.launch_name.clone(),
   });
 
   if active_instances > 0 {
@@ -2087,6 +2159,7 @@ pub fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
         selection,
         server,
         mtp,
+        name,
       } = *args;
       let mode_str = mode.map(|m| match m {
         crate::launch::mode::LaunchMode::Chat => "chat",
@@ -2111,6 +2184,9 @@ pub fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
           "server": server,
           // MTP intent from the picker's cycle row (auto/on/off).
           "mtp": mtp.label(),
+          // User-chosen launch name (from the `Alt+⏎` dialog); `null` for a
+          // plain `⏎` launch. The daemon stamps it on the running row.
+          "name": name,
         }),
       )
     }

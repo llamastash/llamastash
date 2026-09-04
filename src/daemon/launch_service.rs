@@ -46,6 +46,12 @@ pub(crate) struct StartParams {
   /// side rather than trusting the caller — keeps the surface
   /// minimal for CLI/TUI clients.
   pub(crate) model_path: PathBuf,
+  /// User-chosen name for this launch. When set, the launch is
+  /// addressable by `<model-id>@<name>` in `stop`, `logs`, and the
+  /// proxy's `body.model`. A second launch of the same model with the
+  /// same name is refused (the name is unique per model).
+  #[serde(default)]
+  pub(crate) name: Option<String>,
   #[serde(default)]
   pub(crate) mode: Option<LaunchModeWire>,
   #[serde(default)]
@@ -225,6 +231,10 @@ pub struct LaunchExec {
   pub(crate) warnings: Vec<String>,
   /// The backend id this launch resolved to, stamped on the persisted rows.
   pub(crate) resolved_backend_id: String,
+  /// User-chosen launch name (from `--name`), stamped on the persisted
+  /// `RunningSnapshot` so the launch is addressable as `<model-id>@<name>`.
+  /// `None` for unnamed launches.
+  pub(crate) name: Option<String>,
 }
 
 /// Whether a launch resolves as "pure fit" — skipping the default-preset and
@@ -309,6 +319,22 @@ pub(crate) async fn compose_and_spawn(
       ErrorCode::InvalidParams,
       "set exactly one of `port` (strict) or `prefer_port` (soft preference)",
     ));
+  }
+  // A name is unique per model: a second launch of the same model with the
+  // same name is refused so `<model-id>@<name>` stays a stable address.
+  if let Some(name) = parsed.name.as_deref() {
+    let model_path = parsed.model_path.clone();
+    let state_snap = ctx.state.snapshot().await;
+    let dup = state_snap
+      .running
+      .iter()
+      .any(|r| r.params.model_path == model_path && r.name.as_deref() == Some(name));
+    if dup {
+      return Err(ErrorObject::new(
+        ErrorCode::InvalidParams,
+        format!("a launch of this model is already running with name `{name}`"),
+      ));
+    }
   }
   let env = ctx.launch.as_ref().ok_or_else(|| {
     ErrorObject::new(
@@ -1011,6 +1037,7 @@ pub(crate) async fn compose_and_spawn(
     force_admission,
     warnings,
     resolved_backend_id,
+    name: parsed.name.clone(),
   };
   inference_backend.start(ctx, exec).await
 }
@@ -1049,6 +1076,7 @@ pub(crate) async fn spawn_supervised(
     bypasses_admission,
     force_admission,
     resolved_backend_id,
+    name,
     default_binary: _,
   } = exec;
   let resolved_backend_id = resolved_backend_id.clone();
@@ -1242,6 +1270,7 @@ pub(crate) async fn spawn_supervised(
         port,
         started_at,
         launch_id: Some(launch_id.clone()),
+        name: name.clone(),
         params: launch_params.clone(),
         actuals: Default::default(),
         resolved_backend: resolved_backend_id.clone(),
@@ -1784,6 +1813,8 @@ mod tests {
   use crate::daemon::context::LaunchEnv;
   use crate::daemon::probe::ProbeOptions;
   use crate::daemon::registry::SupervisorRegistry;
+  use crate::daemon::state_store::DaemonState;
+  use crate::daemon::supervisor::LaunchOrigin;
 
   /// A named preset / TUI form launch (`Explicit`) is self-contained: it must
   /// not inherit a stale `last_params`, so it resolves as pure-fit and skips
@@ -1914,6 +1945,7 @@ mod tests {
         port,
         started_at: 0,
         launch_id: Some(LaunchId(lid.to_string())),
+        name: None,
         params,
         actuals: Default::default(),
         resolved_backend: backend.to_string(),
@@ -1967,6 +1999,7 @@ mod tests {
       port: 41100,
       started_at: 0,
       launch_id: Some(LaunchId("L1".to_string())),
+      name: None,
       params: LaunchParams::new(PathBuf::from("/m/snapshots/rev"), LaunchMode::Chat),
       actuals: Default::default(),
       resolved_backend: "some-backend".to_string(),
@@ -2005,6 +2038,7 @@ mod tests {
           port: 41100,
           started_at: 0,
           launch_id: None,
+          name: None,
           params: LaunchParams::new(PathBuf::from("/m/a.gguf"), LaunchMode::Chat),
           actuals: Default::default(),
           resolved_backend: "llamacpp".to_string(),
@@ -2566,6 +2600,80 @@ mod tests {
         serde_json::from_value(serde_json::json!({"model_path": "/m/x.gguf", "selection": s}))
           .unwrap();
       assert_eq!(p.selection, want, "selection {s} round-trips");
+    }
+  }
+
+  /// A running snapshot for `path` carrying the given launch `name` (or
+  /// `None` for an unnamed launch), so the duplicate-name gate can be
+  /// exercised without a live supervisor.
+  fn named_running(path: &str, name: Option<&str>) -> RunningSnapshot {
+    RunningSnapshot {
+      id: ModelIdentity::Gguf(ModelId {
+        path: PathBuf::from(path),
+        header_blake3: [7u8; 32],
+      }),
+      pid: 1,
+      port: 41100,
+      started_at: 0,
+      launch_id: Some(LaunchId("L1".to_string())),
+      name: name.map(str::to_string),
+      params: LaunchParams::new(PathBuf::from(path), LaunchMode::Chat),
+      actuals: Default::default(),
+      resolved_backend: "llamacpp".to_string(),
+    }
+  }
+
+  /// D3: a second launch of the *same* model with the *same* name is refused
+  /// so `<model-id>@<name>` stays a stable address. The gate fires before the
+  /// launch-env lookup, so a bare context (no launch env) is enough.
+  #[tokio::test]
+  async fn duplicate_live_name_on_one_model_is_refused() {
+    let ctx = MethodContext::new(ShutdownToken::new()).with_state(PersistedState::new(
+      DaemonState {
+        running: vec![named_running("/m/a.gguf", Some("coder"))],
+        ..Default::default()
+      },
+      None,
+    ));
+    let parsed = StartParams {
+      model_path: PathBuf::from("/m/a.gguf"),
+      name: Some("coder".to_string()),
+      ..Default::default()
+    };
+    match compose_and_spawn(&ctx, parsed, LaunchOrigin::Manual).await {
+      Err(err) => assert!(
+        err.message.contains("already running with name `coder`"),
+        "expected the duplicate-name refusal, got: {}",
+        err.message
+      ),
+      Ok(_) => panic!("expected the duplicate-name refusal, got a successful launch"),
+    }
+  }
+
+  /// D3 (the other half): the *same* name on a *different* model is not a
+  /// duplicate — the gate must not fire, so the call proceeds past it (and
+  /// only then fails on the missing launch env, a different error).
+  #[tokio::test]
+  async fn same_name_on_a_different_model_is_not_refused() {
+    let ctx = MethodContext::new(ShutdownToken::new()).with_state(PersistedState::new(
+      DaemonState {
+        running: vec![named_running("/m/a.gguf", Some("coder"))],
+        ..Default::default()
+      },
+      None,
+    ));
+    let parsed = StartParams {
+      model_path: PathBuf::from("/m/b.gguf"),
+      name: Some("coder".to_string()),
+      ..Default::default()
+    };
+    match compose_and_spawn(&ctx, parsed, LaunchOrigin::Manual).await {
+      Err(err) => assert!(
+        !err.message.contains("already running with name"),
+        "a different model must not trip the duplicate-name gate, got: {}",
+        err.message
+      ),
+      Ok(_) => panic!("expected a post-gate failure, got a successful launch"),
     }
   }
 }

@@ -80,6 +80,11 @@ pub struct ManagedRow {
   pub launch_id: String,
   pub path: PathBuf,
   pub port: u16,
+  /// User-chosen launch name (from `--name`). When set, the launch is
+  /// addressable as `<model-id>@<name>`; the TUI surfaces it in the
+  /// running-launch view so a named launch is distinguishable from an
+  /// unnamed one of the same model. `None` for unnamed launches.
+  pub name: Option<String>,
   pub state: SurfaceState,
   /// Launch device selector (`CUDA0`, `Vulkan1`, etc.) when set.
   pub device: Option<String>,
@@ -399,6 +404,9 @@ pub struct App {
   /// `Ctrl+P` save-preset dialog. `Some(_)` while the modal is open; the
   /// input pump routes keys to its name / overwrite stages.
   pub save_preset_dialog: Option<crate::tui::save_preset_dialog::SavePresetDialog>,
+  /// `Alt+⏎` launch-name dialog. `Some(_)` while the modal is open; on accept
+  /// the normal launch picker opens carrying the typed name.
+  pub launch_name_dialog: Option<crate::tui::launch_name_dialog::LaunchNameDialog>,
   /// Pinned download status strip. Always present; the
   /// renderer reserves a 1-line slot above the body only when
   /// `download_strip.is_active()` is true.
@@ -473,6 +481,10 @@ pub struct StartModelArgs {
   /// MTP speculative-decoding intent from the picker's `mtp` cycle row
   /// (`auto`/`on`/`off`). Backend-agnostic — sent as the `mtp` start param.
   pub mtp: crate::launch::params::MtpEnable,
+  /// User-chosen launch name (from the `Alt+⏎` "launch as…" dialog). `None`
+  /// for a plain `⏎` launch, which stays unnamed as before. Sent as the
+  /// `name` start param so the launch is addressable as `<model-id>@<name>`.
+  pub name: Option<String>,
 }
 
 /// The binary + compute-backend label a focused running model launched on
@@ -595,6 +607,7 @@ impl App {
       confirm_dialog: None,
       hf_dialog: None,
       save_preset_dialog: None,
+      launch_name_dialog: None,
       download_strip: crate::tui::download_strip::DownloadStripState::default(),
       rows_cache: None,
       right_tabs_cache: None,
@@ -1184,6 +1197,8 @@ impl App {
         // The backend the launch actually resolved to (honest even for a
         // `--backend llamacpp` override on a ds4-compatible file).
         backend: m.backend.clone(),
+        // User-chosen launch name (from `--name` / `Alt+⏎`), when set.
+        launch_name: m.name.clone(),
       })
       .collect();
     let mut all = build_rows(RowInputs {
@@ -1955,6 +1970,25 @@ impl App {
     ));
   }
 
+  /// Open the `Alt+⏎` launch-name dialog for the focused model. On accept the
+  /// normal launch picker opens carrying the typed name, so the launch is
+  /// addressable as `<model-id>@<name>`. A plain `⏎` (OpenLaunchPicker) is
+  /// untouched and launches unnamed.
+  pub fn open_launch_name_dialog(&mut self) {
+    let Some(path) = self.focused_path() else {
+      return;
+    };
+    let model_name = self
+      .display_label_for(&path)
+      .unwrap_or_else(|| crate::util::paths::model_file_label(&path));
+    self.launch_name_dialog = Some(crate::tui::launch_name_dialog::LaunchNameDialog::open(
+      crate::tui::launch_name_dialog::LaunchNameArgs {
+        model_path: path,
+        model_name,
+      },
+    ));
+  }
+
   /// The capture tuple (knobs, extras, backend, server) from a launch picker —
   /// shared by the open-picker and default-picker branches so a future field
   /// is added once. The identity comes from [`LaunchPickerState::launch_identity`]
@@ -2357,6 +2391,7 @@ fn parse_external_row(row: &Value) -> Option<ManagedRow> {
     // sysinfo cmdline alone — surface 0 and let the right pane
     // know to hide the endpoint slot for these rows.
     port: 0,
+    name: None,
     state: SurfaceState::External,
     device: None,
     rss_bytes: None,
@@ -2407,6 +2442,7 @@ fn parse_status_row(row: &Value) -> Option<ManagedRow> {
     return None;
   }
   let port = row.get("port")?.as_u64()? as u16;
+  let name = row.get("name").and_then(Value::as_str).map(String::from);
   let path = row
     .get("id")
     .and_then(|id| id.get("path"))
@@ -2471,6 +2507,7 @@ fn parse_status_row(row: &Value) -> Option<ManagedRow> {
     launch_id,
     path,
     port,
+    name,
     state,
     device,
     rss_bytes,

@@ -61,11 +61,22 @@ enum SlotState {
   Cancelled,
 }
 
+/// The single-flight key: the canonical model id plus the optional
+/// launch name, so two named launches of the same model don't coalesce
+/// into one flight.
+type FlightKey = (ModelId, Option<String>);
+/// The in-flight slot map, keyed on [`FlightKey`].
+type FlightMap = HashMap<FlightKey, Arc<SlotInner>>;
+
 /// Single-flight registry. Cheap to clone — every field lives behind
 /// an `Arc` so the per-request handle is a refcount bump.
+///
+/// Keyed on [`FlightKey`] — the canonical model id plus the optional
+/// launch name — so two named launches of the same model don't
+/// coalesce into one flight.
 #[derive(Clone, Default)]
 pub(crate) struct Coalesce {
-  inner: Arc<Mutex<HashMap<ModelId, Arc<SlotInner>>>>,
+  inner: Arc<Mutex<FlightMap>>,
 }
 
 /// Outcome of [`Coalesce::acquire`]. Tells the caller whether to
@@ -87,7 +98,7 @@ pub(crate) enum AcquireOutcome {
 /// `SlotState::Cancelled` and wakes followers so they don't hang.
 pub(crate) struct Leader {
   parent: Coalesce,
-  key: ModelId,
+  key: (ModelId, Option<String>),
   slot: Arc<SlotInner>,
   /// Becomes `true` after [`Self::finish`] runs. The `Drop` impl
   /// uses it to detect the "leader dropped without calling finish"
@@ -209,7 +220,7 @@ impl Coalesce {
   /// The lookup-and-insert happens under one lock, so two concurrent
   /// `acquire(key)` calls can never both walk away as leaders for
   /// the same `key`.
-  pub(crate) async fn acquire(&self, key: ModelId) -> AcquireOutcome {
+  pub(crate) async fn acquire(&self, key: (ModelId, Option<String>)) -> AcquireOutcome {
     let mut guard = self.inner.lock().await;
     if let Some(slot) = guard.get(&key).cloned() {
       return AcquireOutcome::Follower(Follower { slot });
@@ -236,17 +247,23 @@ mod tests {
 
   use super::*;
 
-  fn key(path: &str) -> ModelId {
-    ModelId {
-      path: PathBuf::from(path),
-      header_blake3: [1u8; 32],
-    }
+  fn key(path: &str) -> (ModelId, Option<String>) {
+    (
+      ModelId {
+        path: PathBuf::from(path),
+        header_blake3: [1u8; 32],
+      },
+      None,
+    )
   }
 
   fn ready(port: u16) -> SharedOutcome {
     SharedOutcome::Ready {
       port,
-      model_id: key("/m/ready.gguf"),
+      model_id: ModelId {
+        path: PathBuf::from("/m/ready.gguf"),
+        header_blake3: [1u8; 32],
+      },
     }
   }
 

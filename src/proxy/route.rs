@@ -87,6 +87,12 @@ pub(crate) enum RouteDecision {
     // dead_code: consumed via destructuring in router::forward_request.
     #[allow(dead_code)]
     arch: Option<String>,
+    /// User-chosen launch name parsed from the `@name` suffix. `None`
+    /// for unnamed launches. Threaded through to `auto_start` so a
+    /// second named launch of the same model gets its own flight.
+    // dead_code: consumed via destructuring in router::forward_request.
+    #[allow(dead_code)]
+    name: Option<String>,
   },
   /// `resolve_model` returned zero matches. Emits 404
   /// `model_not_found` with `matches: []`.
@@ -249,21 +255,39 @@ pub(crate) async fn decide(state: &Arc<ProxyState>, body_model: Option<String>) 
   // we explicitly want to avoid on the hot path.
   let snap = state.ctx.catalog.snapshot().await;
   let rows: Vec<CatalogRow> = snap.iter().map(catalog_row_from_discovered).collect();
-  let resolved = match resolve_model_with_candidates(&rows, &requested) {
-    Ok(r) => r,
-    Err(ResolveError::Empty) | Err(ResolveError::None) => {
-      return RouteDecision::NotFound {
-        requested_model: requested,
+
+  // D2 fail-safe: try the whole reference first so a model file whose name
+  // contains `@` (e.g. `foo@bar.gguf`) resolves as a plain model reference.
+  // Only when the whole string does not resolve do we split on `@` and treat
+  // the right side as a launch name. When present, the launch must match
+  // both the model (path) and the name; the name is threaded through to
+  // `auto_start` so a second named launch of the same model gets its own
+  // flight and its own addressable id.
+  let (name, resolved) = match resolve_model_with_candidates(&rows, &requested) {
+    Ok(r) => (None, r),
+    Err(_) => {
+      let (m, n) = match requested.split_once('@') {
+        Some((m, n)) if !n.is_empty() => (m.to_string(), Some(n.to_string())),
+        _ => (requested.clone(), None),
       };
-    }
-    Err(ResolveError::Many(candidates)) => {
-      // The ids `/v1/models` publishes, not the bare names: two same-named
-      // GGUFs in different roots listed the identical string twice, leaving
-      // the client nothing to refine with. Every entry here routes.
-      return RouteDecision::Ambiguous {
-        requested_model: requested,
-        candidates: crate::launch::resolve::published_ids_for(&rows, &candidates),
+      let r = match resolve_model_with_candidates(&rows, &m) {
+        Ok(r) => r,
+        Err(ResolveError::Empty) | Err(ResolveError::None) => {
+          return RouteDecision::NotFound {
+            requested_model: requested,
+          };
+        }
+        Err(ResolveError::Many(candidates)) => {
+          // The ids `/v1/models` publishes, not the bare names: two same-named
+          // GGUFs in different roots listed the identical string twice, leaving
+          // the client nothing to refine with. Every entry here routes.
+          return RouteDecision::Ambiguous {
+            requested_model: requested,
+            candidates: crate::launch::resolve::published_ids_for(&rows, &candidates),
+          };
+        }
       };
+      (n, r)
     }
   };
 
@@ -281,9 +305,26 @@ pub(crate) async fn decide(state: &Arc<ProxyState>, body_model: Option<String>) 
   // resolved row's path. Two HashMap lookups + one state read each
   // — well within the hot-path budget the plan asks for.
   let sup_snap = state.ctx.supervisors.snapshot().await;
+  // When a name is present we must map a launch's port back to its name to
+  // confirm the match; read the state snapshot once (not per-iteration).
+  let state_snap = if name.is_some() {
+    Some(state.ctx.state.snapshot().await)
+  } else {
+    None
+  };
   for (_launch_id, model) in sup_snap.into_iter() {
     if !same_path(&model.id().path, &resolved.path) {
       continue;
+    }
+    // When a name is present, only a launch with that name is a match.
+    if let (Some(n), Some(st)) = (&name, &state_snap) {
+      let has_name = st
+        .running
+        .iter()
+        .any(|r| r.port == model.port() && r.name.as_deref() == Some(n.as_str()));
+      if !has_name {
+        continue;
+      }
     }
     if matches!(model.state().await, ManagedState::Ready) {
       return RouteDecision::ReadyAt {
@@ -305,6 +346,7 @@ pub(crate) async fn decide(state: &Arc<ProxyState>, body_model: Option<String>) 
     requested_model: requested,
     resolved_row: Box::new(resolved),
     arch,
+    name,
   }
 }
 
@@ -531,8 +573,9 @@ pub(crate) async fn handle_not_running(
   resolved_row: CatalogRow,
   requested_arch: Option<String>,
   endpoint_mode: Option<crate::launch::mode::LaunchMode>,
+  name: Option<String>,
 ) -> ProxyResponse {
-  let outcome = launch::auto_start(state, &resolved_row, endpoint_mode).await;
+  let outcome = launch::auto_start(state, &resolved_row, endpoint_mode, name).await;
   match outcome {
     LaunchOutcome::Ready { port, model_id } => {
       // Touch the MRU using the supervisor we just confirmed Ready.

@@ -76,6 +76,11 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
       m.launch_id.clone(),
       palette,
     ));
+    // User-chosen launch name (from `--name`), when set — the distinguishing
+    // identifier for a named launch, addressable as `<model-id>@<name>`.
+    if let Some(n) = m.name.as_deref() {
+      lines.push(crate::tui::fmt::kv_row("name", n.to_string(), palette));
+    }
     // Server (build/binary) the launch ran on — mirrors the editable picker's
     // server row so the operator can see which build served the model. Shown
     // only when the model has more than one compatible server (a real choice);

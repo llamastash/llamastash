@@ -255,6 +255,7 @@ async fn forward_request(state: Arc<ProxyState>, req: Request<Incoming>) -> Prox
       requested_model,
       resolved_row,
       arch,
+      name,
     } => {
       route::handle_not_running(
         &state,
@@ -263,6 +264,7 @@ async fn forward_request(state: Arc<ProxyState>, req: Request<Incoming>) -> Prox
         *resolved_row,
         arch,
         req_mode,
+        name,
       )
       .await
     }
@@ -363,6 +365,20 @@ async fn list_models(state: Arc<ProxyState>) -> ProxyResponse {
     .iter()
     .map(|m| ModelObject::new(published_id(&ids, m)))
     .collect();
+  // Named launches of a model that's already in the catalog get their own
+  // addressable id of the form `<model-id>@<name>`. A second launch of the
+  // same model with a name is reachable only through this id.
+  let state_snap = state.ctx.state.snapshot().await;
+  for r in &state_snap.running {
+    if let Some(name) = r.name.as_deref() {
+      let base_id =
+        crate::util::paths::model_public_id(std::path::Path::new(&r.params.model_path), None);
+      let named_id = format!("{base_id}@{name}");
+      if !rows.iter().any(|row| row.id == named_id) {
+        rows.push(ModelObject::new(named_id));
+      }
+    }
+  }
   // ASCII-lexicographic sort: stable, deterministic across runs, and
   // independent of the catalog's underlying BTreeMap key (canonical
   // path) which orders by filesystem layout instead of display name.
@@ -429,6 +445,34 @@ async fn ollama_tags(state: Arc<ProxyState>) -> ProxyResponse {
     .iter()
     .map(|m| ollama_tag_from_discovered(m, published_id(&ids, m)))
     .collect();
+  // Named launches of a model that's already in the catalog get their own
+  // addressable id of the form `<model-id>@<name>`, mirroring `/v1/models`.
+  let state_snap = state.ctx.state.snapshot().await;
+  for r in &state_snap.running {
+    if let Some(name) = r.name.as_deref() {
+      let base_id =
+        crate::util::paths::model_public_id(std::path::Path::new(&r.params.model_path), None);
+      let named_id = format!("{base_id}@{name}");
+      if !models.iter().any(|m| m.name == named_id) {
+        let digest = digest_for_path(&r.params.model_path);
+        models.push(TagModel {
+          name: named_id.clone(),
+          model: named_id,
+          modified_at: UNKNOWN_MTIME.to_string(),
+          size: 0,
+          digest,
+          details: ModelDetails {
+            parent_model: String::new(),
+            format: "gguf",
+            family: String::new(),
+            families: Vec::new(),
+            parameter_size: String::new(),
+            quantization_level: String::new(),
+          },
+        });
+      }
+    }
+  }
   models.sort_by(|a, b| a.name.cmp(&b.name));
   let body = TagsResponse { models };
   let bytes = serde_json::to_vec(&body).expect("json encoding of fixed shape");
