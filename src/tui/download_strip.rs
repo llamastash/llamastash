@@ -19,6 +19,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
+use crate::init::download::RateMeter;
 use crate::theme::Palette;
 use crate::tui::hf_dialog::PickerRow;
 
@@ -27,55 +28,6 @@ use crate::tui::hf_dialog::PickerRow;
 /// brainstorm's "one-line error in the strip; full diagnostics
 /// flow to logs" guidance.
 pub const ERROR_LINGER: Duration = Duration::from_secs(5);
-
-/// Smoothing factor for the throughput EMA — quick enough to track
-/// real swings without flickering between windows.
-const THROUGHPUT_ALPHA: f64 = 0.3;
-
-/// Bytes pile up for at least this long before one EMA step folds.
-/// hf-hub runs eight chunk workers in parallel and several of their
-/// callbacks land in the same microsecond, so folding a step per
-/// callback divides one chunk by a near-zero interval: measured on a
-/// real pull that read a ~2 MiB/s link as 125 MiB/s at p90 and 4.3
-/// GiB/s at peak.
-const RATE_WINDOW: Duration = Duration::from_millis(250);
-
-/// How often a download surface repaints. Fast enough to read as
-/// live, slow enough that a multi-gigabyte pull isn't spending its
-/// time writing escape codes.
-pub const PROGRESS_REPAINT: Duration = Duration::from_millis(100);
-
-/// EMA-smoothed transfer rate, folded once per 250 ms window. Shared
-/// by the TUI download strip, the CLI `pull` line and the init
-/// wizard so all three report the same figure.
-#[derive(Debug, Default, Clone)]
-pub struct RateMeter {
-  bps: f64,
-  pending_bytes: u64,
-  window_start: Option<Instant>,
-}
-
-impl RateMeter {
-  /// Fold in bytes that actually crossed the network. Call with `0`
-  /// to age the meter without new traffic, so a stalled transfer
-  /// decays towards zero instead of freezing on its last reading.
-  pub fn record(&mut self, bytes: u64, now: Instant) {
-    self.pending_bytes = self.pending_bytes.saturating_add(bytes);
-    let start = *self.window_start.get_or_insert(now);
-    let elapsed = now.saturating_duration_since(start);
-    if elapsed < RATE_WINDOW {
-      return;
-    }
-    let instant = self.pending_bytes as f64 / elapsed.as_secs_f64();
-    self.bps = THROUGHPUT_ALPHA * instant + (1.0 - THROUGHPUT_ALPHA) * self.bps;
-    self.pending_bytes = 0;
-    self.window_start = Some(now);
-  }
-
-  pub fn bps(&self) -> f64 {
-    self.bps
-  }
-}
 
 /// Outcome of [`DownloadStripState::cancel_active`] — fold the
 /// "active vs idle" branch into a single returned value so callers
@@ -445,55 +397,6 @@ mod tests {
     strip.apply_error("owner/repo", "rate-limited".into());
     assert!(strip.active.is_none());
     assert_eq!(strip.lingering_error(), Some("rate-limited"));
-  }
-
-  #[test]
-  fn a_burst_of_callbacks_inside_one_window_is_not_read_as_a_faster_link() {
-    // hf-hub's eight chunk workers land several callbacks in the same
-    // microsecond. Folding an EMA step per callback divided a chunk by
-    // a near-zero interval and read a 2 MiB/s link as gigabytes per
-    // second; a window has to close before a step folds.
-    let t0 = Instant::now();
-    let mut burst = RateMeter::default();
-    for i in 0..64 {
-      burst.record(64 * 1024, t0 + Duration::from_micros(i));
-    }
-    assert_eq!(burst.bps(), 0.0, "no window has closed yet");
-
-    // One second of the same traffic: 4 MiB across four windows.
-    let mut meter = RateMeter::default();
-    let mut t = t0;
-    for _ in 0..16 {
-      t += Duration::from_millis(62);
-      meter.record(256 * 1024, t);
-    }
-    let mib = meter.bps() / (1024.0 * 1024.0);
-    assert!(
-      (2.0..6.0).contains(&mib),
-      "~4 MiB/s of traffic should read as single-digit MiB/s, got {mib}"
-    );
-  }
-
-  #[test]
-  fn a_stalled_transfer_decays_instead_of_holding_its_last_reading() {
-    let t0 = Instant::now();
-    let mut meter = RateMeter::default();
-    let mut t = t0;
-    for _ in 0..8 {
-      t += Duration::from_millis(300);
-      meter.record(10 * 1024 * 1024, t);
-    }
-    let moving = meter.bps();
-    assert!(moving > 0.0);
-    for _ in 0..8 {
-      t += Duration::from_millis(300);
-      meter.record(0, t);
-    }
-    assert!(
-      meter.bps() < moving / 10.0,
-      "stalled rate {} should fall well below {moving}",
-      meter.bps()
-    );
   }
 
   #[test]

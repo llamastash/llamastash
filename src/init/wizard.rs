@@ -967,9 +967,9 @@ struct WizardFileProgress {
   /// and reused by every `on_bytes_progress` update.
   label: String,
   file_size: u64,
-  bytes_in_file: u64,
-  rate: crate::tui::download_strip::RateMeter,
-  last_paint: Option<std::time::Instant>,
+  bytes: crate::init::download::WireDelta,
+  rate: crate::init::download::RateMeter,
+  repaint: crate::init::download::RepaintClock,
 }
 
 /// Bridges hf-hub's per-file lifecycle (resolved → started → finished)
@@ -1011,9 +1011,9 @@ impl crate::init::download::DownloadProgress for WizardDownloadProgress {
     *self.file_progress.lock().unwrap_or_else(|e| e.into_inner()) = Some(WizardFileProgress {
       label,
       file_size: size,
-      bytes_in_file: 0,
+      bytes: Default::default(),
       rate: Default::default(),
-      last_paint: None,
+      repaint: Default::default(),
     });
   }
 
@@ -1034,22 +1034,11 @@ impl crate::init::download::DownloadProgress for WizardDownloadProgress {
       let mut pg = self.file_progress.lock().unwrap_or_else(|e| e.into_inner());
       let Some(state) = pg.as_mut() else { return };
       let now = std::time::Instant::now();
-      // A retry replays from the committed offset, so a rewind is not
-      // new traffic.
-      let transferred = bytes_in_file.saturating_sub(state.bytes_in_file);
-      state.bytes_in_file = bytes_in_file;
+      let transferred = state.bytes.advance(bytes_in_file);
       state.rate.record(transferred, now);
-      // hf-hub drives this once per chunk off eight parallel workers,
-      // and when stderr is not a terminal `StepProgress::update` is a
-      // fresh `log::info` line each time. Unthrottled, a piped `init`
-      // printed one line per chunk for the whole download.
-      if state
-        .last_paint
-        .is_some_and(|t| now.duration_since(t) < crate::tui::download_strip::PROGRESS_REPAINT)
-      {
+      if !state.repaint.tick(now, false) {
         return;
       }
-      state.last_paint = Some(now);
       let pct = (bytes_in_file * 100)
         .checked_div(state.file_size)
         .unwrap_or(0);
@@ -1077,7 +1066,7 @@ impl crate::init::download::DownloadProgress for WizardDownloadProgress {
       .as_mut()
     {
       state.rate = Default::default();
-      state.last_paint = None;
+      state.repaint.reset();
     }
     if let Some(sp) = self
       .spinner

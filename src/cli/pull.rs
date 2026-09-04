@@ -11,8 +11,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::cli::cli_args::{Cli, PullArgs};
 use crate::cli::exit_codes::CliResult;
 use crate::config::Config;
-use crate::init::download::{DownloadProgress, PullProgress, PullTotals};
-use crate::tui::download_strip::{RateMeter, PROGRESS_REPAINT};
+use crate::init::download::{DownloadProgress, PullProgress, PullTotals, RateMeter, RepaintClock};
 use crate::tui::fmt::{format_bytes, format_rate, percent_of, take_head_by_width, truncate_middle};
 
 pub async fn handle(args: PullArgs, cli: &Cli, config: &Config) -> CliResult {
@@ -58,7 +57,7 @@ struct LineState {
   bytes_done: u64,
   bytes_total: u64,
   rate: RateMeter,
-  last_paint: Option<Instant>,
+  repaint: RepaintClock,
   /// Set once anything has been written, so `finish` only clears a
   /// line that actually exists.
   painted: bool,
@@ -88,8 +87,8 @@ impl ProgressLine {
     self.state.lock().unwrap_or_else(|e| e.into_inner())
   }
 
-  /// Repaint unless the last one was under [`PROGRESS_REPAINT`] ago. `force`
-  /// skips the throttle for file boundaries, which are rare and worth
+  /// Repaint, subject to the shared [`RepaintClock`]. `force` skips
+  /// the throttle for file boundaries, which are rare and worth
   /// showing immediately.
   fn paint(&self, force: bool) {
     if !self.tty {
@@ -97,14 +96,9 @@ impl ProgressLine {
     }
     let mut s = self.lock();
     let now = Instant::now();
-    if !force
-      && s
-        .last_paint
-        .is_some_and(|t| now.duration_since(t) < PROGRESS_REPAINT)
-    {
+    if !s.repaint.tick(now, force) {
       return;
     }
-    s.last_paint = Some(now);
     s.painted = true;
     // Age the meter even when no chunk arrived, so a stalled pull
     // reads as slowing down rather than holding its last figure.

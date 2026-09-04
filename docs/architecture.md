@@ -27,7 +27,7 @@ Three submodule groupings under `src/init/`:
 The TUI grows two new modules to host the dialog and its async surface:
 
 - `tui::hf_dialog` — three-state modal (Search → File picker → Confirm), debounced live search with `query_seq` cancellation, slug-shortcut parsing via `RepoSpec::parse`, shard-collapse logic over the HF sibling listing, hardware-fit indicator pulling from the host-metrics snapshot.
-- `tui::download_strip` — pinned single-line strip rendered below the info row when active; FIFO queue of pending pulls, an EMA-smoothed throughput readout, one active pull at a time, AlreadyCached short-circuit per R116.
+- `tui::download_strip` — pinned single-line strip rendered below the info row when active; FIFO queue of pending pulls, one active pull at a time, AlreadyCached short-circuit per R116. Percent, bytes and the EMA-smoothed rate come from `init::download`'s shared `PullTotals` / `RateMeter`, so the strip, the CLI `pull` line and the init wizard all report the same figures.
 
 ## One binary, three roles
 
