@@ -146,6 +146,11 @@ pub struct RunningSnapshot {
   /// `None` only on a legacy/adopted row that predates the stamp.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub launch_id: Option<LaunchId>,
+  /// User-chosen name for this launch. When set, the launch is
+  /// addressable by `<model-id>@<name>` in `stop`, `logs`, and the
+  /// proxy's `body.model`. `None` for unnamed launches (the default).
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub name: Option<String>,
   pub params: LaunchParams,
   /// What `--fit` actually chose, read from the child's `/props` once
   /// on Ready. Empty for adopted/external/Lemonade rows and until
@@ -312,6 +317,7 @@ mod tests {
       port: 41100,
       started_at: 1_700_000_000,
       launch_id: None,
+      name: None,
       params: fake_params("/m/a.gguf"),
       actuals: Default::default(),
       resolved_backend: "llamacpp".to_string(),
@@ -578,6 +584,7 @@ mod tests {
       port: 9100,
       started_at: 1_700_000_001,
       launch_id: None,
+      name: None,
       params: fake_params("/unused"),
       actuals: Default::default(),
       resolved_backend: "llamacpp".to_string(),

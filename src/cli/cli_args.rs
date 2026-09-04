@@ -408,6 +408,12 @@ pub struct StartArgs {
   /// catalog. Non-interactive callers (CI / piped / `--json`) must
   /// pass an explicit reference.
   pub model: Option<String>,
+  /// User-chosen name for this launch. When set, the launch is
+  /// addressable by `<model-id>@<name>` in `stop`, `logs`, and the
+  /// proxy's `body.model`. A second launch of the same model with the
+  /// same name is refused (the name is unique per model).
+  #[arg(long, value_name = "NAME")]
+  pub name: Option<String>,
   /// Saved preset to load before applying overrides. The reserved value
   /// `auto` launches pure-fit (skips the model's `default:` preset and
   /// last-used params), the clean way to ignore prior launch state.

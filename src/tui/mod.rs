@@ -25,6 +25,7 @@ pub mod host_stats_pane;
 pub mod info_pane;
 pub mod input_field;
 pub mod keybindings;
+pub mod launch_name_dialog;
 pub mod launch_picker;
 pub mod layout;
 pub mod list_pane;

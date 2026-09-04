@@ -317,6 +317,17 @@ pub struct PullTotals {
   bytes_in_current_file: u64,
 }
 
+/// One aggregation step from [`PullTotals`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PullProgress {
+  pub bytes_done: u64,
+  pub bytes_total: u64,
+  /// Bytes that crossed the network since the previous step. Zero
+  /// when a file is credited its size on completion, so a progress
+  /// surface can bill the rate meter for traffic only.
+  pub transferred: u64,
+}
+
 impl PullTotals {
   /// Record the resolved file list. Returns the pull's total bytes.
   pub fn resolve_files(&mut self, files: &[(String, u64)]) -> u64 {
@@ -331,29 +342,36 @@ impl PullTotals {
     self.bytes_in_current_file = 0;
   }
 
-  pub fn finish_file(&mut self, filename: &str) -> (u64, u64) {
+  pub fn finish_file(&mut self, filename: &str) -> PullProgress {
     self.bytes_completed = self
       .bytes_completed
       .saturating_add(self.file_sizes.get(filename).copied().unwrap_or(0));
     self.bytes_in_current_file = 0;
-    self.snapshot()
+    self.snapshot(0)
   }
 
   /// Apply a cumulative per-file byte count from the hf-hub adapter.
-  pub fn credit_bytes(&mut self, bytes_in_file: u64) -> (u64, u64) {
+  pub fn credit_bytes(&mut self, bytes_in_file: u64) -> PullProgress {
+    // Saturating, so a retry rewinding to the committed offset bills
+    // nothing rather than a negative-turned-huge delta.
+    let transferred = bytes_in_file.saturating_sub(self.bytes_in_current_file);
     self.bytes_in_current_file = bytes_in_file;
-    self.snapshot()
+    self.snapshot(transferred)
   }
 
-  /// `(bytes_done, bytes_total)`, capped at the total so a chunk
-  /// landing after its file's finish callback can't read past 100%.
-  fn snapshot(&self) -> (u64, u64) {
-    let done = self.bytes_total.min(
+  /// `bytes_done` is capped at the total so a chunk landing after its
+  /// file's finish callback can't read past 100%.
+  fn snapshot(&self, transferred: u64) -> PullProgress {
+    let bytes_done = self.bytes_total.min(
       self
         .bytes_completed
         .saturating_add(self.bytes_in_current_file),
     );
-    (done, self.bytes_total)
+    PullProgress {
+      bytes_done,
+      bytes_total: self.bytes_total,
+      transferred,
+    }
   }
 }
 
@@ -1081,9 +1099,10 @@ pub async fn download_repo(
         .or_else(|| cache_repo.get(filename))
     };
     let path = if let Some(p) = cached {
-      if let Some(cb) = &options.progress {
-        cb.on_bytes_progress(filename, *size);
-      }
+      // No `on_bytes_progress` here: nothing crossed the network, and
+      // `on_file_finished` credits the file's whole size anyway. The
+      // synthetic call this used to make read as a burst of traffic
+      // and had a re-pull of a cached repo reporting tens of GB/s.
       p
     } else {
       let mut last_err: Option<hf_hub::api::tokio::ApiError> = None;
@@ -1216,6 +1235,36 @@ mod tests {
         .unwrap()
         .push((filename.to_string(), bytes_in_file));
     }
+  }
+
+  #[test]
+  fn totals_bill_the_rate_only_for_bytes_off_the_wire() {
+    let mut t = PullTotals::default();
+    assert_eq!(
+      t.resolve_files(&[("a".into(), 100), ("b".into(), 100)]),
+      200
+    );
+
+    t.start_file();
+    let first = t.credit_bytes(60);
+    assert_eq!((first.bytes_done, first.transferred), (60, 60));
+    // A retry rewinds to the committed offset: 20 of those 60 never
+    // landed, and the replay is not new traffic either.
+    let rewound = t.credit_bytes(40);
+    assert_eq!((rewound.bytes_done, rewound.transferred), (40, 0));
+    let replayed = t.credit_bytes(100);
+    assert_eq!((replayed.bytes_done, replayed.transferred), (100, 60));
+
+    // Completion credits the file's size without claiming traffic —
+    // a cached file arrives here having reported nothing at all.
+    let done_a = t.finish_file("a");
+    assert_eq!((done_a.bytes_done, done_a.transferred), (100, 0));
+    t.start_file();
+    let done_b = t.finish_file("b");
+    assert_eq!(
+      (done_b.bytes_done, done_b.bytes_total, done_b.transferred),
+      (200, 200, 0)
+    );
   }
 
   #[tokio::test]

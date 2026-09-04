@@ -135,6 +135,7 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
       "pid": pid,
       "ready_at": ready_at,
       "state": state_obj,
+      "name": running_snap.and_then(|r| r.name.clone()),
       "params": params_json,
       // Backend this launch actually resolved to (`llamacpp` / `ds4` /
       // `lemonade`) — the TUI keys its ds4 badge / knob panel on this, not on
@@ -557,6 +558,7 @@ mod tests {
       port,
       started_at: 0,
       launch_id: Some(crate::daemon::registry::LaunchId(launch_id.to_string())),
+      name: None,
       params: LaunchParams::new(path, LaunchMode::Chat),
       actuals: Default::default(),
       resolved_backend,

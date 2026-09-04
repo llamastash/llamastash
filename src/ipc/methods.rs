@@ -1176,6 +1176,7 @@ mod tests {
       port,
       started_at: 0,
       launch_id: Some(crate::daemon::registry::LaunchId(launch_id.to_string())),
+      name: None,
       resolved_backend,
       params: LaunchParams::new(path, LaunchMode::Chat),
       actuals: Default::default(),

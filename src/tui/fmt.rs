@@ -187,6 +187,47 @@ pub(crate) fn truncate_start(s: &str, budget: usize) -> String {
   format!("{prefix}{tail}")
 }
 
+/// Truncate `s` to `budget` terminal columns by eliding the
+/// **middle**, so both ends survive. Filenames carry their identity
+/// at both ends — `tinyllamas/split/…-00002-of-00003.gguf` says which
+/// directory and which shard, where dropping either end does not.
+///
+/// Width-based like [`truncate_start`], not char-count.
+pub(crate) fn truncate_middle(s: &str, budget: usize) -> String {
+  if s.width() <= budget {
+    return s.to_string();
+  }
+  let ellipsis = crate::tui::glyphs::active().ellipsis();
+  let ell_w = ellipsis.width();
+  if budget <= ell_w {
+    return take_head_by_width(s, budget);
+  }
+  // Bias the tail: the discriminating part of a shard name is at the
+  // end, and an odd leftover column is better spent there.
+  let keep = budget - ell_w;
+  let head_w = keep / 2;
+  let head = take_head_by_width(s, head_w);
+  let tail = take_tail_by_width(s, keep - head.width());
+  format!("{head}{ellipsis}{tail}")
+}
+
+/// Take the longest prefix of `s` whose display width is `<= budget`.
+/// Mirror of [`take_tail_by_width`]; stops before a wide character
+/// that would overflow rather than splitting it.
+pub(crate) fn take_head_by_width(s: &str, budget: usize) -> String {
+  let mut acc_w = 0usize;
+  let mut end = 0usize;
+  for (idx, ch) in s.char_indices() {
+    let w = ch.to_string().width();
+    if acc_w + w > budget {
+      break;
+    }
+    acc_w += w;
+    end = idx + ch.len_utf8();
+  }
+  s[..end].to_string()
+}
+
 /// Take the longest suffix of `s` whose display width is `<= budget`.
 /// Iterates chars in reverse so a wide character that wouldn't fit is
 /// dropped rather than splitting it.
@@ -511,6 +552,43 @@ mod tests {
   fn truncate_end_leaves_short_strings_unchanged() {
     assert_eq!(truncate_end("ok", 10), "ok");
     assert_eq!(truncate_end("", 10), "");
+  }
+
+  #[test]
+  fn truncate_middle_keeps_both_ends_of_a_shard_name() {
+    let name = "tinyllamas/split/stories15M-q8_0-00002-of-00003.gguf";
+    let out = truncate_middle(name, 44);
+    assert_eq!(out.width(), 44, "{out:?}");
+    assert!(out.starts_with("tinyllamas/split/"), "{out:?}");
+    assert!(
+      out.ends_with("-00002-of-00003.gguf"),
+      "the shard suffix is what tells two files apart: {out:?}"
+    );
+  }
+
+  #[test]
+  fn truncate_middle_leaves_a_fitting_string_alone() {
+    assert_eq!(truncate_middle("model.gguf", 44), "model.gguf");
+    assert_eq!(truncate_middle("", 44), "");
+  }
+
+  #[test]
+  fn truncate_middle_never_exceeds_its_budget() {
+    let name = "tinyllamas/split/stories15M-q8_0-00002-of-00003.gguf";
+    for budget in 0..=name.width() + 4 {
+      assert!(
+        truncate_middle(name, budget).width() <= budget,
+        "budget {budget}"
+      );
+    }
+  }
+
+  #[test]
+  fn take_head_by_width_stops_before_splitting_a_wide_char() {
+    // The CJK name is two cells; a 3-cell budget fits one of them.
+    assert_eq!(take_head_by_width("张伟x", 3), "张");
+    assert_eq!(take_head_by_width("张伟x", 4), "张伟");
+    assert_eq!(take_head_by_width("abc", 0), "");
   }
 
   #[test]

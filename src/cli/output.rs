@@ -179,7 +179,13 @@ fn running_status_cell(row: Option<&RunningRow>) -> String {
   } else {
     port_part
   };
-  format!("{glyph} {state_label} {port_part}")
+  // A named launch is addressable as `<model-id>@<name>`; surface the name
+  // here so `list` shows which named launch of this model is running.
+  let name_part = match r.name.as_deref() {
+    Some(n) => format!(" @{n}"),
+    None => String::new(),
+  };
+  format!("{glyph} {state_label} {port_part}{name_part}")
 }
 
 /// Backend badge for a catalog row: every backend that can serve it,
@@ -279,12 +285,16 @@ pub fn list_json(rows: &[CatalogRow], running: &HashMap<String, RunningRow>) -> 
       // (`null` when the launch took the backend default) so an agent reads
       // the same fact the human table's DEVICE column renders as `all`.
       if let Some(live) = running.get(&r.path) {
-        row["status"] = serde_json::json!({
+        let mut status = serde_json::json!({
           "state": live.state,
           "port": live.port,
           "launch_id": live.launch_id,
           "device": device_selector(live),
         });
+        if let Some(n) = live.name.as_deref() {
+          status["name"] = serde_json::json!(n);
+        }
+        row["status"] = status;
       }
       row
     })
@@ -515,7 +525,10 @@ pub fn status_human(snap: &StatusSnapshot) -> String {
         Some(c) => c.to_string(),
         None => "-".to_string(),
       };
-      let name = r.name();
+      // A user-chosen launch name (from `--name`) is the distinguishing
+      // identifier for a named launch; show it in the NAME column when set,
+      // falling back to the model's display name otherwise.
+      let name = r.name.clone().unwrap_or_else(|| r.name());
       rows.push(vec![
         if tty {
           colors::launch_id(&r.launch_id)
@@ -697,6 +710,9 @@ pub fn status_json(snap: &StatusSnapshot) -> Value {
       obj.insert("model_path".into(), serde_json::json!(r.model_path));
       obj.insert("port".into(), serde_json::json!(r.port));
       obj.insert("mode".into(), serde_json::json!(r.mode));
+      if let Some(n) = r.name.as_deref() {
+        obj.insert("name".into(), serde_json::json!(n));
+      }
       obj.insert("state".into(), serde_json::json!(r.state));
       if let Some(cause) = r.state_cause.as_deref() {
         obj.insert("state_cause".into(), serde_json::json!(cause));
@@ -1433,6 +1449,7 @@ mod tests {
         id: Some(serde_json::json!({"path": "/m/a.gguf", "header_blake3": "deadbeef"})),
         port: 41100,
         mode: "chat".into(),
+        name: None,
         state: "ready".into(),
         state_cause: None,
         pid: Some(123),
@@ -1547,6 +1564,7 @@ mod tests {
       state_cause: None,
       pid: Some(123),
       mode: "chat".into(),
+      name: None,
       ready_at: None,
       params: None,
       latest_rss_bytes: None,

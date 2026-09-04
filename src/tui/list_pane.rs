@@ -98,6 +98,11 @@ pub enum ListRow {
     /// `None` for rows in Favorites / folders / Recent (those
     /// resolve their managed launch by path, if any).
     launch_id: Option<String>,
+    /// User-chosen launch name (from `--name` / `Alt+⏎`), when set. Rendered
+    /// as an `@name` suffix on the display name so the row reads the same
+    /// `<model-id>@<name>` string the `list` table and proxy address it by.
+    /// `None` for unnamed launches and for non-running rows.
+    launch_name: Option<String>,
   },
 }
 
@@ -153,6 +158,9 @@ pub struct RunningLaunchRow {
   /// for the Backend column — the honest resolved value, which can differ from
   /// the catalog prediction under a `--backend` override.
   pub backend: Option<String>,
+  /// User-chosen launch name (from `--name` / `Alt+⏎`), when set. Rendered as
+  /// an `@name` suffix on the row's display name.
+  pub launch_name: Option<String>,
 }
 
 /// Group `models` into:
@@ -233,6 +241,7 @@ pub fn build_rows(inputs: RowInputs<'_>) -> Vec<ListRow> {
         None,
         None,
         backend_for(&m.path),
+        None,
       ));
     }
   }
@@ -275,6 +284,7 @@ pub fn build_rows(inputs: RowInputs<'_>) -> Vec<ListRow> {
         None,
         None,
         backend_for(&m.path),
+        None,
       ));
     }
     // Visual separator between favorites and folder groups —
@@ -304,6 +314,7 @@ pub fn build_rows(inputs: RowInputs<'_>) -> Vec<ListRow> {
         None,
         None,
         backend_for(&m.path),
+        None,
       ));
     }
   }
@@ -321,6 +332,7 @@ fn running_row(m: &DiscoveredModel, launch: &RunningLaunchRow) -> ListRow {
     Some(launch.launch_id.clone()),
     // Running rows show the *resolved* backend, not the catalog prediction.
     launch.backend.clone().unwrap_or_default(),
+    launch.launch_name.clone(),
   );
   // The favorite glyph drops on Running rows so two launches of the
   // same favorited model don't both wear a star — the original star
@@ -354,6 +366,7 @@ fn running_row_stub(launch: &RunningLaunchRow) -> ListRow {
     port: Some(launch.port),
     device: launch.device.clone(),
     launch_id: Some(launch.launch_id.clone()),
+    launch_name: launch.launch_name.clone(),
   }
 }
 
@@ -378,6 +391,7 @@ fn display_name(m: &DiscoveredModel) -> String {
     .unwrap_or_else(|| crate::util::paths::model_display_name(&m.path))
 }
 
+#[allow(clippy::too_many_arguments)] // one arg per column the row renders
 fn model_row(
   m: &DiscoveredModel,
   favorite: bool,
@@ -386,6 +400,7 @@ fn model_row(
   device: Option<String>,
   launch_id: Option<String>,
   backend: String,
+  launch_name: Option<String>,
 ) -> ListRow {
   let (arch, params, quant, native_ctx, mode_hint, cached_weights_bytes) = match &m.metadata {
     Some(md) => (
@@ -426,6 +441,7 @@ fn model_row(
     port,
     device,
     launch_id,
+    launch_name,
   }
 }
 
@@ -1159,6 +1175,7 @@ fn render_row<'a>(
       name,
       favorite,
       state,
+      launch_name,
       ..
     } => {
       // The whole row carries a single semantic foreground via
@@ -1174,7 +1191,17 @@ fn render_row<'a>(
       let fg = row_fg(*state, palette);
       let mut spans: Vec<Span<'a>> = Vec::with_capacity(2 + cols.len() * 2);
       spans.push(marker_span(*state, *favorite, palette));
-      spans.push(Span::raw(cell(name.as_str(), name_w)));
+      // A named launch renders `<name>@<launch-name>` so the row reads the
+      // same addressable string the `list` table and proxy use. The `@name`
+      // suffix is muted so the model name stays the dominant token.
+      match launch_name {
+        Some(n) if !n.is_empty() => {
+          let mut label = name.clone();
+          label.push_str(&format!("@{n}"));
+          spans.push(Span::raw(cell(&label, name_w)));
+        }
+        _ => spans.push(Span::raw(cell(name.as_str(), name_w))),
+      }
       for c in cols {
         spans.push(Span::raw(" "));
         spans.push(Span::raw(cell(&column_value(c.id, row), c.width)));
@@ -1341,6 +1368,7 @@ mod tests {
         state: SurfaceState::Ready,
         device: None,
         backend: None,
+        launch_name: None,
       },
       RunningLaunchRow {
         launch_id: "L1".into(),
@@ -1349,6 +1377,7 @@ mod tests {
         state: SurfaceState::Ready,
         device: None,
         backend: None,
+        launch_name: None,
       },
     ];
     let rows = build_rows(RowInputs {
@@ -1398,6 +1427,7 @@ mod tests {
       state: SurfaceState::Ready,
       device: None,
       backend: Some(crate::backend::DEFAULT_BACKEND_ID.into()),
+      launch_name: None,
     };
     assert_eq!(
       column_value(ColumnId::Device, &running_row(&m, &running)),
@@ -1422,6 +1452,7 @@ mod tests {
       None,
       None,
       crate::backend::DEFAULT_BACKEND_ID.into(),
+      None,
     );
     assert_eq!(column_value(ColumnId::Device, &catalog), dash);
     // A running row on a non-default (device-less) backend stays dash even with
@@ -1450,6 +1481,7 @@ mod tests {
       state: SurfaceState::Ready,
       device: None,
       backend: None,
+      launch_name: None,
     }];
     let recent = vec![a.path.clone(), b.path.clone()];
     let rows = build_rows(RowInputs {
@@ -1631,6 +1663,7 @@ mod tests {
       state: SurfaceState::Ready,
       device: None,
       backend: None,
+      launch_name: None,
     }];
     let rows_with_running = build_rows(RowInputs {
       models: std::slice::from_ref(&a),
@@ -2081,6 +2114,7 @@ mod tests {
       state: SurfaceState::Ready,
       device: None,
       backend: Some("llamacpp".into()),
+      launch_name: None,
     }];
     let rows = build_rows(RowInputs {
       models: &[idle.clone(), run_m.clone()],

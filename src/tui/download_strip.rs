@@ -29,14 +29,52 @@ use crate::tui::hf_dialog::PickerRow;
 pub const ERROR_LINGER: Duration = Duration::from_secs(5);
 
 /// Smoothing factor for the throughput EMA — quick enough to track
-/// real swings without flickering on every chunk.
+/// real swings without flickering between windows.
 const THROUGHPUT_ALPHA: f64 = 0.3;
 
-/// One EMA step for a transfer rate. Shared with the CLI `pull`
-/// progress line so both surfaces smooth the same way.
-pub fn ema_bps(prev_bps: f64, delta_bytes: u64, elapsed: Duration) -> f64 {
-  let secs = elapsed.as_secs_f64().max(1e-6);
-  THROUGHPUT_ALPHA * (delta_bytes as f64 / secs) + (1.0 - THROUGHPUT_ALPHA) * prev_bps
+/// Bytes pile up for at least this long before one EMA step folds.
+/// hf-hub runs eight chunk workers in parallel and several of their
+/// callbacks land in the same microsecond, so folding a step per
+/// callback divides one chunk by a near-zero interval: measured on a
+/// real pull that read a ~2 MiB/s link as 125 MiB/s at p90 and 4.3
+/// GiB/s at peak.
+const RATE_WINDOW: Duration = Duration::from_millis(250);
+
+/// How often a download surface repaints. Fast enough to read as
+/// live, slow enough that a multi-gigabyte pull isn't spending its
+/// time writing escape codes.
+pub const PROGRESS_REPAINT: Duration = Duration::from_millis(100);
+
+/// EMA-smoothed transfer rate, folded once per 250 ms window. Shared
+/// by the TUI download strip, the CLI `pull` line and the init
+/// wizard so all three report the same figure.
+#[derive(Debug, Default, Clone)]
+pub struct RateMeter {
+  bps: f64,
+  pending_bytes: u64,
+  window_start: Option<Instant>,
+}
+
+impl RateMeter {
+  /// Fold in bytes that actually crossed the network. Call with `0`
+  /// to age the meter without new traffic, so a stalled transfer
+  /// decays towards zero instead of freezing on its last reading.
+  pub fn record(&mut self, bytes: u64, now: Instant) {
+    self.pending_bytes = self.pending_bytes.saturating_add(bytes);
+    let start = *self.window_start.get_or_insert(now);
+    let elapsed = now.saturating_duration_since(start);
+    if elapsed < RATE_WINDOW {
+      return;
+    }
+    let instant = self.pending_bytes as f64 / elapsed.as_secs_f64();
+    self.bps = THROUGHPUT_ALPHA * instant + (1.0 - THROUGHPUT_ALPHA) * self.bps;
+    self.pending_bytes = 0;
+    self.window_start = Some(now);
+  }
+
+  pub fn bps(&self) -> f64 {
+    self.bps
+  }
 }
 
 /// Outcome of [`DownloadStripState::cancel_active`] — fold the
@@ -75,8 +113,7 @@ pub struct ActivePull {
   pub friendly_name: String,
   pub bytes_total: u64,
   pub bytes_done: u64,
-  pub throughput_bps: f64,
-  pub last_progress_at: Instant,
+  pub rate: RateMeter,
 }
 
 /// One event the download-task shim fires back over the mpsc.
@@ -88,11 +125,13 @@ pub enum DownloadEvent {
   /// Repo listing + HEAD probes resolved; the strip now knows the
   /// `bytes_total` for the active pull.
   Started { repo_id: String, bytes_total: u64 },
-  /// One chunk landed.
+  /// One chunk landed, or a file completed. `transferred` is the
+  /// slice of `bytes_done`'s growth that actually came off the wire.
   Progress {
     repo_id: String,
     bytes_done: u64,
     bytes_total: u64,
+    transferred: u64,
   },
   /// All files downloaded.
   Finished { repo_id: String },
@@ -172,26 +211,29 @@ impl DownloadStripState {
     }
     active.bytes_total = bytes_total;
     active.bytes_done = 0;
-    active.throughput_bps = 0.0;
-    active.last_progress_at = Instant::now();
+    active.rate = RateMeter::default();
   }
 
-  /// Apply a `Progress` event. Updates `bytes_done` + computes an
-  /// EMA-smoothed throughput.
-  pub fn apply_progress(&mut self, repo_id: &str, bytes_done: u64, bytes_total: u64) {
+  /// Apply a `Progress` event. `transferred` is what crossed the
+  /// network since the previous event — the rate meter takes that
+  /// rather than the jump in `bytes_done`, which also moves when a
+  /// cached file is credited its whole size without a byte arriving.
+  pub fn apply_progress(
+    &mut self,
+    repo_id: &str,
+    bytes_done: u64,
+    bytes_total: u64,
+    transferred: u64,
+  ) {
     let Some(active) = self.active.as_mut() else {
       return;
     };
     if active.repo_id != repo_id {
       return;
     }
-    let now = Instant::now();
-    let elapsed = now.saturating_duration_since(active.last_progress_at);
-    let delta = bytes_done.saturating_sub(active.bytes_done);
-    active.throughput_bps = ema_bps(active.throughput_bps, delta, elapsed);
+    active.rate.record(transferred, Instant::now());
     active.bytes_done = bytes_done;
     active.bytes_total = bytes_total.max(active.bytes_total);
-    active.last_progress_at = now;
   }
 
   /// Apply a `Finished` event. Clears the active slot and returns
@@ -270,8 +312,7 @@ impl DownloadStripState {
       friendly_name: pull.friendly_name.clone(),
       bytes_total: pull.row.size_bytes().unwrap_or(0),
       bytes_done: 0,
-      throughput_bps: 0.0,
-      last_progress_at: Instant::now(),
+      rate: RateMeter::default(),
     });
   }
 }
@@ -295,7 +336,7 @@ pub fn render(
       crate::tui::fmt::format_bytes(active.bytes_done),
       crate::tui::fmt::format_bytes(active.bytes_total)
     );
-    let throughput = crate::tui::fmt::format_rate(active.throughput_bps);
+    let throughput = crate::tui::fmt::format_rate(active.rate.bps());
     let queue_tail = if state.queue.is_empty() {
       String::new()
     } else {
@@ -407,14 +448,63 @@ mod tests {
   }
 
   #[test]
-  fn progress_updates_bytes_and_throughput_within_active_pull() {
+  fn a_burst_of_callbacks_inside_one_window_is_not_read_as_a_faster_link() {
+    // hf-hub's eight chunk workers land several callbacks in the same
+    // microsecond. Folding an EMA step per callback divided a chunk by
+    // a near-zero interval and read a 2 MiB/s link as gigabytes per
+    // second; a window has to close before a step folds.
+    let t0 = Instant::now();
+    let mut burst = RateMeter::default();
+    for i in 0..64 {
+      burst.record(64 * 1024, t0 + Duration::from_micros(i));
+    }
+    assert_eq!(burst.bps(), 0.0, "no window has closed yet");
+
+    // One second of the same traffic: 4 MiB across four windows.
+    let mut meter = RateMeter::default();
+    let mut t = t0;
+    for _ in 0..16 {
+      t += Duration::from_millis(62);
+      meter.record(256 * 1024, t);
+    }
+    let mib = meter.bps() / (1024.0 * 1024.0);
+    assert!(
+      (2.0..6.0).contains(&mib),
+      "~4 MiB/s of traffic should read as single-digit MiB/s, got {mib}"
+    );
+  }
+
+  #[test]
+  fn a_stalled_transfer_decays_instead_of_holding_its_last_reading() {
+    let t0 = Instant::now();
+    let mut meter = RateMeter::default();
+    let mut t = t0;
+    for _ in 0..8 {
+      t += Duration::from_millis(300);
+      meter.record(10 * 1024 * 1024, t);
+    }
+    let moving = meter.bps();
+    assert!(moving > 0.0);
+    for _ in 0..8 {
+      t += Duration::from_millis(300);
+      meter.record(0, t);
+    }
+    assert!(
+      meter.bps() < moving / 10.0,
+      "stalled rate {} should fall well below {moving}",
+      meter.bps()
+    );
+  }
+
+  #[test]
+  fn progress_updates_bytes_within_active_pull() {
     let mut strip = DownloadStripState::default();
     let pull = make_pull("owner/repo", "model.gguf", Some(1_000_000));
     strip.enqueue(pull);
     let promoted = strip.promote_next().unwrap();
     strip.install_active(&promoted);
     strip.apply_started("owner/repo", 1_000_000);
-    strip.apply_progress("owner/repo", 500_000, 1_000_000);
+    strip.apply_progress("owner/repo", 500_000, 1_000_000, 500_000);
     let active = strip.active.as_ref().unwrap();
     assert_eq!(active.bytes_done, 500_000);
     assert_eq!(active.bytes_total, 1_000_000);
@@ -427,7 +517,7 @@ mod tests {
     strip.enqueue(pull);
     let promoted = strip.promote_next().unwrap();
     strip.install_active(&promoted);
-    strip.apply_progress("other/repo", 999_999, 999_999);
+    strip.apply_progress("other/repo", 999_999, 999_999, 999_999);
     assert_eq!(strip.active.as_ref().unwrap().bytes_done, 0);
   }
 
@@ -550,7 +640,7 @@ mod tests {
     assert_eq!(active_before.bytes_total, 0);
     assert_eq!(active_before.bytes_done, 0);
     // First Progress carries the real bytes_total.
-    strip.apply_progress("owner/repo", 250_000, 1_000_000);
+    strip.apply_progress("owner/repo", 250_000, 1_000_000, 250_000);
     let active = strip.active.as_ref().unwrap();
     assert_eq!(active.bytes_done, 250_000);
     assert_eq!(

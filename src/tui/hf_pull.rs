@@ -389,6 +389,15 @@ impl StripProgress {
   fn totals(&self) -> std::sync::MutexGuard<'_, crate::init::download::PullTotals> {
     self.totals.lock().unwrap_or_else(|e| e.into_inner())
   }
+
+  fn push_progress(&self, p: crate::init::download::PullProgress) {
+    self.push(crate::tui::download_strip::DownloadEvent::Progress {
+      repo_id: self.repo_id.clone(),
+      bytes_done: p.bytes_done,
+      bytes_total: p.bytes_total,
+      transferred: p.transferred,
+    });
+  }
 }
 
 impl crate::init::download::DownloadProgress for StripProgress {
@@ -405,21 +414,13 @@ impl crate::init::download::DownloadProgress for StripProgress {
   }
 
   fn on_file_finished(&self, filename: &str, _index: usize, _total: usize) {
-    let (bytes_done, bytes_total) = self.totals().finish_file(filename);
-    self.push(crate::tui::download_strip::DownloadEvent::Progress {
-      repo_id: self.repo_id.clone(),
-      bytes_done,
-      bytes_total,
-    });
+    let step = self.totals().finish_file(filename);
+    self.push_progress(step);
   }
 
   fn on_bytes_progress(&self, _filename: &str, bytes_in_file: u64) {
-    let (bytes_done, bytes_total) = self.totals().credit_bytes(bytes_in_file);
-    self.push(crate::tui::download_strip::DownloadEvent::Progress {
-      repo_id: self.repo_id.clone(),
-      bytes_done,
-      bytes_total,
-    });
+    let step = self.totals().credit_bytes(bytes_in_file);
+    self.push_progress(step);
   }
 }
 
@@ -525,10 +526,11 @@ pub fn apply_download_event(app: &mut App, evt: crate::tui::download_strip::Down
       repo_id,
       bytes_done,
       bytes_total,
+      transferred,
     } => {
       app
         .download_strip
-        .apply_progress(&repo_id, bytes_done, bytes_total);
+        .apply_progress(&repo_id, bytes_done, bytes_total, transferred);
       None
     }
     DownloadEvent::Finished { repo_id } => {
