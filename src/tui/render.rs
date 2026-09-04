@@ -171,6 +171,9 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
   if let Some(dialog) = app.save_preset_dialog.as_ref() {
     super::save_preset_dialog::render(frame, area, app, dialog, &palette);
   }
+  if let Some(dialog) = app.launch_name_dialog.as_ref() {
+    super::launch_name_dialog::render(frame, area, app, dialog, &palette);
+  }
   if app.show_help {
     help_overlay::render(frame, area, app, &palette);
   }
@@ -1260,6 +1263,7 @@ mod tests {
         port: None,
         device: None,
         launch_id: None,
+        launch_name: None,
       }
     }
     let app = App::new(AppOptions::default());

@@ -486,6 +486,40 @@ async fn unknown_model_name_returns_404_model_not_found() {
   shutdown_listener(shutdown, listener_handle).await;
 }
 
+// D2 fail-safe: a model file whose name contains `@` (e.g. `foo@bar.gguf`)
+// must resolve as a plain model reference, not be split into `foo` + `bar.gguf`.
+// The whole reference is tried first; only when it does not resolve do we
+// fall back to the `model@name` split.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn model_file_with_at_in_name_resolves_as_plain_reference() {
+  let dir = unique_temp("at-name");
+  let catalog_path = "/m/foo@bar.gguf";
+  let registry = SupervisorRegistry::new();
+  let (model, _port, _id) = spawn_fake_supervisor(catalog_path, &dir, LaunchMode::Chat).await;
+  let launch_id = registry.next_id();
+  registry.insert(launch_id, model.clone()).await;
+
+  let state = proxy_state_with(
+    vec![discovered(catalog_path, Some("foo@bar"), "qwen3")],
+    registry,
+  )
+  .await;
+  let (addr, shutdown, listener_handle) = spawn_listener_with_state(state).await;
+
+  // Request the full filename (with `@` in it). The D2 fail-safe must treat
+  // the whole string as a model reference, not split it on `@`.
+  let body = r#"{"model":"foo@bar.gguf","messages":[]}"#;
+  let (status, _headers, response) = http_post(addr, "/v1/chat/completions", body, &[]).await;
+  assert_eq!(
+    status, 200,
+    "model file with @ in name must resolve as a plain reference, got {status}: {response:?}"
+  );
+
+  let _ = model.stop(Duration::from_secs(3)).await;
+  shutdown_listener(shutdown, listener_handle).await;
+  std::fs::remove_dir_all(&dir).ok();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ambiguous_substring_returns_400_with_candidates() {
   let registry = SupervisorRegistry::new();

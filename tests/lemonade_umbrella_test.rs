@@ -399,6 +399,7 @@ async fn status_projects_delegated_models_and_stop_unloads_them() {
         // The `L#` `start_delegated_lemonade` would have stamped from the
         // registry counter — the delegated row's sole home for its handle.
         launch_id: Some(LaunchId("L1".to_string())),
+        name: None,
         params: LaunchParams::new(
           PathBuf::from(format!("lemonade://{name}")),
           LaunchMode::Chat,

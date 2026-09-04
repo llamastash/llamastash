@@ -134,6 +134,7 @@ async fn build_view(args: &ShowArgs, cli: &Cli, config: &Config) -> Result<ShowV
       });
       json!({
         "launch_id": m.get("launch_id"),
+        "name": m.get("name"),
         "state": state,
         "port": m.get("port"),
         "resolved_ctx": m.get("resolved_ctx"),
@@ -381,11 +382,17 @@ fn render_human(row: &CatalogRow, shards: &[ShardSize], total_bytes: u64, env: &
       Some(Value::Number(n)) => n.to_string(),
       _ => DASH_PLACEHOLDER.into(),
     };
-    out.push_str(&kv_block(&[
+    let mut running_rows: Vec<(&str, String)> = vec![
       ("state", fmt_field(running.get("state"))),
       ("port", fmt_field(running.get("port"))),
       ("resolved_ctx", resolved),
-    ]));
+    ];
+    // Surface the user-chosen launch name when set — the distinguishing
+    // identifier for a named launch.
+    if let Some(n) = running.get("name").and_then(Value::as_str) {
+      running_rows.push(("name", n.to_string()));
+    }
+    out.push_str(&kv_block(&running_rows));
   }
 
   let backend = env

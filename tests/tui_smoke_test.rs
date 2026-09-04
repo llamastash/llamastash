@@ -884,3 +884,38 @@ fn narrow_terminal_truncates_long_model_names_with_ellipsis() {
     );
   }
 }
+
+#[test]
+fn alt_enter_opens_launch_name_dialog() {
+  let mut app = App::new(AppOptions::default());
+  app.models = vec![fake_model("/m/qwen3.gguf", "/m")];
+  app.go_top();
+
+  // Alt+Enter should open the launch-name dialog.
+  pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::ALT));
+  assert!(
+    app.launch_name_dialog.is_some(),
+    "Alt+Enter must open the launch-name dialog"
+  );
+
+  // Escape should close it.
+  pump_input(&mut app, key(KeyCode::Esc, KeyModifiers::NONE));
+  assert!(
+    app.launch_name_dialog.is_none(),
+    "Escape must close the launch-name dialog"
+  );
+}
+
+#[test]
+fn plain_enter_does_not_open_launch_name_dialog() {
+  let mut app = App::new(AppOptions::default());
+  app.models = vec![fake_model("/m/qwen3.gguf", "/m")];
+  app.go_top();
+
+  // Plain Enter (no Alt) should NOT open the launch-name dialog.
+  pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::NONE));
+  assert!(
+    app.launch_name_dialog.is_none(),
+    "Plain Enter must not open the launch-name dialog"
+  );
+}

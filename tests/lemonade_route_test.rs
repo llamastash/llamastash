@@ -309,6 +309,7 @@ async fn idle_lemonade_model_is_unloaded_but_umbrella_stays_up() {
           launch_id: Some(llamastash::daemon::registry::LaunchId(
             "evict-L1".to_string(),
           )),
+          name: None,
           params: LaunchParams::new(
             PathBuf::from("lemonade://Qwen2.5-0.5B-Instruct"),
             LaunchMode::Chat,

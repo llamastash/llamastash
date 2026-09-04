@@ -160,7 +160,14 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
   let backend = args.backend.as_deref().or(params.backend.as_deref());
   let server = args.server.as_deref().or(params.server.as_deref());
   let payload = build_payload(
-    &row.path, mode, &params, backend, server, selection, args.force,
+    &row.path,
+    mode,
+    &params,
+    backend,
+    server,
+    selection,
+    args.force,
+    args.name.as_deref(),
   );
   let resp = client
     .call("start_model", Some(payload))
@@ -576,6 +583,7 @@ fn parse_cli_knobs(
   Ok((knobs, extras))
 }
 
+#[allow(clippy::too_many_arguments)] // one arg per launch knob the CLI can set
 fn build_payload(
   model_path: &str,
   mode: Option<&str>,
@@ -584,6 +592,7 @@ fn build_payload(
   server: Option<&str>,
   selection: &str,
   force: bool,
+  name: Option<&str>,
 ) -> Value {
   let mut obj = serde_json::Map::new();
   obj.insert(
@@ -594,6 +603,10 @@ fn build_payload(
   // preset's pin, then the model's header hint) decide.
   if let Some(m) = mode {
     obj.insert("mode".into(), Value::String(m.to_string()));
+  }
+  // User-chosen name; the daemon refuses a duplicate per model.
+  if let Some(n) = name {
+    obj.insert("name".into(), Value::String(n.to_string()));
   }
   // Drives whether the daemon applies the model's `default:` preset +
   // last_params inheritance. `default` (no selection) is the common case.
@@ -977,6 +990,7 @@ mod tests {
       None,
       "default",
       false,
+      None,
     );
     assert!(v.get("mode").is_none(), "{v}");
   }
@@ -1019,6 +1033,7 @@ mod tests {
       None,
       "explicit",
       false,
+      None,
     );
     assert_eq!(v["backend"], serde_json::json!("llamacpp"));
     assert_eq!(v["selection"], serde_json::json!("explicit"));
@@ -1034,6 +1049,7 @@ mod tests {
       None,
       "default",
       false,
+      None,
     );
     assert!(v.get("backend_knobs").is_none());
   }
@@ -1078,6 +1094,7 @@ mod tests {
     let model = path.display().to_string();
     let args = StartArgs {
       model: Some(model.clone()),
+      name: None,
       preset: None,
       ctx: None,
       port: None,
@@ -1106,6 +1123,7 @@ mod tests {
     let model = path.display().to_string();
     let args = StartArgs {
       model: Some(model.clone()),
+      name: None,
       preset: None,
       ctx: None,
       port: None,
@@ -1140,6 +1158,7 @@ mod tests {
     std::fs::write(&path, b"gguf").unwrap();
     let args = StartArgs {
       model: Some(path.display().to_string()),
+      name: None,
       preset: None,
       ctx: None,
       port: None,
@@ -1191,6 +1210,7 @@ mod tests {
     };
     let args = StartArgs {
       model: Some(path.display().to_string()),
+      name: None,
       preset: None,
       ctx: None,
       port: None,

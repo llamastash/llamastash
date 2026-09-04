@@ -614,6 +614,7 @@ impl Backend for LemonadeBackend {
     let snapshot_params = exec.params.clone();
     let snapshot_backend = exec.resolved_backend_id.clone();
     let snapshot_launch_id = launch_id.clone();
+    let snapshot_name = exec.name.clone();
     ctx
       .state
       .mutate(move |s| {
@@ -625,6 +626,7 @@ impl Backend for LemonadeBackend {
           port: serving_port,
           started_at,
           launch_id: Some(snapshot_launch_id),
+          name: snapshot_name,
           params: snapshot_params,
           actuals: Default::default(),
           resolved_backend: snapshot_backend,

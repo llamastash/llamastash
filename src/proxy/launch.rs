@@ -93,6 +93,7 @@ pub(crate) async fn auto_start(
   state: &Arc<ProxyState>,
   resolved: &CatalogRow,
   endpoint_mode: Option<LaunchMode>,
+  name: Option<String>,
 ) -> LaunchOutcome {
   // Compute the canonical ModelId from the resolved row. Resolved here rather
   // than from any in-process cache so the single-flight key matches what
@@ -129,9 +130,14 @@ pub(crate) async fn auto_start(
   // Single-flight acquire. Leaders run the launch and stamp the
   // outcome on the slot; followers read the outcome directly when
   // the leader finishes (or wake to `None` on cancellation).
-  match state.coalesce.acquire(model_id.clone()).await {
+  match state
+    .coalesce
+    .acquire((model_id.clone(), name.clone()))
+    .await
+  {
     AcquireOutcome::Leader(leader) => {
-      let outcome = drive_launch_as_leader(state, resolved, &model_id, endpoint_mode).await;
+      let outcome =
+        drive_launch_as_leader(state, resolved, &model_id, endpoint_mode, name.clone()).await;
       // Record outcome against the failure tracker before publishing
       // to followers so a follower that wakes up immediately and asks
       // `over_limit` sees a coherent count.
@@ -164,6 +170,7 @@ async fn drive_launch_as_leader(
   resolved: &CatalogRow,
   model_id: &ModelId,
   endpoint_mode: Option<LaunchMode>,
+  name: Option<String>,
 ) -> LaunchOutcome {
   // A launch for this file may already be underway from another
   // surface — CLI `start`, the TUI, a boot-time restore — and the
@@ -172,12 +179,13 @@ async fn drive_launch_as_leader(
   // which would hold its own weights in VRAM until the idle sweep.
   // Ready is included so a supervisor that came up between `decide`
   // and here is reused too.
-  if let Some(existing) = attach_target(state, model_id).await {
+  if let Some(existing) = attach_target(state, model_id, name.as_deref()).await {
     return await_ready(state, &existing).await;
   }
 
   let params = StartParams {
     model_path: std::path::PathBuf::from(&resolved.path),
+    name,
     mode: resolve_auto_start_mode(
       resolved.mode_hint.as_deref(),
       endpoint_mode,
@@ -222,10 +230,31 @@ async fn drive_launch_as_leader(
 /// holds, then the identical request a second later would forward to
 /// that same supervisor. One supervisor per file is the invariant the
 /// whole proxy routes on.
-async fn attach_target(state: &Arc<ProxyState>, model_id: &ModelId) -> Option<ManagedModel> {
+async fn attach_target(
+  state: &Arc<ProxyState>,
+  model_id: &ModelId,
+  name: Option<&str>,
+) -> Option<ManagedModel> {
+  // When a name is present, only attach to a launch that carries that name.
+  // A differently-named launch of the same model is a distinct target and
+  // must not be reused — the caller will spawn a new one instead.
+  let state_snap = if name.is_some() {
+    Some(state.ctx.state.snapshot().await)
+  } else {
+    None
+  };
   for (_launch_id, model) in state.ctx.supervisors.snapshot().await {
     if model.id().path != model_id.path {
       continue;
+    }
+    if let (Some(n), Some(st)) = (name, &state_snap) {
+      let has_name = st
+        .running
+        .iter()
+        .any(|r| r.port == model.port() && r.name.as_deref() == Some(n));
+      if !has_name {
+        continue;
+      }
     }
     if matches!(
       model.state().await,

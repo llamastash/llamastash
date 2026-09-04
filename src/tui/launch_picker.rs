@@ -170,6 +170,10 @@ pub struct LaunchPickerState {
   /// the default build ([`Self::servers`]`[0]`). Sent verbatim as
   /// [`crate::launch::params::LaunchParams::server`]; seeded from last_params.
   pub selected_server: Option<String>,
+  /// User-chosen launch name (from the `Alt+⏎` "launch as…" dialog), or
+  /// `None` for a plain `⏎` launch. Carried through to `StartModelArgs.name`
+  /// so the launch is addressable as `<model-id>@<name>`.
+  pub launch_name: Option<String>,
   /// Walk cursor over the scoped server's devices — the GPU `Space` toggles.
   /// ←/→ move it; it does **not** itself select. Clamped to the device count
   /// on render; reset to 0 when the scoped server changes.
@@ -254,6 +258,7 @@ impl LaunchPickerState {
       prefer_port: None,
       servers: Vec::new(),
       selected_server: None,
+      launch_name: None,
       device_cursor: 0,
       presets: Vec::new(),
       default_stop: PresetStop::LastUsed,

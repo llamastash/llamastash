@@ -349,6 +349,7 @@ mod lifecycle {
       port,
       started_at: 1_700_000_000,
       launch_id: None,
+      name: None,
       params: LaunchParams::new(snapshot.clone(), LaunchMode::Chat),
       actuals: Default::default(),
       resolved_backend: "vllm".to_string(),

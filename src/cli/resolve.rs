@@ -36,6 +36,10 @@ pub struct RunningRow {
   pub id: Option<Value>,
   pub port: u16,
   pub mode: String,
+  /// User-chosen name for this launch. When set, the launch is
+  /// addressable by `<model-id>@<name>` in `stop`, `logs`, and the
+  /// proxy's `body.model`. `None` for unnamed launches.
+  pub name: Option<String>,
   pub state: String,
   /// Failure cause from the daemon's `ManagedState::Error { cause }`
   /// payload. Surfaced so users (and agents) can see *why* a launch
@@ -400,12 +404,14 @@ fn parse_running_row(v: &Value) -> Option<RunningRow> {
   let preset_count = v.get("preset_count").and_then(Value::as_u64).unwrap_or(0) as u32;
   let preset_default = v.get("default").and_then(Value::as_str).map(str::to_string);
   let backend = v.get("backend").and_then(Value::as_str).map(str::to_string);
+  let name = v.get("name").and_then(Value::as_str).map(str::to_string);
   Some(RunningRow {
     launch_id,
     model_path,
     id,
     port,
     mode,
+    name,
     state,
     state_cause,
     pid,
@@ -489,6 +495,29 @@ pub fn resolve_running(rows: &[RunningRow], reference: &str) -> Result<RunningRo
     .collect();
   if !by_id.is_empty() {
     return single_or_error(by_id, reference);
+  }
+  // `model@name` reference: match a running launch by its user-chosen name.
+  // The model part is matched against the path (same as the fallback below);
+  // the name part must match exactly (case-insensitive).
+  if let Some((model_ref, name_ref)) = needle.split_once('@') {
+    let name_lower = name_ref.to_lowercase();
+    let by_named: Vec<&RunningRow> = rows
+      .iter()
+      .filter(|r| {
+        r.name
+          .as_deref()
+          .map(|n| n.to_lowercase() == name_lower)
+          .unwrap_or(false)
+          && {
+            let path = std::path::Path::new(&r.model_path);
+            let fname = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            let parent = path.parent().and_then(|p| p.to_str()).unwrap_or("");
+            fname.to_lowercase().contains(&model_ref.to_lowercase())
+              || parent.to_lowercase().contains(&model_ref.to_lowercase())
+          }
+      })
+      .collect();
+    return single_or_error(by_named, reference);
   }
   // Fall back to a name / parent-dir substring against the running rows.
   let by_name: Vec<&RunningRow> = rows
@@ -788,6 +817,7 @@ mod tests {
         id: None,
         port: 41100,
         mode: "chat".into(),
+        name: None,
         state: "ready".into(),
         state_cause: None,
         pid: Some(123),
@@ -807,6 +837,7 @@ mod tests {
         id: None,
         port: 41101,
         mode: "chat".into(),
+        name: None,
         state: "ready".into(),
         state_cause: None,
         pid: Some(124),
@@ -833,6 +864,7 @@ mod tests {
       id: None,
       port: 41100,
       mode: "chat".into(),
+      name: None,
       state: "ready".into(),
       state_cause: None,
       pid: None,
@@ -858,6 +890,7 @@ mod tests {
       id: None,
       port,
       mode: "chat".into(),
+      name: None,
       state: "ready".into(),
       state_cause: None,
       pid: Some(1),
