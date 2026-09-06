@@ -317,3 +317,210 @@ makes the manual step worth anything.
   orphan adopter before anything else runs. The `skip_serializing_if` on the new
   field is what keeps an existing row byte-identical; the round-trip test in
   Step 5 is not optional.
+
+## Review — PR #76
+
+Findings from the review passes on
+[#76](https://github.com/llamastash/llamastash/pull/76) against `ca672e5`,
+consolidated from the inline comments and the review bodies. Each item carries
+its fix plan. Tick as landed.
+
+### Parse and name matching (the DRY cluster)
+
+- [ ] **RV1 — `model@name` is parsed twice.** `route::decide` (`src/proxy/route.rs:269`)
+      and `resolve_running` (`src/cli/resolve.rs:502`) each split their own copy,
+      and the copies have drifted on three axes: the empty-name guard, the case
+      rule, and the D2 whole-string-first fail-safe.
+      *Fix:* one `parse_named_reference(&str) -> Option<(&str, &str)>` in
+      `src/launch/resolve.rs`, which both the proxy and the CLI already import.
+      Each caller keeps its own model-half matching (catalog resolve vs the
+      resolver's substring walk); only the split is shared.
+- [ ] **RV2 — both split on the first `@`; D2 says the last.** `foo@bar.gguf@coder`
+      misparses in both copies, and `mo@del@coder` yields the name `del@coder`.
+      *Fix:* `rsplit_once('@')` inside the shared helper from RV1, so D2 is a
+      one-line change in one place.
+- [ ] **RV3 — "does this row carry this name" is written four times with three
+      comparison semantics.** `route::decide`, `proxy::launch::attach_target`, the
+      `compose_and_spawn` gate, and `cli::resolve::resolve_running`.
+      *Fix:* one `launch_carries_name(&RunningSnapshot, launch_id, name)` predicate
+      beside `RunningSnapshot` in `src/daemon/state_store.rs`, called from all four.
+- [ ] **RV4 — the case rule is split-brain, and the split is unrecoverable.** The
+      proxy and the daemon gate compare exactly; the CLI compares lowercased. A
+      request for `@CODER` against a live `coder` auto-starts a second full model
+      load, and once that variant exists the CLI's case-insensitive match makes
+      `stop <model>@coder` return "matches 2 launches", so neither launch is
+      stoppable by name.
+      *Fix:* `eq_ignore_ascii_case` in the shared predicate, which also makes the
+      gate reject `CODER` before the second load. Regression test for both halves.
+- [ ] **RV5 — the port-to-name join is copy-pasted and keys on the wrong field.**
+      `decide` and `attach_target` duplicate it, comments included, and match on
+      `port`, which `src/ipc/status.rs` documents as reused the moment its launch
+      stops.
+      *Fix:* the shared predicate from RV3 keys on `launch_id` (both walks already
+      destructure it); `port` stays only as the fallback for adopted rows whose
+      `launch_id` is `None`.
+- [ ] **RV6 — the gate matches rows in any state, so a launch stuck in `error`
+      keeps its name locked** until it is stopped by hand.
+      *Fix:* the predicate takes a holds-a-name state test; `error` releases the
+      name, `launching`/`loading`/`ready` hold it.
+- [ ] **RV7 — the duplicate-name gate is not atomic.** `ctx.state.snapshot()`
+      (`src/daemon/context.rs:150`) takes the mutex, clones, and releases it; the
+      row is not pushed until `spawn_supervised`. Two concurrent `start --name coder`
+      both pass, and because the port allocator *is* serialized the only symptom is
+      two rows with the same name and no error.
+      *Fix:* reserve the name in the same critical section as the port
+      (`src/daemon/registry.rs:48` already serializes ports), or hold the state lock
+      across check and insert.
+- [ ] **RV8 — `--name ""` is accepted and produces a listed-but-unaddressable id.**
+      `/v1/models` publishes `qwen3@` because the emission loop does not guard the
+      suffix, while `decide` rejects the split on its `!n.is_empty()` guard. The
+      TUI normalizes empty to `None`; the CLI and the daemon do not.
+      *Fix:* trim in `build_payload`, map empty to `None`, and reject a
+      whitespace-only value as a CLI usage error.
+- [ ] **RV9 — an empty model half matches every row.** `stop @coder` hits
+      `"".contains("")`, which is true for all rows, so it silently becomes a
+      cross-model name lookup and fails with an ambiguous error naming unrelated
+      models.
+      *Fix:* guard both halves non-empty in the shared parse; an empty model half
+      falls through to the plain reference path instead of widening the match set.
+
+### Named id emission
+
+- [ ] **RV10 — the named-row block is copy-pasted** between `list_models` and
+      `ollama_tags` (`src/proxy/router.rs:375`, `:454`): same snapshot, same
+      `model_public_id(path, None)`, same `format!("{base_id}@{name}")`, same
+      linear dedup scan.
+      *Fix:* one `named_launch_ids()` helper both handlers dress up in their own
+      row type.
+- [ ] **RV11 — emission bypasses `published_id`, and drops `display_label`.**
+      Two same-named `qwen3.gguf` in different roots publish bare `qwen3@coder`
+      instead of the disambiguated stem, and a request for it then 400s ambiguous on
+      the split. D6 says `published_id_index` stays the single rule for the model
+      half.
+      *Fix:* look the running row's path up in the same `published_ids` index the
+      catalog rows use, and pass the row's display label instead of `None`.
+- [ ] **RV12 — `decide_umbrella_route` never sees the parsed name.** A delegated
+      lemonade launch gets its name stamped and publishes `X@coder`, but a request
+      for that id goes down the umbrella path with the name dropped, so the
+      published address is cosmetic and D4 cannot happen for managed-multiplexer
+      models.
+      *Fix:* thread the name into `decide_umbrella_route` and honor it, or stop
+      emitting named ids for umbrella-sourced rows. Either is fine; publishing an
+      address that does not route is not.
+
+### CLI surface
+
+- [ ] **RV13 — `running_index` keeps one row per path and drops the rest**, so
+      `list` can only ever show one `@name` and `show` matches with `.find()`. The
+      feature's own motivating case, `qwen3@coder` and `qwen3@writer` both running,
+      renders as a single catalog row carrying whichever name won.
+      *Fix:* index becomes `HashMap<String, Vec<RunningRow>>`; `list` and `show`
+      emit one line per live launch of the path.
+- [ ] **RV14 — `list` appends `@name` to the STATUS cell** (`src/cli/output.rs:184`)
+      instead of showing `<model-id>@<name>` whole in the id column as Step 3
+      specifies. The joined string is what a user pastes into a client.
+      *Fix:* join in the id cell; STATUS goes back to what it was.
+- [ ] **RV15 — `status` replaces the model display name with the launch name**
+      (`src/cli/output.rs:529`) and has no MODEL column, so two different models
+      both named `coder` are indistinguishable in the command you reach for to work
+      out what to stop. `status_json` is unaffected.
+      *Fix:* NAME renders `<model>@<name>`, or add a MODEL column and let NAME hold
+      the launch name alone.
+- [ ] **RV16 — the PR body claims commands that do not work.** `stop coder`,
+      `show coder`, and `show <model>@coder` all exit 66: there is no bare-name
+      branch in `resolve_running`, and `show` resolves against the catalog only.
+      *Fix:* accept `model@name` in `show`'s resolve and add D3's unique-bare-name
+      branch to `resolve_running`; if bare-name is deferred, narrow the body to
+      `stop <model>@<name>` / `logs <model>@<name>` / name-aware output.
+- [ ] **RV17 — `start` never reports the name it set** (`src/cli/start.rs:775`);
+      the headline uses `row.name()`, the model name. Step 3 asks for the name, and
+      it is the only confirmation the daemon accepted rather than dropped it.
+      *Fix:* append ` name=<name>` when set.
+- [ ] **RV18 — the duplicate-name refusal does not name the launch that holds the
+      name**, so the user has to run `status` to find what to stop. D3's own wording
+      is `name 'coder' is already running as L3`.
+      *Fix:* include the conflicting `launch_id` in the error text.
+
+### TUI
+
+- [ ] **RV19 — move `LaunchNamed` off the model list onto the launch picker.**
+      Model list: `⏎` opens the picker and that is it, `Alt+⏎` does nothing.
+      Picker: `⏎` launches unnamed as today, `Alt+⏎` asks for the name and launches
+      `<model-id>@<name>`.
+      *Fix:* `LaunchNamed` moves from `FocusSet::LIST` to `FocusSet::RIGHT_PANE`,
+      the list-side handler in `events.rs` goes away, and the dialog's accept path
+      submits against the picker that is already open.
+- [ ] **RV20 — `commit_launch_name` sets `focus` but not `right_tab = Settings` or
+      the scroll reset** that `open_launch_picker` does, so with the right pane on
+      Logs/Chat/Embed/Rerank the staged picker is unreachable and `Action::Submit`
+      no-ops. *Fix:* removed structurally by RV19; if any staging path survives,
+      mirror `open_launch_picker` field for field.
+- [ ] **RV21 — the dialog hint resolves the wrong key, under the wrong focus.** It
+      renders `LaunchNamed` under `Focus::ConfirmPopup` while the action is scoped
+      `FocusSet::LIST`, so the lookup always misses and a user's `keybindings:`
+      override never shows; it also advertises `Alt+⏎` when the field submits on a
+      bare `⏎`.
+      *Fix:* hint text is the Enter label, resolved under the focus the action is
+      actually scoped to.
+- [ ] **RV22 — `ALT_ENTER_LABEL` is a hardcoded `⌥⏎` on every platform**
+      (`src/tui/keybindings.rs:1413`), while `ALT_PREFIX` right above it and
+      `TAB_LABEL`/`SHIFT_TAB_LABEL` all use a `#[cfg(target_os = "macos")]` split.
+      D5 asks for `⌥⏎` on macOS and `Alt+⏎` elsewhere.
+      *Fix:* the same cfg split, or compose it from `ALT_PREFIX` + `ENTER_LABEL` so
+      there is one source of truth.
+- [ ] **RV23 — `LaunchNameDialog::error` is never set to `Some`**, so the field, the
+      spacer row, and the render branch at `launch_name_dialog.rs:114` are dead.
+      *Fix:* wire it to the empty/whitespace validation RV8 needs anyway, or delete
+      it.
+- [ ] **RV24 — `commit_launch_name` takes a `writer` it discards** with
+      `let _ = writer;` (`src/tui/events.rs:1358`). *Fix:* drop the parameter.
+- [ ] **RV25 — the dialog is a structural clone of `save_preset_dialog`** minus one
+      stage. No change now; record the extraction trigger (a third single-field
+      modal) as a `TODO.md` line so the shared frame gets pulled out then.
+
+### Nits
+
+- [ ] **RV26 — `FlightKey` is declared but unused**: `Leader::key` and `acquire`
+      (`src/proxy/coalesce.rs:67`) spell the tuple out. *Fix:* use the alias so the
+      key shape has one name.
+- [ ] **RV27 — adding `name` meant hand-editing ~15 `name: None` literals across 8
+      test modules**; only the `launch_service` tests got a builder.
+      *Fix:* one `RunningSnapshot` test builder used repo-wide, which absorbs the
+      next field addition too.
+
+### Pre-existing, newly likely
+
+- [ ] **RV28 — `build_log_path` collides for two launches of one model**
+      (`src/daemon/launch_service.rs:1793`). The filename is
+      `{stem}-{blake3[0..8]}-{unix_secs}.log` with no launch id, so two launches
+      started in the same wall-clock second open the same file and
+      `logs <model>@<name>` returns both processes interleaved. Observed twice in
+      about five attempts, so timing-dependent rather than always-on.
+      *Fix:* put the launch id in the filename.
+
+### Tests still missing
+
+- [ ] **RV29 — `state.json` byte-identical round-trip for an unnamed row** (Step 5,
+      marked not optional). `RunningSnapshot` gained a field at
+      `src/daemon/state_store.rs:153` and nothing pins that an unnamed row still
+      serializes to the pre-feature bytes.
+- [ ] **RV30 — no test that a name survives a daemon restart through orphan
+      re-adoption.** `orphans.rs:191` clones the whole snapshot so `name` rides
+      along, and that is D1's entire justification, but it is the one load-bearing
+      path with no coverage.
+- [ ] **RV31 — no case-variant regression test**: `@CODER` against a live `coder`
+      must not start a second launch, and `<model>@coder` must stay unambiguous.
+- [ ] **RV32 — no TUI golden snapshots** for the hint, the list pane's `@name`
+      suffix, or the Settings name row.
+
+### Docs
+
+- [ ] **RV33 — `docs/usage.md`**: `start --name`, the `model@name` reference form,
+      the new `status.name` JSON field, the keybinding table entry, and the D7
+      manual pi / opencode step.
+- [ ] **RV34 — `docs/architecture.md`**: naming in the routing section, and that
+      named rows come from the registry while catalog rows come from
+      `published_id_index`.
+- [ ] **RV35 — `CHANGELOG.md`**: one line under `[Unreleased]`.
+- [ ] **RV36 — `TODO.md`**: close the R9 proxy-ambiguity entry, add the high-priority
+      patcher entry from D7, and the RV25 shared-frame note.
