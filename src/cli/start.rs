@@ -31,6 +31,19 @@ use crate::ipc::Client;
 use crate::launch::knobs::{Concept, KnobSet};
 
 pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
+  // A `--name` of only whitespace would trim to nothing and be dropped, leaving a
+  // launch whose owner believes it has an address it does not have. Reject it as
+  // the usage error it is, before doing any work.
+  if args
+    .name
+    .as_deref()
+    .is_some_and(|raw| raw.trim().is_empty())
+  {
+    return Err(CliExit::new(
+      USAGE,
+      "`--name` needs a non-empty name (letters, digits, `-` or `_`)",
+    ));
+  }
   // A launch file supplies both the model reference and the preset, so it
   // replaces the `--preset` → `presets_show` round trip rather than adding a
   // path beside it. Read before the daemon: `load` needs nothing from it, and a
@@ -159,6 +172,14 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
   // An explicit flag beats the preset's pin; the preset beats nothing at all.
   let backend = args.backend.as_deref().or(params.backend.as_deref());
   let server = args.server.as_deref().or(params.server.as_deref());
+  // Trimmed so `--name " coder "` and `--name coder` are one address. The
+  // daemon's uniqueness gate compares stored values, so an untrimmed space would
+  // make `stop <model>@coder` miss a launch the user named `coder`.
+  let launch_name = args
+    .name
+    .as_deref()
+    .map(str::trim)
+    .filter(|n| !n.is_empty());
   let payload = build_payload(
     &row.path,
     mode,
@@ -167,12 +188,18 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
     server,
     selection,
     args.force,
-    args.name.as_deref(),
+    launch_name,
   );
-  let resp = client
+  let mut resp = client
     .call("start_model", Some(payload))
     .await
     .map_err(|e| map_start_error(e, &row))?;
+  // Stamp the accepted name onto the response so both report paths show it. The
+  // daemon refuses a duplicate name outright and whitespace-only is rejected
+  // above, so getting here means the name stuck.
+  if let Some(n) = launch_name {
+    resp["launch_name"] = Value::String(n.to_string());
+  }
   if args.wait {
     return wait_and_emit(
       &mut client,
@@ -730,6 +757,7 @@ fn emit_response(preset: Option<&str>, row: &CatalogRow, resp: &Value, json: boo
   let port = resp.get("port").and_then(Value::as_u64);
   let lid = resp.get("launch_id").and_then(Value::as_str);
   let pid = resp.get("pid").and_then(Value::as_u64);
+  let launch_name = resp.get("launch_name").and_then(Value::as_str);
   if json {
     let mut body = serde_json::json!({
       "name": row.name(),
@@ -739,6 +767,11 @@ fn emit_response(preset: Option<&str>, row: &CatalogRow, resp: &Value, json: boo
       "preset": preset,
       "path": row.path,
     });
+    // `name` is already the model name here, so the launch name gets its own
+    // key. Omitted when unset to keep the shape byte-stable for unnamed launches.
+    if let Some(n) = launch_name {
+      body["launch_name"] = Value::String(n.to_string());
+    }
     // The daemon omits `layer_sources` when empty, so this is absent on a
     // pure-fit launch and present otherwise.
     if let Some(sources) = resp.get("layer_sources") {
@@ -759,7 +792,14 @@ fn emit_response(preset: Option<&str>, row: &CatalogRow, resp: &Value, json: boo
   // semantic value colors so the actionable IDs stand out against the
   // green prose.
   use crate::cli::colors;
-  let head = colors::success(&format!("started {name}{preset_label}", name = row.name()));
+  // The name is shown in the `<model>@<name>` form the launch is now addressable
+  // by, so the success line hands the user the exact string to paste into
+  // `stop` / `logs` / `body.model`.
+  let addressed = match launch_name {
+    Some(n) => format!("{}@{n}", row.name()),
+    None => row.name().to_string(),
+  };
+  let head = colors::success(&format!("started {addressed}{preset_label}"));
   let lid_token = lid
     .map(colors::launch_id)
     .unwrap_or_else(|| colors::dim("?"));

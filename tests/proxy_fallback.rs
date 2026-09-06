@@ -654,6 +654,65 @@ async fn two_named_launches_of_one_model_land_on_different_ports() {
   std::fs::remove_dir_all(&dir).ok();
 }
 
+// ---- RV1/RV4: a case variant of a live name reuses that launch ----
+
+/// The proxy used to match names exactly while the CLI matched them
+/// case-insensitively. One mistyped capitalization therefore missed the live
+/// launch and auto-started a second full copy of the model, after which the CLI's
+/// own matcher saw two rows and refused to stop either by name. A variant must
+/// land on the launch that exists.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn case_variant_of_a_live_name_reuses_that_launch() {
+  let dir = unique_temp("case-variant");
+  let log_dir = dir.join("logs");
+  std::fs::create_dir_all(&log_dir).unwrap();
+
+  let model_path = write_gguf(&dir, "qwen3.gguf", "qwen3");
+  let registry = SupervisorRegistry::new();
+  let (state, ctx) = build_state(
+    vec![discovered(&model_path, Some("qwen3"), Some("qwen3"))],
+    registry,
+    &log_dir,
+    allocate_port_range(),
+  )
+  .await;
+  let (addr, shutdown, listener_handle) = spawn_listener(state).await;
+
+  let (status1, _, _) = http_post(
+    addr,
+    "/v1/chat/completions",
+    r#"{"model":"qwen3@coder","messages":[]}"#,
+  )
+  .await;
+  assert_eq!(status1, 200, "first named launch must succeed");
+  let port1 = ctx.state.snapshot().await.running[0].port;
+
+  let (status2, _, _) = http_post(
+    addr,
+    "/v1/chat/completions",
+    r#"{"model":"qwen3@CODER","messages":[]}"#,
+  )
+  .await;
+  assert_eq!(status2, 200, "case-variant request must be served");
+
+  let snap = ctx.state.snapshot().await;
+  assert_eq!(
+    snap.running.len(),
+    1,
+    "a case variant must reuse the live launch, not load a second copy; got {:?}",
+    snap
+      .running
+      .iter()
+      .map(|r| (r.port, r.name.as_deref()))
+      .collect::<Vec<_>>()
+  );
+  assert_eq!(snap.running[0].port, port1, "must be the same launch");
+
+  stop_all(&ctx, &[]).await;
+  shutdown_listener(shutdown, listener_handle).await;
+  std::fs::remove_dir_all(&dir).ok();
+}
+
 // ---- /v1/models lists named row while live, drops it after stop ----
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

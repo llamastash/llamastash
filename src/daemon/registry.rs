@@ -9,7 +9,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex as TokioMutex, RwLock};
@@ -46,6 +46,16 @@ pub struct SupervisorRegistry {
   /// `collect_in_use_ports` snapshot, both bind-probe the same free
   /// port, and the second spawn's `llama-server` would fail to bind.
   reserved_ports: Arc<TokioMutex<BTreeSet<u16>>>,
+  /// `(model path, lowercased name)` pairs claimed by a spawn that cleared the
+  /// duplicate-name gate but has not stamped its row yet.
+  ///
+  /// The gate reads a `state` snapshot and the row is pushed much later, after
+  /// the child is spawned, so without a claim here two concurrent
+  /// `start --name coder` both pass and the only symptom is two launches sharing
+  /// one address, with no error. Same serialization rationale as
+  /// `reserved_ports`. A plain mutex, not a tokio one: the guard has to release
+  /// on `Drop`, which cannot await.
+  reserved_names: Arc<StdMutex<BTreeSet<(String, String)>>>,
   /// Per-delegated-model state for managed-multiplexer backends
   /// (Lemonade), keyed by registry model name. Delegated models have
   /// no supervisor of their own — the umbrella is the only process —
@@ -156,6 +166,36 @@ impl SupervisorRegistry {
     self.reserved_ports.lock().await.remove(&port);
   }
 
+  /// Claim `(model_path, name)` for the duration of one spawn, or return `None`
+  /// when the name is already claimed (nothing is claimed in that case).
+  ///
+  /// The returned guard releases the claim when it drops, so every early return
+  /// between the gate and the spawn hands the name back without a release
+  /// threaded through each one. Names are stored lowercased because
+  /// [`crate::launch::resolve::name_matches`] compares them that way, so a
+  /// capitalization variant collides instead of starting a second copy.
+  pub fn try_reserve_name(&self, model_path: &str, name: &str) -> Option<NameReservation> {
+    let key = (model_path.to_string(), name.to_lowercase());
+    let mut reserved = self.lock_names();
+    if reserved.contains(&key) {
+      return None;
+    }
+    reserved.insert(key.clone());
+    Some(NameReservation {
+      reserved: self.reserved_names.clone(),
+      key,
+    })
+  }
+
+  /// The reserved-name set, tolerating a poisoned lock: the set holds only
+  /// `String` keys, so a panic elsewhere cannot leave it in a state that matters.
+  fn lock_names(&self) -> std::sync::MutexGuard<'_, BTreeSet<(String, String)>> {
+    self
+      .reserved_names
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+  }
+
   /// Record the state of one delegated (umbrella-served) model.
   pub async fn set_delegated_state(&self, name: &str, state: ManagedState) {
     self.delegated.write().await.insert(name.to_string(), state);
@@ -177,6 +217,21 @@ impl SupervisorRegistry {
   /// recorded state can be honored.
   pub async fn clear_delegated(&self) {
     self.delegated.write().await.clear();
+  }
+}
+
+/// A live claim on one `(model path, name)` while a spawn is in flight.
+/// Releases when dropped.
+pub struct NameReservation {
+  reserved: Arc<StdMutex<BTreeSet<(String, String)>>>,
+  key: (String, String),
+}
+
+impl Drop for NameReservation {
+  fn drop(&mut self) {
+    if let Ok(mut reserved) = self.reserved.lock() {
+      reserved.remove(&self.key);
+    }
   }
 }
 
@@ -230,6 +285,34 @@ mod tests {
     assert!(
       err.contains("external") || err.contains("already in use"),
       "error must name the external-bind failure mode, got: {err}"
+    );
+  }
+
+  /// RV7: the name claim is exclusive while held and comes back when the guard
+  /// drops. Without this, two concurrent `start --name coder` both clear the
+  /// gate, and because the port allocator *is* serialized the only symptom is two
+  /// launches sharing one address and no error.
+  #[test]
+  fn name_claim_is_exclusive_then_released_on_drop() {
+    let r = SupervisorRegistry::new();
+    let claim = r.try_reserve_name("/m/a.gguf", "coder");
+    assert!(claim.is_some(), "first claim on a free name must succeed");
+    assert!(
+      r.try_reserve_name("/m/a.gguf", "coder").is_none(),
+      "a held name must not be claimable twice"
+    );
+    // A capitalization variant is the same name, so it collides too.
+    assert!(
+      r.try_reserve_name("/m/a.gguf", "CODER").is_none(),
+      "case variant must collide"
+    );
+    // Different name, or the same name on another model, are separate claims.
+    assert!(r.try_reserve_name("/m/a.gguf", "reviewer").is_some());
+    assert!(r.try_reserve_name("/m/b.gguf", "coder").is_some());
+    drop(claim);
+    assert!(
+      r.try_reserve_name("/m/a.gguf", "coder").is_some(),
+      "dropping the guard must release the name"
     );
   }
 

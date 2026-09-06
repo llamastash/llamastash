@@ -289,6 +289,30 @@ fn pick_launch_binary(
   }
 }
 
+/// The live launch of `model_path` that already answers to `name`, if any.
+///
+/// Rows whose supervisor has errored are skipped. An errored launch keeps its
+/// `state.json` row until it is stopped, but it is not an addressable target (the
+/// proxy skips it and `stop` reports it as a failed stop), so letting it hold the
+/// name would lock the user out of ever relaunching under the name they chose,
+/// with no way to free it except by launch id.
+fn name_holder<'a>(
+  running: impl IntoIterator<Item = &'a RunningSnapshot>,
+  model_path: &Path,
+  name: &str,
+  errored: &std::collections::BTreeSet<String>,
+) -> Option<&'a RunningSnapshot> {
+  running
+    .into_iter()
+    .filter(|r| r.params.model_path == model_path)
+    .filter(|r| {
+      !r.launch_id
+        .as_ref()
+        .is_some_and(|id| errored.contains(&id.0))
+    })
+    .find(|r| crate::launch::resolve::name_matches(r.name.as_deref(), name))
+}
+
 /// The one launch-composition pipeline, for callers that already have a
 /// parsed [`StartParams`]: the IPC `start_model` handler and the proxy's
 /// auto-start path. Performs validation → arch resolve → port
@@ -311,22 +335,53 @@ pub(crate) async fn compose_and_spawn(
       "set exactly one of `port` (strict) or `prefer_port` (soft preference)",
     ));
   }
-  // A name is unique per model: a second launch of the same model with the
-  // same name is refused so `<model-id>@<name>` stays a stable address.
-  if let Some(name) = parsed.name.as_deref() {
-    let model_path = parsed.model_path.clone();
-    let state_snap = ctx.state.snapshot().await;
-    let dup = state_snap
-      .running
-      .iter()
-      .any(|r| r.params.model_path == model_path && r.name.as_deref() == Some(name));
-    if dup {
-      return Err(ErrorObject::new(
-        ErrorCode::InvalidParams,
-        format!("a launch of this model is already running with name `{name}`"),
-      ));
+  // A name is unique per model: a second launch of the same model with the same
+  // name is refused so `<model-id>@<name>` stays a stable address (D3). The
+  // refusal names the launch holding it, so the user knows what to stop without
+  // running `status` first.
+  //
+  // Two details make this more than a snapshot scan. A launch that already
+  // errored keeps its row until it is stopped but is not an addressable target,
+  // so it must not lock the name forever. And the row is not pushed until
+  // `spawn_supervised`, long after this check, so the claim is taken here and
+  // held by the guard for the rest of the spawn: without it two concurrent
+  // `start --name coder` both pass, and because the port allocator *is*
+  // serialized the only symptom would be two launches sharing one address.
+  let _name_claim = match parsed.name.as_deref() {
+    Some(name) => {
+      let mut errored: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+      for (launch_id, model) in ctx.supervisors.snapshot().await {
+        if matches!(model.state().await, ManagedState::Error { .. }) {
+          errored.insert(launch_id.0);
+        }
+      }
+      let state_snap = ctx.state.snapshot().await;
+      let holder = name_holder(&state_snap.running, &parsed.model_path, name, &errored);
+      if let Some(holder) = holder {
+        let held_as = holder
+          .launch_id
+          .as_ref()
+          .map(|id| id.as_str().to_string())
+          .unwrap_or_else(|| format!("port {}", holder.port));
+        return Err(ErrorObject::new(
+          ErrorCode::InvalidParams,
+          format!("name `{name}` is already running as {held_as}"),
+        ));
+      }
+      Some(
+        ctx
+          .supervisors
+          .try_reserve_name(&parsed.model_path.to_string_lossy(), name)
+          .ok_or_else(|| {
+            ErrorObject::new(
+              ErrorCode::InvalidParams,
+              format!("name `{name}` is already being started for this model"),
+            )
+          })?,
+      )
     }
-  }
+    None => None,
+  };
   let env = ctx.launch.as_ref().ok_or_else(|| {
     ErrorObject::new(
       ErrorCode::InternalError,
@@ -2566,12 +2621,66 @@ mod tests {
     };
     match compose_and_spawn(&ctx, parsed, LaunchOrigin::Manual).await {
       Err(err) => assert!(
-        err.message.contains("already running with name `coder`"),
-        "expected the duplicate-name refusal, got: {}",
+        err
+          .message
+          .contains("name `coder` is already running as L1"),
+        "expected the duplicate-name refusal naming the holder, got: {}",
         err.message
       ),
       Ok(_) => panic!("expected the duplicate-name refusal, got a successful launch"),
     }
+  }
+
+  /// The gate uses the same ASCII-case-insensitive rule as every other name
+  /// comparison. A case-sensitive gate would let `coder` and `Coder` coexist, and
+  /// the proxy (exact match) would then miss one of them and auto-start a second
+  /// full copy of the model.
+  #[tokio::test]
+  async fn case_variant_of_a_live_name_is_refused() {
+    let ctx = MethodContext::new(ShutdownToken::new()).with_state(PersistedState::new(
+      DaemonState {
+        running: vec![named_running("/m/a.gguf", Some("coder"))],
+        ..Default::default()
+      },
+      None,
+    ));
+    let parsed = StartParams {
+      model_path: PathBuf::from("/m/a.gguf"),
+      name: Some("CODER".to_string()),
+      ..Default::default()
+    };
+    match compose_and_spawn(&ctx, parsed, LaunchOrigin::Manual).await {
+      Err(err) => assert!(
+        err.message.contains("is already running as L1"),
+        "expected a case-variant name to collide, got: {}",
+        err.message
+      ),
+      Ok(_) => panic!("expected a case-variant name to collide, got a successful launch"),
+    }
+  }
+
+  /// RV6: an errored launch keeps its row until it is stopped but is not an
+  /// addressable target, so it must not hold the name. Otherwise a failed load
+  /// locks the name permanently and the only escape is stopping by launch id.
+  #[test]
+  fn errored_holder_does_not_lock_the_name() {
+    let running = vec![named_running("/m/a.gguf", Some("coder"))];
+    let errored = std::collections::BTreeSet::from(["L1".to_string()]);
+    assert!(
+      name_holder(&running, Path::new("/m/a.gguf"), "coder", &errored).is_none(),
+      "an errored launch must not hold the name"
+    );
+    // Same rows, nothing errored: the holder is found, so the gate still fires.
+    assert!(
+      name_holder(
+        &running,
+        Path::new("/m/a.gguf"),
+        "coder",
+        &Default::default()
+      )
+      .is_some_and(|r| r.port == 41100),
+      "a live launch must hold the name"
+    );
   }
 
   /// D3 (the other half): the *same* name on a *different* model is not a

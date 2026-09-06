@@ -28,7 +28,9 @@ use hyper::body::{Bytes, Incoming};
 use crate::daemon::supervisor::ManagedState;
 use crate::discovery::DiscoveredModel;
 use crate::gguf::identity::ModelId;
-use crate::launch::resolve::{resolve_model_with_candidates, CatalogRow, ResolveError};
+use crate::launch::resolve::{
+  parse_named_reference, resolve_model_with_candidates, CatalogRow, ResolveError,
+};
 
 use super::launch::{self, LaunchOutcome};
 use super::mru::{pick_fallback, FallbackCandidate};
@@ -266,9 +268,9 @@ pub(crate) async fn decide(state: &Arc<ProxyState>, body_model: Option<String>) 
   let (name, resolved) = match resolve_model_with_candidates(&rows, &requested) {
     Ok(r) => (None, r),
     Err(_) => {
-      let (m, n) = match requested.split_once('@') {
-        Some((m, n)) if !n.is_empty() => (m.to_string(), Some(n.to_string())),
-        _ => (requested.clone(), None),
+      let (m, n) = match parse_named_reference(&requested) {
+        Some((m, n)) => (m.to_string(), Some(n.to_string())),
+        None => (requested.clone(), None),
       };
       let r = match resolve_model_with_candidates(&rows, &m) {
         Ok(r) => r,
@@ -312,17 +314,17 @@ pub(crate) async fn decide(state: &Arc<ProxyState>, body_model: Option<String>) 
   } else {
     None
   };
-  for (_launch_id, model) in sup_snap.into_iter() {
+  for (launch_id, model) in sup_snap.into_iter() {
     if !same_path(&model.id().path, &resolved.path) {
       continue;
     }
     // When a name is present, only a launch with that name is a match.
     if let (Some(n), Some(st)) = (&name, &state_snap) {
-      let has_name = st
+      if !st
         .running
         .iter()
-        .any(|r| r.port == model.port() && r.name.as_deref() == Some(n.as_str()));
-      if !has_name {
+        .any(|r| r.carries_name(Some(&launch_id), model.port(), n))
+      {
         continue;
       }
     }

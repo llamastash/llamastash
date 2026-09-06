@@ -390,6 +390,37 @@ pub fn published_ids_for(catalog: &[CatalogRow], subset: &[CatalogRow]) -> Vec<S
     .collect()
 }
 
+/// Split a `<model>@<name>` launch reference into its two halves.
+///
+/// The one implementation of the split, shared by the proxy's route decision and
+/// the CLI's running-row resolver so the two cannot drift on the separator rule.
+/// Each caller matches the model half its own way (a catalog resolve in the
+/// proxy, a substring walk in the CLI); only the split is common.
+///
+/// Splits on the **last** `@` (plan D2), so a GGUF named `foo@bar.gguf` addressed
+/// as `foo@bar.gguf@coder` keeps its filename in the model half. Returns `None`
+/// when there is no `@` or when either half is empty: `@coder` and `qwen3@` are
+/// not name references, and an empty model half substring-matches every row, so
+/// treating them as one silently widens the match set instead of narrowing it.
+pub fn parse_named_reference(reference: &str) -> Option<(&str, &str)> {
+  let (model, name) = reference.rsplit_once('@')?;
+  if model.is_empty() || name.is_empty() {
+    return None;
+  }
+  Some((model, name))
+}
+
+/// The one comparison rule for launch names.
+///
+/// ASCII-case-insensitive, matching how model references resolve everywhere
+/// else. Case-sensitivity here would make a capitalization variant a *second*
+/// address for the same model: the proxy would miss the live launch and
+/// auto-start another full copy, and the CLI would then match both rows and
+/// refuse to stop either one by name.
+pub fn name_matches(have: Option<&str>, want: &str) -> bool {
+  have.is_some_and(|h| h.eq_ignore_ascii_case(want))
+}
+
 /// Distinguishes the three resolver failure modes the HTTP proxy needs
 /// to surface as distinct HTTP responses (and which the CLI folds
 /// together into a single `MODEL_NOT_FOUND` exit).

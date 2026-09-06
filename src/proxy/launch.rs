@@ -243,16 +243,16 @@ async fn attach_target(
   } else {
     None
   };
-  for (_launch_id, model) in state.ctx.supervisors.snapshot().await {
+  for (launch_id, model) in state.ctx.supervisors.snapshot().await {
     if model.id().path != model_id.path {
       continue;
     }
     if let (Some(n), Some(st)) = (name, &state_snap) {
-      let has_name = st
+      if !st
         .running
         .iter()
-        .any(|r| r.port == model.port() && r.name.as_deref() == Some(n));
-      if !has_name {
+        .any(|r| r.carries_name(Some(&launch_id), model.port(), n))
+      {
         continue;
       }
     }

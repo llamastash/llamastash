@@ -327,7 +327,7 @@ its fix plan. Tick as landed.
 
 ### Parse and name matching (the DRY cluster)
 
-- [ ] **RV1 — `model@name` is parsed twice.** `route::decide` (`src/proxy/route.rs:269`)
+- [x] **RV1 — `model@name` is parsed twice.** `route::decide` (`src/proxy/route.rs:269`)
       and `resolve_running` (`src/cli/resolve.rs:502`) each split their own copy,
       and the copies have drifted on three axes: the empty-name guard, the case
       rule, and the D2 whole-string-first fail-safe.
@@ -335,16 +335,16 @@ its fix plan. Tick as landed.
       `src/launch/resolve.rs`, which both the proxy and the CLI already import.
       Each caller keeps its own model-half matching (catalog resolve vs the
       resolver's substring walk); only the split is shared.
-- [ ] **RV2 — both split on the first `@`; D2 says the last.** `foo@bar.gguf@coder`
+- [x] **RV2 — both split on the first `@`; D2 says the last.** `foo@bar.gguf@coder`
       misparses in both copies, and `mo@del@coder` yields the name `del@coder`.
       *Fix:* `rsplit_once('@')` inside the shared helper from RV1, so D2 is a
       one-line change in one place.
-- [ ] **RV3 — "does this row carry this name" is written four times with three
+- [x] **RV3 — "does this row carry this name" is written four times with three
       comparison semantics.** `route::decide`, `proxy::launch::attach_target`, the
       `compose_and_spawn` gate, and `cli::resolve::resolve_running`.
       *Fix:* one `launch_carries_name(&RunningSnapshot, launch_id, name)` predicate
       beside `RunningSnapshot` in `src/daemon/state_store.rs`, called from all four.
-- [ ] **RV4 — the case rule is split-brain, and the split is unrecoverable.** The
+- [x] **RV4 — the case rule is split-brain, and the split is unrecoverable.** The
       proxy and the daemon gate compare exactly; the CLI compares lowercased. A
       request for `@CODER` against a live `coder` auto-starts a second full model
       load, and once that variant exists the CLI's case-insensitive match makes
@@ -352,18 +352,18 @@ its fix plan. Tick as landed.
       stoppable by name.
       *Fix:* `eq_ignore_ascii_case` in the shared predicate, which also makes the
       gate reject `CODER` before the second load. Regression test for both halves.
-- [ ] **RV5 — the port-to-name join is copy-pasted and keys on the wrong field.**
+- [x] **RV5 — the port-to-name join is copy-pasted and keys on the wrong field.**
       `decide` and `attach_target` duplicate it, comments included, and match on
       `port`, which `src/ipc/status.rs` documents as reused the moment its launch
       stops.
       *Fix:* the shared predicate from RV3 keys on `launch_id` (both walks already
       destructure it); `port` stays only as the fallback for adopted rows whose
       `launch_id` is `None`.
-- [ ] **RV6 — the gate matches rows in any state, so a launch stuck in `error`
+- [x] **RV6 — the gate matches rows in any state, so a launch stuck in `error`
       keeps its name locked** until it is stopped by hand.
       *Fix:* the predicate takes a holds-a-name state test; `error` releases the
       name, `launching`/`loading`/`ready` hold it.
-- [ ] **RV7 — the duplicate-name gate is not atomic.** `ctx.state.snapshot()`
+- [x] **RV7 — the duplicate-name gate is not atomic.** `ctx.state.snapshot()`
       (`src/daemon/context.rs:150`) takes the mutex, clones, and releases it; the
       row is not pushed until `spawn_supervised`. Two concurrent `start --name coder`
       both pass, and because the port allocator *is* serialized the only symptom is
@@ -371,13 +371,13 @@ its fix plan. Tick as landed.
       *Fix:* reserve the name in the same critical section as the port
       (`src/daemon/registry.rs:48` already serializes ports), or hold the state lock
       across check and insert.
-- [ ] **RV8 — `--name ""` is accepted and produces a listed-but-unaddressable id.**
+- [x] **RV8 — `--name ""` is accepted and produces a listed-but-unaddressable id.**
       `/v1/models` publishes `qwen3@` because the emission loop does not guard the
       suffix, while `decide` rejects the split on its `!n.is_empty()` guard. The
       TUI normalizes empty to `None`; the CLI and the daemon do not.
       *Fix:* trim in `build_payload`, map empty to `None`, and reject a
       whitespace-only value as a CLI usage error.
-- [ ] **RV9 — an empty model half matches every row.** `stop @coder` hits
+- [x] **RV9 — an empty model half matches every row.** `stop @coder` hits
       `"".contains("")`, which is true for all rows, so it silently becomes a
       cross-model name lookup and fails with an ambiguous error naming unrelated
       models.
@@ -432,11 +432,11 @@ its fix plan. Tick as landed.
       *Fix:* accept `model@name` in `show`'s resolve and add D3's unique-bare-name
       branch to `resolve_running`; if bare-name is deferred, narrow the body to
       `stop <model>@<name>` / `logs <model>@<name>` / name-aware output.
-- [ ] **RV17 — `start` never reports the name it set** (`src/cli/start.rs:775`);
+- [x] **RV17 — `start` never reports the name it set** (`src/cli/start.rs:775`);
       the headline uses `row.name()`, the model name. Step 3 asks for the name, and
       it is the only confirmation the daemon accepted rather than dropped it.
       *Fix:* append ` name=<name>` when set.
-- [ ] **RV18 — the duplicate-name refusal does not name the launch that holds the
+- [x] **RV18 — the duplicate-name refusal does not name the launch that holds the
       name**, so the user has to run `status` to find what to stop. D3's own wording
       is `name 'coder' is already running as L3`.
       *Fix:* include the conflicting `launch_id` in the error text.
@@ -508,7 +508,7 @@ its fix plan. Tick as landed.
       re-adoption.** `orphans.rs:191` clones the whole snapshot so `name` rides
       along, and that is D1's entire justification, but it is the one load-bearing
       path with no coverage.
-- [ ] **RV31 — no case-variant regression test**: `@CODER` against a live `coder`
+- [x] **RV31 — no case-variant regression test**: `@CODER` against a live `coder`
       must not start a second launch, and `<model>@coder` must stay unambiguous.
 - [ ] **RV32 — no TUI golden snapshots** for the hint, the list pane's `@name`
       suffix, or the Settings name row.

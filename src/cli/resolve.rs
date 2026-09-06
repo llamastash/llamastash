@@ -497,24 +497,21 @@ pub fn resolve_running(rows: &[RunningRow], reference: &str) -> Result<RunningRo
     return single_or_error(by_id, reference);
   }
   // `model@name` reference: match a running launch by its user-chosen name.
-  // The model part is matched against the path (same as the fallback below);
-  // the name part must match exactly (case-insensitive).
-  if let Some((model_ref, name_ref)) = needle.split_once('@') {
-    let name_lower = name_ref.to_lowercase();
+  // The model part is matched against the path (same as the fallback below).
+  // The split is the shared one, so an empty half (`@coder`, `qwen3@`) is not a
+  // name reference at all and falls through to the plain substring walk instead
+  // of matching every row, since `"".contains("")` is true for all of them.
+  if let Some((model_ref, name_ref)) = crate::launch::resolve::parse_named_reference(needle) {
     let by_named: Vec<&RunningRow> = rows
       .iter()
       .filter(|r| {
-        r.name
-          .as_deref()
-          .map(|n| n.to_lowercase() == name_lower)
-          .unwrap_or(false)
-          && {
-            let path = std::path::Path::new(&r.model_path);
-            let fname = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-            let parent = path.parent().and_then(|p| p.to_str()).unwrap_or("");
-            fname.to_lowercase().contains(&model_ref.to_lowercase())
-              || parent.to_lowercase().contains(&model_ref.to_lowercase())
-          }
+        crate::launch::resolve::name_matches(r.name.as_deref(), name_ref) && {
+          let path = std::path::Path::new(&r.model_path);
+          let fname = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+          let parent = path.parent().and_then(|p| p.to_str()).unwrap_or("");
+          fname.to_lowercase().contains(&model_ref.to_lowercase())
+            || parent.to_lowercase().contains(&model_ref.to_lowercase())
+        }
       })
       .collect();
     return single_or_error(by_named, reference);

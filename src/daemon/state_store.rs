@@ -187,6 +187,24 @@ impl RunningSnapshot {
       .as_backend()
       .filter(|b| crate::backend::is_managed_multiplexer(&b.backend))
   }
+
+  /// Is this row the launch `launch_id` (falling back to `port`), and does it
+  /// carry `want` as its name?
+  ///
+  /// The one join behind the proxy's supervisor walk, the auto-start attach
+  /// path, and the daemon's duplicate-name gate, so "does this launch carry this
+  /// name" cannot drift between them. Keyed on `launch_id` because a port is
+  /// reused the moment its launch stops (see `src/ipc/status.rs`), so a port join
+  /// can hand a name to whichever launch later takes the slot. Rows adopted from
+  /// a `state.json` that predates the stamp have no id and fall back to the port,
+  /// the same rule `launch_service::drop_running_snapshots` uses.
+  pub fn carries_name(&self, launch_id: Option<&LaunchId>, port: u16, want: &str) -> bool {
+    let same_launch = match (&self.launch_id, launch_id) {
+      (Some(mine), Some(wanted)) => mine == wanted,
+      _ => self.port == port,
+    };
+    same_launch && crate::launch::resolve::name_matches(self.name.as_deref(), want)
+  }
 }
 
 fn current_schema_version() -> u32 {
