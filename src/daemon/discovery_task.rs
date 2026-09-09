@@ -53,13 +53,17 @@ pub struct DiscoveryOptions {
 impl DiscoveryOptions {
   /// Backends that project HF-repo rows right now.
   fn hf_repo_projectors(&self) -> Vec<crate::backend::Backends> {
-    crate::backend::Backends::all()
+    let mut projectors: Vec<crate::backend::Backends> = crate::backend::Backends::all()
       .into_iter()
       .filter(|b| {
         crate::backend::Backend::projects_hf_repos(b)
           && crate::backend::Backend::enabled_in_config(b, &self.backend, &self.backend_force)
       })
-      .collect()
+      .collect();
+    // Highest priority first, so a merged row's first backend is the auto
+    // default (see `merge_by_path`). Stable, so ties keep registration order.
+    projectors.sort_by_key(|b| std::cmp::Reverse(crate::backend::Backend::launch_priority(b)));
+    projectors
   }
 
   pub fn new(roots: Vec<ScanRoot>) -> Self {
@@ -201,10 +205,11 @@ async fn full_rescan(catalog: &ModelCatalog, opts: &DiscoveryOptions) {
     // shard through the cache's symlinks, which is the costlier half.
     let projected = tokio::task::spawn_blocking(move || {
       let candidates = crate::discovery::hf_repos::enumerate_repos(&roots);
-      projectors
-        .iter()
-        .flat_map(|b| crate::backend::Backend::project_hf_repos(b, &candidates))
-        .collect::<Vec<_>>()
+      merge_by_path(
+        projectors
+          .iter()
+          .flat_map(|b| crate::backend::Backend::project_hf_repos(b, &candidates)),
+      )
     })
     .await
     .unwrap_or_else(|e| {
@@ -215,6 +220,33 @@ async fn full_rescan(catalog: &ModelCatalog, opts: &DiscoveryOptions) {
   }
 
   catalog.replace_all(new_models).await;
+}
+
+/// Fold rows that several backends projected for the **same path** into one
+/// row carrying every backend, in the order the rows arrived.
+///
+/// The catalog is keyed by path, so without this the last projector's row
+/// silently replaced the others and a snapshot two engines could serve
+/// listed only one of them — the delete and launch surfaces then saw a
+/// different engine depending on registration order. Projectors are walked
+/// highest [`crate::backend::Backend::launch_priority`] first, so the first
+/// entry is the auto-route default, the same contract
+/// [`crate::backend::supported_backends_for`] gives a GGUF row.
+fn merge_by_path(rows: impl IntoIterator<Item = DiscoveredModel>) -> Vec<DiscoveredModel> {
+  let mut merged: Vec<DiscoveredModel> = Vec::new();
+  for row in rows {
+    match merged.iter_mut().find(|m| m.path == row.path) {
+      Some(existing) => {
+        for id in row.supported_backends {
+          if !existing.supported_backends.contains(&id) {
+            existing.supported_backends.push(id);
+          }
+        }
+      }
+      None => merged.push(row),
+    }
+  }
+  merged
 }
 
 /// Choose the watcher depth for a scan root based on its provenance.
@@ -264,6 +296,47 @@ mod tests {
       periodic_rescan: Duration::from_secs(1),
       channel_capacity: 16,
     }
+  }
+
+  /// Two engines projecting one snapshot used to yield two rows for one
+  /// path, and the catalog kept only the last: a safetensors repo showed
+  /// whichever backend registered last, never both.
+  #[test]
+  fn rows_two_backends_project_for_one_path_merge_into_one() {
+    let candidate = crate::discovery::hf_repos::HfRepoCandidate {
+      repo_id: "o/n".to_string(),
+      snapshot_path: PathBuf::from("/c/models--o--n/snapshots/rev"),
+      config_summary: None,
+      has_safetensors: true,
+      has_gguf: false,
+    };
+    let other = crate::discovery::hf_repos::HfRepoCandidate {
+      repo_id: "o/m".to_string(),
+      snapshot_path: PathBuf::from("/c/models--o--m/snapshots/rev"),
+      ..candidate.clone()
+    };
+    let rows = [
+      crate::discovery::hf_repos::project_safetensors_row(&candidate, "first"),
+      crate::discovery::hf_repos::project_safetensors_row(&other, "first"),
+      crate::discovery::hf_repos::project_safetensors_row(&candidate, "second"),
+      // A repeat of an id already recorded is not listed twice.
+      crate::discovery::hf_repos::project_safetensors_row(&candidate, "first"),
+    ];
+    let merged = merge_by_path(rows);
+    assert_eq!(merged.len(), 2, "one row per path: {merged:?}");
+    let n = merged
+      .iter()
+      .find(|m| m.path.ends_with("models--o--n/snapshots/rev"))
+      .unwrap();
+    assert_eq!(
+      n.supported_backends,
+      vec!["first".to_string(), "second".to_string()]
+    );
+    let m = merged
+      .iter()
+      .find(|m| m.path.ends_with("models--o--m/snapshots/rev"))
+      .unwrap();
+    assert_eq!(m.supported_backends, vec!["first".to_string()]);
   }
 
   #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
