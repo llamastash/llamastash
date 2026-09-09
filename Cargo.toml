@@ -317,6 +317,19 @@ bench = false
 test = false
 doc = false
 
+# Fake `sglang` launcher for the SGLang backend integration tests — mirrors
+# the slow engine-init window, the single served-model-name, and the
+# `/get_server_info` surface the actuals read. Spawned via
+# `CARGO_BIN_EXE_fake_sglang_server`; injected as
+# `backend.sglang.servers[0].binary` per-test.
+[[bin]]
+name = "fake_sglang_server"
+path = "tests/fixtures/fake_sglang_server.rs"
+required-features = ["test-fixtures"]
+bench = false
+test = false
+doc = false
+
 # Local-only git hooks installed at first `cargo test` (or any
 # build that resolves dev-dependencies). The hook bodies live in
 # `.cargo-husky/hooks/`; pre-commit reformats + lints and pre-push
