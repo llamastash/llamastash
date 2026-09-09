@@ -48,6 +48,40 @@ pub const KNOBS: &[KnobDef] = &[
     volatile: true,
   },
   KnobDef {
+    // The only deterministic bound on the KV pool: set, it overrides whatever
+    // `mem-fraction-static` would have sized. Volatile like its sibling — a
+    // persisted value would turn one preset experiment into a permanent
+    // opt-out of the unified-memory guard.
+    id: "max-total-tokens",
+    flag: None,
+    concept: None,
+    kind: KnobKind::U32 { max: None },
+    auto: None,
+    group: Group::Memory,
+    label: "KV pool tokens",
+    help: "hard cap on tokens in the KV memory pool; overrides the GPU memory fraction",
+    aliases: &[],
+    fallback: crate::launch::params::LayerLabel::ServerDefault,
+    emit: Emit::FlagValue,
+    ring: Ring::None,
+    volatile: true,
+  },
+  KnobDef {
+    id: "enable-unified-memory",
+    flag: None,
+    concept: None,
+    kind: KnobKind::Bool,
+    auto: None,
+    group: Group::Memory,
+    label: "Unified KV pool",
+    help: "one dynamically split pool for hybrid (attention + SWA/Mamba) models instead of static partitions",
+    aliases: &[],
+    fallback: crate::launch::params::LayerLabel::ServerDefault,
+    emit: Emit::BareFlagWhenTrue,
+    ring: Ring::None,
+    volatile: false,
+  },
+  KnobDef {
     id: "max-running-requests",
     flag: None,
     concept: Some(Concept::MaxConcurrency),
@@ -201,6 +235,33 @@ mod tests {
       }
       other => panic!("mem-fraction-static kind must be F32, got {:?}", other),
     }
+  }
+
+  /// The token cap is what the unified-memory guard writes, so it has to be
+  /// an unbounded integer and must not persist past the launch that set it.
+  #[test]
+  fn max_total_tokens_is_an_unbounded_volatile_u32() {
+    let knob = KNOBS
+      .iter()
+      .find(|d| d.id == "max-total-tokens")
+      .expect("max-total-tokens knob must exist in KNOBS");
+    assert!(
+      matches!(knob.kind, KnobKind::U32 { max: None }),
+      "max-total-tokens must be an unbounded U32, got {:?}",
+      knob.kind
+    );
+    assert!(knob.volatile, "max-total-tokens must not persist");
+    assert!(matches!(knob.emit, Emit::FlagValue));
+  }
+
+  #[test]
+  fn enable_unified_memory_is_a_bare_flag() {
+    let knob = KNOBS
+      .iter()
+      .find(|d| d.id == "enable-unified-memory")
+      .expect("enable-unified-memory knob must exist in KNOBS");
+    assert!(matches!(knob.kind, KnobKind::Bool));
+    assert!(matches!(knob.emit, Emit::BareFlagWhenTrue));
   }
 
   /// No knob id must start with "--" — ids are the flag name without dashes.
