@@ -60,6 +60,42 @@ pub(crate) fn is_forbidden_head_ext(head: &str, extra: &[&str]) -> bool {
   is_forbidden_head(head) || head_hits_prefixes(head, extra)
 }
 
+/// `extras` with every forbidden head — base denylist plus `extra` — and its
+/// value removed. Both spellings: `--host 0.0.0.0` drops the following token
+/// too, `--host=0.0.0.0` is one token.
+///
+/// `compose_and_spawn` already refused a banned head with a clear error; this
+/// strip is the belt-and-suspenders a process-spawning backend applies right
+/// before argv so none reaches the launcher even if some path skipped the
+/// fail-fast. Without the value drop, the space-separated form left `0.0.0.0`
+/// dangling in argv, which a launcher reads as a stray positional and refuses
+/// the launch over.
+pub(crate) fn strip_forbidden_extras(
+  extras: &[std::ffi::OsString],
+  extra: &[&str],
+  log_tag: &str,
+) -> Vec<std::ffi::OsString> {
+  let mut out = Vec::with_capacity(extras.len());
+  let mut skip_value = false;
+  for e in extras {
+    let lossy = e.to_string_lossy();
+    if skip_value {
+      skip_value = false;
+      if !lossy.starts_with('-') {
+        continue;
+      }
+    }
+    let head = lossy.split('=').next().unwrap_or(&lossy);
+    if is_forbidden_head_ext(head, extra) {
+      log::warn!("{log_tag}: stripping forbidden extra {head:?}");
+      skip_value = !lossy.contains('=');
+      continue;
+    }
+    out.push(e.clone());
+  }
+  out
+}
+
 fn head_hits_prefixes(head: &str, prefixes: &[&str]) -> bool {
   let lower = head.to_ascii_lowercase();
   prefixes

@@ -589,29 +589,11 @@ fn vllm_argv(params: &LaunchParams, port: u16) -> Vec<std::ffi::OsString> {
     VLLM_FORBIDDEN_EXTRA_HEADS,
   ));
   // The `-- <extras>` tail carries the ~230 flags that have no typed knob.
-  // `compose_and_spawn` already refused a banned head with a clear error;
-  // this strip is the belt-and-suspenders that guarantees none reaches the
-  // launcher even if some path skipped the fail-fast.
-  let mut skip_value = false;
-  for e in &params.extras {
-    let lossy = e.to_string_lossy();
-    // Drop the value token that belonged to a flag we just stripped. Without
-    // this the space-separated form leaves `0.0.0.0` dangling in argv, which
-    // vLLM reads as a stray positional and refuses the launch over.
-    if skip_value {
-      skip_value = false;
-      if !lossy.starts_with('-') {
-        continue;
-      }
-    }
-    let head = lossy.split('=').next().unwrap_or(&lossy);
-    if crate::launch::params::is_forbidden_head_ext(head, VLLM_FORBIDDEN_EXTRA_HEADS) {
-      log::warn!("vllm_argv: stripping forbidden extra {head:?}");
-      skip_value = !lossy.contains('=');
-      continue;
-    }
-    argv.push(e.clone());
-  }
+  argv.extend(crate::launch::params::strip_forbidden_extras(
+    &params.extras,
+    VLLM_FORBIDDEN_EXTRA_HEADS,
+    "vllm_argv",
+  ));
   argv
 }
 
