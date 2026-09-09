@@ -309,6 +309,22 @@ If the daemon has no memory reading yet (right after a restart), it treats the h
 
 **Expected.** Weight load is quick, but engine init (memory profiling plus KV-cache build) took 10-27 s on a 0.5B and runs considerably longer on real models; the readiness deadline scales with model size. Setting `kv_cache_memory_bytes` skips vLLM's memory-profiling pass, which is the slowest part. If it never reaches Ready, check `logs` for the engine's own error — a repo whose architecture vLLM cannot serve fails here, since eligibility only checks that a repo is safetensors-and-no-GGUF.
 
+## SGLang shows as not installed even though it runs
+
+Same cause and fix as vLLM above: detection is a filesystem check for a `sglang` launcher on `PATH` or at `backend.sglang.servers[].binary`, never an exec. Point the config at the absolute path of the console script in its venv, or at a wrapper script.
+
+## SGLang launch is refused with "cannot size the KV pool"
+
+**Symptom:** `start` returns before spawn with a message naming `max-total-tokens`.
+
+**The guard could not read the model's attention geometry.** SGLang has no byte-level KV cap, so on a unified-memory host the launcher converts the byte budget into `--max-total-tokens` using `num_hidden_layers`, `num_key_value_heads` (or `num_attention_heads`) and `head_dim` (or `hidden_size`) from the repo's `config.json`. A config missing those fields — or nested under a key other than `text_config` — cannot be priced, and guessing in the wrong direction is the OOM the guard exists to prevent. Set `max_total_tokens` (or `mem_fraction_static`) yourself for that repo; a preset is the natural place.
+
+## SGLang rejects long requests after a launch
+
+**Symptom:** the row is `ready`, the launch log carries a warning that the KV pool is below the requested context, and requests near `--ctx` fail.
+
+**The token cap came out smaller than `--ctx`.** On a tight host the shared budget divided by a large model's per-token cost can be fewer tokens than the requested window; the launch proceeds with the warning rather than refusing. Raise `max_total_tokens` if the host can take it, or lower `--ctx`.
+
 ## HuggingFace pull
 
 `llamastash pull <owner/repo[:filename.gguf]>` downloads a GGUF into the HuggingFace cache layout the scanner already reads, so the model shows up in `list` / the TUI right after. The TUI's `d` HuggingFace dialog is the interactive face of the same worker. If a download stalls, check network / egress and that the repo + filename resolve on huggingface.co; a failed pull exits `69` (`PULL_FAILED`). The per-file cap is 512 GiB (raised for ds4's single-file DeepSeek-V4 GGUFs).

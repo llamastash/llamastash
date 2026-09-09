@@ -6,6 +6,7 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 ### Added
 
+- **SGLang backend (experimental).** Safetensors HuggingFace repos launch through `sglang serve`, alongside vLLM for the same rows; default-on when a `sglang` launcher resolves, `--sglang` / `LLAMASTASH_SGLANG=1` force it. On unified-memory hosts the KV pool is capped in tokens (`--max-total-tokens`) from the model's attention geometry, since SGLang has no byte-level cap; a repo whose geometry cannot be read is refused with the override named. A repo two safetensors engines can serve is one catalog row listing both. Second half of [#36](https://github.com/llamastash/llamastash/issues/36).
 - `proxy.max_body_size` — cap, in bytes, on every request body the proxy buffers before forwarding. Larger bodies are refused with HTTP 413 `payload_too_large` naming the limit; `0` disables the check (no cap). Closes [#65](https://github.com/llamastash/llamastash/issues/65).
 - `llamastash api-key` — print the proxy's bearer key on stdout, for client configs that resolve a credential by shelling out and for `$(...)` in scripts.
 - `llamastash integrations [tools...]` — patch your AI dev tools' configs without running the whole `init` wizard. Registers every **favorited** model, not just one, and names each the way `/v1/models` publishes it, so GGUF files and safetensors repos both resolve.

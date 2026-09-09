@@ -589,6 +589,42 @@ backend:
     # Sources — CLI: (none) · Env: (none). Config-only.
     cors: true
 
+  # SGLang — serves the same safetensors HuggingFace repos as vLLM, through
+  # `sglang serve`. You supply the launcher; llamastash never installs it.
+  # Zero footprint when it's absent. See docs/sglang-setup.md.
+  sglang:
+    # Tri-state like the other detected backends — leave unset (commented,
+    # the shown default) for auto: on whenever a `sglang` launcher resolves;
+    # `true` to force on; `false` to force off even when present.
+    #
+    # Sources — CLI: daemon start --sglang (force on) ·
+    #           Env: LLAMASTASH_SGLANG=1 (force on).
+    enabled: true
+
+    # The `sglang` console script (single-entry `servers` list). Leave empty
+    # to fall back to a `sglang` found on `$PATH`. Detection is a filesystem
+    # check only, so a container wrapper script works too.
+    #
+    # Sources — CLI: (none) · Env: (none). Config-only.
+    servers:
+      - binary: /usr/local/bin/sglang
+
+    # On a unified-memory host, leaving both memory knobs unset lets
+    # llamastash cap the KV pool — in tokens, because SGLang has no byte
+    # cap: `--max-total-tokens` is derived from the shared byte budget and
+    # the model's KV bytes per token (read from its config.json). Set either
+    # knob and the cap steps aside:
+    #
+    #   presets:
+    #     big-ctx:
+    #       knobs:
+    #         max-total-tokens: 131072      # absolute cap in tokens; wins
+    #         mem-fraction-static: 0.5      # fraction of the whole pool
+    #
+    # Both are volatile, so a preset run applies the value without every
+    # later bare `start` inheriting it. There is no `cors` key: SGLang
+    # allows every origin and exposes no flag to narrow it.
+
 # ─── Keybindings ──────────────────────────────────────────────────
 #
 # Override the default keymap. Each entry maps an action name
