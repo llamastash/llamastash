@@ -159,6 +159,45 @@ pub fn is_sampled(snap: &HostMetricsSnapshot) -> bool {
   snap.gpu_backend != HostMetricsSnapshot::UNINITIALIZED_BACKEND
 }
 
+/// The cache budget a unified-memory guard hands an engine that would
+/// otherwise size its KV pool against the whole pool. Shared by every backend
+/// whose engine has that default, so the three figures cannot drift apart.
+///
+/// Default budget when nothing else bounds it. Generous for a single user
+/// (~85x concurrency at 2k context on a 0.5B) and small enough that the
+/// launch cannot take the host down.
+pub const DEFAULT_KV_CACHE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
+/// Floor for the cap. Below this the cache cannot serve a useful context, so
+/// the launch is refused outright rather than admitted with a token cache that
+/// would only fail after a full weight load.
+pub const MIN_KV_CACHE_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Reserve left free for the OS and everything else after weights + cache.
+pub const UNIFIED_HOST_RESERVE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
+/// The KV cache byte budget for a unified-memory host. **Always a value.**
+///
+/// `None` means **refuse the launch**, not "no opinion". An earlier version
+/// floored the cap instead of refusing, on the theory that the admission gate
+/// would catch the tight case. It cannot: the gate's demand is weights + *this*
+/// figure, so shrinking the figure shrinks the very term the gate evaluates,
+/// and a launch that should have been refused was admitted with the host
+/// reserve silently abandoned. Whoever decides there is not enough memory has
+/// to be whoever holds the number, which is here.
+pub fn unified_kv_cache_budget(free_bytes: u64, weights_bytes: u64) -> Option<u64> {
+  let headroom = free_bytes
+    .saturating_sub(weights_bytes)
+    .saturating_sub(UNIFIED_HOST_RESERVE_BYTES);
+  (headroom >= MIN_KV_CACHE_BYTES).then(|| headroom.min(DEFAULT_KV_CACHE_BYTES))
+}
+
+/// `1.5 GiB`-style label for a refusal message.
+pub fn human_gib(b: u64) -> String {
+  const GIB: f64 = (1024 * 1024 * 1024) as f64;
+  format!("{:.1} GiB", b as f64 / GIB)
+}
+
 /// Parse a byte count that may carry a `K`/`M`/`G` suffix (the spelling a
 /// launcher's own size flags accept), or a plain integer.
 pub fn parse_size_bytes(raw: &str) -> Option<u64> {
@@ -309,6 +348,29 @@ fn mtp_band_bytes(resident_weight_bytes: u64, mtp_active: bool) -> u64 {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  /// The freeze guard. An engine's default sizes the KV cache against the
+  /// pool, which on a UMA host is system RAM — measured at ~106 GB of a
+  /// 121 GB box.
+  #[test]
+  fn unified_budget_leaves_the_host_a_reserve_and_is_never_absent() {
+    const GB: u64 = 1024 * 1024 * 1024;
+    // Plenty free: the default budget applies, not "everything that fits".
+    assert_eq!(unified_kv_cache_budget(113 * GB, GB), Some(8 * GB));
+    // Tight: the cap shrinks to what is left after weights + reserve.
+    assert_eq!(unified_kv_cache_budget(20 * GB, 8 * GB), Some(4 * GB));
+    // Too tight to serve a useful context: refuse. Flooring instead used to
+    // shrink the demand the admission gate evaluates, so the gate could not
+    // fire and the launch went ahead with the host reserve abandoned.
+    assert_eq!(unified_kv_cache_budget(10 * GB, 8 * GB), None);
+    assert_eq!(unified_kv_cache_budget(4 * GB, 8 * GB), None);
+    assert_eq!(unified_kv_cache_budget(0, 0), None);
+    // The exact boundary is admitted, not refused.
+    assert_eq!(
+      unified_kv_cache_budget(8 * GB + MIN_KV_CACHE_BYTES, 0),
+      Some(MIN_KV_CACHE_BYTES)
+    );
+  }
 
   const GIB: u64 = 1024 * 1024 * 1024;
 
