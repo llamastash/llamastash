@@ -7,6 +7,9 @@
 //!
 //! Knob ids follow the shared convention: the flag name without the leading
 //! `--` (e.g. `--context-length` → id "context-length").
+//!
+//! `--served-model-name` is deliberately not a knob: the launcher always sets
+//! it to the repo id, which is what readiness and the chat path match on.
 
 use crate::launch::knobs::def::CTX_LADDER;
 use crate::launch::knobs::{AutoKind, Concept, Emit, Group, KnobDef, KnobKind, Ring, Shape};
@@ -97,35 +100,22 @@ pub const KNOBS: &[KnobDef] = &[
     volatile: false,
   },
   KnobDef {
+    // The registry allows one shape per id across backends, so this mirrors
+    // the other safetensors engine's declaration exactly. SGLang's own list is
+    // longer (0.5.18 argparse `choices`); the identifier shape admits the rest
+    // (`modelopt_fp4`, `w8a8_int8`), and a dashed name such as `auto-round`
+    // goes through extras.
     id: "quantization",
     flag: None,
     concept: None,
     kind: KnobKind::OpenEnum {
-      choices: &[],
+      choices: &["awq", "gptq", "fp8", "bitsandbytes"],
       shape: Shape::Identifier,
     },
     auto: None,
     group: Group::Advanced,
     label: "Quantization",
-    help: "quantization method; free-form string (e.g. modelopt_fp4)",
-    aliases: &[],
-    fallback: crate::launch::params::LayerLabel::ServerDefault,
-    emit: Emit::FlagValue,
-    ring: Ring::None,
-    volatile: false,
-  },
-  KnobDef {
-    id: "served-model-name",
-    flag: None,
-    concept: None,
-    kind: KnobKind::OpenEnum {
-      choices: &[],
-      shape: Shape::Identifier,
-    },
-    auto: None,
-    group: Group::Advanced,
-    label: "Served model name",
-    help: "name this model is served under",
+    help: "quantization method; leave unset to read it from the repo config (e.g. modelopt_fp4)",
     aliases: &[],
     fallback: crate::launch::params::LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
@@ -148,17 +138,55 @@ pub const KNOBS: &[KnobDef] = &[
     volatile: false,
   },
   KnobDef {
+    // Closed sets: both parsers are argparse `choices` in 0.5.18, so a value
+    // outside the list fails at spawn anyway. `auto` detects from the chat
+    // template and is the useful default when the model needs a parser.
     id: "tool-call-parser",
     flag: None,
     concept: None,
-    kind: KnobKind::OpenEnum {
-      choices: &[],
-      shape: Shape::Identifier,
+    kind: KnobKind::Enum {
+      choices: &[
+        "auto",
+        "apertus2509",
+        "cohere_command4",
+        "deepseekv3",
+        "deepseekv31",
+        "deepseekv32",
+        "deepseekv4",
+        "glm",
+        "glm45",
+        "glm47",
+        "gpt-oss",
+        "kimi_k2",
+        "kimi_k3",
+        "lfm2",
+        "llama3",
+        "mimo",
+        "minicpm5",
+        "mistral",
+        "muse",
+        "poolside_v1",
+        "pythonic",
+        "qwen",
+        "qwen25",
+        "qwen3_coder",
+        "step3",
+        "step3p5",
+        "minimax-m2",
+        "minimax-m3",
+        "trinity",
+        "interns1",
+        "hermes",
+        "hunyuan",
+        "gigachat3",
+        "gemma4",
+        "inkling",
+      ],
     },
     auto: None,
     group: Group::Advanced,
     label: "Tool call parser",
-    help: "string (e.g. qwen3_coder)",
+    help: "parser for tool-call output; `auto` detects from the chat template",
     aliases: &[],
     fallback: crate::launch::params::LayerLabel::ServerDefault,
     emit: Emit::FlagValue,
@@ -169,14 +197,41 @@ pub const KNOBS: &[KnobDef] = &[
     id: "reasoning-parser",
     flag: None,
     concept: None,
-    kind: KnobKind::OpenEnum {
-      choices: &[],
-      shape: Shape::Identifier,
+    kind: KnobKind::Enum {
+      choices: &[
+        "auto",
+        "apertus2509",
+        "deepseek-r1",
+        "deepseek-v3",
+        "deepseek-v4",
+        "glm45",
+        "hunyuan",
+        "gpt-oss",
+        "kimi",
+        "kimi_k2",
+        "kimi_k3",
+        "mimo",
+        "muse",
+        "poolside_v1",
+        "qwen3",
+        "qwen3-thinking",
+        "minimax",
+        "minimax-append-think",
+        "minimax-m3",
+        "step3",
+        "step3p5",
+        "mistral",
+        "nemotron_3",
+        "interns1",
+        "gemma4",
+        "inkling",
+        "cohere_command4",
+      ],
     },
     auto: None,
     group: Group::Advanced,
     label: "Reasoning parser",
-    help: "string (e.g. nemotron_3)",
+    help: "parser that splits reasoning from the answer; `auto` detects from the chat template",
     aliases: &[],
     fallback: crate::launch::params::LayerLabel::ServerDefault,
     emit: Emit::FlagValue,

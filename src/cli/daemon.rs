@@ -42,6 +42,7 @@ pub async fn handle(action: DaemonAction, cli: &Cli, config: &Config) -> Result<
       lemonade,
       ds4,
       vllm,
+      sglang,
       force,
     } => {
       handle_start(
@@ -55,6 +56,7 @@ pub async fn handle(action: DaemonAction, cli: &Cli, config: &Config) -> Result<
         lemonade,
         ds4,
         vllm,
+        sglang,
         force,
         cli,
         config,
@@ -108,6 +110,7 @@ async fn handle_start(
   lemonade: bool,
   ds4: bool,
   vllm: bool,
+  sglang: bool,
   force: bool,
   cli: &Cli,
   config: &Config,
@@ -128,6 +131,7 @@ async fn handle_start(
     lemonade,
     ds4,
     vllm,
+    sglang,
     cli,
     config,
   )?;
@@ -558,6 +562,7 @@ pub(crate) fn build_options(
   lemonade_cli: bool,
   ds4_cli: bool,
   vllm_cli: bool,
+  sglang_cli: bool,
   cli: &Cli,
   config: &Config,
 ) -> Result<DaemonOptions> {
@@ -735,6 +740,10 @@ pub(crate) fn build_options(
     (
       crate::backend::vllm::VLLM_BACKEND_ID.to_string(),
       vllm_cli || env_flag_truthy("LLAMASTASH_VLLM"),
+    ),
+    (
+      crate::backend::sglang::SGLANG_BACKEND_ID.to_string(),
+      sglang_cli || env_flag_truthy("LLAMASTASH_SGLANG"),
     ),
   ]
   .into_iter()
@@ -1183,7 +1192,7 @@ mod tests {
       ..Config::default()
     };
     let opts = build_options(
-      None, None, false, false, None, false, false, false, false, &cli, &config,
+      None, None, false, false, None, false, false, false, false, false, &cli, &config,
     )
     .expect("build_options");
     assert_eq!(
@@ -1218,7 +1227,7 @@ mod tests {
       ..Config::default()
     };
     let opts = build_options(
-      None, None, false, false, None, false, false, false, false, &cli, &config,
+      None, None, false, false, None, false, false, false, false, false, &cli, &config,
     )
     .expect("build_options");
     assert_eq!(opts.port_range.start, 50000);
@@ -1248,7 +1257,7 @@ mod tests {
       ..Config::default()
     };
     let opts = build_options(
-      None, None, false, false, None, false, false, false, false, &cli, &config,
+      None, None, false, false, None, false, false, false, false, false, &cli, &config,
     )
     .expect("build_options");
     assert_eq!(opts.idle_timeout, None, "0 disables the idle timer");
@@ -1275,7 +1284,7 @@ mod tests {
       ..Config::default()
     };
     let opts = build_options(
-      None, None, false, false, None, false, false, false, false, &cli, &config,
+      None, None, false, false, None, false, false, false, false, false, &cli, &config,
     )
     .expect("build_options");
     assert_eq!(opts.metrics_interval, Duration::from_secs(60));
@@ -1302,7 +1311,7 @@ mod tests {
       ..Config::default()
     };
     let opts = build_options(
-      None, None, false, false, None, false, false, false, false, &cli, &config,
+      None, None, false, false, None, false, false, false, false, false, &cli, &config,
     )
     .expect("build_options");
     assert_eq!(opts.default_launch_mode, DefaultLaunchMode::Inherited);
@@ -1330,7 +1339,7 @@ mod tests {
     std::env::set_var("LLAMASTASH_DEFAULT_LAUNCH_MODE", "inherited");
     std::env::set_var("LLAMASTASH_STRICT_FIT", "1");
     let opts = build_options(
-      None, None, false, false, None, false, false, false, false, &cli, &config,
+      None, None, false, false, None, false, false, false, false, false, &cli, &config,
     )
     .expect("build_options");
     std::env::remove_var("LLAMASTASH_DEFAULT_LAUNCH_MODE");
@@ -1363,7 +1372,7 @@ mod tests {
         ..Config::default()
       };
       let opts = build_options(
-        None, None, false, false, None, false, false, false, false, &cli, &config,
+        None, None, false, false, None, false, false, false, false, false, &cli, &config,
       )
       .expect("build_options");
       assert_eq!(
@@ -1400,6 +1409,7 @@ mod tests {
       false,
       false,
       false,
+      false,
       &cli,
       &config,
     )
@@ -1420,7 +1430,7 @@ mod tests {
     let cli = parse_cli(&["daemon", "start"]);
     let config = Config::default();
     let opts = build_options(
-      None, None, false, false, None, false, false, false, false, &cli, &config,
+      None, None, false, false, None, false, false, false, false, false, &cli, &config,
     )
     .expect("build_options");
     assert_eq!(opts.proxy.port, None);
@@ -1434,7 +1444,7 @@ mod tests {
     let cli = parse_cli(&["daemon", "start"]);
     let config = Config::default();
     let opts = build_options(
-      None, None, true, false, None, false, false, false, false, &cli, &config,
+      None, None, true, false, None, false, false, false, false, false, &cli, &config,
     )
     .expect("build_options");
     assert!(opts.proxy.ollama_compat);
@@ -1466,6 +1476,7 @@ mod tests {
       false,
       false,
       false,
+      false,
       &cli,
       &config_compat,
     )
@@ -1484,6 +1495,7 @@ mod tests {
       false,
       false,
       false,
+      false,
       &cli,
       &config_off,
     )
@@ -1497,6 +1509,7 @@ mod tests {
       false,
       false,
       None,
+      false,
       false,
       false,
       false,
@@ -1530,6 +1543,7 @@ mod tests {
       false,
       false,
       false,
+      false,
       &cli,
       &config,
     )
@@ -1554,7 +1568,7 @@ mod tests {
       ..Config::default()
     };
     let opts = build_options(
-      None, None, false, false, None, false, false, false, false, &cli, &config,
+      None, None, false, false, None, false, false, false, false, false, &cli, &config,
     )
     .expect("build_options");
     assert_eq!(opts.proxy.host, Some("0.0.0.0".parse().unwrap()));
@@ -1573,6 +1587,7 @@ mod tests {
       false,
       None,
       true,
+      false,
       false,
       false,
       false,
@@ -1599,6 +1614,7 @@ mod tests {
       false,
       false,
       false,
+      false,
       &cli,
       &config_insecure,
     )
@@ -1611,6 +1627,7 @@ mod tests {
       false,
       false,
       None,
+      false,
       false,
       false,
       false,
@@ -1636,6 +1653,7 @@ mod tests {
       false,
       false,
       None,
+      false,
       false,
       false,
       false,
@@ -1684,7 +1702,7 @@ mod tests {
         ..Config::default()
       };
       let opts = build_options(
-        None, None, false, false, None, false, false, false, false, &cli, &config,
+        None, None, false, false, None, false, false, false, false, false, &cli, &config,
       )
       .expect("build_options");
       assert_eq!(
@@ -1823,13 +1841,13 @@ mod tests {
     let config = Config::default();
     // Default is fallback_enabled = true.
     let baseline = build_options(
-      None, None, false, false, None, false, false, false, false, &cli, &config,
+      None, None, false, false, None, false, false, false, false, false, &cli, &config,
     )
     .expect("build_options baseline");
     assert!(baseline.proxy.fallback_enabled);
     // CLI flag forces it off.
     let opts = build_options(
-      None, None, false, true, None, false, false, false, false, &cli, &config,
+      None, None, false, true, None, false, false, false, false, false, &cli, &config,
     )
     .expect("build_options no-fallback");
     assert!(!opts.proxy.fallback_enabled);
@@ -1857,6 +1875,7 @@ mod tests {
       false,
       false,
       false,
+      false,
       &cli,
       &config_off_fallback,
     )
@@ -1875,6 +1894,7 @@ mod tests {
       false,
       false,
       false,
+      false,
       &cli,
       &config_default,
     )
@@ -1888,6 +1908,7 @@ mod tests {
       false,
       false,
       None,
+      false,
       false,
       false,
       false,
@@ -1913,7 +1934,7 @@ mod tests {
     // Default: enablement intent is on (default-on-when-found, like ds4), the
     // config `enabled` stays unset, and no force flag is captured.
     let baseline = build_options(
-      None, None, false, false, None, false, false, false, false, &cli, &config,
+      None, None, false, false, None, false, false, false, false, false, &cli, &config,
     )
     .expect("build_options baseline");
     assert_eq!(baseline.backend.lemonade.enabled, None);
@@ -1922,7 +1943,7 @@ mod tests {
 
     // CLI flag captured as force (overrides a config `enabled: false`).
     let opts_cli = build_options(
-      None, None, false, false, None, false, true, false, false, &cli, &config,
+      None, None, false, false, None, false, true, false, false, false, &cli, &config,
     )
     .expect("build_options lemonade");
     assert!(force(&opts_cli));
@@ -1945,6 +1966,7 @@ mod tests {
       false,
       false,
       None,
+      false,
       false,
       false,
       false,
@@ -2068,7 +2090,7 @@ mod tests {
     let cli = parse_cli(&["--no-scan", "daemon", "start"]);
     let config = Config::default();
     let err = build_options(
-      None, None, false, false, None, false, false, false, false, &cli, &config,
+      None, None, false, false, None, false, false, false, false, false, &cli, &config,
     )
     .expect_err("--no-scan with zero paths must error");
     let msg = format!("{err:#}");
@@ -2084,8 +2106,10 @@ mod tests {
     let cli = parse_cli(&["--no-scan", "--model-path", "/work/keep", "daemon", "start"]);
     let config = Config::default();
     assert!(
-      build_options(None, None, false, false, None, false, false, false, false, &cli, &config)
-        .is_ok(),
+      build_options(
+        None, None, false, false, None, false, false, false, false, false, &cli, &config
+      )
+      .is_ok(),
       "--no-scan + --model-path must build cleanly"
     );
   }
@@ -2099,8 +2123,10 @@ mod tests {
       ..Config::default()
     };
     assert!(
-      build_options(None, None, false, false, None, false, false, false, false, &cli, &config)
-        .is_ok(),
+      build_options(
+        None, None, false, false, None, false, false, false, false, false, &cli, &config
+      )
+      .is_ok(),
       "--no-scan + config model_paths must build cleanly"
     );
   }

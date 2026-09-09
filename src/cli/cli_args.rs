@@ -357,6 +357,13 @@ pub enum DaemonAction {
     /// never installs vLLM (see `docs/vllm-setup.md`).
     #[arg(long)]
     vllm: bool,
+    /// Force-enable the SGLang backend for safetensors HF repos, overriding
+    /// `backend.sglang.enabled: false`. SGLang is otherwise **on by default**
+    /// whenever a `sglang` launcher is found (on `PATH` or via
+    /// `backend.sglang.servers`). OR-ed with `LLAMASTASH_SGLANG=1`. llamastash
+    /// never installs SGLang (see `docs/sglang-setup.md`).
+    #[arg(long)]
+    sglang: bool,
     /// Start the daemon even if an *indicated* backend can't initialize —
     /// the `llama-server` binary isn't found, or the Lemonade umbrella port
     /// is already taken / `lemond` is missing. Without this, `daemon start`
@@ -1908,6 +1915,7 @@ mod tests {
         lemonade,
         ds4,
         vllm,
+        sglang,
         force,
       })) => {
         assert!(!foreground);
@@ -1920,6 +1928,7 @@ mod tests {
         assert!(!lemonade);
         assert!(!ds4);
         assert!(!vllm);
+        assert!(!sglang);
         assert!(!force);
       }
       other => panic!("expected daemon start, got {other:?}"),

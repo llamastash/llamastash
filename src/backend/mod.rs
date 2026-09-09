@@ -73,6 +73,7 @@ use crate::backend::ds4::Ds4Backend;
 use crate::backend::identity::ModelIdentity;
 use crate::backend::lemonade::LemonadeBackend;
 use crate::backend::llama_cpp::LlamaCppBackend;
+use crate::backend::sglang::SglangBackend;
 use crate::backend::vllm::VllmBackend;
 use crate::daemon::context::MethodContext;
 use crate::daemon::probe::ProbeOptions;
@@ -893,6 +894,7 @@ pub struct BackendConfig {
   pub lemonade: crate::backend::lemonade::LemonadeConfig,
   pub ds4: crate::backend::ds4::Ds4Config,
   pub vllm: crate::backend::vllm::VllmConfig,
+  pub sglang: crate::backend::sglang::SglangConfig,
 }
 
 /// Zero-cost, exhaustive dispatch over the available backends.
@@ -911,6 +913,8 @@ pub enum Backends {
   Ds4(Ds4Backend),
   /// vLLM — direct process-per-model for safetensors HF repos.
   Vllm(VllmBackend),
+  /// SGLang — direct process-per-model for safetensors HF repos.
+  Sglang(SglangBackend),
 }
 
 /// Forward a [`Backend`] call to whichever [`Backends`] variant is active.
@@ -928,6 +932,7 @@ macro_rules! for_each_backend {
       Backends::Lemonade($b) => $body,
       Backends::Ds4($b) => $body,
       Backends::Vllm($b) => $body,
+      Backends::Sglang($b) => $body,
     }
   };
 }
@@ -946,6 +951,7 @@ impl Backends {
       Backends::Lemonade(LemonadeBackend::new()),
       Backends::Ds4(Ds4Backend::new()),
       Backends::Vllm(VllmBackend::new()),
+      Backends::Sglang(SglangBackend::new()),
     ]
   }
 }
@@ -1831,7 +1837,7 @@ mod tests {
     // construction (one `all()` line), which is what makes it surface in
     // `status` / `doctor` / `--backend` without editing those sites.
     let ids: Vec<&str> = Backends::all().iter().map(|b| b.id()).collect();
-    assert_eq!(ids, vec!["llamacpp", "lemonade", "ds4", "vllm"]);
+    assert_eq!(ids, vec!["llamacpp", "lemonade", "ds4", "vllm", "sglang"]);
     // Forwarding through the macro reaches each variant's real lifecycle.
     let by_id: std::collections::BTreeMap<&str, Lifecycle> = Backends::all()
       .iter()
@@ -1841,6 +1847,7 @@ mod tests {
     assert_eq!(by_id["lemonade"], Lifecycle::ManagedMultiplexer);
     assert_eq!(by_id["ds4"], Lifecycle::ProcessPerModel);
     assert_eq!(by_id["vllm"], Lifecycle::ProcessPerModel);
+    assert_eq!(by_id["sglang"], Lifecycle::ProcessPerModel);
   }
 
   fn ds4_header() -> GgufHeader {
