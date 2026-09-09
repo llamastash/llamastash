@@ -7,7 +7,6 @@
 //!
 //! Plan: `docs/plans/2026-08-10-001-feat-vllm-backend-plan.md`.
 
-pub mod discovery;
 pub mod knobs;
 
 use std::path::{Path, PathBuf};
@@ -189,7 +188,7 @@ impl Backend for VllmBackend {
     // would fail with EISDIR. The same hook a registry backend uses for its
     // file-less `<scheme>://<name>` paths; here the path is real, it just
     // isn't a single weight file.
-    discovery::is_safetensors_snapshot(path).then(|| self.identify(path, &[]))
+    crate::discovery::hf_repos::is_safetensors_snapshot(path).then(|| self.identify(path, &[]))
   }
 
   fn project_hf_repos(
@@ -198,8 +197,8 @@ impl Backend for VllmBackend {
   ) -> Vec<crate::discovery::DiscoveredModel> {
     candidates
       .iter()
-      .filter(|c| discovery::eligible(c))
-      .map(|c| discovery::project(c, VLLM_BACKEND_ID))
+      .filter(|c| crate::discovery::hf_repos::serves_safetensors_only(c))
+      .map(|c| crate::discovery::hf_repos::project_safetensors_row(c, VLLM_BACKEND_ID))
       .collect()
   }
 
@@ -542,7 +541,7 @@ impl VllmBackend {
 /// path into `/v1/models` and force clients to name it in requests. The repo
 /// id is what the catalog shows, so the proxy, the catalog and vLLM all agree.
 pub fn served_model_name(model_path: &Path) -> String {
-  discovery::repo_id_for_snapshot(model_path)
+  crate::discovery::hf_repos::repo_id_for_snapshot(model_path)
     .or_else(|| {
       model_path
         .file_name()
