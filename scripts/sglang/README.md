@@ -41,7 +41,7 @@ scripts/sglang/uat.sh launch   # or drive one stage at a time
 | `launch` | the token cap reached argv, and `resolved_ctx` came back from `/get_server_info` |
 | `replay` | `last_params` re-applied `--ctx`, and the cap re-resolved |
 | `preset` | a preset's own `max_total_tokens` beat the auto cap (needs an `sglang-small` preset) |
-| `chat` | the repo id serves 200 |
+| `chat` | the repo id serves 200, and an unregistered name does too (SGLang does not validate the field) |
 
 Every accessor selects by the `LaunchId` the stage started, so a later stage
 cannot report an earlier launch's argv as its own result.

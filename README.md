@@ -225,7 +225,7 @@ Full detail per feature in [`FEATURES.md`](FEATURES.md) — including trade-offs
 
 ### [SGLang — safetensors HuggingFace repos (experimental)](docs/sglang-setup.md)
 
-- **⚠️ Experimental** — flag surface verified against SGLang 0.5.18 on a DGX Spark; the unified-memory guard is not yet load-tested on real hardware. Behaviour and config may change.
+- **⚠️ Experimental** — validated against SGLang 0.5.18 on a single DGX Spark (GB10, unified memory); behaviour and config may change.
 - **The same rows vLLM serves.** Safetensors repos launch through `sglang serve`; a GGUF still binds llama.cpp (or ds4). With both engines installed a repo lists both and `auto` picks vLLM — `--backend sglang` selects SGLang.
 - **You install SGLang; LlamaStash drives it.** Default-on when a `sglang` launcher resolves (PATH or `backend.sglang.servers`); force with `--sglang` / `LLAMASTASH_SGLANG=1`, opt out with `backend.sglang.enabled: false`. Zero footprint when absent.
 - **A token cap, not a byte cap, on unified-memory hosts.** SGLang's only deterministic bound on its KV pool is `--max-total-tokens`, so the launcher divides the shared byte budget by the model's KV bytes per token, read from `config.json`. Eight native knobs in the launch picker and presets; `--ctx` maps to `--context-length`.

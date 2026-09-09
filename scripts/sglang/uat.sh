@@ -132,11 +132,13 @@ do_chat() {
     -d "{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":3}")
   [ "$code" = "200" ] || die "repo id returned $code"
   ok "repo id -> 200"
-  # Whether SGLang validates the `model` field is not pinned: report, don't assert.
+  # SGLang 0.5.18 does not validate the `model` field (measured 2026-09-09):
+  # an unregistered name is served, so the proxy needs no alias list here.
   code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$port/v1/chat/completions" \
     -H 'content-type: application/json' \
     -d "{\"model\":\"not-a-served-name\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":3}")
-  echo "  info: an unregistered model name returned $code"
+  [ "$code" = "200" ] || die "an unregistered model name returned $code — SGLang started validating the field; the proxy's resolved names now need aliasing"
+  ok "unregistered name -> 200 (no model-field validation)"
 }
 
 do_stop() { stop_all; $LS daemon stop >/dev/null 2>&1 || true; echo "stopped: RAM=$(ram)M"; }

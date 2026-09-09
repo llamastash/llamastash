@@ -8,11 +8,12 @@ llama.cpp (or ds4), and a safetensors repo binds a safetensors engine.
 LlamaStash never installs SGLang. You supply the launcher; the backend is on by
 default whenever a `sglang` is found, and contributes nothing when it isn't.
 
-> **Experimental.** Flag surface verified against SGLang `0.5.18`
-> (`sglang serve --help` and a live server's `/get_server_info`) on one DGX
-> Spark (GB10) host. The unified-memory guard below is derived from that flag
-> surface and has not yet been load-tested against a real unified host.
-> Behaviour and config may change.
+> **Experimental.** Validated against SGLang `0.5.18` on one DGX Spark (GB10,
+> unified memory): the flag surface from `sglang serve --help`, and a real
+> launch through `scripts/sglang/uat.sh` — the token cap the guard passed came
+> back as the server's resolved pool, with host memory peaking at 22 GiB of
+> 121 GiB where the fraction default would have claimed ~107 GiB. Behaviour
+> and config may change.
 
 ## Install
 
@@ -170,8 +171,10 @@ for a name the server never advertises.
   warning, and requests longer than the pool are rejected by SGLang. Raise
   `max_total_tokens` if you know the host can take it.
 - **The model name is the repo id.** LlamaStash passes `--served-model-name`,
-  so `/v1/models` and your requests use `owner/name`, not the cache path.
-  Unlike vLLM, SGLang takes one served name, so no aliases are registered.
+  so `/v1/models` advertises `owner/name`, not the cache path. SGLang takes
+  one served name and does not validate the `model` field of a request
+  (verified on 0.5.18: an unregistered name is served), so no aliases are
+  registered and any name the proxy resolves reaches the model.
 - **No GGUF on SGLang.** A GGUF binds llama.cpp (or ds4). SGLang claims
   safetensors repos only.
 - **Single-host only.** Tensor parallel across local GPUs is exposed;
@@ -179,6 +182,11 @@ for a name the server never advertises.
 - **The memory admission gate covers SGLang.** The pre-spawn refusal prices
   the weights on disk plus the pool the backend resolved for itself (the token
   cap times the per-token cost, or the fraction of free memory).
+- **The daemon still needs a `llama-server` to launch anything.** The launch
+  environment is built only when the default llama.cpp binary resolves, so a
+  host with SGLang alone cannot launch; point `LLAMASTASH_LLAMA_SERVER` (or
+  `server.binary`) at any `llama-server`. This predates the backend and
+  affects vLLM the same way.
 - **CORS is open and there is no switch.** SGLang's HTTP server allows every
   origin unconditionally (0.5.18) and exposes no flag to narrow it, so there
   is no `cors` config key here. The proxy relays the upstream CORS headers onto
@@ -186,4 +194,6 @@ for a name the server never advertises.
   read completions off the loopback listener.
 - **`resolved_ctx` comes from `/get_server_info`.** SGLang's `/v1/models`
   carries no context field; the backend reads `context_length` off the
-  server-info endpoint instead.
+  server-info endpoint instead. That field is `null` when no
+  `--context-length` was passed, so a launch without `--ctx` shows no
+  resolved window.

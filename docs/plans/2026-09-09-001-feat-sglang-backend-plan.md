@@ -92,10 +92,9 @@ Casebook record: `spark-casebook/casebook/2026-09-09-sglang-memory-levers.md`.
 - Single host. `--tp-size` is allowed through extras; multi-node, data
   parallel and prefill/decode disaggregation are refused.
 - No CORS switch — there is no flag to project.
-- The guard is derived from the flag surface and unit/integration-tested
-  against a fixture. **It has not been load-tested on a real unified host.**
-  `scripts/sglang/uat.sh launch` is the stage that proves it; running it on
-  a DGX Spark is the open item below.
+- The guard is unit/integration-tested against a fixture and was
+  load-tested once on a DGX Spark with the 0.5B (see the UAT record); a large
+  model where the cap lands below `--ctx` is untested.
 
 ## Implementation units
 
@@ -112,6 +111,11 @@ Casebook record: `spark-casebook/casebook/2026-09-09-sglang-memory-levers.md`.
 - [x] Docs: `docs/sglang-setup.md`, usage, architecture, troubleshooting,
       config example, README, CHANGELOG, TODO.
 - [x] `scripts/sglang/{probe.sh,uat.sh}`.
-- [ ] Real-hardware UAT on a DGX Spark: `scripts/sglang/uat.sh all` against
-      a native or containerised SGLang 0.5.18, confirming the token cap holds
-      RSS under the pool and that `/v1/chat/completions` serves.
+- [x] Real-hardware UAT on a DGX Spark (2026-09-09, spark2, containerised
+      0.5.18 behind a wrapper): `--max-total-tokens 699050` came back as
+      `max_total_num_tokens`, host memory peaked at 22 GiB of 121 GiB,
+      `resolved_ctx` read back, chat served, replay re-resolved the cap, stop
+      reaped the container. Record:
+      `spark-casebook/casebook/2026-09-09-llamastash-sglang-token-cap-uat.md`.
+- [ ] A launch whose cap lands below `--ctx` (the warning path) on a large
+      model.
