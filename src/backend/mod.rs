@@ -48,6 +48,7 @@ pub mod identity;
 pub mod lemonade;
 pub mod llama_cpp;
 pub mod server;
+pub mod sglang;
 pub mod vllm;
 
 pub use server::{
