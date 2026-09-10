@@ -46,6 +46,19 @@ pub(crate) struct StartParams {
   /// side rather than trusting the caller — keeps the surface
   /// minimal for CLI/TUI clients.
   pub(crate) model_path: PathBuf,
+  /// User-chosen name for this launch. When set, the launch is
+  /// addressable by `<model-id>@<name>` in `stop`, `logs`, and the
+  /// proxy's `body.model`. A second launch of the same model with the
+  /// same name is refused (the name is unique per model).
+  #[serde(default)]
+  pub(crate) name: Option<String>,
+  /// The preset this launch used, when the caller flattened one client-side
+  /// (`start --preset`, a launch file, the TUI's named preset stop). Sent for
+  /// display only — the params themselves arrive resolved in `knobs`/`extras`.
+  /// Daemon-side resolution (a `<model>@<name>` auto-start address, the
+  /// config `default:` on a no-selection launch) fills in behind it.
+  #[serde(default)]
+  pub(crate) preset: Option<String>,
   #[serde(default)]
   pub(crate) mode: Option<LaunchModeWire>,
   #[serde(default)]
@@ -95,15 +108,6 @@ pub(crate) struct StartParams {
   /// what the proxy's `StartParams::default()` auto-start path sends.
   #[serde(default)]
   pub(crate) selection: LaunchSelection,
-  /// MTP speculative-decoding intent. `None` ⇒ inherit (default preset /
-  /// last_params) or fall to `Auto`; `Some(_)` is an explicit
-  /// `--mtp auto|on|off`. Launch-only, no config-file entry (KD2).
-  #[serde(default)]
-  pub(crate) mtp: Option<crate::launch::params::MtpEnable>,
-  /// Tokens to draft per speculation step. `None` ⇒ inherit, or leave the
-  /// serving backend on its own default.
-  #[serde(default)]
-  pub(crate) mtp_draft_n: Option<u32>,
   /// Launch even when the memory admission gate refuses. Set by
   /// `start --force`; the projection is surfaced as a warning instead. Never
   /// set by the proxy's auto-start path, which must not be able to OOM the
@@ -157,6 +161,11 @@ pub struct StartedLaunch {
   pub(crate) port: u16,
   pub(crate) model: ManagedModel,
   pub(crate) log_path: PathBuf,
+  /// The accepted launch name, as stamped on the running row. Echoed by the
+  /// IPC handler so clients report what the daemon actually accepted rather
+  /// than what they asked for — against a daemon without name support the
+  /// launch correctly reports unnamed. `None` for unnamed launches.
+  pub(crate) name: Option<String>,
   /// Non-fatal advisories surfaced to the caller (CLI human output / TUI toast):
   /// capability-dropped knobs, backend admission/knob-resolution notes, and the
   /// admission-bypass note. Empty on a clean launch.
@@ -187,6 +196,11 @@ pub struct LaunchExec {
   pub(crate) probe: crate::daemon::probe::ProbeOptions,
   pub(crate) id: ModelId,
   pub(crate) identity: ModelIdentity,
+  /// The `L#` this launch will answer to, minted before the log file is named
+  /// so the name is unique per attempt. A launch that never spawns burns its
+  /// id — ids are display handles, and a gap is cheaper than two launches
+  /// writing one log.
+  pub(crate) launch_id: LaunchId,
   pub(crate) log_path: PathBuf,
   pub(crate) mode: LaunchMode,
   pub(crate) origin: crate::daemon::supervisor::LaunchOrigin,
@@ -225,6 +239,14 @@ pub struct LaunchExec {
   pub(crate) warnings: Vec<String>,
   /// The backend id this launch resolved to, stamped on the persisted rows.
   pub(crate) resolved_backend_id: String,
+  /// User-chosen launch name (from `--name`), stamped on the persisted
+  /// `RunningSnapshot` so the launch is addressable as `<model-id>@<name>`.
+  /// `None` for unnamed launches.
+  pub(crate) name: Option<String>,
+  /// The preset this launch resolved (explicit pick or daemon-resolved
+  /// default/address), stamped on the persisted `RunningSnapshot` so the
+  /// running row can answer "what preset is this". `None` when none was.
+  pub(crate) preset: Option<String>,
 }
 
 /// Whether a launch resolves as "pure fit" — skipping the default-preset and
@@ -288,6 +310,52 @@ fn pick_launch_binary(
   }
 }
 
+/// The live launch of `model_path` that already answers to `name`, if any.
+///
+/// Rows whose supervisor has errored are skipped. An errored launch keeps its
+/// `state.json` row until it is stopped, but it is not an addressable target (the
+/// proxy skips it and `stop` reports it as a failed stop), so letting it hold the
+/// name would lock the user out of ever relaunching under the name they chose,
+/// with no way to free it except by launch id.
+fn name_holder<'a>(
+  running: impl IntoIterator<Item = &'a RunningSnapshot>,
+  model_path: &Path,
+  name: &str,
+  errored: &std::collections::BTreeSet<String>,
+) -> Option<&'a RunningSnapshot> {
+  running
+    .into_iter()
+    .filter(|r| r.params.model_path == model_path)
+    .filter(|r| {
+      !r.launch_id
+        .as_ref()
+        .is_some_and(|id| errored.contains(&id.0))
+    })
+    .find(|r| crate::launch::resolve::name_matches(r.name.as_deref(), name))
+}
+
+/// The refusal for `--name` on a managed-multiplexer model, or `None` when the
+/// name is fine.
+///
+/// Such a backend serves every one of its models from one shared umbrella
+/// process, so a second launch under a name is not a second instance and
+/// `<model-id>@<name>` has nothing of its own to route to. Refused rather than
+/// recorded, so a name never reaches `status` or `/v1/models` as an address
+/// that resolves to nothing. Names no backend — the lifecycle does.
+fn multiplexer_refuses_name(identity: &ModelIdentity, name: Option<&str>) -> Option<ErrorObject> {
+  let name = name?;
+  let backend = identity.as_backend()?;
+  crate::backend::is_managed_multiplexer(&backend.backend).then(|| {
+    ErrorObject::new(
+      ErrorCode::InvalidParams,
+      format!(
+        "`{}` serves every model from one shared process, so `{name}` cannot name a separate launch",
+        backend.backend
+      ),
+    )
+  })
+}
+
 /// The one launch-composition pipeline, for callers that already have a
 /// parsed [`StartParams`]: the IPC `start_model` handler and the proxy's
 /// auto-start path. Performs validation → arch resolve → port
@@ -298,7 +366,7 @@ fn pick_launch_binary(
 /// IPC handler can forward it verbatim.
 pub(crate) async fn compose_and_spawn(
   ctx: &MethodContext,
-  parsed: StartParams,
+  mut parsed: StartParams,
   origin: crate::daemon::supervisor::LaunchOrigin,
 ) -> Result<StartedLaunch, ErrorObject> {
   // Pure input-validation lives before the daemon's launch-env
@@ -310,6 +378,71 @@ pub(crate) async fn compose_and_spawn(
       "set exactly one of `port` (strict) or `prefer_port` (soft preference)",
     ));
   }
+  // The name rule is enforced here, not just at the clients: raw JSON-RPC
+  // callers skip the CLI's parser, and a name carrying `@` (or a space)
+  // publishes an address that parses back to a different pair or to none.
+  // Normalizing here also means everything downstream — the uniqueness gate,
+  // the stamp, the snapshot — sees the same trimmed value the clients send.
+  if let Some(name) = parsed.name.as_deref() {
+    parsed.name = Some(
+      crate::launch::resolve::validate_launch_name(name)
+        .map_err(|msg| ErrorObject::new(ErrorCode::InvalidParams, msg))?,
+    );
+  }
+  // One read of the daemon's persisted state for the whole compose. The name
+  // gate, the launch-identity carry-over and the last-used knob layer all key
+  // off it; three separate snapshots meant three full clones and three views
+  // that could disagree with each other. Nothing in `compose_and_spawn` writes
+  // state before those reads — the running row is not pushed until
+  // `spawn_supervised` — so one read is also the accurate one.
+  let state_snap = ctx.state.snapshot().await;
+
+  // A name is unique per model: a second launch of the same model with the same
+  // name is refused so `<model-id>@<name>` stays a stable address (D3). The
+  // refusal names the launch holding it, so the user knows what to stop without
+  // running `status` first.
+  //
+  // Two details make this more than a snapshot scan. A launch that already
+  // errored keeps its row until it is stopped but is not an addressable target,
+  // so it must not lock the name forever. And the row is not pushed until
+  // `spawn_supervised`, long after this check, so the claim is taken here and
+  // held by the guard for the rest of the spawn: without it two concurrent
+  // `start --name coder` both pass, and because the port allocator *is*
+  // serialized the only symptom would be two launches sharing one address.
+  let _name_claim = match parsed.name.as_deref() {
+    Some(name) => {
+      let mut errored: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+      for (launch_id, model) in ctx.supervisors.snapshot().await {
+        if matches!(model.state().await, ManagedState::Error { .. }) {
+          errored.insert(launch_id.0);
+        }
+      }
+      let holder = name_holder(&state_snap.running, &parsed.model_path, name, &errored);
+      if let Some(holder) = holder {
+        let held_as = holder
+          .launch_id
+          .as_ref()
+          .map(|id| id.as_str().to_string())
+          .unwrap_or_else(|| format!("port {}", holder.port));
+        return Err(ErrorObject::new(
+          ErrorCode::InvalidParams,
+          format!("name `{name}` is already running as {held_as}"),
+        ));
+      }
+      Some(
+        ctx
+          .supervisors
+          .try_reserve_name(&parsed.model_path.to_string_lossy(), name)
+          .ok_or_else(|| {
+            ErrorObject::new(
+              ErrorCode::InvalidParams,
+              format!("name `{name}` is already being started for this model"),
+            )
+          })?,
+      )
+    }
+    None => None,
+  };
   let env = ctx.launch.as_ref().ok_or_else(|| {
     ErrorObject::new(
       ErrorCode::InternalError,
@@ -346,6 +479,10 @@ pub(crate) async fn compose_and_spawn(
     },
   )?;
 
+  if let Some(err) = multiplexer_refuses_name(&identity, parsed.name.as_deref()) {
+    return Err(err);
+  }
+
   // Pre-spawn refusal (D-guard): on an auto-routed launch, ask every backend
   // whether it declines this model (e.g. a distributed/split GGUF half a
   // backend recognizes by arch but cannot load alone, wasting a 100 GB+ load).
@@ -380,6 +517,36 @@ pub(crate) async fn compose_and_spawn(
     None
   };
 
+  // A proxy auto-start of `<model>@<name>` resolves its preset by the name in
+  // the address, so an OpenAI-shaped client can pick one — the only channel it
+  // has, since it sends nothing but `body.model`. Scoped to auto-start on
+  // purpose: on `start --name` and in the TUI, `--preset` is already how a
+  // preset gets chosen, and a launch name there stays independent of one.
+  // Compared with `name_matches`, because the address half is
+  // case-insensitive — `@Coder` and `@coder` are one launch, so they must not
+  // resolve different presets.
+  let addressed_preset = match origin {
+    crate::daemon::supervisor::LaunchOrigin::AutoStart => parsed.name.as_deref().and_then(|n| {
+      effective_default.as_ref().and_then(|e| {
+        e.presets
+          .iter()
+          .find(|p| crate::launch::resolve::name_matches(Some(&p.name), n))
+      })
+    }),
+    crate::daemon::supervisor::LaunchOrigin::Manual => None,
+  };
+  // The preset this launch takes its `PresetDefault` layer from: the one the
+  // address named, else the model's configured `default:`.
+  let launch_preset =
+    addressed_preset.or_else(|| effective_default.as_ref().and_then(|e| e.default_preset()));
+  // The preset name stamped on the running row: the caller's explicit pick,
+  // else whatever the daemon itself resolved above. `launch_preset` stays
+  // borrowed below, so take an owned copy here.
+  let launch_preset_name = parsed
+    .preset
+    .clone()
+    .or_else(|| launch_preset.map(|np| np.name.clone()));
+
   // Collapse the launch into one resolution shape. `Auto` (explicit
   // `--preset auto`) and a no-selection launch whose config default is
   // `auto` both mean "pure fit": skip the default-preset and last_params
@@ -393,7 +560,9 @@ pub(crate) async fn compose_and_spawn(
   // self-contained: it must not inherit a stale `last_params`, so `Explicit`
   // skips the `LastUsed` layer just like `Auto`. The inline-flag-only CLI path
   // sends `Default`, so it keeps the `PresetDefault → LastUsed` fallback.
-  let pure_fit = is_pure_fit(parsed.selection, default_is_auto);
+  // A preset named by the address is an explicit choice, so it outranks a
+  // `default: auto` that would otherwise launch this model pure-fit.
+  let pure_fit = is_pure_fit(parsed.selection, default_is_auto) && addressed_preset.is_none();
   let no_selection = is_default_sel && !pure_fit;
 
   // Mode resolution, in precedence order: the caller's explicit choice > the
@@ -416,10 +585,7 @@ pub(crate) async fn compose_and_spawn(
     .map(LaunchMode::from)
     .or_else(|| {
       if no_selection {
-        effective_default
-          .as_ref()
-          .and_then(|e| e.default_preset())
-          .map(|np| np.params.mode)
+        launch_preset.map(|np| np.params.mode)
       } else {
         None
       }
@@ -529,7 +695,7 @@ pub(crate) async fn compose_and_spawn(
   // which needs this) — but the recorded server id names its own backend, so
   // there is nothing to contaminate.
   let identity_default = if matches!(parsed.selection, LaunchSelection::Default) {
-    inherited_launch_identity(ctx, &parsed, &identity, arch.as_deref()).await
+    inherited_launch_identity(&state_snap, &identity, launch_preset)
   } else {
     InheritedIdentity::default()
   };
@@ -589,14 +755,9 @@ pub(crate) async fn compose_and_spawn(
 
   // The model's last successful launch params + the backend it resolved to.
   // Cloned once here and reused for the last-used knob layer below.
-  let last_params_entry = {
-    let snap = ctx.state.snapshot().await;
-    snap
-      .last_params
-      .iter()
-      .find(|e| e.id == identity)
-      .map(|e| (e.params.clone(), e.resolved_backend.clone()))
-  };
+  let last_params_entry = state_snap
+    .last_params_for(&identity)
+    .map(|e| (e.params.clone(), e.resolved_backend.clone()));
   // D-contamination: the implicit LastUsed layer + extras inheritance apply
   // only when the stored launch resolved to the *same* backend, so llama.cpp
   // extras (`--rope-freq-base …`) saved before ds4 existed can't poison a ds4
@@ -622,9 +783,7 @@ pub(crate) async fn compose_and_spawn(
   launch_params.extras = if !parsed.extras.is_empty() {
     parsed.extras.iter().cloned().map(OsString::from).collect()
   } else if no_selection {
-    effective_default
-      .as_ref()
-      .and_then(|e| e.default_preset())
+    launch_preset
       .map(|np| np.params.extras.clone())
       .filter(|e| !e.is_empty())
       .or_else(|| last_params.as_ref().map(|p| p.extras.clone()))
@@ -657,35 +816,10 @@ pub(crate) async fn compose_and_spawn(
       crate::discovery::scanner::find_mmproj(&parsed.model_path)
     }
   });
-  // MTP intent — same whole-value inheritance as extras: an
-  // explicit `--mtp` / `--mtp-draft-n` wins verbatim; else a no-selection
-  // launch inherits the default preset's value, then last_params'; else the
-  // `MtpEnable::Auto` default. Launch-only, no config-file entry (KD2). The
-  // effective *directive* (what argv to emit) is resolved below, once real
-  // capability is known.
-  launch_params.mtp = parsed.mtp.unwrap_or_else(|| {
-    if no_selection {
-      effective_default
-        .as_ref()
-        .and_then(|e| e.default_preset())
-        .map(|np| np.params.mtp)
-        .or_else(|| last_params.as_ref().map(|p| p.mtp))
-        .unwrap_or_default()
-    } else {
-      crate::launch::params::MtpEnable::default()
-    }
-  });
-  launch_params.mtp_draft_n = parsed.mtp_draft_n.or_else(|| {
-    if no_selection {
-      effective_default
-        .as_ref()
-        .and_then(|e| e.default_preset())
-        .and_then(|np| np.params.mtp_draft_n)
-        .or_else(|| last_params.as_ref().and_then(|p| p.mtp_draft_n))
-    } else {
-      None
-    }
-  });
+  // MTP intent needs no typed pass here: `mtp` / `mtp-draft-n` are knobs, so
+  // the resolver chain below (User > PresetDefault > LastUsed > ArchDefault)
+  // inherits them exactly like every other knob, and the effective
+  // *directive* is resolved further down, once real capability is known.
 
   // Merge the caller's top-level `ctx` and `reasoning` into the
   // User-layer typed knobs so they participate in the resolver chain
@@ -723,10 +857,7 @@ pub(crate) async fn compose_and_spawn(
   // via `preset_body_from_launch_params` so the preset's `ctx`/`reasoning`
   // (held as `LaunchParams` siblings) fold back into the knob set.
   let default_preset_knobs = if no_selection {
-    effective_default
-      .as_ref()
-      .and_then(|e| e.default_preset())
-      .map(|np| crate::launch::presets::preset_body_from_launch_params(&np.params).knobs)
+    launch_preset.map(|np| crate::launch::presets::preset_body_from_launch_params(&np.params).knobs)
   } else {
     None
   };
@@ -832,8 +963,9 @@ pub(crate) async fn compose_and_spawn(
     ));
   }
 
-  // Per-launch log file under cache_dir/logs/<short-id>-<ts>.log.
-  let log_path = build_log_path(&env.log_dir, &id);
+  // Per-launch log file under cache_dir/logs/<stem>-<short-id>-<L#>-<ts>.log.
+  let launch_id = ctx.supervisors.next_id();
+  let log_path = build_log_path(&env.log_dir, &id, &launch_id);
 
   // The one weight figure this launch is priced against: what it holds
   // resident. Feeds the probe budget (so a slow load of a large multipart GGUF
@@ -859,6 +991,11 @@ pub(crate) async fn compose_and_spawn(
     &servers_snapshot[..],
     &env.binary,
   );
+  // Facts about the *binary* this launch resolved, which only its own backend
+  // can interpret — a flag whose spelling differs between builds of the same
+  // engine. Runs here because the binary is not known until `pick_launch_binary`
+  // returns, and it must land before `compose` reads `launch_config`.
+  inference_backend.seed_binary_caps(&launch_binary, &servers_snapshot[..], &mut launch_params);
   drop(servers_snapshot);
 
   // `inference_backend` was resolved up front (before the last_params gate).
@@ -894,23 +1031,16 @@ pub(crate) async fn compose_and_spawn(
   // embedding / rerank launch never speculates. And the backend defers entirely
   // when the user is already hand-driving speculation through extras (KD3) —
   // asked, not matched here, so the resolution names no backend or flag.
-  // Fold the resolved knob into the typed sibling the backends compose from.
-  // `parsed.mtp_draft_n` is the wire field (CLI `--mtp-draft-n`); a preset or
-  // arch default supplies the same value as a knob instead, and only the
-  // resolver knows which layer won. Wire field first, so an explicit flag
-  // still beats an inherited layer.
-  if launch_params.mtp_draft_n.is_none() {
-    launch_params.mtp_draft_n = launch_params
-      .knobs
-      .get_by_name_for(&resolved_backend_id, "mtp-draft-n")
-      .and_then(|v| v.set_value())
-      .and_then(|s| s.as_u32());
-  }
+  // Intent comes off the resolved knob map (one channel): an unset or `Auto`
+  // mtp means "capability decides". The resolved *truth* lives on
+  // `mtp_directive` (status `active`), never written back onto the knob —
+  // overwriting the intent slot would corrupt the next launch's LastUsed
+  // layer, `status`'s `enable`, and the picker's reopen value.
   let user_drives_speculation =
     crate::backend::Backend::speculation_set_in_extras(&inference_backend, &launch_params.extras);
   launch_params.mtp_directive = if matches!(mode, LaunchMode::Chat) && !user_drives_speculation {
     crate::launch::params::resolve_mtp_directive(
-      launch_params.mtp,
+      launch_params.mtp_intent(),
       mtp_embedded.is_some(),
       crate::discovery::scanner::find_mtp_head(&parsed.model_path, arch.as_deref()),
       &mut warnings,
@@ -918,41 +1048,6 @@ pub(crate) async fn compose_and_spawn(
   } else {
     None
   };
-  // Record what speculation actually resolved to on its own knob, so every
-  // surface reading `params.knobs` sees the truth. The knob emits nothing
-  // itself (`Emit::Custom` — the backend builds the flags from the directive),
-  // so argv is unchanged; without this the running view rendered `inherited`
-  // on a launch that was speculating.
-  if let Some(def) =
-    crate::launch::knobs::def_for_backend(&resolved_backend_id, crate::launch::knobs::kid("mtp"))
-  {
-    launch_params.knobs.set(
-      def.knob_id(),
-      crate::launch::knobs::KnobValue::Set(crate::launch::knobs::Scalar::Bool(
-        launch_params.mtp_directive.is_some(),
-      )),
-    );
-  }
-  // Same for the draft count, which no longer emits on its own: show what the
-  // launch is really drafting with, and drop a stale count on a launch that
-  // ended up not speculating.
-  if let Some(def) = crate::launch::knobs::def_for_backend(
-    &resolved_backend_id,
-    crate::launch::knobs::kid("mtp-draft-n"),
-  ) {
-    match launch_params
-      .mtp_draft_n
-      .filter(|_| launch_params.mtp_directive.is_some())
-    {
-      Some(n) => launch_params.knobs.set(
-        def.knob_id(),
-        crate::launch::knobs::KnobValue::Set(crate::launch::knobs::Scalar::U32(n)),
-      ),
-      None => {
-        launch_params.knobs.clear(def.knob_id());
-      }
-    }
-  }
   // Dropped-knob surfacing (R6): typed knobs the user set that the resolved
   // backend can't honor are silently dropped from argv — tell the user which.
   // ds4 honors only `Ctx`, so a `--flash-attn` on a ds4-routed model warns.
@@ -997,6 +1092,7 @@ pub(crate) async fn compose_and_spawn(
     probe: scaled_probe,
     id,
     identity,
+    launch_id,
     log_path,
     mode,
     origin,
@@ -1011,6 +1107,8 @@ pub(crate) async fn compose_and_spawn(
     force_admission,
     warnings,
     resolved_backend_id,
+    name: parsed.name.clone(),
+    preset: launch_preset_name,
   };
   inference_backend.start(ctx, exec).await
 }
@@ -1036,6 +1134,7 @@ pub(crate) async fn spawn_supervised(
     probe: scaled_probe,
     id,
     identity,
+    launch_id,
     log_path,
     mode,
     origin,
@@ -1049,6 +1148,8 @@ pub(crate) async fn spawn_supervised(
     bypasses_admission,
     force_admission,
     resolved_backend_id,
+    name,
+    preset,
     default_binary: _,
   } = exec;
   let resolved_backend_id = resolved_backend_id.clone();
@@ -1214,7 +1315,6 @@ pub(crate) async fn spawn_supervised(
     }
   };
 
-  let launch_id = ctx.supervisors.next_id();
   ctx
     .supervisors
     .insert(launch_id.clone(), model.clone())
@@ -1242,6 +1342,8 @@ pub(crate) async fn spawn_supervised(
         port,
         started_at,
         launch_id: Some(launch_id.clone()),
+        name: name.clone(),
+        preset,
         params: launch_params.clone(),
         actuals: Default::default(),
         resolved_backend: resolved_backend_id.clone(),
@@ -1283,6 +1385,7 @@ pub(crate) async fn spawn_supervised(
     port,
     model,
     log_path,
+    name,
     warnings,
     layer_sources,
   })
@@ -1411,33 +1514,31 @@ struct InheritedIdentity {
 
 /// The backend / server a no-selection launch should reuse.
 ///
-/// Precedence matches every other inherited field: the model's `default:`
-/// preset outranks its last successful launch. Returns empties when neither
-/// pins anything, which leaves the identity rule and the priority-default
-/// build in charge exactly as before.
-async fn inherited_launch_identity(
-  ctx: &MethodContext,
-  parsed: &StartParams,
+/// Precedence matches every other inherited field: the launch's preset
+/// outranks its last successful launch. Returns empties when neither pins
+/// anything, which leaves the identity rule and the priority-default build in
+/// charge exactly as before.
+///
+/// `launch_preset` is the same one the knob and extras layers resolve from, so
+/// identity cannot disagree with them about which preset is in play. It is
+/// passed in rather than re-resolved: a second `effective_presets` call was one
+/// more preset snapshot and catalog projection per launch, and it silently
+/// dropped the preset a `<model>@<name>` address names.
+///
+/// Identity cannot ride the layered knob resolver itself. A server pick decides
+/// which backend runs, so it has to settle before backend resolution, while the
+/// resolver's `LastUsed` layer is gated on the *resolved* backend. Hence the
+/// ungated `last_params` read below — a recorded server id names its own
+/// backend, so there is nothing to contaminate.
+fn inherited_launch_identity(
+  state: &crate::daemon::state_store::DaemonState,
   identity: &crate::backend::identity::ModelIdentity,
-  arch: Option<&str>,
+  launch_preset: Option<&crate::launch::presets::NamedPreset>,
 ) -> InheritedIdentity {
-  let from_preset = {
-    let store = ctx.presets.snapshot().await;
-    let rows = crate::ipc::methods::catalog_rows(ctx).await;
-    let key = crate::util::paths::model_file_label(&parsed.model_path);
-    let path_str = parsed.model_path.display().to_string();
-    crate::launch::presets::effective_presets(&key, &path_str, arch, &store, &rows)
-      .default_preset()
-      .map(|np| (np.params.backend.clone(), np.params.server.clone()))
-  };
-  let from_last = {
-    let snap = ctx.state.snapshot().await;
-    snap
-      .last_params
-      .iter()
-      .find(|e| &e.id == identity)
-      .map(|e| (e.params.backend.clone(), e.params.server.clone()))
-  };
+  let from_preset = launch_preset.map(|np| (np.params.backend.clone(), np.params.server.clone()));
+  let from_last = state
+    .last_params_for(identity)
+    .map(|e| (e.params.backend.clone(), e.params.server.clone()));
 
   let pick = |f: fn(&(crate::launch::params::BackendChoice, Option<String>)) -> bool| {
     from_preset
@@ -1761,7 +1862,15 @@ async fn current_backend_flavor(ctx: &MethodContext) -> crate::daemon::host_metr
   crate::daemon::host_metrics::GpuFlavor::Unsampled
 }
 
-fn build_log_path(log_dir: &std::path::Path, id: &ModelId) -> PathBuf {
+/// The per-launch log file name.
+///
+/// Carries the launch id because the rest of the name is not unique: two
+/// launches of one model started in the same wall-clock second derived the
+/// identical `{stem}-{fingerprint}-{seconds}` and opened the same file, so
+/// `logs <model>@<name>` returned both processes interleaved. Named launches
+/// make that the ordinary case rather than a race. The id is monotonic per
+/// daemon, so no two attempts can share a name whatever the clock does.
+fn build_log_path(log_dir: &std::path::Path, id: &ModelId, launch_id: &LaunchId) -> PathBuf {
   let stem = id
     .path
     .file_stem()
@@ -1772,7 +1881,7 @@ fn build_log_path(log_dir: &std::path::Path, id: &ModelId) -> PathBuf {
     .map(|d| d.as_secs())
     .unwrap_or_default();
   let short = id.short_fingerprint();
-  log_dir.join(format!("{stem}-{short}-{ts}.log"))
+  log_dir.join(format!("{stem}-{short}-{}-{ts}.log", launch_id.as_str()))
 }
 
 #[cfg(test)]
@@ -1784,6 +1893,8 @@ mod tests {
   use crate::daemon::context::LaunchEnv;
   use crate::daemon::probe::ProbeOptions;
   use crate::daemon::registry::SupervisorRegistry;
+  use crate::daemon::state_store::DaemonState;
+  use crate::daemon::supervisor::LaunchOrigin;
 
   /// A named preset / TUI form launch (`Explicit`) is self-contained: it must
   /// not inherit a stale `last_params`, so it resolves as pure-fit and skips
@@ -1817,6 +1928,7 @@ mod tests {
         total_mib: None,
         free_mib: None,
       }],
+      caps: Default::default(),
     };
     let default = PathBuf::from("/bin/llama-server");
     let binary = pick_launch_binary(
@@ -1848,6 +1960,7 @@ mod tests {
       binary: PathBuf::from("/bin/llama-server-rocm"),
       name: "llamacpp-rocm".into(),
       devices: vec![],
+      caps: Default::default(),
     };
     let default = PathBuf::from("/bin/llama-server");
     let binary = pick_launch_binary(
@@ -1908,16 +2021,13 @@ mod tests {
     let push = |id_path: &'static str, lid: &'static str, backend: &'static str, port: u16| {
       let identity = ModelIdentity::Gguf(crate::gguf::identity::compute(id_path, b"hdr"));
       let params = LaunchParams::new(PathBuf::from(id_path), LaunchMode::Chat);
-      RunningSnapshot {
-        id: identity,
-        pid: 1,
-        port,
-        started_at: 0,
-        launch_id: Some(LaunchId(lid.to_string())),
-        params,
-        actuals: Default::default(),
-        resolved_backend: backend.to_string(),
-      }
+      crate::test_support::running_row(id_path)
+        .identity(identity)
+        .launch_id(lid)
+        .port(port)
+        .params(params)
+        .resolved_backend(backend)
+        .build()
     };
     ctx
       .state
@@ -1958,19 +2068,15 @@ mod tests {
   #[tokio::test]
   async fn stopping_a_backend_identity_launch_drops_its_running_snapshot() {
     let ctx = MethodContext::new(ShutdownToken::new());
-    let backend_row = RunningSnapshot {
-      id: ModelIdentity::Backend(crate::backend::identity::BackendModelId {
-        backend: "some-backend".to_string(),
-        name: "o/r".to_string(),
-      }),
-      pid: 1,
-      port: 41100,
-      started_at: 0,
-      launch_id: Some(LaunchId("L1".to_string())),
-      params: LaunchParams::new(PathBuf::from("/m/snapshots/rev"), LaunchMode::Chat),
-      actuals: Default::default(),
-      resolved_backend: "some-backend".to_string(),
-    };
+    let backend_row = crate::test_support::running_row("/m/snapshots/rev")
+      .identity(ModelIdentity::Backend(
+        crate::backend::identity::BackendModelId {
+          backend: "some-backend".to_string(),
+          name: "o/r".to_string(),
+        },
+      ))
+      .resolved_backend("some-backend")
+      .build();
     let other = RunningSnapshot {
       launch_id: Some(LaunchId("L2".to_string())),
       port: 41101,
@@ -1999,16 +2105,11 @@ mod tests {
     ctx
       .state
       .mutate(|s| {
-        s.running.push(RunningSnapshot {
-          id: ModelIdentity::Gguf(crate::gguf::identity::compute("/m/a.gguf", b"hdr")),
-          pid: 1,
-          port: 41100,
-          started_at: 0,
-          launch_id: None,
-          params: LaunchParams::new(PathBuf::from("/m/a.gguf"), LaunchMode::Chat),
-          actuals: Default::default(),
-          resolved_backend: "llamacpp".to_string(),
-        });
+        s.running.push(
+          crate::test_support::running_row("/m/a.gguf")
+            .unstamped()
+            .build(),
+        );
       })
       .await;
 
@@ -2168,13 +2269,18 @@ mod tests {
     assert_eq!(reclaimed, port);
   }
 
-  /// A `MethodContext` wired with a real (single-port) launch env and a
-  /// minimal GGUF on disk, so `compose_and_spawn` clears identity
-  /// resolution and reaches the post-header validation seams (port / ctx
-  /// bounds) without ever spawning a process. Returns `(ctx, model_path,
-  /// _tempdir-guard)`; keep the guard alive for the test's duration.
+  /// A `MethodContext` wired with a real launch env and a minimal GGUF on
+  /// disk, so `compose_and_spawn` clears identity resolution and reaches the
+  /// post-header validation seams (port / ctx bounds) without ever spawning a
+  /// process. Returns `(ctx, model_path, _tempdir-guard)`; keep the guard
+  /// alive for the test's duration.
+  ///
+  /// The port range is probed per call rather than fixed: `ports::allocate`
+  /// resolves a range by really binding each candidate, so a hardcoded
+  /// single port made every caller race every other caller in the same test
+  /// binary. The loser got `no free port in N-N` and `compose_and_spawn`
+  /// returned `-32603` before it reached the seam under test.
   async fn ctx_with_env_and_gguf() -> (MethodContext, PathBuf, tempfile::TempDir) {
-    use crate::config::loader::PortRange;
     use crate::gguf::test_fixtures::build_minimal_gguf;
 
     let dir = tempfile::tempdir().expect("tempdir");
@@ -2183,10 +2289,7 @@ mod tests {
 
     let env = LaunchEnv {
       binary: PathBuf::from("/nonexistent/llama-server"),
-      port_range: PortRange {
-        start: 41000,
-        end: 41000,
-      },
+      port_range: crate::test_support::allocate_port_range(8),
       log_dir: dir.path().to_path_buf(),
       probe: ProbeOptions::default(),
       arch_defaults: Default::default(),
@@ -2482,6 +2585,7 @@ mod tests {
         binary: PathBuf::from("/nonexistent/llama-server"),
         name: "llamacpp-rocm".into(),
         devices: Vec::new(),
+        caps: Default::default(),
       });
     let parsed = StartParams {
       model_path,
@@ -2517,21 +2621,39 @@ mod tests {
   }
 
   #[test]
-  fn build_log_path_uses_stem_fingerprint_and_timestamp() {
+  fn build_log_path_uses_stem_fingerprint_launch_id_and_timestamp() {
     let id = crate::gguf::identity::ModelId {
       path: PathBuf::from("/models/Qwen3-7B-Q4_K_M.gguf"),
       header_blake3: [0xabu8; 32],
     };
-    let path = build_log_path(std::path::Path::new("/var/log/ls"), &id);
+    let dir = std::path::Path::new("/var/log/ls");
+    let path = build_log_path(dir, &id, &LaunchId("L3".into()));
     let name = path.file_name().unwrap().to_string_lossy();
-    // `<stem>-<short-fingerprint>-<unix-ts>.log`
+    // `<stem>-<short-fingerprint>-<L#>-<unix-ts>.log`
     assert!(name.starts_with("Qwen3-7B-Q4_K_M-"), "stem prefix: {name}");
     assert!(name.ends_with(".log"), "log suffix: {name}");
     assert!(
       name.contains(&id.short_fingerprint()),
       "embeds the short fingerprint: {name}"
     );
+    assert!(name.contains("-L3-"), "embeds the launch id: {name}");
     assert_eq!(path.parent().unwrap(), std::path::Path::new("/var/log/ls"));
+  }
+
+  #[test]
+  fn two_launches_of_one_model_in_one_second_get_their_own_log() {
+    // Same model, same second — everything but the launch id is identical, and
+    // without it both processes wrote into one file, so `logs` returned them
+    // interleaved. Named launches make this the ordinary case.
+    let id = crate::gguf::identity::ModelId {
+      path: PathBuf::from("/models/Qwen3-7B-Q4_K_M.gguf"),
+      header_blake3: [0xabu8; 32],
+    };
+    let dir = std::path::Path::new("/var/log/ls");
+    assert_ne!(
+      build_log_path(dir, &id, &LaunchId("L1".into())),
+      build_log_path(dir, &id, &LaunchId("L2".into())),
+    );
   }
 
   #[test]
@@ -2542,7 +2664,7 @@ mod tests {
       path: PathBuf::from("/"),
       header_blake3: [0u8; 32],
     };
-    let path = build_log_path(std::path::Path::new("/tmp"), &id);
+    let path = build_log_path(std::path::Path::new("/tmp"), &id, &LaunchId("L1".into()));
     let name = path.file_name().unwrap().to_string_lossy();
     assert!(name.starts_with("model-"), "fallback stem: {name}");
   }
@@ -2564,6 +2686,211 @@ mod tests {
         serde_json::from_value(serde_json::json!({"model_path": "/m/x.gguf", "selection": s}))
           .unwrap();
       assert_eq!(p.selection, want, "selection {s} round-trips");
+    }
+  }
+
+  #[test]
+  fn start_params_preset_is_absent_by_default_and_round_trips() {
+    // A presetless caller (plain `start`, proxy auto-start) omits the key —
+    // `null` and absent must both decode to `None` so the daemon-side
+    // resolution fills in behind them.
+    let parsed: StartParams =
+      serde_json::from_value(serde_json::json!({"model_path": "/m/x.gguf"})).unwrap();
+    assert_eq!(parsed.preset, None);
+    let nulled: StartParams =
+      serde_json::from_value(serde_json::json!({"model_path": "/m/x.gguf", "preset": null}))
+        .unwrap();
+    assert_eq!(nulled.preset, None);
+    let named: StartParams =
+      serde_json::from_value(serde_json::json!({"model_path": "/m/x.gguf", "preset": "fast"}))
+        .unwrap();
+    assert_eq!(named.preset.as_deref(), Some("fast"));
+  }
+
+  /// A running snapshot for `path` carrying the given launch `name` (or
+  /// `None` for an unnamed launch), so the duplicate-name gate can be
+  /// exercised without a live supervisor.
+  fn named_running(path: &str, name: Option<&str>) -> RunningSnapshot {
+    crate::test_support::running_row(path)
+      .maybe_name(name)
+      .build()
+  }
+
+  /// A managed multiplexer has one shared process per backend, so a name
+  /// cannot select an instance there — the launch is refused rather than
+  /// stamping a name the proxy would publish and then fail to route.
+  #[test]
+  fn a_name_is_refused_for_a_managed_multiplexer_model() {
+    use crate::backend::{Backend, Backends, Lifecycle};
+    let Some(mux) = Backends::all()
+      .into_iter()
+      .find(|b| b.lifecycle() == Lifecycle::ManagedMultiplexer)
+    else {
+      return;
+    };
+    let delegated = ModelIdentity::Backend(crate::backend::identity::BackendModelId {
+      backend: mux.id().to_string(),
+      name: "some/model".to_string(),
+    });
+    let err = multiplexer_refuses_name(&delegated, Some("coder"))
+      .expect("a name on a multiplexer model is refused");
+    assert_eq!(err.code, ErrorCode::InvalidParams.as_i32());
+    assert!(
+      err.message.contains("coder") && err.message.contains(mux.id()),
+      "the refusal names the launch name and the backend, got: {}",
+      err.message
+    );
+    assert!(
+      multiplexer_refuses_name(&delegated, None).is_none(),
+      "an unnamed launch of the same model is untouched"
+    );
+
+    let gguf = ModelIdentity::Gguf(ModelId {
+      path: PathBuf::from("/m/a.gguf"),
+      header_blake3: [7u8; 32],
+    });
+    assert!(
+      multiplexer_refuses_name(&gguf, Some("coder")).is_none(),
+      "a process-per-model launch keeps its name"
+    );
+  }
+
+  /// D3: a second launch of the *same* model with the *same* name is refused
+  /// so `<model-id>@<name>` stays a stable address. The gate fires before the
+  /// launch-env lookup, so a bare context (no launch env) is enough.
+  #[tokio::test]
+  async fn duplicate_live_name_on_one_model_is_refused() {
+    let ctx = MethodContext::new(ShutdownToken::new()).with_state(PersistedState::new(
+      DaemonState {
+        running: vec![named_running("/m/a.gguf", Some("coder"))],
+        ..Default::default()
+      },
+      None,
+    ));
+    let parsed = StartParams {
+      model_path: PathBuf::from("/m/a.gguf"),
+      name: Some("coder".to_string()),
+      ..Default::default()
+    };
+    match compose_and_spawn(&ctx, parsed, LaunchOrigin::Manual).await {
+      Err(err) => assert!(
+        err
+          .message
+          .contains("name `coder` is already running as L1"),
+        "expected the duplicate-name refusal naming the holder, got: {}",
+        err.message
+      ),
+      Ok(_) => panic!("expected the duplicate-name refusal, got a successful launch"),
+    }
+  }
+
+  /// The daemon enforces the name rule itself, not just the CLI parser: a raw
+  /// JSON-RPC caller can send any string, and `a@b` would publish an address
+  /// that re-splits to a different pair.
+  #[tokio::test]
+  async fn a_name_that_cannot_appear_in_an_address_is_refused() {
+    let ctx = MethodContext::new(ShutdownToken::new());
+    for bad in ["a@b", "co der", "  "] {
+      let parsed = StartParams {
+        model_path: PathBuf::from("/m/a.gguf"),
+        name: Some(bad.to_string()),
+        ..Default::default()
+      };
+      match compose_and_spawn(&ctx, parsed, LaunchOrigin::Manual).await {
+        Err(err) => {
+          assert_eq!(err.code, ErrorCode::InvalidParams.as_i32());
+          let expected = if bad.trim().is_empty() {
+            "needs at least one"
+          } else {
+            "letters, digits"
+          };
+          assert!(
+            err.message.contains(expected),
+            "the refusal states the rule, got: {}",
+            err.message
+          );
+        }
+        Ok(_) => panic!("`{bad}` must be refused as a launch name"),
+      }
+    }
+  }
+
+  /// The gate uses the same ASCII-case-insensitive rule as every other name
+  /// comparison. A case-sensitive gate would let `coder` and `Coder` coexist, and
+  /// the proxy (exact match) would then miss one of them and auto-start a second
+  /// full copy of the model.
+  #[tokio::test]
+  async fn case_variant_of_a_live_name_is_refused() {
+    let ctx = MethodContext::new(ShutdownToken::new()).with_state(PersistedState::new(
+      DaemonState {
+        running: vec![named_running("/m/a.gguf", Some("coder"))],
+        ..Default::default()
+      },
+      None,
+    ));
+    let parsed = StartParams {
+      model_path: PathBuf::from("/m/a.gguf"),
+      name: Some("CODER".to_string()),
+      ..Default::default()
+    };
+    match compose_and_spawn(&ctx, parsed, LaunchOrigin::Manual).await {
+      Err(err) => assert!(
+        err.message.contains("is already running as L1"),
+        "expected a case-variant name to collide, got: {}",
+        err.message
+      ),
+      Ok(_) => panic!("expected a case-variant name to collide, got a successful launch"),
+    }
+  }
+
+  /// RV6: an errored launch keeps its row until it is stopped but is not an
+  /// addressable target, so it must not hold the name. Otherwise a failed load
+  /// locks the name permanently and the only escape is stopping by launch id.
+  #[test]
+  fn errored_holder_does_not_lock_the_name() {
+    let running = vec![named_running("/m/a.gguf", Some("coder"))];
+    let errored = std::collections::BTreeSet::from(["L1".to_string()]);
+    assert!(
+      name_holder(&running, Path::new("/m/a.gguf"), "coder", &errored).is_none(),
+      "an errored launch must not hold the name"
+    );
+    // Same rows, nothing errored: the holder is found, so the gate still fires.
+    assert!(
+      name_holder(
+        &running,
+        Path::new("/m/a.gguf"),
+        "coder",
+        &Default::default()
+      )
+      .is_some_and(|r| r.port == 41100),
+      "a live launch must hold the name"
+    );
+  }
+
+  /// D3 (the other half): the *same* name on a *different* model is not a
+  /// duplicate — the gate must not fire, so the call proceeds past it (and
+  /// only then fails on the missing launch env, a different error).
+  #[tokio::test]
+  async fn same_name_on_a_different_model_is_not_refused() {
+    let ctx = MethodContext::new(ShutdownToken::new()).with_state(PersistedState::new(
+      DaemonState {
+        running: vec![named_running("/m/a.gguf", Some("coder"))],
+        ..Default::default()
+      },
+      None,
+    ));
+    let parsed = StartParams {
+      model_path: PathBuf::from("/m/b.gguf"),
+      name: Some("coder".to_string()),
+      ..Default::default()
+    };
+    match compose_and_spawn(&ctx, parsed, LaunchOrigin::Manual).await {
+      Err(err) => assert!(
+        !err.message.contains("already running with name"),
+        "a different model must not trip the duplicate-name gate, got: {}",
+        err.message
+      ),
+      Ok(_) => panic!("expected a post-gate failure, got a successful launch"),
     }
   }
 }

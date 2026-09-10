@@ -14,7 +14,6 @@
 //! failure so the caller can warn instead of silently overwriting
 //! the user's data.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -29,8 +28,8 @@ use crate::launch::params::LaunchParams;
 ///
 /// `last_params` uses `Vec<(id, value)>` rather than a `BTreeMap` because
 /// `serde_json` can't serialise a map keyed by a struct: JSON object keys must
-/// be strings. In-memory consumers use [`DaemonState::last_params_map`] for
-/// ergonomic look-ups; the on-disk shape stays an explicit array of pairs.
+/// be strings. In-memory consumers use [`DaemonState::last_params_for`] to look
+/// one up; the on-disk shape stays an explicit array of pairs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DaemonState {
   #[serde(default)]
@@ -90,14 +89,14 @@ impl Default for DaemonState {
 }
 
 impl DaemonState {
-  /// In-memory map view of `last_params` for `O(log n)` lookup.
-  /// Cheap on the typical daemon (a few dozen entries at most).
-  pub fn last_params_map(&self) -> BTreeMap<&ModelIdentity, &LaunchParams> {
-    self
-      .last_params
-      .iter()
-      .map(|e| (&e.id, &e.params))
-      .collect()
+  /// This model's last successful launch, as persisted.
+  ///
+  /// The one lookup: `compose_and_spawn` reads it twice per launch, once for
+  /// the identity carry-over and once for the `LastUsed` knob layer. They gate
+  /// the result differently (identity ungated, knobs backend-matched), but they
+  /// must not disagree about which entry they are gating.
+  pub fn last_params_for(&self, id: &ModelIdentity) -> Option<&LastParamsEntry> {
+    self.last_params.iter().find(|e| &e.id == id)
   }
 
   /// Insert or replace the last successful params for `id`. New
@@ -146,6 +145,18 @@ pub struct RunningSnapshot {
   /// `None` only on a legacy/adopted row that predates the stamp.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub launch_id: Option<LaunchId>,
+  /// User-chosen name for this launch. When set, the launch is
+  /// addressable by `<model-id>@<name>` in `stop`, `logs`, and the
+  /// proxy's `body.model`. `None` for unnamed launches (the default).
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub name: Option<String>,
+  /// The preset this launch resolved: a caller-flattened explicit pick
+  /// (`start --preset`, TUI form), the preset a `<model>@<name>` auto-start
+  /// address named, or the model's config `default:` on a no-selection
+  /// launch. `None` when no preset was in play. Surfaced read-only by
+  /// `status` and `show` so the running row answers "what launched this".
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub preset: Option<String>,
   pub params: LaunchParams,
   /// What `--fit` actually chose, read from the child's `/props` once
   /// on Ready. Empty for adopted/external/Lemonade rows and until
@@ -181,6 +192,24 @@ impl RunningSnapshot {
       .id
       .as_backend()
       .filter(|b| crate::backend::is_managed_multiplexer(&b.backend))
+  }
+
+  /// Is this row the launch `launch_id` (falling back to `port`), and does it
+  /// carry `want` as its name?
+  ///
+  /// The one join behind the proxy's supervisor walk, the auto-start attach
+  /// path, and the daemon's duplicate-name gate, so "does this launch carry this
+  /// name" cannot drift between them. Keyed on `launch_id` because a port is
+  /// reused the moment its launch stops (see `src/ipc/status.rs`), so a port join
+  /// can hand a name to whichever launch later takes the slot. Rows adopted from
+  /// a `state.json` that predates the stamp have no id and fall back to the port,
+  /// the same rule `launch_service::drop_running_snapshots` uses.
+  pub fn carries_name(&self, launch_id: Option<&LaunchId>, port: u16, want: &str) -> bool {
+    let same_launch = match (&self.launch_id, launch_id) {
+      (Some(mine), Some(wanted)) => mine == wanted,
+      _ => self.port == port,
+    };
+    same_launch && crate::launch::resolve::name_matches(self.name.as_deref(), want)
   }
 }
 
@@ -306,20 +335,53 @@ mod tests {
       fake_params("/m/a.gguf"),
       "llamacpp".into(),
     );
-    s.running.push(RunningSnapshot {
-      id: id("/m/a.gguf", 1),
-      pid: 1234,
-      port: 41100,
-      started_at: 1_700_000_000,
-      launch_id: None,
-      params: fake_params("/m/a.gguf"),
-      actuals: Default::default(),
-      resolved_backend: "llamacpp".to_string(),
-    });
+    s.running.push(
+      crate::test_support::running_row("/m/a.gguf")
+        .identity(id("/m/a.gguf", 1))
+        .pid(1234)
+        .started_at(1_700_000_000)
+        .unstamped()
+        .params(fake_params("/m/a.gguf"))
+        .build(),
+    );
 
     save(&dir, &s).expect("save");
     let back = load(&dir).expect("load");
     assert_eq!(back, s, "every field must round-trip exactly");
+    fs::remove_dir_all(&dir).ok();
+  }
+
+  #[test]
+  fn an_unnamed_running_row_is_byte_identical_to_a_pre_name_row() {
+    // `skip_serializing_if` is the whole reason a 0.2.0 `state.json` still
+    // loads: an unnamed launch must emit no `name` key at all, not
+    // `"name": null`. The boot sweep and the orphan adopter read this file
+    // before anything else runs, so a shape change here is a cold-start
+    // failure, not a display bug.
+    let dir = temp_state_dir("unnamed-row-bytes");
+    let mut s = DaemonState::default();
+    s.running
+      .push(crate::test_support::running_row("/m/a.gguf").build());
+    save(&dir, &s).expect("save");
+    let written = fs::read_to_string(path(&dir)).expect("read back");
+    let row = &serde_json::from_str::<serde_json::Value>(&written).expect("parse")["running"][0];
+    assert!(
+      row.get("name").is_none(),
+      "an unnamed row must not carry the key: {row}"
+    );
+
+    // A pre-name row (no key on disk) loads as unnamed, and a named one
+    // round-trips.
+    let back = load(&dir).expect("load");
+    assert_eq!(back.running[0].name, None);
+    assert_eq!(back, s, "every field must round-trip exactly");
+
+    s.running[0].name = Some("coder".to_string());
+    save(&dir, &s).expect("save named");
+    assert_eq!(
+      load(&dir).expect("load named").running[0].name.as_deref(),
+      Some("coder")
+    );
     fs::remove_dir_all(&dir).ok();
   }
 
@@ -429,10 +491,13 @@ mod tests {
       fake_params("/m/b.gguf"),
       "llamacpp".into(),
     );
-    let view = s.last_params_map();
-    assert_eq!(view.len(), 2);
-    assert!(view.contains_key(&id("/m/a.gguf", 1)));
-    assert!(view.contains_key(&id("/m/b.gguf", 2)));
+    assert_eq!(
+      s.last_params_for(&id("/m/a.gguf", 1)).map(|e| &e.params),
+      Some(&fake_params("/m/a.gguf"))
+    );
+    assert!(s.last_params_for(&id("/m/b.gguf", 2)).is_some());
+    // A header hash that does not match is a different model, not this one.
+    assert!(s.last_params_for(&id("/m/a.gguf", 9)).is_none());
   }
 
   #[test]
@@ -536,6 +601,32 @@ mod tests {
   }
 
   #[test]
+  fn running_snapshot_preset_round_trips_and_stays_absent_when_none() {
+    // A preset-carrying row round-trips the name; a presetless row serializes
+    // with no `preset` key at all (byte-stability for every existing
+    // state.json) and a pre-field row loads as `None`.
+    let row = crate::test_support::running_row("/m/a.gguf")
+      .preset("fast")
+      .build();
+    let v = serde_json::to_value(&row).unwrap();
+    assert_eq!(v["preset"], serde_json::json!("fast"));
+    let back: RunningSnapshot = serde_json::from_value(v).unwrap();
+    assert_eq!(back.preset.as_deref(), Some("fast"));
+
+    let bare = crate::test_support::running_row("/m/a.gguf").build();
+    let bare_v = serde_json::to_value(&bare).unwrap();
+    assert!(
+      bare_v.get("preset").is_none(),
+      "presetless row omits the key: {bare_v}"
+    );
+    let legacy: RunningSnapshot = serde_json::from_value(serde_json::json!({
+      "id": bare_v["id"], "pid": 1, "port": 41100, "started_at": 0, "params": bare_v["params"]
+    }))
+    .unwrap();
+    assert_eq!(legacy.preset, None, "a pre-field row loads as no preset");
+  }
+
+  #[test]
   fn legacy_presets_are_ignored_and_not_resaved() {
     let dir = temp_state_dir("legacy-presets");
     let legacy_presets = serde_json::json!([
@@ -572,16 +663,16 @@ mod tests {
     let mut s = DaemonState::default();
     s.favorites.add(bid.clone());
     s.upsert_last_params(bid.clone(), fake_params("/unused"), "llamacpp".into());
-    s.running.push(RunningSnapshot {
-      id: bid.clone(),
-      pid: 4321,
-      port: 9100,
-      started_at: 1_700_000_001,
-      launch_id: None,
-      params: fake_params("/unused"),
-      actuals: Default::default(),
-      resolved_backend: "llamacpp".to_string(),
-    });
+    s.running.push(
+      crate::test_support::running_row("/unused")
+        .identity(bid.clone())
+        .pid(4321)
+        .port(9100)
+        .started_at(1_700_000_001)
+        .unstamped()
+        .params(fake_params("/unused"))
+        .build(),
+    );
 
     save(&dir, &s).expect("save");
     let back = load(&dir).expect("load");

@@ -100,6 +100,13 @@ pub struct Server {
   /// Devices this server can target (`--device` selectors). Empty for a
   /// backend with no device probe (ds4 / lemonade) or a CPU-only build.
   pub devices: Vec<Device>,
+  /// Build-specific flag spellings, from [`Backend::probe_caps`]. Opaque here:
+  /// the owning backend writes the keys and is the only thing that reads them,
+  /// so the neutral catalog carries them without knowing what they mean. Empty
+  /// for a backend whose flags don't vary by build, and for the config-only
+  /// catalog `doctor` builds (it never launches, so it skips the probe).
+  #[serde(default)]
+  pub caps: std::collections::BTreeMap<String, String>,
 }
 
 impl Server {
@@ -300,6 +307,7 @@ fn derive_servers(backend_id: &str, probed: Vec<(ServerSpec, Vec<Device>)>) -> V
       binary: spec.binary,
       name: candidate,
       devices,
+      caps: Default::default(),
     });
   }
   out
@@ -323,7 +331,15 @@ pub fn build_server_catalog(ctx: &MethodContext) -> Vec<Server> {
         (spec, devices)
       })
       .collect();
-    out.extend(derive_servers(&backend_id, probed));
+    // Caps are probed after ids are derived so each row is keyed by the binary
+    // it will actually spawn. One extra bounded subprocess per server at boot,
+    // never cached across runs — a rebuild in place changes the answer while
+    // the path stays the same.
+    let mut servers = derive_servers(&backend_id, probed);
+    for server in &mut servers {
+      server.caps = backend.probe_caps(&server.binary);
+    }
+    out.extend(servers);
   }
   out
 }
@@ -518,6 +534,7 @@ mod tests {
       binary: PathBuf::from(binary),
       name: id.to_string(),
       devices: Vec::new(),
+      caps: Default::default(),
     };
     let servers = [
       srv("llamacpp-rocm", "/b/rocm/llama-server"),
@@ -639,6 +656,7 @@ mod tests {
           "AMD Radeon 8060S Graphics (RADV STRIX_HALO)",
         ),
       ],
+      caps: Default::default(),
     };
     assert_eq!(server.devices.len(), 2, "both selectors stay selectable");
     assert_eq!(server.physical_device_count(), 1);

@@ -25,6 +25,11 @@ const KV_CACHE_TYPES: &[&str] = crate::gguf::memory::KV_CACHE_TYPES;
 /// `--split-mode` choices. Closed: llama-server rejects anything else.
 const SPLIT_MODES: &[&str] = &["none", "layer", "row", "tensor"];
 
+/// `--load-mode` values, spelled as llama.cpp parses them (`llama.cpp:69-74`).
+/// `none` is "no special loading mode" — the old `--no-mmap`; `mlock` does not
+/// mmap either (`llama-model-loader.cpp:559`).
+const LOAD_MODES: &[&str] = &["auto", "none", "mmap", "mlock", "mmap+mlock", "dio"];
+
 /// Serving modes. `Emit::Custom` — llama-server spells these as presence flags
 /// (`--embedding`, `--reranking`, nothing for chat), not as a valued flag.
 const MODES: &[&str] = &["chat", "embedding", "rerank"];
@@ -236,32 +241,22 @@ pub const KNOBS: &[KnobDef] = &[
     volatile: false,
   },
   KnobDef {
-    id: "mlock",
+    id: "load-mode",
     flag: None,
     concept: None,
-    kind: KnobKind::Bool,
+    kind: KnobKind::Enum {
+      choices: LOAD_MODES,
+    },
     auto: None,
     group: Group::Memory,
-    label: "mlock",
-    help: "lock the model in RAM (prevents swap-out)",
+    label: "Load mode",
+    help: "how the model is loaded: mmap, locked in RAM, or DirectIO",
     aliases: &[],
     fallback: LayerLabel::ServerDefault,
-    emit: Emit::BareFlagWhenTrue,
-    ring: Ring::None,
-    volatile: false,
-  },
-  KnobDef {
-    id: "no-mmap",
-    flag: None,
-    concept: None,
-    kind: KnobKind::Bool,
-    auto: None,
-    group: Group::Memory,
-    label: "No mmap",
-    help: "load the whole model into RAM instead of mmap",
-    aliases: &[],
-    fallback: LayerLabel::ServerDefault,
-    emit: Emit::BareFlagWhenTrue,
+    // Spelled `--load-mode <v>` on current builds and as separate flags
+    // (`--no-mmap` / `--mlock` / `-dio`) on builds before `14a9d09f7`, so the
+    // argv is composed against the resolved binary's probed dialect.
+    emit: Emit::Custom,
     ring: Ring::None,
     volatile: false,
   },

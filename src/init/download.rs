@@ -23,7 +23,7 @@
 //! .
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use hf_hub::{
   api::tokio::{Api, ApiBuilder},
@@ -295,6 +295,107 @@ pub trait DownloadProgress: Send + Sync {
   fn on_retry(&self, _filename: &str, _attempt: u32) {}
 }
 
+/// Smoothing factor for the throughput EMA — quick enough to track
+/// real swings without flickering between windows.
+const THROUGHPUT_ALPHA: f64 = 0.3;
+
+/// Bytes pile up for at least this long before one EMA step folds.
+/// hf-hub runs eight chunk workers in parallel and several of their
+/// callbacks land in the same microsecond, so folding a step per
+/// callback divides one chunk by a near-zero interval: measured on a
+/// real pull that read a ~2 MiB/s link as 125 MiB/s at p90 and 4.3
+/// GiB/s at peak.
+const RATE_WINDOW: Duration = Duration::from_millis(250);
+
+/// Fast enough to read as live, slow enough that a multi-gigabyte
+/// pull isn't spending its time writing escape codes.
+pub const PROGRESS_REPAINT: Duration = Duration::from_millis(100);
+
+/// Bytes off the wire since the last reading of hf-hub's cumulative
+/// per-file counter. A retry replays the file from its committed
+/// offset, so the counter can rewind; that rewind is not new traffic,
+/// and an unsaturated subtraction would bill it as exabytes.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct WireDelta(u64);
+
+impl WireDelta {
+  /// Take the next cumulative reading, returning what it added.
+  pub fn advance(&mut self, cumulative: u64) -> u64 {
+    let delta = cumulative.saturating_sub(self.0);
+    self.0 = cumulative;
+    delta
+  }
+
+  pub fn cumulative(&self) -> u64 {
+    self.0
+  }
+
+  pub fn reset(&mut self) {
+    self.0 = 0;
+  }
+}
+
+/// EMA-smoothed transfer rate, folded once per 250 ms window. Shared
+/// by the TUI download strip, the CLI `pull` line and the init wizard
+/// so all three report the same figure.
+#[derive(Debug, Default, Clone)]
+pub struct RateMeter {
+  bps: f64,
+  pending_bytes: u64,
+  window_start: Option<Instant>,
+}
+
+impl RateMeter {
+  /// Fold in bytes that actually crossed the network. Call with `0`
+  /// to age the meter without new traffic, so a stalled transfer
+  /// decays towards zero instead of freezing on its last reading.
+  pub fn record(&mut self, bytes: u64, now: Instant) {
+    self.pending_bytes = self.pending_bytes.saturating_add(bytes);
+    let start = *self.window_start.get_or_insert(now);
+    let elapsed = now.saturating_duration_since(start);
+    if elapsed < RATE_WINDOW {
+      return;
+    }
+    let instant = self.pending_bytes as f64 / elapsed.as_secs_f64();
+    self.bps = THROUGHPUT_ALPHA * instant + (1.0 - THROUGHPUT_ALPHA) * self.bps;
+    self.pending_bytes = 0;
+    self.window_start = Some(now);
+  }
+
+  pub fn bps(&self) -> f64 {
+    self.bps
+  }
+}
+
+/// Holds a repainting surface to one frame per [`PROGRESS_REPAINT`].
+/// hf-hub fires its progress callback once per chunk off eight
+/// parallel workers, far more often than any of these surfaces can
+/// usefully redraw — and off a terminal the wizard's redraw is a
+/// fresh log line, so unthrottled it printed one per chunk.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RepaintClock(Option<Instant>);
+
+impl RepaintClock {
+  /// True when the surface should redraw now, recording the frame.
+  /// `force` bypasses the throttle for rare events worth showing
+  /// immediately, like a file boundary.
+  pub fn tick(&mut self, now: Instant, force: bool) -> bool {
+    if !force
+      && self
+        .0
+        .is_some_and(|t| now.duration_since(t) < PROGRESS_REPAINT)
+    {
+      return false;
+    }
+    self.0 = Some(now);
+    true
+  }
+
+  pub fn reset(&mut self) {
+    self.0 = None;
+  }
+}
+
 /// Turns the per-file [`DownloadProgress`] callbacks into a running
 /// `(bytes_done, bytes_total)` for the whole pull. Shared by the TUI
 /// download strip and the CLI `pull` line so the two report the same
@@ -314,7 +415,18 @@ pub struct PullTotals {
   /// Summed sizes of the files already finished.
   bytes_completed: u64,
   /// Cumulative bytes reported for the file currently downloading.
-  bytes_in_current_file: u64,
+  current_file: WireDelta,
+}
+
+/// One aggregation step from [`PullTotals`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PullProgress {
+  pub bytes_done: u64,
+  pub bytes_total: u64,
+  /// Bytes that crossed the network since the previous step. Zero
+  /// when a file is credited its size on completion, so a progress
+  /// surface can bill the rate meter for traffic only.
+  pub transferred: u64,
 }
 
 impl PullTotals {
@@ -323,37 +435,41 @@ impl PullTotals {
     self.file_sizes = files.iter().cloned().collect();
     self.bytes_total = files.iter().map(|(_, n)| *n).sum();
     self.bytes_completed = 0;
-    self.bytes_in_current_file = 0;
+    self.current_file.reset();
     self.bytes_total
   }
 
   pub fn start_file(&mut self) {
-    self.bytes_in_current_file = 0;
+    self.current_file.reset();
   }
 
-  pub fn finish_file(&mut self, filename: &str) -> (u64, u64) {
+  pub fn finish_file(&mut self, filename: &str) -> PullProgress {
     self.bytes_completed = self
       .bytes_completed
       .saturating_add(self.file_sizes.get(filename).copied().unwrap_or(0));
-    self.bytes_in_current_file = 0;
-    self.snapshot()
+    self.current_file.reset();
+    self.snapshot(0)
   }
 
   /// Apply a cumulative per-file byte count from the hf-hub adapter.
-  pub fn credit_bytes(&mut self, bytes_in_file: u64) -> (u64, u64) {
-    self.bytes_in_current_file = bytes_in_file;
-    self.snapshot()
+  pub fn credit_bytes(&mut self, bytes_in_file: u64) -> PullProgress {
+    let transferred = self.current_file.advance(bytes_in_file);
+    self.snapshot(transferred)
   }
 
-  /// `(bytes_done, bytes_total)`, capped at the total so a chunk
-  /// landing after its file's finish callback can't read past 100%.
-  fn snapshot(&self) -> (u64, u64) {
-    let done = self.bytes_total.min(
+  /// `bytes_done` is capped at the total so a chunk landing after its
+  /// file's finish callback can't read past 100%.
+  fn snapshot(&self, transferred: u64) -> PullProgress {
+    let bytes_done = self.bytes_total.min(
       self
         .bytes_completed
-        .saturating_add(self.bytes_in_current_file),
+        .saturating_add(self.current_file.cumulative()),
     );
-    (done, self.bytes_total)
+    PullProgress {
+      bytes_done,
+      bytes_total: self.bytes_total,
+      transferred,
+    }
   }
 }
 
@@ -1081,9 +1197,10 @@ pub async fn download_repo(
         .or_else(|| cache_repo.get(filename))
     };
     let path = if let Some(p) = cached {
-      if let Some(cb) = &options.progress {
-        cb.on_bytes_progress(filename, *size);
-      }
+      // No `on_bytes_progress` here: nothing crossed the network, and
+      // `on_file_finished` credits the file's whole size anyway. The
+      // synthetic call this used to make read as a burst of traffic
+      // and had a re-pull of a cached repo reporting tens of GB/s.
       p
     } else {
       let mut last_err: Option<hf_hub::api::tokio::ApiError> = None;
@@ -1216,6 +1333,101 @@ mod tests {
         .unwrap()
         .push((filename.to_string(), bytes_in_file));
     }
+  }
+
+  #[test]
+  fn totals_bill_the_rate_only_for_bytes_off_the_wire() {
+    let mut t = PullTotals::default();
+    assert_eq!(
+      t.resolve_files(&[("a".into(), 100), ("b".into(), 100)]),
+      200
+    );
+
+    t.start_file();
+    let first = t.credit_bytes(60);
+    assert_eq!((first.bytes_done, first.transferred), (60, 60));
+    // A retry rewinds to the committed offset: 20 of those 60 never
+    // landed, and the replay is not new traffic either.
+    let rewound = t.credit_bytes(40);
+    assert_eq!((rewound.bytes_done, rewound.transferred), (40, 0));
+    let replayed = t.credit_bytes(100);
+    assert_eq!((replayed.bytes_done, replayed.transferred), (100, 60));
+
+    // Completion credits the file's size without claiming traffic —
+    // a cached file arrives here having reported nothing at all.
+    let done_a = t.finish_file("a");
+    assert_eq!((done_a.bytes_done, done_a.transferred), (100, 0));
+    t.start_file();
+    let done_b = t.finish_file("b");
+    assert_eq!(
+      (done_b.bytes_done, done_b.bytes_total, done_b.transferred),
+      (200, 200, 0)
+    );
+  }
+
+  #[test]
+  fn a_burst_of_callbacks_inside_one_window_is_not_read_as_a_faster_link() {
+    // hf-hub's eight chunk workers land several callbacks in the same
+    // microsecond. Folding an EMA step per callback divided a chunk by
+    // a near-zero interval and read a 2 MiB/s link as gigabytes per
+    // second; a window has to close before a step folds.
+    let t0 = Instant::now();
+    let mut burst = RateMeter::default();
+    for i in 0..64 {
+      burst.record(64 * 1024, t0 + Duration::from_micros(i));
+    }
+    assert_eq!(burst.bps(), 0.0, "no window has closed yet");
+
+    // One second of the same traffic: 4 MiB across four windows.
+    let mut meter = RateMeter::default();
+    let mut t = t0;
+    for _ in 0..16 {
+      t += Duration::from_millis(62);
+      meter.record(256 * 1024, t);
+    }
+    let mib = meter.bps() / (1024.0 * 1024.0);
+    assert!(
+      (2.0..6.0).contains(&mib),
+      "~4 MiB/s of traffic should read as single-digit MiB/s, got {mib}"
+    );
+  }
+
+  #[test]
+  fn a_stalled_transfer_decays_instead_of_holding_its_last_reading() {
+    let t0 = Instant::now();
+    let mut meter = RateMeter::default();
+    let mut t = t0;
+    for _ in 0..8 {
+      t += Duration::from_millis(300);
+      meter.record(10 * 1024 * 1024, t);
+    }
+    let moving = meter.bps();
+    assert!(moving > 0.0);
+    for _ in 0..8 {
+      t += Duration::from_millis(300);
+      meter.record(0, t);
+    }
+    assert!(
+      meter.bps() < moving / 10.0,
+      "stalled rate {} should fall well below {moving}",
+      meter.bps()
+    );
+  }
+
+  #[test]
+  fn a_repaint_clock_holds_a_surface_to_its_interval() {
+    let t0 = Instant::now();
+    let mut clock = RepaintClock::default();
+    assert!(clock.tick(t0, false), "the first frame always paints");
+    assert!(!clock.tick(t0 + PROGRESS_REPAINT / 2, false));
+    assert!(
+      clock.tick(t0 + PROGRESS_REPAINT / 2, true),
+      "a file boundary is rare enough to show immediately"
+    );
+    assert!(clock.tick(t0 + PROGRESS_REPAINT * 2, false));
+
+    clock.reset();
+    assert!(clock.tick(t0, false), "a reset clock paints again");
   }
 
   #[tokio::test]

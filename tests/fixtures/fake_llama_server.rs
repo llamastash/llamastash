@@ -166,6 +166,26 @@ async fn main() {
     return;
   }
 
+  // `--help` is the daemon's capability probe (`caps::LoadModeDialect::probe`),
+  // and like `--list-devices` it is one-shot: real llama-server prints and
+  // exits. Without this the fixture would fall through and *serve*, so the
+  // probe would block until its timeout on every boot — which is exactly what
+  // it did, timing out the IPC calls in `cli_integration_test`.
+  //
+  // Advertising `--load-mode` puts the fixture on the current dialect, matching
+  // the llama.cpp the project builds against. `FAKE_LLAMA_LEGACY_LOAD_FLAGS=1`
+  // makes it answer as a pre-2026-09-09 build instead, for a test that needs
+  // the other branch.
+  if std::env::args().skip(1).any(|a| a == "--help") {
+    if std::env::var("FAKE_LLAMA_LEGACY_LOAD_FLAGS").as_deref() == Ok("1") {
+      println!("      --mmap, --no-mmap                whether to memory-map model");
+      println!("      --mlock                          force system to keep model in RAM");
+    } else {
+      println!("-lm,   --load-mode MODE                 model loading mode (default: auto)");
+    }
+    return;
+  }
+
   let args = parse_args();
 
   if args.trap_sigterm {

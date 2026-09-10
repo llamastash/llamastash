@@ -347,6 +347,11 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   // `state.running` forever — `stop_model` returns InvalidParams
   // for them (no live supervisor), and every subsequent restart
   // would re-adopt the same row.
+  //
+  // The launch *name* rides across that demotion (`from_adopted`), so
+  // a crash still leaves the row addressable as `<model>@<name>` in
+  // `status` and `stop`. It is not re-published on the proxy: routing
+  // needs a supervisor, and there is none.
   let recorded_running: Vec<RunningSnapshot> = persisted_state.running.clone();
   let sweep = orphans::sweep(orphans::SweepInputs::new(&recorded_running)).await;
   let mut state_after_sweep = persisted_state;
@@ -368,42 +373,11 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
       continue;
     }
     let live = lookup_live_process(adopted.pid as u32);
-    let start_time_secs = live.start_time_secs.unwrap_or(0);
-    // The launch's model path, whatever shape its identity is. Reading it off
-    // `id.as_gguf()` yielded `None` for every non-GGUF identity, so a re-adopted
-    // row of that kind reported `model_path: null` and a cmdline ending in a
-    // dangling `-m ` — the user could see a surviving process but not which
-    // model it was serving, which is the one thing the row exists to say.
-    let model_path = adopted
-      .id
-      .as_gguf()
-      .map(|g| g.path.clone())
-      .unwrap_or_else(|| adopted.params.model_path.clone());
-    external_combined.push(orphans::ExternalProcess {
-      pid: adopted.pid as u32,
-      // The process's own argv when the OS still has it, so the row reads as
-      // what actually launched (`llama serve …` and `llama-server …` are the
-      // same backend under different binaries). Otherwise reconstruct one from
-      // the recorded backend's primary marker: registry-driven, names no
-      // backend, and only a label once the real argv is gone.
-      cmdline: live.cmdline.clone().unwrap_or_else(|| {
-        format!(
-          "{} --port {} -m {}",
-          crate::backend::adopted_process_name(&adopted.resolved_backend),
-          adopted.port,
-          model_path.display()
-        )
-      }),
-      model_path: Some(model_path),
-      start_time_secs,
-      port: Some(adopted.port),
-      // Adopted entries went through our state.json before the
-      // restart — by construction they were launched by *this*
-      // daemon's previous instance and therefore carry the same
-      // env marker. Marking them keeps `collect_in_use_ports`
-      // consistent across the adopted-vs-external split.
-      launched_by_llamastash: true,
-    });
+    external_combined.push(orphans::ExternalProcess::from_adopted(
+      adopted,
+      live.cmdline.clone(),
+      live.start_time_secs.unwrap_or(0),
+    ));
   }
   log::info!(
     "orphan sweep: {} adopted (now external), {} stale, {} external",

@@ -122,6 +122,25 @@ async fn start_model_drives_supervisor_status_logs_stop_and_last_params() {
     }
     tokio::time::sleep(Duration::from_millis(40)).await;
   }
+  // An unnamed row omits `name` entirely (not `"name": null`) — the same
+  // omit-when-unset convention `state.json` and the CLI's JSON use.
+  let body = client.call("status", None).await.expect("status");
+  let ready_row = body["models"]
+    .as_array()
+    .expect("models")
+    .iter()
+    .find(|m| m["launch_id"] == launch_id)
+    .expect("the unnamed launch's status row");
+  assert!(
+    ready_row.get("name").is_none(),
+    "unnamed status row must omit the name key: {ready_row:?}"
+  );
+  // Same convention for the resolved preset: a plain launch has none in
+  // play, so the key is omitted rather than nulled.
+  assert!(
+    ready_row.get("preset").is_none(),
+    "presetless status row must omit the preset key: {ready_row:?}"
+  );
 
   // 3) logs_tail returns at least the fake server's `listening on …`
   // line (proves stdout/stderr tee + ring buffer are wired).
@@ -201,6 +220,42 @@ async fn start_model_drives_supervisor_status_logs_stop_and_last_params() {
     s.running
   );
 
+  // 5b) a named start echoes the name the daemon actually stamped (trimmed,
+  // not the raw request parroted back); the unnamed start above carried no
+  // `launch_name` key at all, matching the omit-when-unset wire convention.
+  assert!(
+    start_body.get("launch_name").is_none(),
+    "an unnamed start must omit launch_name, got {start_body:?}"
+  );
+  let named_body = client
+    .call(
+      "start_model",
+      Some(json!({
+        "model_path": &model_path_canon,
+        "mode": "chat",
+        "name": " coder ",
+      })),
+    )
+    .await
+    .expect("named start_model");
+  assert_eq!(
+    named_body["launch_name"],
+    json!("coder"),
+    "the echo is the daemon's accepted name: {named_body:?}"
+  );
+  let named_id = named_body["launch_id"]
+    .as_str()
+    .expect("named launch_id")
+    .to_string();
+  let stop_named = client
+    .call(
+      "stop_model",
+      Some(json!({"launch_id": &named_id, "grace_secs": 5})),
+    )
+    .await
+    .expect("stop named launch");
+  assert_eq!(stop_named["state"]["state"], json!("stopped"));
+
   // 6) presets_save / list / show / delete round-trip via IPC.
   let save_body = client
     .call(
@@ -218,6 +273,43 @@ async fn start_model_drives_supervisor_status_logs_stop_and_last_params() {
   assert_eq!(save_body["saved"]["name"], json!("long-ctx"));
   assert_eq!(save_body["saved"]["params"]["ctx"], json!(32768));
   assert!(save_body["replaced"].is_null());
+
+  // A preset name and a launch name are independent on `start_model`: only the
+  // proxy's auto-start reads one as the other, so a manual `--name long-ctx`
+  // must not silently pick up the `long-ctx` preset.
+  let manual = client
+    .call(
+      "start_model",
+      Some(json!({
+        "model_path": &model_path_canon,
+        "mode": "chat",
+        "name": "long-ctx",
+      })),
+    )
+    .await
+    .expect("manual named start_model");
+  let manual_id = manual["launch_id"].as_str().expect("launch_id").to_string();
+  let manual_row = state_store::load(&state_dir)
+    .expect("load state")
+    .running
+    .into_iter()
+    .find(|r| r.launch_id.as_ref().map(|l| l.0.as_str()) == Some(manual_id.as_str()))
+    .expect("the manual launch's row");
+  assert_ne!(
+    manual_row
+      .params
+      .knobs
+      .u32(llamastash::launch::knobs::kid("ctx-size")),
+    Some(32768),
+    "a manual launch must not resolve a preset just because it shares the name"
+  );
+  let _ = client
+    .call(
+      "stop_model",
+      Some(json!({"launch_id": &manual_id, "grace_secs": 5})),
+    )
+    .await
+    .expect("stop manual launch");
 
   let list_body = client
     .call(
@@ -522,7 +614,7 @@ async fn last_params_persists_only_user_supplied_knob_deltas() {
   // user delta. The resolver will pull the first call's `threads`
   // into call 2's resolved knobs (via the `last_used` layer), but
   // the persisted entry for call 2 must only carry the new delta
-  // (`mlock = true`), not the carried-over `threads`.
+  // (`load-mode`), not the carried-over `threads`.
   let state = unique_temp("last-params-delta");
   let model_dir = unique_temp("last-params-delta-models");
   let model_path = model_dir.join("m.gguf");
@@ -598,49 +690,46 @@ async fn last_params_persists_only_user_supplied_knob_deltas() {
     .await
     .expect("stop_model");
 
-  // Call 2: user supplies a *different* delta (`mlock = true`). The
+  // Call 2: user supplies a *different* delta (`load-mode`). The
   // resolver will inherit `threads = 4` from `last_used`, but the
   // *persisted* knobs for call 2 must NOT carry it forward — only
-  // the new user-supplied `mlock` belongs in the delta.
+  // the new user-supplied `load-mode` belongs in the delta. It is the marker
+  // because nothing else seeds it: an arch default that touched the knob
+  // would make "user-supplied" untestable.
   let _ = client
     .call(
       "start_model",
       Some(json!({
         "model_path": &model_path_canon,
-        "knobs": {"mlock": true},
+        "knobs": {"load-mode": "mlock"},
       })),
     )
     .await
     .expect("start_model call 2");
 
   // Poll for call 2's persistence — upsert promotes the entry to the
-  // front of the Vec, so once `mlock == Some(true)` lands at index 0
+  // front of the Vec, so once the marker lands at index 0
   // we know the recorder fired for call 2. 60 s deadline matches the
   // call-1 wait for the same runner-load reason.
   let deadline = std::time::Instant::now() + Duration::from_secs(60);
   let knobs = loop {
     let s = state_store::load(&state_dir).expect("load state");
     if let Some(entry) = s.last_params.first() {
-      if entry
-        .params
-        .knobs
-        .bool(llamastash::launch::knobs::kid("mlock"))
-        == Some(true)
-      {
+      if entry.params.knobs.text_by_name("load-mode").as_deref() == Some("mlock") {
         break entry.params.knobs.clone();
       }
     }
     if std::time::Instant::now() > deadline {
-      panic!("call 2 last_params.mlock never persisted");
+      panic!("call 2 last_params marker never persisted");
     }
     tokio::time::sleep(Duration::from_millis(40)).await;
   };
 
   // The contract: only the call-2 delta survives on disk.
   assert_eq!(
-    knobs.bool(llamastash::launch::knobs::kid("mlock")),
-    Some(true),
-    "user-supplied mlock must persist verbatim"
+    knobs.text_by_name("load-mode").as_deref(),
+    Some("mlock"),
+    "a user-supplied knob must persist verbatim"
   );
   assert_eq!(
     knobs.u32(llamastash::launch::knobs::kid("threads")),
@@ -751,35 +840,30 @@ async fn no_selection_start_inherits_last_params_extras() {
     .expect("stop_model");
 
   // Call 2 (no selection): no extras, no `selection` field (defaults to the
-  // no-selection `default`), plus a distinguishing knob (`mlock`) so we can
+  // no-selection `default`), plus a distinguishing knob (`load-mode`) so we can
   // tell call 2's persisted entry apart from call 1's.
   let _ = client
     .call(
       "start_model",
       Some(json!({
         "model_path": &model_path_canon,
-        "knobs": {"mlock": true},
+        "knobs": {"load-mode": "mlock"},
       })),
     )
     .await
     .expect("start_model call 2");
 
-  // Poll until call 2's entry lands (mlock marks it), then check extras.
+  // Poll until call 2's entry lands (the load-mode marker), then check extras.
   let deadline = std::time::Instant::now() + Duration::from_secs(60);
   let extras = loop {
     let s = state_store::load(&state_dir).expect("load state");
     if let Some(entry) = s.last_params.first() {
-      if entry
-        .params
-        .knobs
-        .bool(llamastash::launch::knobs::kid("mlock"))
-        == Some(true)
-      {
+      if entry.params.knobs.text_by_name("load-mode").as_deref() == Some("mlock") {
         break entry.params.extras.clone();
       }
     }
     if std::time::Instant::now() > deadline {
-      panic!("call 2 last_params (mlock marker) never persisted");
+      panic!("call 2 last_params (load-mode marker) never persisted");
     }
     tokio::time::sleep(Duration::from_millis(40)).await;
   };
@@ -861,10 +945,10 @@ async fn no_selection_start_applies_configured_default_preset() {
   let port = resp["port"].as_u64().unwrap() as u16;
 
   let deadline = std::time::Instant::now() + Duration::from_secs(60);
-  let params = loop {
+  let (params, stamped_preset) = loop {
     let s = state_store::load(&state_dir).expect("load state");
     if let Some(r) = s.running.iter().find(|r| r.port == port) {
-      break r.params.clone();
+      break (r.params.clone(), r.preset.clone());
     }
     if std::time::Instant::now() > deadline {
       panic!("default-preset launch never recorded a running snapshot");
@@ -885,6 +969,20 @@ async fn no_selection_start_applies_configured_default_preset() {
     "default preset's extras applied; got {:?}",
     params.extras
   );
+  assert_eq!(
+    stamped_preset.as_deref(),
+    Some("long"),
+    "the daemon stamps the resolved default preset's name on the running row"
+  );
+  // …and `status` surfaces it, so the TUI / `show` can render it.
+  let status = client.call("status", None).await.expect("status");
+  let row = status["models"]
+    .as_array()
+    .expect("models")
+    .iter()
+    .find(|m| m["port"] == json!(port))
+    .expect("the launch's status row");
+  assert_eq!(row["preset"], json!("long"));
 
   let _ = client.call("shutdown", None).await;
   let _ = timeout(Duration::from_secs(3), daemon).await;
@@ -1159,14 +1257,17 @@ async fn named_preset_launch_does_not_inherit_stale_last_params() {
     .expect("stop_model");
 
   // Call 2 (named preset): `selection: explicit` with the preset's flattened
-  // knobs. The preset sets `ctx-size` but NOT `threads`, so a stale
-  // `last_params.threads` must not leak in from the `LastUsed` layer.
+  // knobs — and its name on `preset`, as the CLI / TUI send it — so the
+  // daemon can stamp the running row. The preset sets `ctx-size` but NOT
+  // `threads`, so a stale `last_params.threads` must not leak in from the
+  // `LastUsed` layer.
   let resp = client
     .call(
       "start_model",
       Some(json!({
         "model_path": &model_path_canon,
         "selection": "explicit",
+        "preset": "fast",
         "knobs": {"ctx-size": 8192},
       })),
     )
@@ -1189,6 +1290,31 @@ async fn named_preset_launch_does_not_inherit_stale_last_params() {
     "a named-preset launch must not inherit a stale last_params knob; got {:?}",
     sources.get("threads")
   );
+  // The caller-sent preset name lands on the running snapshot verbatim —
+  // the client flattened the params, so the daemon only has the name to go
+  // on and must trust it (display-only field).
+  let second_port = resp["port"].as_u64().unwrap() as u16;
+  let deadline = std::time::Instant::now() + Duration::from_secs(60);
+  loop {
+    let s = state_store::load(&state_dir).expect("load state");
+    if s.running.iter().any(|r| r.port == second_port) {
+      assert_eq!(
+        s.running
+          .iter()
+          .find(|r| r.port == second_port)
+          .unwrap()
+          .preset
+          .as_deref(),
+        Some("fast"),
+        "an explicit preset launch stamps the name it was sent"
+      );
+      break;
+    }
+    if std::time::Instant::now() > deadline {
+      panic!("call 2 never recorded a running snapshot");
+    }
+    tokio::time::sleep(Duration::from_millis(40)).await;
+  }
 
   let _ = client.call("shutdown", None).await;
   let _ = timeout(Duration::from_secs(3), daemon).await;

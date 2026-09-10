@@ -74,6 +74,66 @@ pub struct ExternalProcess {
   /// hint that the orphan came from a sibling/previous llamastash.
   #[serde(default)]
   pub launched_by_llamastash: bool,
+  /// The launch name this process was started under, for a row that
+  /// came from `state.json::running` (see
+  /// [`ExternalProcess::from_adopted`]). `None` for a process the
+  /// scan found, which never had one. It is the only piece of the
+  /// launch's identity that survives the daemon it was started by,
+  /// so `status` can still call the row `<model>@<name>` and `stop`
+  /// can still take that name.
+  #[serde(default)]
+  pub name: Option<String>,
+}
+
+impl ExternalProcess {
+  /// Project a re-adopted `state.json` row into the read-only external
+  /// row the daemon surfaces for it.
+  ///
+  /// `cmdline` and `start_time_secs` come from the live process table
+  /// when the OS still has them; the reconstructed cmdline is a label
+  /// of last resort once the real argv is gone.
+  pub fn from_adopted(
+    adopted: &RunningSnapshot,
+    cmdline: Option<String>,
+    start_time_secs: u64,
+  ) -> Self {
+    // The launch's model path, whatever shape its identity is. Reading it off
+    // `id.as_gguf()` yielded `None` for every non-GGUF identity, so a re-adopted
+    // row of that kind reported `model_path: null` and a cmdline ending in a
+    // dangling `-m ` — the user could see a surviving process but not which
+    // model it was serving, which is the one thing the row exists to say.
+    let model_path = adopted
+      .id
+      .as_gguf()
+      .map(|g| g.path.clone())
+      .unwrap_or_else(|| adopted.params.model_path.clone());
+    Self {
+      pid: adopted.pid as u32,
+      // The process's own argv when the OS still has it, so the row reads as
+      // what actually launched (`llama serve …` and `llama-server …` are the
+      // same backend under different binaries). Otherwise reconstruct one from
+      // the recorded backend's primary marker: registry-driven, names no
+      // backend, and only a label once the real argv is gone.
+      cmdline: cmdline.unwrap_or_else(|| {
+        format!(
+          "{} --port {} -m {}",
+          crate::backend::adopted_process_name(&adopted.resolved_backend),
+          adopted.port,
+          model_path.display()
+        )
+      }),
+      model_path: Some(model_path),
+      start_time_secs,
+      port: Some(adopted.port),
+      // Adopted entries went through our state.json before the
+      // restart — by construction they were launched by *this*
+      // daemon's previous instance and therefore carry the same
+      // env marker. Marking them keeps `collect_in_use_ports`
+      // consistent across the adopted-vs-external split.
+      launched_by_llamastash: true,
+      name: adopted.name.clone(),
+    }
+  }
 }
 
 /// Inputs to a sweep — the daemon hands them in.
@@ -252,6 +312,9 @@ pub async fn sweep(inputs: SweepInputs<'_>) -> SweepReport {
         start_time_secs,
         port,
         launched_by_llamastash,
+        // Found by scanning the process table, so there is no launch
+        // record to take a name from.
+        name: None,
       })
     })
     .collect();
@@ -442,23 +505,18 @@ mod tests {
   use tokio::net::TcpListener;
 
   use crate::gguf::identity::ModelId;
-  use crate::launch::mode::LaunchMode;
-  use crate::launch::params::LaunchParams;
 
   fn fake_snapshot(pid: i32, port: u16, path: &str, tag: u8) -> RunningSnapshot {
-    RunningSnapshot {
-      id: crate::backend::identity::ModelIdentity::Gguf(ModelId {
+    crate::test_support::running_row(path)
+      .identity(crate::backend::identity::ModelIdentity::Gguf(ModelId {
         path: PathBuf::from(path),
         header_blake3: [tag; 32],
-      }),
-      pid,
-      port,
-      started_at: 1_700_000_000,
-      launch_id: None,
-      params: LaunchParams::new(PathBuf::from(path), LaunchMode::Chat),
-      actuals: Default::default(),
-      resolved_backend: "llamacpp".to_string(),
-    }
+      }))
+      .pid(pid)
+      .port(port)
+      .started_at(1_700_000_000)
+      .unstamped()
+      .build()
   }
 
   /// A loopback port that nothing is listening on: bind ephemeral, read
@@ -709,6 +767,41 @@ mod tests {
   }
 
   #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+  async fn an_adopted_row_keeps_its_launch_name() {
+    // D1's whole reason for putting the name on the snapshot rather than only
+    // on the supervisor: a daemon restart re-adopts the live process from
+    // `state.json`, and the launch has to still answer to `<model>@<name>`
+    // afterwards. The supervisor is gone by then; the row is the only record.
+    //
+    // This asserts the sweep only. The caller then projects the adopted row
+    // into an `external` row and used to drop the name doing it — so this test
+    // passed while the address was dead. `from_adopted_carries_the_launch_name`
+    // pins that half.
+    let live = std::process::id() as i32;
+    let body = serde_json::json!({
+      "object": "list",
+      "data": [{"id": "/m/match.gguf", "object": "model"}],
+    })
+    .to_string();
+    let (_resp, port) = spawn_one_shot(200, body).await;
+
+    let mut row = fake_snapshot(live, port, "/m/match.gguf", 1);
+    row.name = Some("coder".to_string());
+    let report = sweep(SweepInputs {
+      recorded_running: &[row],
+      external_markers: vec!["llamastash-sweep-marker-that-matches-nothing-9f3a"],
+      probe_timeout: Duration::from_secs(1),
+    })
+    .await;
+    assert_eq!(report.adopted.len(), 1, "matching probe must adopt");
+    assert_eq!(
+      report.adopted[0].name.as_deref(),
+      Some("coder"),
+      "the name has to survive the restart, or the address dies with the daemon"
+    );
+  }
+
+  #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
   async fn live_pid_with_basename_only_id_adopts() {
     // Regression for the llama.cpp drift: b9245+ reports only the file
     // basename as `/v1/models` `id` (not the full `-m` path the older
@@ -841,6 +934,63 @@ mod tests {
        classified as external even when an argv value contains the \
        marker substring (this was the bug that caused llamastash to \
        flag itself via `--llama-server <path>`)"
+    );
+  }
+
+  /// A crashed daemon leaves the launch running; its name is the only piece
+  /// of the address that can survive, and this projection is where it either
+  /// rides across or is lost. Testing `sweep` alone missed the drop once —
+  /// `sweep` cloned the name faithfully and the caller discarded it.
+  #[test]
+  fn from_adopted_carries_the_launch_name() {
+    let snap = crate::test_support::running_row("/models/qwen.gguf")
+      .name("coder")
+      .pid(4242)
+      .port(41100)
+      .build();
+    let ext = ExternalProcess::from_adopted(&snap, Some("llama-server --port 41100".into()), 99);
+    assert_eq!(ext.name.as_deref(), Some("coder"));
+    assert_eq!(ext.pid, 4242);
+    assert_eq!(ext.port, Some(41100));
+    assert_eq!(ext.cmdline, "llama-server --port 41100");
+    assert_eq!(ext.start_time_secs, 99);
+    assert!(
+      ext.launched_by_llamastash,
+      "an adopted row came from our own state.json, so it carries the marker"
+    );
+  }
+
+  /// An unnamed launch must not gain a name on the way across, and the
+  /// reconstructed cmdline still has to say which model is serving.
+  #[test]
+  fn from_adopted_leaves_an_unnamed_row_unnamed() {
+    let snap = crate::test_support::running_row("/models/qwen.gguf")
+      .pid(4243)
+      .port(41101)
+      .build();
+    let ext = ExternalProcess::from_adopted(&snap, None, 0);
+    assert_eq!(ext.name, None);
+    assert!(
+      ext.cmdline.contains("/models/qwen.gguf"),
+      "a reconstructed cmdline must still name the model: {}",
+      ext.cmdline
+    );
+  }
+
+  /// A process the scan found never went through `state.json`, so there is no
+  /// name to claim — the `name` field must stay `None` for it.
+  #[tokio::test]
+  async fn scanned_external_rows_carry_no_name() {
+    let recorded: Vec<RunningSnapshot> = Vec::new();
+    let report = sweep(SweepInputs {
+      recorded_running: &recorded,
+      external_markers: vec!["llama-server"],
+      probe_timeout: Duration::from_millis(100),
+    })
+    .await;
+    assert!(
+      report.external.iter().all(|e| e.name.is_none()),
+      "a scan-found orphan has no launch record to take a name from"
     );
   }
 }

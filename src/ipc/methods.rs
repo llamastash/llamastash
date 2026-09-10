@@ -528,6 +528,13 @@ async fn start_model_handler(
     "pid": pid,
     "log_path": started.log_path,
   });
+  // The accepted name, echoed rather than assumed: the client reports what the
+  // daemon actually stamped (a stale pre-name daemon correctly reports unnamed
+  // instead of the client printing the name it *asked* for). Omitted when unset
+  // to keep the shape byte-stable for unnamed launches.
+  if let Some(n) = &started.name {
+    resp["launch_name"] = json!(n);
+  }
   // Non-fatal advisories (dropped knobs, deepseek4 KV-blind note, ssd_streaming
   // bypass). Omitted when empty so the response stays byte-stable for launches
   // that raise none (every llama.cpp / Lemonade launch today).
@@ -679,10 +686,6 @@ struct PresetsSaveParams {
   knobs: crate::launch::knobs::KnobSet,
   #[serde(default)]
   extras: Vec<String>,
-  #[serde(default)]
-  mtp: crate::launch::params::MtpEnable,
-  #[serde(default)]
-  mtp_draft_n: Option<u32>,
   /// Backend this preset pins. Launch *identity*, not a knob — it decides
   /// which backend's knobs apply at all, so it cannot be backend-declared.
   #[serde(default)]
@@ -715,10 +718,6 @@ async fn presets_save_handler(
   lp.ctx = parsed.ctx;
   lp.reasoning = parsed.reasoning.unwrap_or(false);
   lp.knobs = parsed.knobs;
-  // KD2 scoped MTP to "launch / TUI / preset"; the save path used to drop it,
-  // so a preset could never pin speculation on or off.
-  lp.mtp = parsed.mtp;
-  lp.mtp_draft_n = parsed.mtp_draft_n;
   // Identity: which backend and which of its builds this preset pins. Stored
   // verbatim so a saved preset can reproduce the run it was captured from.
   lp.backend = parsed
@@ -1170,16 +1169,14 @@ mod tests {
     let path = PathBuf::from(format!("lemonade://{name}"));
     let (id, resolved_backend) = crate::backend::synthetic_identity_for_path(&path)
       .expect("a lemonade:// path mints a synthetic backend identity");
-    crate::daemon::state_store::RunningSnapshot {
-      id,
-      pid: 0,
-      port,
-      started_at: 0,
-      launch_id: Some(crate::daemon::registry::LaunchId(launch_id.to_string())),
-      resolved_backend,
-      params: LaunchParams::new(path, LaunchMode::Chat),
-      actuals: Default::default(),
-    }
+    crate::test_support::running_row(&path.to_string_lossy())
+      .identity(id)
+      .pid(0)
+      .port(port)
+      .launch_id(launch_id)
+      .params(LaunchParams::new(path, LaunchMode::Chat))
+      .resolved_backend(&resolved_backend)
+      .build()
   }
 
   #[tokio::test]

@@ -141,6 +141,7 @@ fn two_device_server(backend_id: &str) -> Vec<llamastash::backend::Server> {
     binary: std::path::PathBuf::from("/test/engine"),
     name: format!("{backend_id}-test"),
     devices: vec![device("D0"), device("D1")],
+    caps: Default::default(),
   }]
 }
 
@@ -330,6 +331,42 @@ fn the_tui_save_payload_carries_the_launch_identity() {
     bare_params.get("server").is_none(),
     "unset server must omit the key, not send explicit null"
   );
+}
+
+/// The TUI launch payload carries the preset name a `Named` cycle stop
+/// picked, and sends `null` (not a fabricated name) for the `last used` /
+/// `auto` stops — the daemon stamps the running row from exactly this.
+#[test]
+fn the_tui_launch_payload_carries_the_preset_name() {
+  use llamastash::tui::app::StartModelArgs;
+  use llamastash::tui::events::{encode_writer_cmd, WriterCmd};
+
+  let args = |preset| StartModelArgs {
+    model_path: "/m/qwen.gguf".into(),
+    ctx: None,
+    reasoning: None,
+    knobs: knobs::KnobSet::new(),
+    extras: Vec::new(),
+    mode: None,
+    prefer_port: None,
+    backend: Default::default(),
+    selection: "explicit",
+    server: None,
+    name: None,
+    preset,
+  };
+  let (method, params) =
+    encode_writer_cmd(WriterCmd::StartModel(Box::new(args(Some("fast".into())))));
+  assert_eq!(method, "start_model");
+  assert_eq!(
+    params.get("preset"),
+    Some(&serde_json::json!("fast")),
+    "the named stop's raw name must ride the payload, or the running row can't show it"
+  );
+  // The `last used` / `auto` stops are not preset launches; `null` matches
+  // the `name` / `server` treatment and the daemon's `Option` decode.
+  let (_, bare) = encode_writer_cmd(WriterCmd::StartModel(Box::new(args(None))));
+  assert_eq!(bare.get("preset"), Some(&serde_json::json!(null)));
 }
 
 /// The clap `Command` for one subcommand of the real CLI.

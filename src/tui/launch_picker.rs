@@ -170,6 +170,10 @@ pub struct LaunchPickerState {
   /// the default build ([`Self::servers`]`[0]`). Sent verbatim as
   /// [`crate::launch::params::LaunchParams::server`]; seeded from last_params.
   pub selected_server: Option<String>,
+  /// User-chosen launch name (from the `Alt+⏎` "launch as…" dialog), or
+  /// `None` for a plain `⏎` launch. Carried through to `StartModelArgs.name`
+  /// so the launch is addressable as `<model-id>@<name>`.
+  pub launch_name: Option<String>,
   /// Walk cursor over the scoped server's devices — the GPU `Space` toggles.
   /// ←/→ move it; it does **not** itself select. Clamped to the device count
   /// on render; reset to 0 when the scoped server changes.
@@ -254,6 +258,7 @@ impl LaunchPickerState {
       prefer_port: None,
       servers: Vec::new(),
       selected_server: None,
+      launch_name: None,
       device_cursor: 0,
       presets: Vec::new(),
       default_stop: PresetStop::LastUsed,
@@ -789,55 +794,16 @@ impl LaunchPickerState {
   /// untouched and the model's own hint should decide.
   ///
   /// `mode` is an ordinary knob row (`Emit::Custom`, so nothing emits it from
-  /// the knob map) and the launch reads `LaunchParams.mode`. Same shape as
-  /// `mtp_intent` beside it: one projection point between the row and the
-  /// typed sibling. Without it a preset's pinned mode, and any edit the user
-  /// makes on that row, rode the wire as a knob nobody consumes while the
-  /// catalog hint silently decided the launch.
+  /// the knob map) and the launch reads `LaunchParams.mode`. This is the one
+  /// projection point between the row and that typed sibling. Without it a
+  /// preset's pinned mode, and any edit the user makes on that row, rode the
+  /// wire as a knob nobody consumes while the catalog hint silently decided
+  /// the launch.
   pub fn mode_intent(&self) -> Option<crate::launch::mode::LaunchMode> {
     self
       .user_knobs
       .str_by_concept(self.active_backend_id(), knobs::Concept::Mode)
       .and_then(crate::launch::mode::LaunchMode::from_label)
-  }
-
-  // ----------------------------------------------------------------- mtp
-
-  /// The speculation knob of the backend in scope, when it declares one.
-  ///
-  /// `mtp` is an ordinary knob row in the editor. The wire params still carry
-  /// the intent as a typed sibling, so these two project between the row and
-  /// that field the same way a preset does — one projection point, not a
-  /// second channel.
-  fn mtp_knob(&self) -> Option<&'static KnobDef> {
-    knobs::def_for_backend(self.active_backend_id(), knobs::kid("mtp"))
-  }
-
-  /// The MTP intent this form would launch with.
-  pub fn mtp_intent(&self) -> crate::launch::params::MtpEnable {
-    use crate::launch::params::MtpEnable;
-    let Some(def) = self.mtp_knob() else {
-      return MtpEnable::Auto;
-    };
-    match self.user_knobs.get(def.knob_id()) {
-      Some(KnobValue::Set(Scalar::Bool(true))) => MtpEnable::On,
-      Some(KnobValue::Set(Scalar::Bool(false))) => MtpEnable::Off,
-      // Explicit `auto`, and an untouched row, both mean "let the model
-      // decide" — which is what `Auto` says.
-      _ => MtpEnable::Auto,
-    }
-  }
-
-  /// Seed the MTP row from a remembered intent.
-  pub fn set_mtp_intent(&mut self, intent: crate::launch::params::MtpEnable) {
-    use crate::launch::params::MtpEnable;
-    let Some(def) = self.mtp_knob() else { return };
-    let id = def.knob_id();
-    match intent {
-      MtpEnable::Auto => self.user_knobs.set_auto(id),
-      MtpEnable::On => self.user_knobs.set(id, KnobValue::Set(Scalar::Bool(true))),
-      MtpEnable::Off => self.user_knobs.set(id, KnobValue::Set(Scalar::Bool(false))),
-    }
   }
 
   // -------------------------------------------------------------- cycles
@@ -1560,28 +1526,30 @@ mod tests {
 
   // ------------------------------------------------------------------ mtp
 
+  /// The mtp row is the ordinary generated knob row; what it leaves in
+  /// `user_knobs` is what launches — there is no second typed channel.
   #[test]
-  fn the_mtp_row_cycles_and_projects_onto_the_wire_intent() {
-    use crate::launch::params::MtpEnable;
+  fn the_mtp_row_cycles_the_quad_ring_into_user_knobs() {
     let mut s = LaunchPickerState::for_model("qwen");
     s.mtp_capable = true;
     s.field = row("mtp");
     // `mtp` declares an auto state, so it carries the quad ring. An untouched
     // row and an explicit auto both mean "let the model decide".
-    assert_eq!(s.mtp_intent(), MtpEnable::Auto);
+    assert!(!s.user_knobs.contains(kid("mtp")));
     s.cycle_focused_value_next();
-    assert_eq!(s.mtp_intent(), MtpEnable::Auto, "explicit auto");
+    assert!(s.user_knobs.is_auto(kid("mtp")), "explicit auto");
     s.cycle_focused_value_next();
-    assert_eq!(s.mtp_intent(), MtpEnable::On);
+    assert_eq!(s.user_knobs.bool(kid("mtp")), Some(true), "on");
     s.cycle_focused_value_next();
-    assert_eq!(s.mtp_intent(), MtpEnable::Off);
+    assert_eq!(s.user_knobs.bool(kid("mtp")), Some(false), "off");
     s.cycle_focused_value_next();
-    assert_eq!(s.mtp_intent(), MtpEnable::Auto, "wraps to inherited");
-    // A remembered intent seeds the row it renders.
-    s.set_mtp_intent(MtpEnable::On);
+    assert!(!s.user_knobs.contains(kid("mtp")), "wraps to inherited");
+    // A set row renders its value; clearing it returns to inherited.
+    s.cycle_focused_value_next();
+    s.cycle_focused_value_next();
     assert_eq!(s.value_label(kid("mtp")), "on");
     s.reset_focused_row();
-    assert_eq!(s.mtp_intent(), MtpEnable::Auto);
+    assert!(!s.user_knobs.contains(kid("mtp")));
   }
 
   // --------------------------------------------------------------- values
@@ -1766,6 +1734,7 @@ mod tests {
       binary: std::path::PathBuf::from(binary),
       name: id.into(),
       devices,
+      caps: Default::default(),
     }
   }
 

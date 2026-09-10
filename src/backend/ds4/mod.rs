@@ -654,7 +654,7 @@ impl Backend for Ds4Backend {
     // governs every backend. Independent of host metrics, so it runs before the
     // streaming gate; the auto-set key is stripped from `last_params` so it
     // re-resolves each launch.
-    if !matches!(params.mtp, crate::launch::params::MtpEnable::Off)
+    if !matches!(params.mtp_intent(), crate::launch::params::MtpEnable::Off)
       && !params.knobs.is_set_by_name_for(DS4_BACKEND_ID, "mtp-model")
     {
       // ds4 serves one arch, so the head lookup can key on it directly instead
@@ -695,22 +695,10 @@ impl Backend for Ds4Backend {
           .to_string(),
       );
     }
-    // The neutral per-step draft count maps onto ds4's own draft flag, so the
-    // one `--mtp-draft-n` works whichever backend serves the model. Only when a
-    // head is actually paired (the flag is meaningless without one) and the
-    // native knob wasn't set directly, which wins.
-    if let Some(n) = params.mtp_draft_n {
-      let head_paired = params.knobs.is_set_by_name_for(DS4_BACKEND_ID, "mtp-model");
-      let knob_set_directly = params
-        .knobs
-        .is_set_by_name_for(DS4_BACKEND_ID, "mtp-draft-n");
-      if head_paired && !knob_set_directly {
-        params
-          .knobs
-          .set_by_name_for(DS4_BACKEND_ID, "mtp-draft-n", n.to_string());
-        out.auto_set.insert("mtp_draft".to_string());
-      }
-    }
+    // The neutral per-step draft count (`--mtp-draft-n`) is the shared
+    // `mtp-draft-n` knob, so it needs no projection here — it rides the
+    // resolved knob set onto this backend's `--mtp-draft` spelling. The
+    // headless guard below keeps it from emitting without a paired head.
     // `ssd_streaming` Auto → on when residency won't fit. ds4 holds the full
     // model plus a cached-expert/KV working set the deepseek4 demand model can't
     // see (~1.25× weights), so a full-residency spawn OOM-kills mid-load
@@ -756,11 +744,6 @@ impl Backend for Ds4Backend {
       MtpStreamConflict::DropHead => {
         params.knobs.remove_by_name_for(DS4_BACKEND_ID, "mtp-model");
         out.auto_set.remove("mtp");
-        if out.auto_set.remove("mtp_draft") {
-          params
-            .knobs
-            .remove_by_name_for(DS4_BACKEND_ID, "mtp-draft-n");
-        }
         out.warnings.push(
           "ds4 cannot stream from disk with an MTP draft head — dropped the auto-paired \
            sidecar so the launch can stream. Set `ssd_streaming: false` to speculate at \
@@ -777,6 +760,19 @@ impl Backend for Ds4Backend {
         );
         return out;
       }
+    }
+    // `--mtp-draft` is meaningless without a paired head and this knob emits
+    // on its own (`Emit::FlagValue`), so a set draft count must not survive a
+    // launch that ended up not speculating — drop it once pairing and the
+    // conflict rules above have settled.
+    if !params
+      .knobs
+      .text_by_name("mtp-model")
+      .is_some_and(|v| !v.is_empty())
+    {
+      params
+        .knobs
+        .remove_by_name_for(DS4_BACKEND_ID, "mtp-draft-n");
     }
 
     if let Some(free) = auto_stream_free {

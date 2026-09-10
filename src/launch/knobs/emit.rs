@@ -136,13 +136,28 @@ mod tests {
 
   #[test]
   fn bare_bool_emits_only_when_true() {
+    // The default backend declares no `BareFlagWhenTrue` bool any more —
+    // `mlock` / `no-mmap` folded into the `load-mode` enum when llama.cpp
+    // replaced their flags — so this exercises the emission rule on a backend
+    // that still has one.
+    let backend = crate::backend::ds4::DS4_BACKEND_ID;
     let mut on = KnobSet::new();
-    on.set_scalar(id("mlock"), Scalar::Bool(true));
-    assert_eq!(argv(&on), vec!["--mlock"]);
+    on.set_scalar(id("warm-weights"), Scalar::Bool(true));
+    assert_eq!(strs(emit_argv(backend, &on, &[])), vec!["--warm-weights"]);
 
     let mut off = KnobSet::new();
-    off.set_scalar(id("mlock"), Scalar::Bool(false));
-    assert!(argv(&off).is_empty(), "false emits no --no-flag form");
+    off.set_scalar(id("warm-weights"), Scalar::Bool(false));
+    assert!(
+      emit_argv(backend, &off, &[]).is_empty(),
+      "false emits no --no-flag form"
+    );
+  }
+
+  fn strs(args: Vec<OsString>) -> Vec<String> {
+    args
+      .iter()
+      .map(|s| s.to_string_lossy().into_owned())
+      .collect()
   }
 
   /// Regression: modern llama-server rejects a bare `--flash-attn` and parses

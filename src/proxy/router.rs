@@ -39,6 +39,7 @@ use super::ollama_compat::{
 use super::openai::{ErrorObject, ErrorResponse, ModelList, ModelObject};
 use super::route::{self, RouteDecision};
 use super::state::ProxyState;
+use crate::daemon::state_store::RunningSnapshot;
 use crate::daemon::supervisor::ManagedState;
 use crate::discovery::DiscoveredModel;
 use crate::gguf::metadata::{ModeHint, ModelMetadata};
@@ -255,6 +256,7 @@ async fn forward_request(state: Arc<ProxyState>, req: Request<Incoming>) -> Prox
       requested_model,
       resolved_row,
       arch,
+      name,
     } => {
       route::handle_not_running(
         &state,
@@ -263,6 +265,7 @@ async fn forward_request(state: Arc<ProxyState>, req: Request<Incoming>) -> Prox
         *resolved_row,
         arch,
         req_mode,
+        name,
       )
       .await
     }
@@ -363,6 +366,12 @@ async fn list_models(state: Arc<ProxyState>) -> ProxyResponse {
     .iter()
     .map(|m| ModelObject::new(published_id(&ids, m)))
     .collect();
+  let state_snap = state.ctx.state.snapshot().await;
+  for (named_id, _) in named_launch_ids(&state_snap.running, &ids) {
+    if !rows.iter().any(|row| row.id == named_id) {
+      rows.push(ModelObject::new(named_id));
+    }
+  }
   // ASCII-lexicographic sort: stable, deterministic across runs, and
   // independent of the catalog's underlying BTreeMap key (canonical
   // path) which orders by filesystem layout instead of display name.
@@ -413,6 +422,42 @@ fn published_id(ids: &HashMap<String, String>, m: &DiscoveredModel) -> String {
     .unwrap_or_else(|| model_id_for(m))
 }
 
+/// The addressable `<model-id>@<name>` ids of the live named launches, paired
+/// with the row each one came from. One rule for both listings — `/v1/models`
+/// and `/api/tags` dress the same pairs in their own row type.
+///
+/// The model half is read out of the same `published_ids` index the catalog
+/// rows use (D6). Deriving it from the path alone would publish the bare stem
+/// two same-basename GGUFs in different roots share, and a request for that id
+/// then 400s `ambiguous_model` on the model half — a listed id that cannot be
+/// reached.
+///
+/// Every named row published here routes: a managed multiplexer serves all its
+/// models from one shared umbrella process, so a name cannot name a second
+/// instance there, and the daemon refuses `--name` on such a launch rather than
+/// letting this list publish an address `decide` has no target for.
+fn named_launch_ids<'a>(
+  running: &'a [RunningSnapshot],
+  ids: &HashMap<String, String>,
+) -> Vec<(String, &'a RunningSnapshot)> {
+  let mut out: Vec<(String, &RunningSnapshot)> = Vec::new();
+  for r in running {
+    let Some(name) = r.name.as_deref() else {
+      continue;
+    };
+    let base_id = ids
+      .get(r.params.model_path.to_string_lossy().as_ref())
+      .cloned()
+      .unwrap_or_else(|| crate::util::paths::model_public_id(&r.params.model_path, None));
+    let named_id = crate::launch::resolve::join_named_reference(&base_id, name);
+    if out.iter().any(|(id, _)| *id == named_id) {
+      continue;
+    }
+    out.push((named_id, r));
+  }
+  out
+}
+
 // === Ollama-compat handlers ============================================
 //
 // Tier 1: read-only discovery endpoints. All four share `model_id_for`
@@ -429,6 +474,27 @@ async fn ollama_tags(state: Arc<ProxyState>) -> ProxyResponse {
     .iter()
     .map(|m| ollama_tag_from_discovered(m, published_id(&ids, m)))
     .collect();
+  let state_snap = state.ctx.state.snapshot().await;
+  for (named_id, r) in named_launch_ids(&state_snap.running, &ids) {
+    if models.iter().any(|m| m.name == named_id) {
+      continue;
+    }
+    models.push(TagModel {
+      name: named_id.clone(),
+      model: named_id,
+      modified_at: UNKNOWN_MTIME.to_string(),
+      size: 0,
+      digest: digest_for_path(&r.params.model_path),
+      details: ModelDetails {
+        parent_model: String::new(),
+        format: "gguf",
+        family: String::new(),
+        families: Vec::new(),
+        parameter_size: String::new(),
+        quantization_level: String::new(),
+      },
+    });
+  }
   models.sort_by(|a, b| a.name.cmp(&b.name));
   let body = TagsResponse { models };
   let bytes = serde_json::to_vec(&body).expect("json encoding of fixed shape");
@@ -877,6 +943,66 @@ mod tests {
     assert_eq!(
       capabilities_for(Some(&discovered_with_mode(ModeHint::Rerank))),
       vec!["rerank"]
+    );
+  }
+
+  fn discovered_at(path: &str) -> DiscoveredModel {
+    let mut m = discovered_with_mode(ModeHint::Chat);
+    m.path = std::path::PathBuf::from(path);
+    m.parent = m.path.parent().map(std::path::Path::to_path_buf).unwrap();
+    m
+  }
+
+  #[test]
+  fn named_ids_take_the_published_model_half_not_the_bare_stem() {
+    // Two `qwen3.gguf` in different roots: the catalog disambiguates them
+    // through `published_id_index`, and the named id has to ride the same
+    // rule. Deriving the model half from the path alone published a bare
+    // `qwen3@coder` that then 400s `ambiguous_model` on the split — an id
+    // listed but unreachable.
+    let snap = vec![
+      discovered_at("/a/qwen3.gguf"),
+      discovered_at("/b/qwen3.gguf"),
+    ];
+    let ids = published_ids(&snap);
+    let running = vec![crate::test_support::running_row("/a/qwen3.gguf")
+      .name("coder")
+      .build()];
+
+    let named = named_launch_ids(&running, &ids);
+    let published = ids.get("/a/qwen3.gguf").expect("catalog publishes /a");
+    assert_eq!(
+      named.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+      vec![format!("{published}@coder").as_str()],
+    );
+    assert_ne!(
+      named[0].0, "qwen3@coder",
+      "the ambiguous stem must not be published"
+    );
+  }
+
+  #[test]
+  fn named_ids_fall_back_to_the_path_id_off_catalog_and_dedup() {
+    // A running row whose path left the catalog still publishes an id (the
+    // launch is live and addressable), and one name emits one row however
+    // many times the walk sees it.
+    let ids = published_ids(&[]);
+    let running = vec![
+      crate::test_support::running_row("/a/qwen3.gguf")
+        .name("coder")
+        .build(),
+      crate::test_support::running_row("/a/qwen3.gguf")
+        .name("coder")
+        .launch_id("L2")
+        .port(41101)
+        .build(),
+      crate::test_support::running_row("/a/qwen3.gguf").build(),
+    ];
+    let named = named_launch_ids(&running, &ids);
+    assert_eq!(
+      named.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+      vec!["qwen3@coder"],
+      "unnamed rows publish nothing and a repeated name emits once"
     );
   }
 

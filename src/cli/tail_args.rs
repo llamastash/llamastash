@@ -313,17 +313,17 @@ mod tests {
   #[test]
   fn bool_accepts_alternate_truthy_falsy_spellings() {
     for spelling in ["1", "on", "yes", "TRUE", "True"] {
-      let (knobs, _) = parse_tail_args(&osvec(&[&format!("--mlock={spelling}")])).unwrap();
+      let (knobs, _) = parse_tail_args(&osvec(&[&format!("--flash-attn={spelling}")])).unwrap();
       assert_eq!(
-        knobs.bool(crate::launch::knobs::kid("mlock")),
+        knobs.bool(crate::launch::knobs::kid("flash-attn")),
         Some(true),
         "{spelling:?} should parse to Some(true)"
       );
     }
     for spelling in ["0", "off", "no", "FALSE", "False"] {
-      let (knobs, _) = parse_tail_args(&osvec(&[&format!("--mlock={spelling}")])).unwrap();
+      let (knobs, _) = parse_tail_args(&osvec(&[&format!("--flash-attn={spelling}")])).unwrap();
       assert_eq!(
-        knobs.bool(crate::launch::knobs::kid("mlock")),
+        knobs.bool(crate::launch::knobs::kid("flash-attn")),
         Some(false),
         "{spelling:?} should parse to Some(false)"
       );

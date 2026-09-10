@@ -9,14 +9,15 @@
 ┌ Models [3] · /:filter · ⏎:launch · Ctrl+s:stop · f:fav · p:path · u:url ───┐┌ Settings │ Logs │ Chat ────────────────┐
 │   Name                                   Arch        Quant   Ctx     Size  ││                                        │
 │▶ Running                                                                   ││ qwen-7b                                │
-│ ● qwen-7b                                qwen3       Q4_K    32k     4.2G  ││ /m/x/qwen-7b.gguf                      │
+│ ● qwen-7b@coder                          qwen3       Q4_K    32k     4.2G  ││ /m/x/qwen-7b.gguf                      │
 │★ Favorites                                                                 ││                                        │
 │ ★ mistral-7b                             llama       Q4_K    8.0k    4.0G  ││ ID:L1  :41100  ● ready · 4.2G RAM · 31 │
 │────────────────────────────────────────────────────────────────────────────││ ────────────────────────────────────── │
 │m/x                                                                         ││ Running launch                         │
 │ ★ mistral-7b                             llama       Q4_K    8.0k    4.0G  ││   launch            L1                 │
-│m/y                                                                         ││   ── Context                           │
-│   phi-3                                  phi         Q4_K    8.0k    3.9G  ││   ctx-size          inherited          │
+│m/y                                                                         ││   name              coder              │
+│   phi-3                                  phi         Q4_K    8.0k    3.9G  ││   ── Context                           │
+│                                                                            ││   ctx-size          inherited          │
 │                                                                            ││   reasoning         inherited          │
 │                                                                            ││   mode              inherited          │
 │                                                                            ││   ── GPU / CPU offload                 │
@@ -26,5 +27,4 @@
 │                                                                            ││   cache-type-k      inherited          │
 │                                                                            ││   cache-type-v      inherited          │
 │                                                                            ││   flash-attn        inherited          │
-│                                                                            ││   ── Throughput                        │
 └ ◌ launching · ◐ loading · ● ready · ▲ error · ○ stopped · ⇪ external ──────┘└ e:edit for launch · s:stop · p:path ───┘

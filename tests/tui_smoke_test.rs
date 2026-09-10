@@ -12,7 +12,7 @@ use llamastash::discovery::{DiscoveredModel, ModelSource};
 use llamastash::gguf::metadata::{ModeHint, ModelMetadata, Quant};
 use llamastash::theme::ThemeName;
 use llamastash::tui::app::{App, AppOptions};
-use llamastash::tui::events::pump_input;
+use llamastash::tui::events::{pump_input, pump_input_with_writer, WriterCmd};
 use llamastash::tui::keybindings::KeyMap;
 use llamastash::tui::render::render;
 use ratatui::backend::TestBackend;
@@ -883,4 +883,130 @@ fn narrow_terminal_truncates_long_model_names_with_ellipsis() {
       "rendered line {line:?} wider than 60-col terminal"
     );
   }
+}
+
+#[test]
+fn the_launch_picker_owns_launch_as_not_the_model_list() {
+  // The model list has exactly one launch key. Naming is asked for on the
+  // picker, once the launch is otherwise ready to go.
+  let mut app = App::new(AppOptions::default());
+  app.models = vec![fake_model("/m/qwen3.gguf", "/m")];
+  app.go_top();
+
+  pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::ALT));
+  assert!(
+    app.launch_name_dialog.is_none() && app.launch_picker.is_none(),
+    "Alt+Enter is not a Models-list binding"
+  );
+
+  pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::NONE));
+  assert!(app.launch_picker.is_some(), "Enter opens the launch picker");
+  assert!(
+    app.launch_name_dialog.is_none(),
+    "…and only the picker — a plain Enter never asks for a name"
+  );
+
+  pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::ALT));
+  assert!(
+    app.launch_name_dialog.is_some(),
+    "Alt+Enter on the picker asks for the name"
+  );
+
+  pump_input(&mut app, key(KeyCode::Esc, KeyModifiers::NONE));
+  assert!(
+    app.launch_name_dialog.is_none(),
+    "Escape must close the launch-name dialog"
+  );
+  assert!(
+    app.launch_picker.is_some(),
+    "cancelling the name leaves the picker as it was"
+  );
+}
+
+#[test]
+fn naming_a_launch_dispatches_the_open_picker_carrying_the_name() {
+  // The accept path submits the picker already on screen, so the name rides
+  // the same `start_model` a plain Enter would have sent.
+  let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+  let mut app = App::new(AppOptions::default());
+  app.models = vec![fake_model("/m/qwen3.gguf", "/m")];
+  app.go_top();
+  pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::NONE));
+  pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::ALT));
+
+  for c in "coder".chars() {
+    pump_input_with_writer(
+      &mut app,
+      key(KeyCode::Char(c), KeyModifiers::NONE),
+      Some(&tx),
+    );
+  }
+  // A trailing space is trimmed, not rejected — only a blank-but-typed name is.
+  pump_input_with_writer(
+    &mut app,
+    key(KeyCode::Char(' '), KeyModifiers::NONE),
+    Some(&tx),
+  );
+  pump_input_with_writer(&mut app, key(KeyCode::Enter, KeyModifiers::NONE), Some(&tx));
+  assert!(
+    app.launch_name_dialog.is_none(),
+    "accepting closes the dialog"
+  );
+
+  let cmd = rx.try_recv().expect("the launch dispatches on accept");
+  match cmd {
+    WriterCmd::StartModel(args) => {
+      assert_eq!(
+        args.name.as_deref(),
+        Some("coder"),
+        "the typed name rides along"
+      );
+      assert_eq!(args.model_path, PathBuf::from("/m/qwen3.gguf"));
+    }
+    other => panic!("expected a start_model, got {other:?}"),
+  }
+}
+
+#[test]
+fn a_blank_name_is_refused_inline_rather_than_silently_dropped() {
+  let mut app = App::new(AppOptions::default());
+  app.models = vec![fake_model("/m/qwen3.gguf", "/m")];
+  app.go_top();
+  pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::NONE));
+  pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::ALT));
+
+  pump_input(&mut app, key(KeyCode::Char(' '), KeyModifiers::NONE));
+  pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::NONE));
+  let dialog = app
+    .launch_name_dialog
+    .as_ref()
+    .expect("a whitespace-only name keeps the dialog open");
+  assert!(
+    dialog.error.is_some(),
+    "…and says why, the way `--name \"  \"` does"
+  );
+}
+
+#[test]
+fn a_name_the_cli_would_refuse_is_refused_inline_too() {
+  let mut app = App::new(AppOptions::default());
+  app.models = vec![fake_model("/m/qwen3.gguf", "/m")];
+  app.go_top();
+  pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::NONE));
+  pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::ALT));
+
+  // `a@b` would publish `qwen3@a@b`, which re-splits to a different pair.
+  for c in ['a', '@', 'b'] {
+    pump_input(&mut app, key(KeyCode::Char(c), KeyModifiers::NONE));
+  }
+  pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::NONE));
+  let dialog = app
+    .launch_name_dialog
+    .as_ref()
+    .expect("an unaddressable name keeps the dialog open");
+  assert!(
+    dialog.error.as_deref().is_some_and(|e| e.contains('@')),
+    "the error points at the offending character, got: {:?}",
+    dialog.error
+  );
 }

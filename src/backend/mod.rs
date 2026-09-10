@@ -551,6 +551,27 @@ pub trait Backend {
     Vec::new()
   }
 
+  /// Probe one server binary for the **spellings it accepts**, for a flag whose
+  /// name differs between builds of the same engine. Returned as an opaque
+  /// string map that only the owning backend writes and reads — the generic
+  /// tree carries it to the launch without interpreting it, the way
+  /// `LaunchParams.launch_config` already carries a backend's own launch
+  /// scalars. Default empty: a backend whose flags do not vary by build needs
+  /// nothing here.
+  ///
+  /// Runs once per server at boot, beside [`Self::probe_devices`]. Never cache
+  /// the result across runs — a rebuild in place changes the answer while the
+  /// path stays the same.
+  fn probe_caps(&self, _binary: &Path) -> std::collections::BTreeMap<String, String> {
+    std::collections::BTreeMap::new()
+  }
+
+  /// Stamp what [`Self::probe_caps`] found about the binary **this launch
+  /// resolved** into `params.launch_config`, so the backend's own `compose`
+  /// reads it back without re-probing. Called once the binary is picked and
+  /// before compose. Default: nothing.
+  fn seed_binary_caps(&self, _binary: &Path, _servers: &[Server], _params: &mut LaunchParams) {}
+
   /// Default-ordering weight among the servers a model supports (higher first).
   /// Orders both the launch **server** knob and `supported_backends`, and picks
   /// the no-selection default. Default `0`; a purpose-built backend that should
@@ -1107,6 +1128,14 @@ impl Backend for Backends {
 
   fn probe_devices(&self, binary: &Path) -> Vec<Device> {
     for_each_backend!(self, b => b.probe_devices(binary))
+  }
+
+  fn probe_caps(&self, binary: &Path) -> std::collections::BTreeMap<String, String> {
+    for_each_backend!(self, b => b.probe_caps(binary))
+  }
+
+  fn seed_binary_caps(&self, binary: &Path, servers: &[Server], params: &mut LaunchParams) {
+    for_each_backend!(self, b => b.seed_binary_caps(binary, servers, params))
   }
 
   fn launch_priority(&self) -> i32 {

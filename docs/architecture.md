@@ -27,7 +27,7 @@ Three submodule groupings under `src/init/`:
 The TUI grows two new modules to host the dialog and its async surface:
 
 - `tui::hf_dialog` — three-state modal (Search → File picker → Confirm), debounced live search with `query_seq` cancellation, slug-shortcut parsing via `RepoSpec::parse`, shard-collapse logic over the HF sibling listing, hardware-fit indicator pulling from the host-metrics snapshot.
-- `tui::download_strip` — pinned single-line strip rendered below the info row when active; FIFO queue of pending pulls, an EMA-smoothed throughput readout, one active pull at a time, AlreadyCached short-circuit per R116.
+- `tui::download_strip` — pinned single-line strip rendered below the info row when active; FIFO queue of pending pulls, one active pull at a time, AlreadyCached short-circuit per R116. Percent, bytes and the EMA-smoothed rate come from `init::download`'s shared `PullTotals` / `RateMeter`, so the strip, the CLI `pull` line and the init wizard all report the same figures.
 
 ## One binary, three roles
 
@@ -180,11 +180,11 @@ Not covered: cross-server physical-GPU dedupe — `--list-devices` surfaces no P
 
 Auto-detected and on by default, on llama.cpp and ds4. Two capability signals resolve at discovery scan: an *embedded* head (`ModelMetadata.mtp`, from `{arch}.nextn_predict_layers > 0` — Qwen3.5/3.6, GLM-4.x, DeepSeek) and a *separate* head (`DiscoveredModel.mtp_head` via `scanner::find_mtp_head`, an `mtp-*.gguf` sibling — the Gemma-4 shape). `mtp-*.gguf` heads are excluded from the launchable catalog like mmproj (`is_mtp_companion`).
 
-Enable is a **launch-only tri-state**, `MtpEnable { Auto, On, Off }` (`--mtp auto|on|off`) — there is no `config.yaml` entry; it persists in `last_params` / presets like any other launch choice. `compose_and_spawn` resolves it against real capability into a transient `LaunchParams.mtp_directive` (`resolve_mtp_directive`). llama.cpp's `compose` emits `--spec-type draft-mtp` (plus `--model-draft <head>` for a separate head) **before `--fit-ctx`**, so `--fit` is MTP-aware. The per-step draft count is the neutral `LaunchParams.mtp_draft_n` (`--mtp-draft-n`): llama.cpp maps it to `--spec-draft-n-max`, ds4 to its `mtp_draft` native knob, so one flag works on either backend and no backend-specific scalar rides the neutral IR.
+Enable is a **launch-only tri-state**, `MtpEnable { Auto, On, Off }` (`--mtp auto|on|off`) — there is no `config.yaml` entry; it persists in `last_params` / presets like any other launch choice. Intent and truth are separate channels: the user's choice is the declared `mtp` knob (`Bool` + `AutoKind::Capability`, so an unset or `Auto` knob means "capability decides"), read through `LaunchParams::mtp_intent`, written through `MtpEnable::store` — the one home for that mapping; `compose_and_spawn` resolves it against real capability into a transient `LaunchParams.mtp_directive` (`resolve_mtp_directive`), which is never written back onto the knob. llama.cpp's `compose` emits `--spec-type draft-mtp` (plus `--model-draft <head>` for a separate head) **before `--fit-ctx`**, so `--fit` is MTP-aware. The per-step draft count is the neutral `mtp-draft-n` knob (`--mtp-draft-n`): llama.cpp maps it to `--spec-draft-n-max`, ds4 to its `mtp_draft` native knob, so one flag works on either backend and no backend-specific scalar rides the neutral IR.
 
 The flag is emitted only when genuinely capable — passing it to a non-MTP model is a hard server launch failure, so a force-on against a non-capable model warns and skips, and a non-chat launch (embedding / rerank) never speculates. A user already hand-driving speculation through `extras` defers the whole path, via the `Backend::speculation_set_in_extras` predicate (llama.cpp matches `--spec-type` through the neutral `extras_have_flag`), asked before `resolve_mtp_directive` so the generic path names no flag. DeepSeek-V4 MTP is ds4-only: ds4's own `--mtp` / `--mtp-draft` / `--mtp-margin` knobs auto-pair an `mtp-*.gguf` sidecar found beside the model; that sidecar is never fed to llama.cpp's `--spec-type`. DSpark rides the same `--mtp` slot behind the `dspark` knob, but pairs through `find_draft_head` with the literal `deepseek4-dspark` arch its support GGUF declares, rather than the `<arch>_mtp_support` shape `find_mtp_head` derives; `dspark` with no resolvable support file drops the DSpark knobs pre-spawn, since ds4-server refuses `--dspark` without `--mtp` only after the full load. `ssd_streaming` and a paired `mtp` head are mutually exclusive in `ds4-server` (it exits *after* loading the full model), so `mtp_stream_conflict` reconciles them pre-spawn — an auto-paired head yields to streaming, auto-streaming yields to a user-set head, and two explicit choices are refused through `NativeKnobResolution::refusal`.
 
-Surfaces: a `↯` capability glyph in the TUI (`discovery::MTP_LEGEND`), a generic `PickerField::Mtp` cycle row shown only for MTP-capable models, and per-model `status` `params.mtp` `{enable, active, acceptance, draft_accepted, draft_generated}`. `active` (`Backend::mtp_active`) and `acceptance` (`Backend::draft_acceptance`) come from the owning backend, not the generic directive: llama.cpp reports active off the emitted `--spec-type` and parses its own `draft acceptance = …` log line, while ds4 reports active off its paired head and publishes no acceptance figure — its MTP counters are debug-env-gated and per-decode-step, and the one cumulative `accept_rate` belongs to DSpark and prints at session close, so `acceptance` is null by design.
+Surfaces: a `↯` capability glyph in the TUI (`discovery::MTP_LEGEND`), the generated `mtp` knob row shown only for MTP-capable models (its quad ring is `cycle_bool`'s inherited → auto → on → off), and per-model `status` `params.mtp` `{enable, active, acceptance, draft_accepted, draft_generated}`. `enable` reports intent off the knob; `active` reports truth. `active` (`Backend::mtp_active`) and `acceptance` (`Backend::draft_acceptance`) come from the owning backend, not the generic directive: llama.cpp reports active off the emitted `--spec-type` and parses its own `draft acceptance = …` log line, while ds4 reports active off its paired head and publishes no acceptance figure — its MTP counters are debug-env-gated and per-decode-step, and the one cumulative `accept_rate` belongs to DSpark and prints at session close, so `acceptance` is null by design.
 
 The MTP path names no backend: llama.cpp's flags and log parse live in `backend/llama_cpp/` (`compose.rs` + `telemetry`), ds4's in `backend/ds4/`, and detection is generic and header-keyed. `pull`'s `download_repo` grabs mmproj and MTP-head siblings alongside the model (one per kind by default; `--no-companions` / `--all-companions`, same-repo name-pattern only). See [`plans/2026-07-14-001-feat-mtp-speculative-decoding-plan.md`](plans/2026-07-14-001-feat-mtp-speculative-decoding-plan.md).
 
@@ -223,7 +223,7 @@ All three engines expose an OpenAI-shape local server, so any agent that speaks 
 | Auto-start unloaded model | Yes (scheduler) | Yes (JIT) | Yes (`auto_start` + coalesce) |
 | Multiple loaded at once | Yes, VRAM-bounded | No by default (Auto-Evict on) | Yes (whatever fits) |
 | Idle TTL eviction | 5 min, refcount-gated | 60 min, request-resets | 30 min default, refcount-gated, auto-start only (`proxy.idle_ttl_secs`) |
-| Single-flight coalesce on concurrent first-requests | Implicit via scheduler channel | Not documented | Explicit `Coalesce` map keyed on `ModelId` |
+| Single-flight coalesce on concurrent first-requests | Implicit via scheduler channel | Not documented | Explicit `Coalesce` map keyed on `(ModelId, launch name)` |
 | Fallback when load fails | None — request fails | None documented | Family-MRU pick, headers stamped (`x-llamastash-served-by` + `fallback-reason`) |
 | Body pass-through (no `model` rewrite) | Re-routes by name, may rewrite | OpenAI-shape pass-through | Byte-pure forward via `StreamBody` |
 | Loopback-only by default | No (configurable bind) | Yes (`127.0.0.1`) | Yes; opt-in LAN bind (`proxy.host`) behind a required bearer key |
@@ -232,6 +232,76 @@ All three engines expose an OpenAI-shape local server, so any agent that speaks 
 | Ollama inference `/api/chat`, `/api/generate` | Yes (native) | No | **Deferred** (Tier 2 — TODO §R2) |
 
 **Roadmap note.** The family-MRU fallback is the one behavior neither Ollama nor LM Studio surfaces — both fail the request when a launch fails. For agents that don't read response headers the substitution is invisible, which is worth re-considering before v1 ships (do we want this to be opt-in via `proxy.fallback: false`?). Idle-TTL eviction landed in `37d389a` and follows the Ollama shape — refcount-gated, auto-start only, with manually-launched models exempt (LM Studio's rule).
+
+### Named launches (`model@name`)
+
+One model can run several times at once, each carrying a user-chosen name, so a
+request can say *which* copy it wants. The rules, all in one place:
+
+- **The split** is `launch::resolve::parse_named_reference`: the whole reference
+  is resolved against the catalog first, so a GGUF whose own file name contains
+  an `@` still wins, and only a miss is re-read as `<model>@<name>`, split at the
+  **last** `@`. The name half has to *be* a launch name (below), so a reference
+  the writer would never have produced is not a name reference at all. The
+  proxy, the CLI resolver and `show` all call it, so no surface can drift on
+  where the name starts.
+- **The comparison** is `launch::resolve::name_matches`, ASCII-case-insensitive
+  like every other reference in the product. `RunningSnapshot::carries_name` is
+  the one join from a launch to its name, keyed on `launch_id` (a port is reused
+  the moment its launch stops) and used by the proxy's supervisor walk, the
+  auto-start attach and the daemon's duplicate gate alike.
+- **The namespace** is per model and per live launch. `compose_and_spawn`
+  refuses a second live launch of one model under one name and claims the name
+  for the duration of the spawn (a `Drop` guard over a registry set, mirroring
+  `reserved_ports`), because the check and the row insert are not otherwise in
+  one critical section. An `error` launch does not hold its name. A managed
+  multiplexer refuses names outright: it serves every model from one shared
+  process, so a name there could not select an instance.
+- **The charset** is one predicate, `launch::resolve::is_launch_name`: non-empty,
+  ASCII letters / digits / `-` / `_` only. The writer
+  (`validate_launch_name`, at `--name`'s value parser, the TUI dialog and the
+  daemon's gate for raw JSON-RPC callers) trims and then applies it; the reader
+  (`parse_named_reference`) applies it to the name half. Sharing it is what
+  keeps a malformed address cheap: `qwen3@co der` resolves as a plain reference
+  and misses, instead of auto-starting a launch the daemon then refuses and
+  spending one of that model's three auto-start failures per minute. The
+  accepted name is echoed as
+  `launch_name` on the `start_model` response (omitted when unnamed), and the
+  `status` wire omits `name` on unnamed rows rather than emitting `null` —
+  the same omit-when-unset convention `state.json` uses.
+- **Resolving a name to a launch** prefers the rows that are still addressable.
+  Because an `error` launch does not hold its name but does keep its
+  `state.json` row, a relaunch under the same name coexists with the row it
+  replaced. The CLI resolver skips `error` / `stopping` / `stopped` rows — the
+  same set the proxy's `attach_target` skips — and falls back to them only when
+  no live launch answers, so the address reaches the running copy while
+  `stop <name>` can still clean up one that failed to load.
+- **The preset an auto-start uses** is the one the address names. A proxy
+  auto-start of `<model>@<name>` looks for a preset called `<name>` (compared
+  with `name_matches`, so it follows the address's case rule) and takes it as
+  the launch's `PresetDefault` layer, falling back to the model's `default:`
+  when none answers. That one resolved preset also feeds
+  `inherited_launch_identity`, so a preset's `backend:` / `server:` apply
+  alongside its knobs rather than being resolved a second time from the
+  model's `default:`. A preset chosen this way also outranks `default: auto` —
+  it is an explicit choice, not a default. Scoped to `LaunchOrigin::AutoStart`:
+  a request body carries only `model`, so the address is a client's only
+  channel, while `start --name` and the TUI already have `--preset`.
+- **The published ids** come from two different places by design. Catalog rows
+  are published through `published_id_index` (`util::paths`); named rows come
+  from the live launch registry, and take their model half out of that same
+  index so a named id can never be the ambiguous bare stem. A named id exists
+  only while its launch runs; a request for one that has stopped auto-starts a
+  fresh launch under that name, which is why the unbounded namespace is safe.
+- **The single-flight key** is `(ModelId, Option<name>)`, so two concurrent cold
+  requests for two names of one model produce two launches rather than sharing
+  one silently.
+- **Persistence** is `RunningSnapshot.name`, `skip_serializing_if` so an unnamed
+  row is byte-identical to a pre-feature one. The name rides the snapshot rather
+  than the supervisor for exactly one reason: the orphan sweep re-adopts from
+  `state.json` across a daemon restart, and the address has to survive it.
+
+Design and tradeoffs: [`plans/2026-09-03-002-feat-named-launches-plan.md`](plans/2026-09-03-002-feat-named-launches-plan.md).
 
 ## Model lifecycle
 
@@ -254,7 +324,7 @@ Each launch is owned by a `ManagedModel`. The supervisor health-probes `/health`
 
 Per-launch logs are tee'd to a 10 MB × 5-file rotating log on disk and a 4K-line in-memory ring buffer so the TUI's Logs tab and the `logs_tail` IPC method don't need to re-open files.
 
-`llama-server` children are started in their own session (`setsid` on Linux) so they survive daemon exit. On daemon restart, the orphan sweep re-adopts each entry in `state.running` only after three-factor confirmation:
+`llama-server` children are started in their own session (`setsid` on Linux) so they survive a daemon *crash*. Every deliberate exit — `daemon stop`, SIGINT, SIGTERM, the IPC `shutdown` — stops them first (`stop_all_managed`, 5 s grace), so an orphan only ever exists after a crash. On the next start, the orphan sweep re-adopts each entry in `state.running` only after three-factor confirmation:
 
 1. PID is alive (`kill(pid, 0)` via sysinfo).
 2. Recorded port answers on `127.0.0.1`.
@@ -265,6 +335,8 @@ Per-launch logs are tee'd to a 10 MB × 5-file rotating log on disk and a 4K-lin
    the PID-reuse guard.
 
 A failed factor drops the entry from the running snapshot. Unmanaged `llama-server` processes the daemon doesn't own surface read-only in `status.external` — kernel threads are de-duplicated, so a multi-threaded child counts once, not once per thread.
+
+**A confirmed entry is demoted, not restored.** `state.running` is cleared on every boot and each adopted snapshot is projected into an `external` row (`ExternalProcess::from_adopted`), because rebuilding a `ManagedModel` would mean re-attaching to a dead daemon's pipes — there is no way to resume log capture or the health monitor for a child this process never spawned. The consequences are deliberate: the row accepts `stop_external` and nothing else, it is **not** re-published on `/v1/models`, and `route::decide` cannot pick it, so the next proxy request for that model starts a new launch beside it. What does survive is the launch **name**, carried onto the row so `status` still renders `<model>@<name>` and `stop <name>` still reaches it — the one piece of the address a crash would otherwise take with it.
 
 ## Daemon idle shutdown
 
@@ -398,6 +470,7 @@ Beyond the `models` / `external` / `gpu` shapes, the `status` response carries t
 - **Per-model rows in `models[]`** additionally carry:
   - `latest_rss_bytes: Option<u64>` and `latest_cpu_pct: Option<f32>` from the per-launch resource sampler; both are `None` until roughly one tick (~1 s) after launch. Delegated rows on a managed multiplexer carry the shared umbrella process's reading, not a per-model figure — the TUI flags these with a `*`, and the umbrella's own row is hidden from the TUI running list (but kept in `status` / CLI).
   - `preset_count: u32` (how many presets the model resolves, per-model ∪ arch) and `default: Option<String>` (the config-only default preset name). The full set lives in `presets_list`.
+  - `preset: Option<String>` — the preset this launch actually resolved: the name a client flattened (`start --preset`, a launch file, the TUI's named cycle stop, sent as the `preset` start param), the one a `<model>@<name>` auto-start address selected, or the model's config `default:` on a no-selection launch. Omitted entirely when no preset was in play (`--preset auto` included), the same only-when-set convention `name` uses. Distinct from `default` above, which is the config hint regardless of what launched. Rendered as a read-only `preset` row in the TUI running view and in `show`'s running block.
   - `backend: String` — the backend the launch actually resolved to, stamped on the running snapshot at spawn, so it stays honest for a ds4-compatible file launched `--backend llamacpp`.
   - `params.knobs` — the knobs the launch dispatched with, keyed by declared id; `params.server` — the server id the launch picked (`null` when it took the backend's default), rendered as a read-only `server` row in the TUI running view.
 
@@ -409,15 +482,15 @@ Beyond the `models` / `external` / `gpu` shapes, the `status` response carries t
 
 - `favorites: ModelId[]`
 - `last_params: { <ModelId>: LaunchParams }`
-- `running: RunningSnapshot[]` (PID + port + started_at + params)
+- `running: RunningSnapshot[]` (PID + port + started_at + params, plus `launch_id`, `name`, and `preset` when set)
 
 Corruption → quarantine. A `state.json` that fails to parse is renamed to `state.json.broken-<unix-secs>` and the daemon starts with defaults rather than refusing to boot.
 
 ### Named presets (config.yaml)
 
-Named launch presets live in `config.yaml` under a `presets:` key — the single writable source. The daemon loads them into an in-memory store at start and holds them there; a `presets save` / `delete` (CLI or TUI `Ctrl+P`) mutates memory **and** patches the one touched node in `config.yaml`. App-driven changes are live without a restart; hand-edits to `config.yaml` need a daemon restart. Each top-level key is classified per-resolution against the live catalog: a key naming a discovered model (basename, path fallback) is per-model, otherwise it is read as an arch id. A key carrying `*` / `?` is a glob (`util::glob`) over the model's file name, its stem, its path, and both prefixed with its group label, so `unsloth/*` names a repo and `*-Q4_K_M` names a quant; it is always per-model, never an arch id. `preset_key_matches` is the one predicate both classification and effective-set resolution call, and within the per-model layer an exact key outranks a wildcard one for entries and `default:` alike. A model's effective set is its per-model entries ∪ its arch entries (per-model wins on a name collision); `default` resolves the same way and is config-only. The `default` is the model's standing launch config: on a **no-selection** launch (a plain `start`, or proxy auto-start) the daemon resolves it server-side and applies it as a `PresetDefault` precedence layer (`User > PresetDefault > LastUsed > ArchDefault > fit`). `default: auto` launches pure fit (skips `PresetDefault` + `LastUsed`); an explicit `--preset` / TUI selection flattens client-side into `User` and skips the default **and** `LastUsed` layers (a named preset is self-contained, so a stale `last_params` must not leak in); `--preset auto` is the per-launch pure-fit override. A `selection` field on `start_model` (`default` | `explicit` | `auto`) carries the intent; it is absent-means-`default`, which is what the proxy's `StartParams::default()` sends. Extras follow the same whole-list selection rule with no per-flag merge: explicit inline extras verbatim, else a no-selection launch inherits the default preset's (or `last_params`') extras, else none. Alongside its `knobs:` map an entry may pin `backend:` and `server:`, which are launch *identity* rather than tuning, so a preset reproduces a whole run and not just how it was tuned; `mode` is a knob now and rides **inside** `knobs:` (`mode:` written beside the map is not a field an entry has). Both identity pins ride the `presets_show` row and are applied by `start`, where an explicit `--mode` / `--backend` / `--server` still wins over the pin; `mode` additionally gets a rung in the daemon's own no-selection resolution (`launch_service`), which is what carries a `default:` preset's mode onto the surfaces that send no mode of their own (proxy auto-start, TUI). That rung reads the default preset only, never `last_params`: the proxy deliberately refuses to let a one-off embedding launch lock a chat model out of chat for the rest of the supervisor's life, and a daemon-side `last_params` rung would reintroduce exactly that.
+Named launch presets live in `config.yaml` under a `presets:` key — the single writable source. The daemon loads them into an in-memory store at start and holds them there; a `presets save` / `delete` (CLI or TUI `Ctrl+P`) mutates memory **and** patches the one touched node in `config.yaml`. App-driven changes are live without a restart; hand-edits to `config.yaml` need a daemon restart. Each top-level key is classified per-resolution against the live catalog: a key naming a discovered model (basename, path fallback) is per-model, otherwise it is read as an arch id. A key carrying `*` / `?` is a glob (`util::glob`) over the model's file name, its stem, its path, and both prefixed with its group label, so `unsloth/*` names a repo and `*-Q4_K_M` names a quant; it is always per-model, never an arch id. `preset_key_matches` is the one predicate both classification and effective-set resolution call, and within the per-model layer an exact key outranks a wildcard one for entries and `default:` alike. A model's effective set is its per-model entries ∪ its arch entries (per-model wins on a name collision); `default` resolves the same way and is config-only. The `default` is the model's standing launch config: on a **no-selection** launch (a plain `start`, or proxy auto-start) the daemon resolves it server-side and applies it as a `PresetDefault` precedence layer (`User > PresetDefault > LastUsed > ArchDefault > fit`). `default: auto` launches pure fit (skips `PresetDefault` + `LastUsed`); an explicit `--preset` / TUI selection flattens client-side into `User` and skips the default **and** `LastUsed` layers (a named preset is self-contained, so a stale `last_params` must not leak in); `--preset auto` is the per-launch pure-fit override. A `selection` field on `start_model` (`default` | `explicit` | `auto`) carries the intent; it is absent-means-`default`, which is what the proxy's `StartParams::default()` sends. Because an explicit selection is flattened client-side, the client also sends the chosen preset's name on the `preset` start param — display only, since the params already arrived resolved — and the daemon falls back to whatever it resolved itself (address or `default:`) when that is absent. Extras follow the same whole-list selection rule with no per-flag merge: explicit inline extras verbatim, else a no-selection launch inherits the default preset's (or `last_params`') extras, else none. Alongside its `knobs:` map an entry may pin `backend:` and `server:`, which are launch *identity* rather than tuning, so a preset reproduces a whole run and not just how it was tuned; `mode` is a knob now and rides **inside** `knobs:` (`mode:` written beside the map is not a field an entry has). Both identity pins ride the `presets_show` row and are applied by `start`, where an explicit `--mode` / `--backend` / `--server` still wins over the pin; `mode` additionally gets a rung in the daemon's own no-selection resolution (`launch_service`), which is what carries a `default:` preset's mode onto the surfaces that send no mode of their own (proxy auto-start, TUI). That rung reads the default preset only, never `last_params`: the proxy deliberately refuses to let a one-off embedding launch lock a chat model out of chat for the rest of the supervisor's life, and a daemon-side `last_params` rung would reintroduce exactly that.
 
-The in-memory store is `daemon::preset_store`; the write-through lives behind `config::presets_writer`. `presets_list` / `show` / `save` / `delete` are config-backed, and `presets_all` returns the raw map so the TUI can resolve effective sets client-side. `status` model rows carry `preset_count` + `default`. Presets carry no `port`. The TUI only *saves* (`Ctrl+P`, from the Settings pane but only on a running row in the Models list) and *selects* (the settings cycle row, which marks the default stop with `(default)` and opens on it) — there is no TUI list or delete. CLI and TUI write per-model keys only; arch presets are hand-authored. See [`plans/2026-06-30-001-feat-default-preset-resolver-layer-plan.md`](plans/2026-06-30-001-feat-default-preset-resolver-layer-plan.md).
+The in-memory store is `daemon::preset_store`; the write-through lives behind `config::presets_writer`. `presets_list` / `show` / `save` / `delete` are config-backed, and `presets_all` returns the raw map so the TUI can resolve effective sets client-side. `status` model rows carry `preset_count` + `default`, plus `preset` (the one this launch resolved) when a preset was in play. Presets carry no `port`. The TUI only *saves* (`Ctrl+P`, from the Settings pane but only on a running row in the Models list) and *selects* (the settings cycle row, which marks the default stop with `(default)` and opens on it) — there is no TUI list or delete. CLI and TUI write per-model keys only; arch presets are hand-authored. See [`plans/2026-06-30-001-feat-default-preset-resolver-layer-plan.md`](plans/2026-06-30-001-feat-default-preset-resolver-layer-plan.md).
 
 A `llamastash run <file>.yml` **launch file** is a second, read-only preset source in this same shape, narrowed to exactly one model key: `cli::launch_file` reads it, and nothing writes it, so it never touches `config.yaml` or `state.json`. It is not a new preset type — the selected entry goes through the same `materialize_preset` → `LaunchParams::to_wire` → `partial_params_from_preset` projection as `--preset <name>` and reports `selection = "explicit"`. Two ways it differs from the config: arch keys are not resolved there (catalog-only, so a copied arch block exits `66`), and validation is stricter, rejecting undeclared knob ids, unparseable knob values and unknown block/entry fields as `64` where the config loader drops each with a log line. See [`usage.md`](usage.md) § Launch files.
 

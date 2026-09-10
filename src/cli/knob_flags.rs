@@ -291,7 +291,7 @@ mod tests {
   #[test]
   fn bool_space_form_off() {
     assert_eq!(
-      knobs_of(&["test", "--mlock", "off"]).bool(kid("mlock")),
+      knobs_of(&["test", "--flash-attn", "off"]).bool(kid("flash-attn")),
       Some(false)
     );
   }

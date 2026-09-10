@@ -36,6 +36,14 @@ pub struct RunningRow {
   pub id: Option<Value>,
   pub port: u16,
   pub mode: String,
+  /// User-chosen name for this launch. When set, the launch is
+  /// addressable by `<model-id>@<name>` in `stop`, `logs`, and the
+  /// proxy's `body.model`. `None` for unnamed launches.
+  pub name: Option<String>,
+  /// The preset this launch resolved (explicit pick / `@name` address /
+  /// config `default:`). `None` when no preset was in play — distinct from
+  /// `preset_default`, which is only the config hint.
+  pub preset: Option<String>,
   pub state: String,
   /// Failure cause from the daemon's `ManagedState::Error { cause }`
   /// payload. Surfaced so users (and agents) can see *why* a launch
@@ -156,14 +164,19 @@ pub fn resolve_model(rows: &[CatalogRow], reference: &str) -> Result<CatalogRow,
   }
 }
 
-/// Index running rows by canonical model path. Returns the first
-/// running row per path (multiple supervisors for one path is rare
-/// but possible — the picker uses the most recent ready_at row first
-/// when this matters; here the list view just needs *some* live row).
-pub fn running_index(rows: &[RunningRow]) -> std::collections::HashMap<String, RunningRow> {
-  let mut out = std::collections::HashMap::with_capacity(rows.len());
+/// Index running rows by canonical model path, **every** row per path in the
+/// order the daemon reported them.
+///
+/// Named launches make more than one live row per path the ordinary case
+/// (`qwen3@coder` and `qwen3@writer` at once), and keeping only the first
+/// collapsed them to whichever won — `list` showed one name and `show`
+/// reported one launch. Callers that genuinely want a single row take the
+/// first entry.
+pub fn running_index(rows: &[RunningRow]) -> std::collections::HashMap<String, Vec<RunningRow>> {
+  let mut out: std::collections::HashMap<String, Vec<RunningRow>> =
+    std::collections::HashMap::with_capacity(rows.len());
   for r in rows {
-    out.entry(r.model_path.clone()).or_insert_with(|| r.clone());
+    out.entry(r.model_path.clone()).or_default().push(r.clone());
   }
   out
 }
@@ -340,6 +353,11 @@ pub struct ExternalRow {
   /// etc.). Drives `collect_in_use_ports` on the daemon side; here
   /// it lives so the `daemon status` formatter can flag the row.
   pub launched_by_llamastash: bool,
+  /// The launch name the row carried before its daemon died, for an
+  /// orphan re-adopted out of `state.json`. `None` for a process the
+  /// sweep found by scanning. Keeps `<model>@<name>` addressable in
+  /// `status` and `stop` across a daemon crash.
+  pub name: Option<String>,
 }
 
 impl ExternalRow {
@@ -354,6 +372,16 @@ impl ExternalRow {
       .map(basename)
       .unwrap_or_else(|| basename(&self.cmdline))
   }
+}
+
+/// The `models` rows of a raw `status` body, for a caller that already holds
+/// the body and would otherwise re-issue the call through [`fetch_status`].
+pub fn running_rows_in(status_body: &Value) -> Vec<RunningRow> {
+  status_body
+    .get("models")
+    .and_then(Value::as_array)
+    .map(|a| a.iter().filter_map(parse_running_row).collect())
+    .unwrap_or_default()
 }
 
 fn parse_running_row(v: &Value) -> Option<RunningRow> {
@@ -400,12 +428,16 @@ fn parse_running_row(v: &Value) -> Option<RunningRow> {
   let preset_count = v.get("preset_count").and_then(Value::as_u64).unwrap_or(0) as u32;
   let preset_default = v.get("default").and_then(Value::as_str).map(str::to_string);
   let backend = v.get("backend").and_then(Value::as_str).map(str::to_string);
+  let name = v.get("name").and_then(Value::as_str).map(str::to_string);
+  let preset = v.get("preset").and_then(Value::as_str).map(str::to_string);
   Some(RunningRow {
     launch_id,
     model_path,
     id,
     port,
     mode,
+    name,
+    preset,
     state,
     state_cause,
     pid,
@@ -448,12 +480,14 @@ fn parse_external_row(v: &Value) -> Option<ExternalRow> {
     .get("launched_by_llamastash")
     .and_then(Value::as_bool)
     .unwrap_or(false);
+  let name = v.get("name").and_then(Value::as_str).map(str::to_string);
   Some(ExternalRow {
     pid,
     cmdline,
     model_path,
     port,
     launched_by_llamastash,
+    name,
   })
 }
 
@@ -489,6 +523,43 @@ pub fn resolve_running(rows: &[RunningRow], reference: &str) -> Result<RunningRo
     .collect();
   if !by_id.is_empty() {
     return single_or_error(by_id, reference);
+  }
+  // A bare launch name, matched exactly (ASCII-case-insensitively). The name
+  // the user chose is the address they think in, so it outranks the path
+  // substring walk below the same way an exact launch id does — `stop coder`
+  // reaches the launch named `coder` even when another model's filename
+  // contains the word. Two models running under one name land in
+  // `single_or_error`'s ambiguity listing rather than falling through.
+  let by_launch_name = prefer_addressable(
+    rows
+      .iter()
+      .filter(|r| crate::launch::resolve::name_matches(r.name.as_deref(), needle))
+      .collect(),
+  );
+  if !by_launch_name.is_empty() {
+    return single_or_error(by_launch_name, reference);
+  }
+  // `model@name` reference: match a running launch by its user-chosen name.
+  // The model part is matched against the path (same as the fallback below).
+  // The split is the shared one, so an empty half (`@coder`, `qwen3@`) is not a
+  // name reference at all and falls through to the plain substring walk instead
+  // of matching every row, since `"".contains("")` is true for all of them.
+  if let Some((model_ref, name_ref)) = crate::launch::resolve::parse_named_reference(needle) {
+    let by_named = prefer_addressable(
+      rows
+        .iter()
+        .filter(|r| {
+          crate::launch::resolve::name_matches(r.name.as_deref(), name_ref) && {
+            let path = std::path::Path::new(&r.model_path);
+            let fname = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            let parent = path.parent().and_then(|p| p.to_str()).unwrap_or("");
+            fname.to_lowercase().contains(&model_ref.to_lowercase())
+              || parent.to_lowercase().contains(&model_ref.to_lowercase())
+          }
+        })
+        .collect(),
+    );
+    return single_or_error(by_named, reference);
   }
   // Fall back to a name / parent-dir substring against the running rows.
   let by_name: Vec<&RunningRow> = rows
@@ -546,6 +617,31 @@ pub async fn resolve_running_via_catalog(
     return Err(miss);
   }
   single_or_error(by_label, reference)
+}
+
+/// Narrow a name match to the launches the name actually addresses.
+///
+/// The daemon's name gate skips a launch whose supervisor has errored, so a
+/// relaunch under the same name coexists with the row it replaced. Both rows
+/// carry the name, and calling that an ambiguity leaves the address unusable
+/// — the one thing the feature exists to provide — with only the launch id or
+/// port left to stop either one. The live launch is what the proxy routes
+/// `<model>@<name>` to, so it is what the name resolves to here. A row on its
+/// way out still answers when it is the *only* holder, so `stop <name>` can
+/// still clean up a launch that failed to load.
+fn prefer_addressable(hits: Vec<&RunningRow>) -> Vec<&RunningRow> {
+  // The same set the proxy's `attach_target` skips: on their way out, so not
+  // a target a request (or an address) can land on.
+  let live: Vec<&RunningRow> = hits
+    .iter()
+    .copied()
+    .filter(|r| !matches!(r.state.as_str(), "error" | "stopping" | "stopped"))
+    .collect();
+  if live.is_empty() {
+    hits
+  } else {
+    live
+  }
 }
 
 fn single_or_error(matches: Vec<&RunningRow>, reference: &str) -> Result<RunningRow, CliExit> {
@@ -788,6 +884,7 @@ mod tests {
         id: None,
         port: 41100,
         mode: "chat".into(),
+        name: None,
         state: "ready".into(),
         state_cause: None,
         pid: Some(123),
@@ -799,6 +896,7 @@ mod tests {
         ctx_clamped: false,
         preset_count: 0,
         preset_default: None,
+        preset: None,
         backend: None,
       },
       RunningRow {
@@ -807,6 +905,7 @@ mod tests {
         id: None,
         port: 41101,
         mode: "chat".into(),
+        name: None,
         state: "ready".into(),
         state_cause: None,
         pid: Some(124),
@@ -818,6 +917,7 @@ mod tests {
         ctx_clamped: false,
         preset_count: 0,
         preset_default: None,
+        preset: None,
         backend: None,
       },
     ];
@@ -833,6 +933,7 @@ mod tests {
       id: None,
       port: 41100,
       mode: "chat".into(),
+      name: None,
       state: "ready".into(),
       state_cause: None,
       pid: None,
@@ -844,6 +945,7 @@ mod tests {
       ctx_clamped: false,
       preset_count: 0,
       preset_default: None,
+      preset: None,
       backend: None,
     }];
     let err = resolve_running(&rows, "9999").unwrap_err();
@@ -858,6 +960,7 @@ mod tests {
       id: None,
       port,
       mode: "chat".into(),
+      name: None,
       state: "ready".into(),
       state_cause: None,
       pid: Some(1),
@@ -869,6 +972,7 @@ mod tests {
       ctx_clamped: false,
       preset_count: 0,
       preset_default: None,
+      preset: None,
       backend: None,
     };
     let rows = vec![
@@ -914,6 +1018,132 @@ mod tests {
     });
     let parsed = parse_running_row(&row).expect("row should parse");
     assert_eq!(parsed.state, "ready");
+  }
+
+  /// A running row built from the wire shape `parse_running_row` reads, so a
+  /// test row cannot drift from what the daemon actually sends.
+  fn live(launch_id: &str, path: &str, port: u16, name: Option<&str>) -> RunningRow {
+    let mut row = serde_json::json!({
+      "launch_id": launch_id,
+      "id": {"path": path, "header_blake3": "deadbeef"},
+      "port": port,
+      "mode": "chat",
+      "state": "ready",
+      "pid": 1,
+    });
+    if let Some(n) = name {
+      row["name"] = serde_json::json!(n);
+    }
+    parse_running_row(&row).expect("row parses")
+  }
+
+  /// A row in the `error` state, which keeps its `state.json` entry — and its
+  /// name — until someone stops it.
+  fn errored(launch_id: &str, path: &str, port: u16, name: &str) -> RunningRow {
+    let mut row = live(launch_id, path, port, Some(name));
+    row.state = "error".to_string();
+    row
+  }
+
+  /// The daemon lets a name be re-granted once its holder has errored, so both
+  /// rows carry it. The address must still reach the launch that answers to it
+  /// instead of reporting an ambiguity that no name can get out of.
+  #[test]
+  fn a_name_resolves_to_the_live_launch_when_an_errored_row_still_holds_it() {
+    let rows = vec![
+      errored("L1", "/m/qwen.gguf", 41100, "coder"),
+      live("L2", "/m/qwen.gguf", 41101, Some("coder")),
+    ];
+    assert_eq!(resolve_running(&rows, "coder").unwrap().launch_id, "L2");
+    assert_eq!(
+      resolve_running(&rows, "qwen@coder").unwrap().launch_id,
+      "L2"
+    );
+  }
+
+  /// The errored row is still the only holder, so it stays stoppable by name.
+  #[test]
+  fn a_name_held_only_by_an_errored_launch_still_resolves_to_it() {
+    let rows = vec![errored("L1", "/m/qwen.gguf", 41100, "coder")];
+    assert_eq!(resolve_running(&rows, "coder").unwrap().launch_id, "L1");
+    assert_eq!(
+      resolve_running(&rows, "qwen@coder").unwrap().launch_id,
+      "L1"
+    );
+  }
+
+  #[test]
+  fn resolve_running_takes_a_bare_launch_name_over_a_path_substring() {
+    // D3: the name the user chose is the address they think in, so an exact
+    // name beats a filename that merely contains the word — the same
+    // precedence an exact launch id already has.
+    let rows = vec![
+      live("L1", "/m/qwen.gguf", 41100, Some("coder")),
+      live("L2", "/m/qwen-coder-7b.gguf", 41101, None),
+    ];
+    assert_eq!(resolve_running(&rows, "coder").unwrap().launch_id, "L1");
+    assert_eq!(resolve_running(&rows, "CODER").unwrap().launch_id, "L1");
+    // The path walk still reaches the launch that has no name.
+    assert_eq!(resolve_running(&rows, "7b").unwrap().launch_id, "L2");
+  }
+
+  #[test]
+  fn resolve_running_reports_one_name_held_by_two_models() {
+    // Names are unique per model, not globally, so a bare name can be held
+    // twice. That is an ambiguity to report, not a row to guess at.
+    let rows = vec![
+      live("L1", "/m/qwen.gguf", 41100, Some("coder")),
+      live("L2", "/m/gemma.gguf", 41101, Some("coder")),
+    ];
+    let err = resolve_running(&rows, "coder").unwrap_err();
+    let msg = err.message.unwrap_or_default();
+    assert!(msg.contains("L1") && msg.contains("L2"), "got: {msg}");
+    // The qualified form still resolves to exactly one.
+    assert_eq!(
+      resolve_running(&rows, "qwen@coder").unwrap().launch_id,
+      "L1"
+    );
+    assert_eq!(
+      resolve_running(&rows, "gemma@coder").unwrap().launch_id,
+      "L2"
+    );
+  }
+
+  #[test]
+  fn resolve_running_does_not_widen_on_an_empty_half() {
+    // `"".contains("")` is true for every row, so an unguarded split made
+    // `@coder` a cross-model lookup that failed listing unrelated launches.
+    let rows = vec![
+      live("L1", "/m/qwen.gguf", 41100, Some("coder")),
+      live("L2", "/m/gemma.gguf", 41101, None),
+    ];
+    for miss in ["@coder", "qwen@"] {
+      assert_eq!(
+        resolve_running(&rows, miss).unwrap_err().code,
+        MODEL_NOT_FOUND,
+        "`{miss}` must not widen the match set"
+      );
+    }
+  }
+
+  #[test]
+  fn running_index_keeps_every_launch_of_one_path() {
+    let rows = vec![
+      live("L1", "/m/qwen.gguf", 41100, Some("coder")),
+      live("L2", "/m/qwen.gguf", 41101, Some("writer")),
+      live("L3", "/m/gemma.gguf", 41102, None),
+    ];
+    let idx = running_index(&rows);
+    let qwen = idx.get("/m/qwen.gguf").expect("indexed by path");
+    assert_eq!(
+      qwen
+        .iter()
+        .map(|r| r.launch_id.as_str())
+        .collect::<Vec<_>>(),
+      vec!["L1", "L2"],
+      "both named launches survive, in daemon order"
+    );
+    assert_eq!(idx.get("/m/gemma.gguf").map(Vec::len), Some(1));
   }
 
   #[test]

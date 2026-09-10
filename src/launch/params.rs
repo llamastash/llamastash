@@ -282,14 +282,6 @@ pub enum MtpEnable {
 }
 
 impl MtpEnable {
-  /// Serde skip-predicate: the default state writes nothing, so a preset that
-  /// never set MTP keeps its previous bytes in `config.yaml`.
-  pub fn is_auto(&self) -> bool {
-    matches!(self, MtpEnable::Auto)
-  }
-}
-
-impl MtpEnable {
   /// Stable lowercase label (`"auto"` / `"on"` / `"off"`) for CLI / status.
   pub fn label(self) -> &'static str {
     match self {
@@ -310,24 +302,13 @@ impl MtpEnable {
     }
   }
 
-  /// Next stop on the TUI picker's cycle ring (`auto → on → off → auto`
-  /// forward, reversed backward). Backend-agnostic — the picker shows one MTP
-  /// row for any MTP-capable model, and each backend honors the resolved intent.
-  pub fn cycled(self, forward: bool) -> MtpEnable {
-    use MtpEnable::*;
-    if forward {
-      match self {
-        Auto => On,
-        On => Off,
-        Off => Auto,
-      }
-    } else {
-      match self {
-        Auto => Off,
-        On => Auto,
-        Off => On,
-      }
-    }
+  /// Store this intent onto a knob map — the write side of
+  /// [`LaunchParams::mtp_intent`] and the one home every write site
+  /// (`--mtp`, `presets save --mtp`) goes through. The `auto` label parses
+  /// to the knob's `Auto` state (not a clear), so an explicit `--mtp auto`
+  /// overrides an inherited layer the same way every other knob's `auto` does.
+  pub fn store(self, knobs: &mut crate::launch::knobs::KnobSet) {
+    knobs.set_by_name("mtp", self.label());
   }
 }
 
@@ -481,17 +462,6 @@ pub struct LaunchParams {
   /// it. Empty for a backend that projects nothing.
   #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
   pub launch_config: BTreeMap<String, String>,
-  /// MTP (multi-token prediction) speculative-decoding intent for this launch.
-  /// Default [`MtpEnable::Auto`] (enable when the model is MTP-capable);
-  /// launch-only (no config-file entry — KD2), persisted here in `last_params`
-  /// like any launch choice. `#[serde(default)]` keeps older rows loading.
-  #[serde(default)]
-  pub mtp: MtpEnable,
-  /// How many tokens to draft per speculation step, when MTP resolves on.
-  /// `None` ⇒ unset, leaving the serving backend on its own default. Launch-only,
-  /// persisted like `mtp`; each backend maps it onto its own flag.
-  #[serde(default)]
-  pub mtp_draft_n: Option<u32>,
   /// Resolved MTP directive for *this* launch (what the serving backend turns
   /// into argv, and the running-row truth `status` reports): `Some` ⇒ this launch
   /// speculates (naming a separate draft head when one is used). Computed
@@ -516,8 +486,6 @@ impl LaunchParams {
       backend: BackendChoice::default(),
       server: None,
       launch_config: BTreeMap::new(),
-      mtp: MtpEnable::default(),
-      mtp_draft_n: None,
       mtp_directive: None,
     }
   }
@@ -541,23 +509,27 @@ impl LaunchParams {
       "server": self.server,
     });
     // Pinned backend, omitted at its `Auto` default so non-pinned rows stay
-    // byte-stable. Same reason `mtp` below is additive: `start --preset` reads
-    // this back to rebuild the preset's launch params, and leaving it out
-    // silently dropped every `backend:` a preset declared.
+    // byte-stable: `start --preset` reads this back to rebuild the preset's
+    // launch params, and leaving it out silently dropped every `backend:` a
+    // preset declared.
     if let Some(id) = self.backend.explicit_id() {
       row["backend"] = Value::String(id.to_string());
     }
-    // MTP intent, additive like the native knobs: omitted at its `Auto` default so
-    // non-MTP rows stay byte-stable. The CLI reads this back off `presets_show` to
-    // rebuild a preset's launch params, so leaving it out silently disarmed every
-    // `mtp:` a preset declared.
-    if !self.mtp.is_auto() {
-      row["mtp"] = Value::String(self.mtp.label().to_string());
-    }
-    if let Some(n) = self.mtp_draft_n {
-      row["mtp_draft_n"] = Value::from(n);
-    }
     row
+  }
+
+  /// This launch's MTP intent, read straight off the knob map — the one home
+  /// for the tri-state mapping. Unset and `Auto` both mean "let the model's
+  /// capability decide"; a `Set(Bool)` is an explicit on/off. Callers holding
+  /// the *resolved* knob set (the daemon after layering) get the layered
+  /// answer; callers holding raw user knobs get what the user typed.
+  pub fn mtp_intent(&self) -> MtpEnable {
+    use crate::launch::knobs::{KnobValue, Scalar};
+    match self.knobs.get_by_name("mtp") {
+      Some(KnobValue::Set(Scalar::Bool(true))) => MtpEnable::On,
+      Some(KnobValue::Set(Scalar::Bool(false))) => MtpEnable::Off,
+      _ => MtpEnable::Auto,
+    }
   }
 }
 
@@ -724,22 +696,91 @@ mod tests {
   }
 
   #[test]
-  fn mtp_serde_round_trips_and_defaults_auto() {
-    // Wire form is the lowercase label; a row without `mtp` loads as Auto.
+  fn mtp_intent_rides_the_knob_map() {
+    // The knob map is the only channel: `MtpEnable::store` writes it there,
+    // `mtp_intent` reads it back, and the knob survives a serde round-trip
+    // (state.json / wire) intact. A row with no `mtp` knob reads as Auto.
     let mut p = base_params();
-    p.mtp = MtpEnable::On;
-    p.mtp_draft_n = Some(4);
+    assert_eq!(p.mtp_intent(), MtpEnable::Auto);
+    MtpEnable::On.store(&mut p.knobs);
+    assert_eq!(p.mtp_intent(), MtpEnable::On);
     let v = serde_json::to_value(&p).unwrap();
-    assert_eq!(v["mtp"], "on");
-    assert_eq!(v["mtp_draft_n"], 4);
+    assert_eq!(v["knobs"]["mtp"], true);
     let back: LaunchParams = serde_json::from_value(v).unwrap();
-    assert_eq!(back.mtp, MtpEnable::On);
-    assert_eq!(back.mtp_draft_n, Some(4));
-    // Missing `mtp` → Auto (older rows).
+    assert_eq!(back.mtp_intent(), MtpEnable::On);
+    // Explicit `auto` is a stored state, not a clear — it must survive too,
+    // so it can shadow a preset pinning on/off.
+    MtpEnable::Auto.store(&mut p.knobs);
+    assert!(
+      p.knobs.is_auto(crate::launch::knobs::kid("mtp")),
+      "auto writes the knob's Auto state"
+    );
+    assert_eq!(p.mtp_intent(), MtpEnable::Auto);
+    // An old row's top-level `mtp` key (the pre-collapse typed sibling) is
+    // ignored, not fatal.
     let mut v2 = serde_json::to_value(base_params()).unwrap();
-    v2.as_object_mut().unwrap().remove("mtp");
+    v2.as_object_mut()
+      .unwrap()
+      .insert("mtp".into(), "off".into());
     let d: LaunchParams = serde_json::from_value(v2).unwrap();
-    assert_eq!(d.mtp, MtpEnable::Auto);
+    assert_eq!(d.mtp_intent(), MtpEnable::Auto);
+  }
+
+  /// Regression: a `mtp` knob set through the knob channel — `-- --mtp off`
+  /// passthrough, or a raw `knobs` map on the start request — must drive the
+  /// directive. It used to be dropped on the floor: the resolver read only the
+  /// typed `LaunchParams.mtp` sibling, which those paths never touched.
+  #[test]
+  fn a_knob_set_mtp_drives_the_directive() {
+    let mut warn = Vec::new();
+    let mut p = base_params();
+    p.knobs.set_by_name("mtp", "off");
+    assert!(
+      resolve_mtp_directive(p.mtp_intent(), true, None, &mut warn).is_none(),
+      "an off knob must suppress speculation on a capable model"
+    );
+    let mut q = base_params();
+    q.knobs.set_by_name("mtp", "on");
+    assert!(resolve_mtp_directive(q.mtp_intent(), true, None, &mut warn).is_some());
+    assert!(warn.is_empty());
+  }
+
+  /// Regression: an untouched TUI row used to ship a typed `mtp: "auto"` that
+  /// the daemon read as an explicit choice, shadowing a `default:` preset's
+  /// `mtp:` pin. With one channel the User layer is simply absent, so the
+  /// preset's pin survives the resolve and reaches `mtp_intent`.
+  #[test]
+  fn a_preset_pin_survives_a_launch_that_touched_no_mtp_row() {
+    use crate::launch::knobs::{kid, resolve_layered, KnobSet};
+    use crate::launch::LayerLabel;
+    let mut preset = KnobSet::new();
+    preset.set_by_name("mtp", "off");
+    // The User layer carries an unrelated knob, so it is present but silent
+    // about mtp — exactly the untouched-row case.
+    let mut user = KnobSet::new();
+    user.set_by_name("ctx", "8192");
+    let resolved = resolve_layered(
+      crate::backend::DEFAULT_BACKEND_ID,
+      &[
+        (LayerLabel::User, &user),
+        (LayerLabel::PresetDefault, &preset),
+      ],
+    );
+    let mut p = base_params();
+    p.knobs = resolved.knobs;
+    assert_eq!(p.mtp_intent(), MtpEnable::Off);
+    assert_eq!(p.knobs.u32(kid("ctx")), Some(8192));
+  }
+
+  /// A persisted `last_params` row whose knob map carries `mtp: false` reloads
+  /// as intent Off — the state.json compat case for rows written before the
+  /// typed sibling was collapsed away.
+  #[test]
+  fn a_persisted_mtp_knob_reloads_as_intent() {
+    let mut v = serde_json::to_value(base_params()).unwrap();
+    v["knobs"]["mtp"] = serde_json::Value::Bool(false);
+    let p: LaunchParams = serde_json::from_value(v).unwrap();
+    assert_eq!(p.mtp_intent(), MtpEnable::Off);
   }
 
   #[test]

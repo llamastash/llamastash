@@ -10,6 +10,8 @@ This is the reference for the non-interactive CLI surface and the TUI keybinding
 
 **Model references.** `start`, `stop`, `logs`, `presets`, `favorites` all accept the same model reference: an absolute path, a canonical model id, or a case-insensitive substring of the file name or its parent directory. Ambiguous references exit `66` with a disambiguation list.
 
+**Launch names.** One model can run several times at once, each under a name you choose: `start qwen3 --name coder`, then `start qwen3 --name writer`. The launch is then addressable as `<model-ref>@<name>` everywhere a reference is taken (`stop qwen3@coder`, `logs qwen3@coder`, `show qwen3@coder`) and as `<model-id>@<name>` in a request's `body.model` on the proxy. A bare `stop coder` works too when exactly one live launch answers to that name; a launch that failed to load keeps its row but stops holding the address, so the name reaches the copy that is actually running and only falls back to the failed one when nothing else answers. Names are unique per model, case-insensitive, limited to letters/digits/`-`/`_` (so the address always parses back), live only as long as the launch, and are refused for backends that serve every model from one shared process (Lemonade), where a second launch is not a second instance.
+
 ## Platform requirements
 
 LlamaStash runs on Linux (x86_64, aarch64), macOS (Apple Silicon, Intel), and Windows (x86_64).
@@ -302,9 +304,12 @@ llamastash list [--json] [--filter <PATTERN>]
 
 Row shape:
 
-- Top level: `name`, `repo`, `path`, `parent`, `source`, `backend`, `supported_backends`, `split_siblings`, `parse_error`, `display_label`, plus `model_id` only when set and a CLI-only `status` object on a running row (`state`, `port`, `launch_id`, `device` — the raw `--device` selector, `null` when the launch took the backend default, which the table's DEVICE column renders as `all`).
+- Top level: `name`, `repo`, `path`, `parent`, `source`, `backend`, `supported_backends`, `split_siblings`, `parse_error`, `display_label`, plus `model_id` only when set and a CLI-only `status` object on a running row (`state`, `port`, `launch_id`, `name` when the launch has one, `device` — the raw `--device` selector, `null` when the launch took the backend default, which the table's DEVICE column renders as `all`).
+- `launches` — present alongside `status` on a running row: one object per live launch of that model, same shape as `status`. `status` is the first of them and keeps its pre-existing meaning, so `models[i].status.state` still pins. Read `launches` when a model may be running more than once.
 - `metadata` — GGUF-derived: `arch`, `quant`, `native_ctx`, `mode_hint`, `parameter_label`, `weights_bytes`, `total_parameters`, `tokenizer_kind`, `has_chat_template`, `has_reasoning_hint`. (These are **not** top-level keys; read `has_reasoning_hint`, there is no `reasoning_hint` alias.)
 - `mtp` — `{embedded_layers, separate_head}`; `multimodal` — `{vision, audio}`.
+
+A model running more than once gets **one row per launch**, and a named launch renders `<model>@<name>` in NAME. That joined string is the address: paste it into a client's `model` field, or hand it to `stop` / `logs` / `show`.
 
 The table columns are `NAME [REPO] ARCH PARAMS QUANT CTX SIZE MODE [BACKEND] STATUS [DEVICE]` — the TUI Models list shows the same set minus `REPO`, which is CLI-only (the TUI groups rows under a repo section header instead), with `DEVICE` gated on the same "some single server offers more than one device" rule the TUI uses (`cli::resolve::multi_device`). `MODE` shows the catalog's mode hint (`chat` / `embedding` / `rerank`). `REPO` is where the model lives in short form — `unsloth/Qwen3.8-27B-GGUF` for an HF or LM Studio cache entry, the parent directory's name for anything else; it is empty for a source that names its own origin (Ollama, Lemonade), and the column is dropped when no row has one. It is also the prefix of the repo-qualified id the proxy publishes when two models share a file name (see [Model ids on the proxy](#model-ids-on-the-proxy)). `BACKEND` appears only when some model is served by more than one backend (or a non-default one); `DEVICE` appears only on multi-GPU hosts and reads `all` for a running launch that targets every GPU (no `--device`), the explicit selector when pinned, and `?` otherwise — matching the TUI's Device column. When piped, the same columns print as tab-separated rows.
 
@@ -316,12 +321,14 @@ Everything LlamaStash knows about one model: catalog row, GGUF metadata, on-disk
 llamastash show <model-ref> [--json]
 ```
 
+`<model-ref>` also takes a launch: `show qwen3@coder` scopes the running section to that one launch, and `show coder` / `show L3` / `show 41100` resolve through the live launches the way `stop` and `logs` do.
+
 `--json` builds on the **same catalog-row shape as `list --json`** (nested `metadata`, `multimodal`, `mtp`, `supported_backends`, `split_siblings`; `model_id` omitted when unset). The envelope **is** the serialized `CatalogRow` with four show-only sections layered on top (`src/cli/show.rs::assemble_envelope`) — never a second hand-built projection:
 
 - `size` — `weights_bytes`, `shard_count`, `on_disk_total_bytes`, and a per-shard `shards` breakdown.
 - `arch_defaults` — the `yaml` and `builtin` knob sets for this (arch, GPU backend) pair.
 - `last_params` — the params of the last successful launch (`null` when never launched).
-- `running` — live supervisor info (`launch_id`, `state`, `port`, `resolved_ctx`, `ctx_clamped`), or `null`.
+- `running` — an array with one object per live launch (`launch_id`, `name`, `preset`, `state`, `port`, `resolved_ctx`, `ctx_clamped`), empty when nothing is running. `preset` is the preset that launched that copy (`null` when none was in play). The human output prints one `running` block per launch, headed by its `<model>@<name>` address, and shows the `preset` row only when there is one.
 
 The human output shows the same content as aligned key/value sections, including `multimodal` (`vision + audio`) and `mtp` (`embedded (N layers)` / `separate head`) rows under `metadata`.
 
@@ -330,21 +337,41 @@ The human output shows the same content as aligned key/value sections, including
 Launch a model. `run` is a visible alias for `start` — same flags, same behavior; it exists as the shorter way to say "launch this". Layered resolution: catalog row → optional preset → per-invocation flags → trailing raw `llama-server` flags after `--`.
 
 ```
-llamastash start <ref> [--preset NAME] [--ctx N] [--port N] [--wait] [--force]
+llamastash start <ref> [--name LABEL] [--preset NAME] [--ctx N] [--port N] [--wait] [--force]
                      [--reasoning on|off] [--mode chat|embedding|rerank]
                      [--backend auto|ds4|llamacpp|lemonade|vllm|sglang] [--server <id>]
                      [--<advanced-knob> ...] [-- <llama-server-flags>...]
 ```
 
+`--name <label>` names this launch, so the same model can run several times at once and each copy stays addressable as `<model-ref>@<label>`. A name is trimmed and limited to letters, digits, `-` and `_` — anything else (a space, an `@`) is a usage error at parse time, because the address would not parse back to this launch; the daemon enforces the same rule for raw JSON-RPC callers. A second live launch of the *same* model under the *same* name is refused, and the refusal names the launch already holding it (`name `coder` is already running as L3`); the same name on a *different* model is fine. `--json` reports the accepted name back as `launch_name`, with or without `--wait`. Because a reference is only read as `<model>@<name>` when the name half follows that same rule, a mistyped `qwen3@my coder` is treated as a plain model reference and simply misses, rather than starting anything. Names are not config: they live as long as the launch and are gone once it stops. A `llamastash daemon stop` stops every managed launch with the daemon, so nothing is left to name; if the daemon *crashes*, its `llama-server` children keep serving and the next start surfaces each as a read-only `external` row that still carries its name — `status` shows `<model>@<name>` and `stop <name>` reaches it, but it is not re-published on `/v1/models` (routing needs a supervisor, and there is none), so the next proxy request for that address starts a fresh launch beside it.
+
 `--backend` defaults to `auto` (picks the engine by model identity — a DeepSeek-V4 GGUF routes to the [ds4 backend](#ds4-backend) when available, everything else to llama.cpp). Override it to force a specific engine.
 
 `--server <id>` picks a specific **server** — one build/binary of a backend (`llamacpp-vulkan`, `llamacpp-cuda`, `ds4` or a named `ds4-rocm`). It determines which binary spawns and, when `--backend` is unset, which backend runs the model (the server's owning backend). Server ids auto-derive as `<backend>-<compute>` from each build's own device names (or the bare backend id for a device-less engine like ds4/lemonade), overridable with a per-server `name:`; list them from `status` (the `servers` array; `status --json` mirrors it). A `--device <selector>` already implies its owning server, so `--server` is for picking a build with no device pin. The pick persists in `last_params`, so a relaunch reuses it — in the TUI it reopens the launch picker's `server` row on that build.
 
-Every knob any backend declares is a first-class `start` flag — `--n-gpu-layers`, `--threads`, `--device`, `--tensor-split`, `--main-gpu`, `--split-mode`, `--flash-attn`, `--cache-type-k`/`-v`, `--batch-size`, `--mlock`, and the same for every other backend's own tunables. The flag is spelled the way the engine spells it. Run `start --help` for the full list, grouped by the backend that declares each; `llamastash knobs` lists them with value ranges and choices. Flags, editor rows and preset keys are all generated from one declaration per knob, so no surface can be missing one. Booleans take `--flash-attn` (= on) or `--flash-attn=false`. Anything `start` doesn't recognise as a knob — including `llama-server`'s single-dash shorts like `-ngl` — still works verbatim after `--`. A knob set both inline and after `--` resolves to the `--` value.
+Every knob any backend declares is a first-class `start` flag — `--n-gpu-layers`, `--threads`, `--device`, `--tensor-split`, `--main-gpu`, `--split-mode`, `--flash-attn`, `--cache-type-k`/`-v`, `--batch-size`, `--load-mode`, and the same for every other backend's own tunables. The flag is spelled the way the engine spells it. Run `start --help` for the full list, grouped by the backend that declares each; `llamastash knobs` lists them with value ranges and choices. Flags, editor rows and preset keys are all generated from one declaration per knob, so no surface can be missing one. Booleans take `--flash-attn` (= on) or `--flash-attn=false`. Anything `start` doesn't recognise as a knob — including `llama-server`'s single-dash shorts like `-ngl` — still works verbatim after `--`. A knob set both inline and after `--` resolves to the `--` value.
 
 Modes are strict: when the catalog reports `mode_hint = unknown` and no `--mode` is passed, the CLI exits `64` rather than silently defaulting to chat. Otherwise the mode resolves as `--mode` > a preset's `mode:` pin > the model's own GGUF hint > chat, and the last two rungs are resolved by the daemon, so the same order applies to a plain `start`, the TUI, and proxy auto-start alike.
 
 `--ctx` above the model's native context length is allowed (the supervisor still tries, per R12); a warning prints to stderr. When `--preset` and inline knobs are combined, the inline knobs layer onto the preset — they override only the fields they set, leaving the rest of the preset intact.
+
+#### Model loading (`load-mode`)
+
+`load-mode` picks how the weights are brought in: `auto` (the engine default —
+mmap unless a device can't), `none` (no mmap, the old `--no-mmap`), `mmap`,
+`mlock` (locked in RAM, and *not* mmapped), `mmap+mlock`, or `dio` (DirectIO
+where the build has it).
+
+llama.cpp deleted `--mmap` / `--no-mmap` / `--mlock` / `-dio` on 2026-09-09 in
+favour of one `--load-mode` flag, and both spellings are still in the field — a
+current stock build commonly sits beside older fork builds pinned for one model.
+LlamaStash probes each configured server's `--help` once at daemon start and
+emits whichever spelling that binary takes, so the same preset launches on both.
+Nothing to configure; `llamastash status` lists the servers it probed.
+
+A `config.yaml` still carrying `no-mmap: true` or `mlock: true` is rewritten on
+the next `daemon start` (`no-mmap` → `load-mode: none`, `mlock` → `load-mode:
+mlock`, both → `mlock`), with a `.pre-knobs.bak` copy beside it.
 
 #### Auto launch mode (default)
 
@@ -438,7 +465,7 @@ Both `--json` shapes carry a `warnings` array when the daemon raised any advisor
 
 ### `llamastash stop <target>` / `llamastash stop --all`
 
-Stop a managed launch by `<launch_id>` (e.g. `L3`), by port, by a case-insensitive substring of the running model's file name or parent dir (e.g. `stop qwen`), or — for unmanaged processes the daemon surfaced — by `ext-<pid>` or bare PID. A name substring that matches more than one running launch exits `66` with the candidate launch ids.
+Stop a managed launch by `<launch_id>` (e.g. `L3`), by port, by its launch name (`stop coder`, or `stop qwen3@coder` to qualify it when two models share a name), by a case-insensitive substring of the running model's file name or parent dir (e.g. `stop qwen`), or, for unmanaged processes the daemon surfaced, by `ext-<pid>` or bare PID. An exact launch name is tried before the path substring, the way an exact launch id is. Anything that matches more than one running launch exits `66` with the candidate launch ids.
 
 ```
 llamastash stop <target>     # exit 68 on failure, 66 on no match
@@ -459,6 +486,8 @@ Snapshot of daemon health, managed launches, external (unmanaged) `llama-server`
 }
 ```
 
+Each row in `models` carries `name` when the launch was started with `--name`, and `preset` when the launch resolved one — an explicit `--preset` / launch file / TUI preset stop, a `<model>@<preset>` auto-start address, or the model's config `default:`. Both keys are omitted, not nulled, when they don't apply; `preset` is the preset that actually launched this copy, unlike the sibling `default` field, which is the model's configured default either way. The human table has no MODEL column, so its NAME cell renders `<model>@<name>` for a named launch and the model alone otherwise: two different models both named `coder` stay tellable apart in the command you reach for to work out what to stop.
+
 The `proxy` block is documented in detail under [Proxy → Is the proxy up?](#is-the-proxy-up).
 
 On a host where more than one GPU backend reports a device (e.g. an
@@ -471,7 +500,7 @@ per-vendor shape.
 
 ### `LlamaStash logs <target>`
 
-Tail (or follow) a launch's log file. `<target>` is a `<launch_id>` (e.g. `L3`), a port, or a case-insensitive substring of the running model's file name / parent dir (e.g. `logs qwen`). An ambiguous name exits `66` with the matching launch ids.
+Tail (or follow) a launch's log file. `<target>` is a `<launch_id>` (e.g. `L3`), a port, a launch name (`logs coder` / `logs qwen3@coder`), or a case-insensitive substring of the running model's file name / parent dir (e.g. `logs qwen`). An ambiguous name exits `66` with the matching launch ids. Each launch writes its own file, so two launches of one model never interleave.
 
 ```
 LlamaStash logs <target> [-n N] [-f]
@@ -562,7 +591,7 @@ llamastash start <model> --mtp on        # force on (warns + skips if not capabl
 llamastash start <model> --mtp-draft-n 5  # tokens drafted per step (backend default when unset)
 ```
 
-`--mtp` is a **launch-only** setting (there is no `config.yaml` key to set it globally), but it persists in `last_params` and in named presets like any other launch choice, so `mtp: off` / `mtp: on` under a preset entry pins it. That matters most for pinning MTP **off** on a model where speculation costs more than it saves. `--mtp-draft-n` works whichever backend serves the model. The TUI launch picker shows the same control as an `mtp` cycle row (auto/on/off), but only for MTP-capable models. Forcing it on a model that has no draft head **warns and skips** rather than failing the launch (emitting the flag blind is a hard server error). If you drive speculative decoding yourself through the `-- <extras>` tail, llamastash defers entirely and adds nothing.
+`--mtp` is a **launch-only** setting (there is no `config.yaml` key to set it globally), but it persists in `last_params` and in named presets like any other launch choice, so `mtp: off` / `mtp: on` in a preset entry's `knobs:` map pins it — including under `default:`, where it now applies to a plain `start` and a TUI launch that left the row alone. That matters most for pinning MTP **off** on a model where speculation costs more than it saves. `--mtp-draft-n` works whichever backend serves the model, and rides the `mtp-draft-n` knob, so `-- --mtp off` / `-- --mtp-draft-n 5` in the extras tail work too. The TUI launch picker shows the same control as an `mtp` row cycling inherited → auto → on → off, but only for MTP-capable models; it shows your intent, not the resolved answer (`status`'s `active` reports that). Forcing it on a model that has no draft head **warns and skips** rather than failing the launch (emitting the flag blind is a hard server error). If you drive speculative decoding yourself through the `-- <extras>` tail, llamastash defers entirely and adds nothing.
 
 Under the hood, each backend maps this onto its own flags — the serving backend enables speculation with the resolved draft head (and `--mtp-draft-n` when set), emitted **before** the fit step so context reservation stays MTP-aware. **DeepSeek-V4 on the ds4 backend** uses ds4's own `mtp` / `mtp_draft` / `mtp_margin` native knobs, auto-pairing a sidecar found next to the model. ds4 publishes no draft-acceptance figure, so `acceptance` stays null on a ds4 launch even while MTP is active.
 
@@ -739,6 +768,8 @@ When two models would publish the same plain id, each takes the shortest longer 
 2. **Source-qualified** — the discovery source in front of that: `huggingface/lmstudio-community/gemma-4-E2B-it-GGUF/gemma-4-E2B-it-Q4_K_M` vs `lm-studio/lmstudio-community/…`. This is the rung the ordinary duplicate needs — one repo cached by two different tools derives the *same* `owner/repo` from both roots, so step 1 cannot separate them.
 3. **The full canonical path**, when even that collides — the same file name in two subdirectories of one repo, reached through one source.
 
+A **named launch** publishes one more id: the model's published id, an `@`, and the launch name (`Qwen3.8-27B-Q4_K_M@coder`). These come from the live launch registry rather than the disk catalog, so they appear while the launch runs and drop when it stops, and the model half is the same disambiguated id the catalog row publishes. Sending a named id that has no live launch auto-starts one carrying that name, so a client holding a cached id recovers instead of erroring. That auto-start also reads the name as a preset: if the model has a preset called `coder`, `qwen3@coder` launches under it, otherwise under the model's `default:` preset as before. A request body carries nothing but `model`, so this is the only way a client picks a preset — it applies to proxy auto-starts only, never to `start --name` or the TUI, where `--preset` already chooses one. A model file whose own name contains an `@` still resolves whole, and the split is taken at the last `@`.
+
 The resolver accepts every form for every model, collision or not, and each qualified form in both the published spelling and the `.gguf` filename spelling. It also accepts a partial repo reference (`unsloth/Qwen3.8`), which the raw cache path (`models--unsloth--Qwen3.8-…`) never matched. Sending any form two models share — the bare name, or a repo-qualified form that does not separate them — returns `400 ambiguous_model`, and its `matches` array lists the published id of each candidate, every one of which routes, so resend one verbatim.
 
 ### Anthropic-shape clients (Claude Code)
@@ -909,6 +940,8 @@ plugin queries `/v1/models` at OpenCode startup, so new models appear without a
 re-run. Because `/v1/models` has no type field, it can only separate chat from
 embed/rerank by **name pattern** (`excludeBy` on ids like `embed` / `rerank` /
 `whisper`), not the exact `mode_hint` the generator above uses.
+
+**Named launches are not discovered.** Neither generator sees them: `list --json` is a catalog listing, and the discovery plugin reads `/v1/models` once at startup, while a named id exists only while its launch runs. Until [the patchers learn to emit them](../TODO.md), add one by hand: duplicate the model's block and append `@<name>` to the key (and to its `name`), so `Qwen3.8-27B-Q4_K_M` gains a sibling `Qwen3.8-27B-Q4_K_M@coder`. The proxy auto-starts the named launch on first use, so the entry works even when nothing is running yet. The same applies to pi's `~/.pi/agent/models.json`.
 
 > **Auth posture.** On the default loopback bind the proxy has **no authentication** — the threat model is "same machine, any UID can issue requests," so don't run llamastash on a shared host. Exposing it on the LAN ([LAN access](#lan-access-opt-in-behind-a-key)) requires a bearer key, which llamastash auto-provisions and enforces; the daemon refuses a non-loopback bind with no key unless you pass `--insecure-no-auth`. TLS is still a deferred follow-up, so LAN mode is plaintext (trusted network or reverse proxy). The control plane and `llama-server` children always stay loopback regardless.
 
@@ -1173,7 +1206,7 @@ llamastash pull <repo> [--json] [--offline]
 
 `pull` performs a disk-space precheck by HEADing each file before download, so an out-of-space failure surfaces before any bytes hit disk. It refuses to write the HF token to disk in cache-file modes that would persist it insecurely.
 
-On a terminal, `pull` paints one progress line on **stderr**, in the shape `⬇ <file> (2/4)  42%  1.2G / 4.1G · 85M/s`. The percent, bytes and rate cover the whole pull, not just the current file. The line repaints in place and clears itself before the summary. Redirect stderr, or pipe it, and nothing is written: stdout (including `--json`) is identical either way.
+On a terminal, `pull` paints one progress line on **stderr**, in the shape `⬇ <file> (2/4)  42%  1.2G / 4.1G · 85M/s`. The percent, bytes and rate cover the whole pull, not just the current file. The rate counts bytes off the wire, so files served from the HF cache advance the percent without inflating it. The line is trimmed to the terminal width — a long filename loses its middle, keeping the directory and the shard suffix — and it repaints in place and clears itself before the summary. Redirect stderr, or pipe it, and nothing is written: stdout (including `--json`) is identical either way.
 
 ## Exit codes
 
@@ -1293,6 +1326,7 @@ default)`, `(built-in)`, `(model default)`).
 | `Space`   | Toggle the cursor GPU on the multi-GPU `device` row             |
 | `e`       | Open inline edit on a numeric / enum / extras row              |
 | `Enter`   | Commit an open inline edit; otherwise dispatch `start_model`   |
+| `Alt+Enter` (`⌥⏎` on macOS) | Name this launch, then dispatch it. Accepts on `Enter`, cancels on `Esc`; an empty name launches unnamed |
 | `Esc`     | Cancel an open inline edit, or return focus to the Models list |
 
 Knob set, grouped into labelled clusters in display order:
@@ -1305,7 +1339,7 @@ Knob set, grouped into labelled clusters in display order:
 | Multi-GPU placement _(multi-GPU servers only)_ | `tensor_split`, `main_gpu`, `split_mode`         |
 | Attention & KV cache                         | `flash_attn`, `cache_type_k`, `cache_type_v`       |
 | Throughput                                   | `threads`, `parallel`, `batch_size`, `ubatch_size` |
-| Memory loading                               | `mlock`, `no_mmap`                                 |
+| Memory loading                               | `load_mode`                                        |
 | Advanced                                     | `rope_freq_scale`, `keep`, `extras`                |
 
 Groups are ordered by how often a knob is typically changed; related

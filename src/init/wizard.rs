@@ -967,10 +967,9 @@ struct WizardFileProgress {
   /// and reused by every `on_bytes_progress` update.
   label: String,
   file_size: u64,
-  bytes_in_file: u64,
-  /// EMA-smoothed throughput in bytes/s (α = 0.3, same as the TUI strip).
-  throughput_bps: f64,
-  last_at: std::time::Instant,
+  bytes: crate::init::download::WireDelta,
+  rate: crate::init::download::RateMeter,
+  repaint: crate::init::download::RepaintClock,
 }
 
 /// Bridges hf-hub's per-file lifecycle (resolved → started → finished)
@@ -1012,9 +1011,9 @@ impl crate::init::download::DownloadProgress for WizardDownloadProgress {
     *self.file_progress.lock().unwrap_or_else(|e| e.into_inner()) = Some(WizardFileProgress {
       label,
       file_size: size,
-      bytes_in_file: 0,
-      throughput_bps: 0.0,
-      last_at: std::time::Instant::now(),
+      bytes: Default::default(),
+      rate: Default::default(),
+      repaint: Default::default(),
     });
   }
 
@@ -1035,20 +1034,17 @@ impl crate::init::download::DownloadProgress for WizardDownloadProgress {
       let mut pg = self.file_progress.lock().unwrap_or_else(|e| e.into_inner());
       let Some(state) = pg.as_mut() else { return };
       let now = std::time::Instant::now();
-      let elapsed = now
-        .saturating_duration_since(state.last_at)
-        .as_secs_f64()
-        .max(1e-6);
-      let delta = bytes_in_file.saturating_sub(state.bytes_in_file) as f64;
-      state.throughput_bps = 0.3 * (delta / elapsed) + 0.7 * state.throughput_bps;
-      state.bytes_in_file = bytes_in_file;
-      state.last_at = now;
+      let transferred = state.bytes.advance(bytes_in_file);
+      state.rate.record(transferred, now);
+      if !state.repaint.tick(now, false) {
+        return;
+      }
       let pct = (bytes_in_file * 100)
         .checked_div(state.file_size)
         .unwrap_or(0);
       let pair = crate::tui::fmt::format_bytes_pair(bytes_in_file, state.file_size);
-      let speed = crate::tui::fmt::format_bytes(state.throughput_bps as u64);
-      format!("{} · {pair} · {pct}% · {speed}/s", state.label)
+      let speed = crate::tui::fmt::format_rate(state.rate.bps());
+      format!("{} · {pair} · {pct}% · {speed}", state.label)
     };
     if let Some(sp) = self
       .spinner
@@ -1061,17 +1057,16 @@ impl crate::init::download::DownloadProgress for WizardDownloadProgress {
   }
 
   fn on_retry(&self, _filename: &str, attempt: u32) {
-    // Reset EMA timing so the throughput measurement restarts cleanly
-    // from the resumed byte offset — the old instant_bps spike would
-    // otherwise skew the first post-retry reading.
+    // Drop the rate meter's in-flight window so the retry's backoff
+    // sleep isn't averaged into the resumed transfer.
     if let Some(state) = self
       .file_progress
       .lock()
       .unwrap_or_else(|e| e.into_inner())
       .as_mut()
     {
-      state.throughput_bps = 0.0;
-      state.last_at = std::time::Instant::now();
+      state.rate = Default::default();
+      state.repaint.reset();
     }
     if let Some(sp) = self
       .spinner

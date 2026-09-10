@@ -109,7 +109,7 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
       // rate it reported (null until printed, or on a backend that publishes
       // none). Additive.
       "mtp": {
-        "enable": params.mtp.label(),
+        "enable": params.mtp_intent().label(),
         "active": mtp_active,
         "acceptance": mtp_acceptance.map(|a| a.rate),
         "draft_accepted": mtp_acceptance.map(|a| a.accepted),
@@ -127,7 +127,7 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
       &preset_rows,
       &preset_store,
     );
-    let row = json!({
+    let mut row = json!({
       "launch_id": launch_id,
       "id": model.id(),
       "port": model.port(),
@@ -153,6 +153,19 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
       "preset_count": preset_count,
       "default": preset_default,
     });
+    // Omitted when unset — the same convention `state.json` and the CLI's
+    // `launch_status_json` use — so the unnamed-row shape stays byte-stable
+    // instead of alternating between `null` and a value across surfaces.
+    if let Some(name) = running_snap.and_then(|r| r.name.clone()) {
+      row["name"] = json!(name);
+    }
+    // The preset this launch resolved (explicit pick / `@name` address /
+    // config `default:`), omitted when none was in play — the same
+    // convention `name` uses, and distinct from the config-only `default`
+    // hint above.
+    if let Some(preset) = running_snap.and_then(|r| r.preset.clone()) {
+      row["preset"] = json!(preset);
+    }
     models.push(row);
   }
   // Delegated Lemonade models — the registry holds only the shared
@@ -226,7 +239,7 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
           .map(|s| s.to_string_lossy().into_owned())
           .collect::<Vec<_>>(),
         "mtp": {
-          "enable": running_snap.params.mtp.label(),
+          "enable": running_snap.params.mtp_intent().label(),
           "active": owner.mtp_active(&running_snap.params),
           "acceptance": Value::Null,
           "draft_accepted": Value::Null,
@@ -238,7 +251,7 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
         &preset_rows,
         &preset_store,
       );
-      models.push(json!({
+      let mut delegated_row = json!({
         "launch_id": launch_id,
         "id": synthetic_id,
         "port": running_snap.port,
@@ -257,17 +270,24 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
         "latest_cpu_pct": u_cpu,
         "preset_count": preset_count,
         "default": preset_default,
-      }));
+      });
+      // Same only-when-set `preset` the managed branch stamps, so a
+      // delegated row is shape-identical to a process row.
+      if let Some(preset) = running_snap.preset.clone() {
+        delegated_row["preset"] = json!(preset);
+      }
+      models.push(delegated_row);
     }
   }
   // External — read-only rows for `llama-server` processes the
   // daemon doesn't own. Populated by the startup orphan sweep.
-  // Stable shape: `{pid, cmdline, model_path, port, launched_by_llamastash}`.
+  // Stable shape: `{pid, cmdline, model_path, port, launched_by_llamastash}`,
+  // plus `name` on a row demoted from a named launch.
   let external_snapshot = ctx.external.read().await.clone();
   let external: Vec<Value> = external_snapshot
     .iter()
     .map(|e| {
-      json!({
+      let mut obj = json!({
         "pid": e.pid,
         "cmdline": e.cmdline,
         "model_path": e.model_path,
@@ -278,7 +298,13 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
         // sibling-instance orphans at a glance.
         "port": e.port,
         "launched_by_llamastash": e.launched_by_llamastash,
-      })
+      });
+      // Only-when-set, the same convention the managed rows use, so a
+      // scan-found row stays byte-identical to the pre-name shape.
+      if let Some(n) = e.name.as_deref() {
+        obj["name"] = json!(n);
+      }
+      obj
     })
     .collect();
   // Host-level metrics (CPU%, RAM, GPU util/temp/VRAM aggregates).
@@ -551,16 +577,14 @@ mod tests {
     let path = PathBuf::from(format!("lemonade://{name}"));
     let (id, resolved_backend) = crate::backend::synthetic_identity_for_path(&path)
       .expect("a lemonade:// path mints a synthetic backend identity");
-    crate::daemon::state_store::RunningSnapshot {
-      id,
-      pid: 0,
-      port,
-      started_at: 0,
-      launch_id: Some(crate::daemon::registry::LaunchId(launch_id.to_string())),
-      params: LaunchParams::new(path, LaunchMode::Chat),
-      actuals: Default::default(),
-      resolved_backend,
-    }
+    crate::test_support::running_row(&path.to_string_lossy())
+      .identity(id)
+      .pid(0)
+      .port(port)
+      .launch_id(launch_id)
+      .params(LaunchParams::new(path, LaunchMode::Chat))
+      .resolved_backend(&resolved_backend)
+      .build()
   }
 
   #[tokio::test]

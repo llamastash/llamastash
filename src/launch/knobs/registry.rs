@@ -246,6 +246,14 @@ pub enum RegistryError {
     first: &'static str,
     second: &'static str,
   },
+  /// One backend declares the same id twice. Every id lookup resolves to the
+  /// first match, so the second declaration is unreachable: its ring, concept
+  /// and emit never apply. `KindConflict` only sees a repeat that changes kind,
+  /// and sharing an id *across* backends is deliberate, so neither covers this.
+  DuplicateId {
+    backend: &'static str,
+    id: &'static str,
+  },
 }
 
 impl std::fmt::Display for RegistryError {
@@ -277,6 +285,10 @@ impl std::fmt::Display for RegistryError {
       } => write!(
         f,
         "backend `{backend}` emits `{flag}` from both `{first}` and `{second}`"
+      ),
+      RegistryError::DuplicateId { backend, id } => write!(
+        f,
+        "backend `{backend}` declares knob `{id}` twice; the second is unreachable"
       ),
     }
   }
@@ -345,6 +357,22 @@ fn duplicate_flags(backend_id: &'static str, defs: &[KnobDef]) -> Vec<RegistryEr
   errors
 }
 
+/// One backend declaring an id twice. Shared ids *across* backends are the
+/// point (`distinct_ids` dedupes them), so this is per-backend only.
+fn duplicate_ids(backend_id: &'static str, defs: &[KnobDef]) -> Vec<RegistryError> {
+  let mut errors = Vec::new();
+  let mut seen: BTreeMap<&'static str, ()> = BTreeMap::new();
+  for def in defs {
+    if seen.insert(def.id, ()).is_some() {
+      errors.push(RegistryError::DuplicateId {
+        backend: backend_id,
+        id: def.id,
+      });
+    }
+  }
+  errors
+}
+
 /// Validate the whole registry. Run by a test, so a malformed declaration
 /// fails the build rather than surfacing as a confusing runtime behaviour.
 pub fn validate() -> Vec<RegistryError> {
@@ -400,6 +428,7 @@ pub fn validate() -> Vec<RegistryError> {
 
   for backend in Backends::all() {
     errors.extend(duplicate_flags(backend.id(), backend.knobs()));
+    errors.extend(duplicate_ids(backend.id(), backend.knobs()));
 
     let mut seen: BTreeMap<Concept, usize> = BTreeMap::new();
     for def in backend.knobs() {
@@ -471,6 +500,34 @@ mod tests {
     let errors = duplicate_flags("fake", &defs);
     assert_eq!(errors.len(), 1, "expected one collision, got {errors:?}");
     assert!(errors[0].to_string().contains("--threads"));
+  }
+
+  #[test]
+  fn one_backend_cannot_declare_an_id_twice() {
+    use crate::launch::knobs::def::Emit;
+    // Same id, distinct flags, so `duplicate_flags` sees nothing and the kinds
+    // match, so `KindConflict` sees nothing either.
+    let defs = [
+      flag_def("threads", Some("--threads"), Emit::FlagValue),
+      flag_def("threads", Some("--n-threads"), Emit::FlagValue),
+    ];
+    assert!(
+      duplicate_flags("fake", &defs).is_empty(),
+      "flag check must not be what catches this"
+    );
+    let errors = duplicate_ids("fake", &defs);
+    assert_eq!(errors.len(), 1, "expected one duplicate id, got {errors:?}");
+    assert!(errors[0].to_string().contains("threads"));
+  }
+
+  #[test]
+  fn distinct_ids_in_one_backend_are_not_duplicates() {
+    use crate::launch::knobs::def::Emit;
+    let defs = [
+      flag_def("threads", None, Emit::FlagValue),
+      flag_def("batch-size", None, Emit::FlagValue),
+    ];
+    assert!(duplicate_ids("fake", &defs).is_empty());
   }
 
   #[test]
