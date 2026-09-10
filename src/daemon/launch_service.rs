@@ -313,6 +313,28 @@ fn name_holder<'a>(
     .find(|r| crate::launch::resolve::name_matches(r.name.as_deref(), name))
 }
 
+/// The refusal for `--name` on a managed-multiplexer model, or `None` when the
+/// name is fine.
+///
+/// Such a backend serves every one of its models from one shared umbrella
+/// process, so a second launch under a name is not a second instance and
+/// `<model-id>@<name>` has nothing of its own to route to. Refused rather than
+/// recorded, so a name never reaches `status` or `/v1/models` as an address
+/// that resolves to nothing. Names no backend — the lifecycle does.
+fn multiplexer_refuses_name(identity: &ModelIdentity, name: Option<&str>) -> Option<ErrorObject> {
+  let name = name?;
+  let backend = identity.as_backend()?;
+  crate::backend::is_managed_multiplexer(&backend.backend).then(|| {
+    ErrorObject::new(
+      ErrorCode::InvalidParams,
+      format!(
+        "`{}` serves every model from one shared process, so `{name}` cannot name a separate launch",
+        backend.backend
+      ),
+    )
+  })
+}
+
 /// The one launch-composition pipeline, for callers that already have a
 /// parsed [`StartParams`]: the IPC `start_model` handler and the proxy's
 /// auto-start path. Performs validation → arch resolve → port
@@ -417,6 +439,10 @@ pub(crate) async fn compose_and_spawn(
       }
     },
   )?;
+
+  if let Some(err) = multiplexer_refuses_name(&identity, parsed.name.as_deref()) {
+    return Err(err);
+  }
 
   // Pre-spawn refusal (D-guard): on an auto-routed launch, ask every backend
   // whether it declines this model (e.g. a distributed/split GGUF half a
@@ -1918,17 +1944,13 @@ mod tests {
     let push = |id_path: &'static str, lid: &'static str, backend: &'static str, port: u16| {
       let identity = ModelIdentity::Gguf(crate::gguf::identity::compute(id_path, b"hdr"));
       let params = LaunchParams::new(PathBuf::from(id_path), LaunchMode::Chat);
-      RunningSnapshot {
-        id: identity,
-        pid: 1,
-        port,
-        started_at: 0,
-        launch_id: Some(LaunchId(lid.to_string())),
-        name: None,
-        params,
-        actuals: Default::default(),
-        resolved_backend: backend.to_string(),
-      }
+      crate::test_support::running_row(id_path)
+        .identity(identity)
+        .launch_id(lid)
+        .port(port)
+        .params(params)
+        .resolved_backend(backend)
+        .build()
     };
     ctx
       .state
@@ -1969,20 +1991,15 @@ mod tests {
   #[tokio::test]
   async fn stopping_a_backend_identity_launch_drops_its_running_snapshot() {
     let ctx = MethodContext::new(ShutdownToken::new());
-    let backend_row = RunningSnapshot {
-      id: ModelIdentity::Backend(crate::backend::identity::BackendModelId {
-        backend: "some-backend".to_string(),
-        name: "o/r".to_string(),
-      }),
-      pid: 1,
-      port: 41100,
-      started_at: 0,
-      launch_id: Some(LaunchId("L1".to_string())),
-      name: None,
-      params: LaunchParams::new(PathBuf::from("/m/snapshots/rev"), LaunchMode::Chat),
-      actuals: Default::default(),
-      resolved_backend: "some-backend".to_string(),
-    };
+    let backend_row = crate::test_support::running_row("/m/snapshots/rev")
+      .identity(ModelIdentity::Backend(
+        crate::backend::identity::BackendModelId {
+          backend: "some-backend".to_string(),
+          name: "o/r".to_string(),
+        },
+      ))
+      .resolved_backend("some-backend")
+      .build();
     let other = RunningSnapshot {
       launch_id: Some(LaunchId("L2".to_string())),
       port: 41101,
@@ -2011,17 +2028,11 @@ mod tests {
     ctx
       .state
       .mutate(|s| {
-        s.running.push(RunningSnapshot {
-          id: ModelIdentity::Gguf(crate::gguf::identity::compute("/m/a.gguf", b"hdr")),
-          pid: 1,
-          port: 41100,
-          started_at: 0,
-          launch_id: None,
-          name: None,
-          params: LaunchParams::new(PathBuf::from("/m/a.gguf"), LaunchMode::Chat),
-          actuals: Default::default(),
-          resolved_backend: "llamacpp".to_string(),
-        });
+        s.running.push(
+          crate::test_support::running_row("/m/a.gguf")
+            .unstamped()
+            .build(),
+        );
       })
       .await;
 
@@ -2586,20 +2597,48 @@ mod tests {
   /// `None` for an unnamed launch), so the duplicate-name gate can be
   /// exercised without a live supervisor.
   fn named_running(path: &str, name: Option<&str>) -> RunningSnapshot {
-    RunningSnapshot {
-      id: ModelIdentity::Gguf(ModelId {
-        path: PathBuf::from(path),
-        header_blake3: [7u8; 32],
-      }),
-      pid: 1,
-      port: 41100,
-      started_at: 0,
-      launch_id: Some(LaunchId("L1".to_string())),
-      name: name.map(str::to_string),
-      params: LaunchParams::new(PathBuf::from(path), LaunchMode::Chat),
-      actuals: Default::default(),
-      resolved_backend: "llamacpp".to_string(),
-    }
+    crate::test_support::running_row(path)
+      .maybe_name(name)
+      .build()
+  }
+
+  /// A managed multiplexer has one shared process per backend, so a name
+  /// cannot select an instance there — the launch is refused rather than
+  /// stamping a name the proxy would publish and then fail to route.
+  #[test]
+  fn a_name_is_refused_for_a_managed_multiplexer_model() {
+    use crate::backend::{Backend, Backends, Lifecycle};
+    let Some(mux) = Backends::all()
+      .into_iter()
+      .find(|b| b.lifecycle() == Lifecycle::ManagedMultiplexer)
+    else {
+      return;
+    };
+    let delegated = ModelIdentity::Backend(crate::backend::identity::BackendModelId {
+      backend: mux.id().to_string(),
+      name: "some/model".to_string(),
+    });
+    let err = multiplexer_refuses_name(&delegated, Some("coder"))
+      .expect("a name on a multiplexer model is refused");
+    assert_eq!(err.code, ErrorCode::InvalidParams.as_i32());
+    assert!(
+      err.message.contains("coder") && err.message.contains(mux.id()),
+      "the refusal names the launch name and the backend, got: {}",
+      err.message
+    );
+    assert!(
+      multiplexer_refuses_name(&delegated, None).is_none(),
+      "an unnamed launch of the same model is untouched"
+    );
+
+    let gguf = ModelIdentity::Gguf(ModelId {
+      path: PathBuf::from("/m/a.gguf"),
+      header_blake3: [7u8; 32],
+    });
+    assert!(
+      multiplexer_refuses_name(&gguf, Some("coder")).is_none(),
+      "a process-per-model launch keeps its name"
+    );
   }
 
   /// D3: a second launch of the *same* model with the *same* name is refused

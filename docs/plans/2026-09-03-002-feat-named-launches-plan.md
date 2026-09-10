@@ -386,27 +386,28 @@ its fix plan. Tick as landed.
 
 ### Named id emission
 
-- [ ] **RV10 — the named-row block is copy-pasted** between `list_models` and
+- [x] **RV10 — the named-row block is copy-pasted** between `list_models` and
       `ollama_tags` (`src/proxy/router.rs:375`, `:454`): same snapshot, same
       `model_public_id(path, None)`, same `format!("{base_id}@{name}")`, same
       linear dedup scan.
       *Fix:* one `named_launch_ids()` helper both handlers dress up in their own
       row type.
-- [ ] **RV11 — emission bypasses `published_id`, and drops `display_label`.**
+- [x] **RV11 — emission bypasses `published_id`, and drops `display_label`.**
       Two same-named `qwen3.gguf` in different roots publish bare `qwen3@coder`
       instead of the disambiguated stem, and a request for it then 400s ambiguous on
       the split. D6 says `published_id_index` stays the single rule for the model
       half.
       *Fix:* look the running row's path up in the same `published_ids` index the
       catalog rows use, and pass the row's display label instead of `None`.
-- [ ] **RV12 — `decide_umbrella_route` never sees the parsed name.** A delegated
+- [x] **RV12 — `decide_umbrella_route` never sees the parsed name.** A delegated
       lemonade launch gets its name stamped and publishes `X@coder`, but a request
       for that id goes down the umbrella path with the name dropped, so the
       published address is cosmetic and D4 cannot happen for managed-multiplexer
       models.
-      *Fix:* thread the name into `decide_umbrella_route` and honor it, or stop
-      emitting named ids for umbrella-sourced rows. Either is fine; publishing an
-      address that does not route is not.
+      *Fix:* the daemon refuses `--name` on a managed-multiplexer model
+      (`multiplexer_refuses_name`), so no such row carries a name to publish and
+      the umbrella route has nothing to honor. Refusing beats filtering the
+      emission: `status` would otherwise still show a name that addresses nothing.
 
 ### CLI surface
 
@@ -483,7 +484,7 @@ its fix plan. Tick as landed.
 - [ ] **RV26 — `FlightKey` is declared but unused**: `Leader::key` and `acquire`
       (`src/proxy/coalesce.rs:67`) spell the tuple out. *Fix:* use the alias so the
       key shape has one name.
-- [ ] **RV27 — adding `name` meant hand-editing ~15 `name: None` literals across 8
+- [x] **RV27 — adding `name` meant hand-editing ~15 `name: None` literals across 8
       test modules**; only the `launch_service` tests got a builder.
       *Fix:* one `RunningSnapshot` test builder used repo-wide, which absorbs the
       next field addition too.

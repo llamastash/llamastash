@@ -442,24 +442,18 @@ mod tests {
   use tokio::net::TcpListener;
 
   use crate::gguf::identity::ModelId;
-  use crate::launch::mode::LaunchMode;
-  use crate::launch::params::LaunchParams;
 
   fn fake_snapshot(pid: i32, port: u16, path: &str, tag: u8) -> RunningSnapshot {
-    RunningSnapshot {
-      id: crate::backend::identity::ModelIdentity::Gguf(ModelId {
+    crate::test_support::running_row(path)
+      .identity(crate::backend::identity::ModelIdentity::Gguf(ModelId {
         path: PathBuf::from(path),
         header_blake3: [tag; 32],
-      }),
-      pid,
-      port,
-      started_at: 1_700_000_000,
-      launch_id: None,
-      name: None,
-      params: LaunchParams::new(PathBuf::from(path), LaunchMode::Chat),
-      actuals: Default::default(),
-      resolved_backend: "llamacpp".to_string(),
-    }
+      }))
+      .pid(pid)
+      .port(port)
+      .started_at(1_700_000_000)
+      .unstamped()
+      .build()
   }
 
   /// A loopback port that nothing is listening on: bind ephemeral, read

@@ -311,7 +311,7 @@ mod lifecycle {
   async fn a_live_child_is_readopted_rather_than_dropped_as_stale() {
     use llamastash::backend::identity::{BackendModelId, ModelIdentity};
     use llamastash::daemon::orphans::{sweep, SweepInputs};
-    use llamastash::daemon::state_store::RunningSnapshot;
+
     use llamastash::launch::mode::LaunchMode;
     use llamastash::launch::params::LaunchParams;
 
@@ -340,20 +340,20 @@ mod lifecycle {
       tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    let recorded = vec![RunningSnapshot {
-      id: ModelIdentity::Backend(BackendModelId {
-        backend: "vllm".to_string(),
-        name: "Qwen/Qwen2.5-0.5B-Instruct".to_string(),
-      }),
-      pid: child.id() as i32,
-      port,
-      started_at: 1_700_000_000,
-      launch_id: None,
-      name: None,
-      params: LaunchParams::new(snapshot.clone(), LaunchMode::Chat),
-      actuals: Default::default(),
-      resolved_backend: "vllm".to_string(),
-    }];
+    let recorded = vec![
+      llamastash::test_support::running_row(&snapshot.to_string_lossy())
+        .identity(ModelIdentity::Backend(BackendModelId {
+          backend: "vllm".to_string(),
+          name: "Qwen/Qwen2.5-0.5B-Instruct".to_string(),
+        }))
+        .pid(child.id() as i32)
+        .port(port)
+        .started_at(1_700_000_000)
+        .unstamped()
+        .params(LaunchParams::new(snapshot.clone(), LaunchMode::Chat))
+        .resolved_backend("vllm")
+        .build(),
+    ];
 
     let report = sweep(SweepInputs {
       recorded_running: &recorded,

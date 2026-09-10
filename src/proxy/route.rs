@@ -297,6 +297,10 @@ pub(crate) async fn decide(state: &Arc<ProxyState>, body_model: Option<String>) 
   // per-model supervisor: route them to the umbrella's port. Handled before
   // the GGUF supervisor walk because such a row has no local file for the
   // path-match (or the GGUF auto-start) to key on.
+  //
+  // Any `@name` is dropped here rather than honored: the daemon refuses `--name`
+  // on such a launch, so no named row of this model exists to select and none is
+  // published. A stale id from before still reaches the model it asks for.
   if crate::discovery::ModelSource::from_label(&resolved.source)
     .is_some_and(|s| crate::backend::is_managed_multiplexer(s.backend_id()))
   {

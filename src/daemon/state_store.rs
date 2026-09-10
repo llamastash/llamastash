@@ -329,17 +329,15 @@ mod tests {
       fake_params("/m/a.gguf"),
       "llamacpp".into(),
     );
-    s.running.push(RunningSnapshot {
-      id: id("/m/a.gguf", 1),
-      pid: 1234,
-      port: 41100,
-      started_at: 1_700_000_000,
-      launch_id: None,
-      name: None,
-      params: fake_params("/m/a.gguf"),
-      actuals: Default::default(),
-      resolved_backend: "llamacpp".to_string(),
-    });
+    s.running.push(
+      crate::test_support::running_row("/m/a.gguf")
+        .identity(id("/m/a.gguf", 1))
+        .pid(1234)
+        .started_at(1_700_000_000)
+        .unstamped()
+        .params(fake_params("/m/a.gguf"))
+        .build(),
+    );
 
     save(&dir, &s).expect("save");
     let back = load(&dir).expect("load");
@@ -596,17 +594,16 @@ mod tests {
     let mut s = DaemonState::default();
     s.favorites.add(bid.clone());
     s.upsert_last_params(bid.clone(), fake_params("/unused"), "llamacpp".into());
-    s.running.push(RunningSnapshot {
-      id: bid.clone(),
-      pid: 4321,
-      port: 9100,
-      started_at: 1_700_000_001,
-      launch_id: None,
-      name: None,
-      params: fake_params("/unused"),
-      actuals: Default::default(),
-      resolved_backend: "llamacpp".to_string(),
-    });
+    s.running.push(
+      crate::test_support::running_row("/unused")
+        .identity(bid.clone())
+        .pid(4321)
+        .port(9100)
+        .started_at(1_700_000_001)
+        .unstamped()
+        .params(fake_params("/unused"))
+        .build(),
+    );
 
     save(&dir, &s).expect("save");
     let back = load(&dir).expect("load");

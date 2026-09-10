@@ -296,27 +296,19 @@ async fn idle_lemonade_model_is_unloaded_but_umbrella_stays_up() {
   ctx
     .state
     .mutate(|s| {
-      s.running
-        .push(llamastash::daemon::state_store::RunningSnapshot {
-          id: identity,
-          pid: 0,
-          port,
-          started_at: 0,
-          // Real delegated rows always carry the `L#` stamped by the launch;
-          // idle eviction reads it off the snapshot and hands it to `stop`, which
-          // unloads the model from the umbrella. (A `None` here is treated as an
-          // unreachable leftover everywhere, `status` included.)
-          launch_id: Some(llamastash::daemon::registry::LaunchId(
-            "evict-L1".to_string(),
-          )),
-          name: None,
-          params: LaunchParams::new(
-            PathBuf::from("lemonade://Qwen2.5-0.5B-Instruct"),
-            LaunchMode::Chat,
-          ),
-          actuals: Default::default(),
-          resolved_backend: "lemonade".to_string(),
-        })
+      // Real delegated rows always carry the `L#` stamped by the launch;
+      // idle eviction reads it off the snapshot and hands it to `stop`, which
+      // unloads the model from the umbrella. (A `None` here is treated as an
+      // unreachable leftover everywhere, `status` included.)
+      s.running.push(
+        llamastash::test_support::running_row("lemonade://Qwen2.5-0.5B-Instruct")
+          .identity(identity)
+          .pid(0)
+          .port(port)
+          .launch_id("evict-L1")
+          .resolved_backend("lemonade")
+          .build(),
+      )
     })
     .await;
   registry

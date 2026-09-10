@@ -1162,17 +1162,14 @@ mod tests {
     let path = PathBuf::from(format!("lemonade://{name}"));
     let (id, resolved_backend) = crate::backend::synthetic_identity_for_path(&path)
       .expect("a lemonade:// path mints a synthetic backend identity");
-    crate::daemon::state_store::RunningSnapshot {
-      id,
-      pid: 0,
-      port,
-      started_at: 0,
-      launch_id: Some(crate::daemon::registry::LaunchId(launch_id.to_string())),
-      name: None,
-      resolved_backend,
-      params: LaunchParams::new(path, LaunchMode::Chat),
-      actuals: Default::default(),
-    }
+    crate::test_support::running_row(&path.to_string_lossy())
+      .identity(id)
+      .pid(0)
+      .port(port)
+      .launch_id(launch_id)
+      .params(LaunchParams::new(path, LaunchMode::Chat))
+      .resolved_backend(&resolved_backend)
+      .build()
   }
 
   #[tokio::test]
