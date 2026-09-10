@@ -1967,10 +1967,7 @@ impl App {
       .display_label_for(&path)
       .unwrap_or_else(|| crate::util::paths::model_file_label(&path));
     self.launch_name_dialog = Some(crate::tui::launch_name_dialog::LaunchNameDialog::open(
-      crate::tui::launch_name_dialog::LaunchNameArgs {
-        model_path: path,
-        model_name,
-      },
+      model_name,
     ));
   }
 

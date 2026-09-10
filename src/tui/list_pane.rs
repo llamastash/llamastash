@@ -1193,12 +1193,33 @@ fn render_row<'a>(
       spans.push(marker_span(*state, *favorite, palette));
       // A named launch renders `<name>@<launch-name>` so the row reads the
       // same addressable string the `list` table and proxy use. The `@name`
-      // suffix is muted so the model name stays the dominant token.
+      // suffix is muted so the model name stays the dominant token; like the
+      // state marker it keeps its own fg when the row is selected and
+      // REVERSED, so the address stays legible in the inverted strip.
       match launch_name {
         Some(n) if !n.is_empty() => {
-          let mut label = name.clone();
-          label.push_str(&format!("@{n}"));
-          spans.push(Span::raw(cell(&label, name_w)));
+          let mut suffix = String::with_capacity(1 + n.len());
+          suffix.push('@');
+          suffix.push_str(n);
+          let suffix_w = suffix.chars().count();
+          let name_chars = name.chars().count();
+          if name_chars + suffix_w <= name_w {
+            // The suffix rides directly after the name (the address reads as
+            // one token) and the trailing pad stays unstyled so the row's
+            // single-fg selection flip still covers the whole strip.
+            spans.push(Span::raw(name.as_str()));
+            spans.push(Span::styled(suffix, palette.muted_style()));
+            spans.push(Span::raw(cell("", name_w - name_chars - suffix_w)));
+          } else {
+            // Overflow: the name ellipsizes into its sub-column; the suffix
+            // keeps its slot so the address is never the truncated half.
+            let head_w = name_w.saturating_sub(suffix_w);
+            spans.push(Span::raw(cell(name.as_str(), head_w)));
+            spans.push(Span::styled(
+              cell(&suffix, name_w - head_w),
+              palette.muted_style(),
+            ));
+          }
         }
         _ => spans.push(Span::raw(cell(name.as_str(), name_w))),
       }

@@ -6,8 +6,6 @@
 //! so it is addressable as `<model-id>@<name>`. A plain `⏎` on the picker
 //! still launches unnamed, exactly as before.
 
-use std::path::PathBuf;
-
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -19,41 +17,26 @@ use crate::tui::app::App;
 use crate::tui::input_field::InputField;
 use crate::tui::keybindings::{Action as KeyAction, Focus, ENTER_LABEL, ESC_LABEL};
 
-/// Each action's label under the focus it is actually scoped to, so a user's
-/// `keybindings:` override shows up here. Resolving both under one focus made
-/// the lookup miss and silently fall back to the built-in glyph.
-fn keymap_label(app: &App, focus: Focus, action: KeyAction, fallback: &str) -> String {
-  app.resolve_label(focus, action, fallback)
-}
-
 /// State for the `Alt+⏎` launch-name modal.
 #[derive(Debug, Clone)]
 pub struct LaunchNameDialog {
-  /// Canonical path of the model being launched.
-  pub model_path: PathBuf,
   /// Display name shown in the dialog title.
   pub model_name: String,
   /// The name-entry field.
   pub input: InputField,
-  /// Inline validation error (a blank-but-typed name), rendered under the
-  /// input. Nothing typed at all is not an error — it launches unnamed.
+  /// Inline validation error (a name the `--name` flag would refuse too),
+  /// rendered under the input. Nothing typed at all is not an error — it
+  /// launches unnamed.
   pub error: Option<String>,
-}
-
-/// The model the picker is about to launch, as the dialog titles itself.
-pub struct LaunchNameArgs {
-  pub model_path: PathBuf,
-  pub model_name: String,
 }
 
 impl LaunchNameDialog {
   /// Open the dialog with the input ready for typing.
-  pub fn open(args: LaunchNameArgs) -> Self {
+  pub fn open(model_name: String) -> Self {
     let mut input = InputField::new();
     input.enter_edit();
     Self {
-      model_path: args.model_path,
-      model_name: args.model_name,
+      model_name,
       input,
       error: None,
     }
@@ -73,10 +56,12 @@ pub fn render(
   dialog: &LaunchNameDialog,
   palette: &Palette,
 ) {
-  // The field submits on a bare `⏎` — `Alt+⏎` is what *opened* this dialog and
-  // cannot accept it — so the hint carries the picker's own launch key.
-  let submit = keymap_label(app, Focus::RightPane, KeyAction::Submit, ENTER_LABEL);
-  let cancel = keymap_label(app, Focus::ConfirmPopup, KeyAction::Cancel, ESC_LABEL);
+  // Each label resolves under the focus its action is actually scoped to, so a
+  // user's `keybindings:` override shows up here. The field submits on a bare
+  // `⏎` — `Alt+⏎` is what *opened* this dialog and cannot accept it — so the
+  // hint carries the picker's own launch key.
+  let submit = app.resolve_label(Focus::RightPane, KeyAction::Submit, ENTER_LABEL);
+  let cancel = app.resolve_label(Focus::ConfirmPopup, KeyAction::Cancel, ESC_LABEL);
   let rect = crate::tui::layout::centered_abs(area, 60, 9, 4, 2);
   frame.render_widget(Clear, rect);
   crate::tui::render::paint_theme_bg(frame, rect, palette);
@@ -140,10 +125,7 @@ mod tests {
   use super::*;
 
   fn dialog() -> LaunchNameDialog {
-    LaunchNameDialog::open(LaunchNameArgs {
-      model_path: PathBuf::from("/m/a.gguf"),
-      model_name: "a.gguf".into(),
-    })
+    LaunchNameDialog::open("a.gguf".into())
   }
 
   #[test]
