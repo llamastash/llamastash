@@ -246,14 +246,6 @@ pub enum MtpEnable {
 }
 
 impl MtpEnable {
-  /// Serde skip-predicate: the default state writes nothing, so a preset that
-  /// never set MTP keeps its previous bytes in `config.yaml`.
-  pub fn is_auto(&self) -> bool {
-    matches!(self, MtpEnable::Auto)
-  }
-}
-
-impl MtpEnable {
   /// Stable lowercase label (`"auto"` / `"on"` / `"off"`) for CLI / status.
   pub fn label(self) -> &'static str {
     match self {
@@ -274,24 +266,13 @@ impl MtpEnable {
     }
   }
 
-  /// Next stop on the TUI picker's cycle ring (`auto → on → off → auto`
-  /// forward, reversed backward). Backend-agnostic — the picker shows one MTP
-  /// row for any MTP-capable model, and each backend honors the resolved intent.
-  pub fn cycled(self, forward: bool) -> MtpEnable {
-    use MtpEnable::*;
-    if forward {
-      match self {
-        Auto => On,
-        On => Off,
-        Off => Auto,
-      }
-    } else {
-      match self {
-        Auto => Off,
-        On => Auto,
-        Off => On,
-      }
-    }
+  /// Store this intent onto a knob map — the write side of
+  /// [`LaunchParams::mtp_intent`] and the one home every write site
+  /// (`--mtp`, `presets save --mtp`) goes through. The `auto` label parses
+  /// to the knob's `Auto` state (not a clear), so an explicit `--mtp auto`
+  /// overrides an inherited layer the same way every other knob's `auto` does.
+  pub fn store(self, knobs: &mut crate::launch::knobs::KnobSet) {
+    knobs.set_by_name("mtp", self.label());
   }
 }
 
@@ -514,14 +495,6 @@ impl LaunchParams {
       _ => MtpEnable::Auto,
     }
   }
-
-  /// Store an MTP intent onto the knob map — the write side of
-  /// [`mtp_intent`](Self::mtp_intent). The `auto` label parses to the knob's
-  /// `Auto` state (not a clear), so an explicit `--mtp auto` overrides an
-  /// inherited layer the same way every other knob's `auto` does.
-  pub fn set_mtp_intent(&mut self, intent: MtpEnable) {
-    self.knobs.set_by_name("mtp", intent.label());
-  }
 }
 
 /// One layer in the precedence chain. The label is reported
@@ -688,12 +661,12 @@ mod tests {
 
   #[test]
   fn mtp_intent_rides_the_knob_map() {
-    // The knob map is the only channel: `set_mtp_intent` stores it there,
+    // The knob map is the only channel: `MtpEnable::store` writes it there,
     // `mtp_intent` reads it back, and the knob survives a serde round-trip
     // (state.json / wire) intact. A row with no `mtp` knob reads as Auto.
     let mut p = base_params();
     assert_eq!(p.mtp_intent(), MtpEnable::Auto);
-    p.set_mtp_intent(MtpEnable::On);
+    MtpEnable::On.store(&mut p.knobs);
     assert_eq!(p.mtp_intent(), MtpEnable::On);
     let v = serde_json::to_value(&p).unwrap();
     assert_eq!(v["knobs"]["mtp"], true);
@@ -701,7 +674,7 @@ mod tests {
     assert_eq!(back.mtp_intent(), MtpEnable::On);
     // Explicit `auto` is a stored state, not a clear — it must survive too,
     // so it can shadow a preset pinning on/off.
-    p.set_mtp_intent(MtpEnable::Auto);
+    MtpEnable::Auto.store(&mut p.knobs);
     assert!(
       p.knobs.is_auto(crate::launch::knobs::kid("mtp")),
       "auto writes the knob's Auto state"

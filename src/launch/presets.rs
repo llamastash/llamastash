@@ -582,7 +582,7 @@ mod tests {
     // storage: a preset body written with `mtp: off` must survive a
     // materialise round-trip without being projected out onto typed siblings.
     let mut lp = LaunchParams::new(PathBuf::from("/m/a.gguf"), LaunchMode::Chat);
-    lp.set_mtp_intent(crate::launch::params::MtpEnable::Off);
+    crate::launch::params::MtpEnable::Off.store(&mut lp.knobs);
     lp.knobs.set_by_name("mtp-draft-n", "4");
     let body = preset_body_from_launch_params(&lp);
     assert_eq!(

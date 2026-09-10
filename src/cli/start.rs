@@ -122,7 +122,7 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
   // the hand-written flags fold straight into the knob map, so they ride the
   // same User layer as every other flag.
   if let Some(m) = args.mtp {
-    params.knobs.set_by_name("mtp", m.label());
+    m.store(&mut params.knobs);
   }
   if let Some(n) = args.mtp_draft_n {
     params.knobs.set_by_name("mtp-draft-n", n.to_string());

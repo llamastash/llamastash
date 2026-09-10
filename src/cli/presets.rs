@@ -161,7 +161,7 @@ pub async fn handle(args: PresetsArgs, cli: &Cli, config: &Config) -> CliResult 
         knobs.set_by_name("mode", m.as_label());
       }
       if let Some(m) = mtp {
-        knobs.set_by_name("mtp", m.label());
+        m.store(&mut knobs);
       }
       if let Some(n) = mtp_draft_n {
         knobs.set_by_name("mtp-draft-n", n.to_string());
