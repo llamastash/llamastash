@@ -458,8 +458,24 @@ async fn prefer_port_fallback_once(strict: bool) -> bool {
         "prefer_port": lo,
       })),
     )
-    .await
-    .expect("start_model 1");
+    .await;
+  // Losing a port to the box shows up two ways: the daemon falls back
+  // to another port, or the range is empty and the call errors
+  // outright ("no free port in lo-hi"). Both mean the scenario could
+  // not be set up, so both retry; only `strict` turns them into a
+  // failure.
+  let first = match first {
+    Ok(v) => v,
+    Err(e) if !strict => {
+      let _ = client.call("shutdown", None).await;
+      let _ = timeout(Duration::from_secs(3), daemon).await;
+      std::fs::remove_dir_all(&state).ok();
+      std::fs::remove_dir_all(&model_dir).ok();
+      eprintln!("prefer_port attempt: start_model 1 lost the port race: {e}");
+      return false;
+    }
+    Err(e) => panic!("start_model 1: {e}"),
+  };
   if !strict && first["port"].as_u64() != Some(lo as u64) {
     let _ = client.call("shutdown", None).await;
     let _ = timeout(Duration::from_secs(3), daemon).await;
@@ -484,8 +500,19 @@ async fn prefer_port_fallback_once(strict: bool) -> bool {
         "prefer_port": lo,
       })),
     )
-    .await
-    .expect("start_model 2 must succeed via fallback");
+    .await;
+  let second = match second {
+    Ok(v) => v,
+    Err(e) if !strict => {
+      let _ = client.call("shutdown", None).await;
+      let _ = timeout(Duration::from_secs(3), daemon).await;
+      std::fs::remove_dir_all(&state).ok();
+      std::fs::remove_dir_all(&model_dir).ok();
+      eprintln!("prefer_port attempt: fallback launch lost the port race: {e}");
+      return false;
+    }
+    Err(e) => panic!("start_model 2 must succeed via fallback: {e}"),
+  };
   let assigned = second["port"].as_u64().expect("port present");
   assert_ne!(
     assigned, lo as u64,

@@ -173,10 +173,12 @@ fn extract_version(output: &str) -> String {
     .unwrap_or_else(|| "unknown".to_string())
 }
 
-/// Default version-probe timeout. Modest — `--version` should return
-/// in <100 ms even on slow disks; anything beyond 5 s strongly
-/// suggests the binary is broken.
-pub const DEFAULT_VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Default version-probe timeout. `--version` returns in <100 ms on a
+/// warm binary, but a cold first exec pays dynamic-link and backend-
+/// registry startup: llama.cpp 0.4.0 builds shared, with ggml split
+/// into its own package, and a fresh macOS bottle has exceeded 5 s.
+/// Matches the budget `install::brew` already uses for this probe.
+pub const DEFAULT_VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Compose phase-1 + `--version` probe into a single smoke pass.
 /// Returns a `SmokeReport` the wizard threads into its summary;
@@ -186,6 +188,24 @@ pub fn run_phase_one_and_version(
   hardware: &HardwareSnapshot,
   weights_bytes: u64,
   ctx: u32,
+) -> Result<SmokeReport, SmokeFailure> {
+  run_phase_one_and_version_with_timeout(
+    binary,
+    hardware,
+    weights_bytes,
+    ctx,
+    DEFAULT_VERSION_PROBE_TIMEOUT,
+  )
+}
+
+/// Same, with the probe budget injected so tests can exercise the
+/// timeout path without waiting out the real one.
+fn run_phase_one_and_version_with_timeout(
+  binary: &Path,
+  hardware: &HardwareSnapshot,
+  weights_bytes: u64,
+  ctx: u32,
+  probe_timeout: Duration,
 ) -> Result<SmokeReport, SmokeFailure> {
   log::debug!(
     "smoke: phase-1 inputs: binary={}, weights_bytes={}, ctx={}, vram_bytes={:?}",
@@ -199,9 +219,20 @@ pub fn run_phase_one_and_version(
   log::debug!(
     "smoke: --version probe: spawning `{} --version` (timeout {:?})",
     binary.display(),
-    DEFAULT_VERSION_PROBE_TIMEOUT
+    probe_timeout
   );
-  let version = version_probe(binary, DEFAULT_VERSION_PROBE_TIMEOUT)?;
+  // A slow binary is not a broken one, and the version string is only
+  // ever rendered into the wizard's summary (which already falls back
+  // to "unknown"), so a timeout must not gate init. A non-zero exit or
+  // a spawn failure still does: those mean it cannot run on this host.
+  let version = match version_probe(binary, probe_timeout) {
+    Ok(v) => Some(v),
+    Err(SmokeFailure::VersionProbeTimeout(after)) => {
+      log::warn!("smoke: `--version` did not return within {after:?}; continuing without it");
+      None
+    }
+    Err(e) => return Err(e),
+  };
   log::debug!("smoke: --version probe returned: {version:?}");
   let ceiling = hardware
     .vram_bytes
@@ -211,7 +242,7 @@ pub fn run_phase_one_and_version(
   Ok(SmokeReport {
     ok: true,
     warning,
-    binary_version: Some(version),
+    binary_version: version,
     peak_estimate_bytes: peak,
     effective_ceiling_bytes: ceiling,
   })
@@ -254,6 +285,25 @@ mod tests {
       os: OsFamily::Linux,
       cpu_arch: CpuArch::X86_64,
     }
+  }
+
+  #[cfg(unix)]
+  fn probe_scratch_dir(label: &str) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+      .duration_since(std::time::UNIX_EPOCH)
+      .unwrap()
+      .as_nanos();
+    let dir =
+      std::env::temp_dir().join(format!("llamastash-{label}-{}-{nanos}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+  }
+
+  #[cfg(unix)]
+  fn write_probe_script(path: &Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, body).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
   }
 
   fn cpu(ram_gb: f64) -> HardwareSnapshot {
@@ -400,6 +450,54 @@ mod tests {
       assert_eq!(version, "build b9999 cpu");
       std::fs::remove_dir_all(&dir).ok();
     }
+  }
+
+  /// Regression: llama.cpp 0.4.0's Homebrew bottle builds shared with
+  /// ggml split out, and its cold first exec blew the old 5 s budget,
+  /// so `init` aborted with exit 74 on a binary that was merely slow.
+  #[cfg(unix)]
+  #[test]
+  fn a_slow_version_probe_does_not_fail_the_smoke_pass() {
+    let dir = probe_scratch_dir("slow-probe");
+    let script = dir.join("slow-llama-server");
+    write_probe_script(&script, "#!/bin/sh\nsleep 30\n");
+    let report = run_phase_one_and_version_with_timeout(
+      &script,
+      &cpu(32.0),
+      1_000_000_000,
+      4096,
+      Duration::from_millis(200),
+    )
+    .expect("a slow binary must not fail the smoke pass");
+    assert!(report.ok);
+    assert_eq!(
+      report.binary_version, None,
+      "a timed-out probe reports no version rather than a bogus one"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+  }
+
+  /// The other half: a binary that runs and *rejects* `--version` is a
+  /// real mismatch (wrong arch, wrong tool), and must still fail.
+  #[cfg(unix)]
+  #[test]
+  fn a_non_zero_version_probe_still_fails_the_smoke_pass() {
+    let dir = probe_scratch_dir("nonzero-probe");
+    let script = dir.join("broken-llama-server");
+    write_probe_script(&script, "#!/bin/sh\nexit 1\n");
+    let err = run_phase_one_and_version_with_timeout(
+      &script,
+      &cpu(32.0),
+      1_000_000_000,
+      4096,
+      Duration::from_secs(5),
+    )
+    .expect_err("a non-zero --version must still fail");
+    assert!(
+      matches!(err, SmokeFailure::VersionProbeNonZero(1)),
+      "got {err:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
   }
 
   #[test]
