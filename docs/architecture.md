@@ -274,6 +274,14 @@ request can say *which* copy it wants. The rules, all in one place:
   same set the proxy's `attach_target` skips — and falls back to them only when
   no live launch answers, so the address reaches the running copy while
   `stop <name>` can still clean up one that failed to load.
+- **The preset an auto-start uses** is the one the address names. A proxy
+  auto-start of `<model>@<name>` looks for a preset called `<name>` (compared
+  with `name_matches`, so it follows the address's case rule) and takes it as
+  the launch's `PresetDefault` layer, falling back to the model's `default:`
+  when none answers. A preset chosen this way also outranks `default: auto` —
+  it is an explicit choice, not a default. Scoped to `LaunchOrigin::AutoStart`:
+  a request body carries only `model`, so the address is a client's only
+  channel, while `start --name` and the TUI already have `--preset`.
 - **The published ids** come from two different places by design. Catalog rows
   are published through `published_id_index` (`util::paths`); named rows come
   from the live launch registry, and take their model half out of that same

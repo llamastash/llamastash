@@ -161,6 +161,23 @@ so two arriving requests do not spawn two servers. With D4 that key must widen t
 one launch and one of them silently gets the wrong instance — the exact bug this
 feature exists to remove. Unnamed requests keep their present key.
 
+### D8 — an auto-start address also picks the preset
+
+A named request is the only channel an OpenAI-shaped client has: the body
+carries `model` and nothing else. So when `<model>@<name>` auto-starts, the name
+is read as a preset name too — if the model has a preset called `<name>`, the
+launch resolves its `PresetDefault` layer from it instead of from the model's
+`default:`. No match falls back to the current behaviour, so the name stays a
+launch name first and an unmatched one still launches.
+
+Scoped to `LaunchOrigin::AutoStart`. On `start --name` and in the TUI a preset
+is already chosen with `--preset`, and coupling the two names there would mean
+a launch name could silently change what launches. The comparison is
+`name_matches`, because the address half is case-insensitive: `@Coder` and
+`@coder` are one launch, so they must not resolve two different presets. A
+preset named this way also outranks a `default: auto` — an address that names
+one is a choice, not a default.
+
 ### D5 — the keybinding hint is derived, never written
 
 `Alt+⏎` must appear in the help bar and the help overlay, and it must follow a

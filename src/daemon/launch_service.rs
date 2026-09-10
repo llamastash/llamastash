@@ -499,6 +499,29 @@ pub(crate) async fn compose_and_spawn(
     None
   };
 
+  // A proxy auto-start of `<model>@<name>` resolves its preset by the name in
+  // the address, so an OpenAI-shaped client can pick one — the only channel it
+  // has, since it sends nothing but `body.model`. Scoped to auto-start on
+  // purpose: on `start --name` and in the TUI, `--preset` is already how a
+  // preset gets chosen, and a launch name there stays independent of one.
+  // Compared with `name_matches`, because the address half is
+  // case-insensitive — `@Coder` and `@coder` are one launch, so they must not
+  // resolve different presets.
+  let addressed_preset = match origin {
+    crate::daemon::supervisor::LaunchOrigin::AutoStart => parsed.name.as_deref().and_then(|n| {
+      effective_default.as_ref().and_then(|e| {
+        e.presets
+          .iter()
+          .find(|p| crate::launch::resolve::name_matches(Some(&p.name), n))
+      })
+    }),
+    crate::daemon::supervisor::LaunchOrigin::Manual => None,
+  };
+  // The preset this launch takes its `PresetDefault` layer from: the one the
+  // address named, else the model's configured `default:`.
+  let launch_preset =
+    addressed_preset.or_else(|| effective_default.as_ref().and_then(|e| e.default_preset()));
+
   // Collapse the launch into one resolution shape. `Auto` (explicit
   // `--preset auto`) and a no-selection launch whose config default is
   // `auto` both mean "pure fit": skip the default-preset and last_params
@@ -512,7 +535,9 @@ pub(crate) async fn compose_and_spawn(
   // self-contained: it must not inherit a stale `last_params`, so `Explicit`
   // skips the `LastUsed` layer just like `Auto`. The inline-flag-only CLI path
   // sends `Default`, so it keeps the `PresetDefault → LastUsed` fallback.
-  let pure_fit = is_pure_fit(parsed.selection, default_is_auto);
+  // A preset named by the address is an explicit choice, so it outranks a
+  // `default: auto` that would otherwise launch this model pure-fit.
+  let pure_fit = is_pure_fit(parsed.selection, default_is_auto) && addressed_preset.is_none();
   let no_selection = is_default_sel && !pure_fit;
 
   // Mode resolution, in precedence order: the caller's explicit choice > the
@@ -535,10 +560,7 @@ pub(crate) async fn compose_and_spawn(
     .map(LaunchMode::from)
     .or_else(|| {
       if no_selection {
-        effective_default
-          .as_ref()
-          .and_then(|e| e.default_preset())
-          .map(|np| np.params.mode)
+        launch_preset.map(|np| np.params.mode)
       } else {
         None
       }
@@ -741,9 +763,7 @@ pub(crate) async fn compose_and_spawn(
   launch_params.extras = if !parsed.extras.is_empty() {
     parsed.extras.iter().cloned().map(OsString::from).collect()
   } else if no_selection {
-    effective_default
-      .as_ref()
-      .and_then(|e| e.default_preset())
+    launch_preset
       .map(|np| np.params.extras.clone())
       .filter(|e| !e.is_empty())
       .or_else(|| last_params.as_ref().map(|p| p.extras.clone()))
@@ -817,10 +837,7 @@ pub(crate) async fn compose_and_spawn(
   // via `preset_body_from_launch_params` so the preset's `ctx`/`reasoning`
   // (held as `LaunchParams` siblings) fold back into the knob set.
   let default_preset_knobs = if no_selection {
-    effective_default
-      .as_ref()
-      .and_then(|e| e.default_preset())
-      .map(|np| crate::launch::presets::preset_body_from_launch_params(&np.params).knobs)
+    launch_preset.map(|np| crate::launch::presets::preset_body_from_launch_params(&np.params).knobs)
   } else {
     None
   };

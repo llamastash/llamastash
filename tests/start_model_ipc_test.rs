@@ -268,6 +268,43 @@ async fn start_model_drives_supervisor_status_logs_stop_and_last_params() {
   assert_eq!(save_body["saved"]["params"]["ctx"], json!(32768));
   assert!(save_body["replaced"].is_null());
 
+  // A preset name and a launch name are independent on `start_model`: only the
+  // proxy's auto-start reads one as the other, so a manual `--name long-ctx`
+  // must not silently pick up the `long-ctx` preset.
+  let manual = client
+    .call(
+      "start_model",
+      Some(json!({
+        "model_path": &model_path_canon,
+        "mode": "chat",
+        "name": "long-ctx",
+      })),
+    )
+    .await
+    .expect("manual named start_model");
+  let manual_id = manual["launch_id"].as_str().expect("launch_id").to_string();
+  let manual_row = state_store::load(&state_dir)
+    .expect("load state")
+    .running
+    .into_iter()
+    .find(|r| r.launch_id.as_ref().map(|l| l.0.as_str()) == Some(manual_id.as_str()))
+    .expect("the manual launch's row");
+  assert_ne!(
+    manual_row
+      .params
+      .knobs
+      .u32(llamastash::launch::knobs::kid("ctx-size")),
+    Some(32768),
+    "a manual launch must not resolve a preset just because it shares the name"
+  );
+  let _ = client
+    .call(
+      "stop_model",
+      Some(json!({"launch_id": &manual_id, "grace_secs": 5})),
+    )
+    .await
+    .expect("stop manual launch");
+
   let list_body = client
     .call(
       "presets_list",

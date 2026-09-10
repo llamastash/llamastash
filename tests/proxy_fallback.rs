@@ -19,8 +19,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use llamastash::backend::llama_cpp::LlamaCppBackend;
-use llamastash::config::loader::PortRange;
+use llamastash::config::loader::{ConfigPresetBlock, PortRange, PresetBody};
 use llamastash::daemon::context::{LaunchEnv, MethodContext};
+use llamastash::daemon::preset_store::ConfigPresetStore;
 use llamastash::daemon::probe::ProbeOptions;
 use llamastash::daemon::registry::SupervisorRegistry;
 use llamastash::daemon::shutdown::ShutdownToken;
@@ -158,7 +159,7 @@ async fn build_state(
   log_dir: &Path,
   port_range: PortRange,
 ) -> (Arc<ProxyState>, MethodContext) {
-  build_state_with_fallback(models, registry, log_dir, port_range, true).await
+  build_state_with_fallback(models, registry, log_dir, port_range, true, BTreeMap::new()).await
 }
 
 async fn build_state_with_fallback(
@@ -167,6 +168,7 @@ async fn build_state_with_fallback(
   log_dir: &Path,
   port_range: PortRange,
   fallback_enabled: bool,
+  presets: BTreeMap<String, ConfigPresetBlock>,
 ) -> (Arc<ProxyState>, MethodContext) {
   let catalog = ModelCatalog::new();
   for m in models {
@@ -184,7 +186,8 @@ async fn build_state_with_fallback(
   };
   let ctx = MethodContext::with_catalog(token, catalog)
     .with_supervisors(registry)
-    .with_launch_env(env);
+    .with_launch_env(env)
+    .with_presets(ConfigPresetStore::new(presets, None));
   let state = ProxyState::from_context(&ctx, false, fallback_enabled, DEFAULT_BODY_LIMIT_BYTES);
   (state, ctx)
 }
@@ -529,6 +532,7 @@ async fn fallback_disabled_returns_503_instead_of_picking_other_model() {
     &log_dir,
     allocate_port_range(),
     false,
+    BTreeMap::new(),
   )
   .await;
   let (addr, shutdown, listener_handle) = spawn_listener(state).await;
@@ -594,6 +598,138 @@ async fn named_request_auto_starts_launch_carrying_that_name() {
     1,
     "exactly one launch must carry the name `coder`; got {:?}",
     snap.running.iter().map(|r| &r.name).collect::<Vec<_>>()
+  );
+
+  stop_all(&ctx, &[]).await;
+  shutdown_listener(shutdown, listener_handle).await;
+  std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- A named request auto-starts under the preset the address names ----
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn named_auto_start_takes_the_preset_the_address_names() {
+  let dir = unique_temp("named-preset");
+  let log_dir = dir.join("logs");
+  std::fs::create_dir_all(&log_dir).unwrap();
+  let model_path = write_gguf(&dir, "qwen3.gguf", "qwen3");
+
+  // A preset named `coder` for this model, pinning a ctx no other layer sets.
+  let mut knobs = llamastash::launch::knobs::KnobSet::new();
+  knobs.set_by_name("ctx-size", "8192");
+  let mut entries = BTreeMap::new();
+  entries.insert(
+    "coder".to_string(),
+    PresetBody {
+      knobs,
+      ..PresetBody::default()
+    },
+  );
+  let mut presets = BTreeMap::new();
+  presets.insert(
+    model_path.display().to_string(),
+    ConfigPresetBlock {
+      default: None,
+      entries,
+    },
+  );
+
+  let registry = SupervisorRegistry::new();
+  let (state, ctx) = build_state_with_fallback(
+    vec![discovered(&model_path, Some("qwen3"), Some("qwen3"))],
+    registry,
+    &log_dir,
+    allocate_port_range(),
+    true,
+    presets,
+  )
+  .await;
+  let (addr, shutdown, listener_handle) = spawn_listener(state).await;
+
+  // `qwen3@coder` names a preset as well as a launch. An OpenAI-shaped client
+  // sends nothing but `body.model`, so the address is its only way to pick one.
+  let body = r#"{"model":"qwen3@coder","messages":[]}"#;
+  let (status, _headers, _response) = http_post(addr, "/v1/chat/completions", body).await;
+  assert_eq!(status, 200, "named auto-start must succeed");
+
+  let snap = ctx.state.snapshot().await;
+  let named = snap
+    .running
+    .iter()
+    .find(|r| r.name.as_deref() == Some("coder"))
+    .expect("a launch named `coder`");
+  assert_eq!(
+    named
+      .params
+      .knobs
+      .u32(llamastash::launch::knobs::kid("ctx-size")),
+    Some(8192),
+    "the launch must resolve the preset the address named; got {:?}",
+    named.params.knobs
+  );
+
+  stop_all(&ctx, &[]).await;
+  shutdown_listener(shutdown, listener_handle).await;
+  std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The name is a launch name first: when no preset answers to it, the launch
+/// still happens and still carries the name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn named_auto_start_falls_back_when_no_preset_answers_to_the_name() {
+  let dir = unique_temp("named-preset-miss");
+  let log_dir = dir.join("logs");
+  std::fs::create_dir_all(&log_dir).unwrap();
+  let model_path = write_gguf(&dir, "qwen3.gguf", "qwen3");
+
+  let mut knobs = llamastash::launch::knobs::KnobSet::new();
+  knobs.set_by_name("ctx-size", "8192");
+  let mut entries = BTreeMap::new();
+  entries.insert(
+    "writer".to_string(),
+    PresetBody {
+      knobs,
+      ..PresetBody::default()
+    },
+  );
+  let mut presets = BTreeMap::new();
+  presets.insert(
+    model_path.display().to_string(),
+    ConfigPresetBlock {
+      default: None,
+      entries,
+    },
+  );
+
+  let registry = SupervisorRegistry::new();
+  let (state, ctx) = build_state_with_fallback(
+    vec![discovered(&model_path, Some("qwen3"), Some("qwen3"))],
+    registry,
+    &log_dir,
+    allocate_port_range(),
+    true,
+    presets,
+  )
+  .await;
+  let (addr, shutdown, listener_handle) = spawn_listener(state).await;
+
+  let body = r#"{"model":"qwen3@coder","messages":[]}"#;
+  let (status, _headers, _response) = http_post(addr, "/v1/chat/completions", body).await;
+  assert_eq!(status, 200, "an unmatched name still auto-starts");
+
+  let snap = ctx.state.snapshot().await;
+  let named = snap
+    .running
+    .iter()
+    .find(|r| r.name.as_deref() == Some("coder"))
+    .expect("a launch named `coder`");
+  assert_ne!(
+    named
+      .params
+      .knobs
+      .u32(llamastash::launch::knobs::kid("ctx-size")),
+    Some(8192),
+    "the `writer` preset must not apply to a `@coder` address"
   );
 
   stop_all(&ctx, &[]).await;
