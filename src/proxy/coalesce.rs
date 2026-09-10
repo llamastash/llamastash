@@ -98,7 +98,7 @@ pub(crate) enum AcquireOutcome {
 /// `SlotState::Cancelled` and wakes followers so they don't hang.
 pub(crate) struct Leader {
   parent: Coalesce,
-  key: (ModelId, Option<String>),
+  key: FlightKey,
   slot: Arc<SlotInner>,
   /// Becomes `true` after [`Self::finish`] runs. The `Drop` impl
   /// uses it to detect the "leader dropped without calling finish"
@@ -220,7 +220,7 @@ impl Coalesce {
   /// The lookup-and-insert happens under one lock, so two concurrent
   /// `acquire(key)` calls can never both walk away as leaders for
   /// the same `key`.
-  pub(crate) async fn acquire(&self, key: (ModelId, Option<String>)) -> AcquireOutcome {
+  pub(crate) async fn acquire(&self, key: FlightKey) -> AcquireOutcome {
     let mut guard = self.inner.lock().await;
     if let Some(slot) = guard.get(&key).cloned() {
       return AcquireOutcome::Follower(Follower { slot });
@@ -247,7 +247,7 @@ mod tests {
 
   use super::*;
 
-  fn key(path: &str) -> (ModelId, Option<String>) {
+  fn key(path: &str) -> FlightKey {
     (
       ModelId {
         path: PathBuf::from(path),

@@ -346,6 +346,40 @@ mod tests {
   }
 
   #[test]
+  fn an_unnamed_running_row_is_byte_identical_to_a_pre_name_row() {
+    // `skip_serializing_if` is the whole reason a 0.2.0 `state.json` still
+    // loads: an unnamed launch must emit no `name` key at all, not
+    // `"name": null`. The boot sweep and the orphan adopter read this file
+    // before anything else runs, so a shape change here is a cold-start
+    // failure, not a display bug.
+    let dir = temp_state_dir("unnamed-row-bytes");
+    let mut s = DaemonState::default();
+    s.running
+      .push(crate::test_support::running_row("/m/a.gguf").build());
+    save(&dir, &s).expect("save");
+    let written = fs::read_to_string(path(&dir)).expect("read back");
+    let row = &serde_json::from_str::<serde_json::Value>(&written).expect("parse")["running"][0];
+    assert!(
+      row.get("name").is_none(),
+      "an unnamed row must not carry the key: {row}"
+    );
+
+    // A pre-name row (no key on disk) loads as unnamed, and a named one
+    // round-trips.
+    let back = load(&dir).expect("load");
+    assert_eq!(back.running[0].name, None);
+    assert_eq!(back, s, "every field must round-trip exactly");
+
+    s.running[0].name = Some("coder".to_string());
+    save(&dir, &s).expect("save named");
+    assert_eq!(
+      load(&dir).expect("load named").running[0].name.as_deref(),
+      Some("coder")
+    );
+    fs::remove_dir_all(&dir).ok();
+  }
+
+  #[test]
   fn resolved_backend_tag_round_trips_and_legacy_rows_default_to_llamacpp() {
     // A tagged row survives save→load; a legacy row (no `resolved_backend`
     // key) reads back as `llamacpp` (D-contamination default).

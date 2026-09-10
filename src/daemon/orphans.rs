@@ -704,6 +704,36 @@ mod tests {
   }
 
   #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+  async fn an_adopted_row_keeps_its_launch_name() {
+    // D1's whole reason for putting the name on the snapshot rather than only
+    // on the supervisor: a daemon restart re-adopts the live process from
+    // `state.json`, and the launch has to still answer to `<model>@<name>`
+    // afterwards. The supervisor is gone by then; the row is the only record.
+    let live = std::process::id() as i32;
+    let body = serde_json::json!({
+      "object": "list",
+      "data": [{"id": "/m/match.gguf", "object": "model"}],
+    })
+    .to_string();
+    let (_resp, port) = spawn_one_shot(200, body).await;
+
+    let mut row = fake_snapshot(live, port, "/m/match.gguf", 1);
+    row.name = Some("coder".to_string());
+    let report = sweep(SweepInputs {
+      recorded_running: &[row],
+      external_markers: vec!["llamastash-sweep-marker-that-matches-nothing-9f3a"],
+      probe_timeout: Duration::from_secs(1),
+    })
+    .await;
+    assert_eq!(report.adopted.len(), 1, "matching probe must adopt");
+    assert_eq!(
+      report.adopted[0].name.as_deref(),
+      Some("coder"),
+      "the name has to survive the restart, or the address dies with the daemon"
+    );
+  }
+
+  #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
   async fn live_pid_with_basename_only_id_adopts() {
     // Regression for the llama.cpp drift: b9245+ reports only the file
     // basename as `/v1/models` `id` (not the full `-m` path the older

@@ -184,6 +184,11 @@ pub struct LaunchExec {
   pub(crate) probe: crate::daemon::probe::ProbeOptions,
   pub(crate) id: ModelId,
   pub(crate) identity: ModelIdentity,
+  /// The `L#` this launch will answer to, minted before the log file is named
+  /// so the name is unique per attempt. A launch that never spawns burns its
+  /// id — ids are display handles, and a gap is cheaper than two launches
+  /// writing one log.
+  pub(crate) launch_id: LaunchId,
   pub(crate) log_path: PathBuf,
   pub(crate) mode: LaunchMode,
   pub(crate) origin: crate::daemon::supervisor::LaunchOrigin,
@@ -905,8 +910,9 @@ pub(crate) async fn compose_and_spawn(
     ));
   }
 
-  // Per-launch log file under cache_dir/logs/<short-id>-<ts>.log.
-  let log_path = build_log_path(&env.log_dir, &id);
+  // Per-launch log file under cache_dir/logs/<stem>-<short-id>-<L#>-<ts>.log.
+  let launch_id = ctx.supervisors.next_id();
+  let log_path = build_log_path(&env.log_dir, &id, &launch_id);
 
   // The one weight figure this launch is priced against: what it holds
   // resident. Feeds the probe budget (so a slow load of a large multipart GGUF
@@ -1028,6 +1034,7 @@ pub(crate) async fn compose_and_spawn(
     probe: scaled_probe,
     id,
     identity,
+    launch_id,
     log_path,
     mode,
     origin,
@@ -1068,6 +1075,7 @@ pub(crate) async fn spawn_supervised(
     probe: scaled_probe,
     id,
     identity,
+    launch_id,
     log_path,
     mode,
     origin,
@@ -1247,7 +1255,6 @@ pub(crate) async fn spawn_supervised(
     }
   };
 
-  let launch_id = ctx.supervisors.next_id();
   ctx
     .supervisors
     .insert(launch_id.clone(), model.clone())
@@ -1795,7 +1802,15 @@ async fn current_backend_flavor(ctx: &MethodContext) -> crate::daemon::host_metr
   crate::daemon::host_metrics::GpuFlavor::Unsampled
 }
 
-fn build_log_path(log_dir: &std::path::Path, id: &ModelId) -> PathBuf {
+/// The per-launch log file name.
+///
+/// Carries the launch id because the rest of the name is not unique: two
+/// launches of one model started in the same wall-clock second derived the
+/// identical `{stem}-{fingerprint}-{seconds}` and opened the same file, so
+/// `logs <model>@<name>` returned both processes interleaved. Named launches
+/// make that the ordinary case rather than a race. The id is monotonic per
+/// daemon, so no two attempts can share a name whatever the clock does.
+fn build_log_path(log_dir: &std::path::Path, id: &ModelId, launch_id: &LaunchId) -> PathBuf {
   let stem = id
     .path
     .file_stem()
@@ -1806,7 +1821,7 @@ fn build_log_path(log_dir: &std::path::Path, id: &ModelId) -> PathBuf {
     .map(|d| d.as_secs())
     .unwrap_or_default();
   let short = id.short_fingerprint();
-  log_dir.join(format!("{stem}-{short}-{ts}.log"))
+  log_dir.join(format!("{stem}-{short}-{}-{ts}.log", launch_id.as_str()))
 }
 
 #[cfg(test)]
@@ -2543,21 +2558,39 @@ mod tests {
   }
 
   #[test]
-  fn build_log_path_uses_stem_fingerprint_and_timestamp() {
+  fn build_log_path_uses_stem_fingerprint_launch_id_and_timestamp() {
     let id = crate::gguf::identity::ModelId {
       path: PathBuf::from("/models/Qwen3-7B-Q4_K_M.gguf"),
       header_blake3: [0xabu8; 32],
     };
-    let path = build_log_path(std::path::Path::new("/var/log/ls"), &id);
+    let dir = std::path::Path::new("/var/log/ls");
+    let path = build_log_path(dir, &id, &LaunchId("L3".into()));
     let name = path.file_name().unwrap().to_string_lossy();
-    // `<stem>-<short-fingerprint>-<unix-ts>.log`
+    // `<stem>-<short-fingerprint>-<L#>-<unix-ts>.log`
     assert!(name.starts_with("Qwen3-7B-Q4_K_M-"), "stem prefix: {name}");
     assert!(name.ends_with(".log"), "log suffix: {name}");
     assert!(
       name.contains(&id.short_fingerprint()),
       "embeds the short fingerprint: {name}"
     );
+    assert!(name.contains("-L3-"), "embeds the launch id: {name}");
     assert_eq!(path.parent().unwrap(), std::path::Path::new("/var/log/ls"));
+  }
+
+  #[test]
+  fn two_launches_of_one_model_in_one_second_get_their_own_log() {
+    // Same model, same second — everything but the launch id is identical, and
+    // without it both processes wrote into one file, so `logs` returned them
+    // interleaved. Named launches make this the ordinary case.
+    let id = crate::gguf::identity::ModelId {
+      path: PathBuf::from("/models/Qwen3-7B-Q4_K_M.gguf"),
+      header_blake3: [0xabu8; 32],
+    };
+    let dir = std::path::Path::new("/var/log/ls");
+    assert_ne!(
+      build_log_path(dir, &id, &LaunchId("L1".into())),
+      build_log_path(dir, &id, &LaunchId("L2".into())),
+    );
   }
 
   #[test]
@@ -2568,7 +2601,7 @@ mod tests {
       path: PathBuf::from("/"),
       header_blake3: [0u8; 32],
     };
-    let path = build_log_path(std::path::Path::new("/tmp"), &id);
+    let path = build_log_path(std::path::Path::new("/tmp"), &id, &LaunchId("L1".into()));
     let name = path.file_name().unwrap().to_string_lossy();
     assert!(name.starts_with("model-"), "fallback stem: {name}");
   }

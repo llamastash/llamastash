@@ -482,7 +482,7 @@ its fix plan. Tick as landed.
 
 ### Nits
 
-- [ ] **RV26 — `FlightKey` is declared but unused**: `Leader::key` and `acquire`
+- [x] **RV26 — `FlightKey` is declared but unused**: `Leader::key` and `acquire`
       (`src/proxy/coalesce.rs:67`) spell the tuple out. *Fix:* use the alias so the
       key shape has one name.
 - [x] **RV27 — adding `name` meant hand-editing ~15 `name: None` literals across 8
@@ -492,21 +492,23 @@ its fix plan. Tick as landed.
 
 ### Pre-existing, newly likely
 
-- [ ] **RV28 — `build_log_path` collides for two launches of one model**
+- [x] **RV28 — `build_log_path` collides for two launches of one model**
       (`src/daemon/launch_service.rs:1793`). The filename is
       `{stem}-{blake3[0..8]}-{unix_secs}.log` with no launch id, so two launches
       started in the same wall-clock second open the same file and
       `logs <model>@<name>` returns both processes interleaved. Observed twice in
       about five attempts, so timing-dependent rather than always-on.
-      *Fix:* put the launch id in the filename.
+      *Fix:* the launch id is minted before the log file is named and rides in
+      the filename. A launch that never spawns burns its id — ids are display
+      handles, and a gap is cheaper than two launches writing one log.
 
 ### Tests still missing
 
-- [ ] **RV29 — `state.json` byte-identical round-trip for an unnamed row** (Step 5,
+- [x] **RV29 — `state.json` byte-identical round-trip for an unnamed row** (Step 5,
       marked not optional). `RunningSnapshot` gained a field at
       `src/daemon/state_store.rs:153` and nothing pins that an unnamed row still
       serializes to the pre-feature bytes.
-- [ ] **RV30 — no test that a name survives a daemon restart through orphan
+- [x] **RV30 — no test that a name survives a daemon restart through orphan
       re-adoption.** `orphans.rs:191` clones the whole snapshot so `name` rides
       along, and that is D1's entire justification, but it is the one load-bearing
       path with no coverage.
