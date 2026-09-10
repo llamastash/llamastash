@@ -546,6 +546,7 @@ mod tests {
         total_mib: Some(24576),
         free_mib: Some(24000),
       }],
+      caps: Default::default(),
     }
   }
 

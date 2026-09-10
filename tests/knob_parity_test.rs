@@ -141,6 +141,7 @@ fn two_device_server(backend_id: &str) -> Vec<llamastash::backend::Server> {
     binary: std::path::PathBuf::from("/test/engine"),
     name: format!("{backend_id}-test"),
     devices: vec![device("D0"), device("D1")],
+    caps: Default::default(),
   }]
 }
 

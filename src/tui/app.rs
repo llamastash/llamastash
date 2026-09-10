@@ -3127,6 +3127,7 @@ mod tests {
       binary: PathBuf::from(binary),
       name: "test".into(),
       devices,
+      caps: Default::default(),
     }
   }
 
@@ -3327,6 +3328,7 @@ mod tests {
         binary: PathBuf::from("/usr/bin/lemond"),
         name: "lemonade".into(),
         devices: Vec::new(),
+        caps: Default::default(),
       },
     ];
     let servers = app.compatible_servers(Path::new("/m/qwen.gguf"));

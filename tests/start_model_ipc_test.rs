@@ -614,7 +614,7 @@ async fn last_params_persists_only_user_supplied_knob_deltas() {
   // user delta. The resolver will pull the first call's `threads`
   // into call 2's resolved knobs (via the `last_used` layer), but
   // the persisted entry for call 2 must only carry the new delta
-  // (`mlock = true`), not the carried-over `threads`.
+  // (`load-mode`), not the carried-over `threads`.
   let state = unique_temp("last-params-delta");
   let model_dir = unique_temp("last-params-delta-models");
   let model_path = model_dir.join("m.gguf");
@@ -690,49 +690,46 @@ async fn last_params_persists_only_user_supplied_knob_deltas() {
     .await
     .expect("stop_model");
 
-  // Call 2: user supplies a *different* delta (`mlock = true`). The
+  // Call 2: user supplies a *different* delta (`load-mode`). The
   // resolver will inherit `threads = 4` from `last_used`, but the
   // *persisted* knobs for call 2 must NOT carry it forward — only
-  // the new user-supplied `mlock` belongs in the delta.
+  // the new user-supplied `load-mode` belongs in the delta. It is the marker
+  // because nothing else seeds it: an arch default that touched the knob
+  // would make "user-supplied" untestable.
   let _ = client
     .call(
       "start_model",
       Some(json!({
         "model_path": &model_path_canon,
-        "knobs": {"mlock": true},
+        "knobs": {"load-mode": "mlock"},
       })),
     )
     .await
     .expect("start_model call 2");
 
   // Poll for call 2's persistence — upsert promotes the entry to the
-  // front of the Vec, so once `mlock == Some(true)` lands at index 0
+  // front of the Vec, so once the marker lands at index 0
   // we know the recorder fired for call 2. 60 s deadline matches the
   // call-1 wait for the same runner-load reason.
   let deadline = std::time::Instant::now() + Duration::from_secs(60);
   let knobs = loop {
     let s = state_store::load(&state_dir).expect("load state");
     if let Some(entry) = s.last_params.first() {
-      if entry
-        .params
-        .knobs
-        .bool(llamastash::launch::knobs::kid("mlock"))
-        == Some(true)
-      {
+      if entry.params.knobs.text_by_name("load-mode").as_deref() == Some("mlock") {
         break entry.params.knobs.clone();
       }
     }
     if std::time::Instant::now() > deadline {
-      panic!("call 2 last_params.mlock never persisted");
+      panic!("call 2 last_params marker never persisted");
     }
     tokio::time::sleep(Duration::from_millis(40)).await;
   };
 
   // The contract: only the call-2 delta survives on disk.
   assert_eq!(
-    knobs.bool(llamastash::launch::knobs::kid("mlock")),
-    Some(true),
-    "user-supplied mlock must persist verbatim"
+    knobs.text_by_name("load-mode").as_deref(),
+    Some("mlock"),
+    "a user-supplied knob must persist verbatim"
   );
   assert_eq!(
     knobs.u32(llamastash::launch::knobs::kid("threads")),
@@ -843,35 +840,30 @@ async fn no_selection_start_inherits_last_params_extras() {
     .expect("stop_model");
 
   // Call 2 (no selection): no extras, no `selection` field (defaults to the
-  // no-selection `default`), plus a distinguishing knob (`mlock`) so we can
+  // no-selection `default`), plus a distinguishing knob (`load-mode`) so we can
   // tell call 2's persisted entry apart from call 1's.
   let _ = client
     .call(
       "start_model",
       Some(json!({
         "model_path": &model_path_canon,
-        "knobs": {"mlock": true},
+        "knobs": {"load-mode": "mlock"},
       })),
     )
     .await
     .expect("start_model call 2");
 
-  // Poll until call 2's entry lands (mlock marks it), then check extras.
+  // Poll until call 2's entry lands (the load-mode marker), then check extras.
   let deadline = std::time::Instant::now() + Duration::from_secs(60);
   let extras = loop {
     let s = state_store::load(&state_dir).expect("load state");
     if let Some(entry) = s.last_params.first() {
-      if entry
-        .params
-        .knobs
-        .bool(llamastash::launch::knobs::kid("mlock"))
-        == Some(true)
-      {
+      if entry.params.knobs.text_by_name("load-mode").as_deref() == Some("mlock") {
         break entry.params.extras.clone();
       }
     }
     if std::time::Instant::now() > deadline {
-      panic!("call 2 last_params (mlock marker) never persisted");
+      panic!("call 2 last_params (load-mode marker) never persisted");
     }
     tokio::time::sleep(Duration::from_millis(40)).await;
   };

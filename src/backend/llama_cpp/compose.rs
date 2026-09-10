@@ -69,6 +69,7 @@ pub(crate) fn compose(params: &LaunchParams, allocated_port: u16) -> Vec<OsStrin
   if jinja || params.reasoning {
     argv.push("--jinja".into());
   }
+  argv.extend(load_mode_argv(params));
   if params.reasoning {
     argv.push("--reasoning-format".into());
     argv.push("deepseek".into());
@@ -148,6 +149,52 @@ pub(crate) fn compose(params: &LaunchParams, allocated_port: u16) -> Vec<OsStrin
   argv
 }
 
+/// Argv for the `load-mode` knob, in whichever spelling the resolved build
+/// takes.
+///
+/// llama.cpp replaced `--mmap` / `--no-mmap` / `--mlock` / `-dio` with
+/// `-lm, --load-mode MODE` in `14a9d09f7` (2026-09-09). Both spellings are in
+/// the field at once — a current stock build beside older fork builds pinned
+/// per model — so the dialect is probed per binary at boot and carried here on
+/// `launch_config` (see `seed_binary_caps`).
+///
+/// The legacy column is the inverse of the mapping the removal commit deleted:
+/// `--no-mmap` set `LLAMA_LOAD_MODE_NONE`, `--mlock` set `..._MLOCK`. `auto` is
+/// the engine default and emits nothing either way.
+fn load_mode_argv(params: &LaunchParams) -> Vec<OsString> {
+  let Some(mode) = params.knobs.text_by_name("load-mode") else {
+    return Vec::new();
+  };
+  // `auto` is the engine default; emitting it would only differ from an unset
+  // knob on a build that has no `--load-mode` at all.
+  if mode == "auto" {
+    return Vec::new();
+  }
+  let dialect = super::caps::LoadModeDialect::from_label(
+    params
+      .launch_config
+      .get(super::LLAMACPP_KNOB_LOAD_MODE_DIALECT)
+      .map(String::as_str),
+  );
+  match dialect {
+    super::caps::LoadModeDialect::Enum => vec!["--load-mode".into(), mode.into()],
+    super::caps::LoadModeDialect::Flags => match mode.as_str() {
+      "none" => vec!["--no-mmap".into()],
+      "mmap" => vec!["--mmap".into()],
+      "mlock" => vec!["--mlock".into()],
+      "mmap+mlock" => vec!["--mmap".into(), "--mlock".into()],
+      // A build predating `--load-mode` may also predate DirectIO. Emit the
+      // flag it would have used and let the engine reject it by name, rather
+      // than silently dropping a mode the user asked for.
+      "dio" => vec!["-dio".into()],
+      other => {
+        log::warn!("unknown load-mode `{other}`; emitting nothing");
+        Vec::new()
+      }
+    },
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -163,6 +210,65 @@ mod tests {
 
   fn base_params() -> LaunchParams {
     LaunchParams::new(PathBuf::from("/m/model.gguf"), LaunchMode::Chat)
+  }
+
+  fn with_load_mode(mode: &str, dialect: &str) -> Vec<String> {
+    let mut p = base_params();
+    assert!(
+      p.knobs.set_by_name("load-mode", mode),
+      "mode {mode} must be valid"
+    );
+    p.launch_config.insert(
+      super::super::LLAMACPP_KNOB_LOAD_MODE_DIALECT.to_string(),
+      dialect.to_string(),
+    );
+    strs(&load_mode_argv(&p))
+  }
+
+  /// A current build takes the enum verbatim, values and all.
+  #[test]
+  fn a_load_mode_reaches_a_current_build_as_the_enum() {
+    for mode in ["none", "mmap", "mlock", "mmap+mlock", "dio"] {
+      assert_eq!(
+        with_load_mode(mode, "enum"),
+        vec!["--load-mode".to_string(), mode.to_string()],
+        "mode {mode}"
+      );
+    }
+  }
+
+  /// A fork predating `14a9d09f7` gets the flags it still has. The mapping is
+  /// the inverse of the handlers that commit deleted.
+  #[test]
+  fn a_load_mode_reaches_an_older_build_as_the_flags_it_has() {
+    assert_eq!(with_load_mode("none", "flags"), vec!["--no-mmap"]);
+    assert_eq!(with_load_mode("mmap", "flags"), vec!["--mmap"]);
+    assert_eq!(with_load_mode("mlock", "flags"), vec!["--mlock"]);
+    assert_eq!(
+      with_load_mode("mmap+mlock", "flags"),
+      vec!["--mmap", "--mlock"]
+    );
+    assert_eq!(with_load_mode("dio", "flags"), vec!["-dio"]);
+  }
+
+  /// `auto` is the engine default on both dialects, so it emits nothing —
+  /// otherwise a launch that never touched the knob would differ from one that
+  /// set it to the default.
+  #[test]
+  fn auto_and_unset_both_emit_nothing() {
+    assert!(with_load_mode("auto", "enum").is_empty());
+    assert!(with_load_mode("auto", "flags").is_empty());
+    assert!(load_mode_argv(&base_params()).is_empty(), "unset knob");
+  }
+
+  /// The dialect key is absent on params written before it existed. Those must
+  /// emit the older spelling: it is what every build accepted until 2026-09-09,
+  /// so it is wrong on fewer machines than the enum would be.
+  #[test]
+  fn a_missing_dialect_falls_back_to_the_older_spelling() {
+    let mut p = base_params();
+    assert!(p.knobs.set_by_name("load-mode", "none"));
+    assert_eq!(strs(&load_mode_argv(&p)), vec!["--no-mmap"]);
   }
 
   /// **Golden argv (plan D9).** Pins the exact command line for a fully-set
@@ -184,8 +290,7 @@ mod tests {
       cache_type_k: "q8_0",
       cache_type_v: "q8_0",
       flash_attn: true,
-      mlock: true,
-      no_mmap: true,
+      load_mode: "mlock",
       parallel: 4,
       batch_size: 2048,
       ubatch_size: 512,
@@ -204,6 +309,9 @@ mod tests {
         "41100",
         "-m",
         "/m/model.gguf",
+        // No dialect on `launch_config`, so the golden pins the older spelling
+        // — see `a_missing_dialect_falls_back_to_the_older_spelling`.
+        "--mlock",
         "-c",
         "32768",
         "--n-gpu-layers",
@@ -226,8 +334,6 @@ mod tests {
         "4",
         "--flash-attn",
         "on",
-        "--mlock",
-        "--no-mmap",
         "--batch-size",
         "2048",
         "--ubatch-size",

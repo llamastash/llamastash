@@ -349,11 +349,29 @@ llamastash start <ref> [--name LABEL] [--preset NAME] [--ctx N] [--port N] [--wa
 
 `--server <id>` picks a specific **server** — one build/binary of a backend (`llamacpp-vulkan`, `llamacpp-cuda`, `ds4` or a named `ds4-rocm`). It determines which binary spawns and, when `--backend` is unset, which backend runs the model (the server's owning backend). Server ids auto-derive as `<backend>-<compute>` from each build's own device names (or the bare backend id for a device-less engine like ds4/lemonade), overridable with a per-server `name:`; list them from `status` (the `servers` array; `status --json` mirrors it). A `--device <selector>` already implies its owning server, so `--server` is for picking a build with no device pin. The pick persists in `last_params`, so a relaunch reuses it — in the TUI it reopens the launch picker's `server` row on that build.
 
-Every knob any backend declares is a first-class `start` flag — `--n-gpu-layers`, `--threads`, `--device`, `--tensor-split`, `--main-gpu`, `--split-mode`, `--flash-attn`, `--cache-type-k`/`-v`, `--batch-size`, `--mlock`, and the same for every other backend's own tunables. The flag is spelled the way the engine spells it. Run `start --help` for the full list, grouped by the backend that declares each; `llamastash knobs` lists them with value ranges and choices. Flags, editor rows and preset keys are all generated from one declaration per knob, so no surface can be missing one. Booleans take `--flash-attn` (= on) or `--flash-attn=false`. Anything `start` doesn't recognise as a knob — including `llama-server`'s single-dash shorts like `-ngl` — still works verbatim after `--`. A knob set both inline and after `--` resolves to the `--` value.
+Every knob any backend declares is a first-class `start` flag — `--n-gpu-layers`, `--threads`, `--device`, `--tensor-split`, `--main-gpu`, `--split-mode`, `--flash-attn`, `--cache-type-k`/`-v`, `--batch-size`, `--load-mode`, and the same for every other backend's own tunables. The flag is spelled the way the engine spells it. Run `start --help` for the full list, grouped by the backend that declares each; `llamastash knobs` lists them with value ranges and choices. Flags, editor rows and preset keys are all generated from one declaration per knob, so no surface can be missing one. Booleans take `--flash-attn` (= on) or `--flash-attn=false`. Anything `start` doesn't recognise as a knob — including `llama-server`'s single-dash shorts like `-ngl` — still works verbatim after `--`. A knob set both inline and after `--` resolves to the `--` value.
 
 Modes are strict: when the catalog reports `mode_hint = unknown` and no `--mode` is passed, the CLI exits `64` rather than silently defaulting to chat. Otherwise the mode resolves as `--mode` > a preset's `mode:` pin > the model's own GGUF hint > chat, and the last two rungs are resolved by the daemon, so the same order applies to a plain `start`, the TUI, and proxy auto-start alike.
 
 `--ctx` above the model's native context length is allowed (the supervisor still tries, per R12); a warning prints to stderr. When `--preset` and inline knobs are combined, the inline knobs layer onto the preset — they override only the fields they set, leaving the rest of the preset intact.
+
+#### Model loading (`load-mode`)
+
+`load-mode` picks how the weights are brought in: `auto` (the engine default —
+mmap unless a device can't), `none` (no mmap, the old `--no-mmap`), `mmap`,
+`mlock` (locked in RAM, and *not* mmapped), `mmap+mlock`, or `dio` (DirectIO
+where the build has it).
+
+llama.cpp deleted `--mmap` / `--no-mmap` / `--mlock` / `-dio` on 2026-09-09 in
+favour of one `--load-mode` flag, and both spellings are still in the field — a
+current stock build commonly sits beside older fork builds pinned for one model.
+LlamaStash probes each configured server's `--help` once at daemon start and
+emits whichever spelling that binary takes, so the same preset launches on both.
+Nothing to configure; `llamastash status` lists the servers it probed.
+
+A `config.yaml` still carrying `no-mmap: true` or `mlock: true` is rewritten on
+the next `daemon start` (`no-mmap` → `load-mode: none`, `mlock` → `load-mode:
+mlock`, both → `mlock`), with a `.pre-knobs.bak` copy beside it.
 
 #### Auto launch mode (default)
 
@@ -1302,7 +1320,7 @@ Knob set, grouped into labelled clusters in display order:
 | Multi-GPU placement _(multi-GPU servers only)_ | `tensor_split`, `main_gpu`, `split_mode`         |
 | Attention & KV cache                         | `flash_attn`, `cache_type_k`, `cache_type_v`       |
 | Throughput                                   | `threads`, `parallel`, `batch_size`, `ubatch_size` |
-| Memory loading                               | `mlock`, `no_mmap`                                 |
+| Memory loading                               | `load_mode`                                        |
 | Advanced                                     | `rope_freq_scale`, `keep`, `extras`                |
 
 Groups are ordered by how often a knob is typically changed; related

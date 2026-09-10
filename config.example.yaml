@@ -724,8 +724,11 @@ arch_defaults:
     cache-type-k: q8_0
     cache-type-v: q8_0
     # ── Memory residency ──────────────────────────────────
-    mlock: false # lock in RAM
-    no-mmap: false # full RAM load instead of mmap
+    # auto | none | mmap | mlock | mmap+mlock | dio. `none` is the old
+    # `no-mmap`, `mlock` the old `--mlock` (it does not mmap either).
+    # Spelled `--load-mode` on current llama.cpp and as the separate legacy
+    # flags on builds before 2026-09-09; llamastash picks per binary.
+    load-mode: auto
     # ── Chat template ─────────────────────────────────────
     reasoning: false # true bundles --jinja, --reasoning-format deepseek
   llama:

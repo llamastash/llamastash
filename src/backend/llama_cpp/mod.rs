@@ -12,6 +12,7 @@
 //! `compose`'s output so a future reimplementation can't silently drift.
 
 mod actuals;
+pub mod caps;
 mod compose;
 pub mod knobs;
 pub mod list_devices;
@@ -42,6 +43,11 @@ use crate::launch::params::LaunchParams;
 pub const LLAMACPP_KNOB_JINJA: &str = "jinja";
 pub const LLAMACPP_KNOB_STRICT_FIT: &str = "strict_fit";
 pub const LLAMACPP_KNOB_FIT_CTX_FLOOR: &str = "fit_ctx_floor";
+/// `launch_config` key carrying which spelling the resolved build takes for the
+/// model-loading mode. Written by `seed_binary_caps`, read by `compose`.
+pub const LLAMACPP_KNOB_LOAD_MODE_DIALECT: &str = "load_mode_dialect";
+/// The same fact as a [`caps`] probe key on `Server::caps`.
+pub const CAP_LOAD_MODE_DIALECT: &str = "load_mode_dialect";
 
 /// The `fit_ctx_floor` launch knob parsed to `u32`, or `None` when unseeded /
 /// unparsable. Shared by the admission-floor and readiness-gate hooks.
@@ -321,6 +327,38 @@ impl Backend for LlamaCppBackend {
 
   fn probe_devices(&self, binary: &Path) -> Vec<super::Device> {
     list_devices::probe_devices(binary)
+  }
+
+  fn probe_caps(&self, binary: &Path) -> std::collections::BTreeMap<String, String> {
+    let mut caps = std::collections::BTreeMap::new();
+    caps.insert(
+      CAP_LOAD_MODE_DIALECT.to_string(),
+      caps::LoadModeDialect::probe(binary).label().to_string(),
+    );
+    caps
+  }
+
+  fn seed_binary_caps(&self, binary: &Path, servers: &[super::Server], params: &mut LaunchParams) {
+    let dialect = match servers.iter().find(|s| s.binary == binary) {
+      Some(server) => caps::LoadModeDialect::from_label(
+        server.caps.get(CAP_LOAD_MODE_DIALECT).map(String::as_str),
+      ),
+      // The binary should always be a catalog row (`configured_servers` adds the
+      // daemon's resolved default), so a miss means the catalog and the launch
+      // disagree. Probe rather than assume: guessing wrong here emits a flag the
+      // engine rejects, which costs a whole failed load to discover.
+      None => {
+        log::warn!(
+          "{} is not in the server catalog; probing its flags directly",
+          binary.display()
+        );
+        caps::LoadModeDialect::probe(binary)
+      }
+    };
+    params.launch_config.insert(
+      LLAMACPP_KNOB_LOAD_MODE_DIALECT.to_string(),
+      dialect.label().to_string(),
+    );
   }
 
   fn launch_priority(&self) -> i32 {

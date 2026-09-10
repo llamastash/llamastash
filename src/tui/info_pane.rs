@@ -764,6 +764,7 @@ mod tests {
         total_mib: Some(24576),
         free_mib: Some(24000),
       }],
+      caps: Default::default(),
     }];
     // Rows: [TableHeader, Header(▶ Running), Model] — running row at 2.
     app.list_cursor = 2;

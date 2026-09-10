@@ -1734,6 +1734,7 @@ mod tests {
       binary: std::path::PathBuf::from(binary),
       name: id.into(),
       devices,
+      caps: Default::default(),
     }
   }
 

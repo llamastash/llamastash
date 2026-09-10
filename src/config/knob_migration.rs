@@ -87,10 +87,67 @@ fn is_legacy_entry(entry: &YamlValue) -> bool {
   let Some(map) = entry.as_mapping() else {
     return false;
   };
-  map.iter().any(|(k, _)| {
+  let flat_legacy = map.iter().any(|(k, _)| {
     let Some(k) = k.as_str() else { return false };
     k == "backend_knobs" || !RESERVED.contains(&k)
-  })
+  });
+  flat_legacy || holds_retired_load_flags(entry)
+}
+
+/// Whether an already-migrated entry still carries a knob that has since been
+/// retired. The shape is current, so [`is_legacy_entry`]'s flat-key test says
+/// no — but the entry would launch a flag the engine no longer has.
+fn holds_retired_load_flags(entry: &YamlValue) -> bool {
+  entry
+    .get(KNOBS_KEY)
+    .and_then(YamlValue::as_mapping)
+    .is_some_and(|knobs| {
+      knobs
+        .iter()
+        .any(|(k, _)| matches!(k.as_str(), Some("no-mmap") | Some("mlock")))
+    })
+}
+
+/// Fold the retired `no-mmap` / `mlock` booleans into the `load-mode` enum.
+///
+/// llama.cpp deleted the flags they emitted in `14a9d09f7` (2026-09-09), so an
+/// entry keeping them launches nothing on a current build. They also cannot
+/// both survive as knobs: one engine enum driven by two booleans needs a
+/// precedence rule resolved somewhere the user cannot see.
+///
+/// `mlock` wins when both are set — it is the stronger request, and it does not
+/// mmap either (`llama-model-loader.cpp:559`). A `false` value is dropped
+/// rather than translated: it only ever asserted the engine's own default.
+fn retire_load_flags(knobs: &mut yaml_serde::Mapping) {
+  let retired = |k: &YamlValue| matches!(k.as_str(), Some("no-mmap") | Some("mlock"));
+  if !knobs.keys().any(retired) {
+    return;
+  }
+  let truthy = |k: &str| knobs.get(YamlValue::from(k)).and_then(YamlValue::as_bool) == Some(true);
+  let mode = match (truthy("mlock"), truthy("no-mmap")) {
+    (true, _) => Some("mlock"),
+    (false, true) => Some("none"),
+    // Both present but both false: they asserted the default, so the entry ends
+    // up with no load-mode knob at all, which is that same default.
+    (false, false) => None,
+  };
+  // Rebuilt in place rather than removed-and-appended: `Mapping::remove` is
+  // `swap_remove`, which drags the last knob into the hole, and appending puts
+  // the replacement at the end. Both show up as spurious reordering in the diff
+  // of a `config.yaml` someone keeps in a dotfiles repo.
+  let mut out = yaml_serde::Mapping::new();
+  let mut placed = false;
+  for (k, v) in knobs.iter() {
+    if retired(k) {
+      if let (Some(mode), false) = (mode, placed) {
+        out.insert(YamlValue::from("load-mode"), YamlValue::from(mode));
+        placed = true;
+      }
+      continue;
+    }
+    out.insert(k.clone(), v.clone());
+  }
+  *knobs = out;
 }
 
 /// Rewrite `config_path` into the new shape, or `Ok(None)` when it is already
@@ -183,11 +240,28 @@ fn rewrite_entry(entry: &YamlValue) -> YamlValue {
 
   let flat: std::collections::BTreeMap<String, YamlValue> =
     yaml_serde::from_value(entry.clone()).unwrap_or_default();
-  let knobs = fold_legacy_entry(&flat, RESERVED);
-  if !knobs.is_empty() {
-    if let Ok(v) = yaml_serde::to_value(&knobs) {
-      out.insert(YamlValue::from(KNOBS_KEY), v);
+  // Two sources, because this runs for two kinds of entry: a legacy one whose
+  // knobs are flat keys to be folded, and an already-current one pulled in only
+  // because it still holds a retired knob (`holds_retired_load_flags`). The
+  // second has nothing to fold and its `knobs:` must be carried through — the
+  // reserved-key loop below deliberately skips that key, so without this the
+  // entry would come out empty.
+  let folded = fold_legacy_entry(&flat, RESERVED);
+  let mut knobs = if folded.is_empty() {
+    entry
+      .get(KNOBS_KEY)
+      .and_then(YamlValue::as_mapping)
+      .cloned()
+      .unwrap_or_default()
+  } else {
+    match yaml_serde::to_value(&folded) {
+      Ok(YamlValue::Mapping(m)) => m,
+      _ => yaml_serde::Mapping::new(),
     }
+  };
+  retire_load_flags(&mut knobs);
+  if !knobs.is_empty() {
+    out.insert(YamlValue::from(KNOBS_KEY), YamlValue::Mapping(knobs));
   }
 
   // Reserved keys keep their place and their value verbatim.
@@ -217,6 +291,98 @@ mod tests {
 
   fn read(p: &Path) -> String {
     std::fs::read_to_string(p).unwrap()
+  }
+
+  /// The flags these emitted were deleted upstream in `14a9d09f7`, so an entry
+  /// keeping them launches nothing on a current build — even though its shape
+  /// is already current and the flat-key test says nothing to do.
+  #[test]
+  fn a_retired_no_mmap_becomes_a_load_mode() {
+    let p = write(
+      "no-mmap",
+      "presets:\n  m.gguf:\n    entries:\n      fast:\n        knobs:\n          ctx-size: 4096\n          no-mmap: true\n",
+    );
+    let report = migrate(&p).unwrap().expect("should migrate");
+    assert_eq!(report.entries, vec![("m.gguf".into(), "fast".into())]);
+    let out = read(&p);
+    assert!(out.contains("load-mode: none"), "folded:\n{out}");
+    assert!(!out.contains("no-mmap"), "retired key gone:\n{out}");
+    assert!(out.contains("ctx-size: 4096"), "siblings survive:\n{out}");
+  }
+
+  /// A `config.yaml` kept in a dotfiles repo is read as a diff, so the rewrite
+  /// must not reorder the knobs it is not changing. `Mapping::remove` is
+  /// `swap_remove`, which used to drag the last knob into the retired one's slot.
+  #[test]
+  fn the_surrounding_knobs_keep_their_order() {
+    let p = write(
+      "order",
+      "presets:\n  m.gguf:\n    entries:\n      fast:\n        knobs:\n          ctx-size: 4096\n          no-mmap: true\n          parallel: 1\n          threads: 16\n",
+    );
+    migrate(&p).unwrap().expect("should migrate");
+    let out = read(&p);
+    let at = |needle: &str| {
+      out
+        .find(needle)
+        .unwrap_or_else(|| panic!("{needle} missing:\n{out}"))
+    };
+    assert!(at("ctx-size") < at("load-mode"), "order kept:\n{out}");
+    assert!(
+      at("load-mode") < at("parallel"),
+      "replacement sits in the retired key's slot:\n{out}"
+    );
+    assert!(at("parallel") < at("threads"), "tail not swapped:\n{out}");
+  }
+
+  #[test]
+  fn a_retired_mlock_becomes_a_load_mode() {
+    let p = write(
+      "mlock",
+      "presets:\n  m.gguf:\n    entries:\n      fast:\n        knobs:\n          mlock: true\n",
+    );
+    migrate(&p).unwrap().expect("should migrate");
+    assert!(read(&p).contains("load-mode: mlock"));
+  }
+
+  /// Both set is the case that forced one knob: the engine takes a single enum,
+  /// so two booleans need a precedence rule. mlock is the stronger request and
+  /// does not mmap either.
+  #[test]
+  fn mlock_wins_when_both_were_set() {
+    let p = write(
+      "both",
+      "presets:\n  m.gguf:\n    entries:\n      fast:\n        knobs:\n          mlock: true\n          no-mmap: true\n",
+    );
+    migrate(&p).unwrap().expect("should migrate");
+    let out = read(&p);
+    assert!(out.contains("load-mode: mlock"), "{out}");
+    assert!(!out.contains("load-mode: none"), "{out}");
+  }
+
+  /// `false` only ever asserted the engine default, so it translates to no knob
+  /// at all rather than to a mode.
+  #[test]
+  fn a_false_value_is_dropped_rather_than_translated() {
+    let p = write(
+      "false",
+      "presets:\n  m.gguf:\n    entries:\n      fast:\n        knobs:\n          ctx-size: 4096\n          no-mmap: false\n",
+    );
+    migrate(&p).unwrap().expect("should migrate");
+    let out = read(&p);
+    assert!(!out.contains("load-mode"), "no mode invented:\n{out}");
+    assert!(!out.contains("no-mmap"), "retired key gone:\n{out}");
+    assert!(out.contains("ctx-size: 4096"), "siblings survive:\n{out}");
+  }
+
+  /// An entry already free of the retired keys must not be rewritten — a
+  /// migration that fires every boot would churn the file and its backup.
+  #[test]
+  fn a_current_entry_without_them_is_left_alone() {
+    let p = write(
+      "clean",
+      "presets:\n  m.gguf:\n    entries:\n      fast:\n        knobs:\n          load-mode: mlock\n",
+    );
+    assert!(migrate(&p).unwrap().is_none(), "nothing to migrate");
   }
 
   #[test]

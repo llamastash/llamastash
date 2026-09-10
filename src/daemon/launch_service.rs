@@ -991,6 +991,11 @@ pub(crate) async fn compose_and_spawn(
     &servers_snapshot[..],
     &env.binary,
   );
+  // Facts about the *binary* this launch resolved, which only its own backend
+  // can interpret — a flag whose spelling differs between builds of the same
+  // engine. Runs here because the binary is not known until `pick_launch_binary`
+  // returns, and it must land before `compose` reads `launch_config`.
+  inference_backend.seed_binary_caps(&launch_binary, &servers_snapshot[..], &mut launch_params);
   drop(servers_snapshot);
 
   // `inference_backend` was resolved up front (before the last_params gate).
@@ -1923,6 +1928,7 @@ mod tests {
         total_mib: None,
         free_mib: None,
       }],
+      caps: Default::default(),
     };
     let default = PathBuf::from("/bin/llama-server");
     let binary = pick_launch_binary(
@@ -1954,6 +1960,7 @@ mod tests {
       binary: PathBuf::from("/bin/llama-server-rocm"),
       name: "llamacpp-rocm".into(),
       devices: vec![],
+      caps: Default::default(),
     };
     let default = PathBuf::from("/bin/llama-server");
     let binary = pick_launch_binary(
@@ -2578,6 +2585,7 @@ mod tests {
         binary: PathBuf::from("/nonexistent/llama-server"),
         name: "llamacpp-rocm".into(),
         devices: Vec::new(),
+        caps: Default::default(),
       });
     let parsed = StartParams {
       model_path,
