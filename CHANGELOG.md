@@ -4,6 +4,12 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-09-10
+
+This release lets one model run more than once. **Named launches** give every copy its own address: `start qwen3 --name coder` and that launch answers to `qwen3@coder` on the proxy, the CLI and the TUI, so a long-context copy and a fast copy can sit side by side. A request for a name that has stopped starts it again under the preset of that name, so an OpenAI-shaped client can pick a configuration without a CLI round trip. **Run preset files** are the other half: `llamastash run model.yml` starts one model with its own preset from a file you can commit next to a project, and nothing is written back to `config.yaml`.
+
+Underneath, knob keys now use the engine's own flag spelling (`ctx-size`, `n-gpu-layers`), and existing configs are migrated in place on first start with a `.pre-knobs.bak` beside them. llama.cpp deleted `--no-mmap` and `--mlock` on 2026-09-09, so presets carrying them stopped launching; one `load-mode` knob now covers both and LlamaStash emits whichever spelling your binary takes. The proxy's body cap moves from 2 MiB to 16 MiB, which is what vision payloads needed.
+
 ### Added
 
 - **Named launches.** `start <model> --name coder` runs a model under a name, so the same model can run several times at once and each copy is addressable: `qwen3@coder` in a request's `model` field, and `stop qwen3@coder` / `logs coder` / `show qwen3@coder` on the CLI. Named ids are published on `/v1/models` and `/api/tags` while the launch is live, and a request for one that has stopped starts it again — under the preset of that name when the model has one, so `qwen3@long-ctx` from any OpenAI-shaped client launches the `long-ctx` preset without a CLI round trip. In the TUI, `Alt+⏎` on the launch picker asks for the name.
@@ -17,6 +23,11 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 - `llamastash api-key` — print the proxy's bearer key on stdout, for client configs that resolve a credential by shelling out and for `$(...)` in scripts.
 - A `REPO` column in `llamastash list` (and a `repo` field in `list --json`) showing where a model lives in short form — `unsloth/Qwen3.8-27B-GGUF` for a cache entry, the parent directory's name otherwise.
 - `layer_sources` on the `start_model` IPC response and `start --json` — the layer each resolved knob value came from (`user`, `preset_default`, `last_used`, `arch_default`, …), so a caller can tell where a value originated. Omitted when empty (a pure-fit launch where every knob fell to the backend default).
+
+### Changed
+
+- **Config, preset and `--json` knob keys are now the engine's own flag spelling** (`ctx-size`, `n-gpu-layers`, `flash-attn`), and preset entries hold them under a `knobs:` map alongside optional `backend` / `server`. Existing `config.yaml` files are migrated in place on first start, with a `.pre-knobs.bak` beside them.
+- **Proxy body cap default raised from 2 MiB to 16 MiB.** Vision payloads (base64 images, ~33% larger than the source file) stopped 413ing out of the box; the cap is now configurable via `proxy.max_body_size`.
 
 ### Fixed
 
@@ -51,11 +62,6 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 - **pi.dev models were configured but unreachable.** pi bounds its model switcher by `enabledModels` in `settings.json`; the provider block alone left every llamastash model out of scope. `init` / `integrations` now append `llamastash/**` there, and only when the user already has a scope set.
 - **pi.dev got an embedding model it cannot use.** The patcher wrote `api: openai-embeddings` for an embedder, which is not an API pi implements — the model would only fail at request time. Embedders are left out of pi and Zed, which both drive chat only.
 - **A symlinked tool config was replaced by a regular file.** Atomic writes rename over the target, so patching a config that a dotfiles repo symlinks in detached it from the repo. Every patcher resolves the link and writes through it now.
-
-### Changed
-
-- **Config, preset and `--json` knob keys are now the engine's own flag spelling** (`ctx-size`, `n-gpu-layers`, `flash-attn`), and preset entries hold them under a `knobs:` map alongside optional `backend` / `server`. Existing `config.yaml` files are migrated in place on first start, with a `.pre-knobs.bak` beside them.
-- **Proxy body cap default raised from 2 MiB to 16 MiB.** Vision payloads (base64 images, ~33% larger than the source file) stopped 413ing out of the box; the cap is now configurable via `proxy.max_body_size`.
 
 ### Security
 
