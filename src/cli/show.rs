@@ -434,7 +434,10 @@ fn render_human(row: &CatalogRow, shards: &[ShardSize], total_bytes: u64, env: &
     // The heading carries the launch's address when it has a name, so several
     // blocks stay tellable apart at a glance.
     let heading = match running.get("name").and_then(Value::as_str) {
-      Some(n) => format!("running {}@{n}", row.name()),
+      Some(n) => format!(
+        "running {}",
+        crate::launch::resolve::join_named_reference(&row.name(), n)
+      ),
       None => "running".to_string(),
     };
     out.push_str(&section_header(&heading, None));

@@ -449,7 +449,7 @@ fn named_launch_ids<'a>(
       .get(r.params.model_path.to_string_lossy().as_ref())
       .cloned()
       .unwrap_or_else(|| crate::util::paths::model_public_id(&r.params.model_path, None));
-    let named_id = format!("{base_id}@{name}");
+    let named_id = crate::launch::resolve::join_named_reference(&base_id, name);
     if out.iter().any(|(id, _)| *id == named_id) {
       continue;
     }

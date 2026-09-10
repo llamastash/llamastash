@@ -421,6 +421,41 @@ pub fn name_matches(have: Option<&str>, want: &str) -> bool {
   have.is_some_and(|h| h.eq_ignore_ascii_case(want))
 }
 
+/// The one rule for what a launch name may be: trimmed, non-empty, and only
+/// ASCII letters, digits, `-` and `_`. Returns the trimmed name.
+///
+/// A name is half of an address, and every consumer splits the address on the
+/// last `@` ([`parse_named_reference`]) — so a name containing `@` (or a
+/// space, which a client cannot be relied on to quote) publishes an id that
+/// routes to a different pair or to nothing. Enforced at every entry point
+/// that accepts a name: the `--name` flag, the TUI dialog, and the daemon's
+/// `start_model` gate for raw JSON-RPC clients.
+pub fn validate_launch_name(raw: &str) -> Result<String, String> {
+  let name = raw.trim();
+  if name.is_empty() {
+    return Err("a name needs at least one letter, digit, `-` or `_`".into());
+  }
+  if !name
+    .chars()
+    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+  {
+    return Err(format!(
+      "a name is letters, digits, `-` or `_` — got `{name}`"
+    ));
+  }
+  Ok(name.to_string())
+}
+
+/// The one join for a `<model>@<name>` address — the inverse of
+/// [`parse_named_reference`], and the only place the separator is *written*.
+///
+/// The split and the compare were centralized so surfaces cannot drift; the
+/// join is the third half of that contract. Only names that pass
+/// [`validate_launch_name`] round-trip back through the split unchanged.
+pub fn join_named_reference(model: &str, name: &str) -> String {
+  format!("{model}@{name}")
+}
+
 /// Distinguishes the three resolver failure modes the HTTP proxy needs
 /// to surface as distinct HTTP responses (and which the CLI folds
 /// together into a single `MODEL_NOT_FOUND` exit).
@@ -892,5 +927,28 @@ mod tests {
     );
     assert!(v["mtp"].is_null());
     assert!(v["multimodal"].is_null());
+  }
+
+  #[test]
+  fn a_valid_name_round_trips_through_the_join_and_the_split() {
+    for raw in ["coder", " Coder-2_x ", "a-b_c9"] {
+      let name = validate_launch_name(raw).unwrap();
+      let address = join_named_reference("qwen3.gguf", &name);
+      assert_eq!(
+        parse_named_reference(&address),
+        Some(("qwen3.gguf", name.as_str())),
+        "`{raw}` must re-split to the pair it was joined from"
+      );
+    }
+  }
+
+  #[test]
+  fn a_name_that_cannot_appear_in_an_address_is_refused() {
+    for raw in ["", "   ", "a@b", "co der", "cöder", "@", "a/b", "b.c"] {
+      assert!(
+        validate_launch_name(raw).is_err(),
+        "`{raw}` must not be accepted as a launch name"
+      );
+    }
   }
 }

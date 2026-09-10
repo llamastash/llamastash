@@ -796,7 +796,7 @@ fn emit_response(preset: Option<&str>, row: &CatalogRow, resp: &Value, json: boo
   // by, so the success line hands the user the exact string to paste into
   // `stop` / `logs` / `body.model`.
   let addressed = match launch_name {
-    Some(n) => format!("{}@{n}", row.name()),
+    Some(n) => crate::launch::resolve::join_named_reference(&row.name(), n),
     None => row.name().to_string(),
   };
   let head = colors::success(&format!("started {addressed}{preset_label}"));

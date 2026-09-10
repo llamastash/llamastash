@@ -208,7 +208,7 @@ fn running_status_cell(row: Option<&RunningRow>) -> String {
 /// rather than as a fragment appended to STATUS.
 fn addressable_name(row: &CatalogRow, run: Option<&RunningRow>) -> String {
   match run.and_then(|r| r.name.as_deref()) {
-    Some(name) => format!("{}@{name}", row.name()),
+    Some(name) => crate::launch::resolve::join_named_reference(&row.name(), name),
     None => row.name(),
   }
 }
@@ -571,7 +571,7 @@ pub fn status_human(snap: &StatusSnapshot) -> String {
       // for to work out what to stop. Same `<model>@<name>` join `list` uses,
       // and the same string `stop` takes.
       let name = match r.name.as_deref() {
-        Some(n) => format!("{}@{n}", r.name()),
+        Some(n) => crate::launch::resolve::join_named_reference(&r.name(), n),
         None => r.name(),
       };
       rows.push(vec![
