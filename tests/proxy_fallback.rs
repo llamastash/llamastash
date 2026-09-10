@@ -737,6 +737,68 @@ async fn named_auto_start_falls_back_when_no_preset_answers_to_the_name() {
   std::fs::remove_dir_all(&dir).ok();
 }
 
+/// The preset the address names also decides the launch identity. Identity is
+/// resolved on its own path (a server pick decides the backend, so it has to
+/// settle before backend resolution), which is exactly where a second preset
+/// lookup could disagree with the knob layers about which preset is in play.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn named_auto_start_takes_the_backend_its_preset_pins() {
+  let dir = unique_temp("named-preset-backend");
+  let log_dir = dir.join("logs");
+  std::fs::create_dir_all(&log_dir).unwrap();
+  let model_path = write_gguf(&dir, "qwen3.gguf", "qwen3");
+
+  let mut entries = BTreeMap::new();
+  entries.insert(
+    "coder".to_string(),
+    PresetBody {
+      backend: Some("llamacpp".to_string()),
+      ..PresetBody::default()
+    },
+  );
+  let mut presets = BTreeMap::new();
+  presets.insert(
+    model_path.display().to_string(),
+    ConfigPresetBlock {
+      default: None,
+      entries,
+    },
+  );
+
+  let registry = SupervisorRegistry::new();
+  let (state, ctx) = build_state_with_fallback(
+    vec![discovered(&model_path, Some("qwen3"), Some("qwen3"))],
+    registry,
+    &log_dir,
+    allocate_port_range(),
+    true,
+    presets,
+  )
+  .await;
+  let (addr, shutdown, listener_handle) = spawn_listener(state).await;
+
+  let body = r#"{"model":"qwen3@coder","messages":[]}"#;
+  let (status, _headers, _response) = http_post(addr, "/v1/chat/completions", body).await;
+  assert_eq!(status, 200, "named auto-start must succeed");
+
+  let snap = ctx.state.snapshot().await;
+  let named = snap
+    .running
+    .iter()
+    .find(|r| r.name.as_deref() == Some("coder"))
+    .expect("a launch named `coder`");
+  assert_eq!(
+    named.params.backend.explicit_id(),
+    Some("llamacpp"),
+    "the preset the address named must decide the backend too; got {:?}",
+    named.params.backend
+  );
+
+  stop_all(&ctx, &[]).await;
+  shutdown_listener(shutdown, listener_handle).await;
+  std::fs::remove_dir_all(&dir).ok();
+}
+
 // ---- Two named launches of one model land on different ports ----
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

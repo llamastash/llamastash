@@ -278,7 +278,10 @@ request can say *which* copy it wants. The rules, all in one place:
   auto-start of `<model>@<name>` looks for a preset called `<name>` (compared
   with `name_matches`, so it follows the address's case rule) and takes it as
   the launch's `PresetDefault` layer, falling back to the model's `default:`
-  when none answers. A preset chosen this way also outranks `default: auto` —
+  when none answers. That one resolved preset also feeds
+  `inherited_launch_identity`, so a preset's `backend:` / `server:` apply
+  alongside its knobs rather than being resolved a second time from the
+  model's `default:`. A preset chosen this way also outranks `default: auto` —
   it is an explicit choice, not a default. Scoped to `LaunchOrigin::AutoStart`:
   a request body carries only `model`, so the address is a client's only
   channel, while `start --name` and the TUI already have `--preset`.

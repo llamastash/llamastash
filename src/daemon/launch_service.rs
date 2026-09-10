@@ -670,7 +670,7 @@ pub(crate) async fn compose_and_spawn(
   // which needs this) — but the recorded server id names its own backend, so
   // there is nothing to contaminate.
   let identity_default = if matches!(parsed.selection, LaunchSelection::Default) {
-    inherited_launch_identity(ctx, &parsed, &identity, arch.as_deref()).await
+    inherited_launch_identity(ctx, &identity, launch_preset).await
   } else {
     InheritedIdentity::default()
   };
@@ -1486,25 +1486,28 @@ struct InheritedIdentity {
 
 /// The backend / server a no-selection launch should reuse.
 ///
-/// Precedence matches every other inherited field: the model's `default:`
-/// preset outranks its last successful launch. Returns empties when neither
-/// pins anything, which leaves the identity rule and the priority-default
-/// build in charge exactly as before.
+/// Precedence matches every other inherited field: the launch's preset
+/// outranks its last successful launch. Returns empties when neither pins
+/// anything, which leaves the identity rule and the priority-default build in
+/// charge exactly as before.
+///
+/// `launch_preset` is the same one the knob and extras layers resolve from, so
+/// identity cannot disagree with them about which preset is in play. It is
+/// passed in rather than re-resolved: a second `effective_presets` call was one
+/// more preset snapshot and catalog projection per launch, and it silently
+/// dropped the preset a `<model>@<name>` address names.
+///
+/// Identity cannot ride the layered knob resolver itself. A server pick decides
+/// which backend runs, so it has to settle before backend resolution, while the
+/// resolver's `LastUsed` layer is gated on the *resolved* backend. Hence the
+/// ungated `last_params` read below — a recorded server id names its own
+/// backend, so there is nothing to contaminate.
 async fn inherited_launch_identity(
   ctx: &MethodContext,
-  parsed: &StartParams,
   identity: &crate::backend::identity::ModelIdentity,
-  arch: Option<&str>,
+  launch_preset: Option<&crate::launch::presets::NamedPreset>,
 ) -> InheritedIdentity {
-  let from_preset = {
-    let store = ctx.presets.snapshot().await;
-    let rows = crate::ipc::methods::catalog_rows(ctx).await;
-    let key = crate::util::paths::model_file_label(&parsed.model_path);
-    let path_str = parsed.model_path.display().to_string();
-    crate::launch::presets::effective_presets(&key, &path_str, arch, &store, &rows)
-      .default_preset()
-      .map(|np| (np.params.backend.clone(), np.params.server.clone()))
-  };
+  let from_preset = launch_preset.map(|np| (np.params.backend.clone(), np.params.server.clone()));
   let from_last = {
     let snap = ctx.state.snapshot().await;
     snap

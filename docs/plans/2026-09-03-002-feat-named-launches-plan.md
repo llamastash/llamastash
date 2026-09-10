@@ -178,6 +178,13 @@ a launch name could silently change what launches. The comparison is
 preset named this way also outranks a `default: auto` — an address that names
 one is a choice, not a default.
 
+One preset, resolved once. Launch identity (`backend:` / `server:`) settles on
+its own path, before backend resolution, because a server pick decides which
+backend runs. It used to re-resolve `effective_presets` there and read
+`default_preset()`, which meant a second preset lookup that could disagree with
+the knob layers — and did, for an addressed preset. It now takes the resolved
+preset as an argument.
+
 ### D5 — the keybinding hint is derived, never written
 
 `Alt+⏎` must appear in the help bar and the help overlay, and it must follow a
