@@ -64,14 +64,23 @@ fn allocate_port_range(slots: usize) -> PortRange {
     listeners.push(l);
   }
   // Drop the listeners so the ports become available, then expand
-  // the range to cover them — also fills any gap between the
-  // chosen ports so the allocator can pick freely. Adding a small
-  // headroom band ahead of `lo` covers the rare case where the
-  // kernel hands a contiguous block.
+  // the range to cover them, filling any gap between the chosen
+  // ports so the allocator can pick freely.
   drop(listeners);
   let lo = *ports.iter().min().unwrap();
   let hi = *ports.iter().max().unwrap();
-  PortRange { start: lo, end: hi }
+  // Headroom on both sides. macOS hands out contiguous ephemeral
+  // ports, so `lo..=hi` can be exactly `slots` wide (one port when
+  // slots is 1) and any port the box takes between the drop above
+  // and the daemon's bind leaves the allocator with nothing, which
+  // surfaces as a 502/503 from the proxy rather than a real defect.
+  // The allocator probes for a free port, so extra width is only
+  // opportunity; no assertion here depends on the range being tight.
+  const HEADROOM: u16 = 16;
+  PortRange {
+    start: lo.saturating_sub(HEADROOM).max(1024),
+    end: hi.saturating_add(HEADROOM),
+  }
 }
 
 fn write_gguf(dir: &Path, name: &str, arch: &str) -> PathBuf {
