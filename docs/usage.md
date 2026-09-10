@@ -10,6 +10,8 @@ This is the reference for the non-interactive CLI surface and the TUI keybinding
 
 **Model references.** `start`, `stop`, `logs`, `presets`, `favorites` all accept the same model reference: an absolute path, a canonical model id, or a case-insensitive substring of the file name or its parent directory. Ambiguous references exit `66` with a disambiguation list.
 
+**Launch names.** One model can run several times at once, each under a name you choose: `start qwen3 --name coder`, then `start qwen3 --name writer`. The launch is then addressable as `<model-ref>@<name>` everywhere a reference is taken (`stop qwen3@coder`, `logs qwen3@coder`, `show qwen3@coder`) and as `<model-id>@<name>` in a request's `body.model` on the proxy. A bare `stop coder` works too when exactly one live launch answers to that name. Names are unique per model, case-insensitive, live only as long as the launch, and are refused for backends that serve every model from one shared process (Lemonade), where a second launch is not a second instance.
+
 ## Platform requirements
 
 LlamaStash runs on Linux (x86_64, aarch64), macOS (Apple Silicon, Intel), and Windows (x86_64).
@@ -302,9 +304,12 @@ llamastash list [--json] [--filter <PATTERN>]
 
 Row shape:
 
-- Top level: `name`, `repo`, `path`, `parent`, `source`, `backend`, `supported_backends`, `split_siblings`, `parse_error`, `display_label`, plus `model_id` only when set and a CLI-only `status` object on a running row (`state`, `port`, `launch_id`, `device` — the raw `--device` selector, `null` when the launch took the backend default, which the table's DEVICE column renders as `all`).
+- Top level: `name`, `repo`, `path`, `parent`, `source`, `backend`, `supported_backends`, `split_siblings`, `parse_error`, `display_label`, plus `model_id` only when set and a CLI-only `status` object on a running row (`state`, `port`, `launch_id`, `name` when the launch has one, `device` — the raw `--device` selector, `null` when the launch took the backend default, which the table's DEVICE column renders as `all`).
+- `launches` — present alongside `status` on a running row: one object per live launch of that model, same shape as `status`. `status` is the first of them and keeps its pre-existing meaning, so `models[i].status.state` still pins. Read `launches` when a model may be running more than once.
 - `metadata` — GGUF-derived: `arch`, `quant`, `native_ctx`, `mode_hint`, `parameter_label`, `weights_bytes`, `total_parameters`, `tokenizer_kind`, `has_chat_template`, `has_reasoning_hint`. (These are **not** top-level keys; read `has_reasoning_hint`, there is no `reasoning_hint` alias.)
 - `mtp` — `{embedded_layers, separate_head}`; `multimodal` — `{vision, audio}`.
+
+A model running more than once gets **one row per launch**, and a named launch renders `<model>@<name>` in NAME. That joined string is the address: paste it into a client's `model` field, or hand it to `stop` / `logs` / `show`.
 
 The table columns are `NAME [REPO] ARCH PARAMS QUANT CTX SIZE MODE [BACKEND] STATUS [DEVICE]` — the TUI Models list shows the same set minus `REPO`, which is CLI-only (the TUI groups rows under a repo section header instead), with `DEVICE` gated on the same "some single server offers more than one device" rule the TUI uses (`cli::resolve::multi_device`). `MODE` shows the catalog's mode hint (`chat` / `embedding` / `rerank`). `REPO` is where the model lives in short form — `unsloth/Qwen3.8-27B-GGUF` for an HF or LM Studio cache entry, the parent directory's name for anything else; it is empty for a source that names its own origin (Ollama, Lemonade), and the column is dropped when no row has one. It is also the prefix of the repo-qualified id the proxy publishes when two models share a file name (see [Model ids on the proxy](#model-ids-on-the-proxy)). `BACKEND` appears only when some model is served by more than one backend (or a non-default one); `DEVICE` appears only on multi-GPU hosts and reads `all` for a running launch that targets every GPU (no `--device`), the explicit selector when pinned, and `?` otherwise — matching the TUI's Device column. When piped, the same columns print as tab-separated rows.
 
@@ -316,12 +321,14 @@ Everything LlamaStash knows about one model: catalog row, GGUF metadata, on-disk
 llamastash show <model-ref> [--json]
 ```
 
+`<model-ref>` also takes a launch: `show qwen3@coder` scopes the running section to that one launch, and `show coder` / `show L3` / `show 41100` resolve through the live launches the way `stop` and `logs` do.
+
 `--json` builds on the **same catalog-row shape as `list --json`** (nested `metadata`, `multimodal`, `mtp`, `supported_backends`, `split_siblings`; `model_id` omitted when unset). The envelope **is** the serialized `CatalogRow` with four show-only sections layered on top (`src/cli/show.rs::assemble_envelope`) — never a second hand-built projection:
 
 - `size` — `weights_bytes`, `shard_count`, `on_disk_total_bytes`, and a per-shard `shards` breakdown.
 - `arch_defaults` — the `yaml` and `builtin` knob sets for this (arch, GPU backend) pair.
 - `last_params` — the params of the last successful launch (`null` when never launched).
-- `running` — live supervisor info (`launch_id`, `state`, `port`, `resolved_ctx`, `ctx_clamped`), or `null`.
+- `running` — an array with one object per live launch (`launch_id`, `name`, `state`, `port`, `resolved_ctx`, `ctx_clamped`), empty when nothing is running. The human output prints one `running` block per launch, headed by its `<model>@<name>` address.
 
 The human output shows the same content as aligned key/value sections, including `multimodal` (`vision + audio`) and `mtp` (`embedded (N layers)` / `separate head`) rows under `metadata`.
 
@@ -330,11 +337,13 @@ The human output shows the same content as aligned key/value sections, including
 Launch a model. `run` is a visible alias for `start` — same flags, same behavior; it exists as the shorter way to say "launch this". Layered resolution: catalog row → optional preset → per-invocation flags → trailing raw `llama-server` flags after `--`.
 
 ```
-llamastash start <ref> [--preset NAME] [--ctx N] [--port N] [--wait] [--force]
+llamastash start <ref> [--name LABEL] [--preset NAME] [--ctx N] [--port N] [--wait] [--force]
                      [--reasoning on|off] [--mode chat|embedding|rerank]
                      [--backend auto|ds4|llamacpp|lemonade|vllm] [--server <id>]
                      [--<advanced-knob> ...] [-- <llama-server-flags>...]
 ```
+
+`--name <label>` names this launch, so the same model can run several times at once and each copy stays addressable as `<model-ref>@<label>`. The name is trimmed; a blank one is a usage error rather than a silently dropped flag. A second live launch of the *same* model under the *same* name is refused, and the refusal names the launch already holding it (`name `coder` is already running as L3`); the same name on a *different* model is fine. `--json` reports it back as `launch_name`. Names are not config: they live as long as the launch, survive a daemon restart through re-adoption, and are gone once it stops.
 
 `--backend` defaults to `auto` (picks the engine by model identity — a DeepSeek-V4 GGUF routes to the [ds4 backend](#ds4-backend) when available, everything else to llama.cpp). Override it to force a specific engine.
 
@@ -438,7 +447,7 @@ Both `--json` shapes carry a `warnings` array when the daemon raised any advisor
 
 ### `llamastash stop <target>` / `llamastash stop --all`
 
-Stop a managed launch by `<launch_id>` (e.g. `L3`), by port, by a case-insensitive substring of the running model's file name or parent dir (e.g. `stop qwen`), or — for unmanaged processes the daemon surfaced — by `ext-<pid>` or bare PID. A name substring that matches more than one running launch exits `66` with the candidate launch ids.
+Stop a managed launch by `<launch_id>` (e.g. `L3`), by port, by its launch name (`stop coder`, or `stop qwen3@coder` to qualify it when two models share a name), by a case-insensitive substring of the running model's file name or parent dir (e.g. `stop qwen`), or, for unmanaged processes the daemon surfaced, by `ext-<pid>` or bare PID. An exact launch name is tried before the path substring, the way an exact launch id is. Anything that matches more than one running launch exits `66` with the candidate launch ids.
 
 ```
 llamastash stop <target>     # exit 68 on failure, 66 on no match
@@ -459,6 +468,8 @@ Snapshot of daemon health, managed launches, external (unmanaged) `llama-server`
 }
 ```
 
+Each row in `models` carries `name` when the launch was started with `--name`. The human table has no MODEL column, so its NAME cell renders `<model>@<name>` for a named launch and the model alone otherwise: two different models both named `coder` stay tellable apart in the command you reach for to work out what to stop.
+
 The `proxy` block is documented in detail under [Proxy → Is the proxy up?](#is-the-proxy-up).
 
 On a host where more than one GPU backend reports a device (e.g. an
@@ -471,7 +482,7 @@ per-vendor shape.
 
 ### `LlamaStash logs <target>`
 
-Tail (or follow) a launch's log file. `<target>` is a `<launch_id>` (e.g. `L3`), a port, or a case-insensitive substring of the running model's file name / parent dir (e.g. `logs qwen`). An ambiguous name exits `66` with the matching launch ids.
+Tail (or follow) a launch's log file. `<target>` is a `<launch_id>` (e.g. `L3`), a port, a launch name (`logs coder` / `logs qwen3@coder`), or a case-insensitive substring of the running model's file name / parent dir (e.g. `logs qwen`). An ambiguous name exits `66` with the matching launch ids. Each launch writes its own file, so two launches of one model never interleave.
 
 ```
 LlamaStash logs <target> [-n N] [-f]
@@ -720,6 +731,8 @@ When two models would publish the same plain id, each takes the shortest longer 
 2. **Source-qualified** — the discovery source in front of that: `huggingface/lmstudio-community/gemma-4-E2B-it-GGUF/gemma-4-E2B-it-Q4_K_M` vs `lm-studio/lmstudio-community/…`. This is the rung the ordinary duplicate needs — one repo cached by two different tools derives the *same* `owner/repo` from both roots, so step 1 cannot separate them.
 3. **The full canonical path**, when even that collides — the same file name in two subdirectories of one repo, reached through one source.
 
+A **named launch** publishes one more id: the model's published id, an `@`, and the launch name (`Qwen3.8-27B-Q4_K_M@coder`). These come from the live launch registry rather than the disk catalog, so they appear while the launch runs and drop when it stops, and the model half is the same disambiguated id the catalog row publishes. Sending a named id that has no live launch auto-starts one carrying that name, so a client holding a cached id recovers instead of erroring. A model file whose own name contains an `@` still resolves whole, and the split is taken at the last `@`.
+
 The resolver accepts every form for every model, collision or not, and each qualified form in both the published spelling and the `.gguf` filename spelling. It also accepts a partial repo reference (`unsloth/Qwen3.8`), which the raw cache path (`models--unsloth--Qwen3.8-…`) never matched. Sending any form two models share — the bare name, or a repo-qualified form that does not separate them — returns `400 ambiguous_model`, and its `matches` array lists the published id of each candidate, every one of which routes, so resend one verbatim.
 
 ### Anthropic-shape clients (Claude Code)
@@ -890,6 +903,8 @@ plugin queries `/v1/models` at OpenCode startup, so new models appear without a
 re-run. Because `/v1/models` has no type field, it can only separate chat from
 embed/rerank by **name pattern** (`excludeBy` on ids like `embed` / `rerank` /
 `whisper`), not the exact `mode_hint` the generator above uses.
+
+**Named launches are not discovered.** Neither generator sees them: `list --json` is a catalog listing, and the discovery plugin reads `/v1/models` once at startup, while a named id exists only while its launch runs. Until [the patchers learn to emit them](../TODO.md), add one by hand: duplicate the model's block and append `@<name>` to the key (and to its `name`), so `Qwen3.8-27B-Q4_K_M` gains a sibling `Qwen3.8-27B-Q4_K_M@coder`. The proxy auto-starts the named launch on first use, so the entry works even when nothing is running yet. The same applies to pi's `~/.pi/agent/models.json`.
 
 > **Auth posture.** On the default loopback bind the proxy has **no authentication** — the threat model is "same machine, any UID can issue requests," so don't run llamastash on a shared host. Exposing it on the LAN ([LAN access](#lan-access-opt-in-behind-a-key)) requires a bearer key, which llamastash auto-provisions and enforces; the daemon refuses a non-loopback bind with no key unless you pass `--insecure-no-auth`. TLS is still a deferred follow-up, so LAN mode is plaintext (trusted network or reverse proxy). The control plane and `llama-server` children always stay loopback regardless.
 
@@ -1274,6 +1289,7 @@ default)`, `(built-in)`, `(model default)`).
 | `Space`   | Toggle the cursor GPU on the multi-GPU `device` row             |
 | `e`       | Open inline edit on a numeric / enum / extras row              |
 | `Enter`   | Commit an open inline edit; otherwise dispatch `start_model`   |
+| `Alt+Enter` (`⌥⏎` on macOS) | Name this launch, then dispatch it. Accepts on `Enter`, cancels on `Esc`; an empty name launches unnamed |
 | `Esc`     | Cancel an open inline edit, or return focus to the Models list |
 
 Knob set, grouped into labelled clusters in display order:

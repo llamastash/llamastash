@@ -296,12 +296,12 @@ makes the manual step worth anything.
 
 ### Step 6 — docs
 
-- [ ] `docs/usage.md` — `start --name`, the `model@name` reference form, the
+- [x] `docs/usage.md` — `start --name`, the `model@name` reference form, the
       keybinding table entry, and the manual pi / opencode step from D7.
-- [ ] `docs/architecture.md` — naming in the routing section; note that named
+- [x] `docs/architecture.md` — naming in the routing section; note that named
       rows come from the registry and catalog rows from `published_id_index`.
-- [ ] `CHANGELOG.md` — one line under `[Unreleased]`.
-- [ ] `TODO.md` — close the R9 proxy-ambiguity entry, and add the high-priority
+- [x] `CHANGELOG.md` — one line under `[Unreleased]`.
+- [x] `TODO.md` — close the R9 proxy-ambiguity entry, and add the high-priority
       patcher entry from D7.
 
 ## Risks
@@ -519,12 +519,12 @@ its fix plan. Tick as landed.
 
 ### Docs
 
-- [ ] **RV33 — `docs/usage.md`**: `start --name`, the `model@name` reference form,
+- [x] **RV33 — `docs/usage.md`**: `start --name`, the `model@name` reference form,
       the new `status.name` JSON field, the keybinding table entry, and the D7
       manual pi / opencode step.
-- [ ] **RV34 — `docs/architecture.md`**: naming in the routing section, and that
+- [x] **RV34 — `docs/architecture.md`**: naming in the routing section, and that
       named rows come from the registry while catalog rows come from
       `published_id_index`.
-- [ ] **RV35 — `CHANGELOG.md`**: one line under `[Unreleased]`.
-- [ ] **RV36 — `TODO.md`**: close the R9 proxy-ambiguity entry, add the high-priority
+- [x] **RV35 — `CHANGELOG.md`**: one line under `[Unreleased]`.
+- [x] **RV36 — `TODO.md`**: close the R9 proxy-ambiguity entry, add the high-priority
       patcher entry from D7, and the RV25 shared-frame note.
