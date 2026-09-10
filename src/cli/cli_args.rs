@@ -366,7 +366,10 @@ pub enum DaemonAction {
     #[arg(long)]
     force: bool,
   },
-  /// Stop the running daemon. Running models keep running.
+  /// Stop the running daemon. Every managed launch is stopped with it
+  /// (SIGTERM, then SIGKILL after the grace window) — only a daemon
+  /// *crash* leaves a model running, as an orphan the next start
+  /// surfaces read-only under `external`.
   Stop {
     /// Bypass the IPC `shutdown` call and signal the daemon by PID
     /// instead. Useful when `runtime.json` is missing (e.g. a stale

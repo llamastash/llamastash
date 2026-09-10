@@ -597,7 +597,12 @@ pub fn status_human(snap: &StatusSnapshot) -> String {
       ]);
     }
     for r in &snap.external {
-      let name = r.name();
+      // Same `<model>@<name>` join the managed rows use: an orphan
+      // demoted from a named launch keeps the address `stop` takes.
+      let name = match r.name.as_deref() {
+        Some(n) => crate::launch::resolve::join_named_reference(&r.name(), n),
+        None => r.name(),
+      };
       // External rows are styled dim end-to-end so they read as
       // observer-only entries vs the bright managed ones.
       let dim_or_plain = |s: &str| if tty { colors::dim(s) } else { s.to_string() };
@@ -794,14 +799,19 @@ pub fn status_json(snap: &StatusSnapshot) -> Value {
     .external
     .iter()
     .map(|r| {
-      serde_json::json!({
+      let mut obj = serde_json::json!({
         "launch_id": format!("ext-{}", r.pid),
         "pid": r.pid,
         "cmdline": r.cmdline,
         "model_path": r.model_path,
         "port": r.port,
         "launched_by_llamastash": r.launched_by_llamastash,
-      })
+      });
+      // Only-when-set, mirroring the managed rows and the IPC shape.
+      if let Some(n) = r.name.as_deref() {
+        obj["name"] = serde_json::json!(n);
+      }
+      obj
     })
     .collect();
   let daemon = snap.daemon.as_ref().map(|d| {
@@ -1520,6 +1530,7 @@ mod tests {
         model_path: Some("/m/b.gguf".into()),
         port: Some(41101),
         launched_by_llamastash: true,
+        name: None,
       }],
       gpu: Value::String("CpuOnly".into()),
       host: serde_json::json!({"gpu_backend": "amd", "cpu_pct": 12.5}),
@@ -1540,6 +1551,44 @@ mod tests {
     assert_eq!(model["latest_cpu_pct"], serde_json::json!(312.0));
     let ext = &v["external"][0];
     assert_eq!(ext["pid"], serde_json::json!(999));
+    assert!(
+      ext.get("name").is_none(),
+      "a scan-found orphan has no name, and the key stays absent so the \
+       pre-name shape is byte-identical"
+    );
+  }
+
+  /// An orphan demoted from a named launch is the only trace of that launch
+  /// after a daemon crash, so both `status` surfaces have to keep calling it
+  /// by the address the user typed.
+  #[test]
+  fn status_surfaces_a_demoted_orphans_launch_name() {
+    let snap = StatusSnapshot {
+      models: vec![],
+      external: vec![ExternalRow {
+        pid: 999,
+        cmdline: "llama-server".into(),
+        model_path: Some("/m/qwen.gguf".into()),
+        port: Some(41101),
+        launched_by_llamastash: true,
+        name: Some("coder".into()),
+      }],
+      gpu: Value::Null,
+      host: Value::Null,
+      daemon: None,
+      proxy: Value::Null,
+      backends: Value::Null,
+      servers: Value::Null,
+    };
+    assert_eq!(
+      status_json(&snap)["external"][0]["name"],
+      serde_json::json!("coder")
+    );
+    let human = status_human(&snap);
+    assert!(
+      human.contains("qwen.gguf@coder"),
+      "the table must print the address `stop` takes: {human}"
+    );
   }
 
   #[test]
@@ -1640,6 +1689,7 @@ mod tests {
         model_path: Some("/m/ext.gguf".into()),
         port: None,
         launched_by_llamastash: false,
+        name: None,
       }],
       gpu: Value::Null,
       host: Value::Null,

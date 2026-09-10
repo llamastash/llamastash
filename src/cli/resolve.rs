@@ -353,6 +353,11 @@ pub struct ExternalRow {
   /// etc.). Drives `collect_in_use_ports` on the daemon side; here
   /// it lives so the `daemon status` formatter can flag the row.
   pub launched_by_llamastash: bool,
+  /// The launch name the row carried before its daemon died, for an
+  /// orphan re-adopted out of `state.json`. `None` for a process the
+  /// sweep found by scanning. Keeps `<model>@<name>` addressable in
+  /// `status` and `stop` across a daemon crash.
+  pub name: Option<String>,
 }
 
 impl ExternalRow {
@@ -475,12 +480,14 @@ fn parse_external_row(v: &Value) -> Option<ExternalRow> {
     .get("launched_by_llamastash")
     .and_then(Value::as_bool)
     .unwrap_or(false);
+  let name = v.get("name").and_then(Value::as_str).map(str::to_string);
   Some(ExternalRow {
     pid,
     cmdline,
     model_path,
     port,
     launched_by_llamastash,
+    name,
   })
 }
 

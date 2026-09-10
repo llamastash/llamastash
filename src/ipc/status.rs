@@ -287,7 +287,7 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
   let external: Vec<Value> = external_snapshot
     .iter()
     .map(|e| {
-      json!({
+      let mut obj = json!({
         "pid": e.pid,
         "cmdline": e.cmdline,
         "model_path": e.model_path,
@@ -298,7 +298,13 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
         // sibling-instance orphans at a glance.
         "port": e.port,
         "launched_by_llamastash": e.launched_by_llamastash,
-      })
+      });
+      // Only-when-set, the same convention the managed rows use, so a
+      // scan-found row stays byte-identical to the pre-name shape.
+      if let Some(n) = e.name.as_deref() {
+        obj["name"] = json!(n);
+      }
+      obj
     })
     .collect();
   // Host-level metrics (CPU%, RAM, GPU util/temp/VRAM aggregates).

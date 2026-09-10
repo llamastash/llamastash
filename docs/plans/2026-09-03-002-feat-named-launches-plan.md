@@ -101,6 +101,22 @@ Without the name on that row, restarting the daemon re-adopts a live
 that is up and serving. That is runtime record-keeping, not configuration:
 nothing accumulates, and the row is dropped when the launch stops.
 
+**Correction (2026-09-10, found in manual testing).** The second paragraph
+overstated what re-adoption gives back. The daemon does not restore an adopted
+entry as a managed launch — `src/daemon/mod.rs` clears `state.running` on every
+boot and projects each adopted snapshot into a read-only `external` row, because
+a `ManagedModel` for a child this process never spawned has no pipes to capture
+and no health monitor. So an adopted `@coder` is not re-published on
+`/v1/models` and `route::decide` cannot select it: a cold request for that
+address starts a **new** launch beside the orphan. The name now rides onto the
+external row (`ExternalProcess::from_adopted`), which is what keeps `status`
+rendering `<model>@<name>` and `stop coder` reaching it — but the address is
+addressable, not routable. Note this only arises after a daemon *crash*: a
+deliberate `daemon stop` stops the children first, and a reboot kills them too,
+so the pi-across-a-reboot case in D4 is served by the cold auto-start path, not
+by re-adoption. Making an orphan routable again is a deliberate non-goal, not a
+gap.
+
 ### D2 — `@` is the separator, and the parse fails safe
 
 `/` is taken by the repo qualifier (`unsloth/Qwen3-0.6B` already publishes and
@@ -303,8 +319,8 @@ makes the manual step worth anything.
 - [ ] Integration: two launches of one model with the **same** preset, addressed
       by name, land on different ports. This is the case that motivated the
       feature and the one `@preset` could not express.
-- [ ] Integration: the name survives a daemon restart through orphan re-adoption
-      (D1's whole justification).
+- [x] Integration: the name survives a daemon restart through orphan re-adoption
+      — as an `external` row, not a managed launch. See the D1 correction.
 - [ ] `foo@bar.gguf` still resolves as a model reference (D2's fail-safe).
 - [ ] A named request with no live launch auto-starts one carrying that name
       (D4), and the model half still 404s when it resolves to nothing.
@@ -535,7 +551,10 @@ its fix plan. Tick as landed.
 - [x] **RV30 — no test that a name survives a daemon restart through orphan
       re-adoption.** `orphans.rs:191` clones the whole snapshot so `name` rides
       along, and that is D1's entire justification, but it is the one load-bearing
-      path with no coverage.
+      path with no coverage. **Insufficient (2026-09-10):** testing `sweep` alone
+      passed while the behaviour was broken one layer up — the caller dropped the
+      name projecting the adopted snapshot into an `external` row. Covered now by
+      `from_adopted`, which owns that projection and is tested directly.
 - [x] **RV31 — no case-variant regression test**: `@CODER` against a live `coder`
       must not start a second launch, and `<model>@coder` must stay unambiguous.
 - [x] **RV32 — no TUI golden snapshots** for the hint, the list pane's `@name`

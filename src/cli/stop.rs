@@ -131,46 +131,19 @@ pub async fn handle(args: StopArgs, cli: &Cli, config: &Config) -> CliResult {
   // accept `stop_external` only (no edit/restart path). Try the
   // external snapshot first so a `stop ext-1234` doesn't get
   // disambiguated against the managed list and miss.
-  if let Some(ext) = resolve_external(&snap.external, &target) {
-    let mut params = serde_json::json!({ "pid": ext.pid });
-    if let Some(g) = grace {
-      params["grace_secs"] = serde_json::Value::from(g);
-    }
-    let resp = client
-      .call("stop_external", Some(params))
-      .await
-      .map_err(|e| CliExit::new(STOP_FAILED, format!("stop_external pid={}: {e}", ext.pid)))?;
-    let killed = resp
-      .get("killed_with_sigkill")
-      .and_then(|v| v.as_bool())
-      .unwrap_or(false);
-    if args.json {
-      let body = serde_json::json!({
-        "pid": ext.pid,
-        "killed_with_sigkill": killed,
-      });
-      println!("{}", pretty_json(&body));
-    } else if !cli.quiet {
-      use crate::cli::colors;
-      let pid_token = console::style(ext.pid.to_string()).bold().to_string();
-      let signal = if killed { "SIGKILL" } else { "SIGTERM" };
-      // SIGKILL escalation is the alarming case (process didn't honor
-      // SIGTERM in the grace window); color it red so it's distinct
-      // from the normal SIGTERM path.
-      let signal_styled = if killed {
-        console::style(signal).red().bold().to_string()
-      } else {
-        colors::dim(signal)
-      };
-      println!(
-        "{} {pid_token} {} {signal_styled}",
-        colors::success("stopped external pid"),
-        colors::dim("→"),
-      );
-    }
-    return Ok(());
+  if let Some(ext) = resolve_external_pid(&snap.external, &target) {
+    return stop_external_row(&mut client, &ext, grace, args.json, cli).await;
   }
-  let row = resolve_running_via_catalog(&mut client, &snap.models, &target).await?;
+  // A name reaches a managed launch first — it is the live, routable one —
+  // and only falls back to an orphan carrying the same name, which is all a
+  // crashed daemon leaves behind.
+  let row = match resolve_running_via_catalog(&mut client, &snap.models, &target).await {
+    Ok(row) => row,
+    Err(miss) => match resolve_external_named(&snap.external, &target)? {
+      Some(ext) => return stop_external_row(&mut client, &ext, grace, args.json, cli).await,
+      None => return Err(miss),
+    },
+  };
   let mut params = serde_json::json!({"launch_id": &row.launch_id});
   if let Some(g) = grace {
     params["grace_secs"] = serde_json::Value::from(g);
@@ -210,13 +183,60 @@ pub async fn handle(args: StopArgs, cli: &Cli, config: &Config) -> CliResult {
   Ok(())
 }
 
-/// Match `target` against an external row. Accepted forms:
+/// SIGTERM one external row through `stop_external` and render the outcome.
+async fn stop_external_row(
+  client: &mut crate::ipc::Client,
+  ext: &ExternalRow,
+  grace: Option<u64>,
+  json: bool,
+  cli: &Cli,
+) -> CliResult {
+  let mut params = serde_json::json!({ "pid": ext.pid });
+  if let Some(g) = grace {
+    params["grace_secs"] = serde_json::Value::from(g);
+  }
+  let resp = client
+    .call("stop_external", Some(params))
+    .await
+    .map_err(|e| CliExit::new(STOP_FAILED, format!("stop_external pid={}: {e}", ext.pid)))?;
+  let killed = resp
+    .get("killed_with_sigkill")
+    .and_then(|v| v.as_bool())
+    .unwrap_or(false);
+  if json {
+    let body = serde_json::json!({
+      "pid": ext.pid,
+      "killed_with_sigkill": killed,
+    });
+    println!("{}", pretty_json(&body));
+  } else if !cli.quiet {
+    use crate::cli::colors;
+    let pid_token = console::style(ext.pid.to_string()).bold().to_string();
+    let signal = if killed { "SIGKILL" } else { "SIGTERM" };
+    // SIGKILL escalation is the alarming case (process didn't honor
+    // SIGTERM in the grace window); color it red so it's distinct
+    // from the normal SIGTERM path.
+    let signal_styled = if killed {
+      console::style(signal).red().bold().to_string()
+    } else {
+      colors::dim(signal)
+    };
+    println!(
+      "{} {pid_token} {} {signal_styled}",
+      colors::success("stopped external pid"),
+      colors::dim("→"),
+    );
+  }
+  Ok(())
+}
+
+/// Match `target` against an external row by pid. Accepted forms:
 /// - `ext-<pid>` (the format `status` uses for the `launch_id`-like
 ///   identifier of external rows in the TUI surface),
 /// - bare `<pid>` that also doesn't match a managed launch — the
 ///   caller checks managed first via [`resolve_running`] in the
 ///   primary path.
-fn resolve_external(rows: &[ExternalRow], target: &str) -> Option<ExternalRow> {
+fn resolve_external_pid(rows: &[ExternalRow], target: &str) -> Option<ExternalRow> {
   let needle = target.trim();
   if let Some(rest) = needle.strip_prefix("ext-") {
     if let Ok(pid) = rest.parse::<u64>() {
@@ -227,6 +247,55 @@ fn resolve_external(rows: &[ExternalRow], target: &str) -> Option<ExternalRow> {
     return rows.iter().find(|r| r.pid == pid).cloned();
   }
   None
+}
+
+/// Match `target` against an external row by the launch name it carried
+/// before its daemon died — bare (`coder`) or as the full address
+/// (`qwen3@coder`), by the one comparison rule for names.
+///
+/// Only rows demoted from a named launch can match; a scan-found orphan
+/// has no name. Two orphans under one name are an error rather than a
+/// coin flip, matching how the managed resolver refuses the same
+/// ambiguity.
+fn resolve_external_named(
+  rows: &[ExternalRow],
+  target: &str,
+) -> Result<Option<ExternalRow>, CliExit> {
+  use crate::launch::resolve::{name_matches, parse_named_reference};
+  let needle = target.trim();
+  let wanted = match parse_named_reference(needle) {
+    // The model half is checked against the row's model label, which is
+    // all an external row has to identify itself with.
+    Some((model, name)) => {
+      let model = model.to_lowercase();
+      let hits: Vec<&ExternalRow> = rows
+        .iter()
+        .filter(|r| {
+          name_matches(r.name.as_deref(), name) && r.name().to_lowercase().contains(&model)
+        })
+        .collect();
+      hits
+    }
+    None => rows
+      .iter()
+      .filter(|r| name_matches(r.name.as_deref(), needle))
+      .collect(),
+  };
+  match wanted.as_slice() {
+    [] => Ok(None),
+    [one] => Ok(Some((*one).clone())),
+    many => {
+      let ids: Vec<String> = many.iter().map(|r| format!("ext-{}", r.pid)).collect();
+      Err(CliExit::new(
+        crate::cli::exit_codes::MODEL_NOT_FOUND,
+        format!(
+          "`{needle}` matches {} launches: {}",
+          ids.len(),
+          ids.join(", ")
+        ),
+      ))
+    }
+  }
 }
 
 /// TTY-guarded confirmation. Refuses up front when stdin isn't a
@@ -286,6 +355,78 @@ mod tests {
       preset_default: None,
       preset: None,
     }]
+  }
+
+  fn ext_row(pid: u64, model: &str, name: Option<&str>) -> ExternalRow {
+    ExternalRow {
+      pid,
+      cmdline: "llama-server".into(),
+      model_path: Some(model.into()),
+      port: Some(41100),
+      launched_by_llamastash: true,
+      name: name.map(str::to_string),
+    }
+  }
+
+  /// After a daemon crash the orphan is all that is left of a named launch,
+  /// and `stop coder` is the command the user reaches for to clean it up.
+  #[test]
+  fn external_resolves_by_bare_launch_name() {
+    let rows = vec![ext_row(900, "/m/qwen.gguf", Some("coder"))];
+    let hit = resolve_external_named(&rows, "coder").expect("no ambiguity");
+    assert_eq!(hit.map(|r| r.pid), Some(900));
+  }
+
+  /// The address form is the one `status` prints, so it has to resolve too —
+  /// and the name half compares case-insensitively like everywhere else.
+  #[test]
+  fn external_resolves_by_address_and_ignores_name_case() {
+    let rows = vec![ext_row(900, "/m/qwen.gguf", Some("coder"))];
+    assert_eq!(
+      resolve_external_named(&rows, "qwen@CODER")
+        .expect("no ambiguity")
+        .map(|r| r.pid),
+      Some(900)
+    );
+    assert_eq!(
+      resolve_external_named(&rows, "CODER")
+        .expect("no ambiguity")
+        .map(|r| r.pid),
+      Some(900)
+    );
+  }
+
+  /// The model half narrows: the same name on two orphans is answerable when
+  /// the address says which model, and an error when it does not.
+  #[test]
+  fn two_orphans_under_one_name_need_the_model_half() {
+    let rows = vec![
+      ext_row(900, "/m/qwen.gguf", Some("coder")),
+      ext_row(901, "/m/phi.gguf", Some("coder")),
+    ];
+    let err = resolve_external_named(&rows, "coder").expect_err("ambiguous");
+    let msg = err.message.unwrap_or_default();
+    assert!(
+      msg.contains("ext-900") && msg.contains("ext-901"),
+      "the refusal must name both candidates: {msg}"
+    );
+    assert_eq!(
+      resolve_external_named(&rows, "phi@coder")
+        .expect("model half disambiguates")
+        .map(|r| r.pid),
+      Some(901)
+    );
+  }
+
+  /// A scan-found orphan has no name, so a name lookup must not fall back to
+  /// matching it on the model label — that would stop a process the user
+  /// never named just because the word appeared in its path.
+  #[test]
+  fn unnamed_external_rows_never_match_a_name() {
+    let rows = vec![ext_row(900, "/m/coder.gguf", None)];
+    assert!(resolve_external_named(&rows, "coder")
+      .expect("no ambiguity")
+      .is_none());
   }
 
   #[test]
