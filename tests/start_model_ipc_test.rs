@@ -122,6 +122,19 @@ async fn start_model_drives_supervisor_status_logs_stop_and_last_params() {
     }
     tokio::time::sleep(Duration::from_millis(40)).await;
   }
+  // An unnamed row omits `name` entirely (not `"name": null`) — the same
+  // omit-when-unset convention `state.json` and the CLI's JSON use.
+  let body = client.call("status", None).await.expect("status");
+  let ready_row = body["models"]
+    .as_array()
+    .expect("models")
+    .iter()
+    .find(|m| m["launch_id"] == launch_id)
+    .expect("the unnamed launch's status row");
+  assert!(
+    ready_row.get("name").is_none(),
+    "unnamed status row must omit the name key: {ready_row:?}"
+  );
 
   // 3) logs_tail returns at least the fake server's `listening on …`
   // line (proves stdout/stderr tee + ring buffer are wired).

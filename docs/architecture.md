@@ -253,6 +253,14 @@ request can say *which* copy it wants. The rules, all in one place:
   one critical section. An `error` launch does not hold its name. A managed
   multiplexer refuses names outright: it serves every model from one shared
   process, so a name there could not select an instance.
+- **The charset** is enforced by `launch::resolve::validate_launch_name` at
+  every entry point (`--name`'s value parser, the TUI dialog, and the daemon's
+  gate for raw JSON-RPC callers): trimmed, non-empty, ASCII letters / digits /
+  `-` / `_` only. A name containing `@` or a space would publish an address
+  that re-splits to a different pair. The accepted name is echoed as
+  `launch_name` on the `start_model` response (omitted when unnamed), and the
+  `status` wire omits `name` on unnamed rows rather than emitting `null` —
+  the same omit-when-unset convention `state.json` uses.
 - **The published ids** come from two different places by design. Catalog rows
   are published through `published_id_index` (`util::paths`); named rows come
   from the live launch registry, and take their model half out of that same

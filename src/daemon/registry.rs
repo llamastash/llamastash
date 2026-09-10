@@ -229,9 +229,14 @@ pub struct NameReservation {
 
 impl Drop for NameReservation {
   fn drop(&mut self) {
-    if let Ok(mut reserved) = self.reserved.lock() {
-      reserved.remove(&self.key);
-    }
+    // Poison-tolerant like `lock_names`: the set holds plain keys, so
+    // recovering the guard is safe — while skipping the remove (the `if let
+    // Ok` shape) would hold the name until the daemon restarts.
+    self
+      .reserved
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .remove(&self.key);
   }
 }
 
@@ -313,6 +318,24 @@ mod tests {
     assert!(
       r.try_reserve_name("/m/a.gguf", "coder").is_some(),
       "dropping the guard must release the name"
+    );
+  }
+
+  /// A panic elsewhere poisons the registry's mutexes; the claim's `Drop` must
+  /// still release (the set holds plain keys, so recovering the guard is safe).
+  /// Leaking the claim instead would block that name until the daemon restarts.
+  #[test]
+  fn a_poisoned_lock_does_not_leak_a_held_name() {
+    let r = SupervisorRegistry::new();
+    let claim = r.try_reserve_name("/m/a.gguf", "coder").unwrap();
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      let _guard = r.reserved_names.lock().unwrap();
+      panic!("poison the mutex the way any panic under the lock would");
+    }));
+    drop(claim);
+    assert!(
+      r.try_reserve_name("/m/a.gguf", "coder").is_some(),
+      "the claim must release even through a poisoned lock"
     );
   }
 

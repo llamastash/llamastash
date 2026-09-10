@@ -127,7 +127,7 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
       &preset_rows,
       &preset_store,
     );
-    let row = json!({
+    let mut row = json!({
       "launch_id": launch_id,
       "id": model.id(),
       "port": model.port(),
@@ -135,7 +135,6 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
       "pid": pid,
       "ready_at": ready_at,
       "state": state_obj,
-      "name": running_snap.and_then(|r| r.name.clone()),
       "params": params_json,
       // Backend this launch actually resolved to (`llamacpp` / `ds4` /
       // `lemonade`) — the TUI keys its ds4 badge / knob panel on this, not on
@@ -154,6 +153,12 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
       "preset_count": preset_count,
       "default": preset_default,
     });
+    // Omitted when unset — the same convention `state.json` and the CLI's
+    // `launch_status_json` use — so the unnamed-row shape stays byte-stable
+    // instead of alternating between `null` and a value across surfaces.
+    if let Some(name) = running_snap.and_then(|r| r.name.clone()) {
+      row["name"] = json!(name);
+    }
     models.push(row);
   }
   // Delegated Lemonade models — the registry holds only the shared
