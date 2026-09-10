@@ -191,6 +191,10 @@ pub enum Action {
   ClearFilter,
   ToggleFavorite,
   OpenLaunchPicker,
+  /// Launch the focused model under a user-chosen name (`Alt+⏎`). Opens the
+  /// launch-name modal; on accept the normal launch picker opens carrying the
+  /// name so the launch is addressable as `<model-id>@<name>`.
+  LaunchNamed,
   Submit,
   Cancel,
   YankUrl,
@@ -799,6 +803,11 @@ fn build_default_bindings() -> Vec<Binding> {
     chords: [(KeyCode::Enter, KeyModifiers::NONE, ENTER_LABEL, CAT_MODELS)],
   });
   v.extend_from_slice(&binds! {
+    action: Action::LaunchNamed, scopes: FocusSet::RIGHT_PANE,
+    hint: "launch as…", description: Some("launch under a name"),
+    chords: [(KeyCode::Enter, KeyModifiers::ALT, ALT_ENTER_LABEL, CAT_MODELS)],
+  });
+  v.extend_from_slice(&binds! {
     action: Action::Submit,
     scopes: FocusSet::FILTER
       .union(FocusSet::RIGHT_PANE)
@@ -1163,6 +1172,7 @@ impl Action {
     ("clear_filter", Action::ClearFilter),
     ("toggle_favorite", Action::ToggleFavorite),
     ("open_launch_picker", Action::OpenLaunchPicker),
+    ("launch_named", Action::LaunchNamed),
     ("submit", Action::Submit),
     ("cancel", Action::Cancel),
     ("yank_url", Action::YankUrl),
@@ -1397,6 +1407,11 @@ pub const SHIFT_TAB_LABEL: &str = "⇧↹";
 /// `Shift+Enter` chord label (e.g. newline-in-input). Same on
 /// both platforms.
 pub const SHIFT_ENTER_LABEL: &str = "⇧⏎";
+
+/// `Alt+Enter` chord label (the launch picker's "launch as…"). Composed from
+/// [`ALT_PREFIX`] so the platform split has one source of truth: `⌥⏎` on
+/// macOS, `Alt+⏎` elsewhere, like every other Alt chord.
+pub const ALT_ENTER_LABEL: &str = crate::alt_label!("⏎");
 
 /// `Ctrl` modifier prefix. macOS uses the `⌃` (U+2303) glyph
 /// with no `+` joiner — it sits tight against the key letter

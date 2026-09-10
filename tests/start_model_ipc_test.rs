@@ -122,6 +122,19 @@ async fn start_model_drives_supervisor_status_logs_stop_and_last_params() {
     }
     tokio::time::sleep(Duration::from_millis(40)).await;
   }
+  // An unnamed row omits `name` entirely (not `"name": null`) — the same
+  // omit-when-unset convention `state.json` and the CLI's JSON use.
+  let body = client.call("status", None).await.expect("status");
+  let ready_row = body["models"]
+    .as_array()
+    .expect("models")
+    .iter()
+    .find(|m| m["launch_id"] == launch_id)
+    .expect("the unnamed launch's status row");
+  assert!(
+    ready_row.get("name").is_none(),
+    "unnamed status row must omit the name key: {ready_row:?}"
+  );
 
   // 3) logs_tail returns at least the fake server's `listening on …`
   // line (proves stdout/stderr tee + ring buffer are wired).
@@ -201,6 +214,42 @@ async fn start_model_drives_supervisor_status_logs_stop_and_last_params() {
     s.running
   );
 
+  // 5b) a named start echoes the name the daemon actually stamped (trimmed,
+  // not the raw request parroted back); the unnamed start above carried no
+  // `launch_name` key at all, matching the omit-when-unset wire convention.
+  assert!(
+    start_body.get("launch_name").is_none(),
+    "an unnamed start must omit launch_name, got {start_body:?}"
+  );
+  let named_body = client
+    .call(
+      "start_model",
+      Some(json!({
+        "model_path": &model_path_canon,
+        "mode": "chat",
+        "name": " coder ",
+      })),
+    )
+    .await
+    .expect("named start_model");
+  assert_eq!(
+    named_body["launch_name"],
+    json!("coder"),
+    "the echo is the daemon's accepted name: {named_body:?}"
+  );
+  let named_id = named_body["launch_id"]
+    .as_str()
+    .expect("named launch_id")
+    .to_string();
+  let stop_named = client
+    .call(
+      "stop_model",
+      Some(json!({"launch_id": &named_id, "grace_secs": 5})),
+    )
+    .await
+    .expect("stop named launch");
+  assert_eq!(stop_named["state"]["state"], json!("stopped"));
+
   // 6) presets_save / list / show / delete round-trip via IPC.
   let save_body = client
     .call(
@@ -218,6 +267,43 @@ async fn start_model_drives_supervisor_status_logs_stop_and_last_params() {
   assert_eq!(save_body["saved"]["name"], json!("long-ctx"));
   assert_eq!(save_body["saved"]["params"]["ctx"], json!(32768));
   assert!(save_body["replaced"].is_null());
+
+  // A preset name and a launch name are independent on `start_model`: only the
+  // proxy's auto-start reads one as the other, so a manual `--name long-ctx`
+  // must not silently pick up the `long-ctx` preset.
+  let manual = client
+    .call(
+      "start_model",
+      Some(json!({
+        "model_path": &model_path_canon,
+        "mode": "chat",
+        "name": "long-ctx",
+      })),
+    )
+    .await
+    .expect("manual named start_model");
+  let manual_id = manual["launch_id"].as_str().expect("launch_id").to_string();
+  let manual_row = state_store::load(&state_dir)
+    .expect("load state")
+    .running
+    .into_iter()
+    .find(|r| r.launch_id.as_ref().map(|l| l.0.as_str()) == Some(manual_id.as_str()))
+    .expect("the manual launch's row");
+  assert_ne!(
+    manual_row
+      .params
+      .knobs
+      .u32(llamastash::launch::knobs::kid("ctx-size")),
+    Some(32768),
+    "a manual launch must not resolve a preset just because it shares the name"
+  );
+  let _ = client
+    .call(
+      "stop_model",
+      Some(json!({"launch_id": &manual_id, "grace_secs": 5})),
+    )
+    .await
+    .expect("stop manual launch");
 
   let list_body = client
     .call(

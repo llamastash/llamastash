@@ -255,6 +255,44 @@ fn chat_view_golden_render_matches_fixture() {
   assert_golden(&mut seeded_chat_view_app(), "tests/golden/chat-view.txt");
 }
 
+#[cfg_attr(target_os = "macos", ignore = "fixture uses Linux key glyphs")]
+#[test]
+fn named_launch_golden_render_matches_fixture() {
+  assert_golden(
+    &mut seeded_named_launch_app(),
+    "tests/golden/named-launch.txt",
+  );
+}
+
+#[cfg_attr(target_os = "macos", ignore = "fixture uses Linux key glyphs")]
+#[test]
+fn launch_picker_golden_render_matches_fixture() {
+  assert_golden(
+    &mut seeded_launch_picker_app(),
+    "tests/golden/launch-picker.txt",
+  );
+}
+
+/// The running launch carries a name, so the list row reads
+/// `qwen-7b.gguf@coder` and the Settings running view carries the `name` row —
+/// the two places the address shows up in the TUI.
+fn seeded_named_launch_app() -> App {
+  let mut app = seeded_dashboard_app();
+  app.managed[0].name = Some("coder".into());
+  app.right_tab = RightTab::Settings;
+  app
+}
+
+/// An idle model with the launch picker staged: the surface that owns
+/// "launch as…", so the hint chip has to be in this footer and nowhere else.
+fn seeded_launch_picker_app() -> App {
+  let mut app = seeded_dashboard_app();
+  // Row 4 is the idle mistral-7b under Favorites (row 3 is the group header).
+  app.list_cursor = 4;
+  app.drill_into_focused_model();
+  app
+}
+
 /// A search result with deterministic counts/sizes so the rendered
 /// `downloads` / `params` / `size` columns are stable.
 fn fake_hf_result(repo_id: &str, downloads: u64, file_size: u64, params: u64) -> HfSearchResult {

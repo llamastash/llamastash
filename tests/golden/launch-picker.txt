@@ -1,0 +1,30 @@
+ LlamaStash v0.2.0 · ● daemon · ◐ macchiato                 P:pull · ?:help · ↹/⇧↹:panes · ↑↓:scroll · t:theme · q:quit
+┌ Host ─────────────────┐┌ Daemon ─────────────────────────────────────────────────────────────────────────┐┌──────────┐
+│CPU  ███░░░░ 48% 54°C  ││port    48134 · pid 4242 · up 3h12m                                              ││  ▉    ▉  │
+│MEM  ██░░░░░ 11/32G    ││server  /usr/local/bin/llama-server (cuda)                                       ││  █▃██▃█  │
+│GPU  ██████░ 84% 68°C  ││proxy   —                                                                        ││ █ ●  ● █ │
+│VRAM ████░░░ 14/24G    ││models  3 found · 1 ready · 2 ★                                                  ││ ██ ◡◡ ██ │
+│backend  NVIDIA · 1 GPU││running 1 (qwen-7b :41100)                                                       ││  ▀████▀  │
+└───────────────────────┘└─────────────────────────────────────────────────────────────────────────────────┘└──────────┘
+┌ Models [3] · /:filter · ⏎:launch · f:fav · p:path · Ctrl+d:delete ─────────┐┌ Settings ──────────────────────────────┐
+│   Name                                   Arch        Quant   Ctx     Size  ││                                        │
+│▶ Running                                                                   ││ mistral-7b                             │
+│ ● qwen-7b                                qwen3       Q4_K    32k     4.2G  ││ /m/x/mistral-7b.gguf                   │
+│★ Favorites                                                                 ││  llamacpp                              │
+│ ★ mistral-7b                             llama       Q4_K    8.0k    4.0G  ││                                        │
+│────────────────────────────────────────────────────────────────────────────││ not launched                           │
+│m/x                                                                         ││ ────────────────────────────────────── │
+│ ★ mistral-7b                             llama       Q4_K    8.0k    4.0G  ││ Launch settings                        │
+│m/y                                                                         ││ → preset (0)        ◀ last used (defa… │
+│   phi-3                                  phi         Q4_K    8.0k    3.9G  ││   ── Context                           │
+│                                                                            ││   ctx-size          inherited          │
+│                                                                            ││   reasoning         inherited          │
+│                                                                            ││   mode              inherited          │
+│                                                                            ││   ── GPU / CPU offload                 │
+│                                                                            ││   n-gpu-layers      inherited          │
+│                                                                            ││   n-cpu-moe         inherited          │
+│                                                                            ││   ── Attention & KV cache              │
+│                                                                            ││   cache-type-k      inherited          │
+│                                                                            ││   cache-type-v      inherited          │
+│                                                                            ││   flash-attn        inherited          │
+└ ◌ launching · ◐ loading · ● ready · ▲ error · ○ stopped · ⇪ external ──────┘└ ⏎:launch · Alt+⏎:launch as… · p:path ──┘

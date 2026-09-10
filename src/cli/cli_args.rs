@@ -408,6 +408,14 @@ pub struct StartArgs {
   /// catalog. Non-interactive callers (CI / piped / `--json`) must
   /// pass an explicit reference.
   pub model: Option<String>,
+  /// User-chosen name for this launch. When set, the launch is
+  /// addressable by `<model-id>@<name>` in `stop`, `logs`, and the
+  /// proxy's `body.model`. A second launch of the same model with the
+  /// same name is refused (the name is unique per model). Trimmed at
+  /// parse time; letters, digits, `-` and `_` only, so the address
+  /// always parses back to this launch.
+  #[arg(long, value_name = "NAME", value_parser = parse_name_arg)]
+  pub name: Option<String>,
   /// Saved preset to load before applying overrides. The reserved value
   /// `auto` launches pure-fit (skips the model's `default:` preset and
   /// last-used params), the clean way to ignore prior launch state.
@@ -1246,6 +1254,13 @@ fn parse_ctx_arg(s: &str) -> Result<CtxArg, String> {
     .map_err(|_| format!("expected a token count or `auto`, got `{s}`"))
 }
 
+/// `--name`: the one name rule, applied at parse time so no unaddressable
+/// name reaches the daemon. See `validate_launch_name` for why the charset
+/// is this narrow.
+fn parse_name_arg(s: &str) -> Result<String, String> {
+  crate::launch::resolve::validate_launch_name(s)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 #[clap(rename_all = "lower")]
 pub enum LaunchMode {
@@ -1391,6 +1406,23 @@ mod tests {
       help.contains(&"run"),
       "`run` must show up in --help: {help:?}"
     );
+  }
+
+  /// `--name` is half of a `model@name` address that every consumer re-splits
+  /// on the last `@`, so a name carrying one (or a space) is a usage error at
+  /// parse time, and a valid name arrives trimmed.
+  #[test]
+  fn name_is_trimmed_and_charset_checked_at_parse_time() {
+    match parse(&["start", "qwen3", "--name", " Coder-2_x "]).command {
+      Some(Command::Start(args)) => assert_eq!(args.name.as_deref(), Some("Coder-2_x")),
+      other => panic!("expected start, got {other:?}"),
+    }
+    for bad in ["a@b", "co der", "  "] {
+      assert!(
+        Cli::try_parse_from(["llamastash", "start", "qwen3", "--name", bad]).is_err(),
+        "`{bad}` must not parse as a launch name"
+      );
+    }
   }
 
   #[test]

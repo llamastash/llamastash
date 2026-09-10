@@ -69,11 +69,16 @@ pub fn row_path(v: &Value) -> Option<&str> {
 /// the catalog stays uncluttered. `running` is the index produced by
 /// [`crate::cli::resolve::running_index`] — pass an empty map to opt out.
 ///
+/// A model with more than one live launch gets **one line per launch**, and a
+/// named launch renders `<model>@<name>` in NAME — the whole string a client
+/// or `stop` takes. One line per model would have to pick a winner, which is
+/// the case named launches exist for.
+///
 /// Footer line `(N models)` is appended on TTY only — the piped form
 /// stays byte-stable for `awk -F\t` / `column -t` pipelines.
 pub fn list_human(
   rows: &[CatalogRow],
-  running: &HashMap<String, RunningRow>,
+  running: &HashMap<String, Vec<RunningRow>>,
   multi_device: bool,
 ) -> String {
   use crate::cli::{colors, format};
@@ -113,42 +118,55 @@ pub fn list_human(
   if multi_device {
     header.push("DEVICE");
   }
-  let body: Vec<Vec<String>> = rows
-    .iter()
-    .map(|r| {
-      // Shared `list_cell` so a missing Arch/Quant/Params reads as one
-      // placeholder (`?`), matching the TUI list — an unknown quant no longer
-      // leaks the literal `Unknown` while Arch shows `?`.
-      let arch = crate::tui::fmt::list_cell(r.arch.as_deref(), "?");
-      let params = crate::tui::fmt::list_cell(r.parameter_label.as_deref(), "?");
-      let quant = crate::tui::fmt::list_cell(r.quant.as_deref(), "?");
-      let ctx = r
-        .native_ctx
-        .map(|n| n.to_string())
-        .unwrap_or_else(|| "?".to_string());
-      // Compute the on-disk total via the shared shard-sizes util so
-      // a row's SIZE always reflects shard 1 + every sibling shard,
-      // independent of when the daemon last scanned (its cached
-      // `weights_bytes` may predate a binary upgrade that fixed the
-      // split-shard aggregation). One `stat` per row is cheap.
-      let size = display_size(r);
-      let mode = crate::tui::fmt::list_cell(r.mode_hint.as_deref(), "?");
-      let status = running_status_cell(running.get(&r.path));
-      let mut cells = vec![r.name()];
+  let mut body: Vec<Vec<String>> = Vec::with_capacity(rows.len());
+  for r in rows {
+    // Shared `list_cell` so a missing Arch/Quant/Params reads as one
+    // placeholder (`?`), matching the TUI list — an unknown quant no longer
+    // leaks the literal `Unknown` while Arch shows `?`.
+    let arch = crate::tui::fmt::list_cell(r.arch.as_deref(), "?");
+    let params = crate::tui::fmt::list_cell(r.parameter_label.as_deref(), "?");
+    let quant = crate::tui::fmt::list_cell(r.quant.as_deref(), "?");
+    let ctx = r
+      .native_ctx
+      .map(|n| n.to_string())
+      .unwrap_or_else(|| "?".to_string());
+    // Compute the on-disk total via the shared shard-sizes util so
+    // a row's SIZE always reflects shard 1 + every sibling shard,
+    // independent of when the daemon last scanned (its cached
+    // `weights_bytes` may predate a binary upgrade that fixed the
+    // split-shard aggregation). One `stat` per row is cheap.
+    let size = display_size(r);
+    let mode = crate::tui::fmt::list_cell(r.mode_hint.as_deref(), "?");
+    // No live launch still gets its catalog line, so `None` is one iteration.
+    let live = running.get(&r.path).map(Vec::as_slice).unwrap_or_default();
+    let launches: Vec<Option<&RunningRow>> = if live.is_empty() {
+      vec![None]
+    } else {
+      live.iter().map(Some).collect()
+    };
+    for run in launches {
+      let mut cells = vec![addressable_name(r, run)];
       if show_repo {
         cells.push(r.group_label());
       }
-      cells.extend([arch, params, quant, ctx, size, mode]);
+      cells.extend([
+        arch.clone(),
+        params.clone(),
+        quant.clone(),
+        ctx.clone(),
+        size.clone(),
+        mode.clone(),
+      ]);
       if show_backend {
         cells.push(backend_badge(r, "?"));
       }
-      cells.push(status);
+      cells.push(running_status_cell(run));
       if multi_device {
-        cells.push(device_cell(running.get(&r.path)));
+        cells.push(device_cell(run));
       }
-      cells
-    })
-    .collect();
+      body.push(cells);
+    }
+  }
   let mut out = format::table(&header, &body);
   if console::colors_enabled() {
     out.push_str(&colors::count(rows.len(), "models"));
@@ -180,6 +198,19 @@ fn running_status_cell(row: Option<&RunningRow>) -> String {
     port_part
   };
   format!("{glyph} {state_label} {port_part}")
+}
+
+/// The NAME cell: the catalog row's name, joined with the launch name when the
+/// live launch carries one.
+///
+/// The joined string is the address — what a client puts in `body.model` and
+/// what `stop` / `logs` take — so it belongs whole in the identity column
+/// rather than as a fragment appended to STATUS.
+fn addressable_name(row: &CatalogRow, run: Option<&RunningRow>) -> String {
+  match run.and_then(|r| r.name.as_deref()) {
+    Some(name) => crate::launch::resolve::join_named_reference(&row.name(), name),
+    None => row.name(),
+  }
 }
 
 /// Backend badge for a catalog row: every backend that can serve it,
@@ -264,7 +295,7 @@ pub(crate) fn backend_for_source(source: &str) -> &'static str {
 /// against this, so column drift requires deliberate intent. Wrapped
 /// in `{"models": [...]}` so every CLI `--json` surface lives behind
 /// the same "always object at the root" rule.
-pub fn list_json(rows: &[CatalogRow], running: &HashMap<String, RunningRow>) -> Value {
+pub fn list_json(rows: &[CatalogRow], running: &HashMap<String, Vec<RunningRow>>) -> Value {
   let arr: Vec<Value> = rows
     .iter()
     .map(|r| {
@@ -278,18 +309,37 @@ pub fn list_json(rows: &[CatalogRow], running: &HashMap<String, RunningRow>) -> 
       // model has no live supervisor. `device` carries the raw selector
       // (`null` when the launch took the backend default) so an agent reads
       // the same fact the human table's DEVICE column renders as `all`.
-      if let Some(live) = running.get(&r.path) {
-        row["status"] = serde_json::json!({
-          "state": live.state,
-          "port": live.port,
-          "launch_id": live.launch_id,
-          "device": device_selector(live),
-        });
+      let live = running.get(&r.path).map(Vec::as_slice).unwrap_or_default();
+      let launches: Vec<Value> = live.iter().map(launch_status_json).collect();
+      if let Some(first) = launches.first() {
+        row["status"] = first.clone();
+        // Every live launch, so an agent reading `--json` sees the same rows
+        // the table prints. `status` stays the first launch: the key predates
+        // named launches and agents pin `models[i].status.state`.
+        row["launches"] = Value::Array(launches);
       }
       row
     })
     .collect();
   serde_json::json!({"models": arr})
+}
+
+/// One live launch as the nested `status` / `launches[]` object: the keys
+/// agents pin (`state`, `port`, `launch_id`, `device`), plus `name` when the
+/// launch carries one. `device` is the raw selector (`null` when the launch
+/// took the backend default) so an agent reads the same fact the human
+/// table's DEVICE column renders as `all`.
+fn launch_status_json(live: &RunningRow) -> Value {
+  let mut status = serde_json::json!({
+    "state": live.state,
+    "port": live.port,
+    "launch_id": live.launch_id,
+    "device": device_selector(live),
+  });
+  if let Some(n) = live.name.as_deref() {
+    status["name"] = serde_json::json!(n);
+  }
+  status
 }
 
 /// JSON projection of `favorite_list` rows. Wrapped in
@@ -515,7 +565,15 @@ pub fn status_human(snap: &StatusSnapshot) -> String {
         Some(c) => c.to_string(),
         None => "-".to_string(),
       };
-      let name = r.name();
+      // `status` has no MODEL column, so the launch name is appended to the
+      // model rather than replacing it: two different models both named
+      // `coder` were otherwise indistinguishable in the one command you reach
+      // for to work out what to stop. Same `<model>@<name>` join `list` uses,
+      // and the same string `stop` takes.
+      let name = match r.name.as_deref() {
+        Some(n) => crate::launch::resolve::join_named_reference(&r.name(), n),
+        None => r.name(),
+      };
       rows.push(vec![
         if tty {
           colors::launch_id(&r.launch_id)
@@ -697,6 +755,9 @@ pub fn status_json(snap: &StatusSnapshot) -> Value {
       obj.insert("model_path".into(), serde_json::json!(r.model_path));
       obj.insert("port".into(), serde_json::json!(r.port));
       obj.insert("mode".into(), serde_json::json!(r.mode));
+      if let Some(n) = r.name.as_deref() {
+        obj.insert("name".into(), serde_json::json!(n));
+      }
       obj.insert("state".into(), serde_json::json!(r.state));
       if let Some(cause) = r.state_cause.as_deref() {
         obj.insert("state_cause".into(), serde_json::json!(cause));
@@ -973,7 +1034,7 @@ mod tests {
     let mut explicit = running("L1", "ready", 41100, path);
     explicit.params = Some(serde_json::json!({"knobs": {"device": "ROCm0"}}));
     let mut explicit_idx = HashMap::new();
-    explicit_idx.insert(path.to_string(), explicit);
+    explicit_idx.insert(path.to_string(), vec![explicit]);
     let explicit_out = list_human(&rows, &explicit_idx, true);
     assert!(
       explicit_out.contains("\tROCm0\n"),
@@ -983,7 +1044,7 @@ mod tests {
     // Running on the default backend with no override → `all`.
     let plain = running("L1", "ready", 41100, path);
     let mut plain_idx = HashMap::new();
-    plain_idx.insert(path.to_string(), plain);
+    plain_idx.insert(path.to_string(), vec![plain]);
     let plain_out = list_human(&rows, &plain_idx, true);
     assert!(
       plain_out.contains("\tall\n"),
@@ -994,7 +1055,7 @@ mod tests {
     let mut other = running("L1", "ready", 41100, path);
     other.backend = Some("lemonade".to_string());
     let mut other_idx = HashMap::new();
-    other_idx.insert(path.to_string(), other);
+    other_idx.insert(path.to_string(), vec![other]);
     let other_out = list_human(&rows, &other_idx, true);
     assert!(
       other_out.contains("\t?\n"),
@@ -1117,14 +1178,14 @@ mod tests {
     let mut pinned = running("L1", "ready", 41100, path);
     pinned.params = Some(serde_json::json!({"knobs": {"device": "ROCm0"}}));
     let mut idx = HashMap::new();
-    idx.insert(path.to_string(), pinned);
+    idx.insert(path.to_string(), vec![pinned]);
     assert_eq!(
       list_json(&rows, &idx)["models"][0]["status"]["device"],
       serde_json::json!("ROCm0")
     );
 
     let mut all_gpu = HashMap::new();
-    all_gpu.insert(path.to_string(), running("L1", "ready", 41100, path));
+    all_gpu.insert(path.to_string(), vec![running("L1", "ready", 41100, path)]);
     assert_eq!(
       list_json(&rows, &all_gpu)["models"][0]["status"]["device"],
       Value::Null,
@@ -1433,6 +1494,7 @@ mod tests {
         id: Some(serde_json::json!({"path": "/m/a.gguf", "header_blake3": "deadbeef"})),
         port: 41100,
         mode: "chat".into(),
+        name: None,
         state: "ready".into(),
         state_cause: None,
         pid: Some(123),
@@ -1547,6 +1609,7 @@ mod tests {
       state_cause: None,
       pid: Some(123),
       mode: "chat".into(),
+      name: None,
       ready_at: None,
       params: None,
       latest_rss_bytes: None,
@@ -1588,6 +1651,112 @@ mod tests {
     // resolved_ctx unset → "-" in the CTX column.
     assert!(s.contains("L1\tready\tchat\t41100\t123\t-\tqwen.gguf\n"));
     assert!(s.contains("external\texternal\t-\t-\t9999\t-\text.gguf\n"));
+  }
+
+  #[test]
+  fn list_human_emits_a_line_per_named_launch_with_the_whole_address() {
+    let _g = ColorGuard::set(false);
+    // The motivating case: `qwen@coder` and `qwen@writer` live at once. One
+    // line per model had to pick a winner, and the address belongs whole in
+    // the identity column — it is what a client puts in `body.model`.
+    let rows = vec![row("qwen", "qwen2", "Q4_K", 8192)];
+    let path = "/m/qwen.gguf";
+    let mut coder = running("L1", "ready", 41100, path);
+    coder.name = Some("coder".into());
+    let mut writer = running("L2", "ready", 41101, path);
+    writer.name = Some("writer".into());
+    let mut idx = HashMap::new();
+    idx.insert(path.to_string(), vec![coder, writer]);
+
+    let out = list_human(&rows, &idx, false);
+    assert!(
+      out.contains("qwen.gguf@coder\t") && out.contains("qwen.gguf@writer\t"),
+      "both named launches must render, address-first: {out:?}"
+    );
+    assert!(
+      !out.contains(" @coder"),
+      "the name belongs in NAME, not appended to STATUS: {out:?}"
+    );
+    assert!(
+      out.contains(":41100") && out.contains(":41101"),
+      "each line carries its own launch's port: {out:?}"
+    );
+  }
+
+  #[test]
+  fn list_human_leaves_an_unnamed_or_idle_model_on_one_line() {
+    let _g = ColorGuard::set(false);
+    let rows = vec![row("qwen", "qwen2", "Q4_K", 8192)];
+    let path = "/m/qwen.gguf";
+
+    let idle = list_human(&rows, &HashMap::new(), false);
+    assert_eq!(idle.lines().filter(|l| l.contains("qwen.gguf")).count(), 1);
+    assert!(
+      !idle.contains('@'),
+      "no launch, no address suffix: {idle:?}"
+    );
+
+    let mut idx = HashMap::new();
+    idx.insert(path.to_string(), vec![running("L1", "ready", 41100, path)]);
+    let live = list_human(&rows, &idx, false);
+    assert_eq!(live.lines().filter(|l| l.contains("qwen.gguf")).count(), 1);
+    assert!(
+      !live.contains('@'),
+      "unnamed launch adds no suffix: {live:?}"
+    );
+  }
+
+  #[test]
+  fn list_json_carries_every_live_launch() {
+    let rows = vec![row("qwen", "qwen2", "Q4_K", 8192)];
+    let path = "/m/qwen.gguf";
+    let mut coder = running("L1", "ready", 41100, path);
+    coder.name = Some("coder".into());
+    let mut writer = running("L2", "ready", 41101, path);
+    writer.name = Some("writer".into());
+    let mut idx = HashMap::new();
+    idx.insert(path.to_string(), vec![coder, writer]);
+
+    let v = list_json(&rows, &idx);
+    let launches = v["models"][0]["launches"]
+      .as_array()
+      .expect("every live launch is listed");
+    assert_eq!(launches.len(), 2);
+    assert_eq!(launches[0]["name"], serde_json::json!("coder"));
+    assert_eq!(launches[1]["name"], serde_json::json!("writer"));
+    // `status` keeps its pre-feature meaning: agents pin `status.state`.
+    assert_eq!(v["models"][0]["status"], launches[0]);
+  }
+
+  #[test]
+  fn status_human_keeps_the_model_next_to_the_launch_name() {
+    let _g = ColorGuard::set(false);
+    // `status` has no MODEL column, so a NAME cell holding only the launch
+    // name made two different models both named `coder` indistinguishable —
+    // in the command you reach for to work out what to stop.
+    let mut a = running("L1", "ready", 41100, "/m/qwen.gguf");
+    a.name = Some("coder".into());
+    let mut b = running("L2", "ready", 41101, "/m/gemma.gguf");
+    b.name = Some("coder".into());
+    let snap = StatusSnapshot {
+      models: vec![a, b],
+      external: vec![],
+      gpu: Value::Null,
+      host: Value::Null,
+      daemon: None,
+      proxy: Value::Null,
+      backends: Value::Null,
+      servers: Value::Null,
+    };
+    let s = status_human(&snap);
+    assert!(
+      s.contains("\tqwen.gguf@coder\n"),
+      "model identity lost: {s:?}"
+    );
+    assert!(
+      s.contains("\tgemma.gguf@coder\n"),
+      "model identity lost: {s:?}"
+    );
   }
 
   #[test]

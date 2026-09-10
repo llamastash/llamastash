@@ -19,8 +19,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use llamastash::backend::llama_cpp::LlamaCppBackend;
-use llamastash::config::loader::PortRange;
+use llamastash::config::loader::{ConfigPresetBlock, PortRange, PresetBody};
 use llamastash::daemon::context::{LaunchEnv, MethodContext};
+use llamastash::daemon::preset_store::ConfigPresetStore;
 use llamastash::daemon::probe::ProbeOptions;
 use llamastash::daemon::registry::SupervisorRegistry;
 use llamastash::daemon::shutdown::ShutdownToken;
@@ -158,7 +159,7 @@ async fn build_state(
   log_dir: &Path,
   port_range: PortRange,
 ) -> (Arc<ProxyState>, MethodContext) {
-  build_state_with_fallback(models, registry, log_dir, port_range, true).await
+  build_state_with_fallback(models, registry, log_dir, port_range, true, BTreeMap::new()).await
 }
 
 async fn build_state_with_fallback(
@@ -167,6 +168,7 @@ async fn build_state_with_fallback(
   log_dir: &Path,
   port_range: PortRange,
   fallback_enabled: bool,
+  presets: BTreeMap<String, ConfigPresetBlock>,
 ) -> (Arc<ProxyState>, MethodContext) {
   let catalog = ModelCatalog::new();
   for m in models {
@@ -184,7 +186,8 @@ async fn build_state_with_fallback(
   };
   let ctx = MethodContext::with_catalog(token, catalog)
     .with_supervisors(registry)
-    .with_launch_env(env);
+    .with_launch_env(env)
+    .with_presets(ConfigPresetStore::new(presets, None));
   let state = ProxyState::from_context(&ctx, false, fallback_enabled, DEFAULT_BODY_LIMIT_BYTES);
   (state, ctx)
 }
@@ -244,6 +247,15 @@ async fn http_post(
   parse_response(&buf)
 }
 
+async fn http_get(addr: SocketAddr, path: &str) -> (u16, Vec<(String, String)>, Vec<u8>) {
+  let mut sock = TcpStream::connect(addr).await.expect("connect");
+  let req = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+  sock.write_all(req.as_bytes()).await.expect("write");
+  let mut buf = Vec::new();
+  sock.read_to_end(&mut buf).await.expect("read");
+  parse_response(&buf)
+}
+
 fn parse_response(buf: &[u8]) -> (u16, Vec<(String, String)>, Vec<u8>) {
   let needle = b"\r\n\r\n";
   let split = buf
@@ -278,11 +290,24 @@ fn header_value<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a s
 
 async fn stop_all(ctx: &MethodContext, extras: &[ManagedModel]) {
   let snap = ctx.supervisors.snapshot().await;
-  for (_, m) in snap {
+  let mut stopped_ports: std::collections::HashSet<u16> = std::collections::HashSet::new();
+  for (_launch_id, m) in snap {
+    let port = m.port();
     let _ = m.stop(Duration::from_secs(3)).await;
+    stopped_ports.insert(port);
   }
   for m in extras {
     let _ = m.stop(Duration::from_secs(3)).await;
+  }
+  // Mirror the production `drop_running_snapshots` so the state
+  // snapshot reflects the stopped launches (needed for /v1/models).
+  if !stopped_ports.is_empty() {
+    ctx
+      .state
+      .mutate(move |s| {
+        s.running.retain(|r| !stopped_ports.contains(&r.port));
+      })
+      .await;
   }
 }
 
@@ -507,6 +532,7 @@ async fn fallback_disabled_returns_503_instead_of_picking_other_model() {
     &log_dir,
     allocate_port_range(),
     false,
+    BTreeMap::new(),
   )
   .await;
   let (addr, shutdown, listener_handle) = spawn_listener(state).await;
@@ -532,4 +558,464 @@ async fn fallback_disabled_returns_503_instead_of_picking_other_model() {
   stop_all(&ctx, &[live]).await;
   shutdown_listener(shutdown, listener_handle).await;
   std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- D4: named request with no live launch auto-starts one carrying that name ----
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn named_request_auto_starts_launch_carrying_that_name() {
+  let dir = unique_temp("d4-auto-start");
+  let log_dir = dir.join("logs");
+  std::fs::create_dir_all(&log_dir).unwrap();
+
+  // A real GGUF on disk so the auto-start header read succeeds.
+  let model_path = write_gguf(&dir, "qwen3.gguf", "qwen3");
+  let registry = SupervisorRegistry::new();
+  let (state, ctx) = build_state(
+    vec![discovered(&model_path, Some("qwen3"), Some("qwen3"))],
+    registry,
+    &log_dir,
+    allocate_port_range(),
+  )
+  .await;
+  let (addr, shutdown, listener_handle) = spawn_listener(state).await;
+
+  // Request `qwen3@coder` — no launch is running, so the proxy must
+  // auto-start one and stamp it with the name `coder`.
+  let body = r#"{"model":"qwen3@coder","messages":[]}"#;
+  let (status, _headers, _response) = http_post(addr, "/v1/chat/completions", body).await;
+  assert_eq!(status, 200, "named auto-start must succeed");
+
+  // The auto-started launch must carry the name `coder` in the state snapshot.
+  let snap = ctx.state.snapshot().await;
+  let named: Vec<_> = snap
+    .running
+    .iter()
+    .filter(|r| r.name.as_deref() == Some("coder"))
+    .collect();
+  assert_eq!(
+    named.len(),
+    1,
+    "exactly one launch must carry the name `coder`; got {:?}",
+    snap.running.iter().map(|r| &r.name).collect::<Vec<_>>()
+  );
+
+  stop_all(&ctx, &[]).await;
+  shutdown_listener(shutdown, listener_handle).await;
+  std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- A named request auto-starts under the preset the address names ----
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn named_auto_start_takes_the_preset_the_address_names() {
+  let dir = unique_temp("named-preset");
+  let log_dir = dir.join("logs");
+  std::fs::create_dir_all(&log_dir).unwrap();
+  let model_path = write_gguf(&dir, "qwen3.gguf", "qwen3");
+
+  // A preset named `coder` for this model, pinning a ctx no other layer sets.
+  let mut knobs = llamastash::launch::knobs::KnobSet::new();
+  knobs.set_by_name("ctx-size", "8192");
+  let mut entries = BTreeMap::new();
+  entries.insert(
+    "coder".to_string(),
+    PresetBody {
+      knobs,
+      ..PresetBody::default()
+    },
+  );
+  let mut presets = BTreeMap::new();
+  presets.insert(
+    model_path.display().to_string(),
+    ConfigPresetBlock {
+      default: None,
+      entries,
+    },
+  );
+
+  let registry = SupervisorRegistry::new();
+  let (state, ctx) = build_state_with_fallback(
+    vec![discovered(&model_path, Some("qwen3"), Some("qwen3"))],
+    registry,
+    &log_dir,
+    allocate_port_range(),
+    true,
+    presets,
+  )
+  .await;
+  let (addr, shutdown, listener_handle) = spawn_listener(state).await;
+
+  // `qwen3@coder` names a preset as well as a launch. An OpenAI-shaped client
+  // sends nothing but `body.model`, so the address is its only way to pick one.
+  let body = r#"{"model":"qwen3@coder","messages":[]}"#;
+  let (status, _headers, _response) = http_post(addr, "/v1/chat/completions", body).await;
+  assert_eq!(status, 200, "named auto-start must succeed");
+
+  let snap = ctx.state.snapshot().await;
+  let named = snap
+    .running
+    .iter()
+    .find(|r| r.name.as_deref() == Some("coder"))
+    .expect("a launch named `coder`");
+  assert_eq!(
+    named
+      .params
+      .knobs
+      .u32(llamastash::launch::knobs::kid("ctx-size")),
+    Some(8192),
+    "the launch must resolve the preset the address named; got {:?}",
+    named.params.knobs
+  );
+
+  stop_all(&ctx, &[]).await;
+  shutdown_listener(shutdown, listener_handle).await;
+  std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The name is a launch name first: when no preset answers to it, the launch
+/// still happens and still carries the name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn named_auto_start_falls_back_when_no_preset_answers_to_the_name() {
+  let dir = unique_temp("named-preset-miss");
+  let log_dir = dir.join("logs");
+  std::fs::create_dir_all(&log_dir).unwrap();
+  let model_path = write_gguf(&dir, "qwen3.gguf", "qwen3");
+
+  let mut knobs = llamastash::launch::knobs::KnobSet::new();
+  knobs.set_by_name("ctx-size", "8192");
+  let mut entries = BTreeMap::new();
+  entries.insert(
+    "writer".to_string(),
+    PresetBody {
+      knobs,
+      ..PresetBody::default()
+    },
+  );
+  let mut presets = BTreeMap::new();
+  presets.insert(
+    model_path.display().to_string(),
+    ConfigPresetBlock {
+      default: None,
+      entries,
+    },
+  );
+
+  let registry = SupervisorRegistry::new();
+  let (state, ctx) = build_state_with_fallback(
+    vec![discovered(&model_path, Some("qwen3"), Some("qwen3"))],
+    registry,
+    &log_dir,
+    allocate_port_range(),
+    true,
+    presets,
+  )
+  .await;
+  let (addr, shutdown, listener_handle) = spawn_listener(state).await;
+
+  let body = r#"{"model":"qwen3@coder","messages":[]}"#;
+  let (status, _headers, _response) = http_post(addr, "/v1/chat/completions", body).await;
+  assert_eq!(status, 200, "an unmatched name still auto-starts");
+
+  let snap = ctx.state.snapshot().await;
+  let named = snap
+    .running
+    .iter()
+    .find(|r| r.name.as_deref() == Some("coder"))
+    .expect("a launch named `coder`");
+  assert_ne!(
+    named
+      .params
+      .knobs
+      .u32(llamastash::launch::knobs::kid("ctx-size")),
+    Some(8192),
+    "the `writer` preset must not apply to a `@coder` address"
+  );
+
+  stop_all(&ctx, &[]).await;
+  shutdown_listener(shutdown, listener_handle).await;
+  std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The preset the address names also decides the launch identity. Identity is
+/// resolved on its own path (a server pick decides the backend, so it has to
+/// settle before backend resolution), which is exactly where a second preset
+/// lookup could disagree with the knob layers about which preset is in play.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn named_auto_start_takes_the_backend_its_preset_pins() {
+  let dir = unique_temp("named-preset-backend");
+  let log_dir = dir.join("logs");
+  std::fs::create_dir_all(&log_dir).unwrap();
+  let model_path = write_gguf(&dir, "qwen3.gguf", "qwen3");
+
+  let mut entries = BTreeMap::new();
+  entries.insert(
+    "coder".to_string(),
+    PresetBody {
+      backend: Some("llamacpp".to_string()),
+      ..PresetBody::default()
+    },
+  );
+  let mut presets = BTreeMap::new();
+  presets.insert(
+    model_path.display().to_string(),
+    ConfigPresetBlock {
+      default: None,
+      entries,
+    },
+  );
+
+  let registry = SupervisorRegistry::new();
+  let (state, ctx) = build_state_with_fallback(
+    vec![discovered(&model_path, Some("qwen3"), Some("qwen3"))],
+    registry,
+    &log_dir,
+    allocate_port_range(),
+    true,
+    presets,
+  )
+  .await;
+  let (addr, shutdown, listener_handle) = spawn_listener(state).await;
+
+  let body = r#"{"model":"qwen3@coder","messages":[]}"#;
+  let (status, _headers, _response) = http_post(addr, "/v1/chat/completions", body).await;
+  assert_eq!(status, 200, "named auto-start must succeed");
+
+  let snap = ctx.state.snapshot().await;
+  let named = snap
+    .running
+    .iter()
+    .find(|r| r.name.as_deref() == Some("coder"))
+    .expect("a launch named `coder`");
+  assert_eq!(
+    named.params.backend.explicit_id(),
+    Some("llamacpp"),
+    "the preset the address named must decide the backend too; got {:?}",
+    named.params.backend
+  );
+
+  stop_all(&ctx, &[]).await;
+  shutdown_listener(shutdown, listener_handle).await;
+  std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- Two named launches of one model land on different ports ----
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_named_launches_of_one_model_land_on_different_ports() {
+  let dir = unique_temp("two-named");
+  let log_dir = dir.join("logs");
+  std::fs::create_dir_all(&log_dir).unwrap();
+
+  let model_path = write_gguf(&dir, "qwen3.gguf", "qwen3");
+  let registry = SupervisorRegistry::new();
+  let (state, ctx) = build_state(
+    vec![discovered(&model_path, Some("qwen3"), Some("qwen3"))],
+    registry,
+    &log_dir,
+    allocate_port_range(),
+  )
+  .await;
+  let (addr, shutdown, listener_handle) = spawn_listener(state).await;
+
+  // First named request: auto-starts a launch named `coder`.
+  let body1 = r#"{"model":"qwen3@coder","messages":[]}"#;
+  let (status1, _, _) = http_post(addr, "/v1/chat/completions", body1).await;
+  assert_eq!(status1, 200, "first named launch must succeed");
+
+  // Second named request: auto-starts a second launch named `writer`.
+  let body2 = r#"{"model":"qwen3@writer","messages":[]}"#;
+  let (status2, _, _) = http_post(addr, "/v1/chat/completions", body2).await;
+  assert_eq!(status2, 200, "second named launch must succeed");
+
+  // Both launches must be running, on different ports, with their names.
+  let snap = ctx.state.snapshot().await;
+  let named: Vec<_> = snap.running.iter().filter(|r| r.name.is_some()).collect();
+  assert_eq!(
+    named.len(),
+    2,
+    "exactly two named launches must be running; got {:?}",
+    snap.running.iter().map(|r| &r.name).collect::<Vec<_>>()
+  );
+  let ports: Vec<u16> = named.iter().map(|r| r.port).collect();
+  assert_ne!(
+    ports[0], ports[1],
+    "two named launches of the same model must land on different ports; got {ports:?}"
+  );
+  let names: Vec<&str> = named.iter().filter_map(|r| r.name.as_deref()).collect();
+  assert!(names.contains(&"coder"), "missing `coder`; got {names:?}");
+  assert!(names.contains(&"writer"), "missing `writer`; got {names:?}");
+
+  stop_all(&ctx, &[]).await;
+  shutdown_listener(shutdown, listener_handle).await;
+  std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- RV1/RV4: a case variant of a live name reuses that launch ----
+
+/// The proxy used to match names exactly while the CLI matched them
+/// case-insensitively. One mistyped capitalization therefore missed the live
+/// launch and auto-started a second full copy of the model, after which the CLI's
+/// own matcher saw two rows and refused to stop either by name. A variant must
+/// land on the launch that exists.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn case_variant_of_a_live_name_reuses_that_launch() {
+  let dir = unique_temp("case-variant");
+  let log_dir = dir.join("logs");
+  std::fs::create_dir_all(&log_dir).unwrap();
+
+  let model_path = write_gguf(&dir, "qwen3.gguf", "qwen3");
+  let registry = SupervisorRegistry::new();
+  let (state, ctx) = build_state(
+    vec![discovered(&model_path, Some("qwen3"), Some("qwen3"))],
+    registry,
+    &log_dir,
+    allocate_port_range(),
+  )
+  .await;
+  let (addr, shutdown, listener_handle) = spawn_listener(state).await;
+
+  let (status1, _, _) = http_post(
+    addr,
+    "/v1/chat/completions",
+    r#"{"model":"qwen3@coder","messages":[]}"#,
+  )
+  .await;
+  assert_eq!(status1, 200, "first named launch must succeed");
+  let port1 = ctx.state.snapshot().await.running[0].port;
+
+  let (status2, _, _) = http_post(
+    addr,
+    "/v1/chat/completions",
+    r#"{"model":"qwen3@CODER","messages":[]}"#,
+  )
+  .await;
+  assert_eq!(status2, 200, "case-variant request must be served");
+
+  let snap = ctx.state.snapshot().await;
+  assert_eq!(
+    snap.running.len(),
+    1,
+    "a case variant must reuse the live launch, not load a second copy; got {:?}",
+    snap
+      .running
+      .iter()
+      .map(|r| (r.port, r.name.as_deref()))
+      .collect::<Vec<_>>()
+  );
+  assert_eq!(snap.running[0].port, port1, "must be the same launch");
+
+  stop_all(&ctx, &[]).await;
+  shutdown_listener(shutdown, listener_handle).await;
+  std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- /v1/models lists named row while live, drops it after stop ----
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v1_models_lists_named_row_while_live_and_drops_after_stop() {
+  let dir = unique_temp("v1-models-named");
+  let log_dir = dir.join("logs");
+  std::fs::create_dir_all(&log_dir).unwrap();
+
+  let model_path = write_gguf(&dir, "qwen3.gguf", "qwen3");
+  let registry = SupervisorRegistry::new();
+  let (state, ctx) = build_state(
+    vec![discovered(&model_path, Some("qwen3"), Some("qwen3"))],
+    registry,
+    &log_dir,
+    allocate_port_range(),
+  )
+  .await;
+  let (addr, shutdown, listener_handle) = spawn_listener(state).await;
+
+  // Auto-start a named launch.
+  let body = r#"{"model":"qwen3@coder","messages":[]}"#;
+  let (status, _, _) = http_post(addr, "/v1/chat/completions", body).await;
+  assert_eq!(status, 200, "named auto-start must succeed");
+
+  // /v1/models must list the named row `qwen3@coder`.
+  let (status, _, resp) = http_get(addr, "/v1/models").await;
+  assert_eq!(status, 200);
+  let v: serde_json::Value = serde_json::from_slice(&resp).expect("json");
+  let ids: Vec<&str> = v["data"]
+    .as_array()
+    .expect("data array")
+    .iter()
+    .filter_map(|m| m["id"].as_str())
+    .collect();
+  assert!(
+    ids.contains(&"qwen3@coder"),
+    "/v1/models must list the named row `qwen3@coder`; got {ids:?}"
+  );
+
+  // Stop the launch and wait for the state snapshot to reflect it.
+  stop_all(&ctx, &[]).await;
+  tokio::time::sleep(Duration::from_millis(1000)).await;
+
+  // /v1/models must no longer list the named row.
+  let (status, _, resp) = http_get(addr, "/v1/models").await;
+  assert_eq!(status, 200);
+  let v: serde_json::Value = serde_json::from_slice(&resp).expect("json");
+  let ids: Vec<&str> = v["data"]
+    .as_array()
+    .expect("data array")
+    .iter()
+    .filter_map(|m| m["id"].as_str())
+    .collect();
+  assert!(
+    !ids.contains(&"qwen3@coder"),
+    "/v1/models must drop the named row after stop; got {ids:?}"
+  );
+
+  shutdown_listener(shutdown, listener_handle).await;
+  std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_cold_requests_for_two_names_produce_two_launches() {
+  let dir = unique_temp("concurrent-two-names");
+  let log_dir = dir.join("logs");
+  std::fs::create_dir_all(&log_dir).unwrap();
+
+  let model_path = write_gguf(&dir, "qwen3.gguf", "qwen3");
+  let registry = SupervisorRegistry::new();
+  let (state, ctx) = build_state(
+    vec![discovered(&model_path, Some("qwen3"), Some("qwen3"))],
+    registry,
+    &log_dir,
+    allocate_port_range(),
+  )
+  .await;
+  let (addr, shutdown, listener_handle) = spawn_listener(state).await;
+
+  // Fire two concurrent cold requests for different names.
+  let body1 = r#"{"model":"qwen3@coder","messages":[]}"#;
+  let body2 = r#"{"model":"qwen3@writer","messages":[]}"#;
+  let (r1, r2) = tokio::join!(
+    http_post(addr, "/v1/chat/completions", body1),
+    http_post(addr, "/v1/chat/completions", body2),
+  );
+  assert_eq!(r1.0, 200, "first concurrent request must succeed");
+  assert_eq!(r2.0, 200, "second concurrent request must succeed");
+
+  // Both launches must be present in the state snapshot.
+  let snap = ctx.state.snapshot().await;
+  let named: Vec<&str> = snap
+    .running
+    .iter()
+    .filter_map(|r| r.name.as_deref())
+    .collect();
+  assert!(
+    named.contains(&"coder"),
+    "state must contain a launch named `coder`; got {named:?}"
+  );
+  assert!(
+    named.contains(&"writer"),
+    "state must contain a launch named `writer`; got {named:?}"
+  );
+
+  stop_all(&ctx, &[]).await;
+  shutdown_listener(shutdown, listener_handle).await;
+  let _ = std::fs::remove_dir_all(&dir);
 }

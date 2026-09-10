@@ -390,6 +390,91 @@ pub fn published_ids_for(catalog: &[CatalogRow], subset: &[CatalogRow]) -> Vec<S
     .collect()
 }
 
+/// Split a `<model>@<name>` launch reference into its two halves.
+///
+/// The one implementation of the split, shared by the proxy's route decision and
+/// the CLI's running-row resolver so the two cannot drift on the separator rule.
+/// Each caller matches the model half its own way (a catalog resolve in the
+/// proxy, a substring walk in the CLI); only the split is common.
+///
+/// Splits on the **last** `@` (plan D2), so a GGUF named `foo@bar.gguf` addressed
+/// as `foo@bar.gguf@coder` keeps its filename in the model half. Returns `None`
+/// when there is no `@`, when the model half is empty (`@coder` — an empty half
+/// substring-matches every row, so treating it as a reference widens the match
+/// set instead of narrowing it), or when the name half is not a launch name
+/// ([`is_launch_name`]).
+pub fn parse_named_reference(reference: &str) -> Option<(&str, &str)> {
+  let (model, name) = reference.rsplit_once('@')?;
+  if model.is_empty() || !is_launch_name(name) {
+    return None;
+  }
+  Some((model, name))
+}
+
+/// The one comparison rule for launch names.
+///
+/// ASCII-case-insensitive, matching how model references resolve everywhere
+/// else. Case-sensitivity here would make a capitalization variant a *second*
+/// address for the same model: the proxy would miss the live launch and
+/// auto-start another full copy, and the CLI would then match both rows and
+/// refuse to stop either one by name.
+pub fn name_matches(have: Option<&str>, want: &str) -> bool {
+  have.is_some_and(|h| h.eq_ignore_ascii_case(want))
+}
+
+/// The one rule for what a launch name may be: trimmed, non-empty, and only
+/// ASCII letters, digits, `-` and `_`. Returns the trimmed name.
+///
+/// A name is half of an address, and every consumer splits the address on the
+/// last `@` ([`parse_named_reference`]) — so a name containing `@` (or a
+/// space, which a client cannot be relied on to quote) publishes an id that
+/// routes to a different pair or to nothing. Enforced at every entry point
+/// that accepts a name: the `--name` flag, the TUI dialog, and the daemon's
+/// `start_model` gate for raw JSON-RPC clients.
+pub fn validate_launch_name(raw: &str) -> Result<String, String> {
+  let name = raw.trim();
+  if name.is_empty() {
+    return Err("a name needs at least one letter, digit, `-` or `_`".into());
+  }
+  if !is_launch_name(name) {
+    return Err(format!(
+      "a name is letters, digits, `-` or `_` — got `{name}`"
+    ));
+  }
+  Ok(name.to_string())
+}
+
+/// `true` when `s` is *exactly* a launch name: non-empty, nothing to trim, and
+/// only ASCII letters, digits, `-` and `_`.
+///
+/// The reader ([`parse_named_reference`]) and the writer
+/// ([`validate_launch_name`]) share this predicate so a name the writer refuses
+/// can never be read back as a name half. Without that, `qwen3@co der` parses as
+/// a named reference, finds no launch, and auto-starts — which the daemon then
+/// refuses, spending one of the model's three auto-start failures per minute on
+/// an address that cannot exist. Sharing the rule makes it a plain
+/// model-not-found instead.
+pub fn is_launch_name(s: &str) -> bool {
+  !s.is_empty()
+    && s
+      .chars()
+      .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// The one join for a `<model>@<name>` address — the inverse of
+/// [`parse_named_reference`].
+///
+/// The split and the compare were centralized so surfaces cannot drift; the
+/// join is the third half of that contract. Only names that pass
+/// [`validate_launch_name`] round-trip back through the split unchanged.
+///
+/// Every surface that prints a whole address goes through here. The one place
+/// that writes the separator itself is the TUI list row, which needs the
+/// suffix as its own span to style it.
+pub fn join_named_reference(model: &str, name: &str) -> String {
+  format!("{model}@{name}")
+}
+
 /// Distinguishes the three resolver failure modes the HTTP proxy needs
 /// to surface as distinct HTTP responses (and which the CLI folds
 /// together into a single `MODEL_NOT_FOUND` exit).
@@ -861,5 +946,57 @@ mod tests {
     );
     assert!(v["mtp"].is_null());
     assert!(v["multimodal"].is_null());
+  }
+
+  #[test]
+  fn a_valid_name_round_trips_through_the_join_and_the_split() {
+    for raw in ["coder", " Coder-2_x ", "a-b_c9"] {
+      let name = validate_launch_name(raw).unwrap();
+      let address = join_named_reference("qwen3.gguf", &name);
+      assert_eq!(
+        parse_named_reference(&address),
+        Some(("qwen3.gguf", name.as_str())),
+        "`{raw}` must re-split to the pair it was joined from"
+      );
+    }
+  }
+
+  /// The reader and the writer share [`is_launch_name`], so an address whose
+  /// name half the writer would refuse is not a name reference at all. It
+  /// resolves as a plain reference and misses, instead of auto-starting a
+  /// launch the daemon refuses and charging the model's auto-start budget.
+  #[test]
+  fn an_address_the_writer_would_refuse_is_not_a_name_reference() {
+    for address in [
+      "qwen3@co der",
+      "qwen3@cöder",
+      "qwen3@a/b",
+      "qwen3@",
+      "@coder",
+    ] {
+      assert_eq!(
+        parse_named_reference(address),
+        None,
+        "`{address}` must not read back as a named reference"
+      );
+    }
+    // D2's fail-safe gets stronger for free: a filename's extension is not a
+    // launch name, so a GGUF that really is called `foo@bar.gguf` stays whole.
+    assert_eq!(parse_named_reference("foo@bar.gguf"), None);
+    // The last-`@` rule still holds for two valid halves.
+    assert_eq!(
+      parse_named_reference("foo@bar.gguf@coder"),
+      Some(("foo@bar.gguf", "coder"))
+    );
+  }
+
+  #[test]
+  fn a_name_that_cannot_appear_in_an_address_is_refused() {
+    for raw in ["", "   ", "a@b", "co der", "cöder", "@", "a/b", "b.c"] {
+      assert!(
+        validate_launch_name(raw).is_err(),
+        "`{raw}` must not be accepted as a launch name"
+      );
+    }
   }
 }

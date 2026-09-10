@@ -20,9 +20,8 @@ use llamastash::backend::{Backend, LaunchPlan};
 use llamastash::config::{LemonadeConfig, PortRange};
 use llamastash::daemon::context::{LaunchEnv, MethodContext};
 use llamastash::daemon::probe::ProbeOptions;
-use llamastash::daemon::registry::{LaunchId, SupervisorRegistry};
+use llamastash::daemon::registry::SupervisorRegistry;
 use llamastash::daemon::shutdown::ShutdownToken;
-use llamastash::daemon::state_store::RunningSnapshot;
 use llamastash::daemon::supervisor::{ManagedModel, ManagedState};
 use llamastash::ipc::methods::dispatch_request;
 use llamastash::ipc::protocol::Request;
@@ -391,21 +390,17 @@ async fn status_projects_delegated_models_and_stop_unloads_them() {
   ctx
     .state
     .mutate(|s| {
-      s.running.push(RunningSnapshot {
-        id: identity,
-        pid: 0,
-        port,
-        started_at: 0,
-        // The `L#` `start_delegated_lemonade` would have stamped from the
-        // registry counter — the delegated row's sole home for its handle.
-        launch_id: Some(LaunchId("L1".to_string())),
-        params: LaunchParams::new(
-          PathBuf::from(format!("lemonade://{name}")),
-          LaunchMode::Chat,
-        ),
-        actuals: Default::default(),
-        resolved_backend: "lemonade".to_string(),
-      })
+      // The `L#` `start_delegated_lemonade` would have stamped from the
+      // registry counter — the delegated row's sole home for its handle.
+      s.running.push(
+        llamastash::test_support::running_row(&format!("lemonade://{name}"))
+          .identity(identity)
+          .pid(0)
+          .port(port)
+          .launch_id("L1")
+          .resolved_backend("lemonade")
+          .build(),
+      )
     })
     .await;
 

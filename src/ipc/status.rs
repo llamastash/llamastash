@@ -127,7 +127,7 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
       &preset_rows,
       &preset_store,
     );
-    let row = json!({
+    let mut row = json!({
       "launch_id": launch_id,
       "id": model.id(),
       "port": model.port(),
@@ -153,6 +153,12 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
       "preset_count": preset_count,
       "default": preset_default,
     });
+    // Omitted when unset — the same convention `state.json` and the CLI's
+    // `launch_status_json` use — so the unnamed-row shape stays byte-stable
+    // instead of alternating between `null` and a value across surfaces.
+    if let Some(name) = running_snap.and_then(|r| r.name.clone()) {
+      row["name"] = json!(name);
+    }
     models.push(row);
   }
   // Delegated Lemonade models — the registry holds only the shared
@@ -551,16 +557,14 @@ mod tests {
     let path = PathBuf::from(format!("lemonade://{name}"));
     let (id, resolved_backend) = crate::backend::synthetic_identity_for_path(&path)
       .expect("a lemonade:// path mints a synthetic backend identity");
-    crate::daemon::state_store::RunningSnapshot {
-      id,
-      pid: 0,
-      port,
-      started_at: 0,
-      launch_id: Some(crate::daemon::registry::LaunchId(launch_id.to_string())),
-      params: LaunchParams::new(path, LaunchMode::Chat),
-      actuals: Default::default(),
-      resolved_backend,
-    }
+    crate::test_support::running_row(&path.to_string_lossy())
+      .identity(id)
+      .pid(0)
+      .port(port)
+      .launch_id(launch_id)
+      .params(LaunchParams::new(path, LaunchMode::Chat))
+      .resolved_backend(&resolved_backend)
+      .build()
   }
 
   #[tokio::test]

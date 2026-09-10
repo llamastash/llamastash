@@ -159,13 +159,26 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
   // An explicit flag beats the preset's pin; the preset beats nothing at all.
   let backend = args.backend.as_deref().or(params.backend.as_deref());
   let server = args.server.as_deref().or(params.server.as_deref());
+  // Already trimmed and charset-checked by the flag's value parser, so what the
+  // daemon receives is exactly what it can stamp and compare.
+  let launch_name = args.name.as_deref();
   let payload = build_payload(
-    &row.path, mode, &params, backend, server, selection, args.force,
+    &row.path,
+    mode,
+    &params,
+    backend,
+    server,
+    selection,
+    args.force,
+    launch_name,
   );
   let resp = client
     .call("start_model", Some(payload))
     .await
     .map_err(|e| map_start_error(e, &row))?;
+  // `launch_name` on the response is the daemon's echo of the name it stamped —
+  // not re-read from what we sent, so a daemon that dropped the name reports
+  // unnamed instead of the CLI asserting a launch that is not addressable.
   if args.wait {
     return wait_and_emit(
       &mut client,
@@ -219,7 +232,7 @@ async fn wait_and_emit(
       .iter()
       .find(|m| Some(m.launch_id.as_str()) == launch_id.as_deref())
       .cloned()
-      .or_else(|| index.get(&row.path).cloned());
+      .or_else(|| index.get(&row.path).and_then(|rows| rows.first().cloned()));
     if let Some(r) = found {
       match r.state.as_str() {
         // Error / Stopped are terminal immediately — no actuals to wait on.
@@ -256,6 +269,7 @@ async fn wait_and_emit(
       "resolved_ctx": settled.as_ref().and_then(|r| r.resolved_ctx),
       "ctx_clamped": settled.as_ref().map(|r| r.ctx_clamped).unwrap_or(false),
     });
+    copy_launch_name(resp, &mut body);
     if let Some(cause) = settled.as_ref().and_then(|r| r.state_cause.clone()) {
       body["cause"] = Value::String(cause);
     }
@@ -576,6 +590,7 @@ fn parse_cli_knobs(
   Ok((knobs, extras))
 }
 
+#[allow(clippy::too_many_arguments)] // one arg per launch knob the CLI can set
 fn build_payload(
   model_path: &str,
   mode: Option<&str>,
@@ -584,6 +599,7 @@ fn build_payload(
   server: Option<&str>,
   selection: &str,
   force: bool,
+  name: Option<&str>,
 ) -> Value {
   let mut obj = serde_json::Map::new();
   obj.insert(
@@ -594,6 +610,10 @@ fn build_payload(
   // preset's pin, then the model's header hint) decide.
   if let Some(m) = mode {
     obj.insert("mode".into(), Value::String(m.to_string()));
+  }
+  // User-chosen name; the daemon refuses a duplicate per model.
+  if let Some(n) = name {
+    obj.insert("name".into(), Value::String(n.to_string()));
   }
   // Drives whether the daemon applies the model's `default:` preset +
   // last_params inheritance. `default` (no selection) is the common case.
@@ -713,10 +733,20 @@ fn copy_warnings(resp: &Value, body: &mut Value) {
   }
 }
 
+/// Copy the daemon's echoed launch name onto a `--json` body. Omitted when the
+/// launch is unnamed, the same omit-when-unset convention the rest of the wire
+/// uses. Shared so `--wait` reports the name too — it builds its own body.
+fn copy_launch_name(resp: &Value, body: &mut Value) {
+  if let Some(n) = resp.get("launch_name").and_then(Value::as_str) {
+    body["launch_name"] = Value::String(n.to_string());
+  }
+}
+
 fn emit_response(preset: Option<&str>, row: &CatalogRow, resp: &Value, json: bool, quiet: bool) {
   let port = resp.get("port").and_then(Value::as_u64);
   let lid = resp.get("launch_id").and_then(Value::as_str);
   let pid = resp.get("pid").and_then(Value::as_u64);
+  let launch_name = resp.get("launch_name").and_then(Value::as_str);
   if json {
     let mut body = serde_json::json!({
       "name": row.name(),
@@ -726,6 +756,8 @@ fn emit_response(preset: Option<&str>, row: &CatalogRow, resp: &Value, json: boo
       "preset": preset,
       "path": row.path,
     });
+    // `name` is already the model name here, so the launch name gets its own key.
+    copy_launch_name(resp, &mut body);
     // The daemon omits `layer_sources` when empty, so this is absent on a
     // pure-fit launch and present otherwise.
     if let Some(sources) = resp.get("layer_sources") {
@@ -746,7 +778,14 @@ fn emit_response(preset: Option<&str>, row: &CatalogRow, resp: &Value, json: boo
   // semantic value colors so the actionable IDs stand out against the
   // green prose.
   use crate::cli::colors;
-  let head = colors::success(&format!("started {name}{preset_label}", name = row.name()));
+  // The name is shown in the `<model>@<name>` form the launch is now addressable
+  // by, so the success line hands the user the exact string to paste into
+  // `stop` / `logs` / `body.model`.
+  let addressed = match launch_name {
+    Some(n) => crate::launch::resolve::join_named_reference(&row.name(), n),
+    None => row.name().to_string(),
+  };
+  let head = colors::success(&format!("started {addressed}{preset_label}"));
   let lid_token = lid
     .map(colors::launch_id)
     .unwrap_or_else(|| colors::dim("?"));
@@ -977,6 +1016,7 @@ mod tests {
       None,
       "default",
       false,
+      None,
     );
     assert!(v.get("mode").is_none(), "{v}");
   }
@@ -1008,6 +1048,23 @@ mod tests {
     assert!(resolve_mode(&r, None, None).is_err());
   }
 
+  /// `--json` means the same thing with and without `--wait`: both bodies go
+  /// through the one copier, and an unnamed launch emits no key at all.
+  #[test]
+  fn the_daemon_echo_lands_on_a_json_body_only_when_the_launch_is_named() {
+    let mut body = serde_json::json!({"name": "qwen.gguf"});
+    copy_launch_name(&serde_json::json!({"launch_id": "L1"}), &mut body);
+    assert!(
+      body.get("launch_name").is_none(),
+      "an unnamed launch must omit the key: {body}"
+    );
+    copy_launch_name(
+      &serde_json::json!({"launch_id": "L1", "launch_name": "coder"}),
+      &mut body,
+    );
+    assert_eq!(body["launch_name"], serde_json::json!("coder"));
+  }
+
   #[test]
   fn build_payload_includes_backend_override_when_set() {
     let p = PartialParams::default();
@@ -1019,6 +1076,7 @@ mod tests {
       None,
       "explicit",
       false,
+      None,
     );
     assert_eq!(v["backend"], serde_json::json!("llamacpp"));
     assert_eq!(v["selection"], serde_json::json!("explicit"));
@@ -1034,6 +1092,7 @@ mod tests {
       None,
       "default",
       false,
+      None,
     );
     assert!(v.get("backend_knobs").is_none());
   }
@@ -1078,6 +1137,7 @@ mod tests {
     let model = path.display().to_string();
     let args = StartArgs {
       model: Some(model.clone()),
+      name: None,
       preset: None,
       ctx: None,
       port: None,
@@ -1106,6 +1166,7 @@ mod tests {
     let model = path.display().to_string();
     let args = StartArgs {
       model: Some(model.clone()),
+      name: None,
       preset: None,
       ctx: None,
       port: None,
@@ -1140,6 +1201,7 @@ mod tests {
     std::fs::write(&path, b"gguf").unwrap();
     let args = StartArgs {
       model: Some(path.display().to_string()),
+      name: None,
       preset: None,
       ctx: None,
       port: None,
@@ -1191,6 +1253,7 @@ mod tests {
     };
     let args = StartArgs {
       model: Some(path.display().to_string()),
+      name: None,
       preset: None,
       ctx: None,
       port: None,

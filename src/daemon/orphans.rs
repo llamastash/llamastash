@@ -442,23 +442,18 @@ mod tests {
   use tokio::net::TcpListener;
 
   use crate::gguf::identity::ModelId;
-  use crate::launch::mode::LaunchMode;
-  use crate::launch::params::LaunchParams;
 
   fn fake_snapshot(pid: i32, port: u16, path: &str, tag: u8) -> RunningSnapshot {
-    RunningSnapshot {
-      id: crate::backend::identity::ModelIdentity::Gguf(ModelId {
+    crate::test_support::running_row(path)
+      .identity(crate::backend::identity::ModelIdentity::Gguf(ModelId {
         path: PathBuf::from(path),
         header_blake3: [tag; 32],
-      }),
-      pid,
-      port,
-      started_at: 1_700_000_000,
-      launch_id: None,
-      params: LaunchParams::new(PathBuf::from(path), LaunchMode::Chat),
-      actuals: Default::default(),
-      resolved_backend: "llamacpp".to_string(),
-    }
+      }))
+      .pid(pid)
+      .port(port)
+      .started_at(1_700_000_000)
+      .unstamped()
+      .build()
   }
 
   /// A loopback port that nothing is listening on: bind ephemeral, read
@@ -706,6 +701,36 @@ mod tests {
     .await;
     assert_eq!(report.adopted.len(), 1, "matching probe must adopt");
     assert!(report.stale.is_empty());
+  }
+
+  #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+  async fn an_adopted_row_keeps_its_launch_name() {
+    // D1's whole reason for putting the name on the snapshot rather than only
+    // on the supervisor: a daemon restart re-adopts the live process from
+    // `state.json`, and the launch has to still answer to `<model>@<name>`
+    // afterwards. The supervisor is gone by then; the row is the only record.
+    let live = std::process::id() as i32;
+    let body = serde_json::json!({
+      "object": "list",
+      "data": [{"id": "/m/match.gguf", "object": "model"}],
+    })
+    .to_string();
+    let (_resp, port) = spawn_one_shot(200, body).await;
+
+    let mut row = fake_snapshot(live, port, "/m/match.gguf", 1);
+    row.name = Some("coder".to_string());
+    let report = sweep(SweepInputs {
+      recorded_running: &[row],
+      external_markers: vec!["llamastash-sweep-marker-that-matches-nothing-9f3a"],
+      probe_timeout: Duration::from_secs(1),
+    })
+    .await;
+    assert_eq!(report.adopted.len(), 1, "matching probe must adopt");
+    assert_eq!(
+      report.adopted[0].name.as_deref(),
+      Some("coder"),
+      "the name has to survive the restart, or the address dies with the daemon"
+    );
   }
 
   #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -98,6 +98,11 @@ pub enum ListRow {
     /// `None` for rows in Favorites / folders / Recent (those
     /// resolve their managed launch by path, if any).
     launch_id: Option<String>,
+    /// User-chosen launch name (from `--name` / `Alt+⏎`), when set. Rendered
+    /// as an `@name` suffix on the display name so the row reads the same
+    /// `<model-id>@<name>` string the `list` table and proxy address it by.
+    /// `None` for unnamed launches and for non-running rows.
+    launch_name: Option<String>,
   },
 }
 
@@ -153,6 +158,9 @@ pub struct RunningLaunchRow {
   /// for the Backend column — the honest resolved value, which can differ from
   /// the catalog prediction under a `--backend` override.
   pub backend: Option<String>,
+  /// User-chosen launch name (from `--name` / `Alt+⏎`), when set. Rendered as
+  /// an `@name` suffix on the row's display name.
+  pub launch_name: Option<String>,
 }
 
 /// Group `models` into:
@@ -233,6 +241,7 @@ pub fn build_rows(inputs: RowInputs<'_>) -> Vec<ListRow> {
         None,
         None,
         backend_for(&m.path),
+        None,
       ));
     }
   }
@@ -275,6 +284,7 @@ pub fn build_rows(inputs: RowInputs<'_>) -> Vec<ListRow> {
         None,
         None,
         backend_for(&m.path),
+        None,
       ));
     }
     // Visual separator between favorites and folder groups —
@@ -304,6 +314,7 @@ pub fn build_rows(inputs: RowInputs<'_>) -> Vec<ListRow> {
         None,
         None,
         backend_for(&m.path),
+        None,
       ));
     }
   }
@@ -321,6 +332,7 @@ fn running_row(m: &DiscoveredModel, launch: &RunningLaunchRow) -> ListRow {
     Some(launch.launch_id.clone()),
     // Running rows show the *resolved* backend, not the catalog prediction.
     launch.backend.clone().unwrap_or_default(),
+    launch.launch_name.clone(),
   );
   // The favorite glyph drops on Running rows so two launches of the
   // same favorited model don't both wear a star — the original star
@@ -354,6 +366,7 @@ fn running_row_stub(launch: &RunningLaunchRow) -> ListRow {
     port: Some(launch.port),
     device: launch.device.clone(),
     launch_id: Some(launch.launch_id.clone()),
+    launch_name: launch.launch_name.clone(),
   }
 }
 
@@ -378,6 +391,7 @@ fn display_name(m: &DiscoveredModel) -> String {
     .unwrap_or_else(|| crate::util::paths::model_display_name(&m.path))
 }
 
+#[allow(clippy::too_many_arguments)] // one arg per column the row renders
 fn model_row(
   m: &DiscoveredModel,
   favorite: bool,
@@ -386,6 +400,7 @@ fn model_row(
   device: Option<String>,
   launch_id: Option<String>,
   backend: String,
+  launch_name: Option<String>,
 ) -> ListRow {
   let (arch, params, quant, native_ctx, mode_hint, cached_weights_bytes) = match &m.metadata {
     Some(md) => (
@@ -426,6 +441,7 @@ fn model_row(
     port,
     device,
     launch_id,
+    launch_name,
   }
 }
 
@@ -805,7 +821,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, palette: &Palette, input: Rende
   };
   let items: Vec<ListItem<'_>> = rows
     .iter()
-    .map(|r| render_row(r, palette, &layout, content_w))
+    .enumerate()
+    .map(|(i, r)| render_row(r, palette, &layout, content_w, Some(i) == safe_selected))
     .collect();
   let title_line = build_block_title(input.title, input.filter_chip_label, palette, input.focused);
   let legend = build_status_legend(palette);
@@ -1107,6 +1124,7 @@ fn render_row<'a>(
   palette: &Palette,
   layout: &ColumnLayout,
   content_w: usize,
+  selected: bool,
 ) -> ListItem<'a> {
   let name_w = layout.name_w;
   let cols = layout.visible.as_slice();
@@ -1159,6 +1177,7 @@ fn render_row<'a>(
       name,
       favorite,
       state,
+      launch_name,
       ..
     } => {
       // The whole row carries a single semantic foreground via
@@ -1174,7 +1193,43 @@ fn render_row<'a>(
       let fg = row_fg(*state, palette);
       let mut spans: Vec<Span<'a>> = Vec::with_capacity(2 + cols.len() * 2);
       spans.push(marker_span(*state, *favorite, palette));
-      spans.push(Span::raw(cell(name.as_str(), name_w)));
+      // A named launch renders `<name>@<launch-name>` so the row reads the
+      // same addressable string the `list` table and proxy use. The `@name`
+      // suffix is muted so the model name stays the dominant token — but only
+      // while the row is unselected. `highlight_style` REVERSEs each cell
+      // against whatever fg it carries, so a muted span on the selected row
+      // would invert to a grey block mid-strip while the cells around it flip
+      // to the row colour. Unset there, it flips with everything else.
+      let suffix_style = if selected {
+        Style::default()
+      } else {
+        palette.muted_style()
+      };
+      match launch_name {
+        Some(n) if !n.is_empty() => {
+          let mut suffix = String::with_capacity(1 + n.len());
+          suffix.push('@');
+          suffix.push_str(n);
+          let suffix_w = suffix.chars().count();
+          let name_chars = name.chars().count();
+          if name_chars + suffix_w <= name_w {
+            // The suffix rides directly after the name (the address reads as
+            // one token) and the trailing pad stays unstyled so the row's
+            // single-fg selection flip still covers the whole strip.
+            spans.push(Span::raw(name.as_str()));
+            spans.push(Span::styled(suffix, suffix_style));
+            spans.push(Span::raw(cell("", name_w - name_chars - suffix_w)));
+          } else {
+            // Overflow: the name ellipsizes into what is left after the
+            // suffix, so the launch half of the address survives. Only a Name
+            // column narrower than the suffix itself truncates the suffix.
+            let head_w = name_w.saturating_sub(suffix_w);
+            spans.push(Span::raw(cell(name.as_str(), head_w)));
+            spans.push(Span::styled(cell(&suffix, name_w - head_w), suffix_style));
+          }
+        }
+        _ => spans.push(Span::raw(cell(name.as_str(), name_w))),
+      }
       for c in cols {
         spans.push(Span::raw(" "));
         spans.push(Span::raw(cell(&column_value(c.id, row), c.width)));
@@ -1327,6 +1382,138 @@ mod tests {
     assert_eq!(display_name(&m), "Qwen2.5-Coder-7B-Instruct-Q4_K_M");
   }
 
+  /// Draw the pane into a real terminal buffer, so assertions see what
+  /// `highlight_style` leaves behind rather than what a span asked for.
+  fn draw_pane(rows: &[ListRow], selected: usize, w: u16) -> ratatui::buffer::Buffer {
+    use crate::theme::{palette_for, ThemeName};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let palette = palette_for(ThemeName::Macchiato);
+    let h = (rows.len() as u16) + 2;
+    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    term
+      .draw(|f| {
+        render(
+          f,
+          Rect::new(0, 0, w, h),
+          palette,
+          RenderInputs {
+            rows,
+            selected,
+            title: TitleInputs {
+              total: rows.len(),
+              area_width: w as usize,
+              filter: FilterTitle::Inactive,
+              hints: Vec::new(),
+            },
+            filter_chip_label: "",
+            focused: true,
+            show_device: false,
+            show_backend: false,
+          },
+        )
+      })
+      .unwrap();
+    term.backend().buffer().clone()
+  }
+
+  /// The rendered line containing `needle`, with the column it starts at.
+  fn find_line(buf: &ratatui::buffer::Buffer, needle: &str) -> (u16, usize, String) {
+    for y in 0..buf.area.height {
+      let line: String = (0..buf.area.width)
+        .map(|x| buf.cell((x, y)).unwrap().symbol())
+        .collect();
+      if let Some(col) = line.find(needle) {
+        return (y, line[..col].chars().count(), line);
+      }
+    }
+    panic!("`{needle}` never rendered");
+  }
+
+  /// Foreground colour of every cell of `needle`.
+  fn needle_fg(buf: &ratatui::buffer::Buffer, needle: &str) -> Vec<Color> {
+    let (y, col, _) = find_line(buf, needle);
+    (col..col + needle.chars().count())
+      .map(|x| buf.cell((x as u16, y)).unwrap().fg)
+      .collect()
+  }
+
+  fn named_rows(model_path: &str, name: &str) -> Vec<ListRow> {
+    let m = fake(model_path, "/m");
+    build_rows(RowInputs {
+      models: std::slice::from_ref(&m),
+      favorites: &[],
+      model_states: &BTreeMap::new(),
+      model_ports: &BTreeMap::new(),
+      running: &[RunningLaunchRow {
+        launch_id: "L1".into(),
+        path: m.path.clone(),
+        port: 41100,
+        state: SurfaceState::Ready,
+        device: None,
+        backend: None,
+        launch_name: Some(name.into()),
+      }],
+      recent_paths: &[],
+      backend_by_path: &BTreeMap::new(),
+    })
+  }
+
+  fn named_row_index(rows: &[ListRow], name: &str) -> usize {
+    rows
+      .iter()
+      .position(|r| matches!(r, ListRow::Model { launch_name: Some(n), .. } if n == name))
+      .expect("a named running row")
+  }
+
+  /// The suffix is muted so the model name stays the dominant token.
+  #[test]
+  fn the_address_suffix_is_muted_on_an_unselected_row() {
+    use crate::theme::{palette_for, ThemeName};
+    let palette = palette_for(ThemeName::Macchiato);
+    let rows = named_rows("/m/qwen.gguf", "coder");
+    // Row 0 is the table header, so the selection lands off the named row.
+    let buf = draw_pane(&rows, 0, 80);
+    for fg in needle_fg(&buf, "@coder") {
+      assert_eq!(fg, palette.muted, "unselected suffix must paint muted");
+    }
+  }
+
+  /// On the selected row `highlight_style` REVERSEs each cell against its own
+  /// fg, so a muted suffix would invert to a grey block mid-strip. It has to
+  /// carry the row colour like every other cell instead.
+  #[test]
+  fn the_address_suffix_flips_with_the_row_when_selected() {
+    use crate::theme::{palette_for, ThemeName};
+    let palette = palette_for(ThemeName::Macchiato);
+    let rows = named_rows("/m/qwen.gguf", "coder");
+    let selected = named_row_index(&rows, "coder");
+    let buf = draw_pane(&rows, selected, 80);
+    let want = row_fg(SurfaceState::Ready, palette);
+    for fg in needle_fg(&buf, "@coder") {
+      assert_eq!(
+        fg, want,
+        "selected suffix must flip with the rest of the row, not keep `muted`"
+      );
+    }
+  }
+
+  /// A Name column too narrow for the whole address ellipsizes the model half
+  /// and keeps the launch half, so the row still says which launch it is.
+  #[test]
+  fn a_narrow_name_column_ellipsizes_the_model_half_not_the_name() {
+    let rows = named_rows(
+      "/m/an-extremely-long-model-file-name-that-cannot-fit.gguf",
+      "coder",
+    );
+    let buf = draw_pane(&rows, 0, 40);
+    let (_, _, line) = find_line(&buf, "@coder");
+    assert!(
+      line.contains(crate::tui::glyphs::active().ellipsis()),
+      "the model half must be the truncated one: {line}"
+    );
+  }
+
   #[test]
   fn build_rows_places_running_section_at_top_with_per_launch_rows() {
     // Two launches of the same model should produce two Running
@@ -1341,6 +1528,7 @@ mod tests {
         state: SurfaceState::Ready,
         device: None,
         backend: None,
+        launch_name: None,
       },
       RunningLaunchRow {
         launch_id: "L1".into(),
@@ -1349,6 +1537,7 @@ mod tests {
         state: SurfaceState::Ready,
         device: None,
         backend: None,
+        launch_name: None,
       },
     ];
     let rows = build_rows(RowInputs {
@@ -1398,6 +1587,7 @@ mod tests {
       state: SurfaceState::Ready,
       device: None,
       backend: Some(crate::backend::DEFAULT_BACKEND_ID.into()),
+      launch_name: None,
     };
     assert_eq!(
       column_value(ColumnId::Device, &running_row(&m, &running)),
@@ -1422,6 +1612,7 @@ mod tests {
       None,
       None,
       crate::backend::DEFAULT_BACKEND_ID.into(),
+      None,
     );
     assert_eq!(column_value(ColumnId::Device, &catalog), dash);
     // A running row on a non-default (device-less) backend stays dash even with
@@ -1450,6 +1641,7 @@ mod tests {
       state: SurfaceState::Ready,
       device: None,
       backend: None,
+      launch_name: None,
     }];
     let recent = vec![a.path.clone(), b.path.clone()];
     let rows = build_rows(RowInputs {
@@ -1631,6 +1823,7 @@ mod tests {
       state: SurfaceState::Ready,
       device: None,
       backend: None,
+      launch_name: None,
     }];
     let rows_with_running = build_rows(RowInputs {
       models: std::slice::from_ref(&a),
@@ -2081,6 +2274,7 @@ mod tests {
       state: SurfaceState::Ready,
       device: None,
       backend: Some("llamacpp".into()),
+      launch_name: None,
     }];
     let rows = build_rows(RowInputs {
       models: &[idle.clone(), run_m.clone()],

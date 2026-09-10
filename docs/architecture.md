@@ -221,7 +221,7 @@ All three engines expose an OpenAI-shape local server, so any agent that speaks 
 | Auto-start unloaded model | Yes (scheduler) | Yes (JIT) | Yes (`auto_start` + coalesce) |
 | Multiple loaded at once | Yes, VRAM-bounded | No by default (Auto-Evict on) | Yes (whatever fits) |
 | Idle TTL eviction | 5 min, refcount-gated | 60 min, request-resets | 30 min default, refcount-gated, auto-start only (`proxy.idle_ttl_secs`) |
-| Single-flight coalesce on concurrent first-requests | Implicit via scheduler channel | Not documented | Explicit `Coalesce` map keyed on `ModelId` |
+| Single-flight coalesce on concurrent first-requests | Implicit via scheduler channel | Not documented | Explicit `Coalesce` map keyed on `(ModelId, launch name)` |
 | Fallback when load fails | None — request fails | None documented | Family-MRU pick, headers stamped (`x-llamastash-served-by` + `fallback-reason`) |
 | Body pass-through (no `model` rewrite) | Re-routes by name, may rewrite | OpenAI-shape pass-through | Byte-pure forward via `StreamBody` |
 | Loopback-only by default | No (configurable bind) | Yes (`127.0.0.1`) | Yes; opt-in LAN bind (`proxy.host`) behind a required bearer key |
@@ -230,6 +230,76 @@ All three engines expose an OpenAI-shape local server, so any agent that speaks 
 | Ollama inference `/api/chat`, `/api/generate` | Yes (native) | No | **Deferred** (Tier 2 — TODO §R2) |
 
 **Roadmap note.** The family-MRU fallback is the one behavior neither Ollama nor LM Studio surfaces — both fail the request when a launch fails. For agents that don't read response headers the substitution is invisible, which is worth re-considering before v1 ships (do we want this to be opt-in via `proxy.fallback: false`?). Idle-TTL eviction landed in `37d389a` and follows the Ollama shape — refcount-gated, auto-start only, with manually-launched models exempt (LM Studio's rule).
+
+### Named launches (`model@name`)
+
+One model can run several times at once, each carrying a user-chosen name, so a
+request can say *which* copy it wants. The rules, all in one place:
+
+- **The split** is `launch::resolve::parse_named_reference`: the whole reference
+  is resolved against the catalog first, so a GGUF whose own file name contains
+  an `@` still wins, and only a miss is re-read as `<model>@<name>`, split at the
+  **last** `@`. The name half has to *be* a launch name (below), so a reference
+  the writer would never have produced is not a name reference at all. The
+  proxy, the CLI resolver and `show` all call it, so no surface can drift on
+  where the name starts.
+- **The comparison** is `launch::resolve::name_matches`, ASCII-case-insensitive
+  like every other reference in the product. `RunningSnapshot::carries_name` is
+  the one join from a launch to its name, keyed on `launch_id` (a port is reused
+  the moment its launch stops) and used by the proxy's supervisor walk, the
+  auto-start attach and the daemon's duplicate gate alike.
+- **The namespace** is per model and per live launch. `compose_and_spawn`
+  refuses a second live launch of one model under one name and claims the name
+  for the duration of the spawn (a `Drop` guard over a registry set, mirroring
+  `reserved_ports`), because the check and the row insert are not otherwise in
+  one critical section. An `error` launch does not hold its name. A managed
+  multiplexer refuses names outright: it serves every model from one shared
+  process, so a name there could not select an instance.
+- **The charset** is one predicate, `launch::resolve::is_launch_name`: non-empty,
+  ASCII letters / digits / `-` / `_` only. The writer
+  (`validate_launch_name`, at `--name`'s value parser, the TUI dialog and the
+  daemon's gate for raw JSON-RPC callers) trims and then applies it; the reader
+  (`parse_named_reference`) applies it to the name half. Sharing it is what
+  keeps a malformed address cheap: `qwen3@co der` resolves as a plain reference
+  and misses, instead of auto-starting a launch the daemon then refuses and
+  spending one of that model's three auto-start failures per minute. The
+  accepted name is echoed as
+  `launch_name` on the `start_model` response (omitted when unnamed), and the
+  `status` wire omits `name` on unnamed rows rather than emitting `null` —
+  the same omit-when-unset convention `state.json` uses.
+- **Resolving a name to a launch** prefers the rows that are still addressable.
+  Because an `error` launch does not hold its name but does keep its
+  `state.json` row, a relaunch under the same name coexists with the row it
+  replaced. The CLI resolver skips `error` / `stopping` / `stopped` rows — the
+  same set the proxy's `attach_target` skips — and falls back to them only when
+  no live launch answers, so the address reaches the running copy while
+  `stop <name>` can still clean up one that failed to load.
+- **The preset an auto-start uses** is the one the address names. A proxy
+  auto-start of `<model>@<name>` looks for a preset called `<name>` (compared
+  with `name_matches`, so it follows the address's case rule) and takes it as
+  the launch's `PresetDefault` layer, falling back to the model's `default:`
+  when none answers. That one resolved preset also feeds
+  `inherited_launch_identity`, so a preset's `backend:` / `server:` apply
+  alongside its knobs rather than being resolved a second time from the
+  model's `default:`. A preset chosen this way also outranks `default: auto` —
+  it is an explicit choice, not a default. Scoped to `LaunchOrigin::AutoStart`:
+  a request body carries only `model`, so the address is a client's only
+  channel, while `start --name` and the TUI already have `--preset`.
+- **The published ids** come from two different places by design. Catalog rows
+  are published through `published_id_index` (`util::paths`); named rows come
+  from the live launch registry, and take their model half out of that same
+  index so a named id can never be the ambiguous bare stem. A named id exists
+  only while its launch runs; a request for one that has stopped auto-starts a
+  fresh launch under that name, which is why the unbounded namespace is safe.
+- **The single-flight key** is `(ModelId, Option<name>)`, so two concurrent cold
+  requests for two names of one model produce two launches rather than sharing
+  one silently.
+- **Persistence** is `RunningSnapshot.name`, `skip_serializing_if` so an unnamed
+  row is byte-identical to a pre-feature one. The name rides the snapshot rather
+  than the supervisor for exactly one reason: the orphan sweep re-adopts from
+  `state.json` across a daemon restart, and the address has to survive it.
+
+Design and tradeoffs: [`plans/2026-09-03-002-feat-named-launches-plan.md`](plans/2026-09-03-002-feat-named-launches-plan.md).
 
 ## Model lifecycle
 
@@ -407,7 +477,7 @@ Beyond the `models` / `external` / `gpu` shapes, the `status` response carries t
 
 - `favorites: ModelId[]`
 - `last_params: { <ModelId>: LaunchParams }`
-- `running: RunningSnapshot[]` (PID + port + started_at + params)
+- `running: RunningSnapshot[]` (PID + port + started_at + params, plus `launch_id` and `name` when set)
 
 Corruption → quarantine. A `state.json` that fails to parse is renamed to `state.json.broken-<unix-secs>` and the daemon starts with defaults rather than refusing to boot.
 
