@@ -31,19 +31,6 @@ use crate::ipc::Client;
 use crate::launch::knobs::{Concept, KnobSet};
 
 pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
-  // A `--name` of only whitespace would trim to nothing and be dropped, leaving a
-  // launch whose owner believes it has an address it does not have. Reject it as
-  // the usage error it is, before doing any work.
-  if args
-    .name
-    .as_deref()
-    .is_some_and(|raw| raw.trim().is_empty())
-  {
-    return Err(CliExit::new(
-      USAGE,
-      "`--name` needs a non-empty name (letters, digits, `-` or `_`)",
-    ));
-  }
   // A launch file supplies both the model reference and the preset, so it
   // replaces the `--preset` → `presets_show` round trip rather than adding a
   // path beside it. Read before the daemon: `load` needs nothing from it, and a
@@ -172,14 +159,9 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
   // An explicit flag beats the preset's pin; the preset beats nothing at all.
   let backend = args.backend.as_deref().or(params.backend.as_deref());
   let server = args.server.as_deref().or(params.server.as_deref());
-  // Trimmed so `--name " coder "` and `--name coder` are one address. The
-  // daemon's uniqueness gate compares stored values, so an untrimmed space would
-  // make `stop <model>@coder` miss a launch the user named `coder`.
-  let launch_name = args
-    .name
-    .as_deref()
-    .map(str::trim)
-    .filter(|n| !n.is_empty());
+  // Already trimmed and charset-checked by the flag's value parser, so what the
+  // daemon receives is exactly what it can stamp and compare.
+  let launch_name = args.name.as_deref();
   let payload = build_payload(
     &row.path,
     mode,

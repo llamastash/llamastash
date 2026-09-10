@@ -986,3 +986,27 @@ fn a_blank_name_is_refused_inline_rather_than_silently_dropped() {
     "…and says why, the way `--name \"  \"` does"
   );
 }
+
+#[test]
+fn a_name_the_cli_would_refuse_is_refused_inline_too() {
+  let mut app = App::new(AppOptions::default());
+  app.models = vec![fake_model("/m/qwen3.gguf", "/m")];
+  app.go_top();
+  pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::NONE));
+  pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::ALT));
+
+  // `a@b` would publish `qwen3@a@b`, which re-splits to a different pair.
+  for c in ['a', '@', 'b'] {
+    pump_input(&mut app, key(KeyCode::Char(c), KeyModifiers::NONE));
+  }
+  pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::NONE));
+  let dialog = app
+    .launch_name_dialog
+    .as_ref()
+    .expect("an unaddressable name keeps the dialog open");
+  assert!(
+    dialog.error.as_deref().is_some_and(|e| e.contains('@')),
+    "the error points at the offending character, got: {:?}",
+    dialog.error
+  );
+}

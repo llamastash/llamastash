@@ -350,7 +350,7 @@ fn multiplexer_refuses_name(identity: &ModelIdentity, name: Option<&str>) -> Opt
 /// IPC handler can forward it verbatim.
 pub(crate) async fn compose_and_spawn(
   ctx: &MethodContext,
-  parsed: StartParams,
+  mut parsed: StartParams,
   origin: crate::daemon::supervisor::LaunchOrigin,
 ) -> Result<StartedLaunch, ErrorObject> {
   // Pure input-validation lives before the daemon's launch-env
@@ -361,6 +361,17 @@ pub(crate) async fn compose_and_spawn(
       ErrorCode::InvalidParams,
       "set exactly one of `port` (strict) or `prefer_port` (soft preference)",
     ));
+  }
+  // The name rule is enforced here, not just at the clients: raw JSON-RPC
+  // callers skip the CLI's parser, and a name carrying `@` (or a space)
+  // publishes an address that parses back to a different pair or to none.
+  // Normalizing here also means everything downstream — the uniqueness gate,
+  // the stamp, the snapshot — sees the same trimmed value the clients send.
+  if let Some(name) = parsed.name.as_deref() {
+    parsed.name = Some(
+      crate::launch::resolve::validate_launch_name(name)
+        .map_err(|msg| ErrorObject::new(ErrorCode::InvalidParams, msg))?,
+    );
   }
   // A name is unique per model: a second launch of the same model with the same
   // name is refused so `<model-id>@<name>` stays a stable address (D3). The
@@ -2700,6 +2711,37 @@ mod tests {
         err.message
       ),
       Ok(_) => panic!("expected the duplicate-name refusal, got a successful launch"),
+    }
+  }
+
+  /// The daemon enforces the name rule itself, not just the CLI parser: a raw
+  /// JSON-RPC caller can send any string, and `a@b` would publish an address
+  /// that re-splits to a different pair.
+  #[tokio::test]
+  async fn a_name_that_cannot_appear_in_an_address_is_refused() {
+    let ctx = MethodContext::new(ShutdownToken::new());
+    for bad in ["a@b", "co der", "  "] {
+      let parsed = StartParams {
+        model_path: PathBuf::from("/m/a.gguf"),
+        name: Some(bad.to_string()),
+        ..Default::default()
+      };
+      match compose_and_spawn(&ctx, parsed, LaunchOrigin::Manual).await {
+        Err(err) => {
+          assert_eq!(err.code, ErrorCode::InvalidParams.as_i32());
+          let expected = if bad.trim().is_empty() {
+            "needs at least one"
+          } else {
+            "letters, digits"
+          };
+          assert!(
+            err.message.contains(expected),
+            "the refusal states the rule, got: {}",
+            err.message
+          );
+        }
+        Ok(_) => panic!("`{bad}` must be refused as a launch name"),
+      }
     }
   }
 

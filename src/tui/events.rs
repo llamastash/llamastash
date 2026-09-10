@@ -1308,8 +1308,9 @@ fn commit_save_preset(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) {
 
 /// Route a key to the open launch-name dialog. Single text-entry stage:
 /// typing edits the buffer, `Enter` accepts (an empty name is fine — it
-/// launches unnamed, same as a plain `⏎`), `Esc` cancels. A blank-but-typed
-/// name is rejected inline rather than silently dropped, matching `--name`.
+/// launches unnamed, same as a plain `⏎`), `Esc` cancels. Anything else the
+/// `--name` flag would refuse is rejected inline rather than silently
+/// accepted, so no dialog path can publish an unaddressable name.
 fn handle_launch_name_input(
   app: &mut App,
   key: KeyEvent,
@@ -1326,11 +1327,13 @@ fn handle_launch_name_input(
   }
   match dialog.input.handle_key(key) {
     InputOutcome::Submit => {
-      // Nothing typed launches unnamed; whitespace is a typo, not a name, and
-      // the CLI rejects `--name "  "` for the same reason.
-      if !dialog.input.buffer().is_empty() && dialog.name().is_empty() {
-        dialog.error = Some("a name cannot be only whitespace".to_string());
-        return;
+      // Nothing typed at all launches unnamed; anything else must survive the
+      // same `validate_launch_name` the CLI's `--name` parser applies.
+      if !dialog.input.buffer().is_empty() {
+        if let Err(msg) = crate::launch::resolve::validate_launch_name(dialog.input.buffer()) {
+          dialog.error = Some(msg);
+          return;
+        }
       }
       dialog.error = None;
       // Borrow released below; the picker launches carrying the typed name.
