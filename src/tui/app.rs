@@ -144,9 +144,6 @@ pub struct LastParamsRow {
   /// Server id (build/binary) the last launch used, when one was picked.
   /// Seeds the picker's Server row so a relaunch reuses the same build.
   pub server: Option<String>,
-  /// MTP intent from the last successful launch (`auto`/`on`/`off`). Seeds the
-  /// picker's MTP row so a returning user keeps their choice.
-  pub mtp: crate::launch::params::MtpEnable,
 }
 
 /// Snapshot of the daemon-side metadata the Daemon info panel
@@ -470,9 +467,6 @@ pub struct StartModelArgs {
   /// the daemon derives the binary (and, when `backend` is `Auto`, the backend)
   /// from it.
   pub server: Option<String>,
-  /// MTP speculative-decoding intent from the picker's `mtp` cycle row
-  /// (`auto`/`on`/`off`). Backend-agnostic — sent as the `mtp` start param.
-  pub mtp: crate::launch::params::MtpEnable,
 }
 
 /// The binary + compute-backend label a focused running model launched on
@@ -1111,11 +1105,6 @@ impl App {
           .get("server")
           .and_then(Value::as_str)
           .map(String::from);
-        let mtp = params
-          .get("mtp")
-          .and_then(Value::as_str)
-          .and_then(crate::launch::params::MtpEnable::from_token)
-          .unwrap_or_default();
         if recent.len() < RECENT_LIST_CAP {
           recent.push(path.clone());
         }
@@ -1128,7 +1117,6 @@ impl App {
             extras,
             port,
             server,
-            mtp,
           },
         );
       }
@@ -1658,9 +1646,6 @@ impl App {
       state.mtp_capable = self.mtp_capable_for(p);
       if let Some(last) = self.last_params.get(p) {
         state.prefer_port = last.port;
-        // A returning user keeps their last MTP choice. It arrives as a typed
-        // sibling on the wire params and lands on the knob row that renders it.
-        state.set_mtp_intent(last.mtp);
         // returning user inherits the typed-knob deltas they
         // last shipped. The daemon persists only user-supplied
         // deltas (not the fully resolved set) so seeding straight

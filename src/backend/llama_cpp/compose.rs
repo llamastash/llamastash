@@ -85,7 +85,9 @@ pub(crate) fn compose(params: &LaunchParams, allocated_port: u16) -> Vec<OsStrin
       argv.push("--model-draft".into());
       argv.push(draft.clone().into());
     }
-    if let Some(n) = params.mtp_draft_n {
+    // The draft count is the `mtp-draft-n` knob (`Emit::Custom`, so the
+    // generic emitter leaves it to this block — one emission, not two).
+    if let Some(n) = params.knobs.u32(crate::launch::knobs::kid("mtp-draft-n")) {
       argv.push("--spec-draft-n-max".into());
       argv.push(n.to_string().into());
     }
@@ -313,7 +315,7 @@ mod tests {
     p.mtp_directive = Some(MtpDirective {
       draft_model: Some(PathBuf::from("/m/mtp-model.gguf")),
     });
-    p.mtp_draft_n = Some(5);
+    p.knobs.set_by_name("mtp-draft-n", "5");
     let argv = strs(&compose(&p, 41100));
     let md = argv
       .iter()
@@ -336,12 +338,12 @@ mod tests {
 
   /// No knob's flag reaches argv twice, whichever channel carried its value.
   ///
-  /// `mtp-draft-n` lived on two: the `mtp_draft_n` typed field the MTP block
-  /// composes from, and the knob's own `Emit::FlagValue`. A preset setting the
-  /// knob populated both, so argv carried `--spec-draft-n-max` twice.
+  /// `mtp-draft-n` once lived on two channels: a typed field the MTP block
+  /// composed from, and the knob's own emission. A preset setting the knob
+  /// populated both, so argv carried `--spec-draft-n-max` twice.
   /// llama-server takes the last one and warns, so the two channels
   /// disagreeing would have silently picked a value the user never asked for.
-  /// The knob is `Emit::Custom` now; this counts rather than trusting that.
+  /// One channel now; this counts rather than trusting that.
   #[test]
   fn no_declared_flag_is_emitted_twice() {
     use crate::launch::knobs::{KnobValue, Scalar};
@@ -350,7 +352,6 @@ mod tests {
     // The real shape that produced the duplicate: a preset pinning the knob on
     // a launch that also resolved a directive.
     p.mtp_directive = Some(MtpDirective { draft_model: None });
-    p.mtp_draft_n = Some(4);
     p.knobs.set_by_name("mtp-draft-n", "4");
     p.knobs.set_by_name("flash-attn", "true");
     p.knobs.set_by_name("threads", "16");

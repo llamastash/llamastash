@@ -103,12 +103,6 @@ pub fn preset_body_from_launch_params(params: &LaunchParams) -> PresetBody {
       KnobValue::Set(Scalar::Str(params.mode.label().to_string())),
     );
   }
-  if !matches!(params.mtp, crate::launch::params::MtpEnable::Auto) {
-    knobs.set_by_name("mtp", params.mtp.label());
-  }
-  if let Some(n) = params.mtp_draft_n {
-    knobs.set_by_name("mtp-draft-n", n.to_string());
-  }
   let extras: Vec<String> = params
     .extras
     .iter()
@@ -125,10 +119,11 @@ pub fn preset_body_from_launch_params(params: &LaunchParams) -> PresetBody {
 /// Materialise a stored [`PresetBody`] back into a [`NamedPreset`] over
 /// `model_path`.
 ///
-/// `ctx` / `reasoning` / `mode` / `mtp` are projected back out of the knob map
+/// `ctx` / `reasoning` / `mode` are projected back out of the knob map
 /// onto their [`LaunchParams`] siblings so the IPC and CLI wire shapes are
 /// unchanged. An `Auto` ctx stays in the knob, so `--fit` still governs it.
-/// The inverse of [`preset_body_from_launch_params`].
+/// `mtp` / `mtp-draft-n` are knobs end to end and stay put. The inverse of
+/// [`preset_body_from_launch_params`].
 pub fn materialize_preset(name: &str, body: &PresetBody, model_path: PathBuf) -> NamedPreset {
   let mut knobs = body.knobs.clone();
   let backend = body
@@ -164,15 +159,6 @@ pub fn materialize_preset(name: &str, body: &PresetBody, model_path: PathBuf) ->
     .unwrap_or(false);
   knobs.remove_by_name("reasoning");
 
-  let mtp = knobs
-    .text_by_name("mtp")
-    .and_then(|v| crate::launch::params::MtpEnable::from_token(&v))
-    .unwrap_or_default();
-  let mtp_draft_n = knobs
-    .get_by_name("mtp-draft-n")
-    .and_then(|v| v.set_value())
-    .and_then(|s| s.as_u32());
-
   let mut params = LaunchParams::new(model_path, mode);
   params.ctx = ctx;
   params.reasoning = reasoning;
@@ -186,8 +172,6 @@ pub fn materialize_preset(name: &str, body: &PresetBody, model_path: PathBuf) ->
     .collect();
   params.backend = backend;
   params.server = body.server.clone();
-  params.mtp = mtp;
-  params.mtp_draft_n = mtp_draft_n;
   NamedPreset {
     name: name.to_string(),
     params,
@@ -594,12 +578,12 @@ mod tests {
 
   #[test]
   fn mtp_round_trips_through_a_preset_body() {
-    // KD2 scopes MTP to "launch / TUI / preset". The preset half was missing:
-    // PresetBody had no mtp field, so `mtp: off` in config.yaml was parsed,
-    // stored, materialised and then silently dropped at launch.
+    // KD2 scopes MTP to "launch / TUI / preset", and the knob map is its one
+    // storage: a preset body written with `mtp: off` must survive a
+    // materialise round-trip without being projected out onto typed siblings.
     let mut lp = LaunchParams::new(PathBuf::from("/m/a.gguf"), LaunchMode::Chat);
-    lp.mtp = crate::launch::params::MtpEnable::Off;
-    lp.mtp_draft_n = Some(4);
+    lp.set_mtp_intent(crate::launch::params::MtpEnable::Off);
+    lp.knobs.set_by_name("mtp-draft-n", "4");
     let body = preset_body_from_launch_params(&lp);
     assert_eq!(
       body.knobs.bool(crate::launch::knobs::kid("mtp")),
@@ -610,8 +594,16 @@ mod tests {
       Some(4)
     );
     let np = materialize_preset("p", &body, PathBuf::from("/m/a.gguf"));
-    assert_eq!(np.params.mtp, crate::launch::params::MtpEnable::Off);
-    assert_eq!(np.params.mtp_draft_n, Some(4));
+    assert_eq!(
+      np.params.mtp_intent(),
+      crate::launch::params::MtpEnable::Off
+    );
+    assert_eq!(
+      np.params
+        .knobs
+        .u32(crate::launch::knobs::kid("mtp-draft-n")),
+      Some(4)
+    );
   }
 
   #[test]

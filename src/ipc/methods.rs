@@ -679,10 +679,6 @@ struct PresetsSaveParams {
   knobs: crate::launch::knobs::KnobSet,
   #[serde(default)]
   extras: Vec<String>,
-  #[serde(default)]
-  mtp: crate::launch::params::MtpEnable,
-  #[serde(default)]
-  mtp_draft_n: Option<u32>,
   /// Backend this preset pins. Launch *identity*, not a knob — it decides
   /// which backend's knobs apply at all, so it cannot be backend-declared.
   #[serde(default)]
@@ -715,10 +711,6 @@ async fn presets_save_handler(
   lp.ctx = parsed.ctx;
   lp.reasoning = parsed.reasoning.unwrap_or(false);
   lp.knobs = parsed.knobs;
-  // KD2 scoped MTP to "launch / TUI / preset"; the save path used to drop it,
-  // so a preset could never pin speculation on or off.
-  lp.mtp = parsed.mtp;
-  lp.mtp_draft_n = parsed.mtp_draft_n;
   // Identity: which backend and which of its builds this preset pins. Stored
   // verbatim so a saved preset can reproduce the run it was captured from.
   lp.backend = parsed

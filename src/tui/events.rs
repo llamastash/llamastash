@@ -1744,9 +1744,6 @@ fn apply_launch_submit(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) 
     // Chosen server build (or `None` for the priority default). The daemon
     // derives the binary — and, when `backend` is `Auto`, the backend — from it.
     server: picker.selected_server.clone(),
-    // MTP is an ordinary declared knob in the editor; the wire params still
-    // carry it as a typed sibling, so project it back out the way a preset does.
-    mtp: picker.mtp_intent(),
   });
 
   if active_instances > 0 {
@@ -2086,7 +2083,6 @@ pub fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
         backend,
         selection,
         server,
-        mtp,
       } = *args;
       let mode_str = mode.map(|m| match m {
         crate::launch::mode::LaunchMode::Chat => "chat",
@@ -2099,6 +2095,7 @@ pub fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
           "model_path": model_path,
           "ctx": ctx,
           "reasoning": reasoning,
+          // MTP intent rides here too: the picker's cycle row is the `mtp` knob.
           "knobs": knobs,
           "extras": extras,
           "mode": mode_str,
@@ -2109,8 +2106,6 @@ pub fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
           "selection": selection,
           // Chosen server build id; daemon ignores `null` / stale ids.
           "server": server,
-          // MTP intent from the picker's cycle row (auto/on/off).
-          "mtp": mtp.label(),
         }),
       )
     }

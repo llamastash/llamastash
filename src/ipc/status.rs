@@ -109,7 +109,7 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
       // rate it reported (null until printed, or on a backend that publishes
       // none). Additive.
       "mtp": {
-        "enable": params.mtp.label(),
+        "enable": params.mtp_intent().label(),
         "active": mtp_active,
         "acceptance": mtp_acceptance.map(|a| a.rate),
         "draft_accepted": mtp_acceptance.map(|a| a.accepted),
@@ -226,7 +226,7 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
           .map(|s| s.to_string_lossy().into_owned())
           .collect::<Vec<_>>(),
         "mtp": {
-          "enable": running_snap.params.mtp.label(),
+          "enable": running_snap.params.mtp_intent().label(),
           "active": owner.mtp_active(&running_snap.params),
           "acceptance": Value::Null,
           "draft_accepted": Value::Null,

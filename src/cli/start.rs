@@ -118,12 +118,14 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
   if let Some(r) = args.reasoning {
     params.reasoning = Some(matches!(r, ReasoningFlag::On));
   }
-  // MTP overrides layer over any preset baseline, like `--ctx` / `--reasoning`.
+  // MTP overrides layer over any preset baseline, like `--ctx` / `--reasoning`:
+  // the hand-written flags fold straight into the knob map, so they ride the
+  // same User layer as every other flag.
   if let Some(m) = args.mtp {
-    params.mtp = Some(m);
+    params.knobs.set_by_name("mtp", m.label());
   }
   if let Some(n) = args.mtp_draft_n {
-    params.mtp_draft_n = Some(n);
+    params.knobs.set_by_name("mtp-draft-n", n.to_string());
   }
   let (cli_knobs, cli_extras) = parse_cli_knobs(&args.knobs.tokens, &args.extra)?;
   // Layer per-invocation overrides onto the preset baseline instead of
@@ -416,8 +418,6 @@ struct PartialParams {
   reasoning: Option<bool>,
   knobs: KnobSet,
   extras: Vec<String>,
-  mtp: Option<crate::launch::params::MtpEnable>,
-  mtp_draft_n: Option<u32>,
   /// Serving mode a preset pins. `Some("chat")` is *not* a pin: a preset
   /// stores a mode only when it differs from chat, so a materialised `chat`
   /// means the preset said nothing and the catalog hint still decides.
@@ -546,13 +546,6 @@ fn partial_params_from_preset(preset: &Value) -> PartialParams {
     reasoning: p.get("reasoning").and_then(Value::as_bool),
     knobs,
     extras,
-    mtp: p
-      .get("mtp")
-      .and_then(|v| serde_json::from_value(v.clone()).ok()),
-    mtp_draft_n: p
-      .get("mtp_draft_n")
-      .and_then(Value::as_u64)
-      .map(|n| n as u32),
     mode: p.get("mode").and_then(Value::as_str).map(str::to_string),
     backend: p.get("backend").and_then(Value::as_str).map(str::to_string),
     server: p.get("server").and_then(Value::as_str).map(str::to_string),
@@ -642,14 +635,8 @@ fn build_payload(
       Value::Array(p.extras.iter().cloned().map(Value::String).collect()),
     );
   }
-  // MTP intent + draft-token count. Omitted when unset so the daemon inherits
-  // (default preset / last_params) and falls to `Auto`.
-  if let Some(m) = p.mtp {
-    obj.insert("mtp".into(), Value::String(m.label().to_string()));
-  }
-  if let Some(n) = p.mtp_draft_n {
-    obj.insert("mtp_draft_n".into(), Value::from(n));
-  }
+  // MTP intent + draft-token count ride the `knobs` map (`mtp` /
+  // `mtp-draft-n`), so they need no keys of their own here.
   Value::Object(obj)
 }
 
@@ -921,8 +908,16 @@ mod tests {
     );
     assert_eq!(p.server.as_deref(), Some("llamacpp-vulkan"));
     assert_eq!(p.mode.as_deref(), Some("embedding"));
-    assert_eq!(p.mtp, Some(crate::launch::params::MtpEnable::On));
-    assert_eq!(p.mtp_draft_n, Some(4));
+    assert_eq!(
+      p.knobs.bool(crate::launch::knobs::kid("mtp")),
+      Some(true),
+      "the mtp knob rides the knob set end to end"
+    );
+    assert_eq!(
+      p.knobs.u32(crate::launch::knobs::kid("mtp-draft-n")),
+      Some(4),
+      "the draft count rides the knob set end to end"
+    );
     assert_eq!(p.reasoning, Some(true));
   }
 

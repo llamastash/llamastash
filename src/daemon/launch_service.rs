@@ -95,15 +95,6 @@ pub(crate) struct StartParams {
   /// what the proxy's `StartParams::default()` auto-start path sends.
   #[serde(default)]
   pub(crate) selection: LaunchSelection,
-  /// MTP speculative-decoding intent. `None` ⇒ inherit (default preset /
-  /// last_params) or fall to `Auto`; `Some(_)` is an explicit
-  /// `--mtp auto|on|off`. Launch-only, no config-file entry (KD2).
-  #[serde(default)]
-  pub(crate) mtp: Option<crate::launch::params::MtpEnable>,
-  /// Tokens to draft per speculation step. `None` ⇒ inherit, or leave the
-  /// serving backend on its own default.
-  #[serde(default)]
-  pub(crate) mtp_draft_n: Option<u32>,
   /// Launch even when the memory admission gate refuses. Set by
   /// `start --force`; the projection is surfaced as a warning instead. Never
   /// set by the proxy's auto-start path, which must not be able to OOM the
@@ -657,35 +648,10 @@ pub(crate) async fn compose_and_spawn(
       crate::discovery::scanner::find_mmproj(&parsed.model_path)
     }
   });
-  // MTP intent — same whole-value inheritance as extras: an
-  // explicit `--mtp` / `--mtp-draft-n` wins verbatim; else a no-selection
-  // launch inherits the default preset's value, then last_params'; else the
-  // `MtpEnable::Auto` default. Launch-only, no config-file entry (KD2). The
-  // effective *directive* (what argv to emit) is resolved below, once real
-  // capability is known.
-  launch_params.mtp = parsed.mtp.unwrap_or_else(|| {
-    if no_selection {
-      effective_default
-        .as_ref()
-        .and_then(|e| e.default_preset())
-        .map(|np| np.params.mtp)
-        .or_else(|| last_params.as_ref().map(|p| p.mtp))
-        .unwrap_or_default()
-    } else {
-      crate::launch::params::MtpEnable::default()
-    }
-  });
-  launch_params.mtp_draft_n = parsed.mtp_draft_n.or_else(|| {
-    if no_selection {
-      effective_default
-        .as_ref()
-        .and_then(|e| e.default_preset())
-        .and_then(|np| np.params.mtp_draft_n)
-        .or_else(|| last_params.as_ref().and_then(|p| p.mtp_draft_n))
-    } else {
-      None
-    }
-  });
+  // MTP intent needs no typed pass here: `mtp` / `mtp-draft-n` are knobs, so
+  // the resolver chain below (User > PresetDefault > LastUsed > ArchDefault)
+  // inherits them exactly like every other knob, and the effective
+  // *directive* is resolved further down, once real capability is known.
 
   // Merge the caller's top-level `ctx` and `reasoning` into the
   // User-layer typed knobs so they participate in the resolver chain
@@ -894,23 +860,16 @@ pub(crate) async fn compose_and_spawn(
   // embedding / rerank launch never speculates. And the backend defers entirely
   // when the user is already hand-driving speculation through extras (KD3) —
   // asked, not matched here, so the resolution names no backend or flag.
-  // Fold the resolved knob into the typed sibling the backends compose from.
-  // `parsed.mtp_draft_n` is the wire field (CLI `--mtp-draft-n`); a preset or
-  // arch default supplies the same value as a knob instead, and only the
-  // resolver knows which layer won. Wire field first, so an explicit flag
-  // still beats an inherited layer.
-  if launch_params.mtp_draft_n.is_none() {
-    launch_params.mtp_draft_n = launch_params
-      .knobs
-      .get_by_name_for(&resolved_backend_id, "mtp-draft-n")
-      .and_then(|v| v.set_value())
-      .and_then(|s| s.as_u32());
-  }
+  // Intent comes off the resolved knob map (one channel): an unset or `Auto`
+  // mtp means "capability decides". The resolved *truth* lives on
+  // `mtp_directive` (status `active`), never written back onto the knob —
+  // overwriting the intent slot would corrupt the next launch's LastUsed
+  // layer, `status`'s `enable`, and the picker's reopen value.
   let user_drives_speculation =
     crate::backend::Backend::speculation_set_in_extras(&inference_backend, &launch_params.extras);
   launch_params.mtp_directive = if matches!(mode, LaunchMode::Chat) && !user_drives_speculation {
     crate::launch::params::resolve_mtp_directive(
-      launch_params.mtp,
+      launch_params.mtp_intent(),
       mtp_embedded.is_some(),
       crate::discovery::scanner::find_mtp_head(&parsed.model_path, arch.as_deref()),
       &mut warnings,
@@ -918,41 +877,6 @@ pub(crate) async fn compose_and_spawn(
   } else {
     None
   };
-  // Record what speculation actually resolved to on its own knob, so every
-  // surface reading `params.knobs` sees the truth. The knob emits nothing
-  // itself (`Emit::Custom` — the backend builds the flags from the directive),
-  // so argv is unchanged; without this the running view rendered `inherited`
-  // on a launch that was speculating.
-  if let Some(def) =
-    crate::launch::knobs::def_for_backend(&resolved_backend_id, crate::launch::knobs::kid("mtp"))
-  {
-    launch_params.knobs.set(
-      def.knob_id(),
-      crate::launch::knobs::KnobValue::Set(crate::launch::knobs::Scalar::Bool(
-        launch_params.mtp_directive.is_some(),
-      )),
-    );
-  }
-  // Same for the draft count, which no longer emits on its own: show what the
-  // launch is really drafting with, and drop a stale count on a launch that
-  // ended up not speculating.
-  if let Some(def) = crate::launch::knobs::def_for_backend(
-    &resolved_backend_id,
-    crate::launch::knobs::kid("mtp-draft-n"),
-  ) {
-    match launch_params
-      .mtp_draft_n
-      .filter(|_| launch_params.mtp_directive.is_some())
-    {
-      Some(n) => launch_params.knobs.set(
-        def.knob_id(),
-        crate::launch::knobs::KnobValue::Set(crate::launch::knobs::Scalar::U32(n)),
-      ),
-      None => {
-        launch_params.knobs.clear(def.knob_id());
-      }
-    }
-  }
   // Dropped-knob surfacing (R6): typed knobs the user set that the resolved
   // backend can't honor are silently dropped from argv — tell the user which.
   // ds4 honors only `Ctx`, so a `--flash-attn` on a ds4-routed model warns.

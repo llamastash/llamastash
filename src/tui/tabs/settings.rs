@@ -757,7 +757,6 @@ mod tests {
         },
         extras: vec!["--rope-freq-base".into(), "10000".into()],
         port: Some(41100),
-        mtp: Default::default(),
         ..Default::default()
       },
     );
@@ -841,7 +840,6 @@ mod tests {
           },
           extras: vec![],
           port: Some(41100),
-          mtp: Default::default(),
           ..Default::default()
         },
       );
