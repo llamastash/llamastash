@@ -287,11 +287,11 @@ fn header_value<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a s
 
 async fn stop_all(ctx: &MethodContext, extras: &[ManagedModel]) {
   let snap = ctx.supervisors.snapshot().await;
-  let mut stopped_ports: Vec<u16> = Vec::new();
+  let mut stopped_ports: std::collections::HashSet<u16> = std::collections::HashSet::new();
   for (_launch_id, m) in snap {
     let port = m.port();
     let _ = m.stop(Duration::from_secs(3)).await;
-    stopped_ports.push(port);
+    stopped_ports.insert(port);
   }
   for m in extras {
     let _ = m.stop(Duration::from_secs(3)).await;
@@ -299,11 +299,10 @@ async fn stop_all(ctx: &MethodContext, extras: &[ManagedModel]) {
   // Mirror the production `drop_running_snapshots` so the state
   // snapshot reflects the stopped launches (needed for /v1/models).
   if !stopped_ports.is_empty() {
-    let ports = stopped_ports.clone();
     ctx
       .state
       .mutate(move |s| {
-        s.running.retain(|r| !ports.contains(&r.port));
+        s.running.retain(|r| !stopped_ports.contains(&r.port));
       })
       .await;
   }
