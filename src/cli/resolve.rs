@@ -160,14 +160,19 @@ pub fn resolve_model(rows: &[CatalogRow], reference: &str) -> Result<CatalogRow,
   }
 }
 
-/// Index running rows by canonical model path. Returns the first
-/// running row per path (multiple supervisors for one path is rare
-/// but possible — the picker uses the most recent ready_at row first
-/// when this matters; here the list view just needs *some* live row).
-pub fn running_index(rows: &[RunningRow]) -> std::collections::HashMap<String, RunningRow> {
-  let mut out = std::collections::HashMap::with_capacity(rows.len());
+/// Index running rows by canonical model path, **every** row per path in the
+/// order the daemon reported them.
+///
+/// Named launches make more than one live row per path the ordinary case
+/// (`qwen3@coder` and `qwen3@writer` at once), and keeping only the first
+/// collapsed them to whichever won — `list` showed one name and `show`
+/// reported one launch. Callers that genuinely want a single row take the
+/// first entry.
+pub fn running_index(rows: &[RunningRow]) -> std::collections::HashMap<String, Vec<RunningRow>> {
+  let mut out: std::collections::HashMap<String, Vec<RunningRow>> =
+    std::collections::HashMap::with_capacity(rows.len());
   for r in rows {
-    out.entry(r.model_path.clone()).or_insert_with(|| r.clone());
+    out.entry(r.model_path.clone()).or_default().push(r.clone());
   }
   out
 }
@@ -360,6 +365,16 @@ impl ExternalRow {
   }
 }
 
+/// The `models` rows of a raw `status` body, for a caller that already holds
+/// the body and would otherwise re-issue the call through [`fetch_status`].
+pub fn running_rows_in(status_body: &Value) -> Vec<RunningRow> {
+  status_body
+    .get("models")
+    .and_then(Value::as_array)
+    .map(|a| a.iter().filter_map(parse_running_row).collect())
+    .unwrap_or_default()
+}
+
 fn parse_running_row(v: &Value) -> Option<RunningRow> {
   let launch_id = v.get("launch_id")?.as_str()?.to_string();
   let id = v.get("id").cloned();
@@ -495,6 +510,19 @@ pub fn resolve_running(rows: &[RunningRow], reference: &str) -> Result<RunningRo
     .collect();
   if !by_id.is_empty() {
     return single_or_error(by_id, reference);
+  }
+  // A bare launch name, matched exactly (ASCII-case-insensitively). The name
+  // the user chose is the address they think in, so it outranks the path
+  // substring walk below the same way an exact launch id does — `stop coder`
+  // reaches the launch named `coder` even when another model's filename
+  // contains the word. Two models running under one name land in
+  // `single_or_error`'s ambiguity listing rather than falling through.
+  let by_launch_name: Vec<&RunningRow> = rows
+    .iter()
+    .filter(|r| crate::launch::resolve::name_matches(r.name.as_deref(), needle))
+    .collect();
+  if !by_launch_name.is_empty() {
+    return single_or_error(by_launch_name, reference);
   }
   // `model@name` reference: match a running launch by its user-chosen name.
   // The model part is matched against the path (same as the fallback below).
@@ -944,6 +972,97 @@ mod tests {
     });
     let parsed = parse_running_row(&row).expect("row should parse");
     assert_eq!(parsed.state, "ready");
+  }
+
+  /// A running row built from the wire shape `parse_running_row` reads, so a
+  /// test row cannot drift from what the daemon actually sends.
+  fn live(launch_id: &str, path: &str, port: u16, name: Option<&str>) -> RunningRow {
+    let mut row = serde_json::json!({
+      "launch_id": launch_id,
+      "id": {"path": path, "header_blake3": "deadbeef"},
+      "port": port,
+      "mode": "chat",
+      "state": "ready",
+      "pid": 1,
+    });
+    if let Some(n) = name {
+      row["name"] = serde_json::json!(n);
+    }
+    parse_running_row(&row).expect("row parses")
+  }
+
+  #[test]
+  fn resolve_running_takes_a_bare_launch_name_over_a_path_substring() {
+    // D3: the name the user chose is the address they think in, so an exact
+    // name beats a filename that merely contains the word — the same
+    // precedence an exact launch id already has.
+    let rows = vec![
+      live("L1", "/m/qwen.gguf", 41100, Some("coder")),
+      live("L2", "/m/qwen-coder-7b.gguf", 41101, None),
+    ];
+    assert_eq!(resolve_running(&rows, "coder").unwrap().launch_id, "L1");
+    assert_eq!(resolve_running(&rows, "CODER").unwrap().launch_id, "L1");
+    // The path walk still reaches the launch that has no name.
+    assert_eq!(resolve_running(&rows, "7b").unwrap().launch_id, "L2");
+  }
+
+  #[test]
+  fn resolve_running_reports_one_name_held_by_two_models() {
+    // Names are unique per model, not globally, so a bare name can be held
+    // twice. That is an ambiguity to report, not a row to guess at.
+    let rows = vec![
+      live("L1", "/m/qwen.gguf", 41100, Some("coder")),
+      live("L2", "/m/gemma.gguf", 41101, Some("coder")),
+    ];
+    let err = resolve_running(&rows, "coder").unwrap_err();
+    let msg = err.message.unwrap_or_default();
+    assert!(msg.contains("L1") && msg.contains("L2"), "got: {msg}");
+    // The qualified form still resolves to exactly one.
+    assert_eq!(
+      resolve_running(&rows, "qwen@coder").unwrap().launch_id,
+      "L1"
+    );
+    assert_eq!(
+      resolve_running(&rows, "gemma@coder").unwrap().launch_id,
+      "L2"
+    );
+  }
+
+  #[test]
+  fn resolve_running_does_not_widen_on_an_empty_half() {
+    // `"".contains("")` is true for every row, so an unguarded split made
+    // `@coder` a cross-model lookup that failed listing unrelated launches.
+    let rows = vec![
+      live("L1", "/m/qwen.gguf", 41100, Some("coder")),
+      live("L2", "/m/gemma.gguf", 41101, None),
+    ];
+    for miss in ["@coder", "qwen@"] {
+      assert_eq!(
+        resolve_running(&rows, miss).unwrap_err().code,
+        MODEL_NOT_FOUND,
+        "`{miss}` must not widen the match set"
+      );
+    }
+  }
+
+  #[test]
+  fn running_index_keeps_every_launch_of_one_path() {
+    let rows = vec![
+      live("L1", "/m/qwen.gguf", 41100, Some("coder")),
+      live("L2", "/m/qwen.gguf", 41101, Some("writer")),
+      live("L3", "/m/gemma.gguf", 41102, None),
+    ];
+    let idx = running_index(&rows);
+    let qwen = idx.get("/m/qwen.gguf").expect("indexed by path");
+    assert_eq!(
+      qwen
+        .iter()
+        .map(|r| r.launch_id.as_str())
+        .collect::<Vec<_>>(),
+      vec!["L1", "L2"],
+      "both named launches survive, in daemon order"
+    );
+    assert_eq!(idx.get("/m/gemma.gguf").map(Vec::len), Some(1));
   }
 
   #[test]

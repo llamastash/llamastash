@@ -411,28 +411,29 @@ its fix plan. Tick as landed.
 
 ### CLI surface
 
-- [ ] **RV13 — `running_index` keeps one row per path and drops the rest**, so
+- [x] **RV13 — `running_index` keeps one row per path and drops the rest**, so
       `list` can only ever show one `@name` and `show` matches with `.find()`. The
       feature's own motivating case, `qwen3@coder` and `qwen3@writer` both running,
       renders as a single catalog row carrying whichever name won.
       *Fix:* index becomes `HashMap<String, Vec<RunningRow>>`; `list` and `show`
       emit one line per live launch of the path.
-- [ ] **RV14 — `list` appends `@name` to the STATUS cell** (`src/cli/output.rs:184`)
+- [x] **RV14 — `list` appends `@name` to the STATUS cell** (`src/cli/output.rs:184`)
       instead of showing `<model-id>@<name>` whole in the id column as Step 3
       specifies. The joined string is what a user pastes into a client.
       *Fix:* join in the id cell; STATUS goes back to what it was.
-- [ ] **RV15 — `status` replaces the model display name with the launch name**
+- [x] **RV15 — `status` replaces the model display name with the launch name**
       (`src/cli/output.rs:529`) and has no MODEL column, so two different models
       both named `coder` are indistinguishable in the command you reach for to work
       out what to stop. `status_json` is unaffected.
       *Fix:* NAME renders `<model>@<name>`, or add a MODEL column and let NAME hold
       the launch name alone.
-- [ ] **RV16 — the PR body claims commands that do not work.** `stop coder`,
+- [x] **RV16 — the PR body claims commands that do not work.** `stop coder`,
       `show coder`, and `show <model>@coder` all exit 66: there is no bare-name
       branch in `resolve_running`, and `show` resolves against the catalog only.
-      *Fix:* accept `model@name` in `show`'s resolve and add D3's unique-bare-name
-      branch to `resolve_running`; if bare-name is deferred, narrow the body to
-      `stop <model>@<name>` / `logs <model>@<name>` / name-aware output.
+      *Fix:* `resolve_running` gained the unique-bare-name tier (exact name beats
+      a path substring, the way an exact launch id does), and `show` resolves
+      through three tiers — catalog, `<model>@<name>`, then the live launches —
+      so `show coder` / `show L3` / `show 41100` reach the launch's model too.
 - [x] **RV17 — `start` never reports the name it set** (`src/cli/start.rs:775`);
       the headline uses `row.name()`, the model name. Step 3 asks for the name, and
       it is the only confirmation the daemon accepted rather than dropped it.

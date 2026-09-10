@@ -76,7 +76,14 @@ struct ShowView {
 async fn build_view(args: &ShowArgs, cli: &Cli, config: &Config) -> Result<ShowView, CliExit> {
   let mut client = connect_or_spawn(cli, config).await?;
   let catalog = fetch_catalog(&mut client).await?;
-  let row = resolve_model(&catalog, &args.model)?;
+  // Fetched before the resolve because a reference that names no catalog row
+  // may still name a live launch (`show coder`, `show L3`).
+  let status_body = client
+    .call("status", None)
+    .await
+    .map_err(CliExit::from_client_error)?;
+  let running_rows = crate::cli::resolve::running_rows_in(&status_body);
+  let (row, name_filter) = resolve_show_target(&catalog, &running_rows, &args.model)?;
 
   // Pull last-params for this model_path. The IPC handler keys by
   // ModelId; `model_path` is part of the JSON wire shape (`entry.id.path`)
@@ -103,10 +110,6 @@ async fn build_view(args: &ShowArgs, cli: &Cli, config: &Config) -> Result<ShowV
   // GPU backend from the daemon's host-metrics sampler — keys the
   // built-in arch_defaults lookup so the values we display match
   // what `start_model` would resolve.
-  let status_body = client
-    .call("status", None)
-    .await
-    .map_err(CliExit::from_client_error)?;
   let backend_label = status_body
     .get("host")
     .and_then(|h| h.get("gpu_backend"))
@@ -114,33 +117,42 @@ async fn build_view(args: &ShowArgs, cli: &Cli, config: &Config) -> Result<ShowV
     .unwrap_or("");
   let backend = GpuFlavor::from_label(backend_label);
 
-  // Live running info for this exact model path: when a
-  // supervisor is up, surface what `--fit` actually resolved (and any
-  // ctx clamp) so `show` reflects the running reality, not just the
-  // catalog metadata + arch defaults. `null` when nothing is running.
-  let running = status_body
+  // Live running info for this exact model path: when a supervisor is up,
+  // surface what `--fit` actually resolved (and any ctx clamp) so `show`
+  // reflects the running reality, not just the catalog metadata + arch
+  // defaults. One entry per live launch — a model can carry several at once
+  // under different names — and `[]` when nothing is running.
+  let running: Vec<Value> = status_body
     .get("models")
     .and_then(Value::as_array)
-    .and_then(|rows| {
+    .map(|rows| {
       rows
         .iter()
-        .find(|m| crate::cli::output::row_path(m) == Some(row.path.as_str()))
+        .filter(|m| crate::cli::output::row_path(m) == Some(row.path.as_str()))
+        .filter(|m| match name_filter.as_deref() {
+          Some(want) => {
+            crate::launch::resolve::name_matches(m.get("name").and_then(Value::as_str), want)
+          }
+          None => true,
+        })
+        .map(|m| {
+          let state = m.get("state").and_then(|s| {
+            s.get("state")
+              .and_then(Value::as_str)
+              .or_else(|| s.as_str())
+          });
+          json!({
+            "launch_id": m.get("launch_id"),
+            "name": m.get("name"),
+            "state": state,
+            "port": m.get("port"),
+            "resolved_ctx": m.get("resolved_ctx"),
+            "ctx_clamped": m.get("ctx_clamped").and_then(Value::as_bool).unwrap_or(false),
+          })
+        })
+        .collect()
     })
-    .map(|m| {
-      let state = m.get("state").and_then(|s| {
-        s.get("state")
-          .and_then(Value::as_str)
-          .or_else(|| s.as_str())
-      });
-      json!({
-        "launch_id": m.get("launch_id"),
-        "name": m.get("name"),
-        "state": state,
-        "port": m.get("port"),
-        "resolved_ctx": m.get("resolved_ctx"),
-        "ctx_clamped": m.get("ctx_clamped").and_then(Value::as_bool).unwrap_or(false),
-      })
-    });
+    .unwrap_or_default();
 
   // Built-in arch defaults for this (arch, backend) pair — the same
   // values that ship under `LayerLabel::ArchDefault` in the launch
@@ -206,6 +218,46 @@ async fn build_view(args: &ShowArgs, cli: &Cli, config: &Config) -> Result<ShowV
   })
 }
 
+/// Resolve `show`'s target to a catalog row, plus the launch name to scope the
+/// running block to when the reference named one.
+///
+/// Three tiers, most specific first:
+/// 1. the whole reference against the catalog — D2's fail-safe, so a model file
+///    whose own name contains `@` still resolves as a plain reference;
+/// 2. `<model>@<name>`, the address the proxy and `stop` take;
+/// 3. the reference against the *live launches* (`show coder`, `show L3`,
+///    `show 41100`), through the same resolver `stop` and `logs` use, so a
+///    reference that stops a launch also shows it.
+///
+/// The tier-1 error is what surfaces on a total miss: it names the whole
+/// reference the user typed rather than some half of it.
+fn resolve_show_target(
+  catalog: &[CatalogRow],
+  running: &[crate::cli::resolve::RunningRow],
+  reference: &str,
+) -> Result<(CatalogRow, Option<String>), CliExit> {
+  let miss = match resolve_model(catalog, reference) {
+    Ok(row) => return Ok((row, None)),
+    Err(miss) => miss,
+  };
+  if let Some((model_ref, name)) = crate::launch::resolve::parse_named_reference(reference) {
+    if let Ok(row) = resolve_model(catalog, model_ref) {
+      return Ok((row, Some(name.to_string())));
+    }
+  }
+  match crate::cli::resolve::resolve_running(running, reference) {
+    Ok(live) => {
+      let row = catalog
+        .iter()
+        .find(|c| c.path == live.model_path)
+        .cloned()
+        .ok_or(miss)?;
+      Ok((row, live.name))
+    }
+    Err(_) => Err(miss),
+  }
+}
+
 /// The `show --json` envelope is the shared catalog-row wire shape
 /// ([`CatalogRow`]'s serde impl, the same bytes `list --json` and IPC
 /// `list_models` emit) with the show-only sections layered on top. No
@@ -217,13 +269,15 @@ fn assemble_envelope(
   size: Value,
   arch_defaults: Value,
   last_params: Option<Value>,
-  running: Option<Value>,
+  running: Vec<Value>,
 ) -> Value {
   let mut envelope = serde_json::to_value(row).unwrap_or_else(|_| json!({}));
   envelope["size"] = size;
   envelope["arch_defaults"] = arch_defaults;
   envelope["last_params"] = last_params.unwrap_or(Value::Null);
-  envelope["running"] = running.unwrap_or(Value::Null);
+  // Always present, `[]` when nothing is live, so agents can pin
+  // `running[i].port` without a null check.
+  envelope["running"] = Value::Array(running);
   envelope
 }
 
@@ -368,9 +422,22 @@ fn render_human(row: &CatalogRow, shards: &[ShardSize], total_bytes: u64, env: &
   // Live running block — only when a supervisor is up for this
   // model. Shows the context window `--fit` actually resolved and flags
   // a memory-driven clamp, so `show` reflects the running reality.
-  if let Some(running) = env.get("running").filter(|r| !r.is_null()) {
+  // One block per live launch: a model can be running several times at once
+  // under different names, and a single block had to pick one of them.
+  let launches = env
+    .get("running")
+    .and_then(Value::as_array)
+    .map(Vec::as_slice)
+    .unwrap_or_default();
+  for running in launches {
     out.push('\n');
-    out.push_str(&section_header("running", None));
+    // The heading carries the launch's address when it has a name, so several
+    // blocks stay tellable apart at a glance.
+    let heading = match running.get("name").and_then(Value::as_str) {
+      Some(n) => format!("running {}@{n}", row.name()),
+      None => "running".to_string(),
+    };
+    out.push_str(&section_header(&heading, None));
     let clamped = running
       .get("ctx_clamped")
       .and_then(Value::as_bool)
@@ -383,12 +450,11 @@ fn render_human(row: &CatalogRow, shards: &[ShardSize], total_bytes: u64, env: &
       _ => DASH_PLACEHOLDER.into(),
     };
     let mut running_rows: Vec<(&str, String)> = vec![
+      ("launch_id", fmt_field(running.get("launch_id"))),
       ("state", fmt_field(running.get("state"))),
       ("port", fmt_field(running.get("port"))),
       ("resolved_ctx", resolved),
     ];
-    // Surface the user-chosen launch name when set — the distinguishing
-    // identifier for a named launch.
     if let Some(n) = running.get("name").and_then(Value::as_str) {
       running_rows.push(("name", n.to_string()));
     }
@@ -662,13 +728,13 @@ mod tests {
       "size": { "on_disk_total_bytes": 0 },
       "arch_defaults": { "gpu_backend": "CpuOnly", "yaml": null, "builtin": {} },
       "last_params": null,
-      "running": {
+      "running": [{
         "launch_id": "L1",
         "state": "ready",
         "port": 41100,
         "resolved_ctx": 16384,
         "ctx_clamped": true,
-      },
+      }],
     });
     let rendered =
       console::strip_ansi_codes(&render_human(&row, &shards, 0, &envelope)).into_owned();
@@ -683,6 +749,74 @@ mod tests {
     assert!(
       rendered.contains("16384") && rendered.contains("clamped to fit-ctx floor"),
       "resolved ctx + clamp note missing:\n{rendered}"
+    );
+  }
+
+  #[test]
+  fn resolve_show_target_takes_a_model_a_named_address_or_a_live_launch() {
+    let catalog = vec![fake_row("/m/qwen.gguf"), fake_row("/m/gemma.gguf")];
+    let running = crate::cli::resolve::running_rows_in(&json!({
+      "models": [{
+        "launch_id": "L3",
+        "id": {"path": "/m/qwen.gguf", "header_blake3": "deadbeef"},
+        "port": 41100,
+        "mode": "chat",
+        "state": "ready",
+        "name": "coder",
+      }],
+    }));
+
+    // Plain model reference: no name to scope the running block with.
+    let (row, name) = resolve_show_target(&catalog, &running, "qwen").unwrap();
+    assert_eq!(row.path, "/m/qwen.gguf");
+    assert_eq!(name, None);
+
+    // The address the proxy and `stop` take, then a bare launch name, a
+    // launch id and a port — each reaches the launch's model and scopes to it.
+    for reference in ["qwen@coder", "coder", "L3", "41100"] {
+      let (found, scoped) = resolve_show_target(&catalog, &running, reference).unwrap();
+      assert_eq!(found.path, "/m/qwen.gguf", "`{reference}` resolves");
+      assert_eq!(scoped.as_deref(), Some("coder"), "`{reference}` scopes");
+    }
+
+    // A total miss reports the whole reference, not a half of it.
+    let err = resolve_show_target(&catalog, &running, "nope@nothing").unwrap_err();
+    assert!(
+      err.message.unwrap_or_default().contains("nope@nothing"),
+      "the error names what the user typed"
+    );
+  }
+
+  #[test]
+  fn render_human_shows_one_block_per_live_launch() {
+    // Two named launches of one model is the case the feature exists for; a
+    // single block had to pick one of them.
+    let row = fake_row("/m/x.gguf");
+    let shards = shard_breakdown(&row);
+    let envelope = json!({
+      "size": { "on_disk_total_bytes": 0 },
+      "arch_defaults": { "gpu_backend": "CpuOnly", "yaml": null, "builtin": {} },
+      "last_params": null,
+      "running": [
+        {"launch_id": "L1", "name": "coder", "state": "ready", "port": 41100,
+         "resolved_ctx": 4096, "ctx_clamped": false},
+        {"launch_id": "L2", "name": "writer", "state": "ready", "port": 41101,
+         "resolved_ctx": 8192, "ctx_clamped": false},
+      ],
+    });
+    let rendered =
+      console::strip_ansi_codes(&render_human(&row, &shards, 0, &envelope)).into_owned();
+    assert!(
+      rendered.contains("running x.gguf@coder") && rendered.contains("running x.gguf@writer"),
+      "each block is headed by its own address:\n{rendered}"
+    );
+    assert!(
+      rendered.contains("41100") && rendered.contains("41101"),
+      "each block carries its own port:\n{rendered}"
+    );
+    assert!(
+      rendered.contains("L1") && rendered.contains("L2"),
+      "the launch id is what `stop` takes when a name is ambiguous:\n{rendered}"
     );
   }
 
@@ -739,7 +873,7 @@ mod tests {
       json!({"weights_bytes": row.weights_bytes, "shard_count": 3}),
       json!({"gpu_backend": "CpuOnly", "yaml": null, "builtin": {}}),
       None,
-      None,
+      Vec::new(),
     );
     for (key, value) in shared.as_object().unwrap() {
       assert_eq!(
@@ -772,7 +906,7 @@ mod tests {
     // the show envelope must not resurrect the key.
     let mut row = fake_row("/m/x.gguf");
     row.model_id = None;
-    let envelope = assemble_envelope(&row, json!({}), json!({}), None, None);
+    let envelope = assemble_envelope(&row, json!({}), json!({}), None, Vec::new());
     assert!(
       envelope.get("model_id").is_none(),
       "model_id must be omitted when unset: {envelope}"

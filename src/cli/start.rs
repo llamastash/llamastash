@@ -253,7 +253,7 @@ async fn wait_and_emit(
       .iter()
       .find(|m| Some(m.launch_id.as_str()) == launch_id.as_deref())
       .cloned()
-      .or_else(|| index.get(&row.path).cloned());
+      .or_else(|| index.get(&row.path).and_then(|rows| rows.first().cloned()));
     if let Some(r) = found {
       match r.state.as_str() {
         // Error / Stopped are terminal immediately — no actuals to wait on.
