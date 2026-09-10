@@ -108,8 +108,15 @@ picker or saved in a preset:
 | `tool_call_parser` | `--tool-call-parser` |
 | `reasoning_parser` | `--reasoning-parser` |
 
-The two parser knobs are closed sets, transcribed from 0.5.18's own argparse
-choices; `auto` detects the parser from the chat template. `quantization`
+The two parser knobs are closed sets: SGLang's argparse `choices` are
+`auto` plus the keys of `FunctionCallParser.ToolCallParserEnum`
+(`python/sglang/srt/function_call/function_call_parser.py`) and
+`ReasoningParser.DetectorMap` (`python/sglang/srt/parser/reasoning_parser.py`).
+**Transcribed from the `v0.5.19` tag** (37 tool-call and 28 reasoning
+parsers plus `auto`; 0.5.19 added `dots`, `ling3` and `spark25`). A newer SGLang can
+accept a name the knob refuses; until the list is re-transcribed, pass it
+through the extras tail (`-- --tool-call-parser <name>`), which is not
+denylisted. `auto` detects the parser from the chat template. `quantization`
 shares its declaration with the vLLM knob of the same name (the registry
 allows one shape per knob id), so a dashed method such as `auto-round` goes
 through the extras tail: `-- --quantization auto-round`.
@@ -162,8 +169,11 @@ for a name the server never advertises.
 
   When the geometry cannot be read the launch is **refused**, naming the
   override, rather than guessed: a guess in the wrong direction is the freeze.
-  Set either `max_total_tokens` or `mem_fraction_static` yourself and the
-  auto-cap steps aside. Both are volatile, so a preset run applies the value
+  A per-token cost that leaves the budget holding under 2,048 tokens is
+  refused the same way, including on the first launch after daemon start,
+  before the host has been sampled, when the 8 GiB default budget stands in
+  for the free reading. Set either `max_total_tokens` or
+  `mem_fraction_static` yourself and the auto-cap steps aside. Both are volatile, so a preset run applies the value
   without every later bare `start` inheriting it. Discrete-GPU hosts are
   untouched; there the fraction applies to real VRAM.
 - **The cap can be smaller than your `--ctx`.** A large model on a tight host

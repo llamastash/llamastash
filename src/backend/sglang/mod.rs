@@ -284,9 +284,12 @@ impl Backend for SglangBackend {
         return Some(tokens.saturating_mul(per_token));
       }
     }
-    // A fraction is of the whole pool, not of what is free, and SGLang fills
-    // whatever it is given. Project the same way SGLang spends it so the gate
-    // sees the real demand rather than nothing at all.
+    // A user-set fraction is projected against what is *free*, not the whole
+    // pool SGLang actually takes it of, and the gate adds the weights on top
+    // even though `mem_fraction_static` already covers them (0.5.18
+    // `ServerArgs`: "model weights and KV cache memory pool"). Both errors
+    // over-refuse, the safe direction. The other safetensors engine carries
+    // the same projection for its utilization fraction; correct both at once.
     if let Some(frac) = knob_f64(params, "mem-fraction-static") {
       let frac = frac.clamp(0.0, 1.0);
       return Some((free_bytes as f64 * frac) as u64);
@@ -415,10 +418,24 @@ impl Backend for SglangBackend {
           "sglang: no host memory reading yet — capping the KV pool at the default \
            budget rather than letting the launcher size it against the whole pool"
         );
-        // Not through the cap arithmetic: that would refuse on the (unknown)
-        // free figure, and the default budget is the point of this branch.
-        u32::try_from(crate::launch::admission::DEFAULT_KV_CACHE_BYTES / per_token.max(1))
-          .unwrap_or(u32::MAX)
+        // The default budget stands in for the (unknown) free figure, but the
+        // token floor still applies: a pool no request fits in is a refusal
+        // here exactly as it is on the sampled path.
+        let budget = crate::launch::admission::DEFAULT_KV_CACHE_BYTES;
+        match guard::tokens_for_budget(budget, per_token) {
+          Some(cap) => cap,
+          None => {
+            out.refusal = Some(format!(
+              "cannot size the KV pool: no host memory reading yet, and the default \
+               {} budget holds under {} tokens at {} bytes per token. Set \
+               max-total-tokens to override.",
+              human_gib(budget),
+              guard::MIN_POOL_TOKENS,
+              per_token,
+            ));
+            return out;
+          }
+        }
       }
     };
     if let Some(ctx_len) = params.ctx.filter(|c| *c > cap) {
@@ -461,12 +478,18 @@ fn user_set(params: &LaunchParams, id: &str) -> bool {
   params.knobs.is_set_by_name_for(SGLANG_BACKEND_ID, id)
 }
 
-/// GET `/get_server_info` on the loopback port, parsed. Larger than the
-/// `/v1/models` cap the orphan probe uses: the body is every server argument
-/// (479 keys on 0.5.18), so it is bounded at 256 KiB rather than 32.
+/// Ceiling on a `/get_server_info` body. Larger than the `/v1/models` cap
+/// the orphan probe uses because the body is every server argument (479 keys
+/// on 0.5.18, well under 64 KiB); a body past it is not this server's.
+const SERVER_INFO_MAX_BODY: usize = 256 * 1024;
+
+/// GET `/get_server_info` on the loopback port, parsed. The body is read in
+/// chunks and **rejected** once it passes [`SERVER_INFO_MAX_BODY`] — never
+/// buffered whole and then cut, which would bound nothing and leave a
+/// truncated body that no longer parses.
 async fn fetch_server_info(port: u16, timeout: std::time::Duration) -> Option<serde_json::Value> {
   let client = reqwest::Client::builder().timeout(timeout).build().ok()?;
-  let resp = client
+  let mut resp = client
     .get(format!("http://127.0.0.1:{port}/get_server_info"))
     .send()
     .await
@@ -474,9 +497,13 @@ async fn fetch_server_info(port: u16, timeout: std::time::Duration) -> Option<se
   if resp.status().as_u16() != 200 {
     return None;
   }
-  const MAX_BODY: usize = 256 * 1024;
-  let mut body = resp.bytes().await.ok()?.to_vec();
-  body.truncate(MAX_BODY);
+  let mut body = Vec::new();
+  while let Some(chunk) = resp.chunk().await.ok()? {
+    if body.len() + chunk.len() > SERVER_INFO_MAX_BODY {
+      return None;
+    }
+    body.extend_from_slice(&chunk);
+  }
   serde_json::from_slice(&body).ok()
 }
 
@@ -933,5 +960,45 @@ mod tests {
   fn an_empty_config_block_is_the_default() {
     let parsed: SglangConfig = yaml_serde::from_str("{}").expect("empty sglang config");
     assert_eq!(parsed, SglangConfig::default());
+  }
+
+  /// One HTTP/1.1 exchange on a loopback port, answering 200 with `body`.
+  async fn serve_once(body: Vec<u8>) -> u16 {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+      .await
+      .expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    tokio::spawn(async move {
+      use tokio::io::{AsyncReadExt, AsyncWriteExt};
+      let (mut sock, _) = listener.accept().await.expect("accept");
+      let mut req = [0u8; 4096];
+      let _ = sock.read(&mut req).await;
+      let head = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+      );
+      sock.write_all(head.as_bytes()).await.expect("head");
+      sock.write_all(&body).await.expect("body");
+      sock.shutdown().await.expect("shutdown");
+    });
+    port
+  }
+
+  /// The body cap rejects, rather than cutting a body into JSON that no
+  /// longer parses; a body under it still parses whole.
+  #[tokio::test]
+  async fn server_info_past_the_body_cap_is_rejected_not_truncated() {
+    let timeout = std::time::Duration::from_secs(5);
+    let small = br#"{"context_length":2048}"#.to_vec();
+    let small_port = serve_once(small).await;
+    let info = fetch_server_info(small_port, timeout)
+      .await
+      .expect("small body parses");
+    assert_eq!(info["context_length"], 2048);
+
+    let pad = "x".repeat(SERVER_INFO_MAX_BODY);
+    let huge = format!(r#"{{"context_length":2048,"pad":"{pad}"}}"#).into_bytes();
+    let huge_port = serve_once(huge).await;
+    assert_eq!(fetch_server_info(huge_port, timeout).await, None);
   }
 }

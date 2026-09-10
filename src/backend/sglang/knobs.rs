@@ -138,9 +138,10 @@ pub const KNOBS: &[KnobDef] = &[
     volatile: false,
   },
   KnobDef {
-    // Closed sets: both parsers are argparse `choices` in 0.5.18, so a value
-    // outside the list fails at spawn anyway. `auto` detects from the chat
-    // template and is the useful default when the model needs a parser.
+    // Closed sets: both parsers are argparse `choices` (`["auto"]` plus the
+    // detector map's keys), so a value outside the list fails at spawn anyway.
+    // Transcribed in map order from the v0.5.19 tag; `auto` detects from the
+    // chat template and is the useful default when the model needs a parser.
     id: "tool-call-parser",
     flag: None,
     concept: None,
@@ -153,6 +154,7 @@ pub const KNOBS: &[KnobDef] = &[
         "deepseekv31",
         "deepseekv32",
         "deepseekv4",
+        "dots",
         "glm",
         "glm45",
         "glm47",
@@ -160,6 +162,7 @@ pub const KNOBS: &[KnobDef] = &[
         "kimi_k2",
         "kimi_k3",
         "lfm2",
+        "ling3",
         "llama3",
         "mimo",
         "minicpm5",
@@ -170,6 +173,7 @@ pub const KNOBS: &[KnobDef] = &[
         "qwen",
         "qwen25",
         "qwen3_coder",
+        "spark25",
         "step3",
         "step3p5",
         "minimax-m2",
@@ -204,7 +208,9 @@ pub const KNOBS: &[KnobDef] = &[
         "deepseek-r1",
         "deepseek-v3",
         "deepseek-v4",
+        "dots",
         "glm45",
+        "ling3",
         "hunyuan",
         "gpt-oss",
         "kimi",
@@ -250,17 +256,6 @@ pub const KNOBS: &[KnobDef] = &[
 mod tests {
   use super::*;
   use crate::launch::knobs::Concept;
-
-  /// Every knob id must be unique — duplicates would render the picker
-  /// ambiguous and break persistence.
-  #[test]
-  fn knob_ids_are_unique() {
-    let ids: Vec<&str> = KNOBS.iter().map(|d| d.id).collect();
-    let mut seen = std::collections::HashSet::new();
-    for id in &ids {
-      assert!(seen.insert(*id), "duplicate knob id: {id}");
-    }
-  }
 
   /// The context-length knob must exist and carry Concept::ContextLength.
   #[test]

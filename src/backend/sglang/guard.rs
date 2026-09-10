@@ -23,7 +23,18 @@ pub fn max_total_tokens_cap(
   kv_bytes_per_token: u64,
 ) -> Option<u32> {
   let budget = crate::launch::admission::unified_kv_cache_budget(free_bytes, weights_bytes)?;
-  let tokens = budget / kv_bytes_per_token.max(1);
+  tokens_for_budget(budget, kv_bytes_per_token)
+}
+
+/// A byte budget spent in tokens, or `None` to **refuse the launch**: a pool
+/// under [`MIN_POOL_TOKENS`], or a per-token cost of zero. Zero is unreadable
+/// geometry, not a free model — dividing by anything else would hand the
+/// launcher an unbounded cap on the very host the guard exists for.
+pub fn tokens_for_budget(budget_bytes: u64, kv_bytes_per_token: u64) -> Option<u32> {
+  if kv_bytes_per_token == 0 {
+    return None;
+  }
+  let tokens = budget_bytes / kv_bytes_per_token;
   (tokens >= MIN_POOL_TOKENS).then(|| u32::try_from(tokens).unwrap_or(u32::MAX))
 }
 
@@ -43,6 +54,11 @@ pub fn kv_bytes_per_token(model_dir: &Path) -> Option<u64> {
 /// lands smaller than it could — the safe direction. A `--kv-cache-dtype`
 /// narrower than the weights, passed through extras, overestimates the same
 /// way.
+///
+/// A zero anywhere in the product is `None` too: a `kv_lora_rank: 0` "not
+/// MLA" marker, zero layers, or a head dim that rounds to nothing are
+/// unreadable geometry, and a zero cost would turn the byte budget into an
+/// unbounded token cap.
 pub fn kv_bytes_per_token_from(config: &serde_json::Value) -> Option<u64> {
   // Multimodal repos nest the language model under `text_config`.
   let cfg = if config.get("num_hidden_layers").is_some() {
@@ -50,12 +66,12 @@ pub fn kv_bytes_per_token_from(config: &serde_json::Value) -> Option<u64> {
   } else {
     config.get("text_config")?
   };
-  let layers = field(cfg, "num_hidden_layers")?;
+  let layers = field(cfg, "num_hidden_layers").filter(|l| *l > 0)?;
   let dtype = ["torch_dtype", "dtype"]
     .iter()
     .find_map(|k| cfg.get(k).or_else(|| config.get(k)))
     .and_then(|v| v.as_str());
-  let per_layer = match field(cfg, "kv_lora_rank") {
+  let per_layer = match field(cfg, "kv_lora_rank").filter(|r| *r > 0) {
     // Multi-head latent attention caches one compressed latent per token,
     // shared by K and V, plus the decoupled RoPE key alongside it.
     Some(rank) => rank + field(cfg, "qk_rope_head_dim").unwrap_or(0),
@@ -69,7 +85,8 @@ pub fn kv_bytes_per_token_from(config: &serde_json::Value) -> Option<u64> {
       2 * kv_heads * head_dim
     }
   };
-  Some(layers * per_layer * dtype_bytes(dtype))
+  let bytes = layers * per_layer * dtype_bytes(dtype);
+  (bytes > 0).then_some(bytes)
 }
 
 fn field(cfg: &serde_json::Value, key: &str) -> Option<u64> {
@@ -171,6 +188,34 @@ mod tests {
       None,
       "zero heads must not divide"
     );
+    let mut zero_layers = qwen05b();
+    zero_layers["num_hidden_layers"] = serde_json::json!(0);
+    assert_eq!(kv_bytes_per_token_from(&zero_layers), None, "zero layers");
+    let mut zero_kv_heads = qwen05b();
+    zero_kv_heads["num_key_value_heads"] = serde_json::json!(0);
+    assert_eq!(
+      kv_bytes_per_token_from(&zero_kv_heads),
+      None,
+      "zero KV heads"
+    );
+  }
+
+  /// `"kv_lora_rank": 0` is a "not MLA" marker some configs carry; it must
+  /// fall through to the head geometry, never price the model at zero.
+  #[test]
+  fn a_zero_latent_rank_falls_through_to_the_head_geometry() {
+    let mut c = qwen05b();
+    c["kv_lora_rank"] = serde_json::json!(0);
+    c["qk_rope_head_dim"] = serde_json::json!(0);
+    assert_eq!(kv_bytes_per_token_from(&c), Some(2 * 2 * 64 * 2 * 24));
+    let only_rank = serde_json::json!({
+      "num_hidden_layers": 61, "kv_lora_rank": 0, "torch_dtype": "bfloat16"
+    });
+    assert_eq!(
+      kv_bytes_per_token_from(&only_rank),
+      None,
+      "no heads to fall through to"
+    );
   }
 
   #[test]
@@ -219,8 +264,28 @@ mod tests {
     );
   }
 
+  /// A zero per-token cost is unreadable geometry. Dividing by one instead
+  /// would return the whole budget as tokens, which the launcher takes as an
+  /// unbounded pool on the very host the guard protects.
   #[test]
-  fn a_zero_per_token_cost_does_not_divide_by_zero() {
-    assert!(max_total_tokens_cap(113 * GB, GB, 0).is_some());
+  fn a_zero_per_token_cost_refuses_rather_than_uncapping() {
+    assert_eq!(max_total_tokens_cap(113 * GB, GB, 0), None);
+    assert_eq!(tokens_for_budget(DEFAULT_KV_CACHE_BYTES, 0), None);
+  }
+
+  /// The unsampled path spends the default budget through the same floor.
+  #[test]
+  fn the_default_budget_spent_in_tokens_keeps_the_floor() {
+    let too_costly = DEFAULT_KV_CACHE_BYTES / (MIN_POOL_TOKENS - 1);
+    assert_eq!(tokens_for_budget(DEFAULT_KV_CACHE_BYTES, too_costly), None);
+    let just_fits = DEFAULT_KV_CACHE_BYTES / MIN_POOL_TOKENS;
+    assert_eq!(
+      tokens_for_budget(DEFAULT_KV_CACHE_BYTES, just_fits),
+      Some(MIN_POOL_TOKENS as u32)
+    );
+    assert_eq!(
+      tokens_for_budget(DEFAULT_KV_CACHE_BYTES, 32),
+      Some((DEFAULT_KV_CACHE_BYTES / 32) as u32)
+    );
   }
 }

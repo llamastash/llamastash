@@ -481,6 +481,48 @@ mod lifecycle {
     let _ = std::fs::remove_dir_all(&cache);
   }
 
+  /// Before the host has been sampled the guard spends the default budget,
+  /// and a model costing more per token than that budget holds
+  /// `MIN_POOL_TOKENS` of is refused there too, not launched with a pool no
+  /// request fits in. Two layers of one 2,000,000-wide KV head at bf16 is
+  /// 16 MB per token, so the 8 GiB default holds 512 tokens.
+  #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+  async fn a_pool_under_the_token_floor_is_refused_before_the_host_is_sampled() {
+    let state = unique_temp("floor");
+    let cache = unique_temp("floor-cache");
+    let snapshot = seed_repo(&cache, "Qwen/Qwen2.5-0.5B-Instruct");
+    std::fs::write(
+      snapshot.join("config.json"),
+      br#"{"model_type":"qwen2","num_hidden_layers":2,"num_attention_heads":1,
+          "num_key_value_heads":1,"head_dim":2000000,"torch_dtype":"bfloat16"}"#,
+    )
+    .unwrap();
+
+    let opts = opts_with_sglang(state.clone());
+    let socket = opts.state_dir.clone();
+    let daemon = tokio::spawn(async move { run_foreground(opts).await });
+    wait_for_socket(&socket).await;
+    let mut client = Client::connect(&socket).await.expect("connect");
+
+    let err = client
+      .call(
+        "start_model",
+        Some(json!({ "model_path": snapshot.to_string_lossy() })),
+      )
+      .await
+      .expect_err("a pool under the token floor must be refused");
+    let msg = err.to_string();
+    assert!(
+      msg.contains("max-total-tokens") && msg.contains("2048 tokens"),
+      "the refusal must name the floor and the override: {msg}"
+    );
+
+    let _ = client.call("shutdown", None).await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), daemon).await;
+    let _ = std::fs::remove_dir_all(&state);
+    let _ = std::fs::remove_dir_all(&cache);
+  }
+
   /// The readiness contract: a server that binds its port immediately but
   /// serves an empty `/v1/models` until the engine finishes must **not** be
   /// called ready early. This is the case a bare status check gets wrong.
@@ -564,6 +606,8 @@ mod lifecycle {
       port,
       started_at: 1_700_000_000,
       launch_id: None,
+      name: None,
+      preset: None,
       params: LaunchParams::new(snapshot.clone(), LaunchMode::Chat),
       actuals: Default::default(),
       resolved_backend: "sglang".to_string(),
