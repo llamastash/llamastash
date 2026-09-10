@@ -52,6 +52,13 @@ pub(crate) struct StartParams {
   /// same name is refused (the name is unique per model).
   #[serde(default)]
   pub(crate) name: Option<String>,
+  /// The preset this launch used, when the caller flattened one client-side
+  /// (`start --preset`, a launch file, the TUI's named preset stop). Sent for
+  /// display only — the params themselves arrive resolved in `knobs`/`extras`.
+  /// Daemon-side resolution (a `<model>@<name>` auto-start address, the
+  /// config `default:` on a no-selection launch) fills in behind it.
+  #[serde(default)]
+  pub(crate) preset: Option<String>,
   #[serde(default)]
   pub(crate) mode: Option<LaunchModeWire>,
   #[serde(default)]
@@ -236,6 +243,10 @@ pub struct LaunchExec {
   /// `RunningSnapshot` so the launch is addressable as `<model-id>@<name>`.
   /// `None` for unnamed launches.
   pub(crate) name: Option<String>,
+  /// The preset this launch resolved (explicit pick or daemon-resolved
+  /// default/address), stamped on the persisted `RunningSnapshot` so the
+  /// running row can answer "what preset is this". `None` when none was.
+  pub(crate) preset: Option<String>,
 }
 
 /// Whether a launch resolves as "pure fit" — skipping the default-preset and
@@ -528,6 +539,13 @@ pub(crate) async fn compose_and_spawn(
   // address named, else the model's configured `default:`.
   let launch_preset =
     addressed_preset.or_else(|| effective_default.as_ref().and_then(|e| e.default_preset()));
+  // The preset name stamped on the running row: the caller's explicit pick,
+  // else whatever the daemon itself resolved above. `launch_preset` stays
+  // borrowed below, so take an owned copy here.
+  let launch_preset_name = parsed
+    .preset
+    .clone()
+    .or_else(|| launch_preset.map(|np| np.name.clone()));
 
   // Collapse the launch into one resolution shape. `Auto` (explicit
   // `--preset auto`) and a no-selection launch whose config default is
@@ -1085,6 +1103,7 @@ pub(crate) async fn compose_and_spawn(
     warnings,
     resolved_backend_id,
     name: parsed.name.clone(),
+    preset: launch_preset_name,
   };
   inference_backend.start(ctx, exec).await
 }
@@ -1125,6 +1144,7 @@ pub(crate) async fn spawn_supervised(
     force_admission,
     resolved_backend_id,
     name,
+    preset,
     default_binary: _,
   } = exec;
   let resolved_backend_id = resolved_backend_id.clone();
@@ -1318,6 +1338,7 @@ pub(crate) async fn spawn_supervised(
         started_at,
         launch_id: Some(launch_id.clone()),
         name: name.clone(),
+        preset,
         params: launch_params.clone(),
         actuals: Default::default(),
         resolved_backend: resolved_backend_id.clone(),
@@ -2658,6 +2679,24 @@ mod tests {
           .unwrap();
       assert_eq!(p.selection, want, "selection {s} round-trips");
     }
+  }
+
+  #[test]
+  fn start_params_preset_is_absent_by_default_and_round_trips() {
+    // A presetless caller (plain `start`, proxy auto-start) omits the key —
+    // `null` and absent must both decode to `None` so the daemon-side
+    // resolution fills in behind them.
+    let parsed: StartParams =
+      serde_json::from_value(serde_json::json!({"model_path": "/m/x.gguf"})).unwrap();
+    assert_eq!(parsed.preset, None);
+    let nulled: StartParams =
+      serde_json::from_value(serde_json::json!({"model_path": "/m/x.gguf", "preset": null}))
+        .unwrap();
+    assert_eq!(nulled.preset, None);
+    let named: StartParams =
+      serde_json::from_value(serde_json::json!({"model_path": "/m/x.gguf", "preset": "fast"}))
+        .unwrap();
+    assert_eq!(named.preset.as_deref(), Some("fast"));
   }
 
   /// A running snapshot for `path` carrying the given launch `name` (or

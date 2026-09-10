@@ -328,7 +328,7 @@ llamastash show <model-ref> [--json]
 - `size` — `weights_bytes`, `shard_count`, `on_disk_total_bytes`, and a per-shard `shards` breakdown.
 - `arch_defaults` — the `yaml` and `builtin` knob sets for this (arch, GPU backend) pair.
 - `last_params` — the params of the last successful launch (`null` when never launched).
-- `running` — an array with one object per live launch (`launch_id`, `name`, `state`, `port`, `resolved_ctx`, `ctx_clamped`), empty when nothing is running. The human output prints one `running` block per launch, headed by its `<model>@<name>` address.
+- `running` — an array with one object per live launch (`launch_id`, `name`, `preset`, `state`, `port`, `resolved_ctx`, `ctx_clamped`), empty when nothing is running. `preset` is the preset that launched that copy (`null` when none was in play). The human output prints one `running` block per launch, headed by its `<model>@<name>` address, and shows the `preset` row only when there is one.
 
 The human output shows the same content as aligned key/value sections, including `multimodal` (`vision + audio`) and `mtp` (`embedded (N layers)` / `separate head`) rows under `metadata`.
 
@@ -343,7 +343,7 @@ llamastash start <ref> [--name LABEL] [--preset NAME] [--ctx N] [--port N] [--wa
                      [--<advanced-knob> ...] [-- <llama-server-flags>...]
 ```
 
-`--name <label>` names this launch, so the same model can run several times at once and each copy stays addressable as `<model-ref>@<label>`. A name is trimmed and limited to letters, digits, `-` and `_` — anything else (a space, an `@`) is a usage error at parse time, because the address would not parse back to this launch; the daemon enforces the same rule for raw JSON-RPC callers. A second live launch of the *same* model under the *same* name is refused, and the refusal names the launch already holding it (`name `coder` is already running as L3`); the same name on a *different* model is fine. `--json` reports the accepted name back as `launch_name`, with or without `--wait`. Because a reference is only read as `<model>@<name>` when the name half follows that same rule, a mistyped `qwen3@my coder` is treated as a plain model reference and simply misses, rather than starting anything. Names are not config: they live as long as the launch, survive a daemon restart through re-adoption, and are gone once it stops.
+`--name <label>` names this launch, so the same model can run several times at once and each copy stays addressable as `<model-ref>@<label>`. A name is trimmed and limited to letters, digits, `-` and `_` — anything else (a space, an `@`) is a usage error at parse time, because the address would not parse back to this launch; the daemon enforces the same rule for raw JSON-RPC callers. A second live launch of the *same* model under the *same* name is refused, and the refusal names the launch already holding it (`name `coder` is already running as L3`); the same name on a *different* model is fine. `--json` reports the accepted name back as `launch_name`, with or without `--wait`. Because a reference is only read as `<model>@<name>` when the name half follows that same rule, a mistyped `qwen3@my coder` is treated as a plain model reference and simply misses, rather than starting anything. Names are not config: they live as long as the launch and are gone once it stops. A `llamastash daemon stop` stops every managed launch with the daemon, so nothing is left to name; if the daemon *crashes*, its `llama-server` children keep serving and the next start surfaces each as a read-only `external` row that still carries its name — `status` shows `<model>@<name>` and `stop <name>` reaches it, but it is not re-published on `/v1/models` (routing needs a supervisor, and there is none), so the next proxy request for that address starts a fresh launch beside it.
 
 `--backend` defaults to `auto` (picks the engine by model identity — a DeepSeek-V4 GGUF routes to the [ds4 backend](#ds4-backend) when available, everything else to llama.cpp). Override it to force a specific engine.
 
@@ -468,7 +468,7 @@ Snapshot of daemon health, managed launches, external (unmanaged) `llama-server`
 }
 ```
 
-Each row in `models` carries `name` when the launch was started with `--name`. The human table has no MODEL column, so its NAME cell renders `<model>@<name>` for a named launch and the model alone otherwise: two different models both named `coder` stay tellable apart in the command you reach for to work out what to stop.
+Each row in `models` carries `name` when the launch was started with `--name`, and `preset` when the launch resolved one — an explicit `--preset` / launch file / TUI preset stop, a `<model>@<preset>` auto-start address, or the model's config `default:`. Both keys are omitted, not nulled, when they don't apply; `preset` is the preset that actually launched this copy, unlike the sibling `default` field, which is the model's configured default either way. The human table has no MODEL column, so its NAME cell renders `<model>@<name>` for a named launch and the model alone otherwise: two different models both named `coder` stay tellable apart in the command you reach for to work out what to stop.
 
 The `proxy` block is documented in detail under [Proxy → Is the proxy up?](#is-the-proxy-up).
 

@@ -197,6 +197,7 @@ mod tests {
         selection: "explicit",
         server: None,
         name: None,
+        preset: None,
       }),
     };
     assert_eq!(dup.severity(), ConfirmSeverity::Neutral);

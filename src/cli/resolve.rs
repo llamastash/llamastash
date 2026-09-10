@@ -40,6 +40,10 @@ pub struct RunningRow {
   /// addressable by `<model-id>@<name>` in `stop`, `logs`, and the
   /// proxy's `body.model`. `None` for unnamed launches.
   pub name: Option<String>,
+  /// The preset this launch resolved (explicit pick / `@name` address /
+  /// config `default:`). `None` when no preset was in play — distinct from
+  /// `preset_default`, which is only the config hint.
+  pub preset: Option<String>,
   pub state: String,
   /// Failure cause from the daemon's `ManagedState::Error { cause }`
   /// payload. Surfaced so users (and agents) can see *why* a launch
@@ -420,6 +424,7 @@ fn parse_running_row(v: &Value) -> Option<RunningRow> {
   let preset_default = v.get("default").and_then(Value::as_str).map(str::to_string);
   let backend = v.get("backend").and_then(Value::as_str).map(str::to_string);
   let name = v.get("name").and_then(Value::as_str).map(str::to_string);
+  let preset = v.get("preset").and_then(Value::as_str).map(str::to_string);
   Some(RunningRow {
     launch_id,
     model_path,
@@ -427,6 +432,7 @@ fn parse_running_row(v: &Value) -> Option<RunningRow> {
     port,
     mode,
     name,
+    preset,
     state,
     state_cause,
     pid,
@@ -883,6 +889,7 @@ mod tests {
         ctx_clamped: false,
         preset_count: 0,
         preset_default: None,
+        preset: None,
         backend: None,
       },
       RunningRow {
@@ -903,6 +910,7 @@ mod tests {
         ctx_clamped: false,
         preset_count: 0,
         preset_default: None,
+        preset: None,
         backend: None,
       },
     ];
@@ -930,6 +938,7 @@ mod tests {
       ctx_clamped: false,
       preset_count: 0,
       preset_default: None,
+      preset: None,
       backend: None,
     }];
     let err = resolve_running(&rows, "9999").unwrap_err();
@@ -956,6 +965,7 @@ mod tests {
       ctx_clamped: false,
       preset_count: 0,
       preset_default: None,
+      preset: None,
       backend: None,
     };
     let rows = vec![

@@ -159,6 +159,13 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
     if let Some(name) = running_snap.and_then(|r| r.name.clone()) {
       row["name"] = json!(name);
     }
+    // The preset this launch resolved (explicit pick / `@name` address /
+    // config `default:`), omitted when none was in play — the same
+    // convention `name` uses, and distinct from the config-only `default`
+    // hint above.
+    if let Some(preset) = running_snap.and_then(|r| r.preset.clone()) {
+      row["preset"] = json!(preset);
+    }
     models.push(row);
   }
   // Delegated Lemonade models — the registry holds only the shared
@@ -244,7 +251,7 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
         &preset_rows,
         &preset_store,
       );
-      models.push(json!({
+      let mut delegated_row = json!({
         "launch_id": launch_id,
         "id": synthetic_id,
         "port": running_snap.port,
@@ -263,12 +270,19 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
         "latest_cpu_pct": u_cpu,
         "preset_count": preset_count,
         "default": preset_default,
-      }));
+      });
+      // Same only-when-set `preset` the managed branch stamps, so a
+      // delegated row is shape-identical to a process row.
+      if let Some(preset) = running_snap.preset.clone() {
+        delegated_row["preset"] = json!(preset);
+      }
+      models.push(delegated_row);
     }
   }
   // External — read-only rows for `llama-server` processes the
   // daemon doesn't own. Populated by the startup orphan sweep.
-  // Stable shape: `{pid, cmdline, model_path, port, launched_by_llamastash}`.
+  // Stable shape: `{pid, cmdline, model_path, port, launched_by_llamastash}`,
+  // plus `name` on a row demoted from a named launch.
   let external_snapshot = ctx.external.read().await.clone();
   let external: Vec<Value> = external_snapshot
     .iter()

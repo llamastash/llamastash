@@ -135,6 +135,12 @@ async fn start_model_drives_supervisor_status_logs_stop_and_last_params() {
     ready_row.get("name").is_none(),
     "unnamed status row must omit the name key: {ready_row:?}"
   );
+  // Same convention for the resolved preset: a plain launch has none in
+  // play, so the key is omitted rather than nulled.
+  assert!(
+    ready_row.get("preset").is_none(),
+    "presetless status row must omit the preset key: {ready_row:?}"
+  );
 
   // 3) logs_tail returns at least the fake server's `listening on …`
   // line (proves stdout/stderr tee + ring buffer are wired).
@@ -947,10 +953,10 @@ async fn no_selection_start_applies_configured_default_preset() {
   let port = resp["port"].as_u64().unwrap() as u16;
 
   let deadline = std::time::Instant::now() + Duration::from_secs(60);
-  let params = loop {
+  let (params, stamped_preset) = loop {
     let s = state_store::load(&state_dir).expect("load state");
     if let Some(r) = s.running.iter().find(|r| r.port == port) {
-      break r.params.clone();
+      break (r.params.clone(), r.preset.clone());
     }
     if std::time::Instant::now() > deadline {
       panic!("default-preset launch never recorded a running snapshot");
@@ -971,6 +977,20 @@ async fn no_selection_start_applies_configured_default_preset() {
     "default preset's extras applied; got {:?}",
     params.extras
   );
+  assert_eq!(
+    stamped_preset.as_deref(),
+    Some("long"),
+    "the daemon stamps the resolved default preset's name on the running row"
+  );
+  // …and `status` surfaces it, so the TUI / `show` can render it.
+  let status = client.call("status", None).await.expect("status");
+  let row = status["models"]
+    .as_array()
+    .expect("models")
+    .iter()
+    .find(|m| m["port"] == json!(port))
+    .expect("the launch's status row");
+  assert_eq!(row["preset"], json!("long"));
 
   let _ = client.call("shutdown", None).await;
   let _ = timeout(Duration::from_secs(3), daemon).await;
@@ -1245,14 +1265,17 @@ async fn named_preset_launch_does_not_inherit_stale_last_params() {
     .expect("stop_model");
 
   // Call 2 (named preset): `selection: explicit` with the preset's flattened
-  // knobs. The preset sets `ctx-size` but NOT `threads`, so a stale
-  // `last_params.threads` must not leak in from the `LastUsed` layer.
+  // knobs — and its name on `preset`, as the CLI / TUI send it — so the
+  // daemon can stamp the running row. The preset sets `ctx-size` but NOT
+  // `threads`, so a stale `last_params.threads` must not leak in from the
+  // `LastUsed` layer.
   let resp = client
     .call(
       "start_model",
       Some(json!({
         "model_path": &model_path_canon,
         "selection": "explicit",
+        "preset": "fast",
         "knobs": {"ctx-size": 8192},
       })),
     )
@@ -1275,6 +1298,31 @@ async fn named_preset_launch_does_not_inherit_stale_last_params() {
     "a named-preset launch must not inherit a stale last_params knob; got {:?}",
     sources.get("threads")
   );
+  // The caller-sent preset name lands on the running snapshot verbatim —
+  // the client flattened the params, so the daemon only has the name to go
+  // on and must trust it (display-only field).
+  let second_port = resp["port"].as_u64().unwrap() as u16;
+  let deadline = std::time::Instant::now() + Duration::from_secs(60);
+  loop {
+    let s = state_store::load(&state_dir).expect("load state");
+    if s.running.iter().any(|r| r.port == second_port) {
+      assert_eq!(
+        s.running
+          .iter()
+          .find(|r| r.port == second_port)
+          .unwrap()
+          .preset
+          .as_deref(),
+        Some("fast"),
+        "an explicit preset launch stamps the name it was sent"
+      );
+      break;
+    }
+    if std::time::Instant::now() > deadline {
+      panic!("call 2 never recorded a running snapshot");
+    }
+    tokio::time::sleep(Duration::from_millis(40)).await;
+  }
 
   let _ = client.call("shutdown", None).await;
   let _ = timeout(Duration::from_secs(3), daemon).await;

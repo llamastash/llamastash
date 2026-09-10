@@ -1807,6 +1807,16 @@ fn apply_launch_submit(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) 
     crate::tui::launch_picker::PresetStop::Auto => "auto",
     _ => "explicit",
   };
+  // The bare preset name for a `Named` stop, sent so the daemon can stamp the
+  // running row. The raw name, not `preset_value_label()` (display-only — it
+  // appends a `(default)` suffix), and nothing for the `last used` / `auto`
+  // stops: neither is a preset launch even when the values coincide.
+  let preset = match picker.preset_stop {
+    crate::tui::launch_picker::PresetStop::Named(i) => {
+      picker.presets.get(i).map(|p| p.name.clone())
+    }
+    _ => None,
+  };
   let args = Box::new(crate::tui::app::StartModelArgs {
     ctx: knobs.u32(crate::launch::knobs::resolve_id("ctx-size").expect("ctx knob")),
     reasoning: knobs.bool(crate::launch::knobs::resolve_id("reasoning").expect("reasoning knob")),
@@ -1825,6 +1835,7 @@ fn apply_launch_submit(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) 
     // User-chosen launch name (from the `Alt+⏎` dialog), or `None` for a
     // plain `⏎` launch. Distinct from the model display `name` above.
     name: picker.launch_name.clone(),
+    preset,
   });
 
   if active_instances > 0 {
@@ -2165,6 +2176,7 @@ pub fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
         selection,
         server,
         name,
+        preset,
       } = *args;
       let mode_str = mode.map(|m| match m {
         crate::launch::mode::LaunchMode::Chat => "chat",
@@ -2191,6 +2203,10 @@ pub fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
           // User-chosen launch name (from the `Alt+⏎` dialog); `null` for a
           // plain `⏎` launch. The daemon stamps it on the running row.
           "name": name,
+          // The named preset stop the form launched from; `null` for the
+          // `last used` / `auto` stops. Stamped on the running row beside
+          // the name.
+          "preset": preset,
         }),
       )
     }

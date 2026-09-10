@@ -81,6 +81,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
     if let Some(n) = m.name.as_deref() {
       lines.push(crate::tui::fmt::kv_row("name", n.to_string(), palette));
     }
+    // The preset this launch resolved, when one was in play — the answer to
+    // "what launched this", above the server row with the other identity
+    // rows. Absent for a plain launch, matching the status wire shape.
+    if let Some(p) = m.preset.as_deref() {
+      lines.push(crate::tui::fmt::kv_row("preset", p.to_string(), palette));
+    }
     // Server (build/binary) the launch ran on — mirrors the editable picker's
     // server row so the operator can see which build served the model. Shown
     // only when the model has more than one compatible server (a real choice);
@@ -606,6 +612,38 @@ mod tests {
       running_server_label(&app, &m),
       None,
       "a single server has nothing to disambiguate"
+    );
+  }
+
+  #[test]
+  fn running_view_shows_the_preset_between_launch_and_server() {
+    use crate::tui::app::ManagedRow;
+    let path = "/m/a.gguf";
+    let mut app = app_with_two_servers(path);
+    app.managed = vec![ManagedRow {
+      launch_id: "L1".into(),
+      path: PathBuf::from(path),
+      state: crate::tui::status_icons::SurfaceState::Ready,
+      backend: Some(crate::backend::DEFAULT_BACKEND_ID.into()),
+      preset: Some("fast".into()),
+      ..Default::default()
+    }];
+    app.list_cursor = 2;
+    let rows = render_rows_for_running(&app, 60, 40);
+    let row_of = |needle: &str| rows.iter().position(|r| r.contains(needle));
+    let preset = row_of("fast").expect("the preset row renders");
+    let launch = row_of("L1").expect("the launch row renders");
+    let server = row_of("llamacpp-rocm").expect("the server row renders");
+    assert!(
+      launch < preset && preset < server,
+      "preset sits between launch and server:\n{rows:#?}"
+    );
+    // A presetless launch renders no preset row at all.
+    app.managed[0].preset = None;
+    let bare = render_rows_for_running(&app, 60, 40);
+    assert!(
+      !bare.iter().any(|r| r.contains("preset")),
+      "no preset in play → no row:\n{bare:#?}"
     );
   }
 

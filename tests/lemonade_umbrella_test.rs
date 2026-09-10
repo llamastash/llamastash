@@ -399,6 +399,7 @@ async fn status_projects_delegated_models_and_stop_unloads_them() {
           .port(port)
           .launch_id("L1")
           .resolved_backend("lemonade")
+          .preset("fast")
           .build(),
       )
     })
@@ -418,6 +419,9 @@ async fn status_projects_delegated_models_and_stop_unloads_them() {
   assert_eq!(row["port"], json!(port));
   assert_eq!(row["state"]["state"], "ready");
   assert_eq!(row["mode"], "chat");
+  // The delegated branch stamps the resolved preset only-when-set, same as
+  // a process row — a delegated launch can run from a preset too.
+  assert_eq!(row["preset"], "fast");
   // A delegated model has no process of its own — no pid (`-` in the CLI).
   assert!(
     row["pid"].is_null(),

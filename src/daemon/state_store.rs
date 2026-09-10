@@ -150,6 +150,13 @@ pub struct RunningSnapshot {
   /// proxy's `body.model`. `None` for unnamed launches (the default).
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub name: Option<String>,
+  /// The preset this launch resolved: a caller-flattened explicit pick
+  /// (`start --preset`, TUI form), the preset a `<model>@<name>` auto-start
+  /// address named, or the model's config `default:` on a no-selection
+  /// launch. `None` when no preset was in play. Surfaced read-only by
+  /// `status` and `show` so the running row answers "what launched this".
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub preset: Option<String>,
   pub params: LaunchParams,
   /// What `--fit` actually chose, read from the child's `/props` once
   /// on Ready. Empty for adopted/external/Lemonade rows and until
@@ -591,6 +598,32 @@ mod tests {
       .expect("a legacy favorite must deserialize as a Gguf identity");
     assert_eq!(gguf.path.to_string_lossy(), "/models/qwen.gguf");
     fs::remove_dir_all(&dir).ok();
+  }
+
+  #[test]
+  fn running_snapshot_preset_round_trips_and_stays_absent_when_none() {
+    // A preset-carrying row round-trips the name; a presetless row serializes
+    // with no `preset` key at all (byte-stability for every existing
+    // state.json) and a pre-field row loads as `None`.
+    let row = crate::test_support::running_row("/m/a.gguf")
+      .preset("fast")
+      .build();
+    let v = serde_json::to_value(&row).unwrap();
+    assert_eq!(v["preset"], serde_json::json!("fast"));
+    let back: RunningSnapshot = serde_json::from_value(v).unwrap();
+    assert_eq!(back.preset.as_deref(), Some("fast"));
+
+    let bare = crate::test_support::running_row("/m/a.gguf").build();
+    let bare_v = serde_json::to_value(&bare).unwrap();
+    assert!(
+      bare_v.get("preset").is_none(),
+      "presetless row omits the key: {bare_v}"
+    );
+    let legacy: RunningSnapshot = serde_json::from_value(serde_json::json!({
+      "id": bare_v["id"], "pid": 1, "port": 41100, "started_at": 0, "params": bare_v["params"]
+    }))
+    .unwrap();
+    assert_eq!(legacy.preset, None, "a pre-field row loads as no preset");
   }
 
   #[test]

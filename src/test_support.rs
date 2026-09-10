@@ -133,6 +133,7 @@ pub fn running_row(path: &str) -> RunningRow {
     started_at: 0,
     launch_id: Some(LaunchId("L1".to_string())),
     name: None,
+    preset: None,
     params: LaunchParams::new(PathBuf::from(path), LaunchMode::Chat),
     actuals: Default::default(),
     resolved_backend: crate::backend::DEFAULT_BACKEND_ID.to_string(),
@@ -154,6 +155,12 @@ impl RunningRow {
   /// The launch name as an `Option`, for a test that parameterises over both.
   pub fn maybe_name(mut self, name: Option<&str>) -> Self {
     self.0.name = name.map(str::to_string);
+    self
+  }
+
+  /// The preset the launch resolved, as on a preset-backed running row.
+  pub fn preset(mut self, preset: &str) -> Self {
+    self.0.preset = Some(preset.to_string());
     self
   }
 

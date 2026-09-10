@@ -64,6 +64,15 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
   // preset fetch); a named `--preset` is an explicit baseline; a plain
   // `start` makes no selection, so the daemon applies the model's `default:`.
   let preset_is_auto = args.preset.as_deref() == Some(crate::launch::presets::AUTO_DEFAULT);
+  // What the daemon stamps on the running row: the applied preset's name,
+  // minus the `auto` sentinel — "pure fit" is the absence of a preset, not
+  // a preset named auto. A plain `start` sends nothing; the daemon fills in
+  // the model's `default:` itself.
+  let stamped_preset: Option<&str> = if preset_is_auto {
+    None
+  } else {
+    applied_preset.as_deref()
+  };
   let selection = match (&from_file, args.preset.as_deref()) {
     // A launch file's preset is a self-contained baseline.
     (Some(_), _) => "explicit",
@@ -171,6 +180,7 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
     selection,
     args.force,
     launch_name,
+    stamped_preset,
   );
   let resp = client
     .call("start_model", Some(payload))
@@ -600,6 +610,7 @@ fn build_payload(
   selection: &str,
   force: bool,
   name: Option<&str>,
+  preset: Option<&str>,
 ) -> Value {
   let mut obj = serde_json::Map::new();
   obj.insert(
@@ -614,6 +625,12 @@ fn build_payload(
   // User-chosen name; the daemon refuses a duplicate per model.
   if let Some(n) = name {
     obj.insert("name".into(), Value::String(n.to_string()));
+  }
+  // The preset this launch flattened client-side, so the daemon can stamp it
+  // on the running row. Omitted for a plain start (the daemon resolves the
+  // model's `default:` itself) and for `--preset auto` (no preset in play).
+  if let Some(applied) = preset {
+    obj.insert("preset".into(), Value::String(applied.to_string()));
   }
   // Drives whether the daemon applies the model's `default:` preset +
   // last_params inheritance. `default` (no selection) is the common case.
@@ -1017,6 +1034,7 @@ mod tests {
       "default",
       false,
       None,
+      None,
     );
     assert!(v.get("mode").is_none(), "{v}");
   }
@@ -1077,6 +1095,7 @@ mod tests {
       "explicit",
       false,
       None,
+      None,
     );
     assert_eq!(v["backend"], serde_json::json!("llamacpp"));
     assert_eq!(v["selection"], serde_json::json!("explicit"));
@@ -1093,8 +1112,40 @@ mod tests {
       "default",
       false,
       None,
+      None,
     );
     assert!(v.get("backend_knobs").is_none());
+  }
+
+  #[test]
+  fn build_payload_stamps_and_omits_the_preset_name() {
+    // An explicit preset launch sends the name so the daemon can stamp the
+    // running row; a plain start omits it (the daemon resolves `default:`
+    // itself) and `--preset auto` never sends one.
+    let named = build_payload(
+      "/m/a.gguf",
+      Some("chat"),
+      &PartialParams::default(),
+      None,
+      None,
+      "explicit",
+      false,
+      None,
+      Some("fast"),
+    );
+    assert_eq!(named["preset"], serde_json::json!("fast"));
+    let plain = build_payload(
+      "/m/a.gguf",
+      Some("chat"),
+      &PartialParams::default(),
+      None,
+      None,
+      "default",
+      false,
+      None,
+      None,
+    );
+    assert!(plain.get("preset").is_none(), "{plain}");
   }
 
   fn osvec(args: &[&str]) -> Vec<OsString> {

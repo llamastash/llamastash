@@ -284,6 +284,7 @@ mod tests {
       ctx_clamped: false,
       preset_count: 0,
       preset_default: None,
+      preset: None,
     }]
   }
 

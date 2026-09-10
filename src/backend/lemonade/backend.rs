@@ -615,6 +615,7 @@ impl Backend for LemonadeBackend {
     let snapshot_backend = exec.resolved_backend_id.clone();
     let snapshot_launch_id = launch_id.clone();
     let snapshot_name = exec.name.clone();
+    let snapshot_preset = exec.preset.clone();
     let echoed_name = snapshot_name.clone();
     ctx
       .state
@@ -628,6 +629,7 @@ impl Backend for LemonadeBackend {
           started_at,
           launch_id: Some(snapshot_launch_id),
           name: snapshot_name,
+          preset: snapshot_preset,
           params: snapshot_params,
           actuals: Default::default(),
           resolved_backend: snapshot_backend,

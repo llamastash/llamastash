@@ -85,6 +85,11 @@ pub struct ManagedRow {
   /// running-launch view so a named launch is distinguishable from an
   /// unnamed one of the same model. `None` for unnamed launches.
   pub name: Option<String>,
+  /// The preset this launch resolved (`--preset`, a named picker stop, the
+  /// model's `default:`, or a `<model>@<name>` auto-start address), from the
+  /// status row. `None` when no preset was in play; rendered as a read-only
+  /// `preset` row in the running-launch Settings view.
+  pub preset: Option<String>,
   pub state: SurfaceState,
   /// Launch device selector (`CUDA0`, `Vulkan1`, etc.) when set.
   pub device: Option<String>,
@@ -479,6 +484,10 @@ pub struct StartModelArgs {
   /// for a plain `⏎` launch, which stays unnamed as before. Sent as the
   /// `name` start param so the launch is addressable as `<model-id>@<name>`.
   pub name: Option<String>,
+  /// The named preset stop the form launched from, when it did. Sent so the
+  /// daemon can stamp the running row; `None` for the `last used` / `auto`
+  /// stops (the values are flattened into `knobs`/`extras` either way).
+  pub preset: Option<String>,
 }
 
 /// The binary + compute-backend label a focused running model launched on
@@ -2374,6 +2383,8 @@ fn parse_external_row(row: &Value) -> Option<ManagedRow> {
     // know to hide the endpoint slot for these rows.
     port: 0,
     name: None,
+    // An external process wasn't launched through a preset.
+    preset: None,
     state: SurfaceState::External,
     device: None,
     rss_bytes: None,
@@ -2425,6 +2436,8 @@ fn parse_status_row(row: &Value) -> Option<ManagedRow> {
   }
   let port = row.get("port")?.as_u64()? as u16;
   let name = row.get("name").and_then(Value::as_str).map(String::from);
+  // The preset this launch resolved, present only when one was in play.
+  let preset = row.get("preset").and_then(Value::as_str).map(String::from);
   let path = row
     .get("id")
     .and_then(|id| id.get("path"))
@@ -2490,6 +2503,7 @@ fn parse_status_row(row: &Value) -> Option<ManagedRow> {
     path,
     port,
     name,
+    preset,
     state,
     device,
     rss_bytes,
@@ -2853,6 +2867,13 @@ mod tests {
     assert_eq!(app.managed[0].state, SurfaceState::Ready);
     assert_eq!(app.managed[0].rss_bytes, Some(4_500_000_000));
     assert_eq!(app.managed[0].cpu_pct, Some(312.0));
+    // Absent `preset` key reads as no preset — the wire omits it for a
+    // presetless launch rather than sending null.
+    assert_eq!(app.managed[0].preset, None);
+    let mut with_preset = body.clone();
+    with_preset["models"][0]["preset"] = json!("fast");
+    app.ingest_status(&with_preset);
+    assert_eq!(app.managed[0].preset.as_deref(), Some("fast"));
   }
 
   #[test]

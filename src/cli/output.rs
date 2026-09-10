@@ -758,6 +758,11 @@ pub fn status_json(snap: &StatusSnapshot) -> Value {
       if let Some(n) = r.name.as_deref() {
         obj.insert("name".into(), serde_json::json!(n));
       }
+      // The preset this launch resolved — only-when-set, the same convention
+      // `name` uses, so a presetless row stays byte-identical.
+      if let Some(p) = r.preset.as_deref() {
+        obj.insert("preset".into(), serde_json::json!(p));
+      }
       obj.insert("state".into(), serde_json::json!(r.state));
       if let Some(cause) = r.state_cause.as_deref() {
         obj.insert("state_cause".into(), serde_json::json!(cause));
@@ -1506,6 +1511,7 @@ mod tests {
         ctx_clamped: false,
         preset_count: 0,
         preset_default: None,
+        preset: None,
         backend: None,
       }],
       external: vec![ExternalRow {
@@ -1618,6 +1624,7 @@ mod tests {
       ctx_clamped: false,
       preset_count: 0,
       preset_default: None,
+      preset: None,
       backend: None,
     }
   }

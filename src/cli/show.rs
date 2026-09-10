@@ -144,6 +144,7 @@ async fn build_view(args: &ShowArgs, cli: &Cli, config: &Config) -> Result<ShowV
           json!({
             "launch_id": m.get("launch_id"),
             "name": m.get("name"),
+            "preset": m.get("preset"),
             "state": state,
             "port": m.get("port"),
             "resolved_ctx": m.get("resolved_ctx"),
@@ -460,6 +461,9 @@ fn render_human(row: &CatalogRow, shards: &[ShardSize], total_bytes: u64, env: &
     ];
     if let Some(n) = running.get("name").and_then(Value::as_str) {
       running_rows.push(("name", n.to_string()));
+    }
+    if let Some(p) = running.get("preset").and_then(Value::as_str) {
+      running_rows.push(("preset", p.to_string()));
     }
     out.push_str(&kv_block(&running_rows));
   }
@@ -787,6 +791,42 @@ mod tests {
     assert!(
       err.message.unwrap_or_default().contains("nope@nothing"),
       "the error names what the user typed"
+    );
+  }
+
+  #[test]
+  fn render_human_shows_the_running_launchs_preset() {
+    let row = fake_row("/m/x.gguf");
+    let shards = shard_breakdown(&row);
+    let envelope = json!({
+      "size": { "on_disk_total_bytes": 0 },
+      "arch_defaults": { "gpu_backend": "CpuOnly", "yaml": null, "builtin": {} },
+      "last_params": null,
+      "running": [{
+        "launch_id": "L1",
+        "state": "ready",
+        "port": 41100,
+        "resolved_ctx": 4096,
+        "ctx_clamped": false,
+        "preset": "fast",
+      }],
+    });
+    let rendered =
+      console::strip_ansi_codes(&render_human(&row, &shards, 0, &envelope)).into_owned();
+    assert!(
+      rendered.contains("preset") && rendered.contains("fast"),
+      "the running block names the preset the launch resolved:\n{rendered}"
+    );
+    // Absent preset → no row, not a dash filler.
+    let mut bare_env = envelope.clone();
+    bare_env["running"] = json!([{
+      "launch_id": "L2", "state": "ready", "port": 41101,
+      "resolved_ctx": 4096, "ctx_clamped": false, "preset": null,
+    }]);
+    let bare = console::strip_ansi_codes(&render_human(&row, &shards, 0, &bare_env)).into_owned();
+    assert!(
+      !bare.contains("preset"),
+      "a null preset renders no row:\n{bare}"
     );
   }
 
