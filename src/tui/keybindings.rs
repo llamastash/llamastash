@@ -803,8 +803,8 @@ fn build_default_bindings() -> Vec<Binding> {
     chords: [(KeyCode::Enter, KeyModifiers::NONE, ENTER_LABEL, CAT_MODELS)],
   });
   v.extend_from_slice(&binds! {
-    action: Action::LaunchNamed, scopes: FocusSet::LIST,
-    hint: "launch as…", description: Some("launch focused model under a name"),
+    action: Action::LaunchNamed, scopes: FocusSet::RIGHT_PANE,
+    hint: "launch as…", description: Some("launch under a name"),
     chords: [(KeyCode::Enter, KeyModifiers::ALT, ALT_ENTER_LABEL, CAT_MODELS)],
   });
   v.extend_from_slice(&binds! {
@@ -1408,9 +1408,10 @@ pub const SHIFT_TAB_LABEL: &str = "⇧↹";
 /// both platforms.
 pub const SHIFT_ENTER_LABEL: &str = "⇧⏎";
 
-/// `Alt+Enter` chord label (the `Alt+⏎` "launch as…" quick-jump). Same on
-/// both platforms.
-pub const ALT_ENTER_LABEL: &str = "⌥⏎";
+/// `Alt+Enter` chord label (the launch picker's "launch as…"). Composed from
+/// [`ALT_PREFIX`] so the platform split has one source of truth: `⌥⏎` on
+/// macOS, `Alt+⏎` elsewhere, like every other Alt chord.
+pub const ALT_ENTER_LABEL: &str = crate::alt_label!("⏎");
 
 /// `Ctrl` modifier prefix. macOS uses the `⌃` (U+2303) glyph
 /// with no `+` joiner — it sits tight against the key letter

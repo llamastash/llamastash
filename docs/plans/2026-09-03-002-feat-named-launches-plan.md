@@ -445,38 +445,38 @@ its fix plan. Tick as landed.
 
 ### TUI
 
-- [ ] **RV19 — move `LaunchNamed` off the model list onto the launch picker.**
+- [x] **RV19 — move `LaunchNamed` off the model list onto the launch picker.**
       Model list: `⏎` opens the picker and that is it, `Alt+⏎` does nothing.
       Picker: `⏎` launches unnamed as today, `Alt+⏎` asks for the name and launches
       `<model-id>@<name>`.
       *Fix:* `LaunchNamed` moves from `FocusSet::LIST` to `FocusSet::RIGHT_PANE`,
       the list-side handler in `events.rs` goes away, and the dialog's accept path
       submits against the picker that is already open.
-- [ ] **RV20 — `commit_launch_name` sets `focus` but not `right_tab = Settings` or
+- [x] **RV20 — `commit_launch_name` sets `focus` but not `right_tab = Settings` or
       the scroll reset** that `open_launch_picker` does, so with the right pane on
       Logs/Chat/Embed/Rerank the staged picker is unreachable and `Action::Submit`
       no-ops. *Fix:* removed structurally by RV19; if any staging path survives,
       mirror `open_launch_picker` field for field.
-- [ ] **RV21 — the dialog hint resolves the wrong key, under the wrong focus.** It
+- [x] **RV21 — the dialog hint resolves the wrong key, under the wrong focus.** It
       renders `LaunchNamed` under `Focus::ConfirmPopup` while the action is scoped
       `FocusSet::LIST`, so the lookup always misses and a user's `keybindings:`
       override never shows; it also advertises `Alt+⏎` when the field submits on a
       bare `⏎`.
       *Fix:* hint text is the Enter label, resolved under the focus the action is
       actually scoped to.
-- [ ] **RV22 — `ALT_ENTER_LABEL` is a hardcoded `⌥⏎` on every platform**
+- [x] **RV22 — `ALT_ENTER_LABEL` is a hardcoded `⌥⏎` on every platform**
       (`src/tui/keybindings.rs:1413`), while `ALT_PREFIX` right above it and
       `TAB_LABEL`/`SHIFT_TAB_LABEL` all use a `#[cfg(target_os = "macos")]` split.
       D5 asks for `⌥⏎` on macOS and `Alt+⏎` elsewhere.
       *Fix:* the same cfg split, or compose it from `ALT_PREFIX` + `ENTER_LABEL` so
       there is one source of truth.
-- [ ] **RV23 — `LaunchNameDialog::error` is never set to `Some`**, so the field, the
+- [x] **RV23 — `LaunchNameDialog::error` is never set to `Some`**, so the field, the
       spacer row, and the render branch at `launch_name_dialog.rs:114` are dead.
-      *Fix:* wire it to the empty/whitespace validation RV8 needs anyway, or delete
-      it.
-- [ ] **RV24 — `commit_launch_name` takes a `writer` it discards** with
+      *Fix:* wired to the same rule `--name` uses — nothing typed launches
+      unnamed, a blank-but-typed name is refused inline.
+- [x] **RV24 — `commit_launch_name` takes a `writer` it discards** with
       `let _ = writer;` (`src/tui/events.rs:1358`). *Fix:* drop the parameter.
-- [ ] **RV25 — the dialog is a structural clone of `save_preset_dialog`** minus one
+- [x] **RV25 — the dialog is a structural clone of `save_preset_dialog`** minus one
       stage. No change now; record the extraction trigger (a third single-field
       modal) as a `TODO.md` line so the shared frame gets pulled out then.
 
@@ -512,7 +512,7 @@ its fix plan. Tick as landed.
       path with no coverage.
 - [x] **RV31 — no case-variant regression test**: `@CODER` against a live `coder`
       must not start a second launch, and `<model>@coder` must stay unambiguous.
-- [ ] **RV32 — no TUI golden snapshots** for the hint, the list pane's `@name`
+- [x] **RV32 — no TUI golden snapshots** for the hint, the list pane's `@name`
       suffix, or the Settings name row.
 
 ### Docs

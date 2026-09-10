@@ -392,6 +392,7 @@ places.
   - [ ] lemonade preload errors carry only `lemond returned HTTP 500` — include the response body's `detail` (e.g. the FLM memlock message) in `LemonadeError` so the status row's cause is actionable; llama.cpp supervisor `Error` rows can carry an empty cause when `llama-server` exits during Loading (status `state_cause` plumbing exists, the watcher just doesn't fill it on that path);
   - [ ] **DOCUMENT**: optional upfront guard for cross-backend `--backend` misuse (today a GGUF forced onto lemonade fails at load time, a registry row forced onto llamacpp fails at spawn — could reject with "model not in <backend>'s catalog" before launching);
   - [ ] delegated rows re-adopted across a daemon restart fall back to mirroring the umbrella state until something reloads them (could reconcile against `lemond`'s loaded list at boot).
+- [ ] **Extract the shared single-field modal frame when a third one appears.** [`launch_name_dialog`](src/tui/launch_name_dialog.rs) is a structural clone of [`save_preset_dialog`](src/tui/save_preset_dialog.rs) minus the `Confirm` stage: same centred rect, panel, input line and hint row, differing only in the title and what accept does. Two copies do not pay for a shared frame; three do, so pull it out then instead of cloning a third time.
 - [ ] Benchmark ds4 vs llama.cpp for Deepseek v4 Flash.
 - [ ] Benchmark against Ollama, LMStudio and other popular options.
   - [ ] AMD GPU : Linux

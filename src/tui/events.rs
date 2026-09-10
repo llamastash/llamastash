@@ -818,11 +818,12 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
       }
     }
     Action::LaunchNamed => {
-      // `Alt+⏎` on the Models list: name the focused model before launching.
-      // A plain `⏎` (OpenLaunchPicker) is untouched and launches unnamed.
-      if app.focused_path().is_none() {
-        app.show_toast("no model focused — nothing to launch");
-      } else {
+      // `Alt+⏎` on the launch picker: name this launch before dispatching it.
+      // A plain `⏎` (Submit) is untouched and launches unnamed. Scoped to the
+      // picker rather than the list so the name is asked for once the launch
+      // is otherwise ready to go — and so accepting can submit the picker
+      // that is already open instead of staging a fresh one.
+      if app.launch_picker.is_some() && !settings_inline_edit_open(app) {
         app.open_launch_name_dialog();
       }
     }
@@ -1307,7 +1308,8 @@ fn commit_save_preset(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) {
 
 /// Route a key to the open launch-name dialog. Single text-entry stage:
 /// typing edits the buffer, `Enter` accepts (an empty name is fine — it
-/// launches unnamed, same as a plain `⏎`), `Esc` cancels.
+/// launches unnamed, same as a plain `⏎`), `Esc` cancels. A blank-but-typed
+/// name is rejected inline rather than silently dropped, matching `--name`.
 fn handle_launch_name_input(
   app: &mut App,
   key: KeyEvent,
@@ -1324,8 +1326,14 @@ fn handle_launch_name_input(
   }
   match dialog.input.handle_key(key) {
     InputOutcome::Submit => {
+      // Nothing typed launches unnamed; whitespace is a typo, not a name, and
+      // the CLI rejects `--name "  "` for the same reason.
+      if !dialog.input.buffer().is_empty() && dialog.name().is_empty() {
+        dialog.error = Some("a name cannot be only whitespace".to_string());
+        return;
+      }
       dialog.error = None;
-      // Borrow released below; open the picker carrying the typed name.
+      // Borrow released below; the picker launches carrying the typed name.
     }
     InputOutcome::Handled => {
       dialog.error = None;
@@ -1336,26 +1344,24 @@ fn handle_launch_name_input(
   commit_launch_name(app, writer);
 }
 
-/// Open the normal launch picker carrying the typed name and close the
-/// dialog. An empty name launches unnamed, exactly like a plain `⏎`.
+/// Stamp the typed name onto the open picker and dispatch it. An empty name
+/// launches unnamed, exactly like a plain `⏎`.
+///
+/// The picker the user was already looking at is the one that launches — no
+/// second picker is built, so nothing has to re-derive the focus, the right
+/// tab and the scroll state that `open_launch_picker` sets.
 fn commit_launch_name(app: &mut App, writer: Option<&mpsc::Sender<WriterCmd>>) {
   let Some(dialog) = app.launch_name_dialog.take() else {
     return;
   };
   let name = dialog.name();
-  let launch_name = if name.is_empty() { None } else { Some(name) };
-  // Seed the picker for the focused model, then stamp the name onto it so
-  // the launch dispatches as `<model-id>@<name>`.
-  if let Some(picker) = app.build_default_picker() {
-    let mut picker = picker;
-    picker.launch_name = launch_name;
-    app.launch_picker = Some(picker);
-    app.focus = Focus::RightPane;
-  } else {
-    // No picker could be built (model vanished) — drop the dialog.
-    app.show_toast("no model focused — nothing to launch");
-  }
-  let _ = writer;
+  let Some(picker) = app.launch_picker.as_mut() else {
+    // The picker closed under the dialog (the model went away).
+    app.show_toast("nothing to launch");
+    return;
+  };
+  picker.launch_name = (!name.is_empty()).then_some(name);
+  apply_launch_submit(app, writer);
 }
 
 /// Apply a confirmed [`ConfirmAction`] — dispatches the writer

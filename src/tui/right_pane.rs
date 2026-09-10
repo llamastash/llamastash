@@ -287,6 +287,15 @@ pub(crate) fn bottom_hint_chips(app: &App) -> Vec<crate::tui::hint_picker::Ranke
           10,
           app.hint_with(Focus::RightPane, Action::Submit, "launch"),
         );
+        // `Alt+⏎:launch as…` — the naming dialog, ranked right behind plain
+        // launch. This footer is the only place it is advertised, so a user
+        // who never opens the help overlay still finds it where the launch
+        // it modifies lives.
+        push(
+          &mut chips,
+          11,
+          app.hint_with(Focus::RightPane, Action::LaunchNamed, "launch as…"),
+        );
         // When the picker was staged via `e` over a running launch
         // (edit-for-next-launch mode), surface `Esc:discard` so the
         // user can step back to the read-only running view without

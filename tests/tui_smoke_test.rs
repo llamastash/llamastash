@@ -12,7 +12,7 @@ use llamastash::discovery::{DiscoveredModel, ModelSource};
 use llamastash::gguf::metadata::{ModeHint, ModelMetadata, Quant};
 use llamastash::theme::ThemeName;
 use llamastash::tui::app::{App, AppOptions};
-use llamastash::tui::events::pump_input;
+use llamastash::tui::events::{pump_input, pump_input_with_writer, WriterCmd};
 use llamastash::tui::keybindings::KeyMap;
 use llamastash::tui::render::render;
 use ratatui::backend::TestBackend;
@@ -886,36 +886,103 @@ fn narrow_terminal_truncates_long_model_names_with_ellipsis() {
 }
 
 #[test]
-fn alt_enter_opens_launch_name_dialog() {
+fn the_launch_picker_owns_launch_as_not_the_model_list() {
+  // The model list has exactly one launch key. Naming is asked for on the
+  // picker, once the launch is otherwise ready to go.
   let mut app = App::new(AppOptions::default());
   app.models = vec![fake_model("/m/qwen3.gguf", "/m")];
   app.go_top();
 
-  // Alt+Enter should open the launch-name dialog.
+  pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::ALT));
+  assert!(
+    app.launch_name_dialog.is_none() && app.launch_picker.is_none(),
+    "Alt+Enter is not a Models-list binding"
+  );
+
+  pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::NONE));
+  assert!(app.launch_picker.is_some(), "Enter opens the launch picker");
+  assert!(
+    app.launch_name_dialog.is_none(),
+    "…and only the picker — a plain Enter never asks for a name"
+  );
+
   pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::ALT));
   assert!(
     app.launch_name_dialog.is_some(),
-    "Alt+Enter must open the launch-name dialog"
+    "Alt+Enter on the picker asks for the name"
   );
 
-  // Escape should close it.
   pump_input(&mut app, key(KeyCode::Esc, KeyModifiers::NONE));
   assert!(
     app.launch_name_dialog.is_none(),
     "Escape must close the launch-name dialog"
   );
+  assert!(
+    app.launch_picker.is_some(),
+    "cancelling the name leaves the picker as it was"
+  );
 }
 
 #[test]
-fn plain_enter_does_not_open_launch_name_dialog() {
+fn naming_a_launch_dispatches_the_open_picker_carrying_the_name() {
+  // The accept path submits the picker already on screen, so the name rides
+  // the same `start_model` a plain Enter would have sent.
+  let (tx, mut rx) = tokio::sync::mpsc::channel(8);
   let mut app = App::new(AppOptions::default());
   app.models = vec![fake_model("/m/qwen3.gguf", "/m")];
   app.go_top();
-
-  // Plain Enter (no Alt) should NOT open the launch-name dialog.
   pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::NONE));
+  pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::ALT));
+
+  for c in "coder".chars() {
+    pump_input_with_writer(
+      &mut app,
+      key(KeyCode::Char(c), KeyModifiers::NONE),
+      Some(&tx),
+    );
+  }
+  // A trailing space is trimmed, not rejected — only a blank-but-typed name is.
+  pump_input_with_writer(
+    &mut app,
+    key(KeyCode::Char(' '), KeyModifiers::NONE),
+    Some(&tx),
+  );
+  pump_input_with_writer(&mut app, key(KeyCode::Enter, KeyModifiers::NONE), Some(&tx));
   assert!(
     app.launch_name_dialog.is_none(),
-    "Plain Enter must not open the launch-name dialog"
+    "accepting closes the dialog"
+  );
+
+  let cmd = rx.try_recv().expect("the launch dispatches on accept");
+  match cmd {
+    WriterCmd::StartModel(args) => {
+      assert_eq!(
+        args.name.as_deref(),
+        Some("coder"),
+        "the typed name rides along"
+      );
+      assert_eq!(args.model_path, PathBuf::from("/m/qwen3.gguf"));
+    }
+    other => panic!("expected a start_model, got {other:?}"),
+  }
+}
+
+#[test]
+fn a_blank_name_is_refused_inline_rather_than_silently_dropped() {
+  let mut app = App::new(AppOptions::default());
+  app.models = vec![fake_model("/m/qwen3.gguf", "/m")];
+  app.go_top();
+  pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::NONE));
+  pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::ALT));
+
+  pump_input(&mut app, key(KeyCode::Char(' '), KeyModifiers::NONE));
+  pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::NONE));
+  let dialog = app
+    .launch_name_dialog
+    .as_ref()
+    .expect("a whitespace-only name keeps the dialog open");
+  assert!(
+    dialog.error.is_some(),
+    "…and says why, the way `--name \"  \"` does"
   );
 }
