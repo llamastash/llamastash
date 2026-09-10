@@ -324,7 +324,12 @@ mod tests {
   /// A panic elsewhere poisons the registry's mutexes; the claim's `Drop` must
   /// still release (the set holds plain keys, so recovering the guard is safe).
   /// Leaking the claim instead would block that name until the daemon restarts.
+  ///
+  /// Skipped under `-Cpanic=abort` (the nightly coverage job): poisoning a
+  /// mutex means panicking under the lock, and `catch_unwind` cannot catch
+  /// what does not unwind, so the process would abort instead.
   #[test]
+  #[cfg_attr(panic = "abort", ignore = "poisoning a mutex needs unwinding")]
   fn a_poisoned_lock_does_not_leak_a_held_name() {
     let r = SupervisorRegistry::new();
     let claim = r.try_reserve_name("/m/a.gguf", "coder").unwrap();
