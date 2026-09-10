@@ -239,8 +239,10 @@ request can say *which* copy it wants. The rules, all in one place:
 - **The split** is `launch::resolve::parse_named_reference`: the whole reference
   is resolved against the catalog first, so a GGUF whose own file name contains
   an `@` still wins, and only a miss is re-read as `<model>@<name>`, split at the
-  **last** `@` with both halves required non-empty. The proxy, the CLI resolver
-  and `show` all call it, so no surface can drift on where the name starts.
+  **last** `@`. The name half has to *be* a launch name (below), so a reference
+  the writer would never have produced is not a name reference at all. The
+  proxy, the CLI resolver and `show` all call it, so no surface can drift on
+  where the name starts.
 - **The comparison** is `launch::resolve::name_matches`, ASCII-case-insensitive
   like every other reference in the product. `RunningSnapshot::carries_name` is
   the one join from a launch to its name, keyed on `launch_id` (a port is reused
@@ -253,14 +255,25 @@ request can say *which* copy it wants. The rules, all in one place:
   one critical section. An `error` launch does not hold its name. A managed
   multiplexer refuses names outright: it serves every model from one shared
   process, so a name there could not select an instance.
-- **The charset** is enforced by `launch::resolve::validate_launch_name` at
-  every entry point (`--name`'s value parser, the TUI dialog, and the daemon's
-  gate for raw JSON-RPC callers): trimmed, non-empty, ASCII letters / digits /
-  `-` / `_` only. A name containing `@` or a space would publish an address
-  that re-splits to a different pair. The accepted name is echoed as
+- **The charset** is one predicate, `launch::resolve::is_launch_name`: non-empty,
+  ASCII letters / digits / `-` / `_` only. The writer
+  (`validate_launch_name`, at `--name`'s value parser, the TUI dialog and the
+  daemon's gate for raw JSON-RPC callers) trims and then applies it; the reader
+  (`parse_named_reference`) applies it to the name half. Sharing it is what
+  keeps a malformed address cheap: `qwen3@co der` resolves as a plain reference
+  and misses, instead of auto-starting a launch the daemon then refuses and
+  spending one of that model's three auto-start failures per minute. The
+  accepted name is echoed as
   `launch_name` on the `start_model` response (omitted when unnamed), and the
   `status` wire omits `name` on unnamed rows rather than emitting `null` —
   the same omit-when-unset convention `state.json` uses.
+- **Resolving a name to a launch** prefers the rows that are still addressable.
+  Because an `error` launch does not hold its name but does keep its
+  `state.json` row, a relaunch under the same name coexists with the row it
+  replaced. The CLI resolver skips `error` / `stopping` / `stopped` rows — the
+  same set the proxy's `attach_target` skips — and falls back to them only when
+  no live launch answers, so the address reaches the running copy while
+  `stop <name>` can still clean up one that failed to load.
 - **The published ids** come from two different places by design. Catalog rows
   are published through `published_id_index` (`util::paths`); named rows come
   from the live launch registry, and take their model half out of that same

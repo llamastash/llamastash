@@ -499,11 +499,9 @@ async fn model_file_with_at_in_name_resolves_as_plain_reference() {
   let launch_id = registry.next_id();
   registry.insert(launch_id, model.clone()).await;
 
-  let state = proxy_state_with(
-    vec![discovered(catalog_path, Some("foo@bar"), "qwen3")],
-    registry,
-  )
-  .await;
+  // A local GGUF carries no display label, so its reference *is* the filename
+  // — the case D2's fail-safe exists for.
+  let state = proxy_state_with(vec![discovered(catalog_path, None, "qwen3")], registry).await;
   let (addr, shutdown, listener_handle) = spawn_listener_with_state(state).await;
 
   // Request the full filename (with `@` in it). The D2 fail-safe must treat

@@ -399,12 +399,13 @@ pub fn published_ids_for(catalog: &[CatalogRow], subset: &[CatalogRow]) -> Vec<S
 ///
 /// Splits on the **last** `@` (plan D2), so a GGUF named `foo@bar.gguf` addressed
 /// as `foo@bar.gguf@coder` keeps its filename in the model half. Returns `None`
-/// when there is no `@` or when either half is empty: `@coder` and `qwen3@` are
-/// not name references, and an empty model half substring-matches every row, so
-/// treating them as one silently widens the match set instead of narrowing it.
+/// when there is no `@`, when the model half is empty (`@coder` — an empty half
+/// substring-matches every row, so treating it as a reference widens the match
+/// set instead of narrowing it), or when the name half is not a launch name
+/// ([`is_launch_name`]).
 pub fn parse_named_reference(reference: &str) -> Option<(&str, &str)> {
   let (model, name) = reference.rsplit_once('@')?;
-  if model.is_empty() || name.is_empty() {
+  if model.is_empty() || !is_launch_name(name) {
     return None;
   }
   Some((model, name))
@@ -435,10 +436,7 @@ pub fn validate_launch_name(raw: &str) -> Result<String, String> {
   if name.is_empty() {
     return Err("a name needs at least one letter, digit, `-` or `_`".into());
   }
-  if !name
-    .chars()
-    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-  {
+  if !is_launch_name(name) {
     return Err(format!(
       "a name is letters, digits, `-` or `_` — got `{name}`"
     ));
@@ -446,12 +444,33 @@ pub fn validate_launch_name(raw: &str) -> Result<String, String> {
   Ok(name.to_string())
 }
 
+/// `true` when `s` is *exactly* a launch name: non-empty, nothing to trim, and
+/// only ASCII letters, digits, `-` and `_`.
+///
+/// The reader ([`parse_named_reference`]) and the writer
+/// ([`validate_launch_name`]) share this predicate so a name the writer refuses
+/// can never be read back as a name half. Without that, `qwen3@co der` parses as
+/// a named reference, finds no launch, and auto-starts — which the daemon then
+/// refuses, spending one of the model's three auto-start failures per minute on
+/// an address that cannot exist. Sharing the rule makes it a plain
+/// model-not-found instead.
+pub fn is_launch_name(s: &str) -> bool {
+  !s.is_empty()
+    && s
+      .chars()
+      .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 /// The one join for a `<model>@<name>` address — the inverse of
-/// [`parse_named_reference`], and the only place the separator is *written*.
+/// [`parse_named_reference`].
 ///
 /// The split and the compare were centralized so surfaces cannot drift; the
 /// join is the third half of that contract. Only names that pass
 /// [`validate_launch_name`] round-trip back through the split unchanged.
+///
+/// Every surface that prints a whole address goes through here. The one place
+/// that writes the separator itself is the TUI list row, which needs the
+/// suffix as its own span to style it.
 pub fn join_named_reference(model: &str, name: &str) -> String {
   format!("{model}@{name}")
 }
@@ -940,6 +959,35 @@ mod tests {
         "`{raw}` must re-split to the pair it was joined from"
       );
     }
+  }
+
+  /// The reader and the writer share [`is_launch_name`], so an address whose
+  /// name half the writer would refuse is not a name reference at all. It
+  /// resolves as a plain reference and misses, instead of auto-starting a
+  /// launch the daemon refuses and charging the model's auto-start budget.
+  #[test]
+  fn an_address_the_writer_would_refuse_is_not_a_name_reference() {
+    for address in [
+      "qwen3@co der",
+      "qwen3@cöder",
+      "qwen3@a/b",
+      "qwen3@",
+      "@coder",
+    ] {
+      assert_eq!(
+        parse_named_reference(address),
+        None,
+        "`{address}` must not read back as a named reference"
+      );
+    }
+    // D2's fail-safe gets stronger for free: a filename's extension is not a
+    // launch name, so a GGUF that really is called `foo@bar.gguf` stays whole.
+    assert_eq!(parse_named_reference("foo@bar.gguf"), None);
+    // The last-`@` rule still holds for two valid halves.
+    assert_eq!(
+      parse_named_reference("foo@bar.gguf@coder"),
+      Some(("foo@bar.gguf", "coder"))
+    );
   }
 
   #[test]

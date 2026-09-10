@@ -269,6 +269,7 @@ async fn wait_and_emit(
       "resolved_ctx": settled.as_ref().and_then(|r| r.resolved_ctx),
       "ctx_clamped": settled.as_ref().map(|r| r.ctx_clamped).unwrap_or(false),
     });
+    copy_launch_name(resp, &mut body);
     if let Some(cause) = settled.as_ref().and_then(|r| r.state_cause.clone()) {
       body["cause"] = Value::String(cause);
     }
@@ -732,6 +733,15 @@ fn copy_warnings(resp: &Value, body: &mut Value) {
   }
 }
 
+/// Copy the daemon's echoed launch name onto a `--json` body. Omitted when the
+/// launch is unnamed, the same omit-when-unset convention the rest of the wire
+/// uses. Shared so `--wait` reports the name too — it builds its own body.
+fn copy_launch_name(resp: &Value, body: &mut Value) {
+  if let Some(n) = resp.get("launch_name").and_then(Value::as_str) {
+    body["launch_name"] = Value::String(n.to_string());
+  }
+}
+
 fn emit_response(preset: Option<&str>, row: &CatalogRow, resp: &Value, json: bool, quiet: bool) {
   let port = resp.get("port").and_then(Value::as_u64);
   let lid = resp.get("launch_id").and_then(Value::as_str);
@@ -746,11 +756,8 @@ fn emit_response(preset: Option<&str>, row: &CatalogRow, resp: &Value, json: boo
       "preset": preset,
       "path": row.path,
     });
-    // `name` is already the model name here, so the launch name gets its own
-    // key. Omitted when unset to keep the shape byte-stable for unnamed launches.
-    if let Some(n) = launch_name {
-      body["launch_name"] = Value::String(n.to_string());
-    }
+    // `name` is already the model name here, so the launch name gets its own key.
+    copy_launch_name(resp, &mut body);
     // The daemon omits `layer_sources` when empty, so this is absent on a
     // pure-fit launch and present otherwise.
     if let Some(sources) = resp.get("layer_sources") {
@@ -1039,6 +1046,23 @@ mod tests {
   fn unknown_hint_without_override_errors() {
     let r = row(Some("unknown"));
     assert!(resolve_mode(&r, None, None).is_err());
+  }
+
+  /// `--json` means the same thing with and without `--wait`: both bodies go
+  /// through the one copier, and an unnamed launch emits no key at all.
+  #[test]
+  fn the_daemon_echo_lands_on_a_json_body_only_when_the_launch_is_named() {
+    let mut body = serde_json::json!({"name": "qwen.gguf"});
+    copy_launch_name(&serde_json::json!({"launch_id": "L1"}), &mut body);
+    assert!(
+      body.get("launch_name").is_none(),
+      "an unnamed launch must omit the key: {body}"
+    );
+    copy_launch_name(
+      &serde_json::json!({"launch_id": "L1", "launch_name": "coder"}),
+      &mut body,
+    );
+    assert_eq!(body["launch_name"], serde_json::json!("coder"));
   }
 
   #[test]

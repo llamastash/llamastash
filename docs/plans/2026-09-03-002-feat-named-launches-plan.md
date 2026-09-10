@@ -542,7 +542,8 @@ on the PR. All ticked as landed.
       *Fix:* `validate_launch_name` (trimmed, non-empty, ASCII letters/digits/
       `-`/`_`) applied at `--name`'s value parser, the TUI dialog's inline
       check, and the daemon's `start_model` gate for raw JSON-RPC callers.
-      Malformed values exit clap-style (2) like other bad flag values.
+      Malformed values exit `USAGE` (64), the same as every other bad flag
+      value on this binary.
 - [x] **RV38 — the CLI fabricated `launch_name` onto the start response.**
       Against a pre-name daemon the launch would run unnamed while `start`
       printed and emitted the name the *client* sent.
@@ -573,3 +574,47 @@ on the PR. All ticked as landed.
       test included.
 - [x] **RV45 (Copilot) — the fallback suite's `stop_all` scanned a `Vec` of
       ports per row** (O(N·M)). *Fix:* `HashSet`.
+
+### Third review pass (post-RV45, 2026-09-10)
+
+Findings from re-reviewing the RV37–RV45 commits. All ticked as landed.
+
+- [x] **RV46 — the reader accepted names the writer refuses.** `--name` enforced
+      the charset but `parse_named_reference` still took any non-empty name
+      half, so `qwen3@co der` parsed as a named reference, missed, and
+      auto-started — which the daemon then refused. Each attempt spent one of
+      that model's three auto-start failures per minute
+      (`proxy::failure_tracker`), and the budget is keyed on the model id, so
+      three typos suppressed auto-start for *every* name of that model.
+      *Fix:* one `is_launch_name` predicate behind both the reader and the
+      writer. A malformed address is now a plain model-not-found. D2's
+      fail-safe gets stronger for free — `foo@bar.gguf` has an extension, not a
+      name, in its second half.
+- [x] **RV47 — an errored launch made its own name unusable.** RV20 stopped an
+      errored row from *holding* a name at the daemon gate, but the row keeps
+      its `state.json` entry, so the relaunch coexisted with it and the CLI
+      resolver matched both: ``stop coder`` and ``stop qwen3@coder`` both exited
+      66 with ``matches 2 launches: L1, L2``. The address the feature exists to
+      provide was reachable only by launch id or port — the same dead end as the
+      case-sensitivity bug, by another route.
+      *Fix:* `prefer_addressable` narrows a name match to rows that are not
+      `error` / `stopping` / `stopped` (the set `attach_target` already skips),
+      falling back to them only when no live launch answers, so a failed launch
+      stays stoppable by name when it is the only holder.
+- [x] **RV48 — `--wait --json` omitted `launch_name`** while plain `--json`
+      carried it, against a `usage.md` line that says `--json` reports it.
+      `wait_and_emit` builds its own body. *Fix:* one `copy_launch_name`
+      copier, called by both.
+- [x] **RV49 — the muted `@name` span broke the selected row.** `highlight_style`
+      REVERSEs each cell against its own fg, so the muted suffix inverted to a
+      grey block mid-strip while the cells around it flipped to the row colour —
+      the "cell-by-cell splotches" the surrounding code exists to avoid.
+      Goldens are text-only, so nothing caught it, and the overflow branch had
+      no test either. *Fix:* the suffix is muted only while the row is
+      unselected; three tests read real buffer cells (muted unselected, row
+      colour selected, model half ellipsized under a narrow Name column).
+- [x] **RV50 — RV37's note claimed malformed `--name` exits 2.** It exits 64,
+      like every other clap error here. Corrected above.
+- [x] **RV51 — `join_named_reference` claimed to be the only place the
+      separator is written.** The TUI list row writes it too, because it needs
+      the suffix as its own span. Comment corrected rather than the code.

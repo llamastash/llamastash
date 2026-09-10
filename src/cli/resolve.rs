@@ -517,10 +517,12 @@ pub fn resolve_running(rows: &[RunningRow], reference: &str) -> Result<RunningRo
   // reaches the launch named `coder` even when another model's filename
   // contains the word. Two models running under one name land in
   // `single_or_error`'s ambiguity listing rather than falling through.
-  let by_launch_name: Vec<&RunningRow> = rows
-    .iter()
-    .filter(|r| crate::launch::resolve::name_matches(r.name.as_deref(), needle))
-    .collect();
+  let by_launch_name = prefer_addressable(
+    rows
+      .iter()
+      .filter(|r| crate::launch::resolve::name_matches(r.name.as_deref(), needle))
+      .collect(),
+  );
   if !by_launch_name.is_empty() {
     return single_or_error(by_launch_name, reference);
   }
@@ -530,18 +532,20 @@ pub fn resolve_running(rows: &[RunningRow], reference: &str) -> Result<RunningRo
   // name reference at all and falls through to the plain substring walk instead
   // of matching every row, since `"".contains("")` is true for all of them.
   if let Some((model_ref, name_ref)) = crate::launch::resolve::parse_named_reference(needle) {
-    let by_named: Vec<&RunningRow> = rows
-      .iter()
-      .filter(|r| {
-        crate::launch::resolve::name_matches(r.name.as_deref(), name_ref) && {
-          let path = std::path::Path::new(&r.model_path);
-          let fname = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-          let parent = path.parent().and_then(|p| p.to_str()).unwrap_or("");
-          fname.to_lowercase().contains(&model_ref.to_lowercase())
-            || parent.to_lowercase().contains(&model_ref.to_lowercase())
-        }
-      })
-      .collect();
+    let by_named = prefer_addressable(
+      rows
+        .iter()
+        .filter(|r| {
+          crate::launch::resolve::name_matches(r.name.as_deref(), name_ref) && {
+            let path = std::path::Path::new(&r.model_path);
+            let fname = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            let parent = path.parent().and_then(|p| p.to_str()).unwrap_or("");
+            fname.to_lowercase().contains(&model_ref.to_lowercase())
+              || parent.to_lowercase().contains(&model_ref.to_lowercase())
+          }
+        })
+        .collect(),
+    );
     return single_or_error(by_named, reference);
   }
   // Fall back to a name / parent-dir substring against the running rows.
@@ -600,6 +604,31 @@ pub async fn resolve_running_via_catalog(
     return Err(miss);
   }
   single_or_error(by_label, reference)
+}
+
+/// Narrow a name match to the launches the name actually addresses.
+///
+/// The daemon's name gate skips a launch whose supervisor has errored, so a
+/// relaunch under the same name coexists with the row it replaced. Both rows
+/// carry the name, and calling that an ambiguity leaves the address unusable
+/// — the one thing the feature exists to provide — with only the launch id or
+/// port left to stop either one. The live launch is what the proxy routes
+/// `<model>@<name>` to, so it is what the name resolves to here. A row on its
+/// way out still answers when it is the *only* holder, so `stop <name>` can
+/// still clean up a launch that failed to load.
+fn prefer_addressable(hits: Vec<&RunningRow>) -> Vec<&RunningRow> {
+  // The same set the proxy's `attach_target` skips: on their way out, so not
+  // a target a request (or an address) can land on.
+  let live: Vec<&RunningRow> = hits
+    .iter()
+    .copied()
+    .filter(|r| !matches!(r.state.as_str(), "error" | "stopping" | "stopped"))
+    .collect();
+  if live.is_empty() {
+    hits
+  } else {
+    live
+  }
 }
 
 fn single_or_error(matches: Vec<&RunningRow>, reference: &str) -> Result<RunningRow, CliExit> {
@@ -989,6 +1018,41 @@ mod tests {
       row["name"] = serde_json::json!(n);
     }
     parse_running_row(&row).expect("row parses")
+  }
+
+  /// A row in the `error` state, which keeps its `state.json` entry — and its
+  /// name — until someone stops it.
+  fn errored(launch_id: &str, path: &str, port: u16, name: &str) -> RunningRow {
+    let mut row = live(launch_id, path, port, Some(name));
+    row.state = "error".to_string();
+    row
+  }
+
+  /// The daemon lets a name be re-granted once its holder has errored, so both
+  /// rows carry it. The address must still reach the launch that answers to it
+  /// instead of reporting an ambiguity that no name can get out of.
+  #[test]
+  fn a_name_resolves_to_the_live_launch_when_an_errored_row_still_holds_it() {
+    let rows = vec![
+      errored("L1", "/m/qwen.gguf", 41100, "coder"),
+      live("L2", "/m/qwen.gguf", 41101, Some("coder")),
+    ];
+    assert_eq!(resolve_running(&rows, "coder").unwrap().launch_id, "L2");
+    assert_eq!(
+      resolve_running(&rows, "qwen@coder").unwrap().launch_id,
+      "L2"
+    );
+  }
+
+  /// The errored row is still the only holder, so it stays stoppable by name.
+  #[test]
+  fn a_name_held_only_by_an_errored_launch_still_resolves_to_it() {
+    let rows = vec![errored("L1", "/m/qwen.gguf", 41100, "coder")];
+    assert_eq!(resolve_running(&rows, "coder").unwrap().launch_id, "L1");
+    assert_eq!(
+      resolve_running(&rows, "qwen@coder").unwrap().launch_id,
+      "L1"
+    );
   }
 
   #[test]
