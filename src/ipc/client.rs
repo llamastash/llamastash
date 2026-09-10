@@ -25,6 +25,24 @@ use crate::daemon::runtime_file;
 /// hang an agent script.
 pub const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Budget for methods whose handler spawns or reaps an engine process.
+/// These are bounded by how fast the box starts `llama-server`, not by
+/// daemon round-trip: a cold macOS runner has taken well past 5 s just
+/// to spawn and bind. Timing the client out mid-launch is worse than
+/// waiting, because the handler is cancelled while the process it
+/// spawned keeps running.
+pub const ENGINE_CALL_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Methods that get [`ENGINE_CALL_TIMEOUT`] instead of the default.
+/// A caller wanting its own budget still uses `call_with_timeout`,
+/// which overrides both (`stop` sizes one from the grace period).
+fn timeout_for(method: &str) -> Duration {
+  match method {
+    "start_model" | "stop_model" | "stop_all" => ENGINE_CALL_TIMEOUT,
+    _ => DEFAULT_CALL_TIMEOUT,
+  }
+}
+
 /// Env-var override pair. When **either** is set both must be set or
 /// the client treats the configuration as malformed and falls through
 /// to `Connect` rather than silently using the partially-overridden
@@ -146,12 +164,14 @@ impl Client {
     })
   }
 
-  /// Issue one JSON-RPC call with the default timeout. Returns the
-  /// `result` field on success or the structured `error` on protocol
-  /// failure. Transport problems surface as `ClientError::Transport`.
+  /// Issue one JSON-RPC call on the budget that suits the method:
+  /// [`ENGINE_CALL_TIMEOUT`] for the ones that spawn or reap an engine,
+  /// [`DEFAULT_CALL_TIMEOUT`] otherwise. Returns the `result` field on
+  /// success or the structured `error` on protocol failure. Transport
+  /// problems surface as `ClientError::Transport`.
   pub async fn call(&mut self, method: &str, params: Option<Value>) -> Result<Value, ClientError> {
     self
-      .call_with_timeout(method, params, DEFAULT_CALL_TIMEOUT)
+      .call_with_timeout(method, params, timeout_for(method))
       .await
   }
 
@@ -260,6 +280,25 @@ fn env_var(key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  /// Regression: `llamastash start` and the TUI's writer both go
+  /// through the generic `call`, which imposed a flat 5 s. The macOS
+  /// release gate failed with "ipc call exceeded 5s" while the daemon
+  /// was still spawning the engine, on a launch that was only slow.
+  #[test]
+  fn engine_spawning_methods_outrank_the_default_budget() {
+    for m in ["start_model", "stop_model", "stop_all"] {
+      assert_eq!(
+        timeout_for(m),
+        ENGINE_CALL_TIMEOUT,
+        "{m} needs the engine budget"
+      );
+    }
+    for m in ["ping", "status", "list_models", "presets_all"] {
+      assert_eq!(timeout_for(m), DEFAULT_CALL_TIMEOUT, "{m} must stay snappy");
+    }
+    assert!(ENGINE_CALL_TIMEOUT > DEFAULT_CALL_TIMEOUT);
+  }
 
   #[test]
   fn with_url_and_token_strips_trailing_slash() {
