@@ -14,7 +14,6 @@
 //! failure so the caller can warn instead of silently overwriting
 //! the user's data.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -29,8 +28,8 @@ use crate::launch::params::LaunchParams;
 ///
 /// `last_params` uses `Vec<(id, value)>` rather than a `BTreeMap` because
 /// `serde_json` can't serialise a map keyed by a struct: JSON object keys must
-/// be strings. In-memory consumers use [`DaemonState::last_params_map`] for
-/// ergonomic look-ups; the on-disk shape stays an explicit array of pairs.
+/// be strings. In-memory consumers use [`DaemonState::last_params_for`] to look
+/// one up; the on-disk shape stays an explicit array of pairs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DaemonState {
   #[serde(default)]
@@ -90,14 +89,14 @@ impl Default for DaemonState {
 }
 
 impl DaemonState {
-  /// In-memory map view of `last_params` for `O(log n)` lookup.
-  /// Cheap on the typical daemon (a few dozen entries at most).
-  pub fn last_params_map(&self) -> BTreeMap<&ModelIdentity, &LaunchParams> {
-    self
-      .last_params
-      .iter()
-      .map(|e| (&e.id, &e.params))
-      .collect()
+  /// This model's last successful launch, as persisted.
+  ///
+  /// The one lookup: `compose_and_spawn` reads it twice per launch, once for
+  /// the identity carry-over and once for the `LastUsed` knob layer. They gate
+  /// the result differently (identity ungated, knobs backend-matched), but they
+  /// must not disagree about which entry they are gating.
+  pub fn last_params_for(&self, id: &ModelIdentity) -> Option<&LastParamsEntry> {
+    self.last_params.iter().find(|e| &e.id == id)
   }
 
   /// Insert or replace the last successful params for `id`. New
@@ -485,10 +484,13 @@ mod tests {
       fake_params("/m/b.gguf"),
       "llamacpp".into(),
     );
-    let view = s.last_params_map();
-    assert_eq!(view.len(), 2);
-    assert!(view.contains_key(&id("/m/a.gguf", 1)));
-    assert!(view.contains_key(&id("/m/b.gguf", 2)));
+    assert_eq!(
+      s.last_params_for(&id("/m/a.gguf", 1)).map(|e| &e.params),
+      Some(&fake_params("/m/a.gguf"))
+    );
+    assert!(s.last_params_for(&id("/m/b.gguf", 2)).is_some());
+    // A header hash that does not match is a different model, not this one.
+    assert!(s.last_params_for(&id("/m/a.gguf", 9)).is_none());
   }
 
   #[test]

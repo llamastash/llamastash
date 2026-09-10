@@ -378,6 +378,14 @@ pub(crate) async fn compose_and_spawn(
         .map_err(|msg| ErrorObject::new(ErrorCode::InvalidParams, msg))?,
     );
   }
+  // One read of the daemon's persisted state for the whole compose. The name
+  // gate, the launch-identity carry-over and the last-used knob layer all key
+  // off it; three separate snapshots meant three full clones and three views
+  // that could disagree with each other. Nothing in `compose_and_spawn` writes
+  // state before those reads — the running row is not pushed until
+  // `spawn_supervised` — so one read is also the accurate one.
+  let state_snap = ctx.state.snapshot().await;
+
   // A name is unique per model: a second launch of the same model with the same
   // name is refused so `<model-id>@<name>` stays a stable address (D3). The
   // refusal names the launch holding it, so the user knows what to stop without
@@ -398,7 +406,6 @@ pub(crate) async fn compose_and_spawn(
           errored.insert(launch_id.0);
         }
       }
-      let state_snap = ctx.state.snapshot().await;
       let holder = name_holder(&state_snap.running, &parsed.model_path, name, &errored);
       if let Some(holder) = holder {
         let held_as = holder
@@ -670,7 +677,7 @@ pub(crate) async fn compose_and_spawn(
   // which needs this) — but the recorded server id names its own backend, so
   // there is nothing to contaminate.
   let identity_default = if matches!(parsed.selection, LaunchSelection::Default) {
-    inherited_launch_identity(ctx, &identity, launch_preset).await
+    inherited_launch_identity(&state_snap, &identity, launch_preset)
   } else {
     InheritedIdentity::default()
   };
@@ -730,14 +737,9 @@ pub(crate) async fn compose_and_spawn(
 
   // The model's last successful launch params + the backend it resolved to.
   // Cloned once here and reused for the last-used knob layer below.
-  let last_params_entry = {
-    let snap = ctx.state.snapshot().await;
-    snap
-      .last_params
-      .iter()
-      .find(|e| e.id == identity)
-      .map(|e| (e.params.clone(), e.resolved_backend.clone()))
-  };
+  let last_params_entry = state_snap
+    .last_params_for(&identity)
+    .map(|e| (e.params.clone(), e.resolved_backend.clone()));
   // D-contamination: the implicit LastUsed layer + extras inheritance apply
   // only when the stored launch resolved to the *same* backend, so llama.cpp
   // extras (`--rope-freq-base …`) saved before ds4 existed can't poison a ds4
@@ -1502,20 +1504,15 @@ struct InheritedIdentity {
 /// resolver's `LastUsed` layer is gated on the *resolved* backend. Hence the
 /// ungated `last_params` read below — a recorded server id names its own
 /// backend, so there is nothing to contaminate.
-async fn inherited_launch_identity(
-  ctx: &MethodContext,
+fn inherited_launch_identity(
+  state: &crate::daemon::state_store::DaemonState,
   identity: &crate::backend::identity::ModelIdentity,
   launch_preset: Option<&crate::launch::presets::NamedPreset>,
 ) -> InheritedIdentity {
   let from_preset = launch_preset.map(|np| (np.params.backend.clone(), np.params.server.clone()));
-  let from_last = {
-    let snap = ctx.state.snapshot().await;
-    snap
-      .last_params
-      .iter()
-      .find(|e| &e.id == identity)
-      .map(|e| (e.params.backend.clone(), e.params.server.clone()))
-  };
+  let from_last = state
+    .last_params_for(identity)
+    .map(|e| (e.params.backend.clone(), e.params.server.clone()));
 
   let pick = |f: fn(&(crate::launch::params::BackendChoice, Option<String>)) -> bool| {
     from_preset
