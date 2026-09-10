@@ -528,3 +528,48 @@ its fix plan. Tick as landed.
 - [x] **RV35 — `CHANGELOG.md`**: one line under `[Unreleased]`.
 - [x] **RV36 — `TODO.md`**: close the R9 proxy-ambiguity entry, add the high-priority
       patcher entry from D7, and the RV25 shared-frame note.
+
+### Second review pass (post-RV36, 2026-09-10)
+
+A re-review of the branch after the RV1–RV36 fixes plus the Copilot pass
+on the PR. All ticked as landed.
+
+- [x] **RV37 — `--name` accepted any non-whitespace string, including `@`.**
+      `start qwen3 --name "a@b"` published `qwen3@a@b`, which re-splits on the
+      last `@` to a different pair: `stop`/`logs` exit MODEL_NOT_FOUND while
+      the launch runs, and the proxy auto-starts a second full copy. The USAGE
+      message always claimed the charset; nothing enforced it.
+      *Fix:* `validate_launch_name` (trimmed, non-empty, ASCII letters/digits/
+      `-`/`_`) applied at `--name`'s value parser, the TUI dialog's inline
+      check, and the daemon's `start_model` gate for raw JSON-RPC callers.
+      Malformed values exit clap-style (2) like other bad flag values.
+- [x] **RV38 — the CLI fabricated `launch_name` onto the start response.**
+      Against a pre-name daemon the launch would run unnamed while `start`
+      printed and emitted the name the *client* sent.
+      *Fix:* the daemon echoes the name it stamped (`StartedLaunch.name` →
+      `launch_name` on the response, omitted when unnamed); the CLI reads the
+      echo instead of stamping.
+- [x] **RV39 — the list row's `@name` suffix claimed to render muted but
+      didn't.** One unmuted `Span::raw` carried the whole label.
+      *Fix:* the suffix is its own muted span riding directly after the name
+      (trailing pad stays unstyled so the row's selection flip still covers
+      the strip); on overflow the name ellipsizes, never the suffix. Golden
+      output unchanged.
+- [x] **RV40 — the status wire emitted `"name": null` for unnamed launches**
+      while `state.json`, `list --json` and `start --json` all omit the key.
+      *Fix:* conditional insert, same convention everywhere.
+- [x] **RV41 — `LaunchNameDialog::model_path` was stored but never read** (the
+      commit path resolves through the open picker). *Fix:* field and
+      `LaunchNameArgs` gone; `open(model_name)`.
+- [x] **RV42 — the `model@name` join was hand-rolled in five places** after the
+      split and compare had been centralized. *Fix:* `join_named_reference`
+      beside `parse_named_reference`; round-trip test pins the pair.
+- [x] **RV43 — `keymap_label` was a pure pass-through** whose doc comment
+      described a constraint the callers own. *Fix:* removed; each hint label
+      resolves under its own focus in `render`.
+- [x] **RV44 (Copilot) — `NameReservation::drop` leaked the claim on a poisoned
+      mutex** (`if let Ok`), holding the name until daemon restart.
+      *Fix:* recovers the guard the way `lock_names` does; poison-regression
+      test included.
+- [x] **RV45 (Copilot) — the fallback suite's `stop_all` scanned a `Vec` of
+      ports per row** (O(N·M)). *Fix:* `HashSet`.
