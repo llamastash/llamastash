@@ -528,6 +528,13 @@ async fn start_model_handler(
     "pid": pid,
     "log_path": started.log_path,
   });
+  // The accepted name, echoed rather than assumed: the client reports what the
+  // daemon actually stamped (a stale pre-name daemon correctly reports unnamed
+  // instead of the client printing the name it *asked* for). Omitted when unset
+  // to keep the shape byte-stable for unnamed launches.
+  if let Some(n) = &started.name {
+    resp["launch_name"] = json!(n);
+  }
   // Non-fatal advisories (dropped knobs, deepseek4 KV-blind note, ssd_streaming
   // bypass). Omitted when empty so the response stays byte-stable for launches
   // that raise none (every llama.cpp / Lemonade launch today).

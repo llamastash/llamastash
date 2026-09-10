@@ -615,6 +615,7 @@ impl Backend for LemonadeBackend {
     let snapshot_backend = exec.resolved_backend_id.clone();
     let snapshot_launch_id = launch_id.clone();
     let snapshot_name = exec.name.clone();
+    let echoed_name = snapshot_name.clone();
     ctx
       .state
       .mutate(move |s| {
@@ -642,6 +643,9 @@ impl Backend for LemonadeBackend {
       port: serving_port,
       model: umbrella,
       log_path: exec.log_path,
+      // `multiplexer_refuses_name` means this is always `None` today; the
+      // field rides along so the echo cannot lie if that ever changes.
+      name: echoed_name,
       // Lemonade's delegated path carries no admission advisories.
       warnings: Vec::new(),
       layer_sources: exec.layer_sources,

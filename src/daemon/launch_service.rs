@@ -154,6 +154,11 @@ pub struct StartedLaunch {
   pub(crate) port: u16,
   pub(crate) model: ManagedModel,
   pub(crate) log_path: PathBuf,
+  /// The accepted launch name, as stamped on the running row. Echoed by the
+  /// IPC handler so clients report what the daemon actually accepted rather
+  /// than what they asked for — against a daemon without name support the
+  /// launch correctly reports unnamed. `None` for unnamed launches.
+  pub(crate) name: Option<String>,
   /// Non-fatal advisories surfaced to the caller (CLI human output / TUI toast):
   /// capability-dropped knobs, backend admission/knob-resolution notes, and the
   /// admission-bypass note. Empty on a clean launch.
@@ -1335,6 +1340,7 @@ pub(crate) async fn spawn_supervised(
     port,
     model,
     log_path,
+    name,
     warnings,
     layer_sources,
   })

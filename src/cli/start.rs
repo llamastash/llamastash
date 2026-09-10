@@ -172,16 +172,13 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
     args.force,
     launch_name,
   );
-  let mut resp = client
+  let resp = client
     .call("start_model", Some(payload))
     .await
     .map_err(|e| map_start_error(e, &row))?;
-  // Stamp the accepted name onto the response so both report paths show it. The
-  // daemon refuses a duplicate name outright and whitespace-only is rejected
-  // above, so getting here means the name stuck.
-  if let Some(n) = launch_name {
-    resp["launch_name"] = Value::String(n.to_string());
-  }
+  // `launch_name` on the response is the daemon's echo of the name it stamped —
+  // not re-read from what we sent, so a daemon that dropped the name reports
+  // unnamed instead of the CLI asserting a launch that is not addressable.
   if args.wait {
     return wait_and_emit(
       &mut client,

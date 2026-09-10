@@ -201,6 +201,42 @@ async fn start_model_drives_supervisor_status_logs_stop_and_last_params() {
     s.running
   );
 
+  // 5b) a named start echoes the name the daemon actually stamped (trimmed,
+  // not the raw request parroted back); the unnamed start above carried no
+  // `launch_name` key at all, matching the omit-when-unset wire convention.
+  assert!(
+    start_body.get("launch_name").is_none(),
+    "an unnamed start must omit launch_name, got {start_body:?}"
+  );
+  let named_body = client
+    .call(
+      "start_model",
+      Some(json!({
+        "model_path": &model_path_canon,
+        "mode": "chat",
+        "name": " coder ",
+      })),
+    )
+    .await
+    .expect("named start_model");
+  assert_eq!(
+    named_body["launch_name"],
+    json!("coder"),
+    "the echo is the daemon's accepted name: {named_body:?}"
+  );
+  let named_id = named_body["launch_id"]
+    .as_str()
+    .expect("named launch_id")
+    .to_string();
+  let stop_named = client
+    .call(
+      "stop_model",
+      Some(json!({"launch_id": &named_id, "grace_secs": 5})),
+    )
+    .await
+    .expect("stop named launch");
+  assert_eq!(stop_named["state"]["state"], json!("stopped"));
+
   // 6) presets_save / list / show / delete round-trip via IPC.
   let save_body = client
     .call(
