@@ -8,6 +8,10 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 - **SGLang backend (experimental).** Safetensors HuggingFace repos launch through `sglang serve`, alongside vLLM for the same rows; default-on when a `sglang` launcher resolves, `--sglang` / `LLAMASTASH_SGLANG=1` force it. On unified-memory hosts the KV pool is capped in tokens (`--max-total-tokens`) from the model's attention geometry, since SGLang has no byte-level cap; a repo whose geometry cannot be read is refused with the override named. A repo two safetensors engines can serve is one catalog row listing both. Second half of [#36](https://github.com/llamastash/llamastash/issues/36).
 
+### Fixed
+
+- **The vLLM unified-memory guard could not launch beside a tenant, and its reserve was spent on engine overhead.** vLLM 0.28 checks `total × gpu_memory_utilization` against its own free reading before honouring the byte cap, so the capped launch only started on a ~92%-free host; the launcher now passes a utilization sized to the launch. The flat 8 GiB reserve left ~1.3 GiB at ready once the engine's own 5.4–6.7 GiB footprint came out of it (measured on a DGX Spark); the reserve now covers the OS, the engine overhead and the gate's compute band, or 15% of the pool if that is more. (#80)
+
 ## [0.3.0] — 2026-09-10
 
 This release lets one model run more than once. **Named launches** give every copy its own address: `start qwen3 --name coder` and that launch answers to `qwen3@coder` on the proxy, the CLI and the TUI, so a long-context copy and a fast copy can sit side by side. A request for a name that has stopped starts it again under the preset of that name, so an OpenAI-shaped client can pick a configuration without a CLI round trip. **Run preset files** are the other half: `llamastash run model.yml` starts one model with its own preset from a file you can commit next to a project, and nothing is written back to `config.yaml`.

@@ -377,7 +377,12 @@ impl Backend for SglangBackend {
     let cap = match snapshot.as_ref().filter(|_| sampled) {
       Some(s) => {
         let free = crate::launch::admission::effective_free_bytes(s);
-        match guard::max_total_tokens_cap(free, weights_bytes, per_token) {
+        match guard::max_total_tokens_cap(
+          free,
+          weights_bytes,
+          per_token,
+          UNIFIED_HOST_RESERVE_BYTES,
+        ) {
           Some(cap) => cap,
           None => {
             out.refusal = Some(format!(

@@ -678,3 +678,33 @@ Enablement, TUI/CLI polish, docs, and the real-hardware UAT.
 - Server abstraction: [`docs/plans/2026-07-16-001-feat-server-abstraction-plan.md`](2026-07-16-001-feat-server-abstraction-plan.md)
 - Brainstorm: [`docs/brainstorms/2026-06-08-multi-backend-abstraction-requirements.md`](../brainstorms/2026-06-08-multi-backend-abstraction-requirements.md)
 - Backend neutrality contract: `docs/architecture.md` § Backend neutrality contract
+
+## Follow-up — issue #80 (2026-09-10)
+
+Two gaps in the unified-memory guard, measured on a DGX Spark (GB10, 121.69
+GiB, vLLM 0.28.0), one fix because the first masked the second.
+
+- [x] **The byte cap alone could not launch beside a tenant.** vLLM's
+      `request_memory()` compares its free reading against `total ×
+      gpu_memory_utilization` at `init_device`, unconditionally, and reads
+      `--kv-cache-memory-bytes` only later. With the 0.92 default the capped
+      launch needed a ~92%-free host. *Fix:* `startup_utilization` passes a
+      fraction sized to weights + cap + engine overhead, or to what vLLM will
+      see as free (MemAvailable minus a 3 GiB context margin, measured
+      2.6–2.7) if that is less. Inert once the cap is set.
+- [x] **The 8 GiB reserve was spent on engine overhead.** CUDA context,
+      workspace, graphs and the API server cost 5.40 GiB (0.5B) and 6.73 GiB
+      (30B-A3B NVFP4) on top of weights + cap, so the binding case left ~1.3
+      GiB at ready; an OOM killer fired the instant the pool was reserved.
+      *Fix:* reserve = OS floor (2 GiB) + engine overhead (7 GiB, the measured
+      ceiling rounded up) + `overhead_band_bytes` (512 MiB native), or 15% of
+      the pool, whichever is more. The overhead figure is GB10-derived from
+      two models with graph memory spanning 1.0–3.0 GiB; it is not a
+      constant of nature and wants checking on Strix Halo.
+- [ ] The unsampled path (first launch after daemon start) still sends the
+      default cap without a utilization, because there is no pool total to
+      size one against. Narrow window; vLLM's own check applies there.
+- [ ] Re-run the GB10 matrix (runs A, A2, B, C in the casebook record) on the
+      merged binary.
+
+Record: `spark-casebook/casebook/2026-09-09-llamastash-vllm-unified-guard-gb10.md`.

@@ -173,8 +173,20 @@ channel where it is labelled for what it is.
   absolute cap that makes vLLM skip memory profiling and honour the figure.
   When the host is unified-memory and you have set neither
   `kv_cache_memory_bytes` nor `gpu_memory_utilization`, the launcher picks a
-  budget from live free memory: 8 GiB, or less if weights plus an 8 GiB host
-  reserve leave less. Set either knob yourself and the auto-cap steps aside.
+  budget from live free memory: 8 GiB, or less if weights plus the host
+  reserve leave less. The reserve is what has to stay free after weights and
+  cache: an OS floor (2 GiB) plus the engine's own footprint (7 GiB — CUDA
+  context, workspace, CUDA graphs and the API server, measured at 5.4–6.7 GiB
+  on a DGX Spark with vLLM 0.28) plus the compute band the admission gate
+  prices, or 15% of the pool if that is more (18.3 GiB on a 121.69 GiB box).
+  The refusal message quotes the figure it used.
+
+  The launcher also passes `--gpu-memory-utilization` next to the cap, sized
+  to what the launch actually needs. vLLM 0.28 checks `total × utilization`
+  against its own free reading at startup before it ever looks at the byte
+  cap, so with the default `0.92` the capped launch could only start on a
+  host that was ~92% free. Once the cap is set the fraction governs nothing
+  else. Set either knob yourself and the auto-cap steps aside.
   Discrete-GPU hosts are untouched; there the fraction applies to real VRAM.
 - **The model name is the repo id.** LlamaStash passes `--served-model-name`, so
   `/v1/models` and your requests use `owner/name`, not the cache path.

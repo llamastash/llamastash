@@ -17,12 +17,21 @@ pub const MIN_POOL_TOKENS: u64 = 2048;
 
 /// The `--max-total-tokens` cap for a unified-memory host, or `None` to
 /// **refuse the launch** — the same contract as the byte budget it divides.
+///
+/// `reserve_bytes` is what the host keeps free after weights and the pool.
+/// SGLang still passes the flat
+/// [`crate::launch::admission::UNIFIED_HOST_RESERVE_BYTES`] rather than the
+/// engine-aware reserve vLLM computes: its own footprint beyond weights and
+/// the pool has not been measured, and guessing one would move a live number
+/// in either direction. See `TODO.md`.
 pub fn max_total_tokens_cap(
   free_bytes: u64,
   weights_bytes: u64,
   kv_bytes_per_token: u64,
+  reserve_bytes: u64,
 ) -> Option<u32> {
-  let budget = crate::launch::admission::unified_kv_cache_budget(free_bytes, weights_bytes)?;
+  let budget =
+    crate::launch::admission::unified_kv_cache_budget(free_bytes, weights_bytes, reserve_bytes)?;
   tokens_for_budget(budget, kv_bytes_per_token)
 }
 
@@ -106,7 +115,9 @@ fn dtype_bytes(dtype: Option<&str>) -> u64 {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::launch::admission::{DEFAULT_KV_CACHE_BYTES, MIN_KV_CACHE_BYTES};
+  use crate::launch::admission::{
+    DEFAULT_KV_CACHE_BYTES, MIN_KV_CACHE_BYTES, UNIFIED_HOST_RESERVE_BYTES,
+  };
 
   const GB: u64 = 1024 * 1024 * 1024;
 
@@ -236,16 +247,19 @@ mod tests {
     let per_token = 2 * 2 * 64 * 2 * 24;
     // Plenty free: the default budget applies.
     assert_eq!(
-      max_total_tokens_cap(113 * GB, GB, per_token),
+      max_total_tokens_cap(113 * GB, GB, per_token, UNIFIED_HOST_RESERVE_BYTES),
       Some((DEFAULT_KV_CACHE_BYTES / per_token) as u32)
     );
     // Tight: what is left after weights + reserve.
     assert_eq!(
-      max_total_tokens_cap(20 * GB, 8 * GB, per_token),
+      max_total_tokens_cap(20 * GB, 8 * GB, per_token, UNIFIED_HOST_RESERVE_BYTES),
       Some((4 * GB / per_token) as u32)
     );
     // Under the byte floor: refused, same as the byte budget.
-    assert_eq!(max_total_tokens_cap(10 * GB, 8 * GB, per_token), None);
+    assert_eq!(
+      max_total_tokens_cap(10 * GB, 8 * GB, per_token, UNIFIED_HOST_RESERVE_BYTES),
+      None
+    );
   }
 
   /// A model whose per-token cost is huge can pass the byte floor and still
@@ -254,12 +268,22 @@ mod tests {
   fn token_cap_refuses_a_pool_under_the_token_floor() {
     let too_costly = MIN_KV_CACHE_BYTES / (MIN_POOL_TOKENS - 1);
     assert_eq!(
-      max_total_tokens_cap(8 * GB + MIN_KV_CACHE_BYTES, 0, too_costly),
+      max_total_tokens_cap(
+        8 * GB + MIN_KV_CACHE_BYTES,
+        0,
+        too_costly,
+        UNIFIED_HOST_RESERVE_BYTES
+      ),
       None
     );
     let just_fits = MIN_KV_CACHE_BYTES / MIN_POOL_TOKENS;
     assert_eq!(
-      max_total_tokens_cap(8 * GB + MIN_KV_CACHE_BYTES, 0, just_fits),
+      max_total_tokens_cap(
+        8 * GB + MIN_KV_CACHE_BYTES,
+        0,
+        just_fits,
+        UNIFIED_HOST_RESERVE_BYTES
+      ),
       Some(MIN_POOL_TOKENS as u32)
     );
   }
@@ -269,7 +293,10 @@ mod tests {
   /// unbounded pool on the very host the guard protects.
   #[test]
   fn a_zero_per_token_cost_refuses_rather_than_uncapping() {
-    assert_eq!(max_total_tokens_cap(113 * GB, GB, 0), None);
+    assert_eq!(
+      max_total_tokens_cap(113 * GB, GB, 0, UNIFIED_HOST_RESERVE_BYTES),
+      None
+    );
     assert_eq!(tokens_for_budget(DEFAULT_KV_CACHE_BYTES, 0), None);
   }
 
