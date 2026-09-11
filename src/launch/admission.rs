@@ -34,31 +34,48 @@ use crate::gguf::header::GgufHeader;
 use crate::gguf::memory::{kv_bytes, parse_cache_type, EstimateOptions};
 use crate::launch::headroom::{admissible_bytes, overhead_band_bytes, PoolKind};
 
+/// One in-flight launch's hold on the budget, keyed by `launch_id`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Reservation {
   launch_id: u64,
   bytes: u64,
 }
 
+/// In-memory reservation ledger. Shared across every launch entry point
+/// (CLI `start`, TUI, proxy auto-start) via the daemon's
+/// `MethodContext`, so check-and-reserve is atomic against concurrent
+/// launches. Never persisted — restart safety comes from conservative
+/// re-sampling, not from a durable ledger.
 #[derive(Debug, Default)]
 pub struct Ledger {
   inner: Mutex<Vec<Reservation>>,
 }
 
+/// Why a launch was refused, with the numbers needed to explain it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Refusal {
+  /// Projected demand floor (weights + KV + overhead band).
   pub demand_bytes: u64,
+  /// Post-headroom free across the budget pool(s), before reservations.
   pub effective_free_bytes: u64,
+  /// Bytes already reserved by other in-flight launches.
   pub reserved_bytes: u64,
 }
 
 impl Refusal {
+  /// Free bytes actually available to this launch (effective − reserved).
   pub fn available_bytes(&self) -> u64 {
-    self.effective_free_bytes.saturating_sub(self.reserved_bytes)
+    self
+      .effective_free_bytes
+      .saturating_sub(self.reserved_bytes)
   }
 }
 
 impl Ledger {
+  /// Atomically check `demand_bytes` against `effective_free_bytes` minus
+  /// the bytes already reserved, and on success record the reservation.
+  /// One lock spans the read-and-reserve so two concurrent leaders cannot
+  /// both pass against the same free reading.
   pub fn try_admit(
     &self,
     launch_id: u64,
@@ -74,18 +91,34 @@ impl Ledger {
         reserved_bytes,
       });
     }
-    held.push(Reservation { launch_id, bytes: demand_bytes });
+    held.push(Reservation {
+      launch_id,
+      bytes: demand_bytes,
+    });
     Ok(())
   }
 
+  /// Record a reservation without checking it against the budget.
+  ///
+  /// For a launch that goes ahead in spite of a refusal (`start --force`):
+  /// [`try_admit`](Self::try_admit) reserves nothing when it refuses, so the
+  /// forced launch's demand would be invisible to the next launch's check and
+  /// a second one could be admitted against memory the first is already
+  /// taking. Overcommitting once is the user's call; doing it twice by
+  /// accident is not.
   pub fn reserve(&self, launch_id: u64, demand_bytes: u64) {
     self
       .inner
       .lock()
       .expect("admission ledger poisoned")
-      .push(Reservation { launch_id, bytes: demand_bytes });
+      .push(Reservation {
+        launch_id,
+        bytes: demand_bytes,
+      });
   }
 
+  /// Drop the reservation for `launch_id` (on Ready / Error / Stopped, or
+  /// when a refused launch releases its port). Idempotent.
   pub fn release(&self, launch_id: u64) {
     self
       .inner
@@ -94,6 +127,7 @@ impl Ledger {
       .retain(|r| r.launch_id != launch_id);
   }
 
+  /// Total reserved bytes — for diagnostics and tests.
   pub fn reserved_bytes(&self) -> u64 {
     self
       .inner
@@ -105,6 +139,7 @@ impl Ledger {
   }
 }
 
+/// Headroom kind for the host's budget pool.
 fn pool_kind(snap: &HostMetricsSnapshot) -> PoolKind {
   if snap.gpu_backend == HostMetricsSnapshot::BACKEND_APPLE_METAL {
     PoolKind::AppleUnified
@@ -117,10 +152,15 @@ fn pool_kind(snap: &HostMetricsSnapshot) -> PoolKind {
   }
 }
 
+/// `true` once the daemon has a real host-metrics sample (not the
+/// pre-first-tick `unsampled` placeholder). Admission only engages when
+/// this holds.
 pub fn is_sampled(snap: &HostMetricsSnapshot) -> bool {
   snap.gpu_backend != HostMetricsSnapshot::UNINITIALIZED_BACKEND
 }
 
+/// Parse a byte count that may carry a `K`/`M`/`G` suffix (the spelling a
+/// launcher's own size flags accept), or a plain integer.
 pub fn parse_size_bytes(raw: &str) -> Option<u64> {
   let s = raw.trim();
   let (digits, mult) = match s.chars().last()? {
@@ -132,6 +172,13 @@ pub fn parse_size_bytes(raw: &str) -> Option<u64> {
   digits.trim().parse::<u64>().ok()?.checked_mul(mult)
 }
 
+/// On-disk bytes of a directory-shaped model: every regular file directly
+/// inside it, symlinks followed (the HF cache stores weights as links into
+/// `blobs/`). Zero when `dir` is not a readable directory.
+///
+/// The fallback when the catalog has no size — a launch by absolute path from
+/// outside the configured scan roots — because `stat` on a directory reports
+/// its inode size, not its contents.
 pub fn dir_weight_bytes(dir: &std::path::Path) -> u64 {
   let Ok(entries) = std::fs::read_dir(dir) else {
     return 0;
@@ -144,6 +191,15 @@ pub fn dir_weight_bytes(dir: &std::path::Path) -> u64 {
     .fold(0u64, u64::saturating_add)
 }
 
+/// Returns whether the current process is running inside an LXC container.
+///
+/// LXC exposes this through the standard systemd container marker when
+/// systemd is available. The cgroup and PID 1 environment fallbacks cover
+/// containers where that marker is absent.
+///
+/// This is intentionally kept local to admission rather than surfaced in
+/// `HostMetricsSnapshot`: containerisation is a property of the process
+/// environment, not GPU hardware.
 #[cfg(target_os = "linux")]
 fn running_in_lxc() -> bool {
   if let Ok(container) = std::fs::read_to_string("/run/systemd/container") {
@@ -151,18 +207,26 @@ fn running_in_lxc() -> bool {
       return true;
     }
   }
+
   if let Ok(environ) = std::fs::read("/proc/1/environ") {
-    if environ.split(|byte| *byte == 0).any(|entry| entry == b"container=lxc") {
+    if environ
+      .split(|byte| *byte == 0)
+      .any(|entry| entry == b"container=lxc")
+    {
       return true;
     }
   }
+
   if let Ok(cgroup) = std::fs::read_to_string("/proc/1/cgroup") {
     if cgroup.lines().any(|line| {
-      line.contains("/lxc/") || line.ends_with("/lxc") || line.contains("name=lxc")
+      line.contains("/lxc/")
+        || line.ends_with("/lxc")
+        || line.contains("name=lxc")
     }) {
       return true;
     }
   }
+
   false
 }
 
@@ -223,7 +287,34 @@ fn effective_free_bytes_for(snap: &HostMetricsSnapshot, lxc: bool) -> u64 {
   }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Demand floor for a launch: model weights + KV cache at the effective
+/// context window + the backend's fixed overhead band. Missing attention
+/// geometry yields a KV of 0, so demand degrades to weights + band
+/// rather than refusing on missing data.
+///
+/// `resident_weight_bytes` is what the launch actually **holds** — the
+/// shard-aware weight total minus the tensors the engine streams from the
+/// mapping — measured once per launch by
+/// [`launch_resident_bytes`](crate::daemon::launch_service) so the gate, the
+/// probe scaler and the backend's cache cap all price the same figure. It is
+/// deliberately not `weights_bytes(header)`: that only sums the tensors in
+/// the header it is handed, which for a split GGUF is just the primary shard
+/// (`…-00001-of-000NN.gguf`) and silently drops every trailing shard, so a
+/// split model would be under-projected by the size of those shards and
+/// wrongly admitted. The header is still used for the KV term (all attention
+/// geometry lives in the primary shard's metadata).
+///
+/// **It is a floor, not a ceiling.** Under Auto the caller passes
+/// `fit_ctx_floor` as `effective_ctx` (a pinned `--ctx` passes the pin),
+/// so the KV term reflects the *minimum* context, not the (possibly much
+/// larger) window `--fit` ends up choosing. So admission guarantees the
+/// floor-sized launch fits, not fit's actual choice. The residual window
+/// is "weights fit, fit then grows ctx past the floor": on a discrete
+/// host fit self-limits against its own correct VRAM reading; on UMA the
+/// GTT-pool budget in [`effective_free_bytes`] bounds it, and the
+/// in-process load check is the final backstop. Weights dominate demand,
+/// so the gross "this model is too big" case is always caught here.
+#[allow(clippy::too_many_arguments)] // one arg per independent memory input
 pub fn project_demand(
   header: &GgufHeader,
   arch: Option<&str>,
@@ -250,20 +341,56 @@ pub fn project_demand(
     .saturating_add(mtp_band_bytes(resident_weight_bytes, mtp_active))
 }
 
+/// A conservative memory band for MTP speculative decoding, so the local OOM
+/// gate isn't over-optimistic for a barely-fitting model. MTP adds the draft
+/// head's resident weights + its draft context/compute buffers; `--fit` owns
+/// GPU placement, but this local floor still under-projects without a band.
+///
+/// Calibrated from a measured idle delta of ~11% of weights (MTP on vs off on
+/// Qwen3.5-4B-MTP: +320 MiB on 2.7 GiB weights), rounded up to ~16.7%
+/// (`weights / 6`) to leave headroom for the active draft context under load.
+/// A fraction of the **resident** weights, not the on-disk total: the draft
+/// head is an ordinary resident tensor, so it scales with what the engine
+/// holds rather than with what the file weighs. Zero when MTP is off.
+/// Saturating.
 fn mtp_band_bytes(resident_weight_bytes: u64, mtp_active: bool) -> u64 {
-  if mtp_active { resident_weight_bytes / 6 } else { 0 }
+  if mtp_active {
+    resident_weight_bytes / 6
+  } else {
+    0
+  }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
+
   const GIB: u64 = 1024 * 1024 * 1024;
 
-  fn snap(backend: &str, unified: bool, ram_total: u64, ram_used: u64) -> HostMetricsSnapshot {
-    HostMetricsSnapshot {
-      gpu_backend: backend.to_string(), unified, ram_total_bytes: ram_total, ram_used_bytes: ram_used,
-      ..HostMetricsSnapshot::default()
+  #[test]
+  fn dir_weight_bytes_follows_links_and_ignores_subdirectories() {
+    let dir = crate::util::test_temp::unique_temp_dir("admission-dir-weight");
+    let blobs = dir.join("blobs");
+    std::fs::create_dir_all(&blobs).expect("blobs");
+    std::fs::write(blobs.join("sha-a"), vec![0u8; 4096]).expect("blob a");
+    std::fs::write(blobs.join("sha-b"), vec![0u8; 2048]).expect("blob b");
+
+    let snapshot = dir.join("snapshot");
+    std::fs::create_dir_all(&snapshot).expect("snapshot");
+    #[cfg(unix)]
+    {
+      std::os::unix::fs::symlink(blobs.join("sha-a"), snapshot.join("a.safetensors"))
+        .expect("link a");
+      std::os::unix::fs::symlink(blobs.join("sha-b"), snapshot.join("b.safetensors"))
+        .expect("link b");
     }
+    std::fs::create_dir_all(snapshot.join("nested")).expect("nested");
+    std::fs::write(snapshot.join("nested").join("ignored"), vec![0u8; 9999]).expect("ignored");
+
+    #[cfg(unix)]
+    assert_eq!(dir_weight_bytes(&snapshot), 4096 + 2048);
+    assert_eq!(dir_weight_bytes(&dir.join("does-not-exist")), 0);
+    std::fs::remove_dir_all(&dir).ok();
   }
 
   #[test]
@@ -276,21 +403,35 @@ mod tests {
   #[test]
   fn refuses_when_demand_exceeds_free_minus_reservations() {
     let ledger = Ledger::default();
-    ledger.try_admit(1, 44 * GIB, 60 * GIB).expect("first admits");
-    let refusal = ledger.try_admit(2, 37 * GIB, 60 * GIB).expect_err("second must be refused");
+    ledger
+      .try_admit(1, 44 * GIB, 60 * GIB)
+      .expect("first admits");
+    let refusal = ledger
+      .try_admit(2, 37 * GIB, 60 * GIB)
+      .expect_err("second must be refused");
     assert_eq!(refusal.reserved_bytes, 44 * GIB);
     assert_eq!(refusal.available_bytes(), 16 * GIB);
-    assert_eq!(ledger.reserved_bytes(), 44 * GIB);
+    assert_eq!(
+      ledger.reserved_bytes(),
+      44 * GIB,
+      "refusal reserves nothing"
+    );
   }
 
   #[test]
   fn release_frees_the_pool_for_a_retry() {
     let ledger = Ledger::default();
-    ledger.try_admit(1, 44 * GIB, 60 * GIB).expect("first admits");
-    ledger.try_admit(2, 37 * GIB, 60 * GIB).expect_err("refused while first holds");
+    ledger
+      .try_admit(1, 44 * GIB, 60 * GIB)
+      .expect("first admits");
+    ledger
+      .try_admit(2, 37 * GIB, 60 * GIB)
+      .expect_err("refused while first holds");
     ledger.release(1);
     assert_eq!(ledger.reserved_bytes(), 0);
-    ledger.try_admit(2, 37 * GIB, 60 * GIB).expect("admits once the pool frees");
+    ledger
+      .try_admit(2, 37 * GIB, 60 * GIB)
+      .expect("admits once the pool frees");
   }
 
   #[test]
@@ -321,6 +462,16 @@ mod tests {
     assert_eq!(parse_size_bytes(""), None);
   }
 
+  fn snap(backend: &str, unified: bool, ram_total: u64, ram_used: u64) -> HostMetricsSnapshot {
+    HostMetricsSnapshot {
+      gpu_backend: backend.to_string(),
+      unified,
+      ram_total_bytes: ram_total,
+      ram_used_bytes: ram_used,
+      ..HostMetricsSnapshot::default()
+    }
+  }
+
   #[test]
   fn uma_budget_falls_back_to_ram_when_gtt_unknown() {
     let s = snap(HostMetricsSnapshot::BACKEND_AMD, true, 128 * GIB, 28 * GIB);
@@ -334,7 +485,9 @@ mod tests {
     s.uma_shared_used_bytes = Some(60 * GIB);
     assert_eq!(effective_free_bytes(&s), 20 * GIB);
     let ledger = Ledger::default();
-    assert!(ledger.try_admit(1, 37 * GIB, effective_free_bytes(&s)).is_err());
+    assert!(ledger
+      .try_admit(1, 37 * GIB, effective_free_bytes(&s))
+      .is_err());
   }
 
   #[test]
@@ -347,17 +500,30 @@ mod tests {
 
   #[test]
   fn lxc_amd_uma_uses_gtt_budget_instead_of_container_ram() {
-    let mut s = snap(HostMetricsSnapshot::BACKEND_AMD, true, 8 * GIB, 1 * GIB);
+    let mut s = snap(
+      HostMetricsSnapshot::BACKEND_AMD,
+      true,
+      8 * GIB,
+      1 * GIB,
+    );
     s.uma_shared_total_bytes = Some(96 * GIB);
     s.uma_shared_used_bytes = Some(2 * GIB);
     assert_eq!(effective_free_bytes_for(&s, true), 94 * GIB);
+
     let ledger = Ledger::default();
-    assert!(ledger.try_admit(1, 36 * GIB, effective_free_bytes_for(&s, true)).is_ok());
+    assert!(ledger
+      .try_admit(1, 36 * GIB, effective_free_bytes_for(&s, true))
+      .is_ok());
   }
 
   #[test]
   fn bare_metal_amd_uma_keeps_ram_gtt_minimum() {
-    let mut s = snap(HostMetricsSnapshot::BACKEND_AMD, true, 128 * GIB, 100 * GIB);
+    let mut s = snap(
+      HostMetricsSnapshot::BACKEND_AMD,
+      true,
+      128 * GIB,
+      100 * GIB,
+    );
     s.uma_shared_total_bytes = Some(96 * GIB);
     s.uma_shared_used_bytes = Some(20 * GIB);
     assert_eq!(effective_free_bytes_for(&s, false), 28 * GIB);
@@ -373,7 +539,12 @@ mod tests {
 
   #[test]
   fn amd_uma_without_gtt_data_still_uses_ram() {
-    let s = snap(HostMetricsSnapshot::BACKEND_AMD, true, 8 * GIB, 1 * GIB);
+    let s = snap(
+      HostMetricsSnapshot::BACKEND_AMD,
+      true,
+      8 * GIB,
+      1 * GIB,
+    );
     assert_eq!(effective_free_bytes_for(&s, true), 7 * GIB);
   }
 
@@ -410,14 +581,34 @@ mod tests {
     let knobs = crate::launch::knobs::KnobSet::new();
     let band = overhead_band_bytes(HostMetricsSnapshot::BACKEND_AMD);
     let demand = project_demand(
-      &header, None, &knobs, crate::backend::DEFAULT_BACKEND_ID, 16384,
-      HostMetricsSnapshot::BACKEND_AMD, 53 * GIB, false,
+      &header,
+      None,
+      &knobs,
+      crate::backend::DEFAULT_BACKEND_ID,
+      16384,
+      HostMetricsSnapshot::BACKEND_AMD,
+      53 * GIB,
+      false,
     );
-    assert_eq!(demand, 53 * GIB + band);
+    assert_eq!(
+      demand,
+      53 * GIB + band,
+      "weights term is the shard-aware total, not the header's tensor sum"
+    );
     let mtp_demand = project_demand(
-      &header, None, &knobs, crate::backend::DEFAULT_BACKEND_ID, 16384,
-      HostMetricsSnapshot::BACKEND_AMD, 53 * GIB, true,
+      &header,
+      None,
+      &knobs,
+      crate::backend::DEFAULT_BACKEND_ID,
+      16384,
+      HostMetricsSnapshot::BACKEND_AMD,
+      53 * GIB,
+      true,
     );
-    assert_eq!(mtp_demand, 53 * GIB + band + (53 * GIB / 6));
+    assert_eq!(
+      mtp_demand,
+      53 * GIB + band + (53 * GIB / 6),
+      "MTP-active demand adds the ~16.7% draft-head band"
+    );
   }
 }
