@@ -291,10 +291,8 @@ fn build_spawn_options(cli: &Cli, config: &Config) -> Result<DaemonOptions, CliE
   // Mirror `daemon start`'s composition (state-dir / socket / discovery
   // roots / binary / port range) so a CLI auto-spawn produces the same
   // daemon a user would have hand-typed.
-  super::daemon::build_options(
-    None, None, false, false, None, false, false, false, false, false, cli, config,
-  )
-  .map_err(|e| CliExit::new(DAEMON_UNREACHABLE, format!("daemon: build options: {e}")))
+  super::daemon::build_options(super::daemon::BuildOptionsArgs::new(cli, config))
+    .map_err(|e| CliExit::new(DAEMON_UNREACHABLE, format!("daemon: build options: {e}")))
 }
 
 #[cfg(test)]

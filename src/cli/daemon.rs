@@ -11,7 +11,7 @@
 //! `status` — connect to the daemon and report PID + uptime; emits "not
 //! running" if the socket is missing or the connection fails.
 
-use std::{net::IpAddr, path::PathBuf, time::Duration};
+use std::{collections::BTreeMap, net::IpAddr, path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result};
 
@@ -45,21 +45,28 @@ pub async fn handle(action: DaemonAction, cli: &Cli, config: &Config) -> Result<
       sglang,
       force,
     } => {
+      let force_flags = [
+        (crate::backend::lemonade::LEMONADE_BACKEND_ID, lemonade),
+        (crate::backend::ds4::DS4_BACKEND_ID, ds4),
+        (crate::backend::vllm::VLLM_BACKEND_ID, vllm),
+        (crate::backend::sglang::SGLANG_BACKEND_ID, sglang),
+      ];
       handle_start(
         foreground,
-        state_dir,
-        proxy_port,
-        ollama_compat,
-        no_proxy_fallback,
-        proxy_host,
-        insecure_no_auth,
-        lemonade,
-        ds4,
-        vllm,
-        sglang,
         force,
-        cli,
-        config,
+        BuildOptionsArgs {
+          state_dir,
+          proxy_port,
+          proxy_host,
+          ollama_compat,
+          no_proxy_fallback,
+          insecure_no_auth,
+          backend_force: force_flags
+            .into_iter()
+            .map(|(id, on)| (id.to_string(), on))
+            .collect(),
+          ..BuildOptionsArgs::new(cli, config)
+        },
       )
       .await
     }
@@ -92,49 +99,17 @@ fn migrate_knob_config(cli: &Cli) -> Option<Config> {
   }
 }
 
-// `handle_start` is the single thin shim that unpacks every
-// `daemon start` flag and feeds them into `build_options`. Each new
-// CLI flag added here costs an argument; the alternative (a typed
-// `StartFlags` struct) would just push the unpack one level out
-// without changing how much information crosses the boundary. Allow
-// the count to grow with the CLI surface instead.
-#[allow(clippy::too_many_arguments)]
-async fn handle_start(
-  foreground: bool,
-  state_dir: Option<PathBuf>,
-  proxy_port: Option<u16>,
-  ollama_compat: bool,
-  no_proxy_fallback: bool,
-  proxy_host: Option<IpAddr>,
-  insecure_no_auth: bool,
-  lemonade: bool,
-  ds4: bool,
-  vllm: bool,
-  sglang: bool,
-  force: bool,
-  cli: &Cli,
-  config: &Config,
-) -> Result<()> {
+/// `daemon start`: the two flags that steer this function, plus the overrides
+/// it hands straight to [`build_options`].
+async fn handle_start(foreground: bool, force: bool, args: BuildOptionsArgs<'_>) -> Result<()> {
+  let cli = args.cli;
   // Bring a pre-registry `config.yaml` to the unified knob shape before
   // anything reads it. The daemon owns config writes, so this is the one
   // place it can run; a plain CLI command must never rewrite the user's file.
   // Idempotent, backs the original up first, and preserves comments.
   let migrated_config = migrate_knob_config(cli);
 
-  let mut opts = build_options(
-    state_dir,
-    proxy_port,
-    ollama_compat,
-    no_proxy_fallback,
-    proxy_host,
-    insecure_no_auth,
-    lemonade,
-    ds4,
-    vllm,
-    sglang,
-    cli,
-    config,
-  )?;
+  let mut opts = build_options(args)?;
   if let Some(fresh) = migrated_config {
     // `config` was parsed from the pre-migration text, so its preset blocks
     // are in the old shape. Take the rewritten file's.
@@ -536,6 +511,63 @@ fn force_stop_via_pid(pid: i32, attach_dir: &std::path::Path) -> Result<()> {
   ))
 }
 
+/// Every backend that can be force-enabled, paired with the env var that does
+/// it alongside its CLI flag. The one place in the daemon CLI that names
+/// backends, which is the sanctioned boundary: the flags are user-facing
+/// surface (`--lemonade`, `--ds4`, `--vllm`, `--sglang`).
+const FORCE_FLAG_ENV: &[(&str, &str)] = &[
+  (
+    crate::backend::lemonade::LEMONADE_BACKEND_ID,
+    "LLAMASTASH_LEMONADE",
+  ),
+  (crate::backend::ds4::DS4_BACKEND_ID, "LLAMASTASH_DS4"),
+  (crate::backend::vllm::VLLM_BACKEND_ID, "LLAMASTASH_VLLM"),
+  (
+    crate::backend::sglang::SGLANG_BACKEND_ID,
+    "LLAMASTASH_SGLANG",
+  ),
+];
+
+/// The `daemon start` overrides [`build_options`] folds over config and env.
+///
+/// A struct rather than positional arguments: there were ten, four of them
+/// booleans that end up as entries in one map, threaded through three call
+/// layers. Adding the fifth backend meant counting `false`s at twenty call
+/// sites and getting the order right. `cli` / `config` are borrows, which
+/// rules out `#[derive(Default)]`, so [`BuildOptionsArgs::new`] is the base to
+/// spread over: `BuildOptionsArgs { proxy_port: Some(1), ..new(&cli, &config) }`.
+pub(crate) struct BuildOptionsArgs<'a> {
+  pub state_dir: Option<PathBuf>,
+  pub proxy_port: Option<u16>,
+  pub proxy_host: Option<IpAddr>,
+  pub ollama_compat: bool,
+  pub no_proxy_fallback: bool,
+  pub insecure_no_auth: bool,
+  /// Force-enable flags from the CLI, keyed by [`crate::backend::Backend::id`].
+  /// Each is OR-ed with its backend's `LLAMASTASH_*` env var in
+  /// [`build_options`], so a caller only sets the ids it was given a flag for.
+  pub backend_force: BTreeMap<String, bool>,
+  pub cli: &'a Cli,
+  pub config: &'a Config,
+}
+
+impl<'a> BuildOptionsArgs<'a> {
+  /// Every override at its "not given" value. Spread over it.
+  pub(crate) fn new(cli: &'a Cli, config: &'a Config) -> Self {
+    Self {
+      state_dir: None,
+      proxy_port: None,
+      proxy_host: None,
+      ollama_compat: false,
+      no_proxy_fallback: false,
+      insecure_no_auth: false,
+      backend_force: BTreeMap::new(),
+      cli,
+      config,
+    }
+  }
+}
+
 /// Compose [`DaemonOptions`] from the parsed CLI overrides. Hidden
 /// `--state-dir` / `--socket-path` flags take precedence; unset fields
 /// fall back to the platform-default XDG paths. Centralised so the
@@ -549,23 +581,18 @@ fn force_stop_via_pid(pid: i32, attach_dir: &std::path::Path) -> Result<()> {
 /// `known_caches::default_set`. An empty config + no flags still
 /// produces a working daemon — the daemon just operates with whichever
 /// HF/Ollama/LM Studio caches exist on disk.
-// Same rationale as `handle_start`: each `daemon start` knob costs an
-// argument here. A typed bundle would just relocate the unpack.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn build_options(
-  state_dir: Option<PathBuf>,
-  proxy_port: Option<u16>,
-  ollama_compat_cli: bool,
-  no_proxy_fallback_cli: bool,
-  proxy_host: Option<IpAddr>,
-  insecure_no_auth_cli: bool,
-  lemonade_cli: bool,
-  ds4_cli: bool,
-  vllm_cli: bool,
-  sglang_cli: bool,
-  cli: &Cli,
-  config: &Config,
-) -> Result<DaemonOptions> {
+pub(crate) fn build_options(args: BuildOptionsArgs<'_>) -> Result<DaemonOptions> {
+  let BuildOptionsArgs {
+    state_dir,
+    proxy_port,
+    proxy_host,
+    ollama_compat: ollama_compat_cli,
+    no_proxy_fallback: no_proxy_fallback_cli,
+    insecure_no_auth: insecure_no_auth_cli,
+    backend_force: backend_force_cli,
+    cli,
+    config,
+  } = args;
   let env_paths = env_model_paths();
   let env_no_scan_v = env_no_scan();
   // Refuse to start with discovery completely off and no user-supplied
@@ -721,33 +748,20 @@ pub(crate) fn build_options(
   if no_proxy_fallback_cli || env_no_fallback {
     opts.proxy.fallback_enabled = false;
   }
-  // Per-backend force-enable map, keyed by backend id. Lemonade + ds4 both
-  // default-on when their binary resolves (config `[lemonade]` / `[ds4]` blocks
-  // already rode through in `opts.backend` above); `--lemonade` /
-  // `LLAMASTASH_LEMONADE` and `--ds4` / `LLAMASTASH_DS4` force each on over a
+  // Per-backend force-enable map, keyed by backend id. Every detected backend
+  // is default-on when its binary resolves (its config block already rode
+  // through in `opts.backend` above); the flag or env var forces it on over a
   // config `enabled: false`. Kept separate from `opts.backend` so the detached
-  // re-exec can re-append the flags (env/flag don't survive detach). The two id
-  // consts are the kept CLI-flag boundary.
-  opts.backend_force = [
-    (
-      crate::backend::lemonade::LEMONADE_BACKEND_ID.to_string(),
-      lemonade_cli || env_flag_truthy("LLAMASTASH_LEMONADE"),
-    ),
-    (
-      crate::backend::ds4::DS4_BACKEND_ID.to_string(),
-      ds4_cli || env_flag_truthy("LLAMASTASH_DS4"),
-    ),
-    (
-      crate::backend::vllm::VLLM_BACKEND_ID.to_string(),
-      vllm_cli || env_flag_truthy("LLAMASTASH_VLLM"),
-    ),
-    (
-      crate::backend::sglang::SGLANG_BACKEND_ID.to_string(),
-      sglang_cli || env_flag_truthy("LLAMASTASH_SGLANG"),
-    ),
-  ]
-  .into_iter()
-  .collect();
+  // re-exec can re-append the flags (env/flag don't survive detach). This
+  // table is the kept CLI-flag boundary: one row per force flag, so a new
+  // backend adds a row instead of an argument.
+  opts.backend_force = FORCE_FLAG_ENV
+    .iter()
+    .map(|(id, env_var)| {
+      let forced = backend_force_cli.get(*id).copied().unwrap_or(false) || env_flag_truthy(env_var);
+      ((*id).to_string(), forced)
+    })
+    .collect();
   opts.propagated_cli_args = propagated_cli_args(cli);
   Ok(opts)
 }
@@ -1191,10 +1205,7 @@ mod tests {
       },
       ..Config::default()
     };
-    let opts = build_options(
-      None, None, false, false, None, false, false, false, false, false, &cli, &config,
-    )
-    .expect("build_options");
+    let opts = build_options(BuildOptionsArgs::new(&cli, &config)).expect("build_options");
     assert_eq!(
       opts.proxy.port,
       Some(22222),
@@ -1226,10 +1237,7 @@ mod tests {
       },
       ..Config::default()
     };
-    let opts = build_options(
-      None, None, false, false, None, false, false, false, false, false, &cli, &config,
-    )
-    .expect("build_options");
+    let opts = build_options(BuildOptionsArgs::new(&cli, &config)).expect("build_options");
     assert_eq!(opts.port_range.start, 50000);
     assert_eq!(opts.probe_timeout_secs, Some(600));
     assert_eq!(opts.idle_timeout, Some(Duration::from_secs(900)));
@@ -1256,10 +1264,7 @@ mod tests {
       },
       ..Config::default()
     };
-    let opts = build_options(
-      None, None, false, false, None, false, false, false, false, false, &cli, &config,
-    )
-    .expect("build_options");
+    let opts = build_options(BuildOptionsArgs::new(&cli, &config)).expect("build_options");
     assert_eq!(opts.idle_timeout, None, "0 disables the idle timer");
     assert_eq!(
       opts.gpu_reprobe_interval, None,
@@ -1283,10 +1288,7 @@ mod tests {
       },
       ..Config::default()
     };
-    let opts = build_options(
-      None, None, false, false, None, false, false, false, false, false, &cli, &config,
-    )
-    .expect("build_options");
+    let opts = build_options(BuildOptionsArgs::new(&cli, &config)).expect("build_options");
     assert_eq!(opts.metrics_interval, Duration::from_secs(60));
   }
 
@@ -1310,10 +1312,7 @@ mod tests {
       },
       ..Config::default()
     };
-    let opts = build_options(
-      None, None, false, false, None, false, false, false, false, false, &cli, &config,
-    )
-    .expect("build_options");
+    let opts = build_options(BuildOptionsArgs::new(&cli, &config)).expect("build_options");
     assert_eq!(opts.default_launch_mode, DefaultLaunchMode::Inherited);
     assert_eq!(opts.backend.llamacpp.fit_ctx_floor, 8192);
     assert!(opts.backend.llamacpp.strict_fit);
@@ -1338,10 +1337,7 @@ mod tests {
     };
     std::env::set_var("LLAMASTASH_DEFAULT_LAUNCH_MODE", "inherited");
     std::env::set_var("LLAMASTASH_STRICT_FIT", "1");
-    let opts = build_options(
-      None, None, false, false, None, false, false, false, false, false, &cli, &config,
-    )
-    .expect("build_options");
+    let opts = build_options(BuildOptionsArgs::new(&cli, &config)).expect("build_options");
     std::env::remove_var("LLAMASTASH_DEFAULT_LAUNCH_MODE");
     std::env::remove_var("LLAMASTASH_STRICT_FIT");
     assert_eq!(
@@ -1371,10 +1367,7 @@ mod tests {
         },
         ..Config::default()
       };
-      let opts = build_options(
-        None, None, false, false, None, false, false, false, false, false, &cli, &config,
-      )
-      .expect("build_options");
+      let opts = build_options(BuildOptionsArgs::new(&cli, &config)).expect("build_options");
       assert_eq!(
         opts.backend.llamacpp.fit_ctx_floor, DEFAULT_FIT_CTX_FLOOR,
         "out-of-range floor {bad} must fall back to the factory value"
@@ -1399,20 +1392,10 @@ mod tests {
       ..Config::default()
     };
     // The CLI override (Some(8080)) beats config.proxy.port.
-    let opts = build_options(
-      None,
-      Some(8080),
-      false,
-      false,
-      None,
-      false,
-      false,
-      false,
-      false,
-      false,
-      &cli,
-      &config,
-    )
+    let opts = build_options(BuildOptionsArgs {
+      proxy_port: Some(8080),
+      ..BuildOptionsArgs::new(&cli, &config)
+    })
     .expect("build_options");
     assert_eq!(opts.proxy.port, Some(8080), "CLI flag overrides config");
     assert_eq!(opts.proxy.effective_port(), 8080);
@@ -1429,10 +1412,7 @@ mod tests {
     // 11435 (default mode) when nothing pins `port` explicitly.
     let cli = parse_cli(&["daemon", "start"]);
     let config = Config::default();
-    let opts = build_options(
-      None, None, false, false, None, false, false, false, false, false, &cli, &config,
-    )
-    .expect("build_options");
+    let opts = build_options(BuildOptionsArgs::new(&cli, &config)).expect("build_options");
     assert_eq!(opts.proxy.port, None);
     assert_eq!(opts.proxy.effective_port(), 11435);
     assert!(!opts.proxy.ollama_compat);
@@ -1443,9 +1423,10 @@ mod tests {
     let _env = crate::cli::test_lock::serialize();
     let cli = parse_cli(&["daemon", "start"]);
     let config = Config::default();
-    let opts = build_options(
-      None, None, true, false, None, false, false, false, false, false, &cli, &config,
-    )
+    let opts = build_options(BuildOptionsArgs {
+      ollama_compat: true,
+      ..BuildOptionsArgs::new(&cli, &config)
+    })
     .expect("build_options");
     assert!(opts.proxy.ollama_compat);
     // Port stays None at the schema level — the CLI flag drives the
@@ -1466,58 +1447,22 @@ mod tests {
       },
       ..Config::default()
     };
-    let opts_config = build_options(
-      None,
-      None,
-      false,
-      false,
-      None,
-      false,
-      false,
-      false,
-      false,
-      false,
-      &cli,
-      &config_compat,
-    )
-    .expect("build_options");
+    let opts_config =
+      build_options(BuildOptionsArgs::new(&cli, &config_compat)).expect("build_options");
     assert!(opts_config.proxy.ollama_compat);
 
     // CLI-only: config has compat=false, CLI flag on → enabled.
     let config_off = Config::default();
-    let opts_cli = build_options(
-      None,
-      None,
-      true,
-      false,
-      None,
-      false,
-      false,
-      false,
-      false,
-      false,
-      &cli,
-      &config_off,
-    )
+    let opts_cli = build_options(BuildOptionsArgs {
+      ollama_compat: true,
+      ..BuildOptionsArgs::new(&cli, &config_off)
+    })
     .expect("build_options");
     assert!(opts_cli.proxy.ollama_compat);
 
     // Both off (neither config nor CLI) → disabled.
-    let opts_neither = build_options(
-      None,
-      None,
-      false,
-      false,
-      None,
-      false,
-      false,
-      false,
-      false,
-      false,
-      &cli,
-      &config_off,
-    )
-    .expect("build_options");
+    let opts_neither =
+      build_options(BuildOptionsArgs::new(&cli, &config_off)).expect("build_options");
     assert!(!opts_neither.proxy.ollama_compat);
   }
 
@@ -1533,20 +1478,10 @@ mod tests {
       ..Config::default()
     };
     let cli_host: std::net::IpAddr = "9.9.9.9".parse().unwrap();
-    let opts = build_options(
-      None,
-      None,
-      false,
-      false,
-      Some(cli_host),
-      false,
-      false,
-      false,
-      false,
-      false,
-      &cli,
-      &config,
-    )
+    let opts = build_options(BuildOptionsArgs {
+      proxy_host: Some(cli_host),
+      ..BuildOptionsArgs::new(&cli, &config)
+    })
     .expect("build_options");
     assert_eq!(
       opts.proxy.host,
@@ -1567,10 +1502,7 @@ mod tests {
       },
       ..Config::default()
     };
-    let opts = build_options(
-      None, None, false, false, None, false, false, false, false, false, &cli, &config,
-    )
-    .expect("build_options");
+    let opts = build_options(BuildOptionsArgs::new(&cli, &config)).expect("build_options");
     assert_eq!(opts.proxy.host, Some("0.0.0.0".parse().unwrap()));
     assert!(!opts.proxy.effective_host().is_loopback());
   }
@@ -1580,20 +1512,10 @@ mod tests {
     let _env = crate::cli::test_lock::serialize();
     let cli = parse_cli(&["daemon", "start"]);
     // CLI flag on, config off → on.
-    let opts_cli = build_options(
-      None,
-      None,
-      false,
-      false,
-      None,
-      true,
-      false,
-      false,
-      false,
-      false,
-      &cli,
-      &Config::default(),
-    )
+    let opts_cli = build_options(BuildOptionsArgs {
+      insecure_no_auth: true,
+      ..BuildOptionsArgs::new(&cli, &Config::default())
+    })
     .expect("build_options");
     assert!(opts_cli.proxy.insecure_no_auth);
     // Config on, CLI off → on.
@@ -1604,38 +1526,12 @@ mod tests {
       },
       ..Config::default()
     };
-    let opts_config = build_options(
-      None,
-      None,
-      false,
-      false,
-      None,
-      false,
-      false,
-      false,
-      false,
-      false,
-      &cli,
-      &config_insecure,
-    )
-    .expect("build_options");
+    let opts_config =
+      build_options(BuildOptionsArgs::new(&cli, &config_insecure)).expect("build_options");
     assert!(opts_config.proxy.insecure_no_auth);
     // Both off → off (the safe default).
-    let opts_off = build_options(
-      None,
-      None,
-      false,
-      false,
-      None,
-      false,
-      false,
-      false,
-      false,
-      false,
-      &cli,
-      &Config::default(),
-    )
-    .expect("build_options");
+    let opts_off =
+      build_options(BuildOptionsArgs::new(&cli, &Config::default())).expect("build_options");
     assert!(!opts_off.proxy.insecure_no_auth);
   }
 
@@ -1647,20 +1543,7 @@ mod tests {
     std::env::set_var("LLAMASTASH_PROXY_HOST", "0.0.0.0");
     std::env::set_var("LLAMASTASH_PROXY_API_KEY", "sk-llamastash-fromenv");
     let cli = parse_cli(&["daemon", "start"]);
-    let opts = build_options(
-      None,
-      None,
-      false,
-      false,
-      None,
-      false,
-      false,
-      false,
-      false,
-      false,
-      &cli,
-      &Config::default(),
-    );
+    let opts = build_options(BuildOptionsArgs::new(&cli, &Config::default()));
     let restore = |k: &str, v: Option<std::ffi::OsString>| match v {
       Some(v) => std::env::set_var(k, v),
       None => std::env::remove_var(k),
@@ -1701,10 +1584,7 @@ mod tests {
         },
         ..Config::default()
       };
-      let opts = build_options(
-        None, None, false, false, None, false, false, false, false, false, &cli, &config,
-      )
-      .expect("build_options");
+      let opts = build_options(BuildOptionsArgs::new(&cli, &config)).expect("build_options");
       assert_eq!(
         opts.proxy.api_key, None,
         "blank api_key {blank:?} must normalize to None"
@@ -1840,15 +1720,14 @@ mod tests {
     let cli = parse_cli(&["daemon", "start"]);
     let config = Config::default();
     // Default is fallback_enabled = true.
-    let baseline = build_options(
-      None, None, false, false, None, false, false, false, false, false, &cli, &config,
-    )
-    .expect("build_options baseline");
+    let baseline =
+      build_options(BuildOptionsArgs::new(&cli, &config)).expect("build_options baseline");
     assert!(baseline.proxy.fallback_enabled);
     // CLI flag forces it off.
-    let opts = build_options(
-      None, None, false, true, None, false, false, false, false, false, &cli, &config,
-    )
+    let opts = build_options(BuildOptionsArgs {
+      no_proxy_fallback: true,
+      ..BuildOptionsArgs::new(&cli, &config)
+    })
     .expect("build_options no-fallback");
     assert!(!opts.proxy.fallback_enabled);
   }
@@ -1865,59 +1744,52 @@ mod tests {
       },
       ..Config::default()
     };
-    let opts_config = build_options(
-      None,
-      None,
-      false,
-      false,
-      None,
-      false,
-      false,
-      false,
-      false,
-      false,
-      &cli,
-      &config_off_fallback,
-    )
-    .expect("build_options");
+    let opts_config =
+      build_options(BuildOptionsArgs::new(&cli, &config_off_fallback)).expect("build_options");
     assert!(!opts_config.proxy.fallback_enabled);
 
     // CLI-only: config has fallback_enabled=true (default), CLI on → disabled.
     let config_default = Config::default();
-    let opts_cli = build_options(
-      None,
-      None,
-      false,
-      true,
-      None,
-      false,
-      false,
-      false,
-      false,
-      false,
-      &cli,
-      &config_default,
-    )
+    let opts_cli = build_options(BuildOptionsArgs {
+      no_proxy_fallback: true,
+      ..BuildOptionsArgs::new(&cli, &config_default)
+    })
     .expect("build_options");
     assert!(!opts_cli.proxy.fallback_enabled);
 
     // Both off → fallback_enabled stays true (the default).
-    let opts_neither = build_options(
-      None,
-      None,
-      false,
-      false,
-      None,
-      false,
-      false,
-      false,
-      false,
-      false,
-      &cli,
-      &config_default,
-    )
-    .expect("build_options");
+    let opts_neither =
+      build_options(BuildOptionsArgs::new(&cli, &config_default)).expect("build_options");
     assert!(opts_neither.proxy.fallback_enabled);
+  }
+
+  /// The force table is keyed by backend id and consumed by id, so a typo
+  /// would silently drop a `--<backend>` flag rather than fail to compile.
+  /// Every entry must name a registered backend and carry the env var the
+  /// docs promise for it.
+  #[test]
+  fn every_force_flag_names_a_real_backend_and_its_env_var() {
+    let registered: Vec<&str> = crate::backend::Backends::all()
+      .iter()
+      .map(|b| crate::backend::Backend::id(b))
+      .collect();
+    for (id, env_var) in FORCE_FLAG_ENV {
+      assert!(
+        registered.contains(id),
+        "`{id}` is not a registered backend id: {registered:?}"
+      );
+      assert_eq!(
+        *env_var,
+        format!("LLAMASTASH_{}", id.to_ascii_uppercase()),
+        "the env var for `{id}` must match the documented spelling"
+      );
+    }
+    // Each id appears once, so a duplicate cannot shadow an earlier row.
+    let mut ids: Vec<&str> = FORCE_FLAG_ENV.iter().map(|(id, _)| *id).collect();
+    let before = ids.len();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), before, "duplicate id in FORCE_FLAG_ENV");
   }
 
   #[test]
@@ -1933,18 +1805,20 @@ mod tests {
     };
     // Default: enablement intent is on (default-on-when-found, like ds4), the
     // config `enabled` stays unset, and no force flag is captured.
-    let baseline = build_options(
-      None, None, false, false, None, false, false, false, false, false, &cli, &config,
-    )
-    .expect("build_options baseline");
+    let baseline =
+      build_options(BuildOptionsArgs::new(&cli, &config)).expect("build_options baseline");
     assert_eq!(baseline.backend.lemonade.enabled, None);
     assert!(!force(&baseline));
     assert!(baseline.backend.lemonade.intends_enabled(force(&baseline)));
 
     // CLI flag captured as force (overrides a config `enabled: false`).
-    let opts_cli = build_options(
-      None, None, false, false, None, false, true, false, false, false, &cli, &config,
-    )
+    let opts_cli = build_options(BuildOptionsArgs {
+      backend_force: BTreeMap::from([(
+        crate::backend::lemonade::LEMONADE_BACKEND_ID.to_string(),
+        true,
+      )]),
+      ..BuildOptionsArgs::new(&cli, &config)
+    })
     .expect("build_options lemonade");
     assert!(force(&opts_cli));
     assert!(opts_cli.backend.lemonade.intends_enabled(force(&opts_cli)));
@@ -1960,21 +1834,8 @@ mod tests {
       },
       ..Config::default()
     };
-    let opts_off = build_options(
-      None,
-      None,
-      false,
-      false,
-      None,
-      false,
-      false,
-      false,
-      false,
-      false,
-      &cli,
-      &config_off,
-    )
-    .expect("build_options config-off");
+    let opts_off =
+      build_options(BuildOptionsArgs::new(&cli, &config_off)).expect("build_options config-off");
     assert!(!opts_off.backend.lemonade.intends_enabled(force(&opts_off)));
   }
 
@@ -2089,10 +1950,8 @@ mod tests {
     // *why* the daemon refused.
     let cli = parse_cli(&["--no-scan", "daemon", "start"]);
     let config = Config::default();
-    let err = build_options(
-      None, None, false, false, None, false, false, false, false, false, &cli, &config,
-    )
-    .expect_err("--no-scan with zero paths must error");
+    let err = build_options(BuildOptionsArgs::new(&cli, &config))
+      .expect_err("--no-scan with zero paths must error");
     let msg = format!("{err:#}");
     assert!(
       msg.contains("scanning is disabled"),
@@ -2106,10 +1965,7 @@ mod tests {
     let cli = parse_cli(&["--no-scan", "--model-path", "/work/keep", "daemon", "start"]);
     let config = Config::default();
     assert!(
-      build_options(
-        None, None, false, false, None, false, false, false, false, false, &cli, &config
-      )
-      .is_ok(),
+      build_options(BuildOptionsArgs::new(&cli, &config)).is_ok(),
       "--no-scan + --model-path must build cleanly"
     );
   }
@@ -2123,10 +1979,7 @@ mod tests {
       ..Config::default()
     };
     assert!(
-      build_options(
-        None, None, false, false, None, false, false, false, false, false, &cli, &config
-      )
-      .is_ok(),
+      build_options(BuildOptionsArgs::new(&cli, &config)).is_ok(),
       "--no-scan + config model_paths must build cleanly"
     );
   }

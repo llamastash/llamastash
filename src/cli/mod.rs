@@ -305,10 +305,7 @@ pub(crate) async fn handle_tui(cli: &Cli, config: &crate::config::Config) -> Cli
   // than dropping back to bare platform defaults. A failure to
   // resolve options is non-fatal: the writer task falls back to
   // `from_defaults` and logs.
-  let daemon_opts = daemon::build_options(
-    None, None, false, false, None, false, false, false, false, false, cli, config,
-  )
-  .ok();
+  let daemon_opts = daemon::build_options(daemon::BuildOptionsArgs::new(cli, config)).ok();
   let offline = crate::init::fetch::offline_requested(false);
   // CLI flag wins as a one-way opt-in: `--mouse-focus` flips on even
   // when `config.mouse_focus` is unset / false. Matches `--offline`

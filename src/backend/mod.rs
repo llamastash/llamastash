@@ -1367,6 +1367,57 @@ pub fn synthetic_identity_for_path_available(
     })
 }
 
+/// Resolve an engine launcher **by filesystem existence only — never by
+/// running it.**
+///
+/// The Python engines build their argument parser after importing the engine,
+/// which probes for a device, so a `--version` on a GPU-less host fails
+/// outright. An exec-based probe would report "not installed" on exactly the
+/// machines where a user is configuring the binary by hand.
+///
+/// A configured path must be a file; otherwise `path_name` is looked up on
+/// `PATH`. Under `test-fixtures` the `PATH` lookup is compiled out so tests
+/// never auto-discover a real engine installed on the host.
+pub fn resolve_launcher_by_existence(
+  configured: Option<&Path>,
+  path_name: &str,
+) -> Option<PathBuf> {
+  if let Some(path) = configured {
+    return path.is_file().then(|| path.to_path_buf());
+  }
+  #[cfg(not(feature = "test-fixtures"))]
+  {
+    return which::which(path_name).ok();
+  }
+  #[cfg(feature = "test-fixtures")]
+  {
+    let _ = path_name;
+    None
+  }
+}
+
+/// Orphan re-adoption for a backend that advertises a **served name** rather
+/// than the model path.
+///
+/// The default rule looks for the recorded path in `/v1/models`, which never
+/// matches an engine handed `--served-model-name`. Confirm on the name
+/// instead, cross-checked against the path still being the argv's model
+/// argument so a recycled PID serving a different model of ours cannot pass.
+/// An unreadable argv (empty) falls back to the name alone rather than
+/// dropping a live child.
+pub async fn served_name_adoption_matches(
+  served_name: &str,
+  recorded_path: &Path,
+  argv: &[String],
+  port: u16,
+  probe_timeout: std::time::Duration,
+) -> bool {
+  let path_str = recorded_path.to_string_lossy();
+  let argv_agrees = argv.is_empty() || argv.iter().any(|a| *a == path_str);
+  argv_agrees
+    && crate::daemon::orphans::models_endpoint_serves_id(port, served_name, probe_timeout).await
+}
+
 /// Everything a surface needs to identify a model path, whichever shape the
 /// model is: a local GGUF file, or a directory / registry entry a backend
 /// claims. Produced by [`resolve_identity_for_path`].

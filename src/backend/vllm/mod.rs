@@ -81,9 +81,7 @@ impl VllmConfig {
   }
 }
 
-/// Executable name searched on `PATH` when no server is configured. Compiled
-/// out under `test-fixtures` so tests never auto-discover a host `vllm`.
-#[cfg(not(feature = "test-fixtures"))]
+/// Executable name searched on `PATH` when no server is configured.
 const VLLM_BIN: &str = "vllm";
 
 /// Extras heads refused on top of the shared loopback/credential denylist.
@@ -118,24 +116,15 @@ pub const VLLM_FORBIDDEN_EXTRA_HEADS: &[&str] = &[
 /// decision from `backend.vllm.cors`, so it belongs nowhere near the picker.
 const VLLM_KNOB_CORS: &str = "cors";
 
-/// Resolve the launcher **by filesystem existence only — never by running it.**
+/// Resolve the launcher, by existence only — see
+/// [`super::resolve_launcher_by_existence`].
 ///
-/// vLLM builds its argument parser through a device probe: on a host with no
-/// usable accelerator, even `vllm --version` dies with
-/// `RuntimeError: Failed to infer device type`. An exec-based probe would
-/// therefore report "not installed" on exactly the machines where a user is
-/// configuring the binary by hand. Verified against
+/// The concrete case here: vLLM builds its argument parser through a device
+/// probe, so on a host with no usable accelerator even `vllm --version` dies
+/// with `RuntimeError: Failed to infer device type`. Verified against
 /// `vllm 0.19.1+rocm7.13.0rc2` on 2026-08-10.
 pub fn resolve_vllm_binary(configured: Option<&Path>) -> Option<PathBuf> {
-  if let Some(path) = configured {
-    return path.is_file().then(|| path.to_path_buf());
-  }
-  #[cfg(not(feature = "test-fixtures"))]
-  {
-    return which::which(VLLM_BIN).ok();
-  }
-  #[cfg(feature = "test-fixtures")]
-  None
+  super::resolve_launcher_by_existence(configured, VLLM_BIN)
 }
 
 /// The vLLM backend.
@@ -331,16 +320,14 @@ impl Backend for VllmBackend {
     port: u16,
     probe_timeout: std::time::Duration,
   ) -> bool {
-    // The default rule looks for the recorded *path* in `/v1/models`, but this
-    // backend advertises the served name instead — the whole point of passing
-    // `--served-model-name`. Confirm on that, cross-checked against the path
-    // still being the argv's model argument so a recycled PID serving a
-    // different model of ours cannot pass.
-    let expected = served_model_name(recorded_path);
-    let path_str = recorded_path.to_string_lossy();
-    let argv_agrees = argv.is_empty() || argv.iter().any(|a| *a == path_str);
-    argv_agrees
-      && crate::daemon::orphans::models_endpoint_serves_id(port, &expected, probe_timeout).await
+    super::served_name_adoption_matches(
+      &served_model_name(recorded_path),
+      recorded_path,
+      argv,
+      port,
+      probe_timeout,
+    )
+    .await
   }
 
   fn resolve_launch_binary(
@@ -463,24 +450,17 @@ impl Backend for VllmBackend {
   }
 }
 
-/// A knob's value parsed as a byte count (`8G`, `512M`, or a plain integer).
+/// This backend's knob accessors, bound to its own vocabulary.
 fn knob_bytes(params: &LaunchParams, id: &str) -> Option<u64> {
-  crate::launch::admission::parse_size_bytes(&params.knobs.text_by_name_for(VLLM_BACKEND_ID, id)?)
+  crate::launch::params::knob_bytes(params, VLLM_BACKEND_ID, id)
 }
 
-/// A knob's value parsed as a fraction.
 fn knob_f64(params: &LaunchParams, id: &str) -> Option<f64> {
-  params
-    .knobs
-    .text_by_name_for(VLLM_BACKEND_ID, id)?
-    .trim()
-    .parse()
-    .ok()
+  crate::launch::params::knob_f64(params, VLLM_BACKEND_ID, id)
 }
 
-/// Whether the user pinned this knob (as opposed to leaving it to us).
 fn user_set(params: &LaunchParams, id: &str) -> bool {
-  params.knobs.is_set_by_name_for(VLLM_BACKEND_ID, id)
+  crate::launch::params::knob_is_user_set(params, VLLM_BACKEND_ID, id)
 }
 
 impl VllmBackend {

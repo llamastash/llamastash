@@ -96,6 +96,41 @@ pub(crate) fn strip_forbidden_extras(
   out
 }
 
+/// One backend's knob value, parsed as an integer. `None` when unset, or set
+/// to something that is not one.
+pub(crate) fn knob_u64(params: &LaunchParams, backend_id: &str, id: &str) -> Option<u64> {
+  params
+    .knobs
+    .text_by_name_for(backend_id, id)?
+    .trim()
+    .parse()
+    .ok()
+}
+
+/// One backend's knob value, parsed as a fraction.
+pub(crate) fn knob_f64(params: &LaunchParams, backend_id: &str, id: &str) -> Option<f64> {
+  params
+    .knobs
+    .text_by_name_for(backend_id, id)?
+    .trim()
+    .parse()
+    .ok()
+}
+
+/// One backend's knob value, parsed as a byte size (`4GiB`, `512M`, a bare
+/// count).
+pub(crate) fn knob_bytes(params: &LaunchParams, backend_id: &str, id: &str) -> Option<u64> {
+  crate::launch::admission::parse_size_bytes(&params.knobs.text_by_name_for(backend_id, id)?)
+}
+
+/// Whether the user pinned this knob, as opposed to leaving it to the backend.
+///
+/// The distinction every memory guard is built on: an explicit value is a
+/// decision to honour, an unset one is the guard's to fill.
+pub(crate) fn knob_is_user_set(params: &LaunchParams, backend_id: &str, id: &str) -> bool {
+  params.knobs.is_set_by_name_for(backend_id, id)
+}
+
 fn head_hits_prefixes(head: &str, prefixes: &[&str]) -> bool {
   let lower = head.to_ascii_lowercase();
   prefixes

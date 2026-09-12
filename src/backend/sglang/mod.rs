@@ -60,9 +60,7 @@ impl SglangConfig {
   }
 }
 
-/// Executable name searched on `PATH` when no server is configured. Compiled
-/// out under `test-fixtures` so tests never auto-discover a host `sglang`.
-#[cfg(not(feature = "test-fixtures"))]
+/// Executable name searched on `PATH` when no server is configured.
 const SGLANG_BIN: &str = "sglang";
 
 /// Extras heads refused on top of the shared loopback/credential denylist.
@@ -103,23 +101,10 @@ pub const SGLANG_FORBIDDEN_EXTRA_HEADS: &[&str] = &[
   "--served-model-name",
 ];
 
-/// Resolve the launcher **by filesystem existence only — never by running it.**
-///
-/// Same rule as the other Python engine: the launcher's argument parser is
-/// built after importing the engine, which probes for a device, so a
-/// `--version` on a GPU-less host fails outright and an exec-based probe would
-/// report "not installed" on exactly the machines where a user is configuring
-/// the binary by hand.
+/// Resolve the launcher, by existence only — see
+/// [`super::resolve_launcher_by_existence`] for why it is never executed.
 pub fn resolve_sglang_binary(configured: Option<&Path>) -> Option<PathBuf> {
-  if let Some(path) = configured {
-    return path.is_file().then(|| path.to_path_buf());
-  }
-  #[cfg(not(feature = "test-fixtures"))]
-  {
-    return which::which(SGLANG_BIN).ok();
-  }
-  #[cfg(feature = "test-fixtures")]
-  None
+  super::resolve_launcher_by_existence(configured, SGLANG_BIN)
 }
 
 /// The SGLang backend.
@@ -304,16 +289,14 @@ impl Backend for SglangBackend {
     port: u16,
     probe_timeout: std::time::Duration,
   ) -> bool {
-    // The default rule looks for the recorded *path* in `/v1/models`, but this
-    // backend advertises the served name instead — the whole point of passing
-    // `--served-model-name`. Confirm on that, cross-checked against the path
-    // still being the argv's model argument so a recycled PID serving a
-    // different model of ours cannot pass.
-    let expected = served_model_name(recorded_path);
-    let path_str = recorded_path.to_string_lossy();
-    let argv_agrees = argv.is_empty() || argv.iter().any(|a| *a == path_str);
-    argv_agrees
-      && crate::daemon::orphans::models_endpoint_serves_id(port, &expected, probe_timeout).await
+    super::served_name_adoption_matches(
+      &served_model_name(recorded_path),
+      recorded_path,
+      argv,
+      port,
+      probe_timeout,
+    )
+    .await
   }
 
   fn resolve_launch_binary(
@@ -453,29 +436,17 @@ impl Backend for SglangBackend {
   }
 }
 
-/// A knob's value parsed as an integer.
+/// This backend's knob accessors, bound to its own vocabulary.
 fn knob_u64(params: &LaunchParams, id: &str) -> Option<u64> {
-  params
-    .knobs
-    .text_by_name_for(SGLANG_BACKEND_ID, id)?
-    .trim()
-    .parse()
-    .ok()
+  crate::launch::params::knob_u64(params, SGLANG_BACKEND_ID, id)
 }
 
-/// A knob's value parsed as a fraction.
 fn knob_f64(params: &LaunchParams, id: &str) -> Option<f64> {
-  params
-    .knobs
-    .text_by_name_for(SGLANG_BACKEND_ID, id)?
-    .trim()
-    .parse()
-    .ok()
+  crate::launch::params::knob_f64(params, SGLANG_BACKEND_ID, id)
 }
 
-/// Whether the user pinned this knob (as opposed to leaving it to us).
 fn user_set(params: &LaunchParams, id: &str) -> bool {
-  params.knobs.is_set_by_name_for(SGLANG_BACKEND_ID, id)
+  crate::launch::params::knob_is_user_set(params, SGLANG_BACKEND_ID, id)
 }
 
 /// Ceiling on a `/get_server_info` body. Larger than the `/v1/models` cap

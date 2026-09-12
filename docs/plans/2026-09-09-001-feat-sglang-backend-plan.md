@@ -172,7 +172,12 @@ Tick as landed.
       pool, so the gate over-refuses (fails safe). vLLM's
       `gpu_memory_utilization` projection is the same code. The comment now
       says what the code does; the shared fix is a follow-up in `TODO.md`.
-- [ ] **RV8 — `build_options` takes ten positional bools.** Deferred to its
-      own PR: a `BuildOptionsArgs` struct with `Default`, the four backend
-      bools folded into the `BTreeMap<String, bool>` they already become.
-      Tracked in `TODO.md`.
+- [x] **RV8 — `build_options` took ten positional bools.** Landed on main
+      after the merge as `BuildOptionsArgs`, spread over
+      `BuildOptionsArgs::new(cli, config)` rather than `Default` (the `cli` /
+      `config` borrows rule out deriving it). The four backend bools are one
+      `BTreeMap<String, bool>` from the CLI down, OR-ed with each backend's
+      `LLAMASTASH_*` var through the `FORCE_FLAG_ENV` table, so a new backend
+      adds a row instead of an argument. `handle_start` lost its positional
+      bools too.
+
