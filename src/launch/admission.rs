@@ -173,8 +173,44 @@ pub const DEFAULT_KV_CACHE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 /// would only fail after a full weight load.
 pub const MIN_KV_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 
-/// Reserve left free for the OS and everything else after weights + cache.
+/// Reserve left free for the OS and everything else after weights + cache,
+/// for an engine whose own footprint has **not** been measured.
+///
+/// Prefer [`unified_host_reserve_bytes`] wherever that figure exists: a flat
+/// 8 GiB is the number that left ~1.3 GiB free at ready on a 121 GiB box once
+/// a measured engine's own 5.4-6.7 GiB came out of it.
 pub const UNIFIED_HOST_RESERVE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
+/// What the OS itself needs kept free once the engine's own footprint is
+/// counted separately: kernel, page cache breathing room, a shell.
+pub const UNIFIED_OS_FLOOR_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// Floor on the reserve as a share of the pool, so a large APU keeps more than
+/// the fixed terms alone would leave it. 15% of 121.69 GiB is 18.25 GiB; on a
+/// 32 GiB APU the fixed terms dominate instead.
+const UNIFIED_RESERVE_FRACTION: f64 = 0.15;
+
+/// Reserve left free after weights + cache on a unified host, given the
+/// engine's own measured overhead beyond weights and the pool.
+///
+/// The flat [`UNIFIED_HOST_RESERVE_BYTES`] was "the OS and everything else",
+/// calibrated on a box where the reserve never actually bound. Measured where
+/// it does bind, the engine spent 5.4-6.7 GiB of it before the OS saw
+/// anything, leaving about 1.3 GiB at ready — under an OOM killer's line on a
+/// 121 GiB machine. So the reserve is the OS floor plus the engine's own
+/// overhead plus the compute band the admission gate already prices, with a
+/// share of the pool as the floor under all of that.
+pub fn unified_host_reserve_bytes(
+  ram_total_bytes: u64,
+  gpu_backend: &str,
+  engine_overhead_bytes: u64,
+) -> u64 {
+  let fixed = UNIFIED_OS_FLOOR_BYTES
+    .saturating_add(engine_overhead_bytes)
+    .saturating_add(crate::launch::headroom::overhead_band_bytes(gpu_backend));
+  let share = (ram_total_bytes as f64 * UNIFIED_RESERVE_FRACTION) as u64;
+  fixed.max(share)
+}
 
 /// The KV cache byte budget for a unified-memory host. **Always a value.**
 ///
@@ -185,10 +221,14 @@ pub const UNIFIED_HOST_RESERVE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 /// and a launch that should have been refused was admitted with the host
 /// reserve silently abandoned. Whoever decides there is not enough memory has
 /// to be whoever holds the number, which is here.
-pub fn unified_kv_cache_budget(free_bytes: u64, weights_bytes: u64) -> Option<u64> {
+pub fn unified_kv_cache_budget(
+  free_bytes: u64,
+  weights_bytes: u64,
+  reserve_bytes: u64,
+) -> Option<u64> {
   let headroom = free_bytes
     .saturating_sub(weights_bytes)
-    .saturating_sub(UNIFIED_HOST_RESERVE_BYTES);
+    .saturating_sub(reserve_bytes);
   (headroom >= MIN_KV_CACHE_BYTES).then(|| headroom.min(DEFAULT_KV_CACHE_BYTES))
 }
 
@@ -355,20 +395,58 @@ mod tests {
   #[test]
   fn unified_budget_leaves_the_host_a_reserve_and_is_never_absent() {
     const GB: u64 = 1024 * 1024 * 1024;
+    let reserve = UNIFIED_HOST_RESERVE_BYTES;
     // Plenty free: the default budget applies, not "everything that fits".
-    assert_eq!(unified_kv_cache_budget(113 * GB, GB), Some(8 * GB));
+    assert_eq!(unified_kv_cache_budget(113 * GB, GB, reserve), Some(8 * GB));
     // Tight: the cap shrinks to what is left after weights + reserve.
-    assert_eq!(unified_kv_cache_budget(20 * GB, 8 * GB), Some(4 * GB));
+    assert_eq!(
+      unified_kv_cache_budget(20 * GB, 8 * GB, reserve),
+      Some(4 * GB)
+    );
     // Too tight to serve a useful context: refuse. Flooring instead used to
     // shrink the demand the admission gate evaluates, so the gate could not
     // fire and the launch went ahead with the host reserve abandoned.
-    assert_eq!(unified_kv_cache_budget(10 * GB, 8 * GB), None);
-    assert_eq!(unified_kv_cache_budget(4 * GB, 8 * GB), None);
-    assert_eq!(unified_kv_cache_budget(0, 0), None);
+    assert_eq!(unified_kv_cache_budget(10 * GB, 8 * GB, reserve), None);
+    assert_eq!(unified_kv_cache_budget(4 * GB, 8 * GB, reserve), None);
+    assert_eq!(unified_kv_cache_budget(0, 0, reserve), None);
     // The exact boundary is admitted, not refused.
     assert_eq!(
-      unified_kv_cache_budget(8 * GB + MIN_KV_CACHE_BYTES, 0),
+      unified_kv_cache_budget(8 * GB + MIN_KV_CACHE_BYTES, 0, reserve),
       Some(MIN_KV_CACHE_BYTES)
+    );
+    // A bigger reserve takes the difference straight off the budget.
+    assert_eq!(
+      unified_kv_cache_budget(20 * GB, 8 * GB, 10 * GB),
+      Some(2 * GB)
+    );
+  }
+
+  /// The reserve covers the engine's own overhead, which the flat 8 GiB did
+  /// not: measured on GB10 it left ~1.3 GiB at ready in the binding case.
+  #[test]
+  fn the_reserve_is_the_fixed_terms_or_a_share_of_the_pool_whichever_is_more() {
+    const GIB: u64 = 1024 * 1024 * 1024;
+    let engine = 7 * GIB;
+    let nvidia = HostMetricsSnapshot::BACKEND_NVIDIA;
+    let fixed =
+      UNIFIED_OS_FLOOR_BYTES + engine + crate::launch::headroom::overhead_band_bytes(nvidia);
+    // A 32 GiB APU: 15% is 4.8 GiB, so the fixed terms hold.
+    assert_eq!(unified_host_reserve_bytes(32 * GIB, nvidia, engine), fixed);
+    // A DGX Spark: 15% of 121.69 GiB is 18.25 GiB and dominates.
+    let spark_total = 130_657_042_432;
+    let reserve = unified_host_reserve_bytes(spark_total, nvidia, engine);
+    assert_eq!(reserve, (spark_total as f64 * 0.15) as u64);
+    assert!(reserve > fixed);
+    // Unknown backend takes the wider band the gate uses for it.
+    let unknown = HostMetricsSnapshot::BACKEND_UNKNOWN;
+    assert_eq!(
+      unified_host_reserve_bytes(0, unknown, engine),
+      UNIFIED_OS_FLOOR_BYTES + engine + crate::launch::headroom::overhead_band_bytes(unknown)
+    );
+    // An unmeasured engine still keeps the OS floor and the band.
+    assert_eq!(
+      unified_host_reserve_bytes(0, nvidia, 0),
+      UNIFIED_OS_FLOOR_BYTES + crate::launch::headroom::overhead_band_bytes(nvidia)
     );
   }
 

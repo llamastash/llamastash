@@ -293,9 +293,9 @@ Weights the engine streams from the mapping rather than holding resident are alr
 
 **Symptom:** the engine starts, then dies during KV-cache build; `dmesg` shows the OOM killer.
 
-**On a unified-memory host GPU memory *is* system RAM,** and vLLM sizes its KV cache against the whole pool rather than the model. The launcher therefore sets `--kv-cache-memory-bytes` from live free memory when the host is unified and you set neither `kv_cache_memory_bytes` nor `gpu_memory_utilization`. If you set either knob yourself the auto-cap steps aside and the figure is yours to get right — `gpu_memory_utilization` in particular is a fraction *of the pool*, so even `0.15` reserved 15.1 GiB on a 0.5B model. Prefer the absolute `kv_cache_memory_bytes` cap on these hosts.
+**On a unified-memory host GPU memory *is* system RAM,** and vLLM sizes its KV cache against the whole pool rather than the model. The launcher therefore sets `--kv-cache-memory-bytes` from live free memory when the host is unified and you set neither `kv_cache_memory_bytes` nor `gpu_memory_utilization`, keeping a reserve that covers the engine's own overhead (measured 5.4–6.7 GiB on a DGX Spark) as well as the OS, and passes a matching `--gpu-memory-utilization` so vLLM's startup check does not refuse the capped launch on a host with other tenants. If you set either knob yourself the auto-cap steps aside and the figure is yours to get right — `gpu_memory_utilization` in particular is a fraction *of the pool*, so even `0.15` reserved 15.1 GiB on a 0.5B model. Prefer the absolute `kv_cache_memory_bytes` cap on these hosts: your value is passed through untouched, and the launcher still derives the companion `--gpu-memory-utilization` from it so the cap is not refused by vLLM's startup check on a host with other tenants.
 
-If the daemon has no memory reading yet (right after a restart), it treats the host as unified rather than leaving the launch uncapped.
+If the daemon has no memory reading yet (right after a restart), it treats the host as unified rather than leaving the launch uncapped. In that window there is no pool total to size the companion fraction against, so vLLM's own `0.92` startup check still applies and a first launch beside a busy tenant can be refused; start it again once the host has been sampled.
 
 ## Stopping a containerized vLLM leaves it running
 

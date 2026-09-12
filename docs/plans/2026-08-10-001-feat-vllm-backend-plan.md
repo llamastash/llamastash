@@ -678,3 +678,66 @@ Enablement, TUI/CLI polish, docs, and the real-hardware UAT.
 - Server abstraction: [`docs/plans/2026-07-16-001-feat-server-abstraction-plan.md`](2026-07-16-001-feat-server-abstraction-plan.md)
 - Brainstorm: [`docs/brainstorms/2026-06-08-multi-backend-abstraction-requirements.md`](../brainstorms/2026-06-08-multi-backend-abstraction-requirements.md)
 - Backend neutrality contract: `docs/architecture.md` § Backend neutrality contract
+
+## Follow-up — issue #80 (2026-09-10)
+
+Two gaps in the unified-memory guard, measured on a DGX Spark (GB10, 121.69
+GiB, vLLM 0.28.0), one fix because the first masked the second.
+
+- [x] **The byte cap alone could not launch beside a tenant.** vLLM's
+      `request_memory()` compares its free reading against `total ×
+      gpu_memory_utilization` at `init_device`, unconditionally, and reads
+      `--kv-cache-memory-bytes` only later. With the 0.92 default the capped
+      launch needed a ~92%-free host. *Fix:* `startup_utilization` passes a
+      fraction sized to weights + cap + engine overhead, or to what vLLM will
+      see as free (MemAvailable minus a 3 GiB context margin, measured
+      2.6–2.7) if that is less. Inert once the cap is set.
+- [x] **The 8 GiB reserve was spent on engine overhead.** CUDA context,
+      workspace, graphs and the API server cost 5.40 GiB (0.5B) and 6.73 GiB
+      (30B-A3B NVFP4) on top of weights + cap, so the binding case left ~1.3
+      GiB at ready; an OOM killer fired the instant the pool was reserved.
+      *Fix:* reserve = OS floor (2 GiB) + engine overhead (7 GiB, the measured
+      ceiling rounded up) + `overhead_band_bytes` (512 MiB native), or 15% of
+      the pool, whichever is more. The overhead figure is GB10-derived from
+      two models with graph memory spanning 1.0–3.0 GiB; it is not a
+      constant of nature and wants checking on Strix Halo.
+- [ ] The unsampled path (first launch after daemon start) still sends the
+      default cap without a utilization, because there is no pool total to
+      size one against. Narrow window; vLLM's own check applies there.
+- [ ] Re-run the GB10 matrix (runs A, A2, B, C in the casebook record) on the
+      merged binary.
+
+Record: `spark-casebook/casebook/2026-09-09-llamastash-vllm-unified-guard-gb10.md`.
+
+### Review — PR #81
+
+- [x] **An explicit `kv_cache_memory_bytes` got no companion utilization.** It
+      returned early from `resolve_knobs`, so the user's own cap still faced
+      the untouched 0.92 startup check and was refused beside a tenant — and
+      that cap is the escape hatch both `docs/vllm-setup.md` and
+      `docs/troubleshooting.md` point at for exactly this host. *Fix:* only a
+      user-set *fraction* opts out entirely now; a user-set cap keeps its
+      value verbatim and still gets a utilization derived from it. Covered by
+      `an_explicit_cap_still_gets_a_companion_startup_utilization`, which
+      drives `resolve_knobs` against a hand-built sampled unified snapshot.
+- [x] **The setup guide claimed the companion fraction unconditionally.** The
+      unsampled branch has no pool total to size one against; both docs now
+      name that exception.
+- [x] **Rebased onto the #79 hoist.** `unified_host_reserve_bytes`, the OS
+      floor and the reserve fraction live in `launch::admission` with the
+      engine overhead as a *parameter*, so no backend name reaches shared code
+      (the leak guard caught the first attempt). `unified_kv_cache_budget`
+      takes the reserve; SGLang passes the flat constant until its own
+      footprint is measured, which keeps its behaviour identical rather than
+      inheriting a figure measured for another engine.
+- [x] **The utilization write is no longer a silent no-op** if the knob ever
+      rejects the value, and the "tight host" numbers in
+      `startup_utilization_clears_the_init_check_against_what_vllm_sees` are
+      labelled as a pre-fix branch exercise: the engine-aware reserve now
+      refuses that host outright, which
+      `a_host_the_reserve_refuses_never_reaches_the_utilization` pins.
+- [ ] The admission ledger still prices a launch without the engine overhead,
+      so two concurrent launches each under-reserve by ~6.5 GiB. In `TODO.md`;
+      it needs the host snapshot at `projected_cache_bytes` or a separate
+      hook, because adding the figure blindly would over-refuse on a discrete
+      card where it was never measured.
