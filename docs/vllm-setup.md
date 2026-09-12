@@ -206,6 +206,10 @@ channel where it is labelled for what it is.
   cache budget the backend resolved for itself. A launch by absolute path from
   outside the scan roots is measured rather than waved through; when no weight
   size can be read at all the gate cannot engage and says so in the log.
+  A `gpu_memory_utilization` you set yourself is priced as what it is — a
+  share of the **whole pool**, weights included — so `0.9` on a 121 GiB host
+  is projected at ~109 GiB and refused when that does not fit, rather than
+  being priced against the smaller free reading and admitted.
 - **CORS follows vLLM's default, and vLLM's default is open.** Its OpenAI
   server allows any origin (`allowed_origins = ["*"]`, applied unconditionally)
   and offers no switch other than `--allowed-origins`. LlamaStash does not

@@ -10,6 +10,7 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 ### Fixed
 
+- **A pool fraction you set yourself was priced against free memory, not the pool.** `gpu_memory_utilization` / `mem_fraction_static` are shares of the whole pool and cover the weights as well as the cache, but the admission gate projected `free × fraction` and then added the weights again. Free is always the smaller number, so the projection understated what the engine takes: `0.9` on a 121 GiB host with 52 GiB free was priced at 47 GiB and admitted, when the launch would take ~109 GiB. Both engines now price the pool and net off the weights the gate already counts. (#79 review, RV7)
 - **The vLLM unified-memory guard could not launch beside a tenant, and its reserve was spent on engine overhead.** vLLM 0.28 checks `total × gpu_memory_utilization` against its own free reading before honouring the byte cap, so the capped launch only started on a ~92%-free host; the launcher now passes a utilization sized to the launch. The flat 8 GiB reserve left ~1.3 GiB at ready once the engine's own 5.4–6.7 GiB footprint came out of it (measured on a DGX Spark); the reserve now covers the OS, the engine overhead and the gate's compute band, or 15% of the pool if that is more. (#80)
 
 ## [0.3.0] — 2026-09-10

@@ -166,12 +166,20 @@ Tick as landed.
 - [x] **RV6 — `docs/reviews/pr-79.md` removed.** Its durable parts are this
       section and the limitation above; the open items were already in
       `TODO.md`.
-- [ ] **RV7 — the fraction projection double-counts weights.**
+- [x] **RV7 — the fraction projection was priced against free, not the pool.**
       `mem_fraction_static` covers weights and the pool per 0.5.18
-      `ServerArgs`, and the projection multiplies by free rather than the
-      pool, so the gate over-refuses (fails safe). vLLM's
-      `gpu_memory_utilization` projection is the same code. The comment now
-      says what the code does; the shared fix is a follow-up in `TODO.md`.
+      `ServerArgs`, and the projection multiplied by free rather than the
+      pool; vLLM's `gpu_memory_utilization` projection was the same code.
+      *Fix:* `projected_cache_bytes` now takes a
+      `launch::admission::DemandInputs` (post-headroom free, the pool total a
+      fraction is a share of, and the weights the gate already counts), and
+      both engines call the shared `pool_fraction_beyond_weights`.
+      **Correction to the original finding:** the two errors pull opposite
+      ways, so it did *not* fail safe. Free is always under the pool total, so
+      `free × fraction` understated the allocation — `0.9` on a 121 GiB host
+      with 52 GiB free projected 47 GiB and was admitted, for a launch that
+      takes ~109 GiB. The weights double-count (over-refusal) only partly
+      masked it. Fixing the base is the half that matters.
 - [x] **RV8 — `build_options` took ten positional bools.** Landed on main
       after the merge as `BuildOptionsArgs`, spread over
       `BuildOptionsArgs::new(cli, config)` rather than `Default` (the `cli` /
