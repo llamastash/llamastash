@@ -428,9 +428,20 @@ impl Backend for SglangBackend {
       ));
     }
     log::info!("sglang: capping the KV pool at {cap} tokens");
-    params
+    // A rejected value would leave the pool uncapped on the host the guard
+    // exists for, and the knob is declared `U32 { max: None }` precisely so
+    // this cannot happen — say so loudly rather than launching wide open if a
+    // later bound ever makes it fail.
+    if !params
       .knobs
-      .set_by_name_for(SGLANG_BACKEND_ID, "max-total-tokens", cap.to_string());
+      .set_by_name_for(SGLANG_BACKEND_ID, "max-total-tokens", cap.to_string())
+    {
+      out.refusal = Some(format!(
+        "internal: the KV pool cap of {cap} tokens was rejected by the \
+         max-total-tokens knob; set it explicitly to launch"
+      ));
+      return out;
+    }
     out.auto_set.insert("max-total-tokens".to_string());
     out
   }

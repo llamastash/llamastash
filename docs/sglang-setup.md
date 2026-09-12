@@ -172,10 +172,20 @@ for a name the server never advertises.
   A per-token cost that leaves the budget holding under 2,048 tokens is
   refused the same way, including on the first launch after daemon start,
   before the host has been sampled, when the 8 GiB default budget stands in
-  for the free reading. Set either `max_total_tokens` or
-  `mem_fraction_static` yourself and the auto-cap steps aside. Both are volatile, so a preset run applies the value
-  without every later bare `start` inheriting it. Discrete-GPU hosts are
-  untouched; there the fraction applies to real VRAM.
+  for the free reading. Set either `max_total_tokens` or `mem_fraction_static`
+  yourself and the auto-cap steps aside. Both are volatile, so a preset run
+  applies the value without every later bare `start` inheriting it.
+  Discrete-GPU hosts are untouched; there the fraction applies to real VRAM.
+
+  **Deliberate bet:** upstream's own help for `--max-total-tokens` says it is
+  "typically used for development and debugging purposes" (still worded that
+  way in 0.5.19), and we make it the production mechanism on every
+  unified-memory host anyway. There is no supported alternative: 0.5.19's
+  `mem_fraction_static` is a fraction of the whole pool and covers weights as
+  well as KV, so on a unified host it cannot express a byte ceiling, and
+  0.5.19's unified-memory byte-budget work is internal pool sizing with no
+  flag attached. If upstream ever ships a real byte cap, this guard should
+  move to it.
 - **The cap can be smaller than your `--ctx`.** A large model on a tight host
   may get a pool below the requested context; the launch goes ahead with a
   warning, and requests longer than the pool are rejected by SGLang. Raise

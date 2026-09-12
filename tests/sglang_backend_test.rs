@@ -211,6 +211,14 @@ mod lifecycle {
     DaemonOptions {
       binary: Some(fake_llama_binary()),
       port_range: allocate_port_range(),
+      // Every guard assertion below depends on the host being **unsampled**:
+      // `resolve_knobs` leaves a sampled discrete host alone, and a CI runner
+      // with no GPU samples as `cpu_only` / not unified. At the factory 1 s
+      // cadence the first snapshot lands mid-test on a loaded runner and the
+      // cap silently stops being written, so the token-cap and refusal tests
+      // would fail. Park the sampler past the life of the test instead of
+      // racing it.
+      metrics_interval: Duration::from_secs(60),
       backend: BackendConfig {
         sglang: SglangConfig {
           enabled: Some(true),
@@ -515,6 +523,12 @@ mod lifecycle {
     assert!(
       msg.contains("max-total-tokens") && msg.contains("2048 tokens"),
       "the refusal must name the floor and the override: {msg}"
+    );
+    // Both refusals name the floor and the override, so without this the test
+    // passes on the sampled branch too and stops covering what it is named for.
+    assert!(
+      msg.contains("no host memory reading yet"),
+      "this must be the unsampled refusal, not the sampled one: {msg}"
     );
 
     let _ = client.call("shutdown", None).await;

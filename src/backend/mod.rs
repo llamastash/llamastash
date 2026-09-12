@@ -1334,15 +1334,31 @@ pub fn umbrella_owner(id: &crate::daemon::registry::LaunchId) -> Option<Backends
 
 /// Mint the synthetic [`ModelIdentity`] for a **file-less** catalog `path`, plus
 /// the id of the backend that owns it. The generic replacement for hand-minting
-/// a backend-registry identity in the launch / status path: returns the first
-/// backend whose [`Backend::synthetic_identity`] claims `path` (paired with that
-/// backend's [`Backend::id`], which callers stamp as `resolved_backend`), or
-/// `None` for a local-file (GGUF) path no backend synthesizes. Names no backend.
+/// a backend-registry identity in the launch / status path: returns the
+/// highest-priority backend whose [`Backend::synthetic_identity`] claims `path`
+/// (paired with that backend's [`Backend::id`], which callers stamp as
+/// `resolved_backend`), or `None` for a local-file (GGUF) path no backend
+/// synthesizes. Names no backend.
 pub fn synthetic_identity_for_path(path: &Path) -> Option<(ModelIdentity, String)> {
-  Backends::all().into_iter().find_map(|b| {
+  claimants_by_priority().into_iter().find_map(|b| {
     b.synthetic_identity(path)
       .map(|id| (id, b.id().to_string()))
   })
+}
+
+/// [`Backends::all`] ordered the way routing decides, highest
+/// [`Backend::launch_priority`] first, ties keeping registration order.
+///
+/// The identity a claimed path mints picks its backend, so this has to be the
+/// **same** order [`supported_backends_for`] publishes for a GGUF row and
+/// `discovery_task` folds a multi-engine row in. Walking registration order
+/// here instead let a row advertise one engine as its auto default while
+/// routing silently chose another; the two agreed only because the engine that
+/// registered first also happened to outrank the others.
+fn claimants_by_priority() -> Vec<Backends> {
+  let mut backends = Backends::all();
+  backends.sort_by_key(|b| std::cmp::Reverse(b.launch_priority()));
+  backends
 }
 
 /// [`synthetic_identity_for_path`] restricted to backends that are actually
@@ -1358,7 +1374,7 @@ pub fn synthetic_identity_for_path_available(
   path: &Path,
   ctx: &MethodContext,
 ) -> Option<(ModelIdentity, String)> {
-  Backends::all()
+  claimants_by_priority()
     .into_iter()
     .filter(|b| b.available(ctx))
     .find_map(|b| {
@@ -1928,6 +1944,69 @@ mod tests {
     assert_eq!(by_id["ds4"], Lifecycle::ProcessPerModel);
     assert_eq!(by_id["vllm"], Lifecycle::ProcessPerModel);
     assert_eq!(by_id["sglang"], Lifecycle::ProcessPerModel);
+  }
+
+  /// Routing order is priority, not registration order. Two engines claim a
+  /// safetensors snapshot, and the identity the path mints is what
+  /// `backend_for_identity` routes an `auto` launch to — so it has to name the
+  /// same engine the catalog row advertises first, or a row's badge and the
+  /// launcher disagree.
+  #[test]
+  fn a_path_two_backends_claim_mints_the_higher_priority_identity() {
+    let dir = crate::util::test_temp::unique_temp_dir("claim-priority");
+    std::fs::write(dir.join("model.safetensors"), b"\0").unwrap();
+
+    let (identity, backend) =
+      synthetic_identity_for_path(&dir).expect("a safetensors snapshot must be claimed");
+    let claimants: Vec<&str> = Backends::all()
+      .iter()
+      .filter(|b| b.synthetic_identity(&dir).is_some())
+      .map(|b| b.id())
+      .collect();
+    assert!(
+      claimants.len() > 1,
+      "this test is only meaningful while two engines claim one snapshot: {claimants:?}"
+    );
+
+    let top = claimants
+      .iter()
+      .max_by_key(|id| {
+        Backends::all()
+          .iter()
+          .find(|b| b.id() == **id)
+          .map(|b| b.launch_priority())
+          .unwrap_or(i32::MIN)
+      })
+      .copied()
+      .unwrap();
+    assert_eq!(backend, top, "claimants: {claimants:?}");
+    // The routing half: an `auto` launch on this identity lands on the same id.
+    assert_eq!(backend_for_identity(&identity).id(), top);
+    let _ = std::fs::remove_dir_all(&dir);
+  }
+
+  /// The sort above is load-bearing, and the ids alone cannot show it: the two
+  /// safetensors engines happen to register in priority order, so the claim
+  /// test passes either way. This pins the mechanism instead.
+  #[test]
+  fn claimants_are_walked_in_priority_order_not_registration_order() {
+    let sorted: Vec<&str> = claimants_by_priority().iter().map(|b| b.id()).collect();
+    let registered: Vec<&str> = Backends::all().iter().map(|b| b.id()).collect();
+    assert_ne!(
+      sorted, registered,
+      "registration order already is priority order, so this test proves nothing; \
+       re-derive it against the real priorities"
+    );
+
+    let priorities: Vec<i32> = claimants_by_priority()
+      .iter()
+      .map(|b| b.launch_priority())
+      .collect();
+    assert!(
+      priorities.windows(2).all(|w| w[0] >= w[1]),
+      "not priority-ordered: {:?}",
+      sorted.iter().zip(&priorities).collect::<Vec<_>>()
+    );
   }
 
   fn ds4_header() -> GgufHeader {

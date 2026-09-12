@@ -181,3 +181,28 @@ Tick as landed.
       adds a row instead of an argument. `handle_start` lost its positional
       bools too.
 
+## Review — post-merge follow-ups
+
+Found reviewing the merged branch; fixed on main in the same pass.
+
+- [x] **The guard's integration tests raced the host-metrics sampler.**
+      `resolve_knobs` leaves a sampled discrete host alone, and a CI runner
+      with no GPU samples as `cpu_only` / not unified, so once the first
+      snapshot landed (~1 s after daemon start, at the factory cadence) the
+      token cap stopped being written and three `expect_err` / argv
+      assertions would fail. `opts_with_sglang` now parks the sampler at 60 s.
+- [x] **The floor test passed on either branch.** Both refusals name
+      `max-total-tokens` and the 2,048-token floor, so it never pinned the
+      unsampled path it is named for. It now also asserts "no host memory
+      reading yet".
+- [x] **Two orderings decided one route.** `merge_by_path` sorts projectors by
+      `launch_priority` and claims the first entry is the auto default, but a
+      claimed path's identity came from `synthetic_identity_for_path`, which
+      walked registration order. They agreed only because vLLM both registers
+      first and outranks SGLang. Both lookups are priority-ordered now, with a
+      test asserting the row's first backend is the one routing picks.
+- [x] **The safetensors engines' shared helpers were copied, not shared.**
+      `knob_f64` / `knob_u64` / `knob_bytes` / user-set and the
+      launcher-by-existence and served-name adoption rules now live in
+      `launch::params` and `backend`, parameterised by backend id, the way the
+      leaf helpers already were.

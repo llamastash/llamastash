@@ -231,7 +231,9 @@ async fn full_rescan(catalog: &ModelCatalog, opts: &DiscoveryOptions) {
 /// different engine depending on registration order. Projectors are walked
 /// highest [`crate::backend::Backend::launch_priority`] first, so the first
 /// entry is the auto-route default, the same contract
-/// [`crate::backend::supported_backends_for`] gives a GGUF row.
+/// [`crate::backend::supported_backends_for`] gives a GGUF row and the same
+/// order [`crate::backend::synthetic_identity_for_path`] mints the identity
+/// that routing actually reads.
 fn merge_by_path(rows: impl IntoIterator<Item = DiscoveredModel>) -> Vec<DiscoveredModel> {
   let mut merged: Vec<DiscoveredModel> = Vec::new();
   for row in rows {
