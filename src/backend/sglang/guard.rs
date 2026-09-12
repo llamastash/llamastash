@@ -19,11 +19,11 @@ pub const MIN_POOL_TOKENS: u64 = 2048;
 /// **refuse the launch** — the same contract as the byte budget it divides.
 ///
 /// `reserve_bytes` is what the host keeps free after weights and the pool.
-/// SGLang still passes the flat
+/// This backend still passes the flat
 /// [`crate::launch::admission::UNIFIED_HOST_RESERVE_BYTES`] rather than the
-/// engine-aware reserve vLLM computes: its own footprint beyond weights and
-/// the pool has not been measured, and guessing one would move a live number
-/// in either direction. See `TODO.md`.
+/// engine-aware [`crate::launch::admission::unified_host_reserve_bytes`]: its
+/// own footprint beyond weights and the pool has not been measured, and
+/// guessing one would move a live number in either direction. See `TODO.md`.
 pub fn max_total_tokens_cap(
   free_bytes: u64,
   weights_bytes: u64,

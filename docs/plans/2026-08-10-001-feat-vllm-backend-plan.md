@@ -708,3 +708,36 @@ GiB, vLLM 0.28.0), one fix because the first masked the second.
       merged binary.
 
 Record: `spark-casebook/casebook/2026-09-09-llamastash-vllm-unified-guard-gb10.md`.
+
+### Review — PR #81
+
+- [x] **An explicit `kv_cache_memory_bytes` got no companion utilization.** It
+      returned early from `resolve_knobs`, so the user's own cap still faced
+      the untouched 0.92 startup check and was refused beside a tenant — and
+      that cap is the escape hatch both `docs/vllm-setup.md` and
+      `docs/troubleshooting.md` point at for exactly this host. *Fix:* only a
+      user-set *fraction* opts out entirely now; a user-set cap keeps its
+      value verbatim and still gets a utilization derived from it. Covered by
+      `an_explicit_cap_still_gets_a_companion_startup_utilization`, which
+      drives `resolve_knobs` against a hand-built sampled unified snapshot.
+- [x] **The setup guide claimed the companion fraction unconditionally.** The
+      unsampled branch has no pool total to size one against; both docs now
+      name that exception.
+- [x] **Rebased onto the #79 hoist.** `unified_host_reserve_bytes`, the OS
+      floor and the reserve fraction live in `launch::admission` with the
+      engine overhead as a *parameter*, so no backend name reaches shared code
+      (the leak guard caught the first attempt). `unified_kv_cache_budget`
+      takes the reserve; SGLang passes the flat constant until its own
+      footprint is measured, which keeps its behaviour identical rather than
+      inheriting a figure measured for another engine.
+- [x] **The utilization write is no longer a silent no-op** if the knob ever
+      rejects the value, and the "tight host" numbers in
+      `startup_utilization_clears_the_init_check_against_what_vllm_sees` are
+      labelled as a pre-fix branch exercise: the engine-aware reserve now
+      refuses that host outright, which
+      `a_host_the_reserve_refuses_never_reaches_the_utilization` pins.
+- [ ] The admission ledger still prices a launch without the engine overhead,
+      so two concurrent launches each under-reserve by ~6.5 GiB. In `TODO.md`;
+      it needs the host snapshot at `projected_cache_bytes` or a separate
+      hook, because adding the figure blindly would over-refuse on a discrete
+      card where it was never measured.

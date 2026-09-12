@@ -178,7 +178,7 @@ pub const MIN_KV_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 ///
 /// Prefer [`unified_host_reserve_bytes`] wherever that figure exists: a flat
 /// 8 GiB is the number that left ~1.3 GiB free at ready on a 121 GiB box once
-/// vLLM's 5.4-6.7 GiB came out of it.
+/// a measured engine's own 5.4-6.7 GiB came out of it.
 pub const UNIFIED_HOST_RESERVE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
 /// What the OS itself needs kept free once the engine's own footprint is

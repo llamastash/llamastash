@@ -186,8 +186,15 @@ channel where it is labelled for what it is.
   against its own free reading at startup before it ever looks at the byte
   cap, so with the default `0.92` the capped launch could only start on a
   host that was ~92% free. Once the cap is set the fraction governs nothing
-  else. Set either knob yourself and the auto-cap steps aside.
-  Discrete-GPU hosts are untouched; there the fraction applies to real VRAM.
+  else. This companion fraction rides along with **your** `max_total_tokens`
+  equivalent too: set `kv_cache_memory_bytes` yourself and the cap stays
+  exactly as you wrote it, but a matching utilization is still derived from it
+  so the explicit cap launches beside a tenant. Set `gpu_memory_utilization`
+  instead and nothing is added — that fraction is the whole decision.
+  One exception: right after a daemon restart, before the host has been
+  sampled, there is no pool total to size a fraction against, so the cap goes
+  out alone and vLLM's own `0.92` check applies. Discrete-GPU hosts are
+  untouched; there the fraction applies to real VRAM.
 - **The model name is the repo id.** LlamaStash passes `--served-model-name`, so
   `/v1/models` and your requests use `owner/name`, not the cache path.
 - **No GGUF on vLLM.** A GGUF binds llama.cpp (or ds4). vLLM claims safetensors

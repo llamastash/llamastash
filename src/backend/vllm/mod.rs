@@ -377,14 +377,17 @@ impl Backend for VllmBackend {
     weights_bytes: u64,
   ) -> super::KnobResolution {
     let mut out = super::KnobResolution::default();
-    // Only an explicit byte cap opts out. A user-set *fraction* used to bail
-    // here too, which left the knob unset AND the admission gate with no
-    // figure to project from — so the one configuration that has frozen this
-    // hardware got neither guard. The fraction is honoured (we insert
-    // nothing), and `projected_cache_bytes` turns it into a demand below.
-    if user_set(params, "kv_cache_memory_bytes") || user_set(params, "gpu_memory_utilization") {
+    // A user-set *fraction* is the whole decision: it governs the startup
+    // check and the pool both, so we insert nothing. It used to bail without
+    // leaving the admission gate a figure to project from either, so the one
+    // configuration that has frozen this hardware got neither guard;
+    // `projected_cache_bytes` turns it into a demand now.
+    if user_set(params, "gpu_memory_utilization") {
       return out;
     }
+    // An explicit byte cap keeps its own value, but it still needs a
+    // companion utilization — see below.
+    let user_cap = user_set(params, "kv_cache_memory_bytes");
     // Fail **safe**, not open. This used to bail whenever the host sampler had
     // no reading yet — which is exactly the state right after a daemon
     // restart, and the launch then took vLLM's pool-sized default: observed at
@@ -402,6 +405,24 @@ impl Backend for VllmBackend {
     if sampled && !snapshot.as_ref().is_some_and(|s| s.unified) {
       // A sampled, definitely-discrete host: the fraction applies to real
       // VRAM there, so vLLM's own default is right and we stay out of it.
+      return out;
+    }
+    // The user's own cap is honoured, but on its own it does not launch: vLLM
+    // weighs `total * utilization` against its free reading at `init_device`
+    // and only reads the cap afterwards, so beside a tenant the untouched
+    // 0.92 default refuses the very launch the cap was set to allow. This is
+    // the escape hatch the setup and troubleshooting docs point at, so it has
+    // to work on the host those docs are about. Nothing else is inserted, and
+    // an unsampled host has no pool total to size a fraction against.
+    if user_cap {
+      if let Some(s) = snapshot.as_ref().filter(|_| sampled) {
+        let free = crate::launch::admission::effective_free_bytes(s);
+        if let Some(util) = knob_bytes(params, "kv_cache_memory_bytes")
+          .and_then(|cap| startup_utilization(free, weights_bytes, cap, s.ram_total_bytes))
+        {
+          set_startup_utilization(params, &mut out, util);
+        }
+      }
       return out;
     }
     let (cap, utilization) = match snapshot.as_ref().filter(|_| sampled) {
@@ -457,15 +478,31 @@ impl Backend for VllmBackend {
       .set_by_name_for(VLLM_BACKEND_ID, "kv-cache-memory-bytes", cap.to_string());
     out.auto_set.insert("kv-cache-memory-bytes".to_string());
     if let Some(util) = utilization {
-      log::info!("vllm: startup utilization {util} so the byte cap can pass init");
-      params.knobs.set_by_name_for(
-        VLLM_BACKEND_ID,
-        "gpu-memory-utilization",
-        format!("{util:.2}"),
-      );
-      out.auto_set.insert("gpu-memory-utilization".to_string());
+      set_startup_utilization(params, &mut out, util);
     }
     out
+  }
+}
+
+/// Write the companion `--gpu-memory-utilization` that clears vLLM's startup
+/// check, marking it auto-set so it never persists into `last_params`.
+///
+/// A rejected value would leave the byte cap facing the 0.92 default, which is
+/// the refusal this exists to prevent, so it is worth a log line rather than a
+/// silent no-op.
+fn set_startup_utilization(params: &mut LaunchParams, out: &mut super::KnobResolution, util: f64) {
+  log::info!("vllm: startup utilization {util:.2} so the byte cap can pass init");
+  if params.knobs.set_by_name_for(
+    VLLM_BACKEND_ID,
+    "gpu-memory-utilization",
+    format!("{util:.2}"),
+  ) {
+    out.auto_set.insert("gpu-memory-utilization".to_string());
+  } else {
+    log::warn!(
+      "vllm: the startup utilization {util:.2} was rejected by the knob; the \
+       byte cap now faces vLLM's own default startup check"
+    );
   }
 }
 
@@ -960,6 +997,113 @@ mod tests {
       .position(|a| a == "--kv-cache-memory-bytes")
       .expect("the cap must reach argv");
     assert_eq!(argv[i + 1], "2147483648");
+  }
+
+  /// A sampled unified host with `free` available out of `total`.
+  fn uma_host(free: u64, total: u64) -> crate::daemon::host_metrics::HostMetricsSnapshot {
+    crate::daemon::host_metrics::HostMetricsSnapshot {
+      gpu_backend: crate::daemon::host_metrics::HostMetricsSnapshot::BACKEND_NVIDIA.to_string(),
+      unified: true,
+      ram_total_bytes: total,
+      ram_used_bytes: total - free,
+      ..Default::default()
+    }
+  }
+
+  fn ctx_with_host(
+    snap: crate::daemon::host_metrics::HostMetricsSnapshot,
+  ) -> crate::daemon::context::MethodContext {
+    let mut ctx =
+      crate::daemon::context::MethodContext::new(crate::daemon::shutdown::ShutdownToken::new());
+    ctx.host_metrics = Some(std::sync::Arc::new(tokio::sync::RwLock::new(snap)));
+    ctx
+  }
+
+  /// The escape hatch the docs point at has to work on the host the docs are
+  /// about. An explicit cap keeps its value, but vLLM weighs
+  /// `total * utilization` against its own free reading before it ever reads
+  /// the cap, so without a companion fraction the untouched 0.92 default
+  /// refuses the launch beside a tenant — the failure the cap was set to
+  /// avoid.
+  #[tokio::test]
+  async fn an_explicit_cap_still_gets_a_companion_startup_utilization() {
+    const GIB: u64 = 1024 * 1024 * 1024;
+    let b = VllmBackend::new();
+    let total = 130_657_042_432;
+    let ctx = ctx_with_host(uma_host(52 * GIB, total));
+
+    let mut p = params("/c/models--o--n/snapshots/rev");
+    set(
+      &mut p,
+      "kv_cache_memory_bytes",
+      (8 * GIB).to_string().as_str(),
+    );
+    let out = b.resolve_knobs(&ctx, &mut p, 998_244_352).await;
+
+    assert!(out.refusal.is_none(), "an explicit cap is never refused");
+    let util = p
+      .knobs
+      .text_by_name_for(VLLM_BACKEND_ID, "gpu-memory-utilization")
+      .expect("the companion utilization must be set");
+    assert!(
+      (total as f64 * util.parse::<f64>().unwrap()) as u64 >= 998_244_352 + 8 * GIB,
+      "the fraction must cover weights + the user's cap, got {util}"
+    );
+    assert!(
+      out.auto_set.contains("gpu-memory-utilization"),
+      "auto-set, so it never persists into last_params"
+    );
+    // Their cap is untouched.
+    assert_eq!(
+      knob_bytes(&p, "kv_cache_memory_bytes"),
+      Some(8 * GIB),
+      "the user's cap must survive verbatim"
+    );
+  }
+
+  /// A user-set fraction is the whole decision, so nothing is inserted
+  /// alongside it.
+  #[tokio::test]
+  async fn a_user_fraction_is_left_entirely_alone() {
+    const GIB: u64 = 1024 * 1024 * 1024;
+    let b = VllmBackend::new();
+    let ctx = ctx_with_host(uma_host(52 * GIB, 130_657_042_432));
+    let mut p = params("/c/models--o--n/snapshots/rev");
+    set(&mut p, "gpu_memory_utilization", "0.5");
+
+    let out = b.resolve_knobs(&ctx, &mut p, GIB).await;
+    assert!(
+      out.auto_set.is_empty(),
+      "nothing inserted: {:?}",
+      out.auto_set
+    );
+    assert_eq!(
+      p.knobs
+        .text_by_name_for(VLLM_BACKEND_ID, "gpu-memory-utilization")
+        .as_deref(),
+      Some("0.5")
+    );
+    assert_eq!(knob_bytes(&p, "kv_cache_memory_bytes"), None);
+  }
+
+  /// The two halves of #80 interact: the engine-aware reserve refuses the
+  /// host state that the pre-fix binding run launched on, so the utilization
+  /// branch sized against a too-tight host is unreachable in production. The
+  /// `startup_utilization` test covers that arithmetic as a pure function.
+  #[test]
+  fn a_host_the_reserve_refuses_never_reaches_the_utilization() {
+    let spark_total: u64 = 130_657_042_432;
+    let reserve = unified_host_reserve_bytes(
+      spark_total,
+      crate::daemon::host_metrics::HostMetricsSnapshot::BACKEND_NVIDIA,
+      VLLM_ENGINE_OVERHEAD_BYTES,
+    );
+    // The measured pre-fix binding run: 32.4 GiB free, 20.1 GiB of weights.
+    assert_eq!(
+      unified_kv_cache_budget(34_789_580_800, 21_583_783_921, reserve),
+      None,
+      "the engine-aware reserve refuses this host outright"
+    );
   }
 
   /// A user-set fraction is a real configuration, not a reason to
