@@ -187,6 +187,16 @@ Tick as landed.
       MemTotal as its device total on NVIDIA coherent UMA. `0.2` admitted at
       24.8 GiB and served; measured cost 26.8 GiB, so ~2 GiB of out-of-pool
       engine footprint is still unpriced (`TODO.md`, with the ledger entry).
+      **Also checked against the Strix Halo reference host** (2026-09-12, live
+      daemon readings: pool 121.49 GiB, `effective_free_bytes` 85.05 GiB).
+      There the old arithmetic *admitted* vLLM's own `0.92` default for any
+      model under ~6.3 GiB — and `0.9` for anything under ~8 GiB — while the
+      engine would have taken 109-112 GiB against 85 GiB admissible. That is
+      the documented freeze (a 0.5B at a high fraction), reproduced as an
+      admit on the reference AMD box; the new projection refuses every one of
+      those. Worth knowing the bug was load- and size-dependent: on a host
+      with plenty free, a *large* model's old demand crossed the free reading
+      anyway, so the refusal only went missing for the small-model case.
 - [x] **RV8 — `build_options` took ten positional bools.** Landed on main
       after the merge as `BuildOptionsArgs`, spread over
       `BuildOptionsArgs::new(cli, config)` rather than `Default` (the `cli` /

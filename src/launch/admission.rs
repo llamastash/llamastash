@@ -287,11 +287,17 @@ pub fn dir_weight_bytes(dir: &std::path::Path) -> u64 {
 ///
 /// **Deliberately still not the GTT pool** on a host that reports one, even
 /// though [`effective_free_bytes`] budgets `min(ram_free, gtt_free)` there.
-/// The two sides of the gate are then denominated differently, and on a
-/// default-config AMD APU — GTT roughly half of RAM — that over-refuses every
-/// hand-set fraction: the projection is against full RAM while free cannot
-/// exceed the GTT cap. Safe but unhelpful; an absolute byte cap or `--force`
-/// is the way through.
+/// The two sides of the gate are then denominated differently, and on an APU
+/// whose GTT is a *fraction* of RAM that over-refuses every hand-set
+/// fraction: the projection is against full RAM while free cannot exceed the
+/// GTT cap. Safe but unhelpful; an absolute byte cap or `--force` is the way
+/// through.
+///
+/// That case needs `gtt_total < ram_total`, which a GTT-sized host does not
+/// have: measured on a Strix Halo running `amdgpu.gttsize=126976`,
+/// `uma_shared_total_bytes` and `ram_total_bytes` both read 121.49 GiB, so
+/// the two sides already agree and there is nothing to reconcile. It is the
+/// stock `gttsize` that would bite.
 ///
 /// The alternative (`uma_shared_total_bytes.unwrap_or(ram_total_bytes)`) puts
 /// both sides on one pool, but it is only correct if torch on an ROCm APU
