@@ -627,7 +627,16 @@ mod shared_ids {
     shared.sort_unstable();
     assert_eq!(
       shared,
-      vec!["ctx-size", "mtp", "mtp-draft-n", "threads"],
+      vec![
+        "ctx-size",
+        "mtp",
+        "mtp-draft-n",
+        // The two safetensors engines spell these the same way and `validate`
+        // holds their kinds identical.
+        "quantization",
+        "threads",
+        "trust-remote-code",
+      ],
       "shared knob ids changed; confirm the kinds still agree before pinning the new set"
     );
   }

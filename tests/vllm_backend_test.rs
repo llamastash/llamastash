@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 /// re-export that keeps the typed struct's path stable.
 const ALLOWED: &[&str] = &[
   "src/backend/vllm/mod.rs",
-  "src/backend/vllm/discovery.rs",
   "src/backend/vllm/knobs.rs",
   "src/backend/mod.rs",
   "src/config/mod.rs",

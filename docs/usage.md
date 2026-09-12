@@ -339,7 +339,7 @@ Launch a model. `run` is a visible alias for `start` — same flags, same behavi
 ```
 llamastash start <ref> [--name LABEL] [--preset NAME] [--ctx N] [--port N] [--wait] [--force]
                      [--reasoning on|off] [--mode chat|embedding|rerank]
-                     [--backend auto|ds4|llamacpp|lemonade|vllm] [--server <id>]
+                     [--backend auto|ds4|llamacpp|lemonade|vllm|sglang] [--server <id>]
                      [--<advanced-knob> ...] [-- <llama-server-flags>...]
 ```
 
@@ -728,6 +728,25 @@ Three behaviours differ from the GGUF backends and are worth knowing:
 `backend.vllm.cors` controls cross-origin access, defaulting to `true` because that is vLLM's own behaviour (it allows any origin and offers no switch but `--allowed-origins`). The proxy relays those headers onto its stable port, so while it is on, any page you visit can read completions off the loopback listener. Set it to `false` to pin `--allowed-origins '[]'`.
 
 Known gap: multi-GPU device selection is not wired.
+
+## SGLang backend
+
+**Experimental.** SGLang serves the same **safetensors HuggingFace repos** vLLM does, through `sglang serve`. Setup, the container recipe, the knob table and the guard are in **[SGLang setup](sglang-setup.md)**.
+
+Enable/disable follows the same tri-state: unset means on-when-found, `backend.sglang.enabled: false` forces off, and `daemon start --sglang` / `LLAMASTASH_SGLANG=1` force on over it.
+
+```bash
+llamastash status --json | jq '.backends[] | select(.id == "sglang")'
+llamastash start owner/repo --backend sglang --ctx 4096
+```
+
+With vLLM installed too, a repo lists both engines in `supported_backends` and an `auto` launch picks vLLM; `--backend sglang` selects SGLang. Detection, the directory-shaped row and the slow readiness window are as for vLLM.
+
+`--ctx` maps to `--context-length`. Eight further tunables are declared (`mem-fraction-static`, `max-total-tokens`, `enable-unified-memory`, `max-running-requests`, `quantization`, `trust-remote-code`, `tool-call-parser`, `reasoning-parser`); the rest ride the `-- <extras>` tail minus a denylist that keeps the launch loopback-only, single-host and on the HTTP server the proxy forwards to.
+
+**On unified-memory hosts the KV pool is capped in tokens.** SGLang has no byte-level cap — `--mem-fraction-static` is a fraction of the whole pool — so when neither `max_total_tokens` nor `mem_fraction_static` is set, the launcher divides the shared byte budget by the model's KV bytes per token, read from the repo's `config.json`, and passes `--max-total-tokens`. A repo whose attention geometry cannot be read is refused, naming the override. See [SGLang setup](sglang-setup.md#notes-and-limitations).
+
+`resolved_ctx` on a running SGLang row is read from `/get_server_info`, since SGLang's `/v1/models` carries no context field. There is no `cors` key: SGLang allows every origin and exposes no flag to narrow it.
 
 ## Proxy (OpenAI-compatible listener)
 
@@ -1278,7 +1297,7 @@ When enabled, left-click moves focus and the wheel replays the `↑`/`↓` actio
 
 Three-stage modal: **Search → File picker → Confirm**. Search runs live against the public `/api/models` endpoint (300 ms debounce); paste an `owner/repo[:filename]` slug + Enter to bypass search. Each search row carries a `fmt` column and two size columns — `params` (model parameter count, e.g. `35B`) and `size` (approximate download size, the representative GGUF file HF parsed, e.g. `5.3G`); the exact per-quant size lands in the File picker.
 
-`fmt` is the repo's weight format: `GGUF` for llama.cpp / ds4, `SFTN` for a safetensors repo (vLLM), `-` when the repo publishes both or neither. Both formats are searched — the browser used to be GGUF-only, which left safetensors repos unfindable and so unpullable. The `init` wizard still searches GGUF only, since it is bootstrapping a first model for the default backend.
+`fmt` is the repo's weight format: `GGUF` for llama.cpp / ds4, `SFTN` for a safetensors repo (vLLM, SGLang), `-` when the repo publishes both or neither. Both formats are searched — the browser used to be GGUF-only, which left safetensors repos unfindable and so unpullable. The `init` wizard still searches GGUF only, since it is bootstrapping a first model for the default backend.
 
 Drilling into a GGUF repo lists its quants to pick from. A safetensors repo has nothing to pick — one model spread over `*.safetensors` plus `config.json` and the tokenizer files, all of which an engine needs — so the picker offers a single whole-repo row and the pull takes the full set.
 

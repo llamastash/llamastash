@@ -7,7 +7,6 @@
 //!
 //! Plan: `docs/plans/2026-08-10-001-feat-vllm-backend-plan.md`.
 
-pub mod discovery;
 pub mod knobs;
 
 use std::path::{Path, PathBuf};
@@ -21,6 +20,10 @@ use super::{
 };
 use crate::daemon::context::MethodContext;
 use crate::daemon::probe::ProbeOptions;
+use crate::launch::admission::{
+  human_gib, unified_kv_cache_budget, DEFAULT_KV_CACHE_BYTES, MIN_KV_CACHE_BYTES,
+  UNIFIED_HOST_RESERVE_BYTES,
+};
 use crate::launch::params::LaunchParams;
 
 /// Stable backend id. The only place this string is authored.
@@ -189,7 +192,7 @@ impl Backend for VllmBackend {
     // would fail with EISDIR. The same hook a registry backend uses for its
     // file-less `<scheme>://<name>` paths; here the path is real, it just
     // isn't a single weight file.
-    discovery::is_safetensors_snapshot(path).then(|| self.identify(path, &[]))
+    crate::discovery::hf_repos::is_safetensors_snapshot(path).then(|| self.identify(path, &[]))
   }
 
   fn project_hf_repos(
@@ -198,8 +201,8 @@ impl Backend for VllmBackend {
   ) -> Vec<crate::discovery::DiscoveredModel> {
     candidates
       .iter()
-      .filter(|c| discovery::eligible(c))
-      .map(|c| discovery::project(c, VLLM_BACKEND_ID))
+      .filter(|c| crate::discovery::hf_repos::serves_safetensors_only(c))
+      .map(|c| crate::discovery::hf_repos::project_safetensors_row(c, VLLM_BACKEND_ID))
       .collect()
   }
 
@@ -417,7 +420,16 @@ impl Backend for VllmBackend {
     let cap = match snapshot.as_ref().filter(|_| sampled) {
       Some(s) => {
         let free = crate::launch::admission::effective_free_bytes(s);
-        match kv_cache_cap_bytes(free, weights_bytes) {
+        // On an APU, GPU memory *is* system RAM, and vLLM sizes its KV cache
+        // to fill whatever `gpu_memory_utilization` allows — a fraction of
+        // the **pool**, not of the model. Measured on a 121 GB Strix Halo:
+        // `0.15` on a 0.5B model reserved 15.1 GiB of KV cache (1.3M tokens,
+        // 644x concurrency for a 2048-token model) and cost 21.2 GB of RAM;
+        // the 0.92 default projects to ~106 GB and has frozen the machine
+        // outright. Clamping the *fraction* does not help, because the
+        // arithmetic is against the wrong number. Capping the cache in bytes
+        // does: vLLM then skips memory profiling entirely and honours it.
+        match unified_kv_cache_budget(free, weights_bytes) {
           Some(cap) => cap,
           None => {
             out.refusal = Some(format!(
@@ -425,10 +437,10 @@ impl Backend for VllmBackend {
                cache once the {} host reserve is kept free (host has {} \
                available). Lower --ctx, pick a smaller model, or set \
                kv_cache_memory_bytes to override.",
-              human_bytes(weights_bytes),
-              human_bytes(MIN_KV_CACHE_BYTES),
-              human_bytes(UNIFIED_HOST_RESERVE_BYTES),
-              human_bytes(free),
+              human_gib(weights_bytes),
+              human_gib(MIN_KV_CACHE_BYTES),
+              human_gib(UNIFIED_HOST_RESERVE_BYTES),
+              human_gib(free),
             ));
             return out;
           }
@@ -471,52 +483,6 @@ fn user_set(params: &LaunchParams, id: &str) -> bool {
   params.knobs.is_set_by_name_for(VLLM_BACKEND_ID, id)
 }
 
-/// Default KV cache budget when nothing else bounds it. Generous for a single
-/// user (~85x concurrency at 2k context on a 0.5B) and small enough that the
-/// launch cannot take the host down.
-const DEFAULT_KV_CACHE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
-
-/// `1.5 GiB`-style label for a refusal message.
-fn human_bytes(b: u64) -> String {
-  const GIB: f64 = (1024 * 1024 * 1024) as f64;
-  format!("{:.1} GiB", b as f64 / GIB)
-}
-
-/// Floor for the cap. Below this the cache cannot serve a useful context, so
-/// the launch is refused outright rather than admitted with a token cache that
-/// would only fail after a full weight load.
-const MIN_KV_CACHE_BYTES: u64 = 512 * 1024 * 1024;
-
-/// Reserve left free for the OS and everything else after weights + cache.
-const UNIFIED_HOST_RESERVE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
-
-/// The KV cache cap for a unified-memory host. **Always a value.**
-///
-/// On an APU, GPU memory *is* system RAM, and vLLM sizes its KV cache to fill
-/// whatever `gpu_memory_utilization` allows — a fraction of the **pool**, not
-/// of the model. Measured on a 121 GB Strix Halo: `0.15` on a 0.5B model
-/// reserved 15.1 GiB of KV cache (1.3M tokens, 644x concurrency for a
-/// 2048-token model) and cost 21.2 GB of RAM; the 0.92 default projects to
-/// ~106 GB and has frozen the machine outright. Clamping the *fraction* does
-/// not help, because the arithmetic is against the wrong number. Capping the
-/// cache in bytes does: vLLM then skips memory profiling entirely and honours
-/// the figure.
-///
-/// `None` means **refuse the launch**, not "no opinion".
-///
-/// An earlier version floored the cap instead of refusing, on the theory that
-/// the admission gate would catch the tight case. It cannot: the gate's demand
-/// is weights + *this* figure, so shrinking the figure shrinks the very term
-/// the gate evaluates, and a launch that should have been refused was admitted
-/// with the host reserve silently abandoned. Whoever decides there is not
-/// enough memory has to be whoever holds the number, which is here.
-fn kv_cache_cap_bytes(free_bytes: u64, weights_bytes: u64) -> Option<u64> {
-  let headroom = free_bytes
-    .saturating_sub(weights_bytes)
-    .saturating_sub(UNIFIED_HOST_RESERVE_BYTES);
-  (headroom >= MIN_KV_CACHE_BYTES).then(|| headroom.min(DEFAULT_KV_CACHE_BYTES))
-}
-
 impl VllmBackend {
   pub fn process_spec(
     &self,
@@ -542,7 +508,7 @@ impl VllmBackend {
 /// path into `/v1/models` and force clients to name it in requests. The repo
 /// id is what the catalog shows, so the proxy, the catalog and vLLM all agree.
 pub fn served_model_name(model_path: &Path) -> String {
-  discovery::repo_id_for_snapshot(model_path)
+  crate::discovery::hf_repos::repo_id_for_snapshot(model_path)
     .or_else(|| {
       model_path
         .file_name()
@@ -623,29 +589,11 @@ fn vllm_argv(params: &LaunchParams, port: u16) -> Vec<std::ffi::OsString> {
     VLLM_FORBIDDEN_EXTRA_HEADS,
   ));
   // The `-- <extras>` tail carries the ~230 flags that have no typed knob.
-  // `compose_and_spawn` already refused a banned head with a clear error;
-  // this strip is the belt-and-suspenders that guarantees none reaches the
-  // launcher even if some path skipped the fail-fast.
-  let mut skip_value = false;
-  for e in &params.extras {
-    let lossy = e.to_string_lossy();
-    // Drop the value token that belonged to a flag we just stripped. Without
-    // this the space-separated form leaves `0.0.0.0` dangling in argv, which
-    // vLLM reads as a stray positional and refuses the launch over.
-    if skip_value {
-      skip_value = false;
-      if !lossy.starts_with('-') {
-        continue;
-      }
-    }
-    let head = lossy.split('=').next().unwrap_or(&lossy);
-    if crate::launch::params::is_forbidden_head_ext(head, VLLM_FORBIDDEN_EXTRA_HEADS) {
-      log::warn!("vllm_argv: stripping forbidden extra {head:?}");
-      skip_value = !lossy.contains('=');
-      continue;
-    }
-    argv.push(e.clone());
-  }
+  argv.extend(crate::launch::params::strip_forbidden_extras(
+    &params.extras,
+    VLLM_FORBIDDEN_EXTRA_HEADS,
+    "vllm_argv",
+  ));
   argv
 }
 
@@ -917,28 +865,6 @@ mod tests {
       }
       other => panic!("expected a model-id poll, got {other:?}"),
     }
-  }
-
-  /// The freeze guard. vLLM's default sizes the KV cache against the pool,
-  /// which on a UMA host is system RAM — measured at ~106 GB of a 121 GB box.
-  #[test]
-  fn kv_cap_leaves_the_host_a_reserve_and_is_never_absent() {
-    const GB: u64 = 1024 * 1024 * 1024;
-    // Plenty free: the default budget applies, not "everything that fits".
-    assert_eq!(kv_cache_cap_bytes(113 * GB, GB), Some(8 * GB));
-    // Tight: the cap shrinks to what is left after weights + reserve.
-    assert_eq!(kv_cache_cap_bytes(20 * GB, 8 * GB), Some(4 * GB));
-    // Too tight to serve a useful context: refuse. Flooring instead used to
-    // shrink the demand the admission gate evaluates, so the gate could not
-    // fire and the launch went ahead with the host reserve abandoned.
-    assert_eq!(kv_cache_cap_bytes(10 * GB, 8 * GB), None);
-    assert_eq!(kv_cache_cap_bytes(4 * GB, 8 * GB), None);
-    assert_eq!(kv_cache_cap_bytes(0, 0), None);
-    // The exact boundary is admitted, not refused.
-    assert_eq!(
-      kv_cache_cap_bytes(8 * GB + MIN_KV_CACHE_BYTES, 0),
-      Some(MIN_KV_CACHE_BYTES)
-    );
   }
 
   #[test]
