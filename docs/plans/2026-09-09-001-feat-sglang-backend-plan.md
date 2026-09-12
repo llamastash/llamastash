@@ -166,12 +166,37 @@ Tick as landed.
 - [x] **RV6 — `docs/reviews/pr-79.md` removed.** Its durable parts are this
       section and the limitation above; the open items were already in
       `TODO.md`.
-- [ ] **RV7 — the fraction projection double-counts weights.**
+- [x] **RV7 — the fraction projection was priced against free, not the pool.**
       `mem_fraction_static` covers weights and the pool per 0.5.18
-      `ServerArgs`, and the projection multiplies by free rather than the
-      pool, so the gate over-refuses (fails safe). vLLM's
-      `gpu_memory_utilization` projection is the same code. The comment now
-      says what the code does; the shared fix is a follow-up in `TODO.md`.
+      `ServerArgs`, and the projection multiplied by free rather than the
+      pool; vLLM's `gpu_memory_utilization` projection was the same code.
+      *Fix:* `projected_cache_bytes` now takes a
+      `launch::admission::DemandInputs` (post-headroom free, the pool total a
+      fraction is a share of, and the weights the gate already counts), and
+      both engines call the shared `pool_fraction_beyond_weights`.
+      **Correction to the original finding:** the two errors pull opposite
+      ways, so it did *not* fail safe. Free is always under the pool total, so
+      `free × fraction` understated the allocation — `0.9` on a 121 GiB host
+      with 52 GiB free projected 47 GiB and was admitted, for a launch that
+      takes ~109 GiB. The weights double-count (over-refusal) only partly
+      masked it. Fixing the base is the half that matters.
+      **Validated on GB10** (2026-09-12, vLLM 0.28, 121.69 GiB unified, beside
+      a tenant leaving 51 GiB): `0.9` refused at 110.0 GiB before spawn, and
+      with `--force` the engine's own check read `desired (0.9, 109.52 GiB)` —
+      the two sides agree to two decimals, which also settles that torch takes
+      MemTotal as its device total on NVIDIA coherent UMA. `0.2` admitted at
+      24.8 GiB and served; measured cost 26.8 GiB, so ~2 GiB of out-of-pool
+      engine footprint is still unpriced (`TODO.md`, with the ledger entry).
+      **Also checked against the Strix Halo reference host** (2026-09-12, live
+      daemon readings: pool 121.49 GiB, `effective_free_bytes` 85.05 GiB).
+      There the old arithmetic *admitted* vLLM's own `0.92` default for any
+      model under ~6.3 GiB — and `0.9` for anything under ~8 GiB — while the
+      engine would have taken 109-112 GiB against 85 GiB admissible. That is
+      the documented freeze (a 0.5B at a high fraction), reproduced as an
+      admit on the reference AMD box; the new projection refuses every one of
+      those. Worth knowing the bug was load- and size-dependent: on a host
+      with plenty free, a *large* model's old demand crossed the free reading
+      anyway, so the refusal only went missing for the small-model case.
 - [x] **RV8 — `build_options` took ten positional bools.** Landed on main
       after the merge as `BuildOptionsArgs`, spread over
       `BuildOptionsArgs::new(cli, config)` rather than `Default` (the `cli` /

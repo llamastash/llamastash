@@ -270,6 +270,104 @@ pub fn dir_weight_bytes(dir: &std::path::Path) -> u64 {
     .fold(0u64, u64::saturating_add)
 }
 
+/// The pool an engine's **fraction knob** is a fraction *of*, or `0` when the
+/// host cannot say.
+///
+/// `gpu_memory_utilization` / `mem_fraction_static` are shares of the device
+/// total, not of what is free and not of the model — so a projection needs the
+/// total, and which total depends on the host. On a unified host the device
+/// total *is* system RAM, which is how these engines have frozen one; the
+/// measured default is in each engine's setup doc. On a discrete host it is
+/// VRAM, and system RAM is irrelevant to the fraction.
+///
+/// **Measured exact on NVIDIA coherent UMA.** On a GB10 (121.69 GiB) the
+/// engine's own refusal read `desired (0.9, 109.52 GiB)` against the same
+/// `0.9 x ram_total` this returns — torch takes MemTotal as its device total
+/// there, so the projection and the engine agree to two decimals.
+///
+/// **Deliberately still not the GTT pool** on a host that reports one, even
+/// though [`effective_free_bytes`] budgets `min(ram_free, gtt_free)` there.
+/// The two sides of the gate are then denominated differently, and on an APU
+/// whose GTT is a *fraction* of RAM that over-refuses every hand-set
+/// fraction: the projection is against full RAM while free cannot exceed the
+/// GTT cap. Safe but unhelpful; an absolute byte cap or `--force` is the way
+/// through.
+///
+/// That case needs `gtt_total < ram_total`, which a GTT-sized host does not
+/// have: measured on a Strix Halo running `amdgpu.gttsize=126976`,
+/// `uma_shared_total_bytes` and `ram_total_bytes` both read 121.49 GiB, so
+/// the two sides already agree and there is nothing to reconcile. It is the
+/// stock `gttsize` that would bite.
+///
+/// The alternative (`uma_shared_total_bytes.unwrap_or(ram_total_bytes)`) puts
+/// both sides on one pool, but it is only correct if torch on an ROCm APU
+/// reports GTT as its device total. If it reports sysmem — as it does on
+/// NVIDIA — the engine really attempts `fraction x full RAM` and pricing
+/// against GTT would *understate* it, which is the freeze this function
+/// exists to project. Under-projection is the direction that takes the host
+/// down, so the conservative total stays until the same reading is taken on
+/// an ROCm APU. Tracked in `TODO.md`.
+pub fn engine_pool_total_bytes(snap: &HostMetricsSnapshot) -> u64 {
+  let unified = snap.unified || snap.gpu_backend == HostMetricsSnapshot::BACKEND_APPLE_METAL;
+  if unified {
+    snap.ram_total_bytes
+  } else {
+    snap.gpu_mem_total_bytes.unwrap_or(0)
+  }
+}
+
+/// What a backend needs to price its own launch for the admission gate.
+///
+/// The gate holds these numbers already; passing them in stops each backend
+/// re-deriving them from the snapshot and drifting from the figure the gate
+/// actually compares against.
+#[derive(Debug, Clone, Copy)]
+pub struct DemandInputs {
+  /// Post-headroom free bytes — the figure the demand is compared against.
+  pub free_bytes: u64,
+  /// The pool a fraction knob is a share of, from
+  /// [`engine_pool_total_bytes`]. `0` when unknown.
+  pub pool_total_bytes: u64,
+  /// Weights the gate is **already** counting, so a backend whose knob covers
+  /// weights as well as cache can report only the part beyond them.
+  pub weights_bytes: u64,
+}
+
+/// An engine pool fraction priced for the admission gate: the bytes it will
+/// hold **beyond the weights** the gate already counts.
+///
+/// Two corrections live here, and they pull opposite ways, which is why the
+/// old `free * fraction` was not simply conservative:
+///
+/// - The fraction is of the pool, not of what is free. **On a unified host**
+///   free is the smaller number, so multiplying by it *understated* the
+///   allocation — with 52 GiB free of a 121 GiB pool, `0.9` projected 47 GiB
+///   against a real 109 GiB, and the gate admitted the launch that freezes
+///   the host. That is the case this fixes.
+/// - The fraction also covers the weights, so the part beyond them is what the
+///   gate wants; adding the whole figure counted the weights twice.
+///
+/// On a **discrete** host the inequality flips: [`effective_free_bytes`] sums
+/// post-headroom VRAM free *and* system-RAM free, so free can exceed the VRAM
+/// pool a fraction is priced against (a 24 GiB card beside 60 GiB of idle RAM
+/// reads ~84 GiB free against a 24 GiB pool). The old code over-refused there;
+/// this one under-tightens, and `0.9 x 24 GiB` is admitted by the gate for the
+/// engine's own startup check to refuse instead. Same safety, worse message.
+///
+/// With no pool total (an unsampled or VRAM-less host) the free reading is the
+/// only number available, so it stands in — understating, but the gate is
+/// better engaged than skipped.
+pub fn pool_fraction_beyond_weights(host: &DemandInputs, fraction: f64) -> u64 {
+  let fraction = fraction.clamp(0.0, 1.0);
+  let pool = if host.pool_total_bytes > 0 {
+    host.pool_total_bytes
+  } else {
+    host.free_bytes
+  };
+  let engine_total = (pool as f64 * fraction) as u64;
+  engine_total.saturating_sub(host.weights_bytes)
+}
+
 /// Post-headroom free bytes across the budget pool(s). Discrete hosts
 /// sum post-headroom VRAM free + post-headroom system-RAM free.
 ///
@@ -419,6 +517,81 @@ mod tests {
       unified_kv_cache_budget(20 * GB, 8 * GB, 10 * GB),
       Some(2 * GB)
     );
+  }
+
+  /// The fraction is a share of the pool, less the weights the gate already
+  /// counts. Pricing it against *free* understated the allocation, which is
+  /// the direction that admits a launch the host cannot hold.
+  #[test]
+  fn a_pool_fraction_prices_the_pool_and_nets_off_the_weights() {
+    const GB: u64 = 1024 * 1024 * 1024;
+    let host = DemandInputs {
+      free_bytes: 52 * GB,
+      pool_total_bytes: 121 * GB,
+      weights_bytes: GB,
+    };
+    // 0.9 of 121 GiB is 108.9, less the 1 GiB of weights.
+    assert_eq!(
+      pool_fraction_beyond_weights(&host, 0.9),
+      ((121 * GB) as f64 * 0.9) as u64 - GB
+    );
+    // The old arithmetic against free would have fit inside the free reading;
+    // the real figure does not, which is the whole point.
+    assert!(pool_fraction_beyond_weights(&host, 0.9) + GB > host.free_bytes);
+    assert!((host.free_bytes as f64 * 0.9) as u64 + GB < host.free_bytes + GB);
+
+    // Out-of-range fractions clamp rather than wrap.
+    assert_eq!(pool_fraction_beyond_weights(&host, 1.5), 121 * GB - GB);
+    assert_eq!(pool_fraction_beyond_weights(&host, -1.0), 0);
+    // A fraction smaller than the weights is not a negative demand.
+    assert_eq!(pool_fraction_beyond_weights(&host, 0.001), 0);
+
+    // No pool total (unsampled, or a VRAM-less discrete host): free stands in
+    // rather than projecting nothing at all.
+    let blind = DemandInputs {
+      pool_total_bytes: 0,
+      ..host
+    };
+    assert_eq!(
+      pool_fraction_beyond_weights(&blind, 0.5),
+      (52 * GB) / 2 - GB
+    );
+  }
+
+  /// A fraction is a share of the device total, and which device that is
+  /// depends on the host: system RAM when unified, VRAM when not.
+  #[test]
+  fn the_fraction_pool_is_ram_when_unified_and_vram_when_not() {
+    const GB: u64 = 1024 * 1024 * 1024;
+    let mut s = HostMetricsSnapshot {
+      gpu_backend: HostMetricsSnapshot::BACKEND_AMD.to_string(),
+      unified: true,
+      ram_total_bytes: 121 * GB,
+      gpu_mem_total_bytes: Some(16 * GB),
+      ..Default::default()
+    };
+    assert_eq!(engine_pool_total_bytes(&s), 121 * GB, "unified: the pool");
+
+    s.unified = false;
+    assert_eq!(engine_pool_total_bytes(&s), 16 * GB, "discrete: VRAM");
+
+    // Apple is unified by construction even without the flag.
+    let apple = HostMetricsSnapshot {
+      gpu_backend: HostMetricsSnapshot::BACKEND_APPLE_METAL.to_string(),
+      unified: false,
+      ram_total_bytes: 64 * GB,
+      ..Default::default()
+    };
+    assert_eq!(engine_pool_total_bytes(&apple), 64 * GB);
+
+    // A discrete host with no VRAM reading cannot say.
+    let blind = HostMetricsSnapshot {
+      gpu_backend: HostMetricsSnapshot::BACKEND_CPU_ONLY.to_string(),
+      unified: false,
+      ram_total_bytes: 32 * GB,
+      ..Default::default()
+    };
+    assert_eq!(engine_pool_total_bytes(&blind), 0);
   }
 
   /// The reserve covers the engine's own overhead, which the flat 8 GiB did

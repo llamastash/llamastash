@@ -206,6 +206,17 @@ channel where it is labelled for what it is.
   cache budget the backend resolved for itself. A launch by absolute path from
   outside the scan roots is measured rather than waved through; when no weight
   size can be read at all the gate cannot engage and says so in the log.
+  A `gpu_memory_utilization` you set yourself is priced as what it is — a
+  share of the **whole pool**, weights included — so on a unified host `0.9`
+  of a 121 GiB pool is projected at ~109 GiB and refused when that does not
+  fit, rather than being priced against the smaller free reading and admitted.
+  On a discrete card the fraction is a share of VRAM, and since the gate's
+  free reading there sums VRAM and system RAM, a fraction that overcommits the
+  card can still pass the gate and be refused by vLLM's own startup check
+  instead. On a UMA host that reports a GTT pool, the projection is against
+  full RAM while the gate's free reading is capped by GTT, so a hand-set
+  fraction can be refused even when it would fit inside GTT; use an absolute
+  `kv_cache_memory_bytes` there, or `--force`.
 - **CORS follows vLLM's default, and vLLM's default is open.** Its OpenAI
   server allows any origin (`allowed_origins = ["*"]`, applied unconditionally)
   and offers no switch other than `--allowed-origins`. LlamaStash does not

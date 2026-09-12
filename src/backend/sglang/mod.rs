@@ -261,23 +261,27 @@ impl Backend for SglangBackend {
     }
   }
 
-  fn projected_cache_bytes(&self, params: &LaunchParams, free_bytes: u64) -> Option<u64> {
+  fn projected_cache_bytes(
+    &self,
+    params: &LaunchParams,
+    host: &crate::launch::admission::DemandInputs,
+  ) -> Option<u64> {
     // A token cap is exact once the per-token cost is known: it is the figure
-    // the launcher is handed, times what one token costs this model.
+    // the launcher is handed, times what one token costs this model. It bounds
+    // the pool only, so it is already "beyond the weights".
     if let Some(tokens) = knob_u64(params, "max-total-tokens") {
       if let Some(per_token) = guard::kv_bytes_per_token(&params.model_path) {
         return Some(tokens.saturating_mul(per_token));
       }
     }
-    // A user-set fraction is projected against what is *free*, not the whole
-    // pool SGLang actually takes it of, and the gate adds the weights on top
-    // even though `mem_fraction_static` already covers them (0.5.18
-    // `ServerArgs`: "model weights and KV cache memory pool"). Both errors
-    // over-refuse, the safe direction. The other safetensors engine carries
-    // the same projection for its utilization fraction; correct both at once.
+    // `mem-fraction-static` is a share of the **whole pool** and covers the
+    // weights as well as the pool (0.5.18 `ServerArgs`: "model weights and KV
+    // cache memory pool"), so both terms have to come from the host rather
+    // than from what is free.
     if let Some(frac) = knob_f64(params, "mem-fraction-static") {
-      let frac = frac.clamp(0.0, 1.0);
-      return Some((free_bytes as f64 * frac) as u64);
+      return Some(crate::launch::admission::pool_fraction_beyond_weights(
+        host, frac,
+      ));
     }
     None
   }
@@ -890,21 +894,28 @@ mod tests {
     let b = SglangBackend::new();
     let dir = crate::util::test_temp::unique_temp_dir("sglang-projection");
     let mut p = params(dir.to_str().unwrap());
+    // A busy 120 GiB pool: 60 free, 1 of weights. The fraction is a share of
+    // the 120, not of the 60.
+    let host = crate::launch::admission::DemandInputs {
+      free_bytes: 60 * GB,
+      pool_total_bytes: 120 * GB,
+      weights_bytes: GB,
+    };
 
-    assert_eq!(b.projected_cache_bytes(&p, 100 * GB), None, "nothing set");
+    assert_eq!(b.projected_cache_bytes(&p, &host), None, "nothing set");
 
     set(&mut p, "mem-fraction-static", "0.9");
     assert_eq!(
-      b.projected_cache_bytes(&p, 100 * GB),
-      Some(90 * GB),
-      "a fraction of the pool is a projectable demand"
+      b.projected_cache_bytes(&p, &host),
+      Some(108 * GB - GB),
+      "0.9 of the 120 GiB pool, less the weights the gate adds itself"
     );
 
     // A token cap is exact once the per-token cost is readable, and wins.
     set(&mut p, "max-total-tokens", "1000");
     assert_eq!(
-      b.projected_cache_bytes(&p, 100 * GB),
-      Some(90 * GB),
+      b.projected_cache_bytes(&p, &host),
+      Some(108 * GB - GB),
       "without geometry the cap cannot be priced; the fraction still projects"
     );
     std::fs::write(
@@ -913,10 +924,35 @@ mod tests {
     )
     .unwrap();
     assert_eq!(
-      b.projected_cache_bytes(&p, 100 * GB),
-      Some(1000 * 2 * 2 * 64 * 2 * 24)
+      b.projected_cache_bytes(&p, &host),
+      Some(1000 * 2 * 2 * 64 * 2 * 24),
+      "a token cap bounds the pool only, so it is already beyond the weights"
     );
     let _ = std::fs::remove_dir_all(&dir);
+  }
+
+  /// The projection the gate compares must not understate what the engine
+  /// takes. Pricing the fraction against *free* did exactly that, and on a
+  /// busy unified host it admitted the launch that freezes the machine.
+  #[test]
+  fn a_pool_fraction_is_not_priced_against_what_is_free() {
+    const GB: u64 = 1024 * 1024 * 1024;
+    let b = SglangBackend::new();
+    let mut p = params("/c/models--o--n/snapshots/rev");
+    set(&mut p, "mem-fraction-static", "0.9");
+    let host = crate::launch::admission::DemandInputs {
+      free_bytes: 52 * GB,
+      pool_total_bytes: 121 * GB,
+      weights_bytes: GB,
+    };
+    let projected = b.projected_cache_bytes(&p, &host).expect("a fraction");
+    // The engine will take 0.9 of 121 GiB. Pricing against 52 free projected
+    // 46.8 and fit inside the free reading; the real figure does not.
+    assert!(
+      projected + host.weights_bytes > host.free_bytes,
+      "0.9 of a 121 GiB pool cannot fit in 52 GiB free: projected {projected}"
+    );
+    assert_eq!(projected, ((121 * GB) as f64 * 0.9) as u64 - GB);
   }
 
   /// One derivation, so the identity the chat path sends is the name the

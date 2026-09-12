@@ -1230,10 +1230,17 @@ pub(crate) async fn spawn_supervised(
           }
           // Only the backend can price the rest, since the figure lives in its
           // own knob vocabulary and may be a pool fraction rather than bytes.
+          let host_inputs = crate::launch::admission::DemandInputs {
+            free_bytes: free,
+            pool_total_bytes: crate::launch::admission::engine_pool_total_bytes(&snapshot),
+            weights_bytes: resident_weight_bytes,
+          };
           crate::backend::Backends::all()
             .into_iter()
             .find(|b| crate::backend::Backend::id(b) == resolved_backend_id)
-            .and_then(|b| crate::backend::Backend::projected_cache_bytes(&b, &launch_params, free))
+            .and_then(|b| {
+              crate::backend::Backend::projected_cache_bytes(&b, &launch_params, &host_inputs)
+            })
             .filter(|_| resident_weight_bytes > 0)
             .map(|cache| {
               resident_weight_bytes

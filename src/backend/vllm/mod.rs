@@ -298,17 +298,25 @@ impl Backend for VllmBackend {
     }
   }
 
-  fn projected_cache_bytes(&self, params: &LaunchParams, free_bytes: u64) -> Option<u64> {
-    // The byte cap is exact — it is the figure the launcher is handed.
+  fn projected_cache_bytes(
+    &self,
+    params: &LaunchParams,
+    host: &crate::launch::admission::DemandInputs,
+  ) -> Option<u64> {
+    // The byte cap is exact — it is the figure the launcher is handed, and it
+    // bounds the cache only, so it is already "beyond the weights". Checked
+    // first, which is what keeps the companion utilization the guard writes
+    // alongside it from being priced as a pool fraction instead.
     if let Some(bytes) = knob_bytes(params, "kv_cache_memory_bytes") {
       return Some(bytes);
     }
-    // A fraction is of the whole pool, not of what is free, and vLLM fills
-    // whatever it is given. Project the same way vLLM spends it so the gate
-    // sees the real demand rather than nothing at all.
+    // `gpu_memory_utilization` is a share of the **whole pool** and covers the
+    // weights as well as the cache, so both terms have to come from the host
+    // rather than from what is free.
     if let Some(frac) = knob_f64(params, "gpu_memory_utilization") {
-      let frac = frac.clamp(0.0, 1.0);
-      return Some((free_bytes as f64 * frac) as u64);
+      return Some(crate::launch::admission::pool_fraction_beyond_weights(
+        host, frac,
+      ));
     }
     None
   }
@@ -1115,19 +1123,58 @@ mod tests {
     const GB: u64 = 1024 * 1024 * 1024;
     let b = VllmBackend::new();
     let mut p = params("/c/models--o--n/snapshots/rev");
+    // A busy 120 GiB pool: 60 free, 1 of weights.
+    let host = crate::launch::admission::DemandInputs {
+      free_bytes: 60 * GB,
+      pool_total_bytes: 120 * GB,
+      weights_bytes: GB,
+    };
 
-    assert_eq!(b.projected_cache_bytes(&p, 100 * GB), None, "nothing set");
+    assert_eq!(b.projected_cache_bytes(&p, &host), None, "nothing set");
 
     set(&mut p, "gpu_memory_utilization", "0.9");
     assert_eq!(
-      b.projected_cache_bytes(&p, 100 * GB),
-      Some(90 * GB),
-      "a fraction of the pool is a projectable demand"
+      b.projected_cache_bytes(&p, &host),
+      Some(108 * GB - GB),
+      "0.9 of the 120 GiB pool, less the weights the gate adds itself"
     );
 
-    // An explicit byte cap is exact and wins.
+    // An explicit byte cap is exact, bounds the cache only, and wins.
     set(&mut p, "kv_cache_memory_bytes", "2G");
-    assert_eq!(b.projected_cache_bytes(&p, 100 * GB), Some(2 * GB));
+    assert_eq!(b.projected_cache_bytes(&p, &host), Some(2 * GB));
+  }
+
+  /// The byte cap is checked first, so the companion utilization the guard
+  /// writes beside it is never priced as a pool fraction.
+  ///
+  /// The cap is the exact figure the launcher is handed; the companion exists
+  /// only to clear vLLM's startup check and is not a demand. Pricing it
+  /// instead would misstate the demand by the clamp margin — the companion is
+  /// `min(weights + cap + engine overhead, free - context margin) / pool`, so
+  /// it can never project past the free reading the gate compares against, and
+  /// would over-state rather than refuse. Wrong number, not a broken launch.
+  #[test]
+  fn the_auto_cap_is_priced_by_its_bytes_not_its_companion_fraction() {
+    const GB: u64 = 1024 * 1024 * 1024;
+    let b = VllmBackend::new();
+    let mut p = params("/c/models--o--n/snapshots/rev");
+    let host = crate::launch::admission::DemandInputs {
+      free_bytes: 52 * GB,
+      pool_total_bytes: 121 * GB,
+      weights_bytes: GB,
+    };
+    // What `resolve_knobs` writes on a unified host: both knobs together.
+    set(
+      &mut p,
+      "kv_cache_memory_bytes",
+      (8 * GB).to_string().as_str(),
+    );
+    set(&mut p, "gpu_memory_utilization", "0.13");
+    assert_eq!(
+      b.projected_cache_bytes(&p, &host),
+      Some(8 * GB),
+      "the byte cap is the bound, so it is what gets priced"
+    );
   }
 
   /// The family is spelled `--data-parallel-size` / `-rank` / …, so a

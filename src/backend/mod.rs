@@ -617,19 +617,28 @@ pub trait Backend {
     KnobResolution::default()
   }
 
-  /// Bytes this launch will hold beyond its weights, for a model with no GGUF
-  /// header to project demand from.
+  /// Bytes this launch will hold **beyond its weights**, for a model with no
+  /// GGUF header to project demand from.
   ///
   /// Only the backend can answer: the figure lives in its own native knobs,
-  /// and the knobs are its own vocabulary. Called with post-headroom free
-  /// bytes so a backend expressing its budget as a *fraction of the pool* can
-  /// turn that into bytes. `None` means "no projection possible", which leaves
-  /// the admission gate disengaged — return a figure wherever one can be
-  /// derived, because a silent skip is how an oversized launch reaches spawn.
+  /// and the knobs are its own vocabulary. `None` means "no projection
+  /// possible", which leaves the admission gate disengaged — return a figure
+  /// wherever one can be derived, because a silent skip is how an oversized
+  /// launch reaches spawn.
+  ///
+  /// "Beyond its weights" is the contract, not a description: the gate adds
+  /// [`crate::launch::admission::DemandInputs::weights_bytes`] to whatever
+  /// comes back. A knob that
+  /// covers weights *and* cache — every engine's pool fraction does — has to
+  /// subtract them, or the weights are counted twice.
   ///
   /// Default `None`: a GGUF backend projects from its header instead and never
   /// reaches this path.
-  fn projected_cache_bytes(&self, _params: &LaunchParams, _free_bytes: u64) -> Option<u64> {
+  fn projected_cache_bytes(
+    &self,
+    _params: &LaunchParams,
+    _host: &crate::launch::admission::DemandInputs,
+  ) -> Option<u64> {
     None
   }
 
@@ -1164,8 +1173,12 @@ impl Backend for Backends {
     for_each_backend!(self, b => b.bypasses_admission(params))
   }
 
-  fn projected_cache_bytes(&self, params: &LaunchParams, free_bytes: u64) -> Option<u64> {
-    for_each_backend!(self, b => b.projected_cache_bytes(params, free_bytes))
+  fn projected_cache_bytes(
+    &self,
+    params: &LaunchParams,
+    host: &crate::launch::admission::DemandInputs,
+  ) -> Option<u64> {
+    for_each_backend!(self, b => b.projected_cache_bytes(params, host))
   }
 
   fn installed(&self, ctx: &MethodContext) -> bool {
