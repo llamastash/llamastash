@@ -1144,9 +1144,15 @@ mod tests {
     assert_eq!(b.projected_cache_bytes(&p, &host), Some(2 * GB));
   }
 
-  /// The companion utilization the guard writes beside an auto byte cap must
-  /// never be priced as a pool fraction — that would project most of the pool
-  /// for a launch the cap already bounds, and refuse every UMA launch.
+  /// The byte cap is checked first, so the companion utilization the guard
+  /// writes beside it is never priced as a pool fraction.
+  ///
+  /// The cap is the exact figure the launcher is handed; the companion exists
+  /// only to clear vLLM's startup check and is not a demand. Pricing it
+  /// instead would misstate the demand by the clamp margin — the companion is
+  /// `min(weights + cap + engine overhead, free - context margin) / pool`, so
+  /// it can never project past the free reading the gate compares against, and
+  /// would over-state rather than refuse. Wrong number, not a broken launch.
   #[test]
   fn the_auto_cap_is_priced_by_its_bytes_not_its_companion_fraction() {
     const GB: u64 = 1024 * 1024 * 1024;

@@ -203,8 +203,11 @@ for a name the server never advertises.
   the weights on disk plus the pool the backend resolved for itself: the token
   cap times the per-token cost, or — for a `mem_fraction_static` you set
   yourself — that share of the **whole pool**, weights included, since that is
-  what SGLang actually takes. `0.9` on a 121 GiB host is projected at
-  ~109 GiB and refused when that does not fit.
+  what SGLang actually takes. On a unified host `0.9` of a 121 GiB pool is
+  projected at ~109 GiB and refused when that does not fit. The same
+  host-shape caveats as vLLM apply to a hand-set fraction (a GTT-reporting APU
+  prices against full RAM while the gate's free reading is GTT-capped) — see
+  `docs/vllm-setup.md`.
 - **The daemon still needs a `llama-server` to launch anything.** The launch
   environment is built only when the default llama.cpp binary resolves, so a
   host with SGLang alone cannot launch; point `LLAMASTASH_LLAMA_SERVER` (or

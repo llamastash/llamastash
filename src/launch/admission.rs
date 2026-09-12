@@ -276,9 +276,25 @@ pub fn dir_weight_bytes(dir: &std::path::Path) -> u64 {
 /// `gpu_memory_utilization` / `mem_fraction_static` are shares of the device
 /// total, not of what is free and not of the model — so a projection needs the
 /// total, and which total depends on the host. On a unified host the device
-/// total *is* system RAM: the 0.92 default projected to ~106 GB of a 121 GB
-/// box, which is how these engines have frozen one. On a discrete host it is
+/// total *is* system RAM, which is how these engines have frozen one; the
+/// measured default is in each engine's setup doc. On a discrete host it is
 /// VRAM, and system RAM is irrelevant to the fraction.
+///
+/// **Deliberately not the GTT pool**, even though [`effective_free_bytes`]
+/// budgets `min(ram_free, gtt_free)` on a UMA host that reports one. The two
+/// sides of the gate are then denominated differently, and on a default-config
+/// APU — GTT roughly half of RAM — that over-refuses every hand-set fraction:
+/// `0.9` prices against full RAM while free cannot exceed the GTT cap. Safe
+/// but unhelpful, and `--force` or an absolute byte cap is the way through.
+///
+/// The alternative (`uma_shared_total_bytes.unwrap_or(ram_total_bytes)`) puts
+/// both sides on one pool, but it is only correct if torch on an ROCm APU
+/// reports GTT as its device total. If it reports sysmem instead, the engine
+/// really does attempt `0.9 x full RAM` and pricing against GTT would
+/// *understate* it — the freeze this function exists to project. Under-
+/// projection is the direction that takes the host down, so the conservative
+/// total stays until someone reads the real device total off an ROCm APU.
+/// Tracked in `TODO.md`.
 pub fn engine_pool_total_bytes(snap: &HostMetricsSnapshot) -> u64 {
   let unified = snap.unified || snap.gpu_backend == HostMetricsSnapshot::BACKEND_APPLE_METAL;
   if unified {
@@ -311,12 +327,20 @@ pub struct DemandInputs {
 /// Two corrections live here, and they pull opposite ways, which is why the
 /// old `free * fraction` was not simply conservative:
 ///
-/// - The fraction is of the pool, not of what is free. Free is always the
-///   smaller number, so multiplying by it *understated* the allocation — on a
-///   121 GiB box with 52 GiB free, `0.9` projected 47 GiB against a real
-///   109 GiB, and the gate admitted the launch that freezes the host.
+/// - The fraction is of the pool, not of what is free. **On a unified host**
+///   free is the smaller number, so multiplying by it *understated* the
+///   allocation — with 52 GiB free of a 121 GiB pool, `0.9` projected 47 GiB
+///   against a real 109 GiB, and the gate admitted the launch that freezes
+///   the host. That is the case this fixes.
 /// - The fraction also covers the weights, so the part beyond them is what the
 ///   gate wants; adding the whole figure counted the weights twice.
+///
+/// On a **discrete** host the inequality flips: [`effective_free_bytes`] sums
+/// post-headroom VRAM free *and* system-RAM free, so free can exceed the VRAM
+/// pool a fraction is priced against (a 24 GiB card beside 60 GiB of idle RAM
+/// reads ~84 GiB free against a 24 GiB pool). The old code over-refused there;
+/// this one under-tightens, and `0.9 x 24 GiB` is admitted by the gate for the
+/// engine's own startup check to refuse instead. Same safety, worse message.
 ///
 /// With no pool total (an unsampled or VRAM-less host) the free reading is the
 /// only number available, so it stands in — understating, but the gate is
