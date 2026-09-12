@@ -180,6 +180,13 @@ Tick as landed.
       with 52 GiB free projected 47 GiB and was admitted, for a launch that
       takes ~109 GiB. The weights double-count (over-refusal) only partly
       masked it. Fixing the base is the half that matters.
+      **Validated on GB10** (2026-09-12, vLLM 0.28, 121.69 GiB unified, beside
+      a tenant leaving 51 GiB): `0.9` refused at 110.0 GiB before spawn, and
+      with `--force` the engine's own check read `desired (0.9, 109.52 GiB)` —
+      the two sides agree to two decimals, which also settles that torch takes
+      MemTotal as its device total on NVIDIA coherent UMA. `0.2` admitted at
+      24.8 GiB and served; measured cost 26.8 GiB, so ~2 GiB of out-of-pool
+      engine footprint is still unpriced (`TODO.md`, with the ledger entry).
 - [x] **RV8 — `build_options` took ten positional bools.** Landed on main
       after the merge as `BuildOptionsArgs`, spread over
       `BuildOptionsArgs::new(cli, config)` rather than `Default` (the `cli` /

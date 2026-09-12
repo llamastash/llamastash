@@ -280,21 +280,27 @@ pub fn dir_weight_bytes(dir: &std::path::Path) -> u64 {
 /// measured default is in each engine's setup doc. On a discrete host it is
 /// VRAM, and system RAM is irrelevant to the fraction.
 ///
-/// **Deliberately not the GTT pool**, even though [`effective_free_bytes`]
-/// budgets `min(ram_free, gtt_free)` on a UMA host that reports one. The two
-/// sides of the gate are then denominated differently, and on a default-config
-/// APU — GTT roughly half of RAM — that over-refuses every hand-set fraction:
-/// `0.9` prices against full RAM while free cannot exceed the GTT cap. Safe
-/// but unhelpful, and `--force` or an absolute byte cap is the way through.
+/// **Measured exact on NVIDIA coherent UMA.** On a GB10 (121.69 GiB) the
+/// engine's own refusal read `desired (0.9, 109.52 GiB)` against the same
+/// `0.9 x ram_total` this returns — torch takes MemTotal as its device total
+/// there, so the projection and the engine agree to two decimals.
+///
+/// **Deliberately still not the GTT pool** on a host that reports one, even
+/// though [`effective_free_bytes`] budgets `min(ram_free, gtt_free)` there.
+/// The two sides of the gate are then denominated differently, and on a
+/// default-config AMD APU — GTT roughly half of RAM — that over-refuses every
+/// hand-set fraction: the projection is against full RAM while free cannot
+/// exceed the GTT cap. Safe but unhelpful; an absolute byte cap or `--force`
+/// is the way through.
 ///
 /// The alternative (`uma_shared_total_bytes.unwrap_or(ram_total_bytes)`) puts
 /// both sides on one pool, but it is only correct if torch on an ROCm APU
-/// reports GTT as its device total. If it reports sysmem instead, the engine
-/// really does attempt `0.9 x full RAM` and pricing against GTT would
-/// *understate* it — the freeze this function exists to project. Under-
-/// projection is the direction that takes the host down, so the conservative
-/// total stays until someone reads the real device total off an ROCm APU.
-/// Tracked in `TODO.md`.
+/// reports GTT as its device total. If it reports sysmem — as it does on
+/// NVIDIA — the engine really attempts `fraction x full RAM` and pricing
+/// against GTT would *understate* it, which is the freeze this function
+/// exists to project. Under-projection is the direction that takes the host
+/// down, so the conservative total stays until the same reading is taken on
+/// an ROCm APU. Tracked in `TODO.md`.
 pub fn engine_pool_total_bytes(snap: &HostMetricsSnapshot) -> u64 {
   let unified = snap.unified || snap.gpu_backend == HostMetricsSnapshot::BACKEND_APPLE_METAL;
   if unified {
