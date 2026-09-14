@@ -213,9 +213,34 @@ fn gpu_summary_row<'a>(
 /// reachable ceiling is `min(pool_total, ram_total − non-GPU RAM use)`:
 /// the full pool when RAM is free, dropping toward free-RAM headroom under
 /// pressure. Clamped `>= used` so the bar never exceeds 100%.
+/// In an AMD Linux LXC container where container RAM limit is artificial,
+/// the real GPU pool is preserved without clamping against container RAM.
 fn vram_denominator(host: &HostMetricsSnapshot, used: u64, total: u64) -> u64 {
+  vram_denominator_for_policy(
+    host,
+    used,
+    total,
+    crate::util::process::linux_lxc_container(),
+  )
+}
+
+pub(crate) fn vram_denominator_for_policy(
+  host: &HostMetricsSnapshot,
+  used: u64,
+  total: u64,
+  in_lxc: bool,
+) -> u64 {
   if !host.unified {
     return total;
+  }
+  // AMD UMA in a Linux LXC container: the container RAM limit (host.ram_total_bytes)
+  // is artificial, but the GPU operates directly against the real host GTT pool (total).
+  // Don't clamp against the container's RAM limit.
+  if in_lxc
+    && host.gpu_backend == HostMetricsSnapshot::BACKEND_AMD
+    && host.uma_shared_total_bytes.is_some()
+  {
+    return total.max(used);
   }
   // Add the GPU's own shared bytes back before subtracting: sysinfo folds
   // them into ram_used, so otherwise they'd be discounted twice.
@@ -917,6 +942,32 @@ mod tests {
       ..Default::default()
     };
     assert_eq!(vram_denominator(&snap, 8 * GIB, 48 * GIB), 32 * GIB);
+  }
+
+  #[test]
+  fn vram_denominator_in_amd_lxc_uses_full_gtt_pool_without_container_ram_clamp() {
+    const GIB: u64 = 1024 * 1024 * 1024;
+    let snap = HostMetricsSnapshot {
+      ram_used_bytes: 2 * GIB,
+      ram_total_bytes: 8 * GIB,
+      gpu_backend: HostMetricsSnapshot::BACKEND_AMD.into(),
+      gpu_mem_total_bytes: Some(96 * GIB),
+      gpu_mem_used_bytes: Some(26 * GIB),
+      unified: true,
+      uma_shared_total_bytes: Some(96 * GIB),
+      uma_class_source: Some(ClassSource::CarveSignature),
+      ..Default::default()
+    };
+    // Outside LXC: clamped by container RAM limit -> (8-0) = 8 GiB reachable ceiling, clamped to used (26 GiB)
+    assert_eq!(
+      vram_denominator_for_policy(&snap, 26 * GIB, 96 * GIB, false),
+      26 * GIB
+    );
+    // Inside LXC: uses the full 96 GiB GTT pool
+    assert_eq!(
+      vram_denominator_for_policy(&snap, 26 * GIB, 96 * GIB, true),
+      96 * GIB
+    );
   }
 
   #[test]

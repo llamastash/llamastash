@@ -79,13 +79,20 @@ pub fn classify_amd_memory(
   if is_integrated || is_carve_signature(vram_total) {
     let gt = gtt_total.unwrap_or(0);
     let gu = gtt_used.unwrap_or(0);
-    (
-      vram_total.saturating_add(gt),
-      vram_used.saturating_add(gu),
-      Some(gt),
-      Some(gu),
-      ClassSource::CarveSignature,
-    )
+    // When vram_total is already large (e.g. equal to GTT on APUs like Strix Halo
+    // or when the driver reports the full aperture in vram_total), summing them
+    // would double-count the same physical unified memory pool.
+    let total = if vram_total >= gt {
+      vram_total
+    } else {
+      vram_total.saturating_add(gt)
+    };
+    let used = if vram_total >= gt && vram_used >= gu {
+      vram_used
+    } else {
+      vram_used.saturating_add(gu)
+    };
+    (total, used, Some(gt), Some(gu), ClassSource::CarveSignature)
   } else {
     (vram_total, vram_used, None, None, ClassSource::Discrete)
   }

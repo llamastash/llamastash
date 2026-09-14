@@ -270,33 +270,39 @@ pub fn dir_weight_bytes(dir: &std::path::Path) -> u64 {
     .fold(0u64, u64::saturating_add)
 }
 
-/// Post-headroom free bytes across the budget pool(s). Discrete hosts
-/// sum post-headroom VRAM free + post-headroom system-RAM free.
-///
-/// UMA hosts budget the **GPU pool**, not all of system RAM. On an
-/// AMD/Intel integrated APU the GPU can only allocate within the amdgpu
-/// GTT cap (carve-out + GTT), which on a default-config box is roughly
-/// half of system RAM. llama.cpp's own free reading conflates the two
-/// and hard-OOMs (it sees system-RAM free, allocates past the GTT cap,
-/// and `hipMalloc` fails); sysfs GTT is the budget authority. So when
-/// the snapshot carries the GTT pool (`uma_shared_*`, from the sysfs
-/// probe) we budget `min(ram_free, gtt_free)` — the GTT cap bounds the
-/// GPU allocation, and `ram_free` still guards the rare case where
-/// system RAM is the tighter constraint. Apple Silicon has no GTT carve
-/// (it leaves `uma_shared_*` unset), so it falls back to `ram_free` with
-/// its 0.75 headroom.
-pub fn effective_free_bytes(snap: &HostMetricsSnapshot) -> u64 {
+/// AMD UMA in Linux LXC can expose a real GTT pool even when the container RAM
+/// limit is much smaller. In that specific case the GPU pool is the budget
+/// authority; everywhere else keep the conservative `min(ram_free, gtt_free)`
+/// policy.
+fn amd_uma_lxc_pool_free(snap: &HostMetricsSnapshot, in_lxc: bool) -> Option<u64> {
+  if !in_lxc
+    || snap.gpu_backend != HostMetricsSnapshot::BACKEND_AMD
+    || !snap.unified
+    || snap.uma_shared_total_bytes.is_none()
+  {
+    return None;
+  }
+
+  let gtt_total = snap.uma_shared_total_bytes?;
+  Some(gtt_total.saturating_sub(snap.uma_shared_used_bytes.unwrap_or(0)))
+}
+
+fn effective_free_bytes_for_policy(snap: &HostMetricsSnapshot, in_lxc: bool) -> u64 {
   let ram_free = snap.ram_total_bytes.saturating_sub(snap.ram_used_bytes);
   // Apple is unified by construction (the `|| apple_metal` just guards
   // it); the host-pane VRAM gauge keys off the same `unified` flag.
   let unified = snap.unified || snap.gpu_backend == HostMetricsSnapshot::BACKEND_APPLE_METAL;
   if unified {
-    let pool_free = match snap.uma_shared_total_bytes {
-      Some(gtt_total) => {
-        let gtt_free = gtt_total.saturating_sub(snap.uma_shared_used_bytes.unwrap_or(0));
-        ram_free.min(gtt_free)
+    let pool_free = if let Some(gtt_free) = amd_uma_lxc_pool_free(snap, in_lxc) {
+      gtt_free
+    } else {
+      match snap.uma_shared_total_bytes {
+        Some(gtt_total) => {
+          let gtt_free = gtt_total.saturating_sub(snap.uma_shared_used_bytes.unwrap_or(0));
+          ram_free.min(gtt_free)
+        }
+        None => ram_free,
       }
-      None => ram_free,
     };
     admissible_bytes(pool_free, pool_kind(snap))
   } else if let (Some(total), Some(used)) = (snap.gpu_mem_total_bytes, snap.gpu_mem_used_bytes) {
@@ -306,6 +312,12 @@ pub fn effective_free_bytes(snap: &HostMetricsSnapshot) -> u64 {
   } else {
     admissible_bytes(ram_free, PoolKind::SystemRam)
   }
+}
+
+/// Post-headroom free bytes across the budget pool(s). Discrete hosts
+/// sum post-headroom VRAM free + post-headroom system-RAM free.
+pub fn effective_free_bytes(snap: &HostMetricsSnapshot) -> u64 {
+  effective_free_bytes_for_policy(snap, crate::util::process::linux_lxc_container())
 }
 
 /// Demand floor for a launch: model weights + KV cache at the effective
@@ -573,6 +585,16 @@ mod tests {
   }
 
   #[test]
+  fn amd_lxc_uma_uses_gtt_budget_instead_of_container_ram() {
+    let mut s = snap(HostMetricsSnapshot::BACKEND_AMD, true, 160 * GIB, 80 * GIB);
+    s.uma_shared_total_bytes = Some(80 * GIB);
+    s.uma_shared_used_bytes = Some(60 * GIB);
+    assert_eq!(amd_uma_lxc_pool_free(&s, true), Some(20 * GIB));
+    assert_eq!(effective_free_bytes_for_policy(&s, true), 20 * GIB);
+    assert_eq!(effective_free_bytes_for_policy(&s, false), 20 * GIB);
+  }
+
+  #[test]
   fn uma_budget_uses_gtt_pool_not_system_ram() {
     // Default-config UMA box: the amdgpu GTT cap is ~half of system RAM.
     // A resident model leaves plenty of system RAM free but little GTT.
@@ -582,13 +604,34 @@ mod tests {
     s.uma_shared_total_bytes = Some(80 * GIB); // GTT cap ~50% of RAM
     s.uma_shared_used_bytes = Some(60 * GIB); // 20 GiB GTT free
                                               // ram_free is 80 GiB but GTT free is only 20 GiB → budget GTT.
-    assert_eq!(effective_free_bytes(&s), 20 * GIB);
+    assert_eq!(effective_free_bytes_for_policy(&s, false), 20 * GIB);
     // A 37 GiB launch is refused against the 20 GiB GTT pool, not
     // admitted against the 80 GiB system-RAM figure.
     let ledger = Ledger::default();
     assert!(ledger
-      .try_admit(1, 37 * GIB, effective_free_bytes(&s))
+      .try_admit(1, 37 * GIB, effective_free_bytes_for_policy(&s, false))
       .is_err());
+  }
+
+  #[test]
+  fn non_amd_lxc_uma_keeps_the_default_min_ram_and_gtt_policy() {
+    let mut s = snap(
+      HostMetricsSnapshot::BACKEND_APPLE_METAL,
+      true,
+      160 * GIB,
+      80 * GIB,
+    );
+    s.uma_shared_total_bytes = Some(80 * GIB);
+    s.uma_shared_used_bytes = Some(60 * GIB);
+    assert_eq!(amd_uma_lxc_pool_free(&s, true), None);
+    assert_eq!(effective_free_bytes_for_policy(&s, true), 15 * GIB);
+  }
+
+  #[test]
+  fn amd_uma_without_gtt_data_falls_back_to_ram_budget() {
+    let s = snap(HostMetricsSnapshot::BACKEND_AMD, true, 128 * GIB, 28 * GIB);
+    assert_eq!(amd_uma_lxc_pool_free(&s, true), None);
+    assert_eq!(effective_free_bytes_for_policy(&s, true), 100 * GIB);
   }
 
   #[test]

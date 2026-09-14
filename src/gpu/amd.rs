@@ -526,6 +526,19 @@ mod tests {
       classify_amd_memory(carve, 2, None, None, false),
       (carve, 2, Some(0), Some(0), ClassSource::CarveSignature)
     );
+    // Integrated APU where vram_total already reflects the full GTT aperture (e.g. 96G + 96G GTT)
+    // -> must not double count to 192G.
+    let full96 = 96 * 1024 * 1024 * 1024;
+    assert_eq!(
+      classify_amd_memory(full96, 47, Some(full96), Some(47), true),
+      (
+        full96,
+        47,
+        Some(full96),
+        Some(47),
+        ClassSource::CarveSignature
+      )
+    );
   }
 
   #[test]
