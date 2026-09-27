@@ -7,6 +7,7 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 ### Added
 
 - Generic backend: run any OpenAI-compatible server declared in `config.yaml` (gufo, Halogen via Docker, CIRU tested), as its own row or as a server option on matching GGUFs, with per-entry knobs and a stop-grace floor.
+- `llamastash daemon restart`: stop the daemon and start it again, taking the same flags as `daemon start`.
 
 ### Fixed
 

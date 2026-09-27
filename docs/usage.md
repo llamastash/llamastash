@@ -560,6 +560,7 @@ Each row's `params` object carries a `knobs` map — every knob the launch dispa
 ```
 llamastash daemon start [--foreground|-f]
 llamastash daemon stop  [--force|-f]
+llamastash daemon restart [--foreground|-f]   # takes every `daemon start` flag
 llamastash daemon status [--json]   # PID + uptime + connections + managed launches
 ```
 
@@ -568,6 +569,8 @@ llamastash daemon status [--json]   # PID + uptime + connections + managed launc
 Without `llama-server`, `daemon start` refuses unless another backend is enabled (ds4, Lemonade, vLLM, SGLang, or a `backend.generic` entry). On such a host those backends launch as usual and only llama.cpp launches fail. `--force` starts the daemon either way.
 
 `daemon stop` calls the IPC `shutdown` RPC, then waits (up to 10 s) for the daemon process to actually exit before printing `daemon: stopped` — so `daemon stop && daemon start` never races the dying daemon's lockfile or its managed `lemond` umbrella. If teardown outlives the wait it falls back to `daemon: shutdown requested (still exiting, pid N)`. When `runtime.json` is missing (the IPC channel can't be opened because a stale daemon from an older version is holding the lockfile) pass `--force` (or `-f`) to fall back to a `SIGTERM` on the PID recorded in `daemon.pid`. The CLI auto-detects this state on every command and prints the exact `kill` / `--force` invocation needed.
+
+`daemon restart` runs `daemon stop`, then `daemon start` with the flags you pass it. It takes the same flags as `daemon start`, so `-f` means `--foreground` here and `--force` skips the backend check, not the IPC shutdown. Flags and `config.yaml` are checked before the running daemon is stopped, so a typo leaves the running daemon up. Every managed launch stops with the old daemon. With no daemon running it just starts one. If the old daemon is still exiting after the stop wait, `restart` exits with an error and does not start a second one.
 
 `daemon status --json` emits the raw `version` IPC response (the same `{name, version, protocol_version, pid, uptime_seconds, connections}` object an agent would get by hitting the UDS directly). The plain form is a human key/value block and is not a stable machine contract — agents should always use `--json`.
 

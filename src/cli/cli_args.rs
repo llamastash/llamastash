@@ -288,105 +288,7 @@ pub enum DaemonAction {
   /// background by default; pass `--foreground` (or `-f`) to keep the
   /// daemon attached to the terminal (e.g. for `systemd` / supervisor
   /// wrappers that own stdout/stderr).
-  Start {
-    /// Keep the daemon attached to the controlling terminal instead of
-    /// detaching into the background. Use this when a process
-    /// supervisor (systemd, runit, foreman, container `CMD`) owns the
-    /// lifecycle and needs to see stdout/stderr directly.
-    #[arg(long, short = 'f')]
-    foreground: bool,
-    /// Internal hand-off: state directory to use instead of XDG defaults.
-    /// `start_detached` propagates this to the re-exec'd child so tests
-    /// and alternate deployments can drive the daemon at a custom path.
-    /// Hidden from `--help` because end users should reach for the
-    /// config file or XDG env vars instead.
-    #[arg(long, value_name = "PATH", hide = true)]
-    state_dir: Option<PathBuf>,
-    /// TCP port the OpenAI-compat proxy listener binds on
-    /// `127.0.0.1`. Overrides `proxy.port` from the config file and
-    /// the `--ollama-compat`-derived default. Default port is `11435`
-    /// (`11434` with `--ollama-compat`); the listener scans up to
-    /// `11440` for a free slot. Use `0` to bind an ephemeral port —
-    /// the actual address is reported via `llamastash status`.
-    #[arg(long, value_name = "PORT")]
-    proxy_port: Option<u16>,
-    /// Enable Ollama drop-in mode for this daemon process. `GET /`
-    /// returns `"Ollama is running"` so the official `ollama` CLI
-    /// (and other Ollama-Go-based clients) recognise the proxy; the
-    /// default port shifts to `11434`. OR-ed with `proxy.ollama_compat`
-    /// in `config.yaml` and the `LLAMASTASH_OLLAMA_COMPAT` env var
-    /// (any of the three turns it on).
-    #[arg(long)]
-    ollama_compat: bool,
-    /// Disable the family-MRU fallback. When a requested model fails
-    /// to auto-start, the proxy normally serves the request from
-    /// another Ready supervisor (with `x-llamastash-fallback-reason`
-    /// stamped on the response). Pass this flag to make the proxy
-    /// return a 503 `launch_failed` instead. OR-ed with
-    /// `proxy.fallback_enabled: false` in `config.yaml` and the
-    /// `LLAMASTASH_NO_PROXY_FALLBACK` env var — any of the three
-    /// disables the fallback.
-    #[arg(long)]
-    no_proxy_fallback: bool,
-    /// Address the OpenAI-compat proxy listener binds. Default
-    /// `127.0.0.1` (loopback only). Pass a routable address
-    /// (`0.0.0.0`, a specific NIC IP, or an IPv6 address like `::`) to
-    /// expose the proxy on the LAN. Overrides `proxy.host` in
-    /// `config.yaml` and the `LLAMASTASH_PROXY_HOST` env var
-    /// (precedence: CLI > env > config). A non-loopback bind requires a
-    /// bearer key: llamastash auto-generates and prints one on first
-    /// use unless you pass `--insecure-no-auth`. Only the proxy is
-    /// exposed — the control plane and `llama-server` children stay
-    /// loopback.
-    #[arg(long, value_name = "IP")]
-    proxy_host: Option<IpAddr>,
-    /// Bind a non-loopback `--proxy-host` with NO authentication. By
-    /// default llamastash refuses to expose the proxy on the LAN
-    /// without a bearer key; this flag opts out of that safety check
-    /// and serves the proxy unauthenticated. Anyone who can reach the
-    /// address can drive your models. Only use it on a trusted,
-    /// firewalled network. A loud warning prints regardless.
-    #[arg(long)]
-    insecure_no_auth: bool,
-    /// Enable the opt-in **experimental** Lemonade (`lemond`) backend for
-    /// this daemon: run Lemonade discovery and supervise/route to the
-    /// `lemond` umbrella. OR-ed with `lemonade.enabled: true` in
-    /// `config.yaml` and the `LLAMASTASH_LEMONADE` env var
-    /// (`1`/`true`/`yes`/`on`) — any of the three turns it on. Experimental:
-    /// behaviour and config may change. llamastash never installs `lemond`;
-    /// set it up manually (see `docs/lemonade-setup.md`).
-    #[arg(long)]
-    lemonade: bool,
-    /// Force-enable the ds4 (DwarfStar) direct backend for DeepSeek V4 GGUFs,
-    /// overriding `ds4.enabled: false`. ds4 is otherwise **on by default**
-    /// whenever `ds4-server` is found (on `PATH` or via `ds4.binary`). OR-ed
-    /// with `LLAMASTASH_DS4=1`. llamastash never installs `ds4-server`; build
-    /// it and point `ds4.binary` at it (see `docs/usage.md`).
-    #[arg(long)]
-    ds4: bool,
-    /// Force-enable the vLLM backend for safetensors HF repos, overriding
-    /// `backend.vllm.enabled: false`. vLLM is otherwise **on by default**
-    /// whenever a `vllm` launcher is found (on `PATH` or via
-    /// `backend.vllm.servers`). OR-ed with `LLAMASTASH_VLLM=1`. llamastash
-    /// never installs vLLM (see `docs/vllm-setup.md`).
-    #[arg(long)]
-    vllm: bool,
-    /// Force-enable the SGLang backend for safetensors HF repos, overriding
-    /// `backend.sglang.enabled: false`. SGLang is otherwise **on by default**
-    /// whenever a `sglang` launcher is found (on `PATH` or via
-    /// `backend.sglang.servers`). OR-ed with `LLAMASTASH_SGLANG=1`. llamastash
-    /// never installs SGLang (see `docs/sglang-setup.md`).
-    #[arg(long)]
-    sglang: bool,
-    /// Start the daemon even if an *indicated* backend can't initialize —
-    /// the `llama-server` binary isn't found, or the Lemonade umbrella port
-    /// is already taken / `lemond` is missing. Without this, `daemon start`
-    /// fails fast with an error rather than coming up silently degraded. With
-    /// it, the daemon starts anyway and the failed backend is simply
-    /// unavailable (surfaced in `status` and the TUI server-info section).
-    #[arg(long)]
-    force: bool,
-  },
+  Start(DaemonStartArgs),
   /// Stop the running daemon. Every managed launch is stopped with it
   /// (SIGTERM, then SIGKILL after the grace window) — only a daemon
   /// *crash* leaves a model running, as an orphan the next start
@@ -402,6 +304,10 @@ pub enum DaemonAction {
     #[arg(long, short = 'f')]
     force: bool,
   },
+  /// Stop the running daemon, then start it again with the given flags.
+  /// Picks up hand-edits to `config.yaml`. Every managed launch stops with
+  /// the old daemon. Starts a daemon when none is running.
+  Restart(DaemonStartArgs),
   /// Print daemon PID, uptime, and connected-client count.
   Status {
     /// Emit the raw `version` IPC response as pretty-printed JSON
@@ -412,6 +318,108 @@ pub enum DaemonAction {
     #[arg(long)]
     json: bool,
   },
+}
+
+/// Flags shared by `daemon start` and `daemon restart`.
+#[derive(Args, Debug)]
+pub struct DaemonStartArgs {
+  /// Keep the daemon attached to the controlling terminal instead of
+  /// detaching into the background. Use this when a process
+  /// supervisor (systemd, runit, foreman, container `CMD`) owns the
+  /// lifecycle and needs to see stdout/stderr directly.
+  #[arg(long, short = 'f')]
+  pub foreground: bool,
+  /// Internal hand-off: state directory to use instead of XDG defaults.
+  /// `start_detached` propagates this to the re-exec'd child so tests
+  /// and alternate deployments can drive the daemon at a custom path.
+  /// Hidden from `--help` because end users should reach for the
+  /// config file or XDG env vars instead.
+  #[arg(long, value_name = "PATH", hide = true)]
+  pub state_dir: Option<PathBuf>,
+  /// TCP port the OpenAI-compat proxy listener binds on
+  /// `127.0.0.1`. Overrides `proxy.port` from the config file and
+  /// the `--ollama-compat`-derived default. Default port is `11435`
+  /// (`11434` with `--ollama-compat`); the listener scans up to
+  /// `11440` for a free slot. Use `0` to bind an ephemeral port —
+  /// the actual address is reported via `llamastash status`.
+  #[arg(long, value_name = "PORT")]
+  pub proxy_port: Option<u16>,
+  /// Enable Ollama drop-in mode for this daemon process. `GET /`
+  /// returns `"Ollama is running"` so the official `ollama` CLI
+  /// (and other Ollama-Go-based clients) recognise the proxy; the
+  /// default port shifts to `11434`. OR-ed with `proxy.ollama_compat`
+  /// in `config.yaml` and the `LLAMASTASH_OLLAMA_COMPAT` env var
+  /// (any of the three turns it on).
+  #[arg(long)]
+  pub ollama_compat: bool,
+  /// Disable the family-MRU fallback. When a requested model fails
+  /// to auto-start, the proxy normally serves the request from
+  /// another Ready supervisor (with `x-llamastash-fallback-reason`
+  /// stamped on the response). Pass this flag to make the proxy
+  /// return a 503 `launch_failed` instead. OR-ed with
+  /// `proxy.fallback_enabled: false` in `config.yaml` and the
+  /// `LLAMASTASH_NO_PROXY_FALLBACK` env var — any of the three
+  /// disables the fallback.
+  #[arg(long)]
+  pub no_proxy_fallback: bool,
+  /// Address the OpenAI-compat proxy listener binds. Default
+  /// `127.0.0.1` (loopback only). Pass a routable address
+  /// (`0.0.0.0`, a specific NIC IP, or an IPv6 address like `::`) to
+  /// expose the proxy on the LAN. Overrides `proxy.host` in
+  /// `config.yaml` and the `LLAMASTASH_PROXY_HOST` env var
+  /// (precedence: CLI > env > config). A non-loopback bind requires a
+  /// bearer key: llamastash auto-generates and prints one on first
+  /// use unless you pass `--insecure-no-auth`. Only the proxy is
+  /// exposed — the control plane and `llama-server` children stay
+  /// loopback.
+  #[arg(long, value_name = "IP")]
+  pub proxy_host: Option<IpAddr>,
+  /// Bind a non-loopback `--proxy-host` with NO authentication. By
+  /// default llamastash refuses to expose the proxy on the LAN
+  /// without a bearer key; this flag opts out of that safety check
+  /// and serves the proxy unauthenticated. Anyone who can reach the
+  /// address can drive your models. Only use it on a trusted,
+  /// firewalled network. A loud warning prints regardless.
+  #[arg(long)]
+  pub insecure_no_auth: bool,
+  /// Enable the opt-in **experimental** Lemonade (`lemond`) backend for
+  /// this daemon: run Lemonade discovery and supervise/route to the
+  /// `lemond` umbrella. OR-ed with `lemonade.enabled: true` in
+  /// `config.yaml` and the `LLAMASTASH_LEMONADE` env var
+  /// (`1`/`true`/`yes`/`on`) — any of the three turns it on. Experimental:
+  /// behaviour and config may change. llamastash never installs `lemond`;
+  /// set it up manually (see `docs/lemonade-setup.md`).
+  #[arg(long)]
+  pub lemonade: bool,
+  /// Force-enable the ds4 (DwarfStar) direct backend for DeepSeek V4 GGUFs,
+  /// overriding `ds4.enabled: false`. ds4 is otherwise **on by default**
+  /// whenever `ds4-server` is found (on `PATH` or via `ds4.binary`). OR-ed
+  /// with `LLAMASTASH_DS4=1`. llamastash never installs `ds4-server`; build
+  /// it and point `ds4.binary` at it (see `docs/usage.md`).
+  #[arg(long)]
+  pub ds4: bool,
+  /// Force-enable the vLLM backend for safetensors HF repos, overriding
+  /// `backend.vllm.enabled: false`. vLLM is otherwise **on by default**
+  /// whenever a `vllm` launcher is found (on `PATH` or via
+  /// `backend.vllm.servers`). OR-ed with `LLAMASTASH_VLLM=1`. llamastash
+  /// never installs vLLM (see `docs/vllm-setup.md`).
+  #[arg(long)]
+  pub vllm: bool,
+  /// Force-enable the SGLang backend for safetensors HF repos, overriding
+  /// `backend.sglang.enabled: false`. SGLang is otherwise **on by default**
+  /// whenever a `sglang` launcher is found (on `PATH` or via
+  /// `backend.sglang.servers`). OR-ed with `LLAMASTASH_SGLANG=1`. llamastash
+  /// never installs SGLang (see `docs/sglang-setup.md`).
+  #[arg(long)]
+  pub sglang: bool,
+  /// Start the daemon even if an *indicated* backend can't initialize —
+  /// the `llama-server` binary isn't found, or the Lemonade umbrella port
+  /// is already taken / `lemond` is missing. Without this, `daemon start`
+  /// fails fast with an error rather than coming up silently degraded. With
+  /// it, the daemon starts anyway and the failed backend is simply
+  /// unavailable (surfaced in `status` and the TUI server-info section).
+  #[arg(long)]
+  pub force: bool,
 }
 
 #[derive(Args, Debug)]
@@ -1967,7 +1975,7 @@ mod tests {
     // default flips to detached so the prompt comes back on its own.
     let cli_start = parse(&["daemon", "start"]);
     match cli_start.command {
-      Some(Command::Daemon(DaemonAction::Start {
+      Some(Command::Daemon(DaemonAction::Start(DaemonStartArgs {
         foreground,
         state_dir,
         proxy_port,
@@ -1980,7 +1988,7 @@ mod tests {
         vllm,
         sglang,
         force,
-      })) => {
+      }))) => {
         assert!(!foreground);
         assert!(state_dir.is_none());
         assert!(proxy_port.is_none());
@@ -2001,18 +2009,18 @@ mod tests {
     let cli_fg = parse(&["daemon", "start", "--foreground"]);
     assert!(matches!(
       cli_fg.command,
-      Some(Command::Daemon(DaemonAction::Start {
+      Some(Command::Daemon(DaemonAction::Start(DaemonStartArgs {
         foreground: true,
         ..
-      }))
+      })))
     ));
     let cli_fg_short = parse(&["daemon", "start", "-f"]);
     assert!(matches!(
       cli_fg_short.command,
-      Some(Command::Daemon(DaemonAction::Start {
+      Some(Command::Daemon(DaemonAction::Start(DaemonStartArgs {
         foreground: true,
         ..
-      }))
+      })))
     ));
 
     let cli_with_paths = parse(&[
@@ -2022,7 +2030,7 @@ mod tests {
       "/tmp/llamastash-test-state",
     ]);
     match cli_with_paths.command {
-      Some(Command::Daemon(DaemonAction::Start {
+      Some(Command::Daemon(DaemonAction::Start(DaemonStartArgs {
         foreground,
         state_dir,
         proxy_port,
@@ -2031,7 +2039,7 @@ mod tests {
         proxy_host,
         insecure_no_auth,
         ..
-      })) => {
+      }))) => {
         assert!(!foreground);
         assert_eq!(state_dir, Some(PathBuf::from("/tmp/llamastash-test-state")));
         assert!(proxy_port.is_none());
@@ -2045,7 +2053,7 @@ mod tests {
 
     let cli_with_proxy_port = parse(&["daemon", "start", "--proxy-port", "8080"]);
     match cli_with_proxy_port.command {
-      Some(Command::Daemon(DaemonAction::Start {
+      Some(Command::Daemon(DaemonAction::Start(DaemonStartArgs {
         foreground,
         state_dir,
         proxy_port,
@@ -2054,7 +2062,7 @@ mod tests {
         proxy_host,
         insecure_no_auth,
         ..
-      })) => {
+      }))) => {
         assert!(!foreground);
         assert!(state_dir.is_none());
         assert_eq!(proxy_port, Some(8080));
@@ -2070,7 +2078,7 @@ mod tests {
     // the actual bound port). Accepted as a deliberate dev-only knob.
     let cli_ephemeral = parse(&["daemon", "start", "--proxy-port", "0"]);
     match cli_ephemeral.command {
-      Some(Command::Daemon(DaemonAction::Start { proxy_port, .. })) => {
+      Some(Command::Daemon(DaemonAction::Start(DaemonStartArgs { proxy_port, .. }))) => {
         assert_eq!(proxy_port, Some(0));
       }
       other => panic!("expected daemon start --proxy-port 0, got {other:?}"),
@@ -2080,11 +2088,11 @@ mod tests {
     // `build_options` resolves the effective port from it.
     let cli_compat = parse(&["daemon", "start", "--ollama-compat"]);
     match cli_compat.command {
-      Some(Command::Daemon(DaemonAction::Start {
+      Some(Command::Daemon(DaemonAction::Start(DaemonStartArgs {
         ollama_compat,
         proxy_port,
         ..
-      })) => {
+      }))) => {
         assert!(ollama_compat);
         assert!(proxy_port.is_none());
       }
@@ -2102,11 +2110,11 @@ mod tests {
       "--insecure-no-auth",
     ]);
     match cli_lan.command {
-      Some(Command::Daemon(DaemonAction::Start {
+      Some(Command::Daemon(DaemonAction::Start(DaemonStartArgs {
         proxy_host,
         insecure_no_auth,
         ..
-      })) => {
+      }))) => {
         assert_eq!(proxy_host, Some("0.0.0.0".parse().unwrap()));
         assert!(insecure_no_auth);
       }
@@ -2118,9 +2126,9 @@ mod tests {
     // fallback off.
     let cli_no_fallback = parse(&["daemon", "start", "--no-proxy-fallback"]);
     match cli_no_fallback.command {
-      Some(Command::Daemon(DaemonAction::Start {
+      Some(Command::Daemon(DaemonAction::Start(DaemonStartArgs {
         no_proxy_fallback, ..
-      })) => {
+      }))) => {
         assert!(no_proxy_fallback);
       }
       other => panic!("expected daemon start --no-proxy-fallback, got {other:?}"),
@@ -2130,7 +2138,7 @@ mod tests {
     // with the config + env.
     let cli_lemonade = parse(&["daemon", "start", "--lemonade"]);
     match cli_lemonade.command {
-      Some(Command::Daemon(DaemonAction::Start { lemonade, .. })) => {
+      Some(Command::Daemon(DaemonAction::Start(DaemonStartArgs { lemonade, .. }))) => {
         assert!(lemonade);
       }
       other => panic!("expected daemon start --lemonade, got {other:?}"),
@@ -2151,6 +2159,22 @@ mod tests {
       cli_stop_force_short.command,
       Some(Command::Daemon(DaemonAction::Stop { force: true }))
     ));
+
+    // `restart` takes the same flags as `start`.
+    let cli_restart = parse(&["daemon", "restart", "-f", "--proxy-port", "8080", "--force"]);
+    match cli_restart.command {
+      Some(Command::Daemon(DaemonAction::Restart(DaemonStartArgs {
+        foreground,
+        proxy_port,
+        force,
+        ..
+      }))) => {
+        assert!(foreground);
+        assert_eq!(proxy_port, Some(8080));
+        assert!(force);
+      }
+      other => panic!("expected daemon restart, got {other:?}"),
+    }
 
     let cli_status = parse(&["daemon", "status"]);
     assert!(matches!(

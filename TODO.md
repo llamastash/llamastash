@@ -335,7 +335,7 @@ places.
 ## R11 (v0.5.0 checklist)
 
 - [x] **Generic backend: run any OpenAI-compatible server from `config.yaml`.** Reaches gufo and Halogen, the two fastest Flash-Next engines on Strix Halo, which LlamaStash can't launch today. Entries declare their own string knobs, which work in the TUI, presets and `last_params`. Also adds a catalog trait hook that moves Lemonade's by-name discovery call behind the backend contract, and a per-backend stop grace — [`docs/plans/2026-09-26-001-feat-generic-command-backend-plan.md`](docs/plans/2026-09-26-001-feat-generic-command-backend-plan.md).
-- [ ] add a restart command for daemon
+- [x] ~~add a restart command for daemon~~ — `daemon restart` takes the `daemon start` flags, checks them and the config first, then stops and starts.
 - [x] **Generic knob rows show the entry's `default:` value** when unset; the TUI editor reads it through the same `config_default_knobs` hook the launch uses.
 - [x] **A host without `llama-server` can launch its other backends.** `LaunchEnv` is always built with an optional default binary; `daemon start` needs `llama-server` only when no other backend is enabled; a llama.cpp launch without it gets the `--llama-server` hint.
 - [x] **File-less-model discovery source is backend-neutral.** `ModelSource::Lemonade` is now `ModelSource::Backend(id)`, parsed from any registered backend id. The `BackendModelId` minting, delegated-row `status` projection and force-map key were already backend-neutral or sit on the sanctioned per-backend flag table.
