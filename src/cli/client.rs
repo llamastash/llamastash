@@ -80,7 +80,7 @@ pub async fn connect_or_spawn(cli: &Cli, config: &Config) -> Result<Client, CliE
       // mismatch and restart the daemon with the new args — but
       // only when no managed launches are running, so we never kill
       // someone else's in-flight model on a stale daemon.
-      reconcile_binary_with_running_daemon(client, cli, config, &attach_dir).await
+      reconcile_binary_with_running_daemon(client, cli, config).await
     }
     Err(ClientError::Connect(_)) => {
       // Stale-daemon pre-flight: a live process owns `daemon.pid` but
@@ -157,7 +157,6 @@ async fn reconcile_binary_with_running_daemon(
   mut client: Client,
   cli: &Cli,
   config: &Config,
-  attach_dir: &std::path::Path,
 ) -> Result<Client, CliExit> {
   let Some(cli_binary) = cli.llama_server.as_ref() else {
     return Ok(client);
@@ -231,32 +230,16 @@ async fn reconcile_binary_with_running_daemon(
       .map(|p| p.display().to_string())
       .unwrap_or_else(|| "—".into())
   );
-  // Trigger shutdown on the existing daemon, then re-spawn with the
-  // CLI flag flowing through `build_spawn_options`.
-  let _ = client.call("shutdown", None).await;
+  // Re-spawn with the CLI flag flowing through `build_spawn_options`.
   drop(client);
-  await_socket_gone(attach_dir, Duration::from_secs(3)).await;
   let opts = build_spawn_options(cli, config)?;
   let attach_for_poll = opts.state_dir.clone();
-  match start_detached(opts) {
+  match crate::daemon::restart::restart_detached(opts).await {
     Ok(_) => await_socket(&attach_for_poll, Duration::from_secs(3)).await,
     Err(e) => Err(CliExit::new(
       DAEMON_UNREACHABLE,
       format!("daemon: restart for --llama-server failed: {e}"),
     )),
-  }
-}
-
-/// Poll until the daemon stops responding (or `total` elapses). Used
-/// after `shutdown` so the follow-up `start_detached` doesn't race
-/// with the old daemon's runtime.json teardown.
-async fn await_socket_gone(attach_dir: &std::path::Path, total: Duration) {
-  let deadline = std::time::Instant::now() + total;
-  while std::time::Instant::now() < deadline {
-    if Client::connect(attach_dir).await.is_err() {
-      return;
-    }
-    tokio::time::sleep(Duration::from_millis(50)).await;
   }
 }
 

@@ -19,6 +19,7 @@ use anyhow::{Context, Result};
 use crate::cli::cli_args::{Cli, DaemonAction, DaemonStartArgs};
 use crate::config::{Config, DefaultLaunchMode, DEFAULT_FIT_CTX_FLOOR, MAX_CTX_TOKENS};
 use crate::daemon::discovery_task::DiscoveryOptions;
+use crate::daemon::restart::{shutdown_and_wait, ShutdownOutcome};
 use crate::daemon::{
   existing_daemon_pid, run_foreground, runtime_file, start_detached, DaemonOptions, StartOutcome,
 };
@@ -42,7 +43,7 @@ pub async fn handle(action: DaemonAction, cli: &Cli, config: &Config) -> Result<
       // leaves the running daemon up instead of taking it down.
       let foreground = args.foreground;
       let opts = prepare_start(args, cli, config)?;
-      if let StopOutcome::StillExiting(pid) = stop_daemon(&opts.state_dir, false).await? {
+      if let ShutdownOutcome::StillExiting(pid) = stop_daemon(&opts.state_dir, false).await? {
         anyhow::bail!(
           "daemon: pid {pid} is still exiting, not starting a new one; \
            retry `daemon restart` once it is gone"
@@ -437,57 +438,23 @@ fn print_provisioned_key(host: IpAddr, port: u16, key: &str, persisted: bool) {
   );
 }
 
-/// How `daemon stop` ended. `restart` starts a new daemon only when the old
-/// one is gone.
-enum StopOutcome {
-  Gone,
-  /// `shutdown` was accepted but the process outlived the wait.
-  StillExiting(i32),
-}
-
 /// `daemon stop`, also the first half of `daemon restart`. Prints its own
 /// status line.
-async fn stop_daemon(attach_dir: &std::path::Path, force: bool) -> Result<StopOutcome> {
+async fn stop_daemon(attach_dir: &std::path::Path, force: bool) -> Result<ShutdownOutcome> {
   if !force {
-    match Client::connect(attach_dir).await {
-      Ok(mut client) => {
-        let resp = client.call("shutdown", None).await?;
-        // Close the pooled keep-alive, or the daemon's drain waits on it.
-        drop(client);
-        // Wait (bounded) for the process to actually exit. `shutdown`
-        // only *requests* teardown; returning while the old daemon
-        // still holds the lockfile (and its `lemond` umbrella is still
-        // dying) makes a chained `daemon stop && daemon start` race
-        // straight into "already running" / a half-released umbrella
-        // port. The daemon reports the longest child stop grace; wait
-        // that plus a margin for its own teardown, at least 10 s. On
-        // timeout we fall back to the old fire-and-forget message.
-        let grace = resp
-          .get("stop_grace_secs")
-          .and_then(|v| v.as_u64())
-          .unwrap_or(0);
-        let wait = Duration::from_secs(grace.saturating_add(5).max(10));
-        let deadline = std::time::Instant::now() + wait;
-        loop {
-          match existing_daemon_pid(attach_dir) {
-            None => {
-              println!("{}", crate::cli::colors::success("daemon: stopped"));
-              return Ok(StopOutcome::Gone);
-            }
-            Some(pid) => {
-              if std::time::Instant::now() >= deadline {
-                println!(
-                  "{} ({} {})",
-                  crate::cli::colors::success("daemon: shutdown requested"),
-                  crate::cli::colors::dim("still exiting, pid"),
-                  pid
-                );
-                return Ok(StopOutcome::StillExiting(pid));
-              }
-              tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-          }
-        }
+    match shutdown_and_wait(attach_dir).await {
+      Ok(ShutdownOutcome::Gone) => {
+        println!("{}", crate::cli::colors::success("daemon: stopped"));
+        return Ok(ShutdownOutcome::Gone);
+      }
+      Ok(ShutdownOutcome::StillExiting(pid)) => {
+        println!(
+          "{} ({} {})",
+          crate::cli::colors::success("daemon: shutdown requested"),
+          crate::cli::colors::dim("still exiting, pid"),
+          pid
+        );
+        return Ok(ShutdownOutcome::StillExiting(pid));
       }
       // No IPC channel — either the daemon is genuinely down, or it's
       // a stale process that didn't publish runtime.json. The
@@ -500,7 +467,7 @@ async fn stop_daemon(attach_dir: &std::path::Path, force: bool) -> Result<StopOu
     None => println!("{}", crate::cli::colors::dim("daemon: not running")),
     Some(pid) => force_stop_via_pid(pid, attach_dir)?,
   }
-  Ok(StopOutcome::Gone)
+  Ok(ShutdownOutcome::Gone)
 }
 
 /// Best-effort PID-based shutdown. Used when the IPC channel is

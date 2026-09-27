@@ -22,6 +22,7 @@ pub mod preset_store;
 pub mod probe;
 pub mod registry;
 pub mod resources;
+pub mod restart;
 pub mod runtime_file;
 pub mod shutdown;
 pub mod state_store;

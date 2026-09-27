@@ -110,6 +110,35 @@ async fn shutdown_removes_runtime_file_and_pidfile() {
   std::fs::remove_dir_all(&dir).ok();
 }
 
+/// `daemon stop`, `daemon restart`, and the TUI restart key all wait here, so
+/// it must return only once the lockfile is free for the next start.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_and_wait_returns_once_the_lockfile_is_released() {
+  use llamastash::daemon::restart::{shutdown_and_wait, ShutdownOutcome};
+  let dir = unique_temp_dir("shutdown-wait");
+  let opts = opts_for(&dir);
+  let attach = opts.state_dir.clone();
+  let handle = tokio::spawn(async move { run_foreground(opts).await });
+  wait_for_socket(&attach).await;
+
+  let outcome = shutdown_and_wait(&attach).await.expect("shutdown");
+  assert_eq!(outcome, ShutdownOutcome::Gone);
+  assert!(!dir.join("daemon.pid").exists(), "pidfile must be gone");
+  timeout(Duration::from_secs(3), handle)
+    .await
+    .expect("daemon must exit")
+    .expect("join")
+    .expect("daemon result");
+
+  // Nothing left to stop: callers treat a connect error as "not running".
+  assert!(matches!(
+    shutdown_and_wait(&attach).await,
+    Err(llamastash::ipc::ClientError::Connect(_))
+  ));
+
+  std::fs::remove_dir_all(&dir).ok();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stale_runtime_file_is_overwritten_on_start() {
   let dir = unique_temp_dir("stale-runtime");
