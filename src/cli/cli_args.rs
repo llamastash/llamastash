@@ -181,6 +181,15 @@ pub fn parse_cli() -> Result<Cli, clap::Error> {
   Ok(cli)
 }
 
+/// Whether `--json` appears in argv before a `--`. For a parse failure, where
+/// no matches exist to read the flag from.
+pub fn argv_wants_json() -> bool {
+  std::env::args_os()
+    .skip(1)
+    .take_while(|a| a != "--")
+    .any(|a| a == "--json")
+}
+
 /// Whether any subcommand level set its `--json` flag. Read from the matches
 /// rather than the typed args so a new command with `--json` needs no edit.
 fn wants_json(m: &clap::ArgMatches) -> bool {
@@ -289,6 +298,104 @@ pub enum DaemonAction {
   /// daemon attached to the terminal (e.g. for `systemd` / supervisor
   /// wrappers that own stdout/stderr).
   Start(DaemonStartArgs),
+    /// Keep the daemon attached to the controlling terminal instead of
+    /// detaching into the background. Use this when a process
+    /// supervisor (systemd, runit, foreman, container `CMD`) owns the
+    /// lifecycle and needs to see stdout/stderr directly.
+    #[arg(long, short = 'f')]
+    foreground: bool,
+    /// Internal hand-off: state directory to use instead of XDG defaults.
+    /// `start_detached` propagates this to the re-exec'd child so tests
+    /// and alternate deployments can drive the daemon at a custom path.
+    /// Hidden from `--help` because end users should reach for the
+    /// config file or XDG env vars instead.
+    #[arg(long, value_name = "PATH", hide = true)]
+    state_dir: Option<PathBuf>,
+    /// TCP port the OpenAI-compat proxy listener binds on
+    /// `127.0.0.1`. Overrides `proxy.port` from the config file and
+    /// the `--ollama-compat`-derived default. Default port is `11435`
+    /// (`11434` with `--ollama-compat`); the listener scans up to
+    /// `11440` for a free slot. Use `0` to bind an ephemeral port —
+    /// the actual address is reported via `llamastash status`.
+    #[arg(long, value_name = "PORT")]
+    proxy_port: Option<u16>,
+    /// Enable Ollama drop-in mode for this daemon process. `GET /`
+    /// returns `"Ollama is running"` so the official `ollama` CLI
+    /// (and other Ollama-Go-based clients) recognise the proxy; the
+    /// default port shifts to `11434`. OR-ed with `proxy.ollama_compat`
+    /// in `config.yaml` and the `LLAMASTASH_OLLAMA_COMPAT` env var
+    /// (any of the three turns it on).
+    #[arg(long)]
+    ollama_compat: bool,
+    /// Disable the family-MRU fallback. When a requested model fails
+    /// to auto-start, the proxy normally serves the request from
+    /// another Ready supervisor (with `x-llamastash-fallback-reason`
+    /// stamped on the response). Pass this flag to make the proxy
+    /// return a 503 `launch_failed` instead. OR-ed with
+    /// `proxy.fallback_enabled: false` in `config.yaml` and the
+    /// `LLAMASTASH_NO_PROXY_FALLBACK` env var — any of the three
+    /// disables the fallback.
+    #[arg(long)]
+    no_proxy_fallback: bool,
+    /// Address the OpenAI-compat proxy listener binds. Default
+    /// `127.0.0.1` (loopback only). Pass a routable address
+    /// (`0.0.0.0`, a specific NIC IP, or an IPv6 address like `::`) to
+    /// expose the proxy on the LAN. Overrides `proxy.host` in
+    /// `config.yaml` and the `LLAMASTASH_PROXY_HOST` env var
+    /// (precedence: CLI > env > config). A non-loopback bind requires a
+    /// bearer key: llamastash auto-generates and prints one on first
+    /// use unless you pass `--insecure-no-auth`. Only the proxy is
+    /// exposed — the control plane and `llama-server` children stay
+    /// loopback.
+    #[arg(long, value_name = "IP")]
+    proxy_host: Option<IpAddr>,
+    /// Bind a non-loopback `--proxy-host` with NO authentication. By
+    /// default llamastash refuses to expose the proxy on the LAN
+    /// without a bearer key; this flag opts out of that safety check
+    /// and serves the proxy unauthenticated. Anyone who can reach the
+    /// address can drive your models. Only use it on a trusted,
+    /// firewalled network. A loud warning prints regardless.
+    #[arg(long)]
+    insecure_no_auth: bool,
+    /// Enable the opt-in **experimental** Lemonade (`lemond`) backend for
+    /// this daemon: run Lemonade discovery and supervise/route to the
+    /// `lemond` umbrella. OR-ed with `backend.lemonade.enabled: true` in
+    /// `config.yaml` and the `LLAMASTASH_LEMONADE` env var
+    /// (`1`/`true`/`yes`/`on`) — any of the three turns it on. Experimental:
+    /// behaviour and config may change. llamastash never installs `lemond`;
+    /// set it up manually (see `docs/lemonade-setup.md`).
+    #[arg(long)]
+    lemonade: bool,
+    /// Force-enable the ds4 (DwarfStar) direct backend for DeepSeek V4 GGUFs,
+    /// overriding `ds4.enabled: false`. ds4 is otherwise **on by default**
+    /// whenever `ds4-server` is found (on `PATH` or via `ds4.binary`). OR-ed
+    /// with `LLAMASTASH_DS4=1`. llamastash never installs `ds4-server`; build
+    /// it and point `ds4.binary` at it (see `docs/usage.md`).
+    #[arg(long)]
+    ds4: bool,
+    /// Force-enable the vLLM backend for safetensors HF repos, overriding
+    /// `backend.vllm.enabled: false`. vLLM is otherwise **on by default**
+    /// whenever a `vllm` launcher is found (on `PATH` or via
+    /// `backend.vllm.servers`). OR-ed with `LLAMASTASH_VLLM=1`. llamastash
+    /// never installs vLLM (see `docs/vllm-setup.md`).
+    #[arg(long)]
+    vllm: bool,
+    /// Force-enable the SGLang backend for safetensors HF repos, overriding
+    /// `backend.sglang.enabled: false`. SGLang is otherwise **on by default**
+    /// whenever a `sglang` launcher is found (on `PATH` or via
+    /// `backend.sglang.servers`). OR-ed with `LLAMASTASH_SGLANG=1`. llamastash
+    /// never installs SGLang (see `docs/sglang-setup.md`).
+    #[arg(long)]
+    sglang: bool,
+    /// Start the daemon even if an *indicated* backend can't initialize —
+    /// the `llama-server` binary isn't found, or the Lemonade umbrella port
+    /// is already taken / `lemond` is missing. Without this, `daemon start`
+    /// fails fast with an error rather than coming up silently degraded. With
+    /// it, the daemon starts anyway and the failed backend is simply
+    /// unavailable (surfaced in `status` and the TUI server-info section).
+    #[arg(long)]
+    force: bool,
+  },
   /// Stop the running daemon. Every managed launch is stopped with it
   /// (SIGTERM, then SIGKILL after the grace window) — only a daemon
   /// *crash* leaves a model running, as an orphan the next start

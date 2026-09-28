@@ -317,6 +317,32 @@ pub(crate) fn kv_row_focused(
   palette: &Palette,
   show_source: bool,
 ) -> Line<'static> {
+  kv_row_focused_muted(
+    label,
+    value,
+    source_label,
+    focused,
+    cyclable,
+    palette,
+    show_source,
+    false,
+  )
+}
+
+/// [`kv_row_focused`] that can also mute a real value: a default the row
+/// falls through to, which should read like `inherited` rather than like a
+/// value the user set.
+#[allow(clippy::too_many_arguments)] // one flag per render decision; a struct would only rename them
+pub(crate) fn kv_row_focused_muted(
+  label: &str,
+  value: String,
+  source_label: Option<&str>,
+  focused: bool,
+  cyclable: bool,
+  palette: &Palette,
+  show_source: bool,
+  muted: bool,
+) -> Line<'static> {
   let marker = if focused {
     crate::tui::glyphs::active().focus_marker()
   } else {
@@ -334,7 +360,11 @@ pub(crate) fn kv_row_focused(
     format!("{marker}{label:<width$}", width = kv_label_width()),
     label_style,
   ));
-  let v_style = kv_value_style(&value, palette);
+  let v_style = if muted {
+    palette.muted_style()
+  } else {
+    kv_value_style(&value, palette)
+  };
   if focused && cyclable {
     let glyphs = crate::tui::glyphs::active();
     spans.push(Span::styled(

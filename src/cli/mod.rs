@@ -248,11 +248,7 @@ fn report(result: CliResult, json: bool) -> i32 {
     Err(exit) => {
       if let Some(msg) = &exit.message {
         if json {
-          let body = serde_json::json!({"error": {"code": exit.code, "message": msg}});
-          println!(
-            "{}",
-            serde_json::to_string_pretty(&body).unwrap_or_default()
-          );
+          output::print_json_error(exit.code, msg);
         } else {
           eprintln!("{}", colors::error(msg));
         }

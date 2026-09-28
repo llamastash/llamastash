@@ -864,6 +864,12 @@ pub fn status_json(snap: &StatusSnapshot) -> Value {
   body
 }
 
+/// The body every failing `--json` command prints on stdout.
+pub fn print_json_error(code: i32, message: &str) {
+  let body = serde_json::json!({"error": {"code": code, "message": message}});
+  println!("{}", pretty_json(&body));
+}
+
 /// Pretty-print `serde_json::Value` as the canonical CLI JSON form.
 /// Agents pin against the pretty form because it's diffable in CI;
 /// keep this consistent across every `--json` exit.

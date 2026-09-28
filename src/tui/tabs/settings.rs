@@ -223,7 +223,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
               lines.push(inline_warning_row(err, palette));
             }
           } else {
-            lines.push(crate::tui::fmt::kv_row_focused(
+            lines.push(crate::tui::fmt::kv_row_focused_muted(
               def.id,
               pv.value_label(id),
               Some(pv.source_for(id).label()),
@@ -233,6 +233,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
                 || def.ring() != crate::launch::knobs::Ring::None,
               palette,
               show_source,
+              pv.shows_config_default(id),
             ));
           }
         }

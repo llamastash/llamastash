@@ -334,8 +334,18 @@ places.
 
 ## R11 (v0.5.0 checklist)
 
-- [x] **Generic backend: run any OpenAI-compatible server from `config.yaml`.** Reaches gufo and Halogen, the two fastest Flash-Next engines on Strix Halo, which LlamaStash can't launch today. Entries declare their own string knobs, which work in the TUI, presets and `last_params`. Also adds a catalog trait hook that moves Lemonade's by-name discovery call behind the backend contract, and a per-backend stop grace — [`docs/plans/2026-09-26-001-feat-generic-command-backend-plan.md`](docs/plans/2026-09-26-001-feat-generic-command-backend-plan.md).
 - [x] ~~add a restart command for daemon~~ — `daemon restart` takes the `daemon start` flags, checks them and the config first, then stops and starts.
+- [ ] look into LS memory usage, its growing over time to more than 1GB
+- [ ] look into issue with frequent model path scanning
+- [ ] **gufo can 404 on a `<model>@<preset>` id through the proxy.** gufo checks the request's `model` against its `--served-model-name "{name}"`, and the proxy forwards `body.model` unchanged. Seen 2026-09-27 on the pre-#87-merge build: a `coding-xhigh` launch started with `start --preset` (no `--name`, so `{name}` was the plain id) answered Pi's `Qwen3.8-Flash-Next-UD-Q4_K_XL@coding-xhigh` with 404 `model '...' is not served by this process`, while the plain id worked. Halogen and llama-server don't check `model`. Re-test on `main` with a proxy auto-start from the `@<preset>` id, which may already name the launch so `{name}` matches. If it still fails: rewrite `body.model` to the served name for generic launches, or publish the addressed id as `{name}`.
+- [ ] Denylist entries the upstream parsers show are missing: vLLM 0.30.0's `-dpm` alias for `--data-parallel-multi-port-external-lb`, and ds4's `--coordinator HOST PORT` (distributed mode). Decide whether to refuse them.
+- [ ] integrations command writes the wrong contextWindow values??
+- [ ] remove ds4 and add it a generic backend sample
+- [ ] tui/cli start with preset without name will adopt preset name as name
+- [ ] proxy route to unnamed if no named found and unnamed is only launch
+- [ ] **`start --device none` is silently dropped and the model launches on the GPU.** `none` is not in the server's `--list-devices` catalog, so [`launch_service`](src/daemon/launch_service.rs) removes the selector as stale and spawns without `-dev`. The user asked for CPU-only and gets a full offload with no warning. `-- -dev none` works. Either accept `none` as a device value or refuse it with a message. Found 2026-09-27 testing #83 in an LXC container.
+- [ ] **Admission prices the `--fit-ctx` floor, not the context `--fit` picks.** Qwen3.8-27B Q6_K (20.5 GiB) was projected at 25.0 GiB, then `--fit` chose 262144 ctx and GTT use reached 86.4 GiB. Documented on [`project_demand`](src/launch/admission.rs) as "a floor, not a ceiling", but a second launch admitted on the floor figure can then run out of memory. Found 2026-09-27 testing #83.
+- [x] **Generic backend: run any OpenAI-compatible server from `config.yaml`.** Reaches gufo and Halogen, the two fastest Flash-Next engines on Strix Halo, which LlamaStash can't launch today. Entries declare their own string knobs, which work in the TUI, presets and `last_params`. Also adds a catalog trait hook that moves Lemonade's by-name discovery call behind the backend contract, and a per-backend stop grace — [`docs/plans/2026-09-26-001-feat-generic-command-backend-plan.md`](docs/plans/2026-09-26-001-feat-generic-command-backend-plan.md).
 - [x] **Generic knob rows show the entry's `default:` value** when unset; the TUI editor reads it through the same `config_default_knobs` hook the launch uses.
 - [x] **A host without `llama-server` can launch its other backends.** `LaunchEnv` is always built with an optional default binary; `daemon start` needs `llama-server` only when no other backend is enabled; a llama.cpp launch without it gets the `--llama-server` hint.
 - [x] **File-less-model discovery source is backend-neutral.** `ModelSource::Lemonade` is now `ModelSource::Backend(id)`, parsed from any registered backend id. The `BackendModelId` minting, delegated-row `status` projection and force-map key were already backend-neutral or sit on the sanctioned per-backend flag table.
@@ -343,11 +353,6 @@ places.
 - [x] **Duplicate launches have a documented pick.** A plain model reference goes to a Ready unnamed launch before a named one, then the newest by numeric `L#` (`route::pick_ready_launch`); documented in `docs/usage.md` and `docs/architecture.md` § Named launches.
 - [x] **A failing `--json` command prints a JSON error.** `report` prints `{"error": {"code", "message"}}` on stdout when any subcommand level set `--json` (read from clap's matches, so new commands need no edit); `show`'s own copy is gone.
 - [x] `strip_forbidden_extras` drops each forbidden flag's values by its real value count (per-backend tables from the vLLM 0.30.0, SGLang 0.5.20 and ds4 parsers), not the leading-dash guess. llama.cpp and ds4 now use it too; ds4's strip used to leave the value behind.
-- [ ] Denylist entries the upstream parsers show are missing: vLLM 0.30.0's `-dpm` alias for `--data-parallel-multi-port-external-lb`, and ds4's `--coordinator HOST PORT` (distributed mode). Decide whether to refuse them.
-- [ ] integrations command writes the wrong contextWindow values??
-- [ ] remove ds4 and add it a generic backned sample
-- [ ] **`start --device none` is silently dropped and the model launches on the GPU.** `none` is not in the server's `--list-devices` catalog, so [`launch_service`](src/daemon/launch_service.rs) removes the selector as stale and spawns without `-dev`. The user asked for CPU-only and gets a full offload with no warning. `-- -dev none` works. Either accept `none` as a device value or refuse it with a message. Found 2026-09-27 testing #83 in an LXC container.
-- [ ] **Admission prices the `--fit-ctx` floor, not the context `--fit` picks.** Qwen3.8-27B Q6_K (20.5 GiB) was projected at 25.0 GiB, then `--fit` chose 262144 ctx and GTT use reached 86.4 GiB. Documented on [`project_demand`](src/launch/admission.rs) as "a floor, not a ceiling", but a second launch admitted on the floor figure can then run out of memory. Found 2026-09-27 testing #83.
 
 ## General Roadmap
 

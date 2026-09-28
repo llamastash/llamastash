@@ -182,6 +182,34 @@ async fn ensure_umbrella_respawns_an_exited_umbrella() {
   second.stop(Duration::from_secs(3)).await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ensure_umbrella_waits_for_an_exited_umbrella_s_port() {
+  let logs = unique_temp("respawn-port");
+  std::fs::create_dir_all(&logs).unwrap();
+  let registry = SupervisorRegistry::new();
+  let port = allocate_port();
+
+  let first = ensure_umbrella(&registry, port, umbrella_spec(port), logs.join("a.log"))
+    .await
+    .expect("first ensure");
+  wait_ready(&first).await;
+  first.stop(Duration::from_secs(3)).await;
+
+  // Stand in for a killed umbrella that hasn't released the port yet.
+  let holder = std::net::TcpListener::bind(("127.0.0.1", port)).expect("hold port");
+  let release = tokio::spawn(async move {
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    drop(holder);
+  });
+
+  let second = ensure_umbrella(&registry, port, umbrella_spec(port), logs.join("b.log"))
+    .await
+    .expect("respawn waits for the port instead of failing PortInUse");
+  wait_ready(&second).await;
+  release.await.unwrap();
+  second.stop(Duration::from_secs(3)).await;
+}
+
 /// Regression for the blocking-preload bug: `start_model` used to await
 /// the lemond load inside its IPC reply, so a cold load (up to lemond's
 /// 120 s budget) outlived the CLI's 5 s reply timeout — the client hung

@@ -101,17 +101,17 @@ pub const SGLANG_FORBIDDEN_EXTRA_HEADS: &[&str] = &[
   "--served-model-name",
 ];
 
-/// Denylisted heads whose value count isn't one (SGLang 0.5.20
-/// `srt/arg_groups`: a `bool` field is `store_true`, a `List` is `nargs="+"`).
+/// Denylisted heads that take no value (SGLang 0.5.20 `srt/arg_groups`: a
+/// `bool` field is `store_true`). `--sidecar-args` is a list but takes one JSON
+/// string, because its `type_parser` skips `nargs="+"`.
 const SGLANG_FORBIDDEN_EXTRA_VALUES: &[(&str, crate::launch::params::FlagValues)] = {
-  use crate::launch::params::FlagValues::{None, OneOrMore};
+  use crate::launch::params::FlagValues::None;
   &[
     ("--enable-ssl-refresh", None),
     ("--grpc-mode", None),
     ("--smg-grpc-mode", None),
     ("--disaggregation-decode-enable-radix-cache", None),
     ("--disaggregation-decode-enable-offload-kvcache", None),
-    ("--sidecar-args", OneOrMore),
   ]
 };
 

@@ -460,10 +460,11 @@ pub trait Backend {
   /// badge / launch routing read that — so a new special-routing backend needs
   /// only override this, with no discovery edit.
   /// Config-only enablement, for boot decisions taken before the full
-  /// [`MethodContext`] exists (the discovery task is spawned first). Same
-  /// predicate as [`Backend::available`], reading only what `DaemonOptions`
-  /// already has. Default `false` — a backend opts in alongside
-  /// [`Backend::projects_hf_repos`].
+  /// [`MethodContext`] exists (the discovery task is spawned first, and the
+  /// `daemon start` precheck runs before any daemon). Same predicate as
+  /// [`Backend::available`], reading only what `DaemonOptions` already has.
+  /// Default `false`; a backend that can be enabled and has a binary to check
+  /// overrides it.
   fn enabled_in_config(
     &self,
     _config: &BackendConfig,

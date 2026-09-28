@@ -289,7 +289,7 @@ impl Backend for LemonadeBackend {
   }
 
   fn available(&self, ctx: &MethodContext) -> bool {
-    // Intent (default-on unless `lemonade.enabled: false`, `--lemonade`/env
+    // Intent (default-on unless `backend.lemonade.enabled: false`, `--lemonade`/env
     // force) AND the `lemond` binary resolves. Consulted by selection and
     // `status`.
     let force = ctx

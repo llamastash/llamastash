@@ -768,14 +768,21 @@ impl LaunchPickerState {
     if matches!(def.ring(), Ring::DeviceCheckbox) {
       return self.device_value_display();
     }
-    let config_default = self
+    KnobValue::render(self.shown_value(id).as_ref(), INHERITED_LABEL)
+  }
+
+  /// The value a knob row shows: the effective value, else the config default.
+  fn shown_value(&self, id: KnobId) -> Option<KnobValue> {
+    self
       .effective(id)
-      .is_none()
-      .then(|| self.config_default(id));
-    KnobValue::render(
-      self.effective(id).or(config_default.flatten().as_ref()),
-      INHERITED_LABEL,
-    )
+      .cloned()
+      .or_else(|| self.config_default(id))
+  }
+
+  /// Whether the row's value column shows the config default rather than a
+  /// value some layer set, so it renders muted like `inherited`.
+  pub fn shows_config_default(&self, id: KnobId) -> bool {
+    self.effective(id).is_none() && self.config_default(id).is_some()
   }
 
   /// The value the model's own config declares for `id` (a config entry's
@@ -791,10 +798,10 @@ impl LaunchPickerState {
     .cloned()
   }
 
-  /// Seed text for an `e`-edit on a knob row: the current effective value, or
+  /// Seed text for an `e`-edit on a knob row: the value the row shows, or
   /// empty when the row inherits or is delegated (there is no literal to edit).
   pub fn buffer_seed(&self, id: KnobId) -> String {
-    match self.effective(id) {
+    match self.shown_value(id) {
       Some(KnobValue::Set(s)) => s.to_arg(),
       _ => String::new(),
     }
@@ -816,6 +823,12 @@ impl LaunchPickerState {
       return Ok(());
     }
     match knobs::parse_value(def, trimmed) {
+      // Accepting the config default the unset row was seeded with keeps it
+      // unset, so a later `default:` change in config still reaches the model.
+      Ok(v) if self.effective(id).is_none() && self.config_default(id).as_ref() == Some(&v) => {
+        self.user_knobs.clear(id);
+        Ok(())
+      }
       Ok(v) => {
         self.user_knobs.set(id, v);
         Ok(())
