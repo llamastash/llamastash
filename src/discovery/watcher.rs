@@ -475,35 +475,58 @@ mod tests {
     };
     let (_handle, mut rx) =
       start(vec![WatchRoot::recursive(root.clone())], opts).expect("start watcher");
-    log.push(format!("{:?} root created, watcher started", t0.elapsed()));
+    log.push(format!("{:?} setup done, watcher started", t0.elapsed()));
+    drain(&mut rx, "baseline, no fs access", &root, &t0, &mut log).await;
 
-    loop {
-      match tokio::time::timeout(Duration::from_millis(3000), rx.recv()).await {
-        Ok(Some(e)) => log.push(format!("{:?} A {}", t0.elapsed(), path_summary(&e, &root))),
-        _ => break,
+    for round in 1..=4usize {
+      if round == 2 {
+        let _ = fs::read(root.join("sub/model.gguf")).unwrap();
+        log.push(format!(
+          "{:?} round {round} read(model.gguf) issued",
+          t0.elapsed()
+        ));
+      } else {
+        let _ = fs::read_dir(root.join("sub")).unwrap().count();
+        log.push(format!(
+          "{:?} round {round} read_dir(sub) issued",
+          t0.elapsed()
+        ));
       }
+      drain(&mut rx, &format!("round {round}"), &root, &t0, &mut log).await;
     }
-    log.push(format!("{:?} A quiet for 3s", t0.elapsed()));
 
-    for _ in 0..5 {
-      let _ = fs::read_dir(root.join("sub")).unwrap().count();
-      let _ = fs::read(root.join("sub/model.gguf")).unwrap();
-    }
-    log.push(format!("{:?} B reads issued", t0.elapsed()));
-
-    loop {
-      match tokio::time::timeout(Duration::from_millis(3000), rx.recv()).await {
-        Ok(Some(e)) => log.push(format!("{:?} B {}", t0.elapsed(), path_summary(&e, &root))),
-        _ => break,
-      }
-    }
-    log.push(format!("{:?} B quiet for 3s", t0.elapsed()));
     fs::remove_dir_all(&root).ok();
     panic!(
       "SPIKE TRANSCRIPT root={}\n{}",
       root.display(),
       log.join("\n")
     );
+  }
+
+  async fn drain(
+    rx: &mut tokio::sync::mpsc::Receiver<WatchEvent>,
+    label: &str,
+    root: &std::path::Path,
+    t0: &Instant,
+    log: &mut Vec<String>,
+  ) {
+    let mut n = 0usize;
+    while let Ok(Some(e)) = tokio::time::timeout(Duration::from_millis(1500), rx.recv()).await {
+      n += 1;
+      log.push(format!(
+        "{:?} {label} event: {}",
+        t0.elapsed(),
+        path_summary(&e, root)
+      ));
+      if n >= 20 {
+        log.push(format!("{:?} {label} capped at 20 events", t0.elapsed()));
+        break;
+      }
+    }
+    log.push(format!(
+      "{:?} {label}: {n} event(s), quiet 1.5s",
+      t0.elapsed()
+    ));
   }
 
   fn path_summary(event: &WatchEvent, root: &std::path::Path) -> String {
