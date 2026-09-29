@@ -456,6 +456,76 @@ mod tests {
     fs::remove_dir_all(&root).ok();
   }
 
+  /// SPIKE: temporary probe, not a real test. Establishes whether the reads
+  /// themselves fire a change event on Windows, or whether the setup creation
+  /// just arrives late. Phase A watches with no filesystem access at all, so
+  /// anything that shows up in phase B came from the reads.
+  #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+  async fn spike_reads_event_timing() {
+    use std::time::Instant;
+
+    let root = temp_root("spike-reads");
+    fs::create_dir_all(root.join("sub")).unwrap();
+    fs::write(root.join("sub/model.gguf"), b"GGUF\x03").unwrap();
+    let t0 = Instant::now();
+    let mut log: Vec<String> = Vec::new();
+    let opts = WatcherOptions {
+      periodic_rescan: Duration::from_secs(3600),
+      ..fast_opts()
+    };
+    let (_handle, mut rx) =
+      start(vec![WatchRoot::recursive(root.clone())], opts).expect("start watcher");
+    log.push(format!("{:?} root created, watcher started", t0.elapsed()));
+
+    loop {
+      match tokio::time::timeout(Duration::from_millis(3000), rx.recv()).await {
+        Ok(Some(e)) => log.push(format!("{:?} A {}", t0.elapsed(), path_summary(&e, &root))),
+        _ => break,
+      }
+    }
+    log.push(format!("{:?} A quiet for 3s", t0.elapsed()));
+
+    for _ in 0..5 {
+      let _ = fs::read_dir(root.join("sub")).unwrap().count();
+      let _ = fs::read(root.join("sub/model.gguf")).unwrap();
+    }
+    log.push(format!("{:?} B reads issued", t0.elapsed()));
+
+    loop {
+      match tokio::time::timeout(Duration::from_millis(3000), rx.recv()).await {
+        Ok(Some(e)) => log.push(format!("{:?} B {}", t0.elapsed(), path_summary(&e, &root))),
+        _ => break,
+      }
+    }
+    log.push(format!("{:?} B quiet for 3s", t0.elapsed()));
+    fs::remove_dir_all(&root).ok();
+    panic!(
+      "SPIKE TRANSCRIPT root={}\n{}",
+      root.display(),
+      log.join("\n")
+    );
+  }
+
+  fn path_summary(event: &WatchEvent, root: &std::path::Path) -> String {
+    match event {
+      WatchEvent::Changed { paths } => paths
+        .iter()
+        .map(|p| pstrip(p, root))
+        .collect::<Vec<_>>()
+        .join(", "),
+      other => format!("{other:?}"),
+    }
+  }
+
+  fn pstrip(path: &std::path::Path, root: &std::path::Path) -> String {
+    match path.strip_prefix(root) {
+      Ok(rel) if !rel.as_os_str().is_empty() => {
+        format!("<root>/{}", rel.display())
+      }
+      _ => format!("{}", path.display()),
+    }
+  }
+
   /// The scan reads every directory and header under a root; if those reads
   /// counted as changes, each rescan would trigger the next one.
   #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
