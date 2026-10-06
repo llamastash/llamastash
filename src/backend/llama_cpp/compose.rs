@@ -70,6 +70,10 @@ pub(crate) fn compose(params: &LaunchParams, allocated_port: u16) -> Vec<OsStrin
   if jinja || params.reasoning {
     argv.push("--jinja".into());
   }
+  if let Some(dir) = params.launch_config.get(super::slot_cache::KNOB_SAVE_PATH) {
+    argv.push("--slot-save-path".into());
+    argv.push(dir.into());
+  }
   argv.extend(load_mode_argv(params));
   if params.reasoning {
     argv.push("--reasoning-format".into());

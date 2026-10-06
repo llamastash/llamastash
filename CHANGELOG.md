@@ -4,6 +4,10 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 ## [Unreleased]
 
+### Added
+
+- `backend.llamacpp.slot_cache` (off by default) saves a llama.cpp model's prompt cache before an idle or make-room unload and restores it on the next load, so the returning conversation does not reprocess its prompt.
+
 ## [0.6.1] — 2026-10-02
 
 A patch release for `integrations`. It keeps the key order of the tool configs it edits instead of sorting them, and a generic entry like Halogen can now declare the image input and reasoning effort levels it accepts, so pi, OpenCode, Zed and Codex get them like they do for a GGUF model.

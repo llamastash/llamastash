@@ -78,6 +78,18 @@ parallel and read the daemon's CPU time per request
 (`/proc/<daemon pid>/stat`) rather than req/s alone. Use it to compare two
 daemon builds on the same upstream, alternating builds between rounds.
 
+## `slot_cache_spike.py` — slot save/restore against reprocessing
+
+```sh
+scripts/bench/slot_cache_spike.py --model /path/to/model.gguf \
+    --tokens 100000 --ctx 110000 --save-dir target/slot-spike
+```
+
+Starts a raw `llama-server` with `--slot-save-path`, fills one slot, saves it,
+restarts, restores and resends the prompt. Prints the timings and the file size
+as JSON. `--ngl` and `--threads` set the placement (default CPU only). Keep
+`--save-dir` off tmpfs. Results: `docs/spikes/2026-10-06-slot-save-restore.md`.
+
 ## `qwen38-flash-speed/` — Qwen3.8-Flash-Next engine and knob comparison
 
 ```sh

@@ -500,6 +500,20 @@ backend:
     # Sources — CLI: (none) · Env: (none, config-only).
     map_anthropic_effort: true
 
+    # Keep a model's prompt cache across an unload (default: off). Right before
+    # the idle sweep or make-room unloads a llama.cpp model, the daemon saves
+    # its slots to `<cache dir>/slot-cache/` and restores them on the next
+    # load, so the returning conversation does not reprocess its prompt.
+    #
+    # A save file is the whole KV cache: 3.3 GB for a 1B model at 100k tokens,
+    # much more for a large model. `max_gb` caps all save files together,
+    # oldest deleted first; 0 means no cap.
+    #
+    # Sources — CLI: (none) · Env: (none, config-only).
+    slot_cache:
+      enabled: false
+      max_gb: 20
+
   # ── Lemonade (NPU / multi-engine backend) [EXPERIMENTAL] ──
   #
   # EXPERIMENTAL: behaviour and these keys may change. A second backend

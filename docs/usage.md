@@ -82,6 +82,9 @@ backend: # Per-engine config, one block per backend. llama.cpp is the
     strict_fit: false # Refuse (vs degrade) an unplaceable --fit. Env: LLAMASTASH_STRICT_FIT.
     jinja: true # Emit --jinja every launch (tool calling). Config-only.
     map_anthropic_effort: true # Map Anthropic output_config.effort to the engine kwarg. Config-only.
+    slot_cache: # Keep the prompt cache across an idle unload. See §"Keeping the prompt cache across an unload".
+      enabled: false
+      max_gb: 20 # Cap on all save files together. 0 = no cap.
   lemonade:
     # servers: [{ binary: /opt/lemonade/lemond }] # lemond path; else PATH.
     # enabled: # tri-state: unset=auto, true=force on, false=force off.
@@ -1269,6 +1272,28 @@ Every non-2xx response carries an OpenAI-shaped JSON body:
 | 503  | `launch_failed`                                              | Auto-start failed and no Ready models exist for fallback. `running: []` is always present on this arm. The list reflects models that were **in `Ready` state at the moment the proxy snapshotted the supervisor registry for fallback** — models in `Launching` / `Loading` are not included, so an empty list does not mean "the daemon has nothing alive," only "no candidate was available for instant fallback." Retry once the slow launch completes. |
 
 Upstream non-2xx responses (e.g. `llama-server` returns 500 for a malformed completion request) are passed through verbatim — same status code, same body bytes; the OpenAI-shape envelope above only covers errors the proxy itself emits. Mid-stream upstream death: once headers are sent the routing decision is committed; if the upstream stream errors after that point, the proxy closes its connection to the agent (the agent sees a truncated SSE / chunked body) — no retry, no fallback.
+
+### Keeping the prompt cache across an unload
+
+When the idle sweep or make-room unloads a llama.cpp model, the next request has to process the whole prompt again. With `backend.llamacpp.slot_cache.enabled: true` the daemon saves the model's prompt cache to disk right before that unload and reads it back when the model loads again, so the returning conversation continues from where it was.
+
+```yaml
+backend:
+  llamacpp:
+    slot_cache:
+      enabled: true
+      max_gb: 20
+```
+
+- **Off by default.** A save file is the model's whole KV cache. It was 3.3 GB for a 1B model at 100,000 tokens and is much larger for a big model.
+- **What it saves you.** On that 1B model at 100,000 tokens: 81.8 s to reprocess, 2.2 s to save and 0.3 s to restore. Numbers and limits are in [`spikes/2026-10-06-slot-save-restore.md`](spikes/2026-10-06-slot-save-restore.md).
+- **When it saves.** Only before an unload the daemon decides on (idle TTL or make-room). `llamastash stop`, a daemon stop and a crash save nothing. Embedding and rerank launches are skipped.
+- **Where.** `<cache dir>/slot-cache/<model key>/slot-<N>.bin`, under `LLAMASTASH_CACHE_DIR` when set. The key covers the model file's path, size and mtime.
+- **Cleanup.** A restore deletes the files it read. `max_gb` caps the total across all models; the oldest files are deleted first, and a save larger than the cap is deleted right after it is written. Deleting the `slot-cache` directory by hand is safe.
+- **Cost.** The save runs before the unload, so a make-room request waits for it. One slot gets 120 s; after that the save is dropped and the unload goes ahead.
+- **Your own `--slot-save-path`.** If a launch already passes the flag in its extras, the daemon leaves that launch alone.
+
+A restore that llama-server refuses (the model now loads with a smaller context, for example) is logged and the launch starts cold.
 
 ### Configuration
 

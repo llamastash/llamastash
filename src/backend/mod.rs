@@ -424,6 +424,15 @@ pub trait Backend {
     crate::daemon::actuals::Actuals::default()
   }
 
+  /// Runs once the child answers its readiness probe, before the launch is
+  /// marked Ready, so whatever it does lands ahead of the first request.
+  /// Default: nothing.
+  async fn after_ready(&self, _params: &LaunchParams, _port: u16) {}
+
+  /// Runs before the idle sweep or make-room stops a launch, while the child
+  /// still answers. Not called for a user-requested stop. Default: nothing.
+  async fn before_evict(&self, _params: &LaunchParams, _port: u16) {}
+
   /// Whether `extras` already configures speculative decoding by hand, in which
   /// case llamastash defers entirely and adds none of its own (KD3).
   ///
@@ -1171,6 +1180,14 @@ impl Backend for Backends {
     timeout: std::time::Duration,
   ) -> crate::daemon::actuals::Actuals {
     for_each_backend!(self, b => b.fetch_actuals(port, timeout).await)
+  }
+
+  async fn after_ready(&self, params: &LaunchParams, port: u16) {
+    for_each_backend!(self, b => b.after_ready(params, port).await)
+  }
+
+  async fn before_evict(&self, params: &LaunchParams, port: u16) {
+    for_each_backend!(self, b => b.before_evict(params, port).await)
   }
 
   fn speculation_set_in_extras(&self, extras: &[OsString]) -> bool {
