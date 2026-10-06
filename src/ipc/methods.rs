@@ -583,11 +583,26 @@ pub(crate) type ResolvedModelInfo = (
 /// still wants. A thin adapter over [`crate::backend::resolve_identity_for_path`]
 /// — the header read, the id, the arch and the supported-backend list all come
 /// from there, so this shape can never drift from what a launch observes.
-pub(crate) fn resolve_model_id_and_arch(
+///
+/// `async` because a caller cannot afford this inline: the header read is up to
+/// ~16 MiB of synchronous file I/O and every caller is an IPC handler, so the
+/// read runs on a blocking thread instead of stalling a tokio worker (same rule
+/// the proxy's auto-start path follows).
+pub(crate) async fn resolve_model_id_and_arch(
   path: &std::path::Path,
 ) -> Result<ResolvedModelInfo, ErrorObject> {
-  let r = crate::backend::resolve_identity_for_path(path, None)
-    .map_err(|e| ErrorObject::new(ErrorCode::InvalidParams, e.to_string()))?;
+  let path = path.to_path_buf();
+  let joined = tokio::task::spawn_blocking(move || {
+    crate::backend::resolve_identity_for_path(&path, None)
+      .map_err(|e| ErrorObject::new(ErrorCode::InvalidParams, e.to_string()))
+  })
+  .await;
+  let r = joined.map_err(|join| {
+    ErrorObject::new(
+      ErrorCode::InternalError,
+      format!("model identity resolution failed: {join}"),
+    )
+  })??;
   Ok((
     r.id,
     r.arch,
@@ -637,6 +652,7 @@ async fn model_key_arch_rows(
     None => (
       crate::util::paths::model_file_label(model_path),
       resolve_model_id_and_arch(model_path)
+        .await
         .ok()
         .and_then(|(_, a, _, _, _)| a),
     ),
@@ -1036,6 +1052,44 @@ mod tests {
 
   fn ctx() -> MethodContext {
     MethodContext::new(ShutdownToken::new())
+  }
+
+  /// A header read for a model the catalog has no row for went onto a blocking
+  /// thread, so cover that it still answers, and answers with the same tuple the
+  /// sync resolver produced.
+  #[tokio::test]
+  async fn resolve_model_id_and_arch_reads_the_header_off_the_worker_thread() {
+    let dir = crate::test_support::unique_temp_dir("ls-ipc", "header");
+    let path = dir.join("model.gguf");
+    std::fs::write(
+      &path,
+      crate::gguf::test_fixtures::build_minimal_gguf("llama"),
+    )
+    .expect("write fixture gguf");
+
+    let (id, arch, _, supported, _) = resolve_model_id_and_arch(&path).await.expect("header read");
+    // The identity resolver canonicalizes on the way, which resolves the `/tmp`
+    // symlink on macOS and drops the verbatim prefix Windows canonicalization
+    // adds. Same helper, so the same answer on every platform.
+    assert_eq!(
+      id.path,
+      crate::util::paths::canonicalize(&path).expect("canonical path")
+    );
+    assert_eq!(arch.as_deref(), Some("llama"));
+    assert!(!supported.is_empty(), "routing tags come from the header");
+    std::fs::remove_dir_all(&dir).ok();
+  }
+
+  #[tokio::test]
+  async fn resolve_model_id_and_arch_maps_a_bad_path_to_invalid_params() {
+    let err = resolve_model_id_and_arch(std::path::Path::new("/nope/definitely-missing.gguf"))
+      .await
+      .expect_err("a missing model has no identity");
+    assert_eq!(
+      err.code,
+      ErrorCode::InvalidParams.as_i32(),
+      "a bad path stays the caller's fault: {err:?}"
+    );
   }
 
   /// A config-declared row keys its `last_params` by a backend identity, which

@@ -6,7 +6,15 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 ### Added
 
-- **Keep a model's prompt cache across an unload (opt-in).** With `backend.llamacpp.slot_save.enabled: true`, the daemon saves a llama.cpp launch's prompt cache before the idle sweep or make-room stops it and restores it when the model starts again. On Llama-3.2-1B a 100,000-token prompt comes back in about 1 s instead of 73 s. Works for full-attention models; hybrid and sliding-window models are detected and skipped until llama.cpp reuses their restored cache.
+- `proxy.aliases` maps a model name a tool is hard-wired to onto a local model (`gpt-4o-mini: qwen3.8-27b-q8`, or a `name:`/`target:` list when you want a comment per entry), so that tool needs no config edit. A value has to name exactly one model by itself, so it never routes to a guess. A name that names a model outright wins over an alias of the same name, an alias settles a name two models share, an alias names a model rather than a preset, and aliases are not listed by `/v1/models` or `/api/tags`. ([#99](https://github.com/llamastash/llamastash/pull/99))
+- The `/ui` model chooser colours each row: green for a model whose backend has a web UI you can open, red for one that is running but serves none. ([#99](https://github.com/llamastash/llamastash/pull/99))
+- **Keep a model's prompt cache across an unload (opt-in).** `backend.llamacpp.slot_save.enabled: true` saves a llama.cpp launch's prompt cache before the idle sweep or make-room stops it and restores it on the next start. On Llama-3.2-1B a 100,000-token prompt comes back in about 1 s instead of 73 s. Full-attention models only for now; hybrid and sliding-window models are detected and skipped.
+
+### Changed
+
+- A preset lookup no longer reads a model header on the daemon's async worker thread, so a slow disk cannot stall the control-plane calls queued behind it. ([#99](https://github.com/llamastash/llamastash/pull/99))
+- `/api/show` reads `<model>@<launch>` the way the chat surfaces do: the launch name is a pointer to a running launch, and a name that does not exist falls back to that model's unnamed launch. It used to answer `404` for anything containing an `@`. ([#99](https://github.com/llamastash/llamastash/pull/99))
+- The proxy reads the model catalog through one shared snapshot instead of copying every row for every request, so routing a request no longer allocates in proportion to how many models are on disk. ([#99](https://github.com/llamastash/llamastash/pull/99))
 
 ## [0.6.1] — 2026-10-02
 

@@ -359,6 +359,138 @@ pub struct ProxyConfig {
   /// Sources — CLI: (none) · Env: (none).
   #[serde(default = "ProxyConfig::default_max_body_size")]
   pub max_body_size: usize,
+  /// Names that stand in for a local model, so a tool with a hard-coded model
+  /// name needs no edit of its own config: `gpt-4o-mini: qwen3.8-27b-q8` answers
+  /// a request for `gpt-4o-mini` with that model. A value is any model reference
+  /// `llamastash list` shows, resolved exactly as a client's reference is
+  /// resolved. `docs/usage.md` (Model ids on the proxy) is the copy a user reads;
+  /// in short, an alias is consulted only when the name the client sent names no
+  /// model outright, and its value has to name exactly one model.
+  ///
+  /// Written either as a map of `name: target` or as a list of `- name:` /
+  /// `target:` entries, which is the spelling that carries a comment per entry.
+  /// Both decode to [`ProxyAliases`] and keep the order they appear in, so a
+  /// repeated name resolves to the last entry. Names match case-insensitively.
+  ///
+  /// Sources — CLI: (none) · Env: (none).
+  #[serde(default)]
+  pub aliases: ProxyAliases,
+}
+
+/// One `proxy.aliases` entry.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub struct ProxyAlias {
+  /// The name a client sends.
+  pub name: String,
+  /// The model reference it stands for.
+  pub target: String,
+}
+
+/// `proxy.aliases`, in the order the operator wrote it. Accepts the map
+/// spelling (`name: target` pairs) and the list spelling (a sequence of
+/// `name:` / `target:` entries); order is kept for both, because it is what
+/// settles a repeated name.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ProxyAliases(Vec<ProxyAlias>);
+
+impl ProxyAlias {
+  /// A pair as written in the map spelling.
+  fn from_pair(name: impl Into<String>, target: impl Into<String>) -> Self {
+    Self {
+      name: name.into(),
+      target: target.into(),
+    }
+  }
+}
+
+impl ProxyAliases {
+  /// Entries in the order given, which is how a caller hands over a table
+  /// decoded from either spelling.
+  pub fn from_pairs(pairs: impl IntoIterator<Item = (String, String)>) -> Self {
+    Self(
+      pairs
+        .into_iter()
+        .map(|(name, target)| ProxyAlias::from_pair(name, target))
+        .collect(),
+    )
+  }
+
+  pub fn is_empty(&self) -> bool {
+    self.0.is_empty()
+  }
+
+  pub fn len(&self) -> usize {
+    self.0.len()
+  }
+
+  pub fn iter(&self) -> impl Iterator<Item = &ProxyAlias> {
+    self.0.iter()
+  }
+
+  /// Entries in file order as `(name, target)`.
+  pub fn pairs(&self) -> impl Iterator<Item = (&str, &str)> {
+    self.0.iter().map(|a| (a.name.as_str(), a.target.as_str()))
+  }
+}
+
+impl<'de> Deserialize<'de> for ProxyAliases {
+  fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+  where
+    D: serde::Deserializer<'de>,
+  {
+    struct Accept;
+
+    impl<'de> serde::de::Visitor<'de> for Accept {
+      type Value = ProxyAliases;
+
+      fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a map of alias to model, or a list of {name, target} entries")
+      }
+
+      fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+      where
+        A: serde::de::SeqAccess<'de>,
+      {
+        let mut out = Vec::new();
+        while let Some(entry) = seq.next_element::<ProxyAlias>()? {
+          out.push(entry);
+        }
+        Ok(ProxyAliases(out))
+      }
+
+      fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+      where
+        A: serde::de::MapAccess<'de>,
+      {
+        let mut out = Vec::new();
+        while let Some((name, target)) = map.next_entry::<String, String>()? {
+          out.push(ProxyAlias { name, target });
+        }
+        Ok(ProxyAliases(out))
+      }
+
+      // `proxy:` with a bare `aliases:` under it is the shape of a section written
+      // before its entries, and it has to read as no aliases. A failed load replaces
+      // the whole config, which would take the proxy port and the model paths with
+      // it.
+      fn visit_unit<E>(self) -> Result<Self::Value, E>
+      where
+        E: serde::de::Error,
+      {
+        Ok(ProxyAliases::default())
+      }
+
+      fn visit_none<E>(self) -> Result<Self::Value, E>
+      where
+        E: serde::de::Error,
+      {
+        Ok(ProxyAliases::default())
+      }
+    }
+
+    deserializer.deserialize_any(Accept)
+  }
 }
 
 impl ProxyConfig {
@@ -441,6 +573,7 @@ impl Default for ProxyConfig {
       api_key: None,
       insecure_no_auth: false,
       max_body_size: Self::default_max_body_size(),
+      aliases: Default::default(),
     }
   }
 }
@@ -1889,6 +2022,188 @@ proxy:
     assert!(loaded.warning.is_none(), "valid config should not warn");
     assert_eq!(loaded.config.proxy.max_body_size, 0);
     fs::remove_dir_all(dir).expect("temp test dir should be removed");
+  }
+
+  #[test]
+  fn proxy_aliases_survives_a_serialize_round_trip() {
+    // Whatever serializes a loaded config (doctor, a future config writer) has to
+    // be able to read back, in either spelling.
+    let dir = temp_test_dir("proxy-aliases-roundtrip");
+    let path = dir.join("config.yaml");
+    fs::write(
+      &path,
+      "proxy:\n  aliases:\n    gpt-4o-mini: qwen3.8-27b-q8\n",
+    )
+    .expect("write failed");
+    let loaded = load_config_from_path(&path);
+    let text = yaml_serde::to_string(&loaded.config.proxy.aliases).expect("serialises");
+    let back: ProxyAliases = yaml_serde::from_str(&text).expect("reads back");
+    assert_eq!(
+      back.pairs().collect::<Vec<(&str, &str)>>(),
+      vec![("gpt-4o-mini", "qwen3.8-27b-q8")]
+    );
+    fs::remove_dir_all(&dir).expect("temp test dir should be removed");
+  }
+
+  #[test]
+  fn proxy_aliases_load_in_both_spellings() {
+    let dir = temp_test_dir("proxy-aliases");
+    let path = dir.join("config.yaml");
+    fs::write(
+      &path,
+      "proxy:\n  aliases:\n    gpt-4o-mini: qwen3.8-27b-q8\n    claude-haiku: some/other-model\n",
+    )
+    .expect("write failed");
+
+    let loaded = load_config_from_path(&path);
+    assert!(loaded.warning.is_none(), "valid config should not warn");
+    assert_eq!(
+      loaded
+        .config
+        .proxy
+        .aliases
+        .pairs()
+        .collect::<Vec<(&str, &str)>>(),
+      vec![
+        ("gpt-4o-mini", "qwen3.8-27b-q8"),
+        ("claude-haiku", "some/other-model")
+      ]
+    );
+    // Absent is the default: no aliases until someone asks for them.
+    assert!(
+      ProxyConfig::default().aliases.is_empty(),
+      "aliases default to empty"
+    );
+    fs::remove_dir_all(&dir).expect("temp test dir should be removed");
+
+    // The block spelling, which is the one that carries a comment per entry.
+    let block_dir = temp_test_dir("proxy-aliases-block");
+    let block_path = block_dir.join("config.yaml");
+    fs::write(
+      &block_path,
+      "proxy:\n  aliases:\n    - name: gpt-4o-mini # the harness default\n      target: qwen3.8-27b-q8\n    - name: claude-haiku\n      target: some/other-model\n",
+    )
+    .expect("write failed");
+    let block = load_config_from_path(&block_path);
+    assert!(
+      block.warning.is_none(),
+      "valid config should not warn: {:?}",
+      block.warning
+    );
+    assert_eq!(
+      block
+        .config
+        .proxy
+        .aliases
+        .pairs()
+        .collect::<Vec<(&str, &str)>>(),
+      vec![
+        ("gpt-4o-mini", "qwen3.8-27b-q8"),
+        ("claude-haiku", "some/other-model")
+      ]
+    );
+    fs::remove_dir_all(&block_dir).expect("temp test dir should be removed");
+  }
+
+  /// A bare `aliases:` is the shape of a section written before its entries. It
+  /// has to read as no aliases: a config that fails to parse is replaced whole by
+  /// defaults, which takes the proxy port and the model paths with it.
+  #[test]
+  fn proxy_aliases_accepts_an_empty_section_and_an_empty_list() {
+    for (label, body) in [
+      ("bare key", "proxy:\n  port: 11999\n  aliases:\n"),
+      ("empty list", "proxy:\n  port: 11999\n  aliases: []\n"),
+      ("empty map", "proxy:\n  port: 11999\n  aliases: {}\n"),
+    ] {
+      let dir = temp_test_dir("proxy-aliases-empty");
+      let path = dir.join("config.yaml");
+      fs::write(&path, body).expect("write failed");
+
+      let loaded = load_config_from_path(&path);
+      assert!(
+        loaded.warning.is_none(),
+        "{label} should load clean: {:?}",
+        loaded.warning
+      );
+      assert!(loaded.config.proxy.aliases.is_empty(), "{label}");
+      assert_eq!(
+        loaded.config.proxy.port,
+        Some(11999),
+        "{label} must not cost the rest of the config"
+      );
+      fs::remove_dir_all(&dir).expect("temp test dir should be removed");
+    }
+  }
+
+  /// A typo in a block-spelling entry is refused rather than ignored, and the
+  /// case-differing duplicate keeps the file's order, which is what decides it.
+  #[test]
+  fn proxy_alias_entries_follow_the_configs_rules() {
+    let extra = temp_test_dir("proxy-aliases-extra");
+    let extra_path = extra.join("config.yaml");
+    fs::write(
+      &extra_path,
+      "proxy:\n  aliases:\n    - name: a\n      target: x\n      note: documented here\n",
+    )
+    .expect("write failed");
+    let loaded = load_config_from_path(&extra_path);
+    assert!(
+      loaded.warning.is_some(),
+      "an unknown key on an entry is a typo, not a comment"
+    );
+    fs::remove_dir_all(&extra).expect("temp test dir should be removed");
+
+    let twice = temp_test_dir("proxy-aliases-twice");
+    let twice_path = twice.join("config.yaml");
+    fs::write(
+      &twice_path,
+      "proxy:\n  aliases:\n    A: first\n    a: second\n",
+    )
+    .expect("write failed");
+    let repeated = load_config_from_path(&twice_path);
+    assert!(
+      repeated.warning.is_none(),
+      "two spellings of one name is the operator's business: {:?}",
+      repeated.warning
+    );
+    assert_eq!(
+      repeated
+        .config
+        .proxy
+        .aliases
+        .pairs()
+        .collect::<Vec<(&str, &str)>>(),
+      vec![("A", "first"), ("a", "second")],
+      "file order is what settles it later"
+    );
+    fs::remove_dir_all(&twice).expect("temp test dir should be removed");
+  }
+
+  /// A target written as a number is read as its text, the way serde_yaml reads a
+  /// number into any string field. It then names no model, which the daemon says
+  /// once on first use.
+  #[test]
+  fn proxy_aliases_reads_a_numeric_target_as_text() {
+    let dir = temp_test_dir("proxy-aliases-bad");
+    let path = dir.join("config.yaml");
+    fs::write(&path, "proxy:\n  aliases:\n    gpt-4o-mini: 42\n").expect("write failed");
+
+    let loaded = load_config_from_path(&path);
+    assert!(
+      loaded.warning.is_none(),
+      "a numeric target is text like any other: {:?}",
+      loaded.warning
+    );
+    assert_eq!(
+      loaded
+        .config
+        .proxy
+        .aliases
+        .pairs()
+        .collect::<Vec<(&str, &str)>>(),
+      vec![("gpt-4o-mini", "42")]
+    );
+    fs::remove_dir_all(&dir).expect("temp test dir should be removed");
   }
 
   #[test]

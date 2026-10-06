@@ -502,16 +502,14 @@ pub(crate) fn collapse_shard_reference(needle: &str) -> Option<String> {
   (stem != needle).then_some(stem)
 }
 
-/// Resolve a model reference, preserving the distinction between "zero
-/// candidates" and "many candidates" so callers (the HTTP proxy emits
-/// 404 vs 400 with `matches: [...]`) can branch without re-running the
-/// substring matcher themselves. The CLI's `resolve_model` wraps this,
-/// folding every failure into a single `MODEL_NOT_FOUND` exit.
+/// The rungs of [`resolve_model_with_candidates`] that name a model outright: an
+/// exact path, file name, published id, or qualified id. Nothing here matches a
+/// partial string, so `gpt-4o-mini` does not name `gpt-4o-mini-Q4_K_M.gguf`.
 ///
-/// Precedence: exact path → exact name → exact published id → repo- or
-/// source-qualified id → a split model's pre-rename shard-1 name →
-/// case-insensitive substring of name, parent, or qualified id.
-pub fn resolve_model_with_candidates(
+/// The proxy asks this before it consults `proxy.aliases`: an alias yields to a
+/// model that really answers to the name, but not to a partial match or to a
+/// string two models both contain.
+pub(crate) fn resolve_exact_reference(
   rows: &[CatalogRow],
   reference: &str,
 ) -> Result<CatalogRow, ResolveError> {
@@ -568,6 +566,34 @@ pub fn resolve_model_with_candidates(
     n if n > 1 => return Err(ResolveError::Many(qualified.into_iter().cloned().collect())),
     _ => {}
   }
+  Err(ResolveError::None)
+}
+
+/// Resolve a model reference, preserving the distinction between "zero
+/// candidates" and "many candidates" so callers (the HTTP proxy emits
+/// 404 vs 400 with `matches: [...]`) can branch without re-running the
+/// substring matcher themselves. The CLI's `resolve_model` wraps this,
+/// folding every failure into a single `MODEL_NOT_FOUND` exit.
+///
+/// Precedence: a rung that names one row outright — an exact path, file name,
+/// published id or qualified id — then a split model's pre-rename shard-1 name,
+/// then a case-insensitive substring of name, parent, or qualified id.
+pub fn resolve_model_with_candidates(
+  rows: &[CatalogRow],
+  reference: &str,
+) -> Result<CatalogRow, ResolveError> {
+  match resolve_exact_reference(rows, reference) {
+    Ok(row) => return Ok(row),
+    // Two rows answering the same qualified string is a collision the source
+    // rung exists for; the substring tier cannot settle it either.
+    Err(ResolveError::Many(candidates)) => return Err(ResolveError::Many(candidates)),
+    Err(_) => {}
+  }
+  let needle = reference.trim();
+  if needle.is_empty() {
+    return Err(ResolveError::Empty);
+  }
+
   // Split models used to be named after shard 1, and that string is still out
   // there: in 0.2.0 tool configs, saved `body.model` values, and preset keys.
   // Accept it as an alias for the collapsed name so an upgrade does not 404.

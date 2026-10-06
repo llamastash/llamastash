@@ -423,6 +423,26 @@ proxy:
   # Sources — CLI: (none) · Env: (none).
   max_body_size: 16777216
 
+  # Names that stand in for a local model, for a tool that will only ever
+  # ask for a fixed one. The key is the name the client sends; the value is any
+  # reference `llamastash list` shows — a plain name, a repo-qualified id, or a
+  # full path. Two things trip people up: a value has to name exactly one model
+  # by itself, and a name a real model owns stays that model's, alias or not. The
+  # rest of the rules are under Model ids on the proxy in docs/usage.md.
+  # Commented out by default; add entries as needed.
+  #
+  # Sources — CLI: (none) · Env: (none).
+  #
+  # aliases:
+  #   gpt-4o-mini: qwen3.8-27b-q8
+  #   claude-haiku: unsloth/Demo-GGUF/demo-Q4_K_M
+  #
+  # Or one entry per block, which is the spelling that carries a comment:
+  #
+  # aliases:
+  #   - name: gpt-4o-mini # what the harness hard-codes
+  #     target: qwen3.8-27b-q8
+
 # ─── Backend engines ──────────────────────────────────────────────
 #
 # All backend configuration lives under `backend:`. llama.cpp is the

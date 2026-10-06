@@ -994,6 +994,34 @@ A request for the plain model id while it runs more than once goes to an unnamed
 
 The resolver accepts every form for every model, collision or not, and each qualified form in both the published spelling and the `.gguf` filename spelling. It also accepts a partial repo reference (`unsloth/Qwen3.8`), which the raw cache path (`models--unsloth--Qwen3.8-…`) never matched. Sending any form two models share — the bare name, or a repo-qualified form that does not separate them — returns `400 ambiguous_model`, and its `matches` array lists the published id of each candidate, every one of which routes, so resend one verbatim.
 
+**Aliases** cover a tool that will only ever ask for one fixed name, so it needs no config edit of its own. `proxy.aliases` in `config.yaml` maps such a name to a model:
+
+```yaml
+proxy:
+  aliases:
+    gpt-4o-mini: qwen3.8-27b-q8_0
+    claude-haiku: unsloth/Demo-GGUF/demo-Q4_K_M
+```
+
+The block spelling takes one entry per row and is the one that carries a comment with each entry:
+
+```yaml
+proxy:
+  aliases:
+    - name: gpt-4o-mini # what the harness hard-codes
+      target: qwen3.8-27b-q8_0
+```
+
+A value is any reference `llamastash list` shows — a plain name, a repo-qualified id, or a full path. It has to name exactly one model by itself: an alias is written once and the client sending the aliased name cannot refine it, so an alias is never answered with a guess. It uses the same rungs a client may send, so a published id ignores case while a full path or a file name is matched as it is spelled on disk. Entries keep the order they are written in, so repeating a name puts the last one in charge. Three rules, all of them so an alias can never surprise a client:
+
+- **A model that owns the name wins.** An alias is consulted when the name the client sent names no model outright — a full path, a file name, a published id, or a repo-qualified id. A longer file name that merely *contains* the alias does not own it, and neither do two models that both contain it: the alias is the tie-break you wrote. When a request arrives for a shadowed alias the daemon logs one warning naming it.
+- **An alias names a model, nothing else.** Its value cannot pin a launch name or a preset, and a value naming another alias is an error the daemon logs once, because a chain names no model. A *name* spelled like a launch address (`qwen3@dev`) is refused when the table is built: the alias could not honour the launch half and would take a client's real address away. A client that wants a named launch of an aliased model sends `<alias>@<name>` and gets the model behind the alias, launch included.
+- **Aliases are not listed.** `/v1/models` and `/api/tags` keep showing one row per model, so an alias answers only a client that already sends the name — a listing tells you nothing about it.
+
+An alias whose value names no model outright 404s, and the daemon logs one warning naming the alias and what it points at — which covers a value that matches nothing and one that only matches as a substring. A value two models answer to comes back as the same `ambiguous_model` answer with both candidates that a client sending that name itself would get, and the same warning says naming one of them is your call. So the daemon warns once about an alias that takes a name some longer file name already answered to on its own, since that moves clients that were working. The request body keeps the name the client sent, as it does for any reference the proxy resolves: an engine that answers only to the name it was served with needs `rewrite_model: true` on its generic entry (see [Generic backend](#generic-backend)).
+
+Alias names match case-insensitively, like model references do. Editing the map takes a daemon restart.
+
 ### Anthropic-shape clients (Claude Code)
 
 llama-server speaks the Anthropic Messages API natively, so the proxy forwards `/v1/messages` and `/v1/messages/count_tokens` on the same path as the OpenAI routes — no body translation, apart from the one effort field below. Point Claude Code (or anything that drives the Anthropic shape) at the proxy with `ANTHROPIC_BASE_URL` (no `/v1` suffix — the SDK appends `/v1/messages` itself):
@@ -1021,7 +1049,7 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:11435 \
 Open `http://127.0.0.1:11435/ui/` in a browser (swap in the actual `proxy.listen` port if it roamed) to use the running model's stock llama.cpp web UI through the proxy — one stable address, so you never have to look up the ephemeral backend port. Chat history persists across model switches because it's keyed to the browser origin, which never changes.
 
 - **One model running:** `/ui/` opens its UI directly.
-- **Several running:** `/ui/` shows a small chooser; pick one and the browser reloads onto it. The pick is remembered in a `ls_ui_target` cookie (scoped to `/ui`), so assets and chat requests stay pinned to that model. The chooser lists **running** models only; start a stopped one from the TUI / `llamastash start <model>` first.
+- **Several running:** `/ui/` shows a small chooser; pick one and the browser reloads onto it. The pick is remembered in a `ls_ui_target` cookie (scoped to `/ui`), so assets and chat requests stay pinned to that model. The chooser lists **running** models only; start a stopped one from the TUI / `llamastash start <model>` first. Rows are coloured by whether they open: a **green** name has a web UI and is a link, a **red** one is running on a backend that serves no browser interface, so it is listed for visibility and is not a link.
 - **None running:** `/ui/` shows a "no model running" page pointing you at the TUI / CLI.
 
 **Switching models.** Once you've picked a model, `/ui/` keeps forwarding to it (that's the cookie pin). To pick a different one, open `http://127.0.0.1:11435/ui/switch` — it always re-shows the chooser and marks the model you're currently on. Bookmark it; the stock chat UI has no in-page switcher and llamastash deliberately doesn't inject one. You can also jump straight to a specific model with `http://127.0.0.1:11435/ui/?target=<launch-id>` (the `L1` / `L2` ids from `llamastash status`), which re-pins and reloads — this is exactly what the chooser links do under the hood.
@@ -1313,6 +1341,10 @@ proxy:
   # header_read_timeout_secs: 30
   # idle_ttl_secs: 1800      # 0 disables the global deadline; a preset can still pin its own.
   # max_body_size: 16777216  # Bytes; cap on every request body (default 16 MiB; 0 disables the check).
+  # aliases:                 # Names that stand in for a local model, for a tool
+  #   gpt-4o-mini: qwen3-a-q8  # that will only ever ask for a fixed one. A real model
+  #                            # id always wins; aliases are not listed. See
+  #                            # "Model ids on the proxy".
 ```
 
 Unknown keys inside `[proxy]` are **rejected loudly** (`#[serde(deny_unknown_fields)]`) — a typo never silently falls back to defaults. The top-level config still tolerates unknown keys for forward-compat. No `tls_*` — TLS for a LAN-exposed proxy is still deferred per the plan's Scope Boundaries. The full key set with per-key sources is in `config.example.yaml` under `[proxy]`.

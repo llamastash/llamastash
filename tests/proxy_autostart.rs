@@ -139,6 +139,17 @@ async fn build_state(
   log_dir: &Path,
   port_range: PortRange,
 ) -> (Arc<ProxyState>, MethodContext) {
+  build_state_with_aliases(models, log_dir, port_range, &[]).await
+}
+
+/// Like [`build_state`] with a `proxy.aliases` map, which the daemon passes
+/// through `from_context_with_auth` in production.
+async fn build_state_with_aliases(
+  models: Vec<DiscoveredModel>,
+  log_dir: &Path,
+  port_range: PortRange,
+  aliases: &[(&str, &str)],
+) -> (Arc<ProxyState>, MethodContext) {
   let catalog = ModelCatalog::new();
   for m in models {
     catalog.upsert(m).await;
@@ -182,7 +193,11 @@ async fn build_state(
       gpu: Arc::new(tokio::sync::RwLock::new(llamastash::gpu::GpuInfo::CpuOnly)),
       interval: Duration::from_secs(1),
     });
-  let state = ProxyState::from_context(&ctx, false, true, DEFAULT_BODY_LIMIT_BYTES);
+  let aliases = llamastash::config::ProxyAliases::from_pairs(
+    aliases.iter().map(|(k, v)| (k.to_string(), v.to_string())),
+  );
+  let state =
+    ProxyState::from_context_with_auth(&ctx, false, true, None, DEFAULT_BODY_LIMIT_BYTES, &aliases);
   (state, ctx)
 }
 
@@ -538,6 +553,51 @@ async fn request_during_load_window_attaches_instead_of_duplicating() {
     after.len(),
     1,
     "proxy must attach to the in-flight launch, not start a second one"
+  );
+
+  stop_all(&ctx).await;
+  shutdown_listener(shutdown, listener_handle).await;
+  std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The chat surface is where the launch half of an address matters: it becomes
+/// the name on the auto-started launch. An alias supplies only the model half, so
+/// `helper@coder` has to auto-start the aliased model under the name `coder`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_alias_answers_a_launch_address_by_naming_the_launch_it_starts() {
+  let dir = unique_temp("alias-launch");
+  let log_dir = dir.join("logs");
+  std::fs::create_dir_all(&log_dir).unwrap();
+  let model_path = write_gguf(&dir, "qwen3.gguf", "qwen3");
+  let (state, ctx) = build_state_with_aliases(
+    vec![discovered(&model_path, Some("qwen3"), "qwen3")],
+    &log_dir,
+    allocate_wide_port_range(),
+    &[("helper", "qwen3")],
+  )
+  .await;
+  let (addr, shutdown, listener_handle) = spawn_listener(state).await;
+
+  let body = r#"{"model":"helper@coder","messages":[{"role":"user","content":"hi"}]}"#;
+  let (status, _h, b) = http_post(addr, "/v1/chat/completions", body).await;
+  assert_eq!(
+    status,
+    200,
+    "the alias supplies the model half of the address: {status} {}",
+    String::from_utf8_lossy(&b)
+  );
+
+  let snap = ctx.state.snapshot().await;
+  let named: Vec<_> = snap
+    .running
+    .iter()
+    .filter(|r| r.name.as_deref() == Some("coder"))
+    .collect();
+  assert_eq!(
+    named.len(),
+    1,
+    "the launch half survives the alias; got {:?}",
+    snap.running.iter().map(|r| &r.name).collect::<Vec<_>>()
   );
 
   stop_all(&ctx).await;

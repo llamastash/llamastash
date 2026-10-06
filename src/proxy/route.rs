@@ -27,7 +27,6 @@ use hyper::body::{Bytes, Incoming};
 
 use crate::daemon::registry::LaunchId;
 use crate::daemon::supervisor::ManagedState;
-use crate::discovery::catalog::catalog_row;
 use crate::discovery::DiscoveredModel;
 use crate::gguf::identity::ModelId;
 use crate::launch::resolve::{
@@ -253,45 +252,29 @@ pub(crate) async fn decide(state: &Arc<ProxyState>, body_model: Option<String>) 
     _ => return RouteDecision::ModelRequired,
   };
 
-  // Catalog snapshot → CatalogRow vec (the resolver speaks
-  // `&[CatalogRow]`). Built in-process here because the existing
-  // `cli::resolve::fetch_catalog` round-trips through IPC, which
-  // we explicitly want to avoid on the hot path.
-  let snap = state.ctx.catalog.snapshot().await;
-  let rows: Vec<CatalogRow> = snap.iter().map(catalog_row).collect();
+  // The catalog's shared pre-built row view (the resolver speaks
+  // `&[CatalogRow]`). Shared rather than rebuilt per request — a request costs one
+  // refcount bump — and never fetched over IPC, which we explicitly want to avoid
+  // on the hot path.
+  let rows = state.ctx.catalog.shared_rows().await;
 
-  // D2 fail-safe: try the whole reference first so a model file whose name
-  // contains `@` (e.g. `foo@bar.gguf`) resolves as a plain model reference.
-  // Only when the whole string does not resolve do we split on `@` and treat
-  // the right side as a launch name. When present, the launch must match
-  // both the model (path) and the name; the name is threaded through to
-  // `auto_start` so a second named launch of the same model gets its own
-  // flight and its own addressable id.
-  let (mut name, resolved) = match resolve_model_with_candidates(&rows, &requested) {
-    Ok(r) => (None, r),
-    Err(_) => {
-      let (m, n) = match parse_named_reference(&requested) {
-        Some((m, n)) => (m.to_string(), Some(n.to_string())),
-        None => (requested.clone(), None),
-      };
-      let r = match resolve_model_with_candidates(&rows, &m) {
-        Ok(r) => r,
-        Err(ResolveError::Empty) | Err(ResolveError::None) => {
-          return RouteDecision::NotFound {
-            requested_model: requested,
-          };
-        }
-        Err(ResolveError::Many(candidates)) => {
-          // The ids `/v1/models` publishes, not the bare names: two same-named
-          // GGUFs in different roots listed the identical string twice, leaving
-          // the client nothing to refine with. Every entry here routes.
-          return RouteDecision::Ambiguous {
-            requested_model: requested,
-            candidates: crate::launch::resolve::published_ids_for(&rows, &candidates),
-          };
-        }
-      };
-      (n, r)
+  // Reference → catalog row, in the one order that applies everywhere a client
+  // names a model (see [`resolve_client_reference`]).
+  let (mut name, resolved) = match resolve_client_reference(state, &rows, &requested) {
+    Ok(v) => v,
+    Err(ClientRefMiss::NotFound) => {
+      return RouteDecision::NotFound {
+        requested_model: requested,
+      }
+    }
+    // The ids `/v1/models` publishes, not the bare names: two same-named
+    // GGUFs in different roots listed the identical string twice, leaving
+    // the client nothing to refine with. Every entry here routes.
+    Err(ClientRefMiss::Ambiguous(candidates)) => {
+      return RouteDecision::Ambiguous {
+        requested_model: requested,
+        candidates,
+      }
     }
   };
 
@@ -400,6 +383,162 @@ pub(crate) async fn decide(state: &Arc<ProxyState>, body_model: Option<String>) 
   }
 }
 
+/// What [`resolve_client_reference`] could not settle, left in a shape the
+/// callers render their own error bodies from.
+pub(crate) enum ClientRefMiss {
+  /// Nothing matched, neither as a reference nor as an alias.
+  NotFound,
+  /// Several real models matched. The entries are published ids, each of which
+  /// routes.
+  Ambiguous(Vec<String>),
+}
+
+/// Turn a client's `model` string into `(launch name, catalog row)`.
+///
+/// The whole string is resolved first, as one reference. Only when it names no
+/// model is it taken apart at `@`, so a file named `foo@bar.gguf` still resolves
+/// whole. Both halves of that address go through the same rule, which is what
+/// makes `<alias>@<launch>` reach the model behind the alias with the launch half
+/// honoured.
+pub(crate) fn resolve_client_reference(
+  state: &ProxyState,
+  rows: &[CatalogRow],
+  requested: &str,
+) -> Result<(Option<String>, CatalogRow), ClientRefMiss> {
+  match resolve_reference(state, rows, requested) {
+    Ok(row) => return Ok((None, row)),
+    Err(ClientRefMiss::Ambiguous(candidates)) => return Err(ClientRefMiss::Ambiguous(candidates)),
+    Err(ClientRefMiss::NotFound) => {}
+  }
+
+  if let Some((model, launch)) = parse_named_reference(requested) {
+    return match resolve_reference(state, rows, model) {
+      Ok(row) => Ok((Some(launch.to_string()), row)),
+      Err(miss) => Err(miss),
+    };
+  }
+
+  Err(ClientRefMiss::NotFound)
+}
+
+/// One reference to one model, the same way every surface that takes a model
+/// string resolves it: a name that owns a model outright, then a `proxy.aliases`
+/// entry, then a partial match. An alias beats a partial match: `gpt-4o-mini`
+/// standing for one model must not be swallowed by a `gpt-4o-mini-Q4_K_M.gguf`
+/// that appears later, nor by two models that both contain the string.
+fn resolve_reference(
+  state: &ProxyState,
+  rows: &[CatalogRow],
+  reference: &str,
+) -> Result<CatalogRow, ClientRefMiss> {
+  match crate::launch::resolve::resolve_exact_reference(rows, reference) {
+    Ok(row) => {
+      state.aliases.warn_shadowed(reference);
+      return Ok(row);
+    }
+    // No outright model under this name, so an alias of it is next. A name two
+    // models share counts as no outright model: that is what the alias settles.
+    Err(ResolveError::None) | Err(ResolveError::Many(_)) => {}
+    Err(ResolveError::Empty) => return Err(ClientRefMiss::NotFound),
+  }
+
+  if let Some(target) = state.aliases.target(reference) {
+    return resolve_aliased_reference(state, rows, reference, target);
+  }
+
+  resolve_model_with_candidates(rows, reference).map_err(|err| client_miss(rows, err))
+}
+
+/// The alias half of [`resolve_reference`]. The target has to name one model
+/// outright: a path, a file name, a published id or a repo-qualified id. An alias
+/// is written once and the client sending its name cannot refine it, so answering
+/// a loose target with a substring match would auto-start whichever row happened
+/// to contain it, and nothing downstream could tell that was not the model named.
+fn resolve_aliased_reference(
+  state: &ProxyState,
+  rows: &[CatalogRow],
+  reference: &str,
+  target: &str,
+) -> Result<CatalogRow, ClientRefMiss> {
+  match crate::launch::resolve::resolve_exact_reference(rows, target) {
+    Ok(row) => {
+      note_moved_partial(state, rows, reference, target, &row);
+      Ok(row)
+    }
+    Err(err @ ResolveError::Many(_)) => Err(aliased_ambiguous(state, rows, reference, target, err)),
+    // The target named no model outright. Two readings are left and each gets
+    // said rather than the generic line: it is another alias name, so the chain
+    // reaches nothing, or several models answer to it once the rungs loosen.
+    Err(ResolveError::None | ResolveError::Empty) => {
+      if state.aliases.target(target).is_some() {
+        state.aliases.warn_points_at_alias(reference, target);
+        return Err(ClientRefMiss::NotFound);
+      }
+      match resolve_model_with_candidates(rows, target) {
+        Err(err @ ResolveError::Many(_)) => {
+          Err(aliased_ambiguous(state, rows, reference, target, err))
+        }
+        _ => {
+          state.aliases.warn_dead_target(reference, target);
+          Err(ClientRefMiss::NotFound)
+        }
+      }
+    }
+  }
+}
+
+/// A value two or more models answer to, which is a mistake only the operator can
+/// fix: said as an ambiguous target and answered with the candidate list any
+/// ambiguous reference gets.
+fn aliased_ambiguous(
+  state: &ProxyState,
+  rows: &[CatalogRow],
+  reference: &str,
+  target: &str,
+  error: ResolveError,
+) -> ClientRefMiss {
+  state.aliases.warn_ambiguous_target(reference, target);
+  client_miss(rows, error)
+}
+
+/// What a failed resolve means to the client: a candidate list when several models
+/// answered, a plain miss when none did. Both tiers are consulted for a client's
+/// own name and for an alias's value, so this is decoded in one place.
+fn client_miss(rows: &[CatalogRow], error: ResolveError) -> ClientRefMiss {
+  match error {
+    ResolveError::Many(candidates) => {
+      ClientRefMiss::Ambiguous(crate::launch::resolve::published_ids_for(rows, &candidates))
+    }
+    _ => ClientRefMiss::NotFound,
+  }
+}
+
+/// The alias won, but the same string also reached a model on its own - a longer
+/// file name that contains it - so clients that were already being served move to
+/// another model. Asked only while that line is still unspent, because answering it
+/// costs the second pass over the catalog.
+fn note_moved_partial(
+  state: &ProxyState,
+  rows: &[CatalogRow],
+  reference: &str,
+  target: &str,
+  row: &CatalogRow,
+) {
+  if !state
+    .aliases
+    .report_pending(reference, super::alias::REPORT_PARTIAL)
+  {
+    return;
+  }
+  if let Ok(other) = resolve_model_with_candidates(rows, reference) {
+    if other.path != row.path {
+      state
+        .aliases
+        .warn_moved_partial(reference, target, &other.name());
+    }
+  }
+}
+
 /// Which of several Ready launches of one model a request goes to: an unnamed
 /// launch over a named one (a named launch has its own address), then the
 /// newest (highest `L#`). Returns an index into `ready`, `None` when it is empty.
@@ -476,11 +615,6 @@ async fn decide_umbrella_route(
   }
 }
 
-/// Project a discovered-model entry onto the `CatalogRow` shape the
-/// resolver expects. In-process equivalent of
-/// `cli::resolve::parse_catalog_row` (which goes through the JSON
-/// wire); kept here so the proxy doesn't pay a serialize/deserialize
-/// round-trip on the hot path.
 /// The backend a **running** model (keyed by its [`ModelId`]) is actually
 /// served by, or `None` for the default (llama.cpp) backend. Prefers the
 /// `resolved_backend` tag stamped on `last_params` — the launch's real backend,
@@ -504,7 +638,7 @@ pub(crate) async fn running_model_backend(
   {
     return Backends::from_id(&tag);
   }
-  let cat = state.ctx.catalog.snapshot().await;
+  let cat = state.ctx.catalog.shared_view().await;
   let rb = cat
     .iter()
     .find(|m| m.path == id.path)
@@ -523,7 +657,7 @@ pub(crate) async fn would_route_backend(
   state: &Arc<ProxyState>,
   row: &CatalogRow,
 ) -> Option<crate::backend::Backends> {
-  let cat = state.ctx.catalog.snapshot().await;
+  let cat = state.ctx.catalog.shared_view().await;
   let m = cat.iter().find(|m| same_path(&m.path, &row.path))?;
   let launch_mode = match row.mode_hint.as_deref() {
     Some("embedding") => crate::launch::mode::LaunchMode::Embedding,
@@ -720,7 +854,7 @@ async fn collect_fallback_candidates(state: &Arc<ProxyState>) -> Vec<FallbackCan
   let sup_snap = state.ctx.supervisors.snapshot().await;
   // Index the catalog by canonical path so each supervisor entry can
   // attach arch + display label without re-walking the catalog.
-  let cat_snap = state.ctx.catalog.snapshot().await;
+  let cat_snap = state.ctx.catalog.shared_view().await;
   let by_path = index_catalog_by_path(&cat_snap);
 
   let mut out: Vec<FallbackCandidate> = Vec::with_capacity(sup_snap.len());
