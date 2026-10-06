@@ -1002,6 +1002,17 @@ pub trait Backend {
   ) -> Result<serde_json::Value, crate::ipc::protocol::ErrorObject> {
     crate::daemon::launch_service::stop_supervised(ctx, launch_id, grace_secs).await
   }
+
+  /// Runs once a supervised launch answers its readiness probe, before it is
+  /// reported `Ready`, so nothing is routed to it until this returns. For
+  /// bringing back engine state that outlives a process. Default: nothing.
+  async fn after_ready(&self, _model: &crate::daemon::supervisor::ManagedModel) {}
+
+  /// Runs before the idle sweep or make-room stops a supervised launch, while
+  /// it is still `Ready` and idle. For saving engine state the next launch can
+  /// pick up. Not called for a user stop or a daemon shutdown, and not for a
+  /// model inside a managed multiplexer. Default: nothing.
+  async fn before_evict(&self, _model: &crate::daemon::supervisor::ManagedModel) {}
 }
 
 // ============================================================================
@@ -1421,6 +1432,14 @@ impl Backend for Backends {
     grace_secs: u64,
   ) -> Result<serde_json::Value, crate::ipc::protocol::ErrorObject> {
     for_each_backend!(self, b => b.stop(ctx, launch_id, grace_secs).await)
+  }
+
+  async fn after_ready(&self, model: &crate::daemon::supervisor::ManagedModel) {
+    for_each_backend!(self, b => b.after_ready(model).await)
+  }
+
+  async fn before_evict(&self, model: &crate::daemon::supervisor::ManagedModel) {
+    for_each_backend!(self, b => b.before_evict(model).await)
   }
 }
 

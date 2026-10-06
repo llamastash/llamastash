@@ -428,7 +428,11 @@ Plans and item details: [`docs/plans/2026-10-05-001-feat-r14-batches-plan.md`](d
 
 ### Batch 4: faster reloads ([plan](docs/plans/2026-10-05-001-feat-r14-batches-plan.md#batch-4-faster-reloads))
 
-- [ ] Keep a model's prompt cache across an unload
+- [x] ~~Keep a model's prompt cache across an unload~~ Done, opt-in: `backend.llamacpp.slot_save`. Spike: [`docs/spikes/2026-10-06-slot-save-restore.md`](docs/spikes/2026-10-06-slot-save-restore.md).
+  - [ ] Hybrid (`qwen35`: Qwen3.5, Qwen3.8) and sliding-window (`gemma4`) models get nothing from it on llama.cpp b11457: the server restores the slot and then processes the whole prompt, because a slot file carries no context checkpoints ([llama.cpp#28194](https://github.com/ggml-org/llama.cpp/issues/28194)). The launch probe skips them. Re-run `scripts/bench/slot_save_spike.py` and the two-turn chat check from the spike when that issue closes; no code change should be needed.
+  - [ ] Measure save, restore and file size at 100k tokens on a large full-attention model. The spike used a 1B model.
+  - [ ] Only live slots are saved. With the default slot settings llama-server moves every conversation but the latest into its host-memory prompt cache (`--cache-ram`), which no endpoint writes to disk.
+  - [ ] Decide whether `slot_save` should default to on once the two items above are answered.
 - [ ] Warm the page cache before a load (`llamastash warm <model>`)
 
 ### Batch 5: CLI setup commands ([plan](docs/plans/2026-10-05-001-feat-r14-batches-plan.md#batch-5-cli-setup-commands))

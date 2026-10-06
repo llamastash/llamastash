@@ -675,6 +675,9 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
           }
         }
         *probe_model.inner.actuals.write().await = actuals;
+        // Still `Loading` here, so no request reaches the server before the
+        // backend has put back whatever state it kept from an earlier launch.
+        probe_backend.after_ready(&probe_model).await;
         let secs = SystemTime::now()
           .duration_since(UNIX_EPOCH)
           .map(|d| d.as_secs())

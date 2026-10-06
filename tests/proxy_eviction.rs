@@ -639,3 +639,223 @@ async fn make_room_skips_a_candidate_that_took_a_request() {
   let _ = busy.stop(Duration::from_secs(2)).await;
   std::fs::remove_dir_all(&dir).ok();
 }
+
+// ── slot save: the prompt cache kept across an eviction ──────────────────
+
+/// A proxy state, and the context behind it, whose llama.cpp config has slot
+/// saving on with a floor low enough for the fixture's word-sized tokens.
+async fn build_slot_save_state(log_dir: &Path) -> (Arc<ProxyState>, MethodContext) {
+  let mut backend = llamastash::backend::BackendConfig::default();
+  backend.llamacpp.slot_save.enabled = true;
+  backend.llamacpp.slot_save.min_tokens = 4;
+  let env = LaunchEnv {
+    binary: Some(fake_binary()),
+    port_range: allocate_port_range(),
+    log_dir: log_dir.to_path_buf(),
+    probe: fast_probe(),
+    arch_defaults: BTreeMap::new(),
+    servers: Default::default(),
+    default_launch_mode: Default::default(),
+  };
+  let ctx = MethodContext::with_catalog(ShutdownToken::new(), ModelCatalog::new())
+    .with_supervisors(SupervisorRegistry::new())
+    .with_state(PersistedState::new(DaemonState::default(), None))
+    .with_launch_env(env)
+    .with_backend(backend, BTreeMap::new());
+  let state = ProxyState::from_context(&ctx, false, true, DEFAULT_BODY_LIMIT_BYTES);
+  (state, ctx)
+}
+
+/// Launch `model_path` the way an auto-start does, with the launch knobs the
+/// llama.cpp backend seeds from config. `child_env` reaches the fixture.
+async fn launch_seeded(
+  ctx: &MethodContext,
+  log_dir: &Path,
+  model_path: &Path,
+  child_env: &[(&str, &str)],
+) -> ManagedModel {
+  use llamastash::backend::Backend;
+  let port = allocate_port();
+  let backend = LlamaCppBackend::new();
+  let mut params = LaunchParams::new(model_path.to_path_buf(), LaunchMode::Chat);
+  backend.seed_launch_knobs(ctx, &mut params);
+  let mut plan = backend.process_spec(&params, port, fake_binary(), fast_probe());
+  for (key, value) in child_env {
+    plan.env.push((key.to_string(), value.into()));
+  }
+  let model = supervisor_spawn(ManagedSpawn {
+    id: ModelId {
+      path: model_path.to_path_buf(),
+      header_blake3: [7u8; 32],
+    },
+    params,
+    port,
+    mode: LaunchMode::Chat,
+    log_path: log_dir.join(format!("slot-{port}.log")),
+    plan,
+    origin: LaunchOrigin::AutoStart,
+    fit_gate: None,
+    resolved_backend: "llamacpp".to_string(),
+  })
+  .await
+  .expect("spawn");
+  wait_for_ready(&model).await;
+  let launch_id = ctx.supervisors.next_id();
+  ctx.supervisors.insert(launch_id, model.clone()).await;
+  model
+}
+
+/// One completion straight to the fixture; returns `timings.cache_n`.
+async fn complete(port: u16, prompt: &str) -> u64 {
+  let body: serde_json::Value = reqwest::Client::new()
+    .post(format!("http://127.0.0.1:{port}/completion"))
+    .json(&serde_json::json!({ "prompt": prompt, "n_predict": 1, "cache_prompt": true }))
+    .send()
+    .await
+    .expect("completion request")
+    .json()
+    .await
+    .expect("completion json");
+  body["timings"]["cache_n"].as_u64().expect("cache_n")
+}
+
+fn saved_slot_files(dir: &Path) -> Vec<String> {
+  let mut names: Vec<String> = std::fs::read_dir(dir.join("slots"))
+    .map(|entries| {
+      entries
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect()
+    })
+    .unwrap_or_default();
+  names.sort();
+  names
+}
+
+async fn sweep_and_wait_until_unregistered(
+  state: &Arc<ProxyState>,
+  ctx: &MethodContext,
+  model: &ManagedModel,
+) {
+  state.touch_mru(model.id()).await;
+  sleep(Duration::from_millis(5)).await;
+  eviction::sweep_once(state, Duration::from_nanos(1)).await;
+  let deadline = std::time::Instant::now() + Duration::from_secs(10);
+  while ctx.supervisors.len().await != 0 {
+    assert!(
+      std::time::Instant::now() < deadline,
+      "launch still registered after the sweep: {:?}",
+      model.state().await
+    );
+    sleep(Duration::from_millis(20)).await;
+  }
+}
+
+const CONVERSATION: &str = "one two three four five six seven eight nine ten eleven twelve";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_evicted_launch_gets_its_slot_back_on_the_next_start() {
+  let dir = unique_temp("slot-roundtrip");
+  let log_dir = dir.join("logs");
+  std::fs::create_dir_all(&log_dir).unwrap();
+  let (state, ctx) = build_slot_save_state(&log_dir).await;
+  let model_path = dir.join("roundtrip.gguf");
+
+  let first = launch_seeded(&ctx, &log_dir, &model_path, &[]).await;
+  // The reuse probe ran before Ready and cleaned up after itself.
+  assert_eq!(saved_slot_files(&dir), Vec::<String>::new());
+  assert_eq!(complete(first.port(), CONVERSATION).await, 0);
+
+  sweep_and_wait_until_unregistered(&state, &ctx, &first).await;
+  let saved = saved_slot_files(&dir);
+  assert_eq!(saved.len(), 1, "one slot file expected, got {saved:?}");
+  assert!(
+    saved[0].starts_with("roundtrip.") && saved[0].ends_with(".slot0.bin"),
+    "unexpected slot file name {saved:?}"
+  );
+
+  // Another port, same model and settings: the file is restored before Ready
+  // and consumed, and the returning conversation is served from the slot.
+  let second = launch_seeded(&ctx, &log_dir, &model_path, &[]).await;
+  assert_eq!(saved_slot_files(&dir), Vec::<String>::new());
+  let returning = format!("{CONVERSATION} thirteen");
+  assert_eq!(complete(second.port(), &returning).await, 12);
+
+  second.stop(Duration::from_secs(2)).await;
+  std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn nothing_is_saved_when_the_engine_would_discard_a_restored_slot() {
+  let dir = unique_temp("slot-noreuse");
+  let log_dir = dir.join("logs");
+  std::fs::create_dir_all(&log_dir).unwrap();
+  let (state, ctx) = build_slot_save_state(&log_dir).await;
+  let model_path = dir.join("noreuse.gguf");
+
+  let model = launch_seeded(
+    &ctx,
+    &log_dir,
+    &model_path,
+    &[("FAKE_LLAMA_NO_PREFIX_REUSE", "1")],
+  )
+  .await;
+  complete(model.port(), CONVERSATION).await;
+  sweep_and_wait_until_unregistered(&state, &ctx, &model).await;
+
+  assert_eq!(saved_slot_files(&dir), Vec::<String>::new());
+  std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_slot_below_the_token_floor_is_not_saved() {
+  let dir = unique_temp("slot-small");
+  let log_dir = dir.join("logs");
+  std::fs::create_dir_all(&log_dir).unwrap();
+  let (state, ctx) = build_slot_save_state(&log_dir).await;
+  let model_path = dir.join("small.gguf");
+
+  let model = launch_seeded(&ctx, &log_dir, &model_path, &[]).await;
+  complete(model.port(), "one two three").await;
+  sweep_and_wait_until_unregistered(&state, &ctx, &model).await;
+
+  assert_eq!(saved_slot_files(&dir), Vec::<String>::new());
+  std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The save can take seconds. A request that lands while it runs must keep the
+/// launch: the idle check that picked it is stale by the time the save returns.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_request_that_arrives_during_the_save_keeps_the_launch() {
+  let dir = unique_temp("slot-busy");
+  let log_dir = dir.join("logs");
+  std::fs::create_dir_all(&log_dir).unwrap();
+  let (state, ctx) = build_slot_save_state(&log_dir).await;
+  let model_path = dir.join("busy.gguf");
+
+  let model = launch_seeded(
+    &ctx,
+    &log_dir,
+    &model_path,
+    &[("FAKE_LLAMA_SLOT_SAVE_DELAY_MS", "800")],
+  )
+  .await;
+  complete(model.port(), CONVERSATION).await;
+
+  state.touch_mru(model.id()).await;
+  sleep(Duration::from_millis(5)).await;
+  eviction::sweep_once(&state, Duration::from_nanos(1)).await;
+  sleep(Duration::from_millis(200)).await;
+  let request = model.inflight_guard();
+  sleep(Duration::from_millis(1500)).await;
+
+  assert!(
+    matches!(model.state().await, ManagedState::Ready),
+    "the launch was stopped under an in-flight request: {:?}",
+    model.state().await
+  );
+  assert_eq!(ctx.supervisors.len().await, 1);
+  drop(request);
+  model.stop(Duration::from_secs(2)).await;
+  std::fs::remove_dir_all(&dir).ok();
+}

@@ -4,6 +4,10 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 ## [Unreleased]
 
+### Added
+
+- **Keep a model's prompt cache across an unload (opt-in).** With `backend.llamacpp.slot_save.enabled: true`, the daemon saves a llama.cpp launch's prompt cache before the idle sweep or make-room stops it and restores it when the model starts again. On Llama-3.2-1B a 100,000-token prompt comes back in about 1 s instead of 73 s. Works for full-attention models; hybrid and sliding-window models are detected and skipped until llama.cpp reuses their restored cache.
+
 ## [0.6.1] — 2026-10-02
 
 A patch release for `integrations`. It keeps the key order of the tool configs it edits instead of sorting them, and a generic entry like Halogen can now declare the image input and reasoning effort levels it accepts, so pi, OpenCode, Zed and Codex get them like they do for a GGUF model.

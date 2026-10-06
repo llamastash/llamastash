@@ -7,6 +7,14 @@
 //! `llama-server`, so every supervisor-lifecycle test runs against
 //! this binary.
 //!
+//! It also keeps one request slot, enough for the slot save tests: `GET
+//! /slots`, `POST /slots/0?action=save|restore|erase` (needs
+//! `--slot-save-path DIR`, as on the real server) and `POST /completion`, which
+//! reports the shared prefix with the slot as `timings.cache_n`. A token is a
+//! whitespace-separated word. `FAKE_LLAMA_NO_PREFIX_REUSE=1` reports
+//! `cache_n: 0` always, like a model whose restored slot the real server
+//! discards, and `FAKE_LLAMA_SLOT_SAVE_DELAY_MS=N` makes a save take N ms.
+//!
 //! Flags accepted (matching real `llama-server` enough for the
 //! supervisor's argv to be portable):
 //! - `--host <ADDR>` (default `127.0.0.1`)
@@ -72,6 +80,17 @@ struct Args {
   /// a real llama-server after generation — the fixture the status
   /// draft-acceptance scan asserts against.
   spec_mtp: bool,
+  /// `--slot-save-path DIR`. The slot actions answer 501 without it.
+  slot_save_path: Option<String>,
+}
+
+/// The one request slot.
+#[derive(Default)]
+struct Slot {
+  tokens: Vec<String>,
+  /// Real llama-server reports `n_prompt_tokens` only once a request has run
+  /// on the slot, so a restored slot that served nothing reports none.
+  served: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,6 +149,7 @@ fn parse_args() -> Args {
   let mut sigterm_exit_delay_ms = None;
   let mut print_env = Vec::new();
   let mut spec_mtp = false;
+  let mut slot_save_path = None;
   while let Some(arg) = args.next() {
     match arg.as_str() {
       "--host" => host = args.next().expect("--host needs value"),
@@ -150,6 +170,7 @@ fn parse_args() -> Args {
         sigterm_exit_delay_ms = args.next().and_then(|v| v.parse().ok());
       }
       "--print-env" => print_env.extend(args.next()),
+      "--slot-save-path" => slot_save_path = args.next(),
       // Silently ignore unknown flags so the supervisor can pass
       // through reasoning bundles + advanced overrides without
       // teaching the fixture every llama-server flag.
@@ -168,6 +189,7 @@ fn parse_args() -> Args {
     sigterm_exit_delay_ms,
     print_env,
     spec_mtp,
+    slot_save_path,
   }
 }
 
@@ -270,6 +292,7 @@ async fn main() {
 
   let started_at = Arc::new(Instant::now());
   let args = Arc::new(args);
+  let slot = Arc::new(std::sync::Mutex::new(Slot::default()));
   loop {
     let (sock, _) = match listener.accept().await {
       Ok(v) => v,
@@ -280,8 +303,9 @@ async fn main() {
     };
     let args = Arc::clone(&args);
     let started_at = Arc::clone(&started_at);
+    let slot = Arc::clone(&slot);
     tokio::spawn(async move {
-      if let Err(e) = handle(sock, args, started_at).await {
+      if let Err(e) = handle(sock, args, started_at, slot).await {
         eprintln!("connection error: {e}");
       }
     });
@@ -292,6 +316,7 @@ async fn handle(
   mut sock: TcpStream,
   args: Arc<Args>,
   started_at: Arc<Instant>,
+  slot: Arc<std::sync::Mutex<Slot>>,
 ) -> std::io::Result<()> {
   let (rd, mut wr) = sock.split();
   let mut br = BufReader::new(rd);
@@ -375,6 +400,65 @@ async fn handle(
       )
       .await?;
     }
+    ("GET", "/slots") => {
+      let body = {
+        let slot = slot.lock().unwrap();
+        let mut row = serde_json::json!({ "id": 0, "is_processing": false });
+        if slot.served {
+          row["n_prompt_tokens"] = slot.tokens.len().into();
+        }
+        serde_json::json!([row])
+      };
+      write_response(
+        &mut wr,
+        200,
+        "application/json",
+        body.to_string().as_bytes(),
+      )
+      .await?;
+    }
+    ("POST", "/completion") => {
+      let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+      let prompt = words(parsed["prompt"].as_str().unwrap_or_default());
+      let cache_n = {
+        let mut slot = slot.lock().unwrap();
+        let shared = slot
+          .tokens
+          .iter()
+          .zip(&prompt)
+          .take_while(|(a, b)| a == b)
+          .count();
+        slot.tokens = prompt.clone();
+        slot.served = true;
+        if std::env::var("FAKE_LLAMA_NO_PREFIX_REUSE").as_deref() == Ok("1") {
+          0
+        } else {
+          shared
+        }
+      };
+      let body = serde_json::json!({
+        "content": "x",
+        "id_slot": 0,
+        "timings": { "cache_n": cache_n, "prompt_n": prompt.len() - cache_n },
+      });
+      write_response(
+        &mut wr,
+        200,
+        "application/json",
+        body.to_string().as_bytes(),
+      )
+      .await?;
+    }
+    ("POST", p) if p.starts_with("/slots/") => {
+      let (status, body) = slot_action(&args, &slot, p, &body).await;
+      write_response(
+        &mut wr,
+        status,
+        "application/json",
+        body.to_string().as_bytes(),
+      )
+      .await?;
+    }
     ("GET", "/v1/models") => {
       let body = serde_json::json!({
         "object": "list",
@@ -411,6 +495,11 @@ async fn handle(
       // request body. The latter is convenient when the test
       // drives `spawn_chat_stream` which builds the URL itself.
       let body_text = std::str::from_utf8(&body).unwrap_or("");
+      {
+        let mut slot = slot.lock().unwrap();
+        slot.tokens = words(body_text);
+        slot.served = true;
+      }
       let want_fail = query.contains("fail=400") || body_text.contains("__TEST_INJECT_FAIL_400__");
       let want_malformed =
         query.contains("malformed-sse=1") || body_text.contains("__TEST_INJECT_MALFORMED_SSE__");
@@ -520,6 +609,103 @@ async fn handle(
   }
   let _ = wr.shutdown().await;
   Ok(())
+}
+
+fn words(text: &str) -> Vec<String> {
+  text.split_whitespace().map(String::from).collect()
+}
+
+fn slot_error(code: u16, message: &str) -> (u16, serde_json::Value) {
+  (
+    code,
+    serde_json::json!({ "error": { "code": code, "message": message } }),
+  )
+}
+
+/// `POST /slots/{id}?action=save|restore|erase`, with the real server's
+/// response fields and error messages. A save writes the slot's words one per
+/// line, which is all a restore needs back.
+async fn slot_action(
+  args: &Args,
+  slot: &std::sync::Mutex<Slot>,
+  path: &str,
+  body: &[u8],
+) -> (u16, serde_json::Value) {
+  let Some(dir) = args.slot_save_path.as_deref() else {
+    return slot_error(
+      501,
+      "This server does not support slots action. Start it with `--slot-save-path`",
+    );
+  };
+  let (id, query) = path["/slots/".len()..]
+    .split_once('?')
+    .unwrap_or((path, ""));
+  if id != "0" {
+    return slot_error(400, "Invalid slot ID");
+  }
+  let action = query.strip_prefix("action=").unwrap_or_default();
+  let parsed: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
+  let filename = parsed["filename"].as_str().unwrap_or_default();
+  let file = std::path::Path::new(dir).join(filename);
+  match action {
+    "save" => {
+      if let Some(ms) = std::env::var("FAKE_LLAMA_SLOT_SAVE_DELAY_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+      {
+        tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+      }
+      let text = slot.lock().unwrap().tokens.join("\n");
+      if std::fs::write(&file, &text).is_err() {
+        return slot_error(500, "Unable to save slot");
+      }
+      let n_saved = words(&text).len();
+      println!("slot save file={filename} tokens={n_saved}");
+      (
+        200,
+        serde_json::json!({
+          "id_slot": 0,
+          "filename": filename,
+          "n_saved": n_saved,
+          "n_written": text.len(),
+          "timings": { "save_ms": 1.0 },
+        }),
+      )
+    }
+    "restore" => {
+      let Ok(text) = std::fs::read_to_string(&file) else {
+        return slot_error(
+          400,
+          "Unable to restore slot: No available space in KV cache or invalid slot save file",
+        );
+      };
+      let tokens = words(&text);
+      let n_restored = tokens.len();
+      *slot.lock().unwrap() = Slot {
+        tokens,
+        served: false,
+      };
+      println!("slot restore file={filename} tokens={n_restored}");
+      (
+        200,
+        serde_json::json!({
+          "id_slot": 0,
+          "filename": filename,
+          "n_restored": n_restored,
+          "n_read": text.len(),
+          "timings": { "restore_ms": 1.0 },
+        }),
+      )
+    }
+    "erase" => {
+      let n_erased = std::mem::take(&mut *slot.lock().unwrap()).tokens.len();
+      (
+        200,
+        serde_json::json!({ "id_slot": 0, "n_erased": n_erased }),
+      )
+    }
+    _ => slot_error(400, "Invalid action"),
+  }
 }
 
 /// Cheap `body.model` extractor.

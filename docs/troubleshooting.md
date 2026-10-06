@@ -245,6 +245,19 @@ If you know the projection is wrong for your setup, `llamastash start <model> --
 
 Weights the engine streams from the mapping rather than holding resident are already subtracted — a 103.7 GiB `Qwen3.8-Flash-Next` is priced at about 77 GiB, because its 26.8 GiB per-layer embedding table never becomes resident. Pinning `-- --lazy-mode off` turns that streaming off, and the gate then prices the whole file.
 
+## A reloaded model processes the whole prompt with `slot_save` on
+
+**Symptom:** `backend.llamacpp.slot_save.enabled: true`, a model was unloaded while idle, and the next request still takes as long as a cold prompt.
+
+**Cause:** look for `slot save:` lines in `<cache dir>/logs/llamastash.log`.
+
+- `a restored slot is not reused`: the model is hybrid (`qwen35`: Qwen3.5, Qwen3.8) or sliding-window (`gemma4`). llama-server restores the file and then processes the prompt anyway ([llama.cpp#28194](https://github.com/ggml-org/llama.cpp/issues/28194)), so nothing is saved for it.
+- `is over the size cap` or `not enough free disk`: raise `slot_save.max_gib` or free space under the cache dir.
+- No line at eviction time: the slot held fewer than `slot_save.min_tokens` tokens, or the model was stopped by hand (only the idle sweep and make-room save).
+- A `saved` line but no `restored` line: the model came back with different launch settings (another preset, another `--ctx`), which is a different file.
+
+Also check that the conversation was the last one the model served. llama-server keeps only the most recent conversations in slots.
+
 ## ds4 model out-of-memories at load
 
 **Symptom:** a DeepSeek-V4 launch on ds4 dies allocating memory. These GGUFs are 81-300+ GB; the practical floor is about 128 GB on CUDA/ROCm and 96 GB on Metal.

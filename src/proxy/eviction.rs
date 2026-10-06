@@ -223,9 +223,24 @@ pub async fn sweep_once(state: &Arc<ProxyState>, default_ttl: Duration) {
 /// overrides `stop` is dispatched rather than defaulted. For a delegated
 /// (multiplexer) row that `stop` is the umbrella-unload call, which is why the
 /// sweep and make-room need only one stop helper.
+///
+/// A supervised launch first gets its backend's `before_evict`, which may save
+/// engine state for the next launch. That can take seconds, so the idle check is
+/// repeated after it: a request that arrived meanwhile keeps the launch.
 async fn stop_launch(ctx: &crate::daemon::context::MethodContext, launch_id: &LaunchId) {
   use crate::backend::Backend;
   let backend = crate::daemon::launch_service::backend_for_launch(ctx, launch_id).await;
+  // A delegated row has no supervisor of its own, so it has nothing to save.
+  if let Some(model) = ctx.supervisors.get(launch_id).await {
+    model.backend().before_evict(&model).await;
+    if model.inflight() > 0 {
+      log::info!(
+        "proxy eviction: {} got a request before the stop, left running",
+        launch_id.as_str()
+      );
+      return;
+    }
+  }
   let _ = backend
     .stop(ctx, launch_id, EVICT_STOP_GRACE.as_secs())
     .await;

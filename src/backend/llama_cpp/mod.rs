@@ -17,10 +17,12 @@ mod compose;
 mod effort;
 pub mod knobs;
 pub mod list_devices;
+mod slot_save;
 mod telemetry;
 
 use compose::compose;
 pub use list_devices::{parse_list_devices, probe_devices, BinaryDevice};
+pub use slot_save::SlotSaveConfig;
 
 use std::path::{Path, PathBuf};
 
@@ -160,6 +162,9 @@ pub struct LlamaCppConfig {
   /// sends an effort value on every request would otherwise always win.
   #[serde(default = "default_true")]
   pub map_anthropic_effort: bool,
+  /// Keep a launch's prompt cache across an eviction. Off by default.
+  #[serde(default)]
+  pub slot_save: SlotSaveConfig,
 }
 
 fn default_true() -> bool {
@@ -178,6 +183,7 @@ impl Default for LlamaCppConfig {
       strict_fit: false,
       fit_ctx_floor: crate::config::DEFAULT_FIT_CTX_FLOOR,
       map_anthropic_effort: true,
+      slot_save: SlotSaveConfig::default(),
     }
   }
 }
@@ -463,6 +469,16 @@ impl Backend for LlamaCppBackend {
       LLAMACPP_KNOB_FIT_CTX_FLOOR.to_string(),
       cfg.fit_ctx_floor.to_string(),
     );
+    let log_dir = ctx.launch.as_ref().map(|env| env.log_dir.as_path());
+    slot_save::seed(&cfg.slot_save, log_dir, params);
+  }
+
+  async fn after_ready(&self, model: &crate::daemon::supervisor::ManagedModel) {
+    slot_save::after_ready(model).await;
+  }
+
+  async fn before_evict(&self, model: &crate::daemon::supervisor::ManagedModel) {
+    slot_save::before_evict(model).await;
   }
 
   fn admission_ctx_floor(&self, params: &LaunchParams) -> Option<u32> {

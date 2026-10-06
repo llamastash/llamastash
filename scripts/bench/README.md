@@ -101,3 +101,18 @@ Engine choice and every launch knob live in `engine.sh`; that file is the write
 target of the autoresearch session recorded in `.auto/`. See
 `.auto/prompt.md` for the workload, the baseline, and the power state a number is
 only comparable within.
+
+## `slot_save_spike.py`: slot save/restore against prompt reprocessing
+
+```sh
+scripts/bench/slot_save_spike.py --model <gguf> --slot-dir <dir on a real disk> \
+  --tokens 100000 --ctx 131072 --ngl 99 --out result.json
+```
+
+Starts `llama-server` three times on one model and reports cold prompt
+processing, slot save time and file size, restore time with the file in page
+cache and after dropping it, and how many tokens a returning prompt gets from
+cache. Talks to `llama-server` directly. Standard library only. Keep
+`--slot-dir` off tmpfs: the file is the KV cache, 3 GiB at 100k tokens on a 1B
+model. Results from 2026-10-06 are in
+`docs/spikes/2026-10-06-slot-save-restore.md`.

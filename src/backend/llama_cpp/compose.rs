@@ -110,6 +110,12 @@ pub(crate) fn compose(params: &LaunchParams, allocated_port: u16) -> Vec<OsStrin
     argv.push("--fit-ctx".into());
     argv.push(floor.to_string().into());
   }
+  // Enables the slot save and restore endpoints. Seeded only when the config
+  // turns slot saving on and the user's extras do not carry the flag already.
+  if let Some(dir) = params.launch_config.get(super::slot_save::KEY_PATH) {
+    argv.push("--slot-save-path".into());
+    argv.push(dir.into());
+  }
   // Emit the device selector verbatim — exactly once. Empty / unset
   // means "let llama-server auto-select" (no flag).
   if let Some(sel) = params
@@ -385,6 +391,21 @@ mod tests {
     assert!(argv.iter().any(|a| a == "--jinja"));
     let i = argv.iter().position(|a| a == "--reasoning-format").unwrap();
     assert_eq!(argv[i + 1], "deepseek");
+  }
+
+  #[test]
+  fn slot_save_path_is_emitted_only_when_seeded() {
+    let mut p = base_params();
+    assert!(!strs(&compose(&p, 41100))
+      .iter()
+      .any(|a| a == "--slot-save-path"));
+    p.launch_config.insert(
+      crate::backend::llama_cpp::slot_save::KEY_PATH.to_string(),
+      "/cache/slots".to_string(),
+    );
+    let argv = strs(&compose(&p, 41100));
+    let i = argv.iter().position(|a| a == "--slot-save-path").unwrap();
+    assert_eq!(argv[i + 1], "/cache/slots");
   }
 
   // ---- MTP speculative decoding ----

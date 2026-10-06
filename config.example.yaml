@@ -500,6 +500,30 @@ backend:
     # Sources — CLI: (none) · Env: (none, config-only).
     map_anthropic_effort: true
 
+    # Keep a model's prompt cache across an unload (default: off). Before the
+    # idle sweep or make-room stops a proxy-started launch, its slots are
+    # written to `<cache dir>/slots/` and read back by the next launch of the
+    # same model with the same settings, so a returning conversation is not
+    # processed again from the first token.
+    #
+    # Only models whose restored slot llama-server reuses are saved. On
+    # llama.cpp b11457 that is full-attention models. Hybrid (`qwen35`, ...)
+    # and sliding-window (`gemma4`, ...) models are detected at launch and
+    # skipped. A save writes about 33 KiB per cached token on a 1B model
+    # (3 GiB at 100,000 tokens) and more on larger ones.
+    #
+    # Sources — CLI: (none) · Env: (none, config-only).
+    slot_save:
+      enabled: false
+      # Total size of the saved files in GiB. The oldest are deleted first
+      # and a slot that would not fit is not saved. 0 saves nothing.
+      max_gib: 16
+      # Delete a saved file this many seconds after it was written.
+      # 0 = no age limit.
+      max_age_secs: 86400
+      # Do not save a slot holding fewer cached tokens than this.
+      min_tokens: 2048
+
   # ── Lemonade (NPU / multi-engine backend) [EXPERIMENTAL] ──
   #
   # EXPERIMENTAL: behaviour and these keys may change. A second backend
