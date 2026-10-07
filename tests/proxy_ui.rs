@@ -216,6 +216,7 @@ async fn build_state_with_cap(
     true,
     api_key.map(str::to_string),
     max_body_size,
+    &Default::default(),
   )
 }
 

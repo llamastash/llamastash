@@ -162,7 +162,7 @@ fn resolve_target(headers: &HeaderMap, mut running: Vec<RunningEntry>) -> UiTarg
 /// umbrella is skipped — it's a multiplexer process, not a web UI.
 async fn collect_running(state: &Arc<ProxyState>) -> Vec<RunningEntry> {
   let sup_snap = state.ctx.supervisors.snapshot().await;
-  let cat_snap = state.ctx.catalog.snapshot().await;
+  let cat_snap = state.ctx.catalog.shared_view().await;
   let by_path = route::index_catalog_by_path(&cat_snap);
 
   let mut out = Vec::new();
@@ -333,7 +333,7 @@ fn chooser_html(running: &[RunningEntry], active: Option<&str>) -> String {
     };
     if e.serves_ui {
       items.push_str(&format!(
-        "<li><a href=\"/ui/?target={id}\">{name}<span class=\"port\">:{port}{current}</span></a></li>",
+        "<li><a class=\"has-ui\" href=\"/ui/?target={id}\"><span class=\"name\">{name}</span><span class=\"port\">:{port}{current}</span></a></li>",
         id = escape_html(&e.launch_id),
         name = escape_html(&e.name),
         port = e.port,
@@ -354,8 +354,9 @@ fn chooser_html(running: &[RunningEntry], active: Option<&str>) -> String {
     "Choose a model",
     &format!(
       "<h1>Choose a model</h1>\
-       <p>Pick the model whose web UI you want to open. Models marked \
-       <em>no web UI</em> are running but serve no browser interface.</p>\
+       <p>Pick the model whose web UI you want to open. Green rows open one; \
+       <span class=\"no-ui-text\">red rows</span> are running but serve no \
+       browser interface.</p>\
        <ul class=\"models\">{items}</ul>\
        <p class=\"tip\">Already on a model? Open \
        <a href=\"/ui/switch\"><code>/ui/switch</code></a> to come back here and pick \
@@ -404,8 +405,14 @@ ul.models li{margin:.5rem 0}\
 ul.models a{display:flex;justify-content:space-between;align-items:center;\
 padding:.75rem 1rem;background:#363a4f;border-radius:.5rem}\
 ul.models a:hover{background:#494d64}\
+ul.models a.has-ui .name{color:#a6da95}\
+li.no-ui{display:flex;justify-content:space-between;align-items:center;\
+padding:.75rem 1rem;background:#363a4f;border-radius:.5rem;opacity:.85}\
+li.no-ui .name,span.no-ui-text{color:#ed8796}\
+li.no-ui .reason{color:#ed8796;font-size:.85em;text-transform:uppercase;\
+letter-spacing:.05em}\
 .port{color:#939ab7;font-variant-numeric:tabular-nums}\
-.current{color:#a6da95;font-variant-numeric:normal;margin-left:.5rem;\
+.current{color:#8aadf4;font-variant-numeric:normal;margin-left:.5rem;\
 text-transform:uppercase;font-size:.72em;letter-spacing:.05em}\
 p.tip{color:#939ab7;font-size:.9em;margin-top:1.5rem}\
 code,kbd{background:#363a4f;border-radius:.25rem;padding:.1rem .35rem;\
@@ -471,6 +478,52 @@ mod tests {
       name: name.to_string(),
       serves_ui,
     }
+  }
+
+  /// The chooser's colour contract: a model whose backend serves a web UI is
+  /// a green link, a model without one is red and is not a link.
+  #[test]
+  fn chooser_rows_are_green_with_a_ui_and_red_without() {
+    let html = chooser_html(
+      &[
+        entry_ui("L1", 41001, "with-ui", true),
+        entry_ui("L2", 41002, "no-ui", false),
+      ],
+      Some("L1"),
+    );
+    assert!(
+      html.contains(
+        "<a class=\"has-ui\" href=\"/ui/?target=L1\"><span class=\"name\">with-ui</span>"
+      ),
+      "a UI-serving row is a green-classed link: {html}"
+    );
+
+    let no_ui = html
+      .split("<li class=\"no-ui\">")
+      .nth(1)
+      .expect("the UI-less row is listed");
+    let no_ui = no_ui.split("</li>").next().unwrap_or(no_ui);
+    assert!(
+      !no_ui.contains("<a "),
+      "a row with no web UI must not be a link: {no_ui}"
+    );
+    assert!(no_ui.contains("<span class=\"name\">no-ui</span>"));
+
+    // The two classes must actually carry two different colours.
+    let green = CSS
+      .split("ul.models a.has-ui .name{color:")
+      .nth(1)
+      .and_then(|r| r.split('}').next())
+      .expect("green rule");
+    let red = CSS
+      .split("li.no-ui .name,span.no-ui-text{color:")
+      .nth(1)
+      .and_then(|r| r.split('}').next())
+      .expect("red rule");
+    assert!(
+      !green.is_empty() && !red.is_empty() && green != red,
+      "{green} vs {red}"
+    );
   }
 
   #[test]

@@ -204,16 +204,60 @@ async fn proxy_state_with_models(models: Vec<DiscoveredModel>) -> Arc<ProxyState
   proxy_state_with_models_compat(models, false).await
 }
 
-async fn proxy_state_with_models_compat(
+/// One build seam for every state in this file: the catalog, the optional
+/// supervisor registry, Ollama drop-in mode, and the `proxy.aliases` table the
+/// daemon hands `from_context_with_auth` in production. The wrappers below are
+/// what the tests call.
+async fn build_state(
   models: Vec<DiscoveredModel>,
+  registry: Option<SupervisorRegistry>,
   ollama_compat: bool,
+  aliases: &[(&str, &str)],
 ) -> Arc<ProxyState> {
   let catalog = ModelCatalog::new();
   for m in models {
     catalog.upsert(m).await;
   }
   let ctx = MethodContext::with_catalog(ShutdownToken::new(), catalog);
-  ProxyState::from_context(&ctx, ollama_compat, true, DEFAULT_BODY_LIMIT_BYTES)
+  let ctx = match registry {
+    Some(registry) => ctx.with_supervisors(registry),
+    None => ctx,
+  };
+  let aliases = llamastash::config::ProxyAliases::from_pairs(
+    aliases
+      .iter()
+      .map(|(name, target)| (name.to_string(), target.to_string())),
+  );
+  ProxyState::from_context_with_auth(
+    &ctx,
+    ollama_compat,
+    true,
+    None,
+    DEFAULT_BODY_LIMIT_BYTES,
+    &aliases,
+  )
+}
+
+/// Like [`proxy_state_with_models`] with a `proxy.aliases` entry.
+async fn proxy_state_with_alias(
+  models: Vec<DiscoveredModel>,
+  alias: (&str, &str),
+) -> Arc<ProxyState> {
+  proxy_state_with_aliases(models, vec![alias]).await
+}
+
+async fn proxy_state_with_aliases(
+  models: Vec<DiscoveredModel>,
+  aliases: Vec<(&str, &str)>,
+) -> Arc<ProxyState> {
+  build_state(models, None, false, &aliases).await
+}
+
+async fn proxy_state_with_models_compat(
+  models: Vec<DiscoveredModel>,
+  ollama_compat: bool,
+) -> Arc<ProxyState> {
+  build_state(models, None, ollama_compat, &[]).await
 }
 
 #[allow(dead_code)]
@@ -430,6 +474,290 @@ async fn api_show_accepts_legacy_name_field() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn api_show_resolves_a_proxy_alias() {
+  // A tool hard-wired to `gpt-4o-mini` should get metadata for the model the
+  // alias names, through the Ollama surface as well as the OpenAI one.
+  let models = vec![make_model(
+    "/m/qwen-coder.gguf",
+    Some("qwen-coder:7b"),
+    "qwen3",
+    ModeHint::Chat,
+  )];
+  let state = proxy_state_with_alias(models, ("gpt-4o-mini", "qwen-coder:7b")).await;
+  let (addr, shutdown, handle) = spawn_listener_with_state(state).await;
+
+  let (status, body) = http_post(addr, "/api/show", r#"{"model":"gpt-4o-mini"}"#).await;
+  assert_eq!(
+    status, 200,
+    "alias must resolve on /api/show: {status} {body:?}"
+  );
+  let v: Value = serde_json::from_slice(&body).expect("json body");
+  assert_eq!(v["details"]["family"], "qwen3");
+
+  shutdown_listener(shutdown, handle).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn api_show_an_alias_beats_a_model_that_merely_contains_the_name() {
+  // The alias is the operator's explicit mapping, so it outranks a partial
+  // match: `gpt-4o-mini` must not be stolen by the `gpt-4o-mini-Q4_K_M.gguf`
+  // that shows up on disk later.
+  let models = vec![
+    make_model(
+      "/m/gpt-4o-mini-Q4_K_M.gguf",
+      Some("gpt-4o-mini-Q4_K_M"),
+      "llama",
+      ModeHint::Chat,
+    ),
+    make_model(
+      "/m/qwen-coder.gguf",
+      Some("qwen-coder:7b"),
+      "qwen3",
+      ModeHint::Chat,
+    ),
+  ];
+  let state = proxy_state_with_alias(models, ("gpt-4o-mini", "qwen-coder:7b")).await;
+  let (addr, shutdown, handle) = spawn_listener_with_state(state).await;
+
+  let (status, body) = http_post(addr, "/api/show", r#"{"model":"gpt-4o-mini"}"#).await;
+  let v: Value = serde_json::from_slice(&body).expect("json body");
+  assert_eq!(
+    v["details"]["family"], "qwen3",
+    "the alias must answer, not the longer file name: {status} {body:?}"
+  );
+
+  shutdown_listener(shutdown, handle).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn api_show_an_alias_resolves_what_is_ambiguous_without_it() {
+  // Two rows contain `gpt-oss`, so the bare name is ambiguous on its own. An
+  // alias for it is the tie-break the operator wrote, and has to win over the
+  // 400 the same string would otherwise get.
+  let models = vec![
+    make_model(
+      "/m/gpt-oss-20b.gguf",
+      Some("gpt-oss-20b"),
+      "phi",
+      ModeHint::Chat,
+    ),
+    make_model(
+      "/m/gpt-oss-120b.gguf",
+      Some("gpt-oss-120b"),
+      "llama",
+      ModeHint::Chat,
+    ),
+  ];
+  let state = proxy_state_with_alias(models, ("gpt-oss", "gpt-oss-20b")).await;
+  let (addr, shutdown, handle) = spawn_listener_with_state(state).await;
+
+  let (status, body) = http_post(addr, "/api/show", r#"{"model":"gpt-oss"}"#).await;
+  assert_eq!(
+    status, 200,
+    "the alias must settle what the catalog cannot: {status} {body:?}"
+  );
+  let v: Value = serde_json::from_slice(&body).expect("json body");
+  assert_eq!(v["details"]["family"], "phi");
+
+  shutdown_listener(shutdown, handle).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn api_show_an_alias_target_has_to_name_a_model_on_its_own() {
+  // `qwen` is a substring of this file's name and of a directory above it, but it
+  // is not a model. Answering it would route to whichever row happened to contain
+  // the string, and the client cannot send anything better.
+  let models = vec![make_model(
+    "/models/qwen/misc/obfuscated-name.gguf",
+    None,
+    "phi",
+    ModeHint::Chat,
+  )];
+  let state = proxy_state_with_alias(models, ("gpt-4o-mini", "qwen")).await;
+  let (addr, shutdown, handle) = spawn_listener_with_state(state).await;
+
+  let (status, body) = http_post(addr, "/api/show", r#"{"model":"gpt-4o-mini"}"#).await;
+  assert_eq!(
+    status, 404,
+    "a target that only matches as a substring is refused, not guessed: {status} {body:?}"
+  );
+
+  shutdown_listener(shutdown, handle).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn api_show_an_alias_may_name_a_path() {
+  // The same rungs a client may send: a path is the unambiguous spelling, so it
+  // belongs in the alias surface too.
+  let models = vec![make_model(
+    "/m/qwen-coder.gguf",
+    Some("qwen-coder:7b"),
+    "qwen3",
+    ModeHint::Chat,
+  )];
+  let state = proxy_state_with_alias(models, ("gpt-4o-mini", "/m/qwen-coder.gguf")).await;
+  let (addr, shutdown, handle) = spawn_listener_with_state(state).await;
+
+  let (status, body) = http_post(addr, "/api/show", r#"{"model":"gpt-4o-mini"}"#).await;
+  assert_eq!(status, 200, "a path target resolves: {status} {body:?}");
+  let v: Value = serde_json::from_slice(&body).expect("json body");
+  assert_eq!(v["details"]["family"], "qwen3");
+
+  shutdown_listener(shutdown, handle).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn api_show_an_alias_pointing_at_another_alias_is_refused() {
+  // `hardwired -> y` reaches no model of its own; following `y` would be a chain,
+  // and a chain names no model.
+  let models = vec![
+    make_model(
+      "/m/realmodel.gguf",
+      Some("realmodel"),
+      "llama",
+      ModeHint::Chat,
+    ),
+    make_model(
+      "/m/synthetic.gguf",
+      Some("synthetic"),
+      "phi",
+      ModeHint::Chat,
+    ),
+  ];
+  let state = proxy_state_with_aliases(models, vec![("hardwired", "y"), ("y", "realmodel")]).await;
+  let (addr, shutdown, handle) = spawn_listener_with_state(state).await;
+
+  let (status, _) = http_post(addr, "/api/show", r#"{"model":"hardwired"}"#).await;
+  assert_eq!(status, 404, "the chain is refused, not followed");
+  let (status, body) = http_post(addr, "/api/show", r#"{"model":"y"}"#).await;
+  assert_eq!(
+    status, 200,
+    "the entry that names a model still works: {body:?}"
+  );
+  let v: Value = serde_json::from_slice(&body).expect("json body");
+  assert_eq!(v["details"]["family"], "llama");
+
+  shutdown_listener(shutdown, handle).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn api_show_an_alias_is_consulted_for_a_launch_address() {
+  // `gpt-4o-mini@coder` is the aliased name plus a launch the client wants. The
+  // alias has to be consulted for the model half, or the string falls through to
+  // a partial match and reaches whichever longer file name contains it.
+  let models = vec![
+    make_model(
+      "/m/gpt-4o-mini-Q4_K_M.gguf",
+      Some("gpt-4o-mini-Q4_K_M"),
+      "llama",
+      ModeHint::Chat,
+    ),
+    make_model(
+      "/m/qwen-coder.gguf",
+      Some("qwen-coder:7b"),
+      "qwen3",
+      ModeHint::Chat,
+    ),
+  ];
+  let state = proxy_state_with_alias(models, ("gpt-4o-mini", "qwen-coder:7b")).await;
+  let (addr, shutdown, handle) = spawn_listener_with_state(state).await;
+
+  let (status, body) = http_post(addr, "/api/show", r#"{"model":"gpt-4o-mini@coder"}"#).await;
+  assert_eq!(
+    status, 200,
+    "the alias must answer its own address: {status} {body:?}"
+  );
+  let v: Value = serde_json::from_slice(&body).expect("json body");
+  assert_eq!(
+    v["details"]["family"], "qwen3",
+    "the alias target, not the longer file name that contains the name: {body:?}"
+  );
+
+  shutdown_listener(shutdown, handle).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn api_show_an_alias_value_two_models_answer_to_names_its_candidates() {
+  // Two rows answer to `qwen3-32b`. Naming one is the operator's call, and the
+  // answer says so with the same candidate list a client gets when it sends an
+  // ambiguous name itself.
+  let models = vec![
+    make_model("/m/a/qwen3-32b.gguf", None, "qwen3", ModeHint::Chat),
+    make_model("/m/b/qwen3-32b.gguf", None, "qwen3", ModeHint::Chat),
+  ];
+  let state = proxy_state_with_alias(models, ("gpt-4o-mini", "qwen3-32b")).await;
+  let (addr, shutdown, handle) = spawn_listener_with_state(state).await;
+
+  let (status, body) = http_post(addr, "/api/show", r#"{"model":"gpt-4o-mini"}"#).await;
+  assert_eq!(
+    status, 400,
+    "an ambiguous value is ambiguity, not a missing model: {status} {body:?}"
+  );
+  let v: Value = serde_json::from_slice(&body).expect("json body");
+  assert_eq!(v["error"]["type"], "ambiguous_model", "{body:?}");
+  assert_eq!(
+    v["error"]["matches"].as_array().map(|m| m.len()),
+    Some(2),
+    "both candidates are named: {body:?}"
+  );
+
+  shutdown_listener(shutdown, handle).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn api_show_an_alias_value_that_is_a_real_model_wins_over_being_an_alias_name() {
+  // `demo` is both an alias of its own and the id of a real model. An entry that
+  // points at `demo` means the model, so this entry has to survive the table and
+  // resolve.
+  let models = vec![
+    make_model("/m/demo.gguf", Some("demo"), "phi", ModeHint::Chat),
+    make_model("/m/other.gguf", Some("other"), "llama", ModeHint::Chat),
+  ];
+  let state = proxy_state_with_aliases(models, vec![("fast", "demo"), ("demo", "other")]).await;
+  let (addr, shutdown, handle) = spawn_listener_with_state(state).await;
+
+  let (status, body) = http_post(addr, "/api/show", r#"{"model":"fast"}"#).await;
+  assert_eq!(
+    status, 200,
+    "a value naming a real model resolves: {status} {body:?}"
+  );
+  let v: Value = serde_json::from_slice(&body).expect("json body");
+  assert_eq!(v["details"]["family"], "phi", "{body:?}");
+
+  shutdown_listener(shutdown, handle).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn api_show_without_the_alias_still_calls_that_name_ambiguous() {
+  // The same two rows with no alias: the alias is what changed behaviour, not
+  // the matcher.
+  let models = vec![
+    make_model(
+      "/m/gpt-oss-20b.gguf",
+      Some("gpt-oss-20b"),
+      "phi",
+      ModeHint::Chat,
+    ),
+    make_model(
+      "/m/gpt-oss-120b.gguf",
+      Some("gpt-oss-120b"),
+      "llama",
+      ModeHint::Chat,
+    ),
+  ];
+  let state = proxy_state_with_models(models).await;
+  let (addr, shutdown, handle) = spawn_listener_with_state(state).await;
+
+  let (status, body) = http_post(addr, "/api/show", r#"{"model":"gpt-oss"}"#).await;
+  assert_eq!(
+    status, 400,
+    "an ambiguous name with no alias stays ambiguous: {status} {body:?}"
+  );
+
+  shutdown_listener(shutdown, handle).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn api_show_missing_model_returns_404_model_not_found() {
   let state = proxy_state_with_models(Vec::new()).await;
   let (addr, shutdown, handle) = spawn_listener_with_state(state).await;
@@ -615,12 +943,7 @@ async fn proxy_state_with_models_and_registry(
   models: Vec<DiscoveredModel>,
   registry: SupervisorRegistry,
 ) -> Arc<ProxyState> {
-  let catalog = ModelCatalog::new();
-  for m in models {
-    catalog.upsert(m).await;
-  }
-  let ctx = MethodContext::with_catalog(ShutdownToken::new(), catalog).with_supervisors(registry);
-  ProxyState::from_context(&ctx, false, true, DEFAULT_BODY_LIMIT_BYTES)
+  build_state(models, Some(registry), false, &[]).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

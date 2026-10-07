@@ -10,6 +10,7 @@
 //! Scope: loopback-only, same-UID, no auth, no TLS, no LAN binding,
 //! no MCP, no HTTP/2.
 
+pub(crate) mod alias;
 pub(crate) mod auth;
 pub(crate) mod coalesce;
 pub mod eviction;

@@ -215,6 +215,30 @@ async fn proxy_state_with(
   proxy_state_with_cap(models, supervisors, DEFAULT_BODY_LIMIT_BYTES).await
 }
 
+/// One build seam for every state in this file: the catalog, the registry it is
+/// served from, the `proxy.max_body_size` cap, and the `proxy.aliases` table. The
+/// daemon hands all of these to `from_context_with_auth`; the wrappers below are
+/// what the tests call.
+async fn build_state(
+  models: Vec<DiscoveredModel>,
+  supervisors: SupervisorRegistry,
+  max_body_size: usize,
+  aliases: &[(&str, &str)],
+) -> Arc<ProxyState> {
+  let catalog = ModelCatalog::new();
+  for m in models {
+    catalog.upsert(m).await;
+  }
+  let ctx =
+    MethodContext::with_catalog(ShutdownToken::new(), catalog).with_supervisors(supervisors);
+  let aliases = llamastash::config::ProxyAliases::from_pairs(
+    aliases
+      .iter()
+      .map(|(name, target)| (name.to_string(), target.to_string())),
+  );
+  ProxyState::from_context_with_auth(&ctx, false, true, None, max_body_size, &aliases)
+}
+
 /// Like [`proxy_state_with`] but with an explicit body cap — the
 /// `proxy.max_body_size` seam the daemon passes through
 /// `from_context_with_auth` in production.
@@ -223,13 +247,32 @@ async fn proxy_state_with_cap(
   supervisors: SupervisorRegistry,
   max_body_size: usize,
 ) -> Arc<ProxyState> {
-  let catalog = ModelCatalog::new();
-  for m in models {
-    catalog.upsert(m).await;
-  }
-  let ctx =
-    MethodContext::with_catalog(ShutdownToken::new(), catalog).with_supervisors(supervisors);
-  ProxyState::from_context(&ctx, false, true, max_body_size)
+  build_state(models, supervisors, max_body_size, &[]).await
+}
+
+/// Like [`proxy_state_with`] but with a `proxy.aliases` map, which the daemon
+/// passes through `from_context_with_auth` in production.
+async fn proxy_state_with_aliases(
+  models: Vec<DiscoveredModel>,
+  supervisors: SupervisorRegistry,
+  aliases: &[(&str, &str)],
+) -> Arc<ProxyState> {
+  build_state(models, supervisors, DEFAULT_BODY_LIMIT_BYTES, aliases).await
+}
+
+/// Send an HTTP GET and read the response head + body. Returns
+/// `(status, headers, body_bytes)`. Closes the connection after.
+async fn http_get(addr: SocketAddr, path: &str) -> (u16, Vec<(String, String)>, Vec<u8>) {
+  let mut sock = TcpStream::connect(addr).await.expect("connect");
+  sock
+    .write_all(
+      format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n").as_bytes(),
+    )
+    .await
+    .expect("write");
+  let mut buf = Vec::new();
+  sock.read_to_end(&mut buf).await.expect("read");
+  parse_response(&buf)
 }
 
 /// Send an HTTP POST and read the response head + body. Returns
@@ -466,6 +509,47 @@ async fn anthropic_messages_endpoint_forwards() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn anthropic_messages_endpoint_resolves_an_alias() {
+  // `/v1/messages` routes through the same reference rule as the OpenAI
+  // surfaces, so a name the client is hard-wired to has to reach the local model
+  // here too, and the body the upstream sees keeps the name the client sent.
+  let dir = unique_temp("messages-alias");
+  let catalog_path = "/fixture/qwen-chat.gguf";
+  let registry = SupervisorRegistry::new();
+  let (model, _port, _id) = spawn_fake_supervisor(catalog_path, &dir, LaunchMode::Chat).await;
+  let launch_id = registry.next_id();
+  registry.insert(launch_id, model.clone()).await;
+
+  let state = proxy_state_with_aliases(
+    vec![discovered(catalog_path, Some("qwen-chat"), "qwen3")],
+    registry,
+    &[("claude-haiku", "qwen-chat")],
+  )
+  .await;
+  let (addr, shutdown, listener_handle) = spawn_listener_with_state(state).await;
+
+  let body = serde_json::json!({
+    "model": "claude-haiku",
+    "max_tokens": 16,
+    "messages": [{"role": "user", "content": "hi"}],
+  })
+  .to_string();
+
+  let (status, _headers, response_body) = http_post(addr, "/v1/messages", &body, &[]).await;
+  assert_eq!(
+    status, 200,
+    "an alias resolves on the Anthropic surface too: {status}"
+  );
+  let parsed: Value = serde_json::from_slice(&response_body).expect("json body");
+  assert_eq!(parsed["type"], "message");
+  assert_eq!(parsed["model"], "claude-haiku");
+
+  let _ = model.stop(Duration::from_secs(3)).await;
+  shutdown_listener(shutdown, listener_handle).await;
+  std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn anthropic_messages_effort_reaches_the_upstream_body() {
   // What the upstream actually receives, end to end through the proxy: the
   // launch's backend is resolved from its recorded id, and that backend's
@@ -570,6 +654,163 @@ async fn model_file_with_at_in_name_resolves_as_plain_reference() {
   assert_eq!(
     status, 200,
     "model file with @ in name must resolve as a plain reference, got {status}: {response:?}"
+  );
+
+  let _ = model.stop(Duration::from_secs(3)).await;
+  shutdown_listener(shutdown, listener_handle).await;
+  std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn proxy_alias_reaches_the_model_it_names() {
+  let dir = unique_temp("alias");
+  let catalog_path = "/fixture/qwen3.gguf";
+  let registry = SupervisorRegistry::new();
+  let (model, _port, _id) = spawn_fake_supervisor(catalog_path, &dir, LaunchMode::Chat).await;
+  registry.insert(registry.next_id(), model.clone()).await;
+
+  // `gpt-4o-mini` is not a model anyone has on disk: only the alias can reach
+  // the one running model, so a 200 here can only come from alias resolution.
+  let state = proxy_state_with_aliases(
+    vec![discovered(catalog_path, Some("qwen3"), "qwen3")],
+    registry,
+    &[("gpt-4o-mini", "qwen3")],
+  )
+  .await;
+  let (addr, shutdown, listener_handle) = spawn_listener_with_state(state).await;
+
+  let body = r#"{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}"#;
+  let (status, _headers, response) = http_post(addr, "/v1/chat/completions", body, &[]).await;
+  assert_eq!(
+    status, 200,
+    "an alias must route to the model it names, got {status}: {response:?}"
+  );
+
+  // And it stays off the listings: `/v1/models` is one row per model.
+  let (status, _h, listing) = http_get(addr, "/v1/models").await;
+  assert_eq!(status, 200);
+  let text = String::from_utf8(listing).expect("utf8 listing");
+  assert!(
+    text.contains("qwen3") && !text.contains("gpt-4o-mini"),
+    "the alias must not be published: {text}"
+  );
+
+  let _ = model.stop(Duration::from_secs(3)).await;
+  shutdown_listener(shutdown, listener_handle).await;
+  std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_alias_settles_a_name_two_models_both_contain() {
+  let dir = unique_temp("alias-ambiguous");
+  let catalog_path = "/fixture/gpt-oss-20b.gguf";
+  let registry = SupervisorRegistry::new();
+  let (model, _port, _id) = spawn_fake_supervisor(catalog_path, &dir, LaunchMode::Chat).await;
+  registry.insert(registry.next_id(), model.clone()).await;
+
+  // A second row contains the same string, so `gpt-oss` alone is ambiguous and
+  // the proxy answers 400 for it. The alias is the operator's tie-break, so it
+  // has to route instead of forwarding the ambiguity to the client.
+  let state = proxy_state_with_aliases(
+    vec![
+      discovered(catalog_path, Some("gpt-oss-20b"), "qwen3"),
+      discovered("/fixture/gpt-oss-120b.gguf", Some("gpt-oss-120b"), "qwen3"),
+    ],
+    registry,
+    &[("gpt-oss", "gpt-oss-20b")],
+  )
+  .await;
+  let (addr, shutdown, listener_handle) = spawn_listener_with_state(state).await;
+
+  let body = r#"{"model":"gpt-oss","messages":[]}"#;
+  let (status, _headers, response) = http_post(addr, "/v1/chat/completions", body, &[]).await;
+  assert_eq!(
+    status, 200,
+    "the alias must beat the ambiguity of the bare name, got {status}: {response:?}"
+  );
+
+  // Without the alias the same string is still ambiguous: the alias is what
+  // changed the outcome, not the matcher.
+  let plain = proxy_state_with(
+    vec![
+      discovered(catalog_path, Some("gpt-oss-20b"), "qwen3"),
+      discovered("/fixture/gpt-oss-120b.gguf", Some("gpt-oss-120b"), "qwen3"),
+    ],
+    SupervisorRegistry::new(),
+  )
+  .await;
+  let (plain_addr, plain_shutdown, plain_handle) = spawn_listener_with_state(plain).await;
+  let (status, _headers, response) = http_post(plain_addr, "/v1/chat/completions", body, &[]).await;
+  assert_eq!(
+    status, 400,
+    "with no alias the name stays ambiguous, got {status}: {response:?}"
+  );
+
+  let _ = model.stop(Duration::from_secs(3)).await;
+  shutdown_listener(plain_shutdown, plain_handle).await;
+  shutdown_listener(shutdown, listener_handle).await;
+  std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_real_model_id_beats_an_alias_of_the_same_name() {
+  let dir = unique_temp("alias-shadow");
+  let catalog_path = "/fixture/gpt-4o-mini.gguf";
+  let registry = SupervisorRegistry::new();
+  let (model, _port, _id) = spawn_fake_supervisor(catalog_path, &dir, LaunchMode::Chat).await;
+  registry.insert(registry.next_id(), model.clone()).await;
+
+  // The catalog really does publish `gpt-4o-mini`, and the alias points
+  // somewhere else entirely (`other-model`, which is not running). If the alias
+  // won, the request would go looking for a dormant model instead of the live
+  // one answering this name.
+  let state = proxy_state_with_aliases(
+    vec![
+      discovered(catalog_path, Some("gpt-4o-mini"), "qwen3"),
+      discovered("/fixture/other.gguf", Some("other-model"), "qwen3"),
+    ],
+    registry,
+    &[("gpt-4o-mini", "other-model")],
+  )
+  .await;
+  let (addr, shutdown, listener_handle) = spawn_listener_with_state(state).await;
+
+  let body = r#"{"model":"gpt-4o-mini","messages":[]}"#;
+  let (status, _headers, response) = http_post(addr, "/v1/chat/completions", body, &[]).await;
+  assert_eq!(
+    status, 200,
+    "the real model must serve its own name, got {status}: {response:?}"
+  );
+
+  let _ = model.stop(Duration::from_secs(3)).await;
+  shutdown_listener(shutdown, listener_handle).await;
+  std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_alias_names_a_model_not_a_launch_or_preset() {
+  let dir = unique_temp("alias-preset");
+  let catalog_path = "/fixture/qwen3.gguf";
+  let registry = SupervisorRegistry::new();
+  let (model, _port, _id) = spawn_fake_supervisor(catalog_path, &dir, LaunchMode::Chat).await;
+  registry.insert(registry.next_id(), model.clone()).await;
+
+  // The target carries `@coder`. An alias names a model only, so the target is
+  // read whole, finds no model called `qwen3@coder`, and the request misses
+  // rather than quietly reaching qwen3 with a preset nobody asked for.
+  let state = proxy_state_with_aliases(
+    vec![discovered(catalog_path, Some("qwen3"), "qwen3")],
+    registry,
+    &[("helper", "qwen3@coder")],
+  )
+  .await;
+  let (addr, shutdown, listener_handle) = spawn_listener_with_state(state).await;
+
+  let body = r#"{"model":"helper","messages":[]}"#;
+  let (status, _headers, response) = http_post(addr, "/v1/chat/completions", body, &[]).await;
+  assert_eq!(
+    status, 404,
+    "an alias target is a model reference, not a `<model>@<name>` address: got {status}: {response:?}"
   );
 
   let _ = model.stop(Duration::from_secs(3)).await;
