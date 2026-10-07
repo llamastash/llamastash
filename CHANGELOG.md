@@ -7,6 +7,7 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 ### Added
 
 - `proxy.aliases` maps a model name a tool is hard-wired to onto a local model (`gpt-4o-mini: qwen3.8-27b-q8`, or a `name:`/`target:` list when you want a comment per entry), so that tool needs no config edit. A value has to name exactly one model by itself, so it never routes to a guess. A name that names a model outright wins over an alias of the same name, an alias settles a name two models share, an alias names a model rather than a preset, and aliases are not listed by `/v1/models` or `/api/tags`. ([#99](https://github.com/llamastash/llamastash/pull/99))
+- A llama.cpp launch that the idle sweep or make-room stops can hand its prompt cache to the next launch of the same model, so a conversation that straddles an unload does not reprocess its whole prompt. Config-only and off by default (`backend.llamacpp.slot_cache`): llama.cpp's restore transfers nothing on hybrid or sliding-window models ([llama.cpp#28194](https://github.com/ggml-org/llama.cpp/issues/28194)). ([#102](https://github.com/llamastash/llamastash/pull/102))
 - The `/ui` model chooser colours each row: green for a model whose backend has a web UI you can open, red for one that is running but serves none. ([#99](https://github.com/llamastash/llamastash/pull/99))
 
 ### Changed
