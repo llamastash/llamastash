@@ -18,8 +18,9 @@
 //!
 //! The engine validates only the model arch when loading a state file, so the
 //! sidecar written next to every save pins the full launch identity
-//! ([`Sidecar`]); a restore whose fingerprint disagrees with the current
-//! launch is skipped and the pair deleted. Files are consumed (deleted) after
+//! ([`Sidecar`]); a pair whose fingerprint disagrees with the live launch is
+//! left alone, because it belongs to a different launch that may still read
+//! it. Files are consumed (deleted) after
 //! a restore attempt, good or bad — a file that fails once will not get
 //! better, and one that succeeds has been read into the server.
 //!
@@ -344,13 +345,6 @@ async fn restore_at(root: &Path, port: u16, params: &LaunchParams, dir: &Path) {
       let Some(slot) = name_of(&path).and_then(slot_from_json) else {
         continue;
       };
-      if !slots.contains(&slot) {
-        // The relaunch has fewer slots than the save (a smaller `-np`); this
-        // conversation has nowhere to land.
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(od.join(bin_name(slot)));
-        continue;
-      }
       let Ok(raw) = std::fs::read_to_string(&path) else {
         continue;
       };
@@ -361,13 +355,19 @@ async fn restore_at(root: &Path, port: u16, params: &LaunchParams, dir: &Path) {
       if !od.join(bin_name(slot)).is_file() {
         continue;
       }
+      // Left in place when it is not ours: this sweep walks every launch's
+      // directory, and the save belongs to whichever launch *can* read it.
+      // Deleting a foreign pair here would mean any other model's relaunch
+      // wipes the conversation that is waiting for its own.
       if !sidecar.matches(&base) {
-        log::debug!(
-          "slot cache: slot {slot} in {} is from another launch; dropping",
-          od.display()
-        );
-        let _ = std::fs::remove_file(od.join(bin_name(slot)));
+        continue;
+      }
+      // The relaunch has fewer slots than this launch had (a smaller `-np`):
+      // the conversation has nowhere to land, and only now is it certain the
+      // pair is ours to discard.
+      if !slots.contains(&slot) {
         let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(od.join(bin_name(slot)));
         continue;
       }
       match newest.get(&slot) {
@@ -978,7 +978,7 @@ mod tests {
   }
 
   #[tokio::test]
-  async fn a_pair_from_another_launch_is_dropped_not_restored() {
+  async fn a_pair_from_another_launch_is_left_for_its_own_model() {
     let tmp = unique_temp_dir("slotcache-mismatch");
     let model = tmp.join("m.gguf");
     std::fs::write(&model, b"weights").unwrap();
@@ -992,19 +992,23 @@ mod tests {
     save_at(&root, evicted_port, &p, &evicted, u64::MAX).await;
     assert_eq!(names_in(&evicted).len(), 2);
 
-    // The relaunch resolved a smaller window than the save was made under;
-    // the engine would reject the file, so it is dropped unread.
+    // The relaunch resolved a smaller window than the save was made under, so
+    // the engine would reject the file. It belongs to a launch that could still
+    // read it, so this one must not restore it and must not delete it either:
+    // every other model's relaunch would otherwise wipe the saves waiting for
+    // its own return.
     let second = Fake::new(relaunch.clone(), 2048, vec![(0, 0)]);
-    let later_port = fake_engine(second.clone()).await;
+    let relaunch_port = fake_engine(second.clone()).await;
     std::fs::create_dir_all(&relaunch).unwrap();
-    restore_at(&root, later_port, &p, &relaunch).await;
+    restore_at(&root, relaunch_port, &p, &relaunch).await;
     assert!(
       second.hits.lock().unwrap().is_empty(),
       "no restore is attempted for a pair that cannot fit"
     );
-    assert!(
-      names_in(&evicted).is_empty(),
-      "an unmatchable pair is deleted, not kept until the cap"
+    assert_eq!(
+      names_in(&evicted).len(),
+      2,
+      "another launch's pair survives this one untouched"
     );
     let _ = std::fs::remove_dir_all(&tmp);
   }
