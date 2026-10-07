@@ -696,7 +696,7 @@ With vLLM installed too, a repo lists both engines in `supported_backends` and a
 
 Runs any OpenAI-compatible server llamastash has no dedicated backend for, declared under `backend.generic.servers` in `config.yaml`. llamastash reserves the port, polls the readiness path, routes the proxy, and stops the process. It knows nothing else about the engine: flags, env and weights live in the entry or in a wrapper script you write. Config-only on purpose, since `binary` runs as you; no CLI flag or IPC method sets one. Entries are read at process start, so run `llamastash daemon restart` (and reopen the TUI) after editing them.
 
-Tested on 2026-09-26 with gufo `d9a84f1`, Halogen `0.14.0` (Docker image) and CIRU `3cf984c` on a Strix Halo host. Full configs are in § Examples below.
+Tested on a Strix Halo host: gufo `d9a84f1` and CIRU `3cf984c` on 2026-09-26, Halogen `0.17.0` (Docker image) on 2026-10-07. Full configs are in § Examples below.
 
 Two shapes:
 
@@ -745,7 +745,7 @@ These are documented, not checked. Break one and the launch fails or misbehaves 
 
 ### Examples: gufo, Halogen, CIRU
 
-Three Qwen3.8 Flash-Next engines, tested on a Strix Halo box with gufo `d9a84f1`, Halogen `0.14.0` and CIRU `3cf984c`. Replace the `/path/to/...` parts with your own paths. Each takes 80-100 GB, so run one at a time.
+Three Qwen3.8 Flash-Next engines, tested on a Strix Halo box with gufo `d9a84f1`, Halogen `0.17.0` and CIRU `3cf984c`. Replace the `/path/to/...` parts with your own paths. Each takes 80-100 GB, so run one at a time.
 
 **gufo**: a native binary that runs a catalog GGUF directly, so it uses `model` and needs no wrapper. It checks the request's `model` field, hence `--served-model-name "{name}"`. Loads in about 22 s; `/ready` returns 503 until then.
 
@@ -784,23 +784,29 @@ llamastash start Qwen3.8-Flash-Next-UD-Q4_K_XL --preset gufo-128k
 llamastash start Qwen3.8-Flash-Next-UD-Q4_K_XL --server generic-gufo -- --seed 7
 ```
 
-**Halogen**: a Docker image configured by `HALOGEN_*` env vars, with its own `.hgn` weights (not a catalog GGUF), so it is its own row. Its knobs feed the container through `env`. `reasoning_effort` lists the levels its chat template accepts, so `integrations` gives the row effort levels in pi, OpenCode, Zed and Codex. Halogen also takes `minimal`, `high` and (from 0.15.1) `max` as aliases of those levels, and `none` turns thinking off. A preset that sets `halogen-effort` changes what the server uses when a request sends no effort, but not `reasoning_effort_default`, so Codex and Zed still write `xhigh` for it. Leave `vision` off unless the wrapper sets `HALOGEN_VISION_TOWER`; without it Halogen refuses images with a `400`.
+**Halogen**: a Docker image configured by `HALOGEN_*` env vars, with its own `.hgn` weights (not a catalog GGUF), so it is its own row. Its knobs feed the container through `env`. `halogen-pool` sets `HALOGEN_KV_POOL_POSITIONS`, the positions kept resident across all conversations: a pool the size of the window holds one full-length conversation, twice the window holds two. `reasoning_effort` lists the levels its chat template accepts, so `integrations` gives the row effort levels in pi, OpenCode, Zed and Codex. Halogen also takes `minimal`, `high` and (from 0.15.1) `max` as aliases of those levels, and `none` turns thinking off. A preset that sets `halogen-effort` changes what the server uses when a request sends no effort, but not `reasoning_effort_default`, so Codex and Zed still write `xhigh` for it. Leave `vision` off unless the wrapper sets `HALOGEN_VISION_TOWER`; without it Halogen refuses images with a `400`.
 
 ```yaml
       - name: flash-next-halogen
         binary: ~/bin/halogen-serve.sh
         args: ["{port}"]
+        arch: qwen4exp                       # row info: arch and params as on the model's GGUF row
+        params: 177B
+        quant: v2-4.16bpw                    # the v2 checkpoint's average bits per weight
+        ctx: 262144
         reasoning_effort: [none, low, medium, xhigh]
         reasoning_effort_default: xhigh      # same as halogen-effort's default
+        memory_gib: 89                       # startup log at a 524288 pool: 89.1 GiB in all
         knobs:
           - {flag: --ctx-window, id: halogen-ctx, ctx: true, default: "131072"}
+          - {flag: --halogen-kv-pool, id: halogen-pool, default: "131072"}
           - {flag: --halogen-temperature, id: halogen-temp, default: "1.0"}
           - {flag: --halogen-mtp-depth, id: halogen-mtp-depth, default: "3"}
           - {flag: --halogen-reasoning-effort, id: halogen-effort, default: xhigh}
         env:
           HALOGEN_MODEL_ID: "{name}"
           HALOGEN_CTX: "{halogen-ctx}"
-          HALOGEN_KV_POOL_POSITIONS: "{halogen-ctx}"
+          HALOGEN_KV_POOL_POSITIONS: "{halogen-pool}"
           HALOGEN_TEMPERATURE: "{halogen-temp}"
           HALOGEN_MTP_DEPTH: "{halogen-mtp-depth}"
           HALOGEN_REASONING_EFFORT: "{halogen-effort}"
@@ -811,12 +817,17 @@ llamastash start Qwen3.8-Flash-Next-UD-Q4_K_XL --server generic-gufo -- --seed 7
 presets:
   flash-next-halogen:
     entries:
+      dual-256k:                   # two full-length conversations stay resident
+        knobs:
+          halogen-ctx: 262144
+          halogen-pool: 524288
       halogen-medium:
         knobs:
           halogen-effort: medium   # shorter thinking, faster turns
 ```
 
 ```bash
+llamastash start flash-next-halogen --preset dual-256k
 llamastash start flash-next-halogen --preset halogen-medium
 ```
 
@@ -824,35 +835,54 @@ llamastash start flash-next-halogen --preset halogen-medium
 
 ```sh
 #!/bin/sh
-# llamastash generic wrapper for Halogen 0.14.0. Bridge network published on
-# loopback only: the image's API binds 0.0.0.0 inside the container.
+# llamastash generic wrapper for Halogen 0.17.0 (v2 .hgn checkpoint).
 # $1 = port; HALOGEN_* come from the entry env.
+# The server is closed source, so it runs on an internal network with no
+# outbound access. Docker can't publish ports from one, so socat forwards
+# loopback to the container; pdeathsig stops socat if this script dies.
 port="$1"
 name="llamastash-halogen-$port"          # per port, so two launches don't collide
+net=halogen-net
 docker rm -f "$name" >/dev/null 2>&1      # leftover from a crashed daemon
+# A stopped --rm container keeps its name until removal finishes (33 s seen),
+# and rm -f returns early while that runs.
+for _ in $(seq 120); do docker container inspect "$name" >/dev/null 2>&1 || break; sleep 1; done
+docker network inspect "$net" >/dev/null 2>&1 || docker network create --internal "$net" >/dev/null || exit 1
 hub=/path/to/huggingface/hub
-hg=/hub/models--peonist-ai--halogen-qwen3.8-flash-next/snapshots/<revision>
-docker run -d --rm --name "$name" -p "127.0.0.1:$port:8080" \
+repo=models--peonist-ai--halogen-qwen3.8-flash-next
+hg=/hub/$repo/snapshots/$(cat "$hub/$repo/refs/main") || exit 1   # the downloaded revision
+docker run -d --rm --name "$name" --network "$net" \
   --device /dev/kfd --device /dev/dri \
   --group-add "$(getent group video | cut -d: -f3)" --group-add "$(getent group render | cut -d: -f3)" \
   --ipc=host --ulimit memlock=-1:-1 -v "$hub":/hub:ro \
   -e HALOGEN_API_PORT=8080 -e HALOGEN_MODEL_ID \
-  -e HALOGEN_CHECKPOINT="$hg/qwen38-flash-next-w4b.hgn" \
-  -e HALOGEN_MTP_HEAD="$hg/qwen38-flash-next-mtp.hgn" -e HALOGEN_TOKENIZER="$hg/tokenizer" \
+  -e HALOGEN_CHECKPOINT="$hg/qwen38-flash-next-v2.hgn" \
+  -e HALOGEN_TOKENIZER="$hg/tokenizer" \
   -e HALOGEN_CTX -e HALOGEN_KV_POOL_POSITIONS -e HALOGEN_MTP_DEPTH -e HALOGEN_REASONING_EFFORT \
   -e HALOGEN_MAX_TOKENS_DEFAULT=16384 -e HALOGEN_TEMPERATURE -e HALOGEN_TOP_P=0.95 -e HALOGEN_TOP_K=20 \
-  ghcr.io/peonist-ai/halogen-flash-server:0.14.0 >/dev/null || exit 1
+  ghcr.io/peonist-ai/halogen-flash-server:0.17.0 >/dev/null || exit 1
 # One clean stop: SIGTERM from llamastash becomes `docker stop`, which the
 # image turns into an engine shutdown (its own SIGKILL comes 30 s later).
 trap 'docker stop -t 60 "$name" >/dev/null 2>&1' TERM INT
 docker logs -f "$name" 2>&1 &
+# Forward only once the API listens; earlier, socat logs every readiness probe as refused.
+ip=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$net\").IPAddress}}" "$name")
+until curl -so /dev/null "http://$ip:8080/v1/models"; do
+  [ "$(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null)" = true ] || exit 1
+  sleep 2
+done
+setpriv --pdeathsig TERM socat TCP-LISTEN:"$port",bind=127.0.0.1,reuseaddr,fork TCP:"$ip":8080 &
+fwd=$!
 docker wait "$name" >/dev/null &
 wait $!
+kill "$fwd" 2>/dev/null
 ```
 
 - `docker run -d` plus `docker wait` keeps the wrapper in the foreground while the container never sees the process-group SIGTERM directly, so the engine gets exactly one signal. Keep `docker stop -t` above the image's 30 s and `stop_grace_secs` above `-t`.
-- Halogen 0.14.0's `all` mode binds its API on `0.0.0.0` whatever `HALOGEN_BIND` says (that variable covers only the internal engine port). Hence the bridge port published on `127.0.0.1` instead of `--network host`, which also keeps two launches' internal engine ports apart.
-- It does not check the request's `model` field. Cold load took 93-105 s here, about 6 s when the weights are still in page cache.
+- The loop after `docker rm -f` covers a relaunch on the same port right after a stop. A stopped `--rm` container keeps its name until Docker finishes removing it, which took 33 s here. `docker rm -f` returns at once during that time (`removal of container ... is already in progress`), and `docker run` then fails with `Conflict. The container name ... is already in use`.
+- The `--internal` network gives the container no outbound access. Docker does not publish ports for a container on an internal network (checked on Docker 29.8.2), so `socat` forwards `127.0.0.1:$port` to it. The host needs `socat`, `setpriv` and `curl`. Without the isolation, publish the port instead (`-p "127.0.0.1:$port:8080"`, no `socat`), as this example did for 0.14.0. The API binds `0.0.0.0:8080` inside the container, so keep it off `--network host`.
+- 0.17.0 serves the v2 checkpoint, `qwen38-flash-next-v2.hgn` (62.1 GiB), and finds its lookup table `qwen38-flash-next-ngram.hgn` (47.7 GiB) beside it. The draft head is inside the checkpoint, so there is no `HALOGEN_MTP_HEAD`. The older w4b checkpoint still loads but is deprecated.
+- It does not check the request's `model` field. The engine was listening 88 s after start when it read the checkpoint from disk, and after 6 to 8 s with the weights still in page cache.
 - `HALOGEN_REASONING_EFFORT` sets the default thinking effort: `minimal`, `low`, `medium`, `high` or `xhigh`, mapped to the template's `low`, `medium` and `xhigh`. Unset, the template's own default applies, which is `xhigh`. A request that sends `reasoning_effort` still wins. The wrapper has to pass the variable through (`-e HALOGEN_REASONING_EFFORT`), or the preset has no effect.
 
 **CIRU**: a `run-server.sh` launcher configured by env vars that `exec`s its own llama-server build and passes extra args through. The wrapper exports the fixed variables; per-launch values go in the entry's `env`.
