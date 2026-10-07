@@ -4,7 +4,9 @@ Two families live here. `end_to_end/`, `overhead/` and `proxy/` are the Python
 harnesses behind the published numbers in `docs/benchmarks/` — see
 `docs/benchmarks/methodology.md` before touching those. The shell scripts below
 are speculative-decoding comparisons, kept because they are worth re-running
-whenever a backend or a draft head changes.
+whenever a backend or a draft head changes. The last section,
+`measure-slot-kv.py`, measures an engine behaviour instead of our build, and
+backs a spike.
 
 ## Before running any of them
 
@@ -101,3 +103,23 @@ Engine choice and every launch knob live in `engine.sh`; that file is the write
 target of the autoresearch session recorded in `.auto/`. See
 `.auto/prompt.md` for the workload, the baseline, and the power state a number is
 only comparable within.
+
+## `measure-slot-kv.py` — slot KV save/restore against reprocessing
+
+```sh
+python3 scripts/bench/measure-slot-kv.py --model ~/models/Qwen3.5-4B-Q4_K_M.gguf \
+    --sizes 6000,24000,120000 --ctx 131072
+```
+
+For each prompt size: start a fresh `llama-server`, prefill it, save the slot it
+landed on (`--slot-save-path` plus `action=save`), restart the server, restore
+into that slot id, prefill again. Prints one JSON row per size with the cold
+reprocess seconds, the save seconds, the file size, the restore seconds and the
+first request's `prompt_ms`. It is the harness behind
+[`docs/spikes/2026-10-07-slot-kv-persistence.md`](../../docs/spikes/2026-10-07-slot-kv-persistence.md);
+re-run it when upstream llama.cpp#28194 closes, and read
+`after_restore_ms ≈ reprocess_s` as that bug reproducing, not as a slow machine.
+Nothing goes through llamastash: `--binary` points at the build under test and
+`--port` needs to be one nothing else holds, because a stale server answering
+`/health` on the port makes every "restart" read as a warm cache. Prompts are
+uuid-prefixed and each size gets its own process for the same reason.

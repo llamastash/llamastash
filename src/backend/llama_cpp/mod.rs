@@ -17,6 +17,7 @@ mod compose;
 mod effort;
 pub mod knobs;
 pub mod list_devices;
+mod slot_cache;
 mod telemetry;
 
 use compose::compose;
@@ -49,6 +50,39 @@ pub const LLAMACPP_KNOB_FIT_CTX_FLOOR: &str = "fit_ctx_floor";
 pub const LLAMACPP_KNOB_LOAD_MODE_DIALECT: &str = "load_mode_dialect";
 /// The same fact as a [`caps`] probe key on `Server::caps`.
 pub const CAP_LOAD_MODE_DIALECT: &str = "load_mode_dialect";
+/// `launch_config` key carrying whether the resolved build serves the
+/// `--slot-save-path` KV API. Written by `seed_binary_caps`, read by `compose`
+/// and by the eviction / readiness hooks.
+pub const LLAMACPP_KNOB_SLOT_SAVE_CAP: &str = "slot_save_cap";
+/// The same fact as a [`caps`] probe key on `Server::caps`.
+pub const CAP_SLOT_SAVE: &str = "slot_save";
+/// `launch_config` key carrying this launch's slot-save directory, seeded when
+/// the feature is on and the binary can do it. Its presence is the feature's
+/// per-launch switch: `compose` emits `--slot-save-path`, and the save and
+/// restore hooks act only when it is set.
+pub const LLAMACPP_KNOB_SLOT_SAVE_DIR: &str = "slot_save_dir";
+/// `launch_config` key carrying the byte cap on all saved slots, projected from
+/// `backend.llamacpp.slot_cache_max_mib` next to the dir so the save hook needs
+/// nothing but the launch params.
+pub const LLAMACPP_KNOB_SLOT_SAVE_MAX_MIB: &str = "slot_save_max_mib";
+/// The engine flag itself, refused in user extras: last-occurrence semantics
+/// would let a copy beat the one `compose` emits and move the saves to a
+/// directory nothing fingerprints or prunes.
+pub const SLOT_SAVE_PATH_FLAG: &str = "--slot-save-path";
+
+/// The slot-save directory this launch was seeded with, when both the config
+/// and the binary allow it. `None` leaves the KV persistence feature off for
+/// this launch.
+fn slot_save_dir(params: &LaunchParams) -> Option<std::path::PathBuf> {
+  let cap = params.launch_config.get(LLAMACPP_KNOB_SLOT_SAVE_CAP)?;
+  if cap != "true" {
+    return None;
+  }
+  params
+    .launch_config
+    .get(LLAMACPP_KNOB_SLOT_SAVE_DIR)
+    .map(std::path::PathBuf::from)
+}
 
 /// The `fit_ctx_floor` launch knob parsed to `u32`, or `None` when unseeded /
 /// unparsable. Shared by the admission-floor and readiness-gate hooks.
@@ -160,6 +194,20 @@ pub struct LlamaCppConfig {
   /// sends an effort value on every request would otherwise always win.
   #[serde(default = "default_true")]
   pub map_anthropic_effort: bool,
+  /// Save each slot's KV cache to disk before an eviction stops a launch and
+  /// restore it when a matching launch comes back, so a conversation that
+  /// straddles an unload does not reprocess its whole prompt. Factory `false`:
+  /// llama.cpp restore transfers no KV on hybrid/recurrent or SWA models
+  /// (upstream ggml-org/llama.cpp#28194), which includes the Qwen3.5 family, so
+  /// the save would write gigabytes and buy nothing. Builds without the engine's
+  /// `--slot-save-path` API are skipped individually. See the `slot_cache` module.
+  #[serde(default)]
+  pub slot_cache: bool,
+  /// Ceiling for the whole slot-save tree under the cache dir, in MiB. The
+  /// oldest saves are dropped first when it is exceeded. Factory 8 GiB,
+  /// roughly a 100k-token prompt on a mid-size model.
+  #[serde(default = "default_slot_cache_max_mib")]
+  pub slot_cache_max_mib: u32,
 }
 
 fn default_true() -> bool {
@@ -170,6 +218,10 @@ fn default_fit_ctx_floor() -> u32 {
   crate::config::DEFAULT_FIT_CTX_FLOOR
 }
 
+fn default_slot_cache_max_mib() -> u32 {
+  8192
+}
+
 impl Default for LlamaCppConfig {
   fn default() -> Self {
     Self {
@@ -178,6 +230,8 @@ impl Default for LlamaCppConfig {
       strict_fit: false,
       fit_ctx_floor: crate::config::DEFAULT_FIT_CTX_FLOOR,
       map_anthropic_effort: true,
+      slot_cache: false,
+      slot_cache_max_mib: default_slot_cache_max_mib(),
     }
   }
 }
@@ -374,19 +428,24 @@ impl Backend for LlamaCppBackend {
   }
 
   fn probe_caps(&self, binary: &Path) -> std::collections::BTreeMap<String, String> {
+    let probed = caps::BuildCaps::probe(binary);
     let mut caps = std::collections::BTreeMap::new();
     caps.insert(
       CAP_LOAD_MODE_DIALECT.to_string(),
-      caps::LoadModeDialect::probe(binary).label().to_string(),
+      probed.load_mode.label().to_string(),
     );
+    caps.insert(CAP_SLOT_SAVE.to_string(), probed.slot_save.to_string());
     caps
   }
 
   fn seed_binary_caps(&self, binary: &Path, servers: &[super::Server], params: &mut LaunchParams) {
-    let dialect = match servers.iter().find(|s| s.binary == binary) {
-      Some(server) => caps::LoadModeDialect::from_label(
-        server.caps.get(CAP_LOAD_MODE_DIALECT).map(String::as_str),
-      ),
+    let probed = match servers.iter().find(|s| s.binary == binary) {
+      Some(server) => caps::BuildCaps {
+        load_mode: caps::LoadModeDialect::from_label(
+          server.caps.get(CAP_LOAD_MODE_DIALECT).map(String::as_str),
+        ),
+        slot_save: server.caps.get(CAP_SLOT_SAVE).is_some_and(|s| s == "true"),
+      },
       // The binary should always be a catalog row (`configured_servers` adds the
       // daemon's resolved default), so a miss means the catalog and the launch
       // disagree. Probe rather than assume: guessing wrong here emits a flag the
@@ -396,12 +455,16 @@ impl Backend for LlamaCppBackend {
           "{} is not in the server catalog; probing its flags directly",
           binary.display()
         );
-        caps::LoadModeDialect::probe(binary)
+        caps::BuildCaps::probe(binary)
       }
     };
     params.launch_config.insert(
       LLAMACPP_KNOB_LOAD_MODE_DIALECT.to_string(),
-      dialect.label().to_string(),
+      probed.load_mode.label().to_string(),
+    );
+    params.launch_config.insert(
+      LLAMACPP_KNOB_SLOT_SAVE_CAP.to_string(),
+      probed.slot_save.to_string(),
     );
   }
 
@@ -463,6 +526,27 @@ impl Backend for LlamaCppBackend {
       LLAMACPP_KNOB_FIT_CTX_FLOOR.to_string(),
       cfg.fit_ctx_floor.to_string(),
     );
+    // The KV save dir, created here because the child rejects a
+    // `--slot-save-path` that is not an existing directory and this is the last
+    // hook before it spawns. Whether the *binary* can take the flag is a
+    // separate verdict (`seed_binary_caps`, which runs later); a launch on a
+    // build without it leaves the directory empty and the next save's prune
+    // pass removes it. Removed when off so an inherited `last_params` copy
+    // can't point a later launch at a dead directory.
+    params.launch_config.remove(LLAMACPP_KNOB_SLOT_SAVE_DIR);
+    params.launch_config.remove(LLAMACPP_KNOB_SLOT_SAVE_MAX_MIB);
+    if cfg.slot_cache && !crate::launch::params::bench_disable_defaults_from_env() {
+      if let Some(dir) = slot_cache::create_save_dir() {
+        params.launch_config.insert(
+          LLAMACPP_KNOB_SLOT_SAVE_DIR.to_string(),
+          dir.display().to_string(),
+        );
+        params.launch_config.insert(
+          LLAMACPP_KNOB_SLOT_SAVE_MAX_MIB.to_string(),
+          cfg.slot_cache_max_mib.to_string(),
+        );
+      }
+    }
   }
 
   fn admission_ctx_floor(&self, params: &LaunchParams) -> Option<u32> {
@@ -501,6 +585,33 @@ impl Backend for LlamaCppBackend {
   ) -> crate::daemon::actuals::Actuals {
     // The llama-server-specific `/props` fetch + `n_ctx` parse.
     actuals::fetch_props_actuals(port, timeout).await
+  }
+
+  fn prune_cache(&self, cfg: &super::BackendConfig) {
+    slot_cache::prune_at_boot(u64::from(cfg.llamacpp.slot_cache_max_mib) * 1024 * 1024);
+  }
+
+  async fn on_evict(&self, port: u16, params: &LaunchParams) {
+    let Some(dir) = slot_save_dir(params) else {
+      return;
+    };
+    let mib = params
+      .launch_config
+      .get(LLAMACPP_KNOB_SLOT_SAVE_MAX_MIB)
+      .and_then(|s| s.parse::<u32>().ok())
+      .unwrap_or_else(default_slot_cache_max_mib);
+    slot_cache::save(port, params, &dir, u64::from(mib) * 1024 * 1024).await;
+  }
+
+  async fn on_ready(&self, port: u16, params: &LaunchParams) {
+    let Some(dir) = slot_save_dir(params) else {
+      return;
+    };
+    slot_cache::restore(port, params, &dir).await;
+  }
+
+  fn forbidden_extra_heads(&self) -> &'static [&'static str] {
+    &[SLOT_SAVE_PATH_FLAG]
   }
 
   fn gpu_resident(&self, params: &LaunchParams, layer_count: Option<u64>) -> bool {
@@ -952,6 +1063,31 @@ mod tests {
     let direct = crate::gguf::identity::compute(Path::new("/m/model.gguf"), bytes);
     // llama.cpp identity is the GGUF identity, wrapped in the seam type.
     assert_eq!(via_backend.as_gguf(), Some(&direct));
+  }
+
+  /// The KV save hooks, `compose`, and the eviction path all key off this one
+  /// lookup, so a launch that should not touch the disk has to read as
+  /// unseeded: no dir, or a binary the probe says cannot save.
+  #[test]
+  fn the_slot_dir_is_live_only_with_the_cap_and_a_dir() {
+    let mut p = LaunchParams::new(PathBuf::from("/m/m.gguf"), LaunchMode::Chat);
+    assert_eq!(slot_save_dir(&p), None);
+    p.launch_config
+      .insert(LLAMACPP_KNOB_SLOT_SAVE_DIR.to_string(), "/s/1".into());
+    assert_eq!(slot_save_dir(&p), None, "no probe verdict means off");
+    p.launch_config
+      .insert(LLAMACPP_KNOB_SLOT_SAVE_CAP.to_string(), "false".into());
+    assert_eq!(slot_save_dir(&p), None);
+    p.launch_config
+      .insert(LLAMACPP_KNOB_SLOT_SAVE_CAP.to_string(), "true".into());
+    assert_eq!(slot_save_dir(&p), Some(PathBuf::from("/s/1")));
+  }
+
+  #[test]
+  fn the_slot_save_head_is_refused_in_extras() {
+    assert!(LlamaCppBackend::new()
+      .forbidden_extra_heads()
+      .contains(&SLOT_SAVE_PATH_FLAG));
   }
 
   // Cross-backend `Backends` enum-dispatch forwarding is tested in the

@@ -226,6 +226,21 @@ pub async fn sweep_once(state: &Arc<ProxyState>, default_ttl: Duration) {
 async fn stop_launch(ctx: &crate::daemon::context::MethodContext, launch_id: &LaunchId) {
   use crate::backend::Backend;
   let backend = crate::daemon::launch_service::backend_for_launch(ctx, launch_id).await;
+  // The backend's last look at the live child. A backend that can carry
+  // conversation state across a stop writes it out here, which is what lets the
+  // next launch of this model skip reprocessing. Best-effort: a slow or failing
+  // save must not hold up an eviction that a request is waiting on.
+  let live = ctx
+    .state
+    .snapshot()
+    .await
+    .running
+    .into_iter()
+    .find(|r| r.launch_id.as_ref() == Some(launch_id))
+    .map(|r| (r.port, r.params));
+  if let Some((port, params)) = live {
+    backend.on_evict(port, &params).await;
+  }
   let _ = backend
     .stop(ctx, launch_id, EVICT_STOP_GRACE.as_secs())
     .await;

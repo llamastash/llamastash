@@ -520,6 +520,39 @@ backend:
     # Sources — CLI: (none) · Env: (none, config-only).
     map_anthropic_effort: true
 
+    # Keep a model's prompt cache across an unload (default: false). When the
+    # idle sweep or make-room stops a llama.cpp launch mid-conversation, the
+    # next request would otherwise reprocess the whole prompt. llamastash asks
+    # llama-server to write each slot's KV state to disk just before such a
+    # stop, and reads it back when a matching launch (same model file, same
+    # serving mode, same resolved context window) is healthy again.
+    #
+    # Off until upstream fixes it: llama.cpp's restore transfers no KV on
+    # hybrid/recurrent or sliding-window models, which includes the Qwen3.5
+    # family (upstream ggml-org/llama.cpp#28194). On those a save writes 33-42
+    # KB per prompt token and the first returning request reprocesses anyway.
+    # On a pure-attention model the same restore gives back essentially the
+    # whole cache, so set this to true if you serve one; a 24k-token slot takes
+    # 0.47 s to write against 24.9 s to reprocess. Numbers and the reason in
+    # docs/spikes/2026-10-07-slot-kv-persistence.md.
+    #
+    # Only an eviction-triggered stop saves anything; a `stop` you asked for is
+    # you being done with that conversation. Files live under the cache
+    # directory, are consumed when restored, and are dropped after a week.
+    # Ignored on a `llama-server` build that does not advertise
+    # `--slot-save-path`.
+    #
+    # Sources — CLI: (none) · Env: (none, config-only).
+    slot_cache: false
+
+    # Ceiling on all saved slot states together, in MiB. Oldest go first when a
+    # new save would exceed it; the state just written is never the one dropped.
+    # Saved states run 33-42 KB per prompt token, so a 100k-token conversation
+    # is about 4 GiB and the 8 GiB default holds one or two of them.
+    #
+    # Sources — CLI: (none) · Env: (none, config-only).
+    slot_cache_max_mib: 8192
+
   # ── Lemonade (NPU / multi-engine backend) [EXPERIMENTAL] ──
   #
   # EXPERIMENTAL: behaviour and these keys may change. A second backend

@@ -304,6 +304,10 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   if let Err(e) = crate::backend::install_backend_config(&opts.backend) {
     log::error!("backend config: {e}");
   }
+  // Backends sweep what their previous runs left in cache dirs: no launch of
+  // this daemon will ever read it, and every hour it stays is disk the eviction
+  // budget could have used.
+  crate::backend::prune_backend_cache(&opts.backend);
 
   // 3. Shutdown plumbing.
   let token = ShutdownToken::new();

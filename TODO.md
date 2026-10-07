@@ -433,7 +433,8 @@ Plans and item details: [`docs/plans/2026-10-05-001-feat-r14-batches-plan.md`](d
 
 ### Batch 4: faster reloads ([plan](docs/plans/2026-10-05-001-feat-r14-batches-plan.md#batch-4-faster-reloads))
 
-- [ ] Keep a model's prompt cache across an unload
+- [x] ~~Keep a model's prompt cache across an unload~~ — **done 2026-10-07, off by default**: an eviction stop writes each llama.cpp slot's KV cache to `<cache_dir>/slots` and the next matching launch reads it back before `Ready`, behind `backend.llamacpp.slot_cache`. The write is worth it (24k tokens save in 0.47 s against 24.9 s to reprocess) but llama.cpp's restore reuses nothing on hybrid/recurrent or SWA models, so the key ships `false` until [llama.cpp#28194](https://github.com/ggml-org/llama.cpp/issues/28194) lands ([`spikes/2026-10-07-slot-kv-persistence.md`](docs/spikes/2026-10-07-slot-kv-persistence.md)). See [`docs/architecture.md § Prompt cache across an eviction`](docs/architecture.md).
+- [ ] Re-measure the slot prompt cache and default `backend.llamacpp.slot_cache` to `true` if the numbers hold, once ggml-org/llama.cpp#28194 is fixed — `scripts/bench/measure-slot-kv.py`, [`spikes/2026-10-07-slot-kv-persistence.md`](docs/spikes/2026-10-07-slot-kv-persistence.md)
 - [ ] Warm the page cache before a load (`llamastash warm <model>`)
 
 ### Batch 5: CLI setup commands ([plan](docs/plans/2026-10-05-001-feat-r14-batches-plan.md#batch-5-cli-setup-commands))

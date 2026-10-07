@@ -674,6 +674,15 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
             );
           }
         }
+        // Give the backend one more look before the world is allowed to route to
+        // it: this is where a launch reloads the conversation state a previous
+        // launch of the same model saved on its way out. It deliberately sits
+        // after the fit gate (a refused launch has nothing to reload into) and
+        // before `Ready` (a request that arrives after this must hit reloaded
+        // state, not reprocess). The default trait impl does no I/O.
+        probe_backend
+          .on_ready(probe_model.inner.port, probe_model.params())
+          .await;
         *probe_model.inner.actuals.write().await = actuals;
         let secs = SystemTime::now()
           .duration_since(UNIX_EPOCH)

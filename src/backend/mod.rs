@@ -347,10 +347,11 @@ pub trait Backend {
   /// rather than a choice — so omitting this fails to compile.
   fn knobs(&self) -> &'static [crate::launch::knobs::KnobDef];
 
-  /// Network-affecting flag heads this backend refuses in `extras` /
-  /// native-knob values **on top of** the base loopback/credential denylist
-  /// ([`crate::launch::params::FORBIDDEN_ADVANCED_PREFIXES`]). Default empty:
-  /// llama.cpp and Lemonade add nothing.
+  /// Flag heads this backend refuses in `extras` / native-knob values **on top
+  /// of** the base loopback/credential denylist
+  /// ([`crate::launch::params::FORBIDDEN_ADVANCED_PREFIXES`]) — network-affecting
+  /// ones, plus any head the launcher owns and must not have overridden.
+  /// Default empty: Lemonade adds nothing.
   fn forbidden_extra_heads(&self) -> &'static [&'static str] {
     &[]
   }
@@ -1002,6 +1003,28 @@ pub trait Backend {
   ) -> Result<serde_json::Value, crate::ipc::protocol::ErrorObject> {
     crate::daemon::launch_service::stop_supervised(ctx, launch_id, grace_secs).await
   }
+
+  /// Called with the child still running, just before the proxy evicts it (idle
+  /// sweep or make-room). A backend that can carry conversation state across a
+  /// stop writes it out here. Never on a manual `stop` — that is the user
+  /// saying they are done with the launch. Anything the hook needs out of
+  /// `config.yaml` arrives projected onto `params.launch_config`, the same way
+  /// every other config-derived launch input does, so the caller has nothing to
+  /// thread. Default: no-op.
+  async fn on_evict(&self, _port: u16, _params: &crate::launch::params::LaunchParams) {}
+
+  /// Drop what this backend's earlier launches left in their shared cache
+  /// directories and no later launch will ever read. Called once at daemon
+  /// start, before any launch. Default: no-op.
+  fn prune_cache(&self, _cfg: &BackendConfig) {}
+
+  /// Called after the child answers its health probe but **before** the launch
+  /// is published as `Ready`, so state a previous launch of the same model
+  /// saved can be reloaded before the first request routes. Blocking here
+  /// delays readiness by the reload time, which is the point: tens of
+  /// milliseconds of disk read instead of tens of seconds of reprocessing on
+  /// the first request. Default: no-op.
+  async fn on_ready(&self, _port: u16, _params: &crate::launch::params::LaunchParams) {}
 }
 
 // ============================================================================
@@ -1422,6 +1445,18 @@ impl Backend for Backends {
   ) -> Result<serde_json::Value, crate::ipc::protocol::ErrorObject> {
     for_each_backend!(self, b => b.stop(ctx, launch_id, grace_secs).await)
   }
+
+  fn prune_cache(&self, cfg: &BackendConfig) {
+    for_each_backend!(self, b => b.prune_cache(cfg))
+  }
+
+  async fn on_evict(&self, port: u16, params: &crate::launch::params::LaunchParams) {
+    for_each_backend!(self, b => b.on_evict(port, params).await)
+  }
+
+  async fn on_ready(&self, port: u16, params: &crate::launch::params::LaunchParams) {
+    for_each_backend!(self, b => b.on_ready(port, params).await)
+  }
 }
 
 /// Install every backend's config-declared runtime state (see
@@ -1430,6 +1465,12 @@ pub fn install_backend_config(config: &BackendConfig) -> Result<(), String> {
   Backends::all()
     .iter()
     .try_for_each(|b| b.install_config(config))
+}
+
+/// Every backend's [`Backend::prune_cache`] — run once at daemon start, after
+/// the config is installed and before the first launch.
+pub fn prune_backend_cache(config: &BackendConfig) {
+  Backends::all().iter().for_each(|b| b.prune_cache(config));
 }
 
 /// The knob scope a launch of `path` on `backend` resolves under: the

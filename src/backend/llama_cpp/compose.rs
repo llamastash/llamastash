@@ -12,10 +12,11 @@
 //! (`--embeddings` / `--reranking`), then `--jinja` (config default or
 //! forced by reasoning) and the reasoning `--reasoning-format deepseek`
 //! pair, then `-c <ctx>`, then
-//! the typed knobs in canonical order, then any user-supplied
-//! `extras` argv tail. `extras` land *last* so they always trump
-//! everything else — that's the contract documented on the TUI's
-//! "Settings" tab.
+//! the typed knobs in canonical order, then `--slot-save-path` when the launch
+//! carries a KV save dir, then any user-supplied `extras` argv tail. `extras`
+//! land *last* so they always trump everything else — that's the contract
+//! documented on the TUI's "Settings" tab. The one exception is
+//! `--slot-save-path`, which the launcher owns and refuses in `extras`.
 //!
 //! The extras strip enforces the loopback-only and same-UID contract: a
 //! curated denylist (`--host`, `--listen`, `--bind`, `--api-key`,
@@ -121,13 +122,20 @@ pub(crate) fn compose(params: &LaunchParams, allocated_port: u16) -> Vec<OsStrin
     knob_argv.push(sel.into());
   }
   argv.extend(knob_argv);
+  // The KV save dir, when this launch was seeded with one. Emitted before the
+  // extras so an extras copy could not beat it; the head is refused outright
+  // (see `SLOT_SAVE_PATH_FLAG`), so this ordering is belt-and-suspenders.
+  if let Some(dir) = super::slot_save_dir(params) {
+    argv.push(super::SLOT_SAVE_PATH_FLAG.into());
+    argv.push(dir.as_os_str().to_os_string());
+  }
   // Defensive strip: refuse to pass loopback-breaking flags even if
   // an upstream validator was skipped. Last-occurrence semantics in
   // llama-server mean a single `--host 0.0.0.0` here would override
   // the bundled `--host 127.0.0.1` above.
   argv.extend(crate::launch::params::strip_forbidden_extras(
     &params.extras,
-    &[],
+    &[super::SLOT_SAVE_PATH_FLAG],
     &[],
     "compose",
   ));
@@ -516,6 +524,56 @@ mod tests {
     assert!(!argv.iter().any(|a| a == "/etc/key.pem"));
     let t = argv.iter().position(|a| a == "--threads").unwrap();
     assert_eq!(argv[t + 1], "8");
+  }
+
+  /// The KV save dir is the launcher's own flag: emitted once, ahead of the
+  /// extras, and an extras copy of the head is stripped rather than honoured —
+  /// a stray one would move the saves to a directory nothing fingerprints or
+  /// prunes.
+  #[test]
+  fn a_seeded_slot_dir_is_emitted_and_its_head_is_refused_in_extras() {
+    let mut p = base_params();
+    p.launch_config.insert(
+      super::super::LLAMACPP_KNOB_SLOT_SAVE_CAP.to_string(),
+      "true".into(),
+    );
+    p.launch_config.insert(
+      super::super::LLAMACPP_KNOB_SLOT_SAVE_DIR.to_string(),
+      "/cache/slots/1-2".into(),
+    );
+    let argv = strs(&compose(&p, 41100));
+    let i = argv
+      .iter()
+      .position(|a| a == "--slot-save-path")
+      .expect("the seeded dir reaches argv");
+    assert_eq!(argv[i + 1], "/cache/slots/1-2");
+    assert_eq!(argv.iter().filter(|a| *a == "--slot-save-path").count(), 1);
+
+    p.extras = vec!["--slot-save-path".into(), "/elsewhere".into()];
+    let with_extras = strs(&compose(&p, 41100));
+    assert_eq!(
+      with_extras
+        .iter()
+        .filter(|a| *a == "--slot-save-path")
+        .count(),
+      1,
+      "the extras copy loses to the launcher's own"
+    );
+    assert!(!with_extras.iter().any(|a| a == "/elsewhere"));
+  }
+
+  /// A dir without the build cap (or neither, the off case) emits nothing: a
+  /// flag this build does not know costs a whole failed load to discover.
+  #[test]
+  fn no_cap_or_no_dir_emits_no_slot_flag() {
+    let mut p = base_params();
+    p.launch_config.insert(
+      super::super::LLAMACPP_KNOB_SLOT_SAVE_DIR.to_string(),
+      "/cache/slots/1-2".into(),
+    );
+    assert!(!strs(&compose(&p, 41100))
+      .iter()
+      .any(|a| a == "--slot-save-path"));
   }
 
   #[test]

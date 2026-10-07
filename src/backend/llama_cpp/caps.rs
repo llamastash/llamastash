@@ -42,30 +42,7 @@ impl LoadModeDialect {
   /// itself will reject the argv with a message naming the flag. Guessing
   /// `Enum` there would turn a clear rejection into a confusing one.
   pub fn probe(binary: &Path) -> Self {
-    let mut cmd = Command::new(binary);
-    // The unified app takes server flags behind `serve`; `llama --help` prints
-    // the dispatcher's own help, which lists no server flags at all.
-    cmd.args(super::serve_prefix(binary));
-    cmd.arg("--help");
-    match crate::util::process::run_with_drain_and_timeout(cmd, HELP_TIMEOUT) {
-      Ok(out) => {
-        // Some builds print help on stderr, some on stdout; read both rather
-        // than depending on which.
-        let text = format!(
-          "{}{}",
-          String::from_utf8_lossy(&out.stdout),
-          String::from_utf8_lossy(&out.stderr)
-        );
-        Self::from_help(&text)
-      }
-      Err(e) => {
-        log::warn!(
-          "`{} --help` failed: {e:?}; assuming the pre-`--load-mode` flags",
-          binary.display()
-        );
-        Self::Flags
-      }
-    }
+    BuildCaps::probe(binary).load_mode
   }
 
   /// The parse, split out so tests drive it with captured help text instead of
@@ -97,6 +74,58 @@ impl LoadModeDialect {
   }
 }
 
+/// The answers one `--help` run gives about a binary. One subprocess per
+/// binary at boot feeds every flag-existence check; separate probes per flag
+/// would multiply the boot cost (and the worst-case 10 s hang budget) for
+/// nothing.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BuildCaps {
+  pub load_mode: LoadModeDialect,
+  /// Whether the build accepts `--slot-save-path` (and so serves the
+  /// `POST /slots/{id}?action=save|restore` KV API backing
+  /// the `slot_cache` module). A build that cannot answer at all reads as
+  /// unsupported: emitting a flag the engine rejects costs a whole failed
+  /// load, while a false negative only loses a reload optimization.
+  pub slot_save: bool,
+}
+
+impl BuildCaps {
+  pub fn probe(binary: &Path) -> Self {
+    let mut cmd = Command::new(binary);
+    // The unified app takes server flags behind `serve`; `llama --help` prints
+    // the dispatcher's own help, which lists no server flags at all.
+    cmd.args(super::serve_prefix(binary));
+    cmd.arg("--help");
+    match crate::util::process::run_with_drain_and_timeout(cmd, HELP_TIMEOUT) {
+      Ok(out) => {
+        // Some builds print help on stderr, some on stdout; read both rather
+        // than depending on which.
+        let text = format!(
+          "{}{}",
+          String::from_utf8_lossy(&out.stdout),
+          String::from_utf8_lossy(&out.stderr)
+        );
+        Self::from_help(&text)
+      }
+      Err(e) => {
+        log::warn!(
+          "`{} --help` failed: {e:?}; assuming the pre-`--load-mode` flags and no slot save",
+          binary.display()
+        );
+        Self::default()
+      }
+    }
+  }
+
+  /// The parse, split out so tests drive it with captured help text.
+  pub fn from_help(help: &str) -> Self {
+    Self {
+      load_mode: LoadModeDialect::from_help(help),
+      slot_save: help.contains("--slot-save-path"),
+    }
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -116,6 +145,13 @@ mod tests {
        --mlock                          force system to keep model in RAM
 ";
 
+  /// The two lines `--slot-save-path` needs, captured from `llama-server
+  /// --help` on build 11457 (commit `5ad1c5da0`).
+  const SLOT_SAVE_HELP: &str = "\
+--slots, --no-slots                     expose slots monitoring endpoint (default: enabled)
+--slot-save-path PATH                   path to save slot kv cache (default: disabled)
+";
+
   #[test]
   fn a_build_advertising_load_mode_takes_the_enum() {
     assert_eq!(LoadModeDialect::from_help(NEW_HELP), LoadModeDialect::Enum);
@@ -133,6 +169,16 @@ mod tests {
   fn an_unreadable_help_falls_back_to_the_flags() {
     assert_eq!(LoadModeDialect::from_help(""), LoadModeDialect::Flags);
     assert_eq!(LoadModeDialect::default(), LoadModeDialect::Flags);
+  }
+
+  /// A build without the flag gets no KV persistence rather than an argv it
+  /// rejects; the older flags and the newer enum both predate or postdate it.
+  #[test]
+  fn only_a_build_advertising_slot_save_path_gets_the_slot_api() {
+    assert!(BuildCaps::from_help(SLOT_SAVE_HELP).slot_save);
+    assert!(!BuildCaps::from_help(NEW_HELP).slot_save);
+    assert!(!BuildCaps::from_help(OLD_HELP).slot_save);
+    assert!(!BuildCaps::default().slot_save);
   }
 
   #[test]
