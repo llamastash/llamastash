@@ -110,6 +110,7 @@ pub(crate) fn compose(params: &LaunchParams, allocated_port: u16) -> Vec<OsStrin
     argv.push("--fit-ctx".into());
     argv.push(floor.to_string().into());
   }
+  argv.extend(slot_save_path_argv(params));
   // Emit the device selector verbatim — exactly once. Empty / unset
   // means "let llama-server auto-select" (no flag).
   if let Some(sel) = params
@@ -178,6 +179,35 @@ fn load_mode_argv(params: &LaunchParams) -> Vec<OsString> {
       }
     },
   }
+}
+
+/// `--slot-save-path DIR`, the flag that turns a slot's KV cache into a file.
+///
+/// Needs two independent things: the feature switched on in config (which is what
+/// puts the directory on `launch_config`) and this binary advertising the flag. A
+/// build the probe could not read gets neither, so it launches exactly as it did
+/// before this feature existed.
+///
+/// The trailing separator is not decoration: the engine concatenates the value
+/// with the request's `filename` verbatim, so without it the file lands beside
+/// the directory instead of inside it.
+fn slot_save_path_argv(params: &LaunchParams) -> Vec<OsString> {
+  let probed = params
+    .launch_config
+    .get(super::CAP_SLOT_SAVE_PATH)
+    .is_some_and(|answer| answer == "true");
+  let Some(dir) = params
+    .launch_config
+    .get(super::LLAMACPP_KNOB_SLOT_CACHE_DIR)
+    .filter(|dir| !dir.is_empty())
+    .filter(|_| probed)
+  else {
+    return Vec::new();
+  };
+  vec![
+    "--slot-save-path".into(),
+    format!("{dir}{}", std::path::MAIN_SEPARATOR).into(),
+  ]
 }
 
 #[cfg(test)]
@@ -254,6 +284,42 @@ mod tests {
     let mut p = base_params();
     assert!(p.knobs.set_by_name("load-mode", "none"));
     assert_eq!(strs(&load_mode_argv(&p)), vec!["--no-mmap"]);
+  }
+
+  /// The directory alone is config saying yes; the capability key is this binary
+  /// saying it can. Either missing and the launch is byte-identical to one from
+  /// before the feature existed.
+  #[test]
+  fn slot_save_path_needs_both_the_dir_and_the_capability() {
+    let mut p = base_params();
+    assert!(slot_save_path_argv(&p).is_empty(), "feature off");
+
+    p.launch_config.insert(
+      super::super::LLAMACPP_KNOB_SLOT_CACHE_DIR.to_string(),
+      "/cache/slot-cache".into(),
+    );
+    assert!(
+      slot_save_path_argv(&p).is_empty(),
+      "config on, build does not advertise the flag"
+    );
+
+    p.launch_config
+      .insert(super::super::CAP_SLOT_SAVE_PATH.to_string(), "true".into());
+    assert_eq!(
+      strs(&slot_save_path_argv(&p)),
+      [
+        "--slot-save-path".to_string(),
+        format!("/cache/slot-cache{}", std::path::MAIN_SEPARATOR)
+      ],
+      "the engine concatenates this value with the filename"
+    );
+
+    p.launch_config
+      .insert(super::super::CAP_SLOT_SAVE_PATH.to_string(), "false".into());
+    assert!(
+      slot_save_path_argv(&p).is_empty(),
+      "a probe that said no must not be given the flag"
+    );
   }
 
   /// **Golden argv (plan D9).** Pins the exact command line for a fully-set

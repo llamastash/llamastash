@@ -378,6 +378,45 @@ A failed factor drops the entry from the running snapshot. Unmanaged `llama-serv
 
 **Nothing is re-launched at boot either — except what you ask for.** `daemon.preload:` (or a preset pinning `preload: true`) names the models that should be warm the moment the daemon is up, and `daemon::preload` starts them: each entry (a `list` reference, a `<model>@<preset>` address, or a launch file) goes through the normal `compose_and_spawn` with `LaunchOrigin::Manual`, so the admission gate prices it like any other launch and the idle sweep cannot unload it. Launches run sequentially in list order — two concurrent launches read the same free-memory sample and can both be admitted against memory only one fits in, which is what the gate exists to prevent — so the list doubles as a priority order. An entry that names nothing, or that does not fit, logs one line and is skipped: preload never blocks or fails the boot. A preset that pins `preload: true` has to be keyed to exactly one model, because a preloaded launch is manual intent and no sweep or make-room pass may ever take it back: an arch or wide-glob key would pin every model it matches and the boot would start them one after another until admission refused, so such a key is skipped with the count it scoped. Launch-file entries take `~` paths, expanded before the file is read. The daemon waits for the first discovery scan to populate the catalog before resolving references, since entries resolve the way CLI references do.
 
+### Prompt cache across an unload (`backend.llamacpp.slot_cache`)
+
+Off by default. When on, an **eviction** (idle sweep or `make_room`) saves each
+of the launch's slots' KV caches to disk before the stop, and the replacement
+launch restores them once it reaches `Ready`, so the returning conversation does
+not reprocess its prompt. Measured at 102k prompt tokens: 78.6 s of
+reprocessing against 0.31 s of restore, for a 3.3 GB file
+(`docs/spikes/2026-10-07-slot-kv-save-restore.md`).
+
+Two `Backend` hooks carry it, both defaulted to no-ops so the eviction sweep and
+the supervisor stay backend-neutral: `save_before_stop(port, params)` on the
+proxy's eviction path (`src/proxy/eviction.rs::stop_launch`) and
+`restore_after_ready(port, params)` in the probe task, before the `Ready`
+transition. A manual `stop` never saves — the user asked for it to go. Neither
+hook may wedge its caller: both take `(port, &LaunchParams)` only (like
+`fetch_actuals`, no `MethodContext`), and each phase runs inside its own budget
+(90 s save, 30 s restore) with a failed restore still allowing `Ready`.
+
+`llama.cpp` implements them in `src/backend/llama_cpp/slot_cache.rs` against
+`--slot-save-path` plus `POST /slots/{id_slot}?action=save|restore`. `compose`
+emits the flag only when config is on *and* this binary advertised it in
+`--help` (`seed_binary_caps` probes it once per binary, so a build that predates
+the flag launches exactly as before). The directory is created at
+`seed_launch_knobs` time because `llama-server` exits if `--slot-save-path`
+names a directory that does not exist.
+
+The engine matches a returning conversation to a slot itself, by prompt-prefix
+similarity over whatever the restored slots hold, so the launcher keys the cache
+on the **model** and restores every slot it saved; it never looks at a prompt.
+The key is sha256 over the model path + size + mtime (first 8 bytes), so a
+re-download or rewritten file yields a new key and a missed hit rather than a
+wrong one. Files and a `manifest.json` live in `<cache dir>/slot-cache/` — under
+the cache dir because deleting the lot costs only reprocessed prompts. Slots
+under 256 prompt tokens are not worth a file; the projected KV size is checked
+before the write so an oversized save is skipped, and the cap plus the TTL
+(`max_bytes`, `max_age_hours`) are applied after it, deleting the oldest files
+first. A file that fails to restore twice is dropped: a prompt that no longer
+fits the launch's context would otherwise cost a doomed restore on every launch.
+
 ## Daemon idle shutdown
 
 Off by default. With `daemon.idle_timeout_secs` above `0`, a poller

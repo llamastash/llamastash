@@ -4,6 +4,10 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 ## [Unreleased]
 
+### Added
+
+- **Prompt cache across an unload.** With `backend.llamacpp.slot_cache.enabled`, an eviction by the idle sweep or make-room saves the launch's KV caches and the replacement reads them back before it takes traffic, so the returning conversation does not reprocess its prompt. At 102k prompt tokens that is a 0.31 s restore instead of 78.6 s of reprocessing. Off by default.
+
 ## [0.6.1] — 2026-10-02
 
 A patch release for `integrations`. It keeps the key order of the tool configs it edits instead of sorting them, and a generic entry like Halogen can now declare the image input and reasoning effort levels it accepts, so pi, OpenCode, Zed and Codex get them like they do for a GGUF model.

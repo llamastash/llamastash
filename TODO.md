@@ -428,7 +428,7 @@ Plans and item details: [`docs/plans/2026-10-05-001-feat-r14-batches-plan.md`](d
 
 ### Batch 4: faster reloads ([plan](docs/plans/2026-10-05-001-feat-r14-batches-plan.md#batch-4-faster-reloads))
 
-- [ ] Keep a model's prompt cache across an unload
+- [x] ~~Keep a model's prompt cache across an unload~~ — `backend.llamacpp.slot_cache` (off by default): KV caches saved on an eviction, restored before the replacement takes traffic. [Spike](docs/spikes/2026-10-07-slot-kv-save-restore.md): 78.6 s reprocess vs 0.31 s restore at 102k tokens.
 - [ ] Warm the page cache before a load (`llamastash warm <model>`)
 
 ### Batch 5: CLI setup commands ([plan](docs/plans/2026-10-05-001-feat-r14-batches-plan.md#batch-5-cli-setup-commands))

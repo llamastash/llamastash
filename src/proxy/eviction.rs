@@ -226,6 +226,12 @@ pub async fn sweep_once(state: &Arc<ProxyState>, default_ttl: Duration) {
 async fn stop_launch(ctx: &crate::daemon::context::MethodContext, launch_id: &LaunchId) {
   use crate::backend::Backend;
   let backend = crate::daemon::launch_service::backend_for_launch(ctx, launch_id).await;
+  // The one place a launch gets to write down what its child is about to lose —
+  // an eviction is the only stop where the conversation is likely to come back.
+  // A delegated row has no supervisor of its own and so nothing to ask.
+  if let Some(model) = ctx.supervisors.get(launch_id).await {
+    backend.save_before_stop(model.port(), model.params()).await;
+  }
   let _ = backend
     .stop(ctx, launch_id, EVICT_STOP_GRACE.as_secs())
     .await;

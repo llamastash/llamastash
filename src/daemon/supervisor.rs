@@ -675,6 +675,14 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
           }
         }
         *probe_model.inner.actuals.write().await = actuals;
+        // Give the backend the launch back the way it saved it before the world is
+        // told this model is usable: a restored prompt cache has to be in place
+        // for the first request, not the second. The default hook does nothing,
+        // and the implementor bounds its own work, so Ready is only ever withheld
+        // by a bounded amount.
+        probe_backend
+          .restore_after_ready(probe_model.inner.port, probe_model.params())
+          .await;
         let secs = SystemTime::now()
           .duration_since(UNIX_EPOCH)
           .map(|d| d.as_secs())

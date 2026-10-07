@@ -424,6 +424,24 @@ pub trait Backend {
     crate::daemon::actuals::Actuals::default()
   }
 
+  /// Write down whatever state a launch would lose, while the child is still
+  /// there to be asked. Default no-op.
+  ///
+  /// Only the eviction paths call this (idle sweep, make-room) — a manual stop is
+  /// a deliberate teardown. llama.cpp uses it for the per-slot KV dump that lets
+  /// a returning conversation skip its prompt; the endpoint and its file layout
+  /// stay inside that backend. The caller is on the path that is waiting to free
+  /// memory, so an implementor must bound its own work.
+  async fn save_before_stop(&self, _port: u16, _params: &LaunchParams) {}
+
+  /// Read back what [`Self::save_before_stop`] wrote, after the engine answers
+  /// its readiness probe but before the launch is marked Ready, so the first
+  /// proxied request already sees it. Default no-op.
+  ///
+  /// Ready is withheld until this returns, so an implementor bounds itself here
+  /// too; a failed or partial restore must leave the launch going Ready anyway.
+  async fn restore_after_ready(&self, _port: u16, _params: &LaunchParams) {}
+
   /// Whether `extras` already configures speculative decoding by hand, in which
   /// case llamastash defers entirely and adds none of its own (KD3).
   ///
@@ -1171,6 +1189,14 @@ impl Backend for Backends {
     timeout: std::time::Duration,
   ) -> crate::daemon::actuals::Actuals {
     for_each_backend!(self, b => b.fetch_actuals(port, timeout).await)
+  }
+
+  async fn save_before_stop(&self, port: u16, params: &LaunchParams) {
+    for_each_backend!(self, b => b.save_before_stop(port, params).await)
+  }
+
+  async fn restore_after_ready(&self, port: u16, params: &LaunchParams) {
+    for_each_backend!(self, b => b.restore_after_ready(port, params).await)
   }
 
   fn speculation_set_in_extras(&self, extras: &[OsString]) -> bool {

@@ -21,6 +21,42 @@ use std::time::Duration;
 /// hangs rather than prints. Matches the `--list-devices` probe.
 const HELP_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// One binary's `--help`, or `None` when it will not answer. One bounded local
+/// subprocess; every fact derived from help text should come from here so a
+/// binary is asked once per daemon start, not once per fact.
+pub fn help_text(binary: &Path) -> Option<String> {
+  let mut cmd = Command::new(binary);
+  // The unified app takes server flags behind `serve`; `llama --help` prints
+  // the dispatcher's own help, which lists no server flags at all.
+  cmd.args(super::serve_prefix(binary));
+  cmd.arg("--help");
+  match crate::util::process::run_with_drain_and_timeout(cmd, HELP_TIMEOUT) {
+    // Some builds print help on stderr, some on stdout; read both rather than
+    // depending on which.
+    Ok(out) => Some(format!(
+      "{}{}",
+      String::from_utf8_lossy(&out.stdout),
+      String::from_utf8_lossy(&out.stderr)
+    )),
+    Err(e) => {
+      log::debug!("`{} --help` failed: {e:?}", binary.display());
+      None
+    }
+  }
+}
+
+/// Whether this build accepts `--slot-save-path`, and so the
+/// `/slots/{id}?action=save|restore` pair. A build that does not advertise it
+/// must not be given the flag, so an unreachable build answers `false`.
+pub fn supports_slot_save_path(binary: &Path) -> bool {
+  help_text(binary).is_some_and(|help| help_admits_slot_save_path(&help))
+}
+
+/// The parse, split out so tests drive it with captured help text.
+pub fn help_admits_slot_save_path(help: &str) -> bool {
+  help.contains("--slot-save-path")
+}
+
 /// How a build spells "how should the model be loaded".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum LoadModeDialect {
@@ -42,25 +78,11 @@ impl LoadModeDialect {
   /// itself will reject the argv with a message naming the flag. Guessing
   /// `Enum` there would turn a clear rejection into a confusing one.
   pub fn probe(binary: &Path) -> Self {
-    let mut cmd = Command::new(binary);
-    // The unified app takes server flags behind `serve`; `llama --help` prints
-    // the dispatcher's own help, which lists no server flags at all.
-    cmd.args(super::serve_prefix(binary));
-    cmd.arg("--help");
-    match crate::util::process::run_with_drain_and_timeout(cmd, HELP_TIMEOUT) {
-      Ok(out) => {
-        // Some builds print help on stderr, some on stdout; read both rather
-        // than depending on which.
-        let text = format!(
-          "{}{}",
-          String::from_utf8_lossy(&out.stdout),
-          String::from_utf8_lossy(&out.stderr)
-        );
-        Self::from_help(&text)
-      }
-      Err(e) => {
+    match help_text(binary) {
+      Some(text) => Self::from_help(&text),
+      None => {
         log::warn!(
-          "`{} --help` failed: {e:?}; assuming the pre-`--load-mode` flags",
+          "`{} --help` failed; assuming the pre-`--load-mode` flags",
           binary.display()
         );
         Self::Flags
@@ -133,6 +155,22 @@ mod tests {
   fn an_unreadable_help_falls_back_to_the_flags() {
     assert_eq!(LoadModeDialect::from_help(""), LoadModeDialect::Flags);
     assert_eq!(LoadModeDialect::default(), LoadModeDialect::Flags);
+  }
+
+  /// Captured from `llama-server --help` on build 11457 (commit `5ad1c5da0`),
+  /// where the flag is present.
+  const SLOT_HELP: &str = "\
+--slot-save-path PATH                   path to save slot kv cache (default: disabled)
+";
+
+  #[test]
+  fn only_a_build_advertising_slot_save_path_gets_it() {
+    assert!(help_admits_slot_save_path(SLOT_HELP));
+    assert!(
+      !help_admits_slot_save_path(NEW_HELP),
+      "a build between the load-mode change and this one must not be given the flag"
+    );
+    assert!(!help_admits_slot_save_path(""));
   }
 
   #[test]

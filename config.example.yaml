@@ -500,6 +500,30 @@ backend:
     # Sources — CLI: (none) · Env: (none, config-only).
     map_anthropic_effort: true
 
+    # Keep a launch's prompt cache across an unload (default: off).
+    #
+    # When the idle sweep or make-room stops a launch mid-conversation, the next
+    # request reprocesses the whole prompt. With this on, llama-server writes each
+    # slot's KV cache to disk before the stop and reads it back once the
+    # replacement launch is up, so the returning conversation skips
+    # reprocessing. Measured at 102k prompt tokens: 78.6 s reprocessing against
+    # 0.31 s of restore, for a 3.3 GB file.
+    #
+    # Files live under `<cache dir>/slot-cache/` and only ever cost reprocessed
+    # prompts if deleted. Nothing is saved for a manual `stop`, only for an
+    # eviction, and a `llama-server` build without `--slot-save-path` is left
+    # alone. Requires a llama.cpp build that advertises `--slot-save-path`.
+    slot_cache:
+      enabled: false
+      # Ceiling on the whole cache directory. A single save larger than this is
+      # skipped rather than written. Oldest files are deleted first.
+      max_bytes: 8589934592
+      # Entries older than this are dropped on the next save.
+      # Entries older than this are dropped on the next save.
+      #
+      # Sources — CLI: (none) · Env: (none, config-only).
+      max_age_hours: 24
+
   # ── Lemonade (NPU / multi-engine backend) [EXPERIMENTAL] ──
   #
   # EXPERIMENTAL: behaviour and these keys may change. A second backend
