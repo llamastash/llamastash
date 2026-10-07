@@ -101,3 +101,24 @@ Engine choice and every launch knob live in `engine.sh`; that file is the write
 target of the autoresearch session recorded in `.auto/`. See
 `.auto/prompt.md` for the workload, the baseline, and the power state a number is
 only comparable within.
+
+## `slot-kv/` — llama.cpp slot KV save/restore
+
+```sh
+python3 scripts/bench/slot-kv/spike.py --model <gguf> \
+    --targets 8192,32768,100000 --ctx 131072 --json-out /tmp/slot-kv.json
+python3 scripts/bench/slot-kv/edge_cases.py --model <gguf> --other-model <other gguf>
+```
+
+The measurements behind `docs/spikes/2026-10-07-slot-kv-save-restore.md`, which
+decided whether `backend.llamacpp.slot_cache` was worth building. `spike.py`
+writes a prompt's KV cache on one `llama-server`, kills it, starts a second
+process over the same files, restores, and reports reprocess time, save time,
+file size, restore time and the first request's time after the restore against
+the cold reprocess it replaces. `edge_cases.py` covers what the engine accepts
+and refuses across that boundary: cross-slot and foreign-model restores, a
+truncated file, a smaller context, a changed `--cache-type-*`, a shallower
+`-ngl`, path-shaped filenames, and whether a restored slot answers identically.
+Both drive `llama-server` directly rather than through the daemon, so the numbers
+are the engine's, not ours. Save files default to `~/.cache/llamastash-slot-spike/`;
+they run to gigabytes at a large context.
