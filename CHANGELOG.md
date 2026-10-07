@@ -6,7 +6,7 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 ### Added
 
-- **Prompt cache across an unload.** With `backend.llamacpp.slot_cache.enabled`, an eviction by the idle sweep or make-room saves the launch's KV caches and the replacement reads them back before it takes traffic, so the returning conversation does not reprocess its prompt. At 102k prompt tokens that is a 0.31 s restore instead of 78.6 s of reprocessing. Off by default.
+- **Prompt cache across an unload.** With `backend.llamacpp.slot_cache.enabled`, an eviction by the idle sweep or make-room saves the launch's KV caches and the replacement reads them back before it takes traffic, so the returning conversation does not reprocess its prompt. At 102k prompt tokens that is a 0.31 s restore instead of 78.6 s of reprocessing. Off by default. (#103)
 
 ## [0.6.1] — 2026-10-02
 
