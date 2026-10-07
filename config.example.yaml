@@ -519,7 +519,6 @@ backend:
       # skipped rather than written. Oldest files are deleted first.
       max_bytes: 8589934592
       # Entries older than this are dropped on the next save.
-      # Entries older than this are dropped on the next save.
       #
       # Sources — CLI: (none) · Env: (none, config-only).
       max_age_hours: 24
