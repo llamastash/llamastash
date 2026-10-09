@@ -24,6 +24,7 @@ All notable changes to LlamaStash will be documented in this file. The format fo
 
 - A model whose projector folder holds two precisions (`mmproj-BF16.gguf` beside `mmproj-F16.gguf`, as unsloth's Qwen3.8 repos publish them) is vision again. Neither name matches the model, so nothing paired: the row read `multimodal: null`, the launch carried no projector, and `integrations` wrote the model without image input. The projector now pairs by the precision order `pull` already uses, and one shared order settles both picks.
 - Deleting a model also removes the projector precisions beside it that pair with nothing, instead of leaving them on disk.
+- The memory gate priced every layer of a hybrid Qwen model (Qwen3-Next, Qwen3.5, Qwen3.8-27B) as holding a KV cache, but only one layer in four has one, so these models were refused at windows they fit. Qwen3.8-27B Q4_K_M at 64K with a `q8_0` cache drops from 26.5 GiB to about 20 GiB.
 
 ## [0.6.1] — 2026-10-02
 

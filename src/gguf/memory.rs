@@ -372,7 +372,8 @@ impl AttnGeometry {
 /// broadcasts to every layer; absent falls back to MHA (`head_count`).
 /// Sliding-window archs additionally expose `sliding_window` +
 /// `sliding_window_pattern` (1 = sliding) and a smaller `*_swa` head dim,
-/// which cap those layers' KV at the window.
+/// which cap those layers' KV at the window. A hybrid's recurrent layers get
+/// zero KV heads (see [`recurrent_layers`]).
 fn attention_geometry(header: &GgufHeader, arch: &str) -> Option<AttnGeometry> {
   let a = arch;
   let n_layers = header.u64(&[format!("{a}.block_count")])?;
@@ -391,12 +392,24 @@ fn attention_geometry(header: &GgufHeader, arch: &str) -> Option<AttnGeometry> {
     .u64(&[format!("{a}.attention.key_length_swa")])
     .unwrap_or(head_dim);
   let swa_window = header.u64(&[format!("{a}.attention.sliding_window")]);
-  let kv_heads = per_layer_u64(
+  let mut kv_heads = per_layer_u64(
     header,
     &format!("{a}.attention.head_count_kv"),
     n_layers,
     n_heads,
   );
+  // An indexer adds a K-only cache on the attention layers, laid out per arch
+  // and not modeled here; pricing every layer keeps it covered.
+  let has_indexer = header
+    .get(&format!("{a}.attention.indexer.key_length"))
+    .is_some();
+  if let Some(recurrent) = recurrent_layers(header, a, n_layers).filter(|_| !has_indexer) {
+    for (heads, is_recurrent) in kv_heads.iter_mut().zip(recurrent) {
+      if is_recurrent {
+        *heads = 0;
+      }
+    }
+  }
   let swa_pattern =
     per_layer_u64_no_default(header, &format!("{a}.attention.sliding_window_pattern"));
   Some(AttnGeometry {
@@ -407,6 +420,39 @@ fn attention_geometry(header: &GgufHeader, arch: &str) -> Option<AttnGeometry> {
     kv_heads,
     swa_pattern,
   })
+}
+
+/// Which layers of a recurrent/attention hybrid keep a fixed-size recurrent
+/// state instead of a KV cache, for the families that name their attention
+/// layers rather than writing a zero `head_count_kv` (the Qwen3-Next /
+/// Qwen3.5 line). Follows llama.cpp's `is_recr`: the `recurrent_layers` flags,
+/// else every layer but each `full_attention_interval`-th when that key is
+/// present. Only trunk layers count: with MTP on, the draft context caches the
+/// MTP layers after them at the full window.
+fn recurrent_layers(header: &GgufHeader, arch: &str, n_layers: u64) -> Option<Vec<bool>> {
+  let flagged: Vec<bool> = match header.get(&format!("{arch}.attention.recurrent_layers")) {
+    Some(GgufValue::Array(flags)) => (0..n_layers as usize)
+      .map(|il| flags.get(il).and_then(GgufValue::as_bool) == Some(true))
+      .collect(),
+    Some(flag) => vec![flag.as_bool() == Some(true); n_layers as usize],
+    None => {
+      let interval = header
+        .u64(&[format!("{arch}.full_attention_interval")])
+        .filter(|n| *n > 0)?;
+      (0..n_layers).map(|il| (il + 1) % interval != 0).collect()
+    }
+  };
+  let nextn = header
+    .u64(&[format!("{arch}.nextn_predict_layers")])
+    .unwrap_or(0);
+  let trunk = n_layers.saturating_sub(nextn);
+  Some(
+    flagged
+      .into_iter()
+      .enumerate()
+      .map(|(il, recurrent)| recurrent && (il as u64) < trunk)
+      .collect(),
+  )
 }
 
 /// A metadata value that may be a per-layer array or a single scalar,
@@ -464,6 +510,58 @@ mod tests {
     let kv = kv_bytes(&h, Some("llama"), opts);
     let expected: u64 = 2 * 32 * 8 * 128 * 8192 * 2;
     assert_eq!(kv, expected);
+  }
+
+  /// KV bytes at 1000 tokens, f16, for a hybrid header: 4 KV heads of 256,
+  /// full attention on every 4th trunk block, one trailing MTP block.
+  fn hybrid_kv(arch: &str, block_count: u64, extra: &[(&str, GgufValue)]) -> u64 {
+    let mut builder = FixtureBuilder::new()
+      .with_arch(arch)
+      .with_block_count(block_count)
+      .with_head_count(24)
+      .with_head_count_kv(4)
+      .with_kv(&format!("{arch}.attention.key_length"), GgufValue::U32(256))
+      .with_kv(
+        &format!("{arch}.full_attention_interval"),
+        GgufValue::U32(4),
+      )
+      .with_kv(&format!("{arch}.nextn_predict_layers"), GgufValue::U32(1));
+    for (key, value) in extra {
+      builder = builder.with_kv(&format!("{arch}.{key}"), value.clone());
+    }
+    let opts = EstimateOptions {
+      ctx_len: 1000,
+      ..EstimateOptions::default()
+    };
+    kv_bytes(&parse(builder.build()), Some(arch), opts)
+  }
+
+  const HYBRID_LAYER_KV: u64 = 2 * 4 * 256 * 1000 * 2;
+
+  #[test]
+  fn kv_bytes_prices_a_hybrids_attention_and_mtp_layers() {
+    // Shaped like Qwen3.8-27B: 16 of the 64 trunk blocks are attention, the
+    // other 48 hold a fixed-size recurrent state, and the MTP block is not
+    // recurrent.
+    assert_eq!(hybrid_kv("qwen35", 65, &[]), 17 * HYBRID_LAYER_KV);
+  }
+
+  #[test]
+  fn kv_bytes_takes_recurrent_layers_over_the_interval() {
+    // The interval gives layers 3 and 7 plus the MTP block; these flags also
+    // make layer 1 attention, which trusting the interval would under-price.
+    let flags = [true, false, true, false, true, true, true, false, false];
+    let recurrent = GgufValue::Array(flags.iter().map(|f| GgufValue::Bool(*f)).collect());
+    assert_eq!(
+      hybrid_kv("qwen35", 9, &[("attention.recurrent_layers", recurrent)]),
+      4 * HYBRID_LAYER_KV
+    );
+  }
+
+  #[test]
+  fn kv_bytes_prices_every_layer_of_a_hybrid_with_an_indexer() {
+    let indexer = ("attention.indexer.key_length", GgufValue::U32(128));
+    assert_eq!(hybrid_kv("qwen4exp", 9, &[indexer]), 9 * HYBRID_LAYER_KV);
   }
 
   #[test]
