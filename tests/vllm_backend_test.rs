@@ -15,7 +15,7 @@ const ALLOWED: &[&str] = &[
   "src/backend/mod.rs",
   "src/config/mod.rs",
   // The daemon force-flag is user-facing CLI surface, so it names the backend
-  // by design — the same sanctioned exception `--lemonade` / `--sglang` carry.
+  // by design — the same sanctioned exception `--vllm` / `--sglang` carry.
   // `daemon/mod.rs` used to be here too, for re-appending that flag across the
   // detached re-exec; it derives the flags from the force map now and names
   // nothing.

@@ -36,15 +36,15 @@ pub struct ProxyState {
   /// the per-connection clone is a refcount bump rather than
   /// rebuilding the pool.
   pub http_client: Arc<reqwest::Client>,
-  /// Client for Lemonade-umbrella upstreams. Identical to
+  /// Client for managed-multiplexer upstreams. Identical to
   /// [`Self::http_client`] except the idle pool is disabled, so every
   /// forwarded request closes its connection client-side when done.
   /// Keep-alive connections into the umbrella are what wedge its port
-  /// across restarts: when `lemond` dies first, its half of each
+  /// across restarts: when the umbrella dies first, its half of each
   /// pooled connection lingers in FIN-WAIT-2 *bound to the umbrella
   /// port* for the kernel's fin-timeout (~60 s), and those orphans
   /// (no `SO_REUSEADDR`) block every rebind — so a quick
-  /// `daemon stop && daemon start --lemonade` refused. Closing
+  /// a quick daemon restart refused. Closing
   /// client-side parks the remnants on our ephemeral ports instead.
   /// llama.cpp upstreams keep the pooled client: their child owns a
   /// fresh per-launch port, so remnants there never block anything.

@@ -46,8 +46,6 @@ PROMPT_PROSE='Explain in three sentences why merge sort is O(n log n).'
 # support file (a generic entry does not auto-pair draft heads).
 {
   echo "backend:"
-  echo "  lemonade:"
-  echo "    enabled: false"
   echo "  generic:"
   echo "    servers:"
   echo "      - name: ds4"

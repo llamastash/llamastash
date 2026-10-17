@@ -103,7 +103,7 @@ pub fn list_human(
   // REPO is the short form of where the model lives (`unsloth/Qwen3.8-27B-GGUF`
   // for an HF cache, the parent directory's name otherwise). Shown whenever
   // any row has one — a catalog of registry-sourced rows only (Ollama,
-  // Lemonade) has nothing to put in it, since their `name` already names the
+  // an engine) have nothing to put in it, since their `name` names the
   // origin.
   let show_repo = rows.iter().any(|r| !r.group_label().is_empty());
   let mut header: Vec<&str> = vec!["NAME"];
@@ -352,7 +352,7 @@ pub fn favorites_json(rows: &[Value]) -> Value {
     .iter()
     .map(|r| {
       let path = row_path(r).unwrap_or("");
-      // Scheme-aware: a `lemonade://` synthetic path keeps its full registry
+      // Scheme-aware: a `<scheme>://` synthetic path keeps its full registry
       // name (dotted names like `qwen3.5-4b-FLM` must not stem to `qwen3`);
       // real GGUF files still drop the extension. Same resolver the TUI and
       // `last-params` use, so the name is consistent across every surface.
@@ -1110,7 +1110,7 @@ mod tests {
 
     // Running on a device-less (non-default) backend with no override → `?`.
     let mut other = running("L1", "ready", 41100, path);
-    other.backend = Some("lemonade".to_string());
+    other.backend = Some("enginex".to_string());
     let mut other_idx = HashMap::new();
     other_idx.insert(path.to_string(), vec![other]);
     let other_out = list_human(&rows, &other_idx, true);
@@ -1277,8 +1277,8 @@ mod tests {
     assert_eq!(backend_badge(&untagged, "—"), "—");
 
     // Only a primary tag → that tag.
-    untagged.backend = Some("lemonade".into());
-    assert_eq!(backend_badge(&untagged, "?"), "lemonade");
+    untagged.backend = Some("enginex".into());
+    assert_eq!(backend_badge(&untagged, "?"), "enginex");
   }
 
   #[test]
@@ -1422,7 +1422,7 @@ mod tests {
   fn tty_backends_section_pads_id_and_state_into_columns() {
     let backends = serde_json::json!([
       { "id": "llamacpp", "installed": true, "server_labels": ["rocm", "vulkan"] },
-      { "id": "lemonade", "installed": false, "accelerators": ["cpu", "npu"], "umbrella": "disabled" },
+      { "id": "enginex", "installed": false, "accelerators": ["cpu", "gpu"], "umbrella": "disabled" },
       { "id": "gen", "installed": true, "server_labels": ["gufo"] },
     ]);
     let _g = ColorGuard::set(true);
@@ -1432,7 +1432,7 @@ mod tests {
       "{human}"
     );
     assert!(
-      human.contains("  lemonade not installed  cpu|npu  (umbrella: disabled)\n"),
+      human.contains("  enginex  not installed  cpu|gpu  (umbrella: disabled)\n"),
       "{human}"
     );
     assert!(
@@ -2331,16 +2331,16 @@ mod tests {
   }
 
   #[test]
-  fn favorites_json_keeps_dotted_lemonade_name_but_stems_gguf() {
+  fn favorites_json_keeps_a_dotted_registry_name_but_stems_gguf() {
     let rows = vec![
-      serde_json::json!({"id": {"path": "lemonade://qwen3.5-4b-FLM"}}),
+      serde_json::json!({"id": {"path": "acme://qwen3.5-4b-FLM"}}),
       serde_json::json!({"id": {"path": "/models/Llama-3.2-1B-Instruct-Q4_K_M.gguf"}}),
     ];
     let out = favorites_json(&rows);
     let favs = out["favorites"].as_array().unwrap();
     // Regression: a dotted registry name must not stem to `qwen3`.
     assert_eq!(favs[0]["name"], "qwen3.5-4b-FLM");
-    assert_eq!(favs[0]["path"], "lemonade://qwen3.5-4b-FLM");
+    assert_eq!(favs[0]["path"], "acme://qwen3.5-4b-FLM");
     // Real GGUF files still drop the extension (byte-stable with the old path).
     assert_eq!(favs[1]["name"], "Llama-3.2-1B-Instruct-Q4_K_M");
   }

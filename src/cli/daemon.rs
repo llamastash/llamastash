@@ -68,7 +68,6 @@ fn start_build_args<'a>(
   config: &'a Config,
 ) -> BuildOptionsArgs<'a> {
   let force_flags = [
-    (crate::backend::lemonade::LEMONADE_BACKEND_ID, args.lemonade),
     (crate::backend::vllm::VLLM_BACKEND_ID, args.vllm),
     (crate::backend::sglang::SGLANG_BACKEND_ID, args.sglang),
   ];
@@ -215,8 +214,7 @@ async fn launch_start(opts: DaemonOptions, foreground: bool) -> Result<()> {
 /// Fail-fast gate for `daemon start`: refuse to come up silently degraded when
 /// an *indicated* backend can't initialize. llama.cpp is indicated unless
 /// another backend is enabled, so a missing `llama-server` fails only on a host
-/// with nothing else to launch; Lemonade is indicated only when enabled, so a
-/// missing `lemond` binary or an already-held umbrella port fails. `--force`
+/// with nothing else to launch. `--force`
 /// skips this whole gate and starts degraded. The port check is a fast
 /// bind-probe (not a readiness wait), so it never delays startup; every message
 /// names the override so the user can get past it deliberately.
@@ -239,43 +237,6 @@ pub(crate) fn precheck_indicated_backends(opts: &DaemonOptions) -> std::result::
        llama.cpp."
         .to_string(),
     );
-  }
-  // Lemonade is flagged only when *explicitly* requested (`--lemonade` / env,
-  // or `backend.lemonade.enabled: true`); the default-on-when-found path stays silent
-  // when `lemond` is simply absent (zero footprint, like vLLM).
-  let lemonade_force = opts
-    .backend_force
-    .get(crate::backend::lemonade::LEMONADE_BACKEND_ID)
-    .copied()
-    .unwrap_or(false);
-  let lemonade_explicit = lemonade_force || opts.backend.lemonade.enabled == Some(true);
-  if opts.backend.lemonade.intends_enabled(lemonade_force) {
-    if crate::backend::lemonade::resolve_lemond_binary(&opts.backend.lemonade).is_none() {
-      if lemonade_explicit {
-        failures.push(
-          "lemonade is enabled but no `lemond` binary was found — set `backend.lemonade.servers` or put \
-           `lemond` on PATH (see docs/lemonade-setup.md), or `llamastash daemon start --force` to \
-           start without it."
-            .to_string(),
-        );
-      }
-    } else if crate::backend::lemonade::umbrella_port_state(opts.backend.lemonade.port)
-      == crate::backend::lemonade::UmbrellaPortState::Listening
-    {
-      // Only probed when a `lemond` binary resolved: without one the port
-      // conflict is moot and reporting both would just be noise. Only a
-      // *live listener* refuses; teardown remnants from a just-stopped
-      // daemon's `lemond` (FIN-WAIT-2 / TIME-WAIT) clear within the
-      // kernel's fin-timeout, and the boot-side umbrella supervision
-      // waits them out — refusing here made every quick
-      // `daemon stop && daemon start --lemonade` fail for up to a minute.
-      failures.push(format!(
-        "lemonade umbrella port 127.0.0.1:{} is already in use — stop whatever holds it \
-         (e.g. a manually started `lemond`) or set `backend.lemonade.port`, or `llamastash daemon start \
-         --force` to start without the managed umbrella.",
-        opts.backend.lemonade.port
-      ));
-    }
   }
   if failures.is_empty() {
     Ok(())
@@ -520,12 +481,8 @@ fn force_stop_via_pid(pid: i32, attach_dir: &std::path::Path) -> Result<StopOutc
 /// Every backend that can be force-enabled, paired with the env var that does
 /// it alongside its CLI flag. The one place in the daemon CLI that names
 /// backends, which is the sanctioned boundary: the flags are user-facing
-/// surface (`--lemonade`, `--vllm`, `--sglang`).
+/// surface (`--vllm`, `--sglang`).
 const FORCE_FLAG_ENV: &[(&str, &str)] = &[
-  (
-    crate::backend::lemonade::LEMONADE_BACKEND_ID,
-    "LLAMASTASH_LEMONADE",
-  ),
   (crate::backend::vllm::VLLM_BACKEND_ID, "LLAMASTASH_VLLM"),
   (
     crate::backend::sglang::SGLANG_BACKEND_ID,
@@ -677,7 +634,7 @@ pub(crate) fn build_options(args: BuildOptionsArgs<'_>) -> Result<DaemonOptions>
     }
   }
   // Backend config: clone the whole `backend:` block (llama.cpp knobs +
-  // lemonade + vLLM + SGLang + generic), then apply the `LLAMASTASH_*` env overrides + range clamp
+  // vLLM + SGLang + generic), then apply the `LLAMASTASH_*` env overrides + range clamp
   // onto the llama.cpp fit knobs. `jinja` stays config-only (factory `true`) —
   // unlike the opt-in booleans below it defaults *on* and the `"1"`-truthy env
   // contract can't express "force off" — so it rides through from the clone.
@@ -1823,7 +1780,6 @@ mod tests {
     // Keep a developer's own engines on PATH out of the result.
     opts.backend.vllm.enabled = Some(false);
     opts.backend.sglang.enabled = Some(false);
-    opts.backend.lemonade.enabled = Some(false);
     assert!(opts.binary.is_none());
     let err = precheck_indicated_backends(&opts).expect_err("nothing to launch");
     assert!(err.contains("llama-server"), "{err}");
@@ -1843,42 +1799,41 @@ mod tests {
   }
 
   #[test]
-  fn build_options_lemonade_defaults_on_and_force_flag_captured() {
+  fn build_options_vllm_defaults_on_and_force_flag_captured() {
     let cli = parse_cli(&["daemon", "start"]);
     let config = Config::default();
-    // Read the Lemonade force flag out of the per-backend force map.
+    // Read the vLLM force flag out of the per-backend force map.
     let force = |o: &DaemonOptions| {
       o.backend_force
-        .get(crate::backend::lemonade::LEMONADE_BACKEND_ID)
+        .get(crate::backend::vllm::VLLM_BACKEND_ID)
         .copied()
         .unwrap_or(false)
     };
-    // Default: enablement intent is on (default-on-when-found, like vLLM), the
-    // config `enabled` stays unset, and no force flag is captured.
+    // Default: enablement intent is on (default-on-when-found, like every
+    // detected engine), the config `enabled` stays unset, and no force flag is
+    // captured.
     let baseline =
       build_options(BuildOptionsArgs::new(&cli, &config)).expect("build_options baseline");
-    assert_eq!(baseline.backend.lemonade.enabled, None);
+    assert_eq!(baseline.backend.vllm.enabled, None);
     assert!(!force(&baseline));
-    assert!(baseline.backend.lemonade.intends_enabled(force(&baseline)));
+    assert!(baseline.backend.vllm.intends_enabled(force(&baseline)));
 
     // CLI flag captured as force (overrides a config `enabled: false`).
     let opts_cli = build_options(BuildOptionsArgs {
-      backend_force: BTreeMap::from([(
-        crate::backend::lemonade::LEMONADE_BACKEND_ID.to_string(),
-        true,
-      )]),
+      backend_force: BTreeMap::from([(crate::backend::vllm::VLLM_BACKEND_ID.to_string(), true)]),
       ..BuildOptionsArgs::new(&cli, &config)
     })
-    .expect("build_options lemonade");
+    .expect("build_options vllm");
     assert!(force(&opts_cli));
-    assert!(opts_cli.backend.lemonade.intends_enabled(force(&opts_cli)));
+    assert!(opts_cli.backend.vllm.intends_enabled(force(&opts_cli)));
 
     // Config `enabled: false` disables the intent (no force present).
     let config_off = Config {
       backend: crate::backend::BackendConfig {
-        lemonade: crate::config::LemonadeConfig {
+        vllm: crate::config::VllmConfig {
           enabled: Some(false),
-          ..Default::default()
+          servers: vec![],
+          cors: true,
         },
         ..Default::default()
       },
@@ -1886,7 +1841,7 @@ mod tests {
     };
     let opts_off =
       build_options(BuildOptionsArgs::new(&cli, &config_off)).expect("build_options config-off");
-    assert!(!opts_off.backend.lemonade.intends_enabled(force(&opts_off)));
+    assert!(!opts_off.backend.vllm.intends_enabled(force(&opts_off)));
   }
 
   #[test]

@@ -6,7 +6,7 @@
 //! from [`crate::launch::resolve::published_ids`], the same rule
 //! `/v1/models` publishes under, so what a tool sends back as `body.model`
 //! is a name the proxy already answers to — for a GGUF file, a safetensors
-//! repo, an Ollama blob, or a Lemonade registry entry alike, and for two
+//! repo, an Ollama blob, or a backend-registry entry alike, and for two
 //! same-named GGUFs cached in different roots.
 
 use std::collections::{BTreeMap, HashSet};

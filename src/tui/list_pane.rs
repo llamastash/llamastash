@@ -78,7 +78,7 @@ pub enum ListRow {
     weights_bytes: Option<u64>,
     /// Mode hint surfaced at discovery time.
     mode_hint: String,
-    /// Backend the model routes to (`llamacpp` / `lemonade`) — the
+    /// Backend the model routes to (the engine's id) — the
     /// daemon's prediction for idle rows, the resolved value for running rows.
     /// Empty when unknown. Only rendered on multi-backend hosts.
     backend: String,
@@ -155,7 +155,7 @@ pub struct RunningLaunchRow {
   pub state: SurfaceState,
   /// Launch device selector (`CUDA0`, `Vulkan1`, etc.) when set.
   pub device: Option<String>,
-  /// The backend the launch resolved to (`llamacpp` / `lemonade`),
+  /// The backend the launch resolved to (the engine's id),
   /// for the Backend column — the honest resolved value, which can differ from
   /// the catalog prediction under a `--backend` override.
   pub backend: Option<String>,
@@ -351,8 +351,8 @@ fn running_row(m: &DiscoveredModel, launch: &RunningLaunchRow) -> ListRow {
 fn running_row_stub(launch: &RunningLaunchRow) -> ListRow {
   ListRow::Model {
     path: launch.path.clone(),
-    // Shared fallback: `file_stem` here would truncate a dotted Lemonade
-    // registry name (`lemonade://qwen3.5-4b-FLM` → `qwen3`); `model_display_name`
+    // Shared fallback: `file_stem` here would truncate a dotted registry
+    // name (`qwen3.5-4b` → `qwen3`); `model_display_name`
     // keeps the full name for synthetic paths and still stems real GGUF files.
     name: crate::util::paths::model_display_name(&launch.path),
     arch: String::new(),
@@ -384,7 +384,7 @@ fn surface_state_for(
 fn display_name(m: &DiscoveredModel) -> String {
   // Same rule as `App::model_label`, but with the `display_label` already in
   // hand: prefer it (sources where the basename is hostile — Ollama's
-  // content-addressed `sha256-<hex>` blobs, Lemonade registry names), else the
+  // content-addressed `sha256-<hex>` blobs, registry entry names), else the
   // shared scheme-aware path fallback so the full weight identifier (quant,
   // finetune, variant) shows and a dotted synthetic name isn't stem-truncated.
   m.display_label
@@ -1038,7 +1038,7 @@ fn column_value(id: ColumnId, model: &ListRow) -> String {
   // Every empty/unknown text cell renders the dash placeholder (shared
   // `fmt::list_cell`), so missing values read the same in every column and on
   // the CLI table instead of a mix of blank / `Unknown` / `unknown` (e.g. a
-  // registry-served Lemonade row with no GGUF header).
+  // registry-served row with no GGUF header).
   match id {
     // A launch with an explicit `--device` shows its selector(s). A *running*
     // launch on the device-selecting default backend with no override targets

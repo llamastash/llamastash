@@ -1027,10 +1027,14 @@ fn parse_config(contents: &str, path: &Path) -> LoadedConfig {
     },
     Err(error) => {
       let error = error.to_string();
-      // The ds4 backend was removed; its block is now a generic server entry.
+      // A removed backend's block names its generic replacement rather than
+      // leaving the raw unknown-field error.
       let hint = if error.contains("unknown field `ds4`") {
         " (the ds4 backend was removed: run ds4-server as a `backend.generic` server, \
          see docs/usage.md#running-ds4-as-a-generic-server)"
+      } else if error.contains("unknown field `lemonade") {
+        " (the lemonade backend was removed: run lemond as a `backend.generic` server, \
+         see docs/usage.md#running-lemonade-as-a-generic-server)"
       } else {
         ""
       };
@@ -1443,6 +1447,19 @@ keybindings:
     fs::write(&path, "backend:\n  ds4:\n    enabled: true\n").expect("write failed");
     let warning = load_config_from_path(&path).warning.expect("rejected");
     assert!(warning.contains("backend.generic"), "{warning}");
+    fs::remove_dir_all(dir).expect("temp test dir should be removed");
+  }
+
+  #[test]
+  fn a_leftover_lemonade_block_points_at_the_generic_example() {
+    let dir = temp_test_dir("lemonade_block");
+    let path = dir.join("config.yaml");
+    fs::write(&path, "backend:\n  lemonade:\n    enabled: true\n").expect("write failed");
+    let warning = load_config_from_path(&path).warning.expect("rejected");
+    assert!(
+      warning.contains("backend.generic") && warning.contains("lemonade"),
+      "{warning}"
+    );
     fs::remove_dir_all(dir).expect("temp test dir should be removed");
   }
 
@@ -2000,40 +2017,6 @@ proxy:
   }
 
   #[test]
-  fn lemonade_is_off_by_default_and_parses_when_enabled() {
-    // Missing `backend.lemonade:` section → opt-in default (off), no warning.
-    let dir = temp_test_dir("lemonade-default");
-    let path = dir.join("config.yaml");
-    fs::write(&path, "{}\n").expect("write failed");
-    let loaded = load_config_from_path(&path);
-    assert!(loaded.warning.is_none());
-    assert_eq!(
-      loaded.config.backend.lemonade.enabled, None,
-      "lemonade `enabled` defaults to unset (on-when-found intent)"
-    );
-    assert!(loaded.config.backend.lemonade.servers.is_empty());
-    assert_eq!(loaded.config.backend.lemonade.port, 13305);
-    fs::remove_dir_all(dir).expect("temp test dir should be removed");
-
-    // Explicit enable + user-provided binary path round-trips.
-    let on_dir = temp_test_dir("lemonade-on");
-    let on_path = on_dir.join("config.yaml");
-    fs::write(
-      &on_path,
-      "backend:\n  lemonade:\n    enabled: true\n    servers:\n      - binary: /opt/lemonade/lemond\n",
-    )
-    .expect("write failed");
-    let on_loaded = load_config_from_path(&on_path);
-    assert!(on_loaded.warning.is_none());
-    assert_eq!(on_loaded.config.backend.lemonade.enabled, Some(true));
-    assert_eq!(
-      on_loaded.config.backend.lemonade.primary_binary(),
-      Some(std::path::Path::new("/opt/lemonade/lemond"))
-    );
-    fs::remove_dir_all(on_dir).expect("temp test dir should be removed");
-  }
-
-  #[test]
   fn proxy_request_log_file_is_off_unless_set() {
     assert!(!Config::default().proxy.request_log_file);
     let dir = temp_test_dir("proxy-request-log-file");
@@ -2272,7 +2255,7 @@ proxy:
     // truth for the config surface. Its active (uncommented) keys must
     // deserialize into `Config` with no warning — this guards against
     // the example drifting from the struct (a stale key under a
-    // `deny_unknown_fields` block like `proxy` / `lemonade`, a renamed
+    // `deny_unknown_fields` block like `proxy`, a renamed
     // field, or a malformed edit). Commented-out keys are inert here;
     // they're covered by the per-section round-trip tests above.
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("config.example.yaml");
@@ -2286,10 +2269,12 @@ proxy:
     // that an empty doc parsed): defaults the example pins explicitly.
     assert!(loaded.config.proxy.enabled);
     assert!(!loaded.config.proxy.insecure_no_auth);
-    // The example pins `backend.lemonade.enabled: true` explicitly (active key,
-    // per the "example keys are not commented out" convention).
-    assert_eq!(loaded.config.backend.lemonade.enabled, Some(true));
-    assert_eq!(loaded.config.backend.lemonade.port, 13305);
+    // The example declares generic servers (active keys, per the
+    // "example keys are not commented out" convention).
+    assert!(
+      !loaded.config.backend.generic.servers.is_empty(),
+      "the example's generic servers must parse"
+    );
   }
 
   #[test]

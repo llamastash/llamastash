@@ -691,7 +691,7 @@ mod tests {
   use super::*;
   use crate::daemon::supervisor::ManagedState;
   use crate::discovery::{DiscoveredModel, ModelSource, Multimodal};
-  use crate::proxy::test_support::{state_with, umbrella_id};
+  use crate::proxy::test_support::state_with;
   use std::path::{Path, PathBuf};
 
   /// The log matches a `/ui` request on its path alone, against the fixed
@@ -755,21 +755,6 @@ mod tests {
       running.iter().all(|e| e.ui == UiSource::Engine),
       "the default backend's row still serves its own web UI, so it stays selectable"
     );
-  }
-
-  /// The managed multiplexer's umbrella is daemon infra, not a servable model,
-  /// so it is never a `/ui` target.
-  #[tokio::test]
-  async fn collect_running_skips_the_infrastructure_launch() {
-    let umbrella = umbrella_id();
-    let state = state_with(&[(
-      umbrella.as_str(),
-      ManagedState::Ready,
-      "/models/umbrella.gguf",
-      41120,
-    )])
-    .await;
-    assert!(collect_running(&state).await.is_empty());
   }
 
   fn headers_with_cookie(value: &str) -> HeaderMap {

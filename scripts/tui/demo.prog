@@ -1,13 +1,14 @@
 comment: LlamaStash README/site demo — the init wizard driven interactively,
-comment: then a TUI tour, with the Lemonade (NPU) backend enabled so the dashboard
-comment: shows both engines.
+comment: then a TUI tour, with an NPU engine declared as a generic server so the
+comment: dashboard shows both engines.
 comment: Flow: `llamastash init` answered by hand (existing llama-server, a small
 comment: model pasted by HF id), then "Launch the TUI now?" hands straight into the
-comment: TUI: launch gemma-4-E2B on llama.cpp, start qwen3.5-4b-FLM on the Lemonade
-comment: NPU (running 3, dual backend), HuggingFace pull, theme cycle, chat gemma.
+comment: TUI: launch gemma-4-E2B on llama.cpp, start a model on the NPU
+comment: engine (running 3, dual backend), HuggingFace pull, theme cycle, chat gemma.
 comment:
-comment: Prereq: a daemon started with the Lemonade backend, e.g.
-comment:   target/release/llamastash daemon start --lemonade   # spawns lemond on :13305
+comment: Prereq: a daemon whose `config.yaml` declares the NPU engine as a
+comment: `backend.generic` server (docs/usage.md has the recipe), e.g.
+comment:   target/release/llamastash daemon start
 comment:
 comment: Capture (release binary symlinked as `llamastash` on PATH, 131x34 to match
 comment: assets/tui.gif, against the real daemon for a rich dashboard):
@@ -86,7 +87,7 @@ wait:7
 key:enter
 wait:5
 
-# ── launch gemma-4-E2B on llama.cpp (Home→lemond, ↓↓→gemma in Favorites; no filter) ──
+# ── launch gemma-4-E2B on llama.cpp (Home→the generic engine row, ↓↓→gemma in Favorites; no filter) ──
 key:home
 wait:0.4
 key:down
@@ -139,12 +140,12 @@ wait:1.2
 type:t
 wait:1.5
 
-# ── finally, jump to the bottom and start the Lemonade NPU model (dual backend) ──
+# ── finally, jump to the bottom and start the NPU engine's model (dual backend) ──
 key:end
 wait:1
 key:enter
 wait:1.5
 key:enter
 wait:9
-# end on the Lemonade model coming up (cast trimmed here; harness tears the TUI down)
+# end on the NPU model coming up (cast trimmed here; harness tears the TUI down)
 wait:2

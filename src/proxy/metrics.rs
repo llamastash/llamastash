@@ -1624,7 +1624,7 @@ mod tests {
   use std::collections::BTreeSet;
   use std::path::PathBuf;
 
-  use crate::proxy::test_support::{state_with, umbrella_id};
+  use crate::proxy::test_support::state_with;
 
   /// A Ready live-launch row for the scrape tests, keyed on the model's path.
   fn live_row(id: &str, model: &str, path: &str, port: u16) -> LiveLaunch {
@@ -1643,20 +1643,13 @@ mod tests {
   }
 
   /// The one registry walk: every model launch in launch order with the
-  /// identity and port its callers need, a not-Ready launch still listed with
-  /// `ready: false`, and the infra umbrella left out.
+  /// identity and port its callers need, and a not-Ready launch still listed
+  /// with `ready: false`.
   #[tokio::test]
   async fn live_launches_lists_model_launches_in_launch_order() {
-    let umbrella = umbrella_id();
     let state = state_with(&[
       ("L10", ManagedState::Ready, "/models/zulu.gguf", 41110),
       ("L2", ManagedState::Loading, "/models/alpha.gguf", 41102),
-      (
-        umbrella.as_str(),
-        ManagedState::Ready,
-        "/models/umbrella.gguf",
-        41120,
-      ),
     ])
     .await;
     let live = live_launches(&state).await;

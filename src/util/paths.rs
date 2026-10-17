@@ -47,12 +47,12 @@ pub fn project_dirs() -> Option<ProjectDirs> {
 /// field, right-pane title, launch picker, logs) — the shared fallback when
 /// the live catalog has no `display_label` for the path.
 ///
-/// A synthetic `<scheme>://<name>` path (`lemonade://qwen3.5-4b-FLM`) is not a
+/// A synthetic `<scheme>://<name>` path (`acme://qwen3.5-4b-FLM`) is not a
 /// file: the whole string after the scheme is the name, so `file_stem` is wrong
 /// there — it mistakes the `.5-4b-FLM` for a file extension and returns
 /// `qwen3`. Return the full name for those, so such a model reads identically
-/// whether or not the catalog match landed (it transiently misses while a
-/// Lemonade umbrella is mid-load / errored).
+/// whether or not the catalog match landed (it transiently misses while an
+/// engine is mid-load / errored).
 pub fn model_display_name(path: &Path) -> String {
   if let Some((_, name)) = path.to_str().and_then(|s| s.split_once("://")) {
     return name.to_string();
@@ -92,7 +92,7 @@ pub fn model_file_label(path: &Path) -> String {
 ///
 /// A GGUF row has no label, so it reads as the file stem
 /// (`Qwen2.5-Coder-7B-Q4_K_M`); a safetensors repo, an Ollama blob, and a
-/// Lemonade registry entry all have opaque paths and carry a label instead
+/// registry entry all have opaque paths and carry a label instead
 /// (`Qwen/Qwen3-0.6B`, `llama3:8b`, `qwen3.5-4b-FLM`). This is the `id`
 /// `/v1/models` publishes and the string external tool configs must send
 /// back, so both go through here rather than deriving a name each.
@@ -518,16 +518,16 @@ mod tests {
   use super::*;
 
   #[test]
-  fn model_display_name_stems_real_files_but_keeps_lemonade_registry_names() {
+  fn model_display_name_stems_real_files_but_keeps_registry_names() {
     // A real GGUF: drop the `.gguf` extension, keep the dotted version tag.
     assert_eq!(
       model_display_name(Path::new("/models/Qwen2.5-Coder-7B-Q4_K_M.gguf")),
       "Qwen2.5-Coder-7B-Q4_K_M"
     );
-    // A Lemonade synthetic path: the dotted registry name is the whole label —
+    // A synthetic registry path: the dotted name is the whole label —
     // `file_stem` would truncate `qwen3.5-4b-FLM` to `qwen3`.
     assert_eq!(
-      model_display_name(Path::new("lemonade://qwen3.5-4b-FLM")),
+      model_display_name(Path::new("acme://qwen3.5-4b-FLM")),
       "qwen3.5-4b-FLM"
     );
   }

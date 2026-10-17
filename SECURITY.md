@@ -76,7 +76,7 @@ Issues we treat as in scope:
 Out of scope:
 
 - Backend-engine upstream behaviour — `llama.cpp` / `llama-server`,
-  vLLM, SGLang, Lemonade / `lemond`, and any server you run through the
+  vLLM, SGLang, and any server you run through the
   generic backend (please report there).
 - Local denial-of-service by a malicious user against their own daemon.
 - Issues that require the attacker to already have shell access as

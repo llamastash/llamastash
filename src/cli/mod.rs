@@ -286,7 +286,7 @@ pub(crate) async fn handle_tui(cli: &Cli, config: &crate::config::Config) -> Cli
   //
   // A failure here does NOT abort the TUI: the backend fail-fast
   // precheck refuses to auto-spawn a degraded daemon (missing
-  // `llama-server`, blocked Lemonade umbrella port, …), and dying on
+  // `llama-server` with nothing else to launch, …), and dying on
   // stderr before the UI exists would hide that. Launch daemon-less
   // instead and surface the refusal in the Daemon panel's server row;
   // if a daemon comes up later the refresher clears it.

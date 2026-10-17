@@ -77,7 +77,7 @@ pub struct CatalogRow {
   /// `parameter_label` (`"7B"` is derived from `7e9`).
   pub total_parameters: Option<u64>,
   /// Backend that serves this row, as the daemon resolved it (`list_models`
-  /// `backend` field): `"llamacpp"` / `"lemonade"`. The honest R14
+  /// `backend` field): a backend id. The honest R14
   /// badge — a non-default id only when that backend claims the file *and* is
   /// available. `None` on rows the daemon didn't tag (falls back to a
   /// source-derived badge in `list_json`).

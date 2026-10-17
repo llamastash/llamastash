@@ -303,7 +303,7 @@ fn server_entry_spans<'a>(
 /// Render the daemon-start refusal in the server row. `err` carries
 /// one single-line failure per backend (the precheck joins them with
 /// `\n`); every backend shares the row with an **equal** per-entry
-/// budget, each middle-truncated so a long lemonade message can't
+/// budget, each middle-truncated so a long engine message can't
 /// push a llama.cpp failure off-screen entirely.
 fn server_error_row<'a>(err: &str, budget: usize, palette: &'a Palette) -> Line<'a> {
   let entries: Vec<&str> = err.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -1104,12 +1104,12 @@ mod tests {
   #[test]
   fn middle_ellipsise_keeps_head_and_tail() {
     assert_eq!(middle_ellipsise("short", 10), "short");
-    let s = "lemonade umbrella port 127.0.0.1:13305 is already in use — use --force";
+    let s = "enginex is enabled but no `enginex` binary was found — set backend.enginex.servers or use --force";
     let out = middle_ellipsise(s, 30);
     assert!(out.width() <= 30, "width {} > 30: {out:?}", out.width());
     assert!(out.contains('…'), "expected middle ellipsis: {out:?}");
     assert!(
-      out.starts_with("lemonade"),
+      out.starts_with("enginex"),
       "head must survive middle truncation: {out:?}"
     );
     assert!(
@@ -1156,7 +1156,7 @@ mod tests {
   #[test]
   fn server_row_splits_budget_equally_across_backend_failures() {
     // Two backends failed (one precheck line each): both must stay
-    // visible on the single row, equally truncated — a long lemonade
+    // visible on the single row, equally truncated — a long engine
     // message can't evict the llama.cpp one.
     let mut app = App::new(AppOptions::default());
     app.daemon_connected = false;

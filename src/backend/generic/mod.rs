@@ -19,6 +19,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 
+mod rows;
+
 pub use config::{GenericConfig, GenericServer, KnobDecl, KnobSpec};
 
 use super::identity::{BackendModelId, ModelIdentity};
@@ -61,9 +63,17 @@ fn entry_named(name: &str) -> Option<Arc<Entry>> {
     .cloned()
 }
 
-/// The entry name in a `generic://<name>` path.
+/// The entry name in a `generic://<name>` path, or in a minted
+/// `generic://<name>/<model>` path.
 pub fn entry_name_from_path(path: &Path) -> Option<&str> {
-  path.to_str()?.strip_prefix(GENERIC_PATH_SCHEME)
+  let tail = path.to_str()?.strip_prefix(GENERIC_PATH_SCHEME)?;
+  tail.split('/').next()
+}
+
+/// The minted model name in a `generic://<name>/<model>` path, else `None`.
+fn minted_name_from_path(path: &Path) -> Option<&str> {
+  let tail = path.to_str()?.strip_prefix(GENERIC_PATH_SCHEME)?;
+  tail.split_once('/').map(|(_, model)| model)
 }
 
 fn entry_for_path(path: &Path) -> Option<Arc<Entry>> {
@@ -161,11 +171,17 @@ impl GenericBackend {
     let (argv, env, ready, probe, grace) = match &entry {
       Some(e) => {
         let s = &e.server;
-        let published = params
-          .launch_config
-          .get(PUBLISHED_NAME_KEY)
-          .cloned()
-          .unwrap_or_else(|| s.name.clone());
+        // A minted row always launches with its bare tag: the published id is
+        // qualified (`tag@coder`) or escalated (`entry/tag`) exactly when the
+        // engine would reject it, and the engine picks the model from the tag.
+        let published = match minted_name_from_path(&params.model_path) {
+          Some(tag) => tag.to_string(),
+          None => params
+            .launch_config
+            .get(PUBLISHED_NAME_KEY)
+            .cloned()
+            .unwrap_or_else(|| s.name.clone()),
+        };
         // `resolve_knobs` already refused a placeholder knob with no value, so
         // an error here means the params changed under us; spawn nothing
         // useful rather than panic.
@@ -363,13 +379,15 @@ impl Backend for GenericBackend {
     _force: &BTreeMap<String, bool>,
   ) -> Vec<crate::discovery::DiscoveredModel> {
     // An entry with `model` is a server option on catalog rows, not a row.
-    config
-      .generic
-      .servers
-      .iter()
-      .filter(|s| s.model.is_none())
-      .map(Self::catalog_row)
-      .collect()
+    let mut out = Vec::new();
+    for server in config.generic.servers.iter().filter(|s| s.model.is_none()) {
+      if server.rows_from.is_some() {
+        out.extend(rows::mint(server).await);
+      } else {
+        out.push(Self::catalog_row(server));
+      }
+    }
+    out
   }
 
   fn serves_path(&self, path: &Path) -> bool {
@@ -413,12 +431,15 @@ impl Backend for GenericBackend {
   }
 
   fn synthetic_identity(&self, path: &Path) -> Option<ModelIdentity> {
-    entry_for_path(path).map(|e| {
-      ModelIdentity::Backend(BackendModelId {
-        backend: GENERIC_BACKEND_ID.to_string(),
-        name: e.server.name.clone(),
-      })
-    })
+    let entry = entry_for_path(path)?;
+    let name = match minted_name_from_path(path) {
+      Some(model) => format!("{}/{model}", entry.server.name),
+      None => entry.server.name.clone(),
+    };
+    Some(ModelIdentity::Backend(BackendModelId {
+      backend: GENERIC_BACKEND_ID.to_string(),
+      name,
+    }))
   }
 
   /// No orphan adoption: an arbitrary binary can't be recognised from its argv

@@ -589,7 +589,7 @@ async fn start_model_handler(
   }
   // Non-fatal advisories (dropped knobs, deepseek4 KV-blind note, ssd_streaming
   // bypass). Omitted when empty so the response stays byte-stable for launches
-  // that raise none (every llama.cpp / Lemonade launch today).
+  // that raise none (every llama.cpp launch today).
   if !started.warnings.is_empty() {
     resp["warnings"] = json!(started.warnings);
   }
@@ -1389,34 +1389,29 @@ mod tests {
   }
 
   #[tokio::test]
-  async fn favorite_add_accepts_a_lemonade_registry_path() {
-    // A fileless `lemonade://` path has no GGUF to hash — favoriting must still
-    // work (via the synthetic id), keyed on the path the catalog row uses so
-    // the TUI `★` resolves.
+  async fn favorite_add_accepts_a_path_with_no_gguf_header() {
+    // A safetensors snapshot has no GGUF to hash — favoriting must still work
+    // (via the synthetic id), keyed on the path the catalog row uses so the
+    // TUI `★` resolves.
+    let dir = crate::util::test_temp::unique_temp_dir("ls-fav-safetensors");
+    std::fs::write(dir.join("model.safetensors"), b"stub").expect("write stub");
+    let path = dir.display().to_string();
     let c = ctx();
     let resp = dispatch_request(
       &c,
-      Request::new(
-        1,
-        "favorite_add",
-        Some(json!({"model_path": "lemonade://qwen3.5-4b-FLM"})),
-      ),
+      Request::new(1, "favorite_add", Some(json!({"model_path": path}))),
     )
     .await;
-    let body = resp
-      .result
-      .expect("lemonade favorite must succeed, not error");
+    let body = resp.result.expect("a headerless row must favorite cleanly");
     assert_eq!(body["added"], json!(true));
-    assert_eq!(body["model_id"]["path"], "lemonade://qwen3.5-4b-FLM");
+    assert_eq!(body["model_id"]["path"], path);
     // favorite_list surfaces it with an `id.path` the TUI matches to the catalog.
     let list = dispatch_request(&c, Request::new(2, "favorite_list", None))
       .await
       .result
       .expect("favorite_list");
-    assert_eq!(
-      list["favorites"][0]["id"]["path"],
-      "lemonade://qwen3.5-4b-FLM"
-    );
+    assert_eq!(list["favorites"][0]["id"]["path"], path);
+    let _ = std::fs::remove_dir_all(dir);
   }
 
   #[tokio::test]
@@ -1444,68 +1439,6 @@ mod tests {
       "error must name the rejected PID, got: {}",
       err.message
     );
-  }
-
-  /// A delegated-lemonade snapshot the way `start_delegated_lemonade`
-  /// persists one: Backend identity + the synthetic `lemonade://` path +
-  /// the registry-assigned `L#` handle.
-  fn lemonade_running_snapshot(
-    name: &str,
-    port: u16,
-    launch_id: &str,
-  ) -> crate::daemon::state_store::RunningSnapshot {
-    let path = PathBuf::from(format!("lemonade://{name}"));
-    let (id, resolved_backend) = crate::backend::synthetic_identity_for_path(&path)
-      .expect("a lemonade:// path mints a synthetic backend identity");
-    crate::test_support::running_row(&path.to_string_lossy())
-      .identity(id)
-      .pid(0)
-      .port(port)
-      .launch_id(launch_id)
-      .params(LaunchParams::new(path, LaunchMode::Chat))
-      .resolved_backend(&resolved_backend)
-      .build()
-  }
-
-  #[tokio::test]
-  async fn stop_model_of_delegated_row_clears_snapshot_even_without_umbrella() {
-    // `stop_model` on a delegated row routes through `backend.stop`, whose
-    // delegated branch unloads from the umbrella and drops the snapshot. The
-    // umbrella is gone but the snapshot lingers (e.g. it crashed): the row must
-    // still be clearable — the unload is best-effort, the bookkeeping removal is
-    // the contract.
-    let c = ctx();
-    c.state
-      .mutate(|s| {
-        s.running
-          .push(lemonade_running_snapshot("Qwen-X", 13305, "L1"))
-      })
-      .await;
-    let resp = dispatch_request(
-      &c,
-      Request::new(1, "stop_model", Some(json!({"launch_id": "L1"}))),
-    )
-    .await;
-    let body = resp.result.expect("delegated stop must succeed");
-    assert_eq!(body["state"]["state"], json!("stopped"));
-    let still_there = c
-      .state
-      .snapshot()
-      .await
-      .running
-      .iter()
-      .any(|r| r.delegated_backend_id().is_some());
-    assert!(!still_there, "snapshot must be dropped");
-    // Second stop: the row is unknown now — the snapshot is gone, so it
-    // falls through to the supervisor path and errors like a bogus id.
-    let second = dispatch_request(
-      &c,
-      Request::new(2, "stop_model", Some(json!({"launch_id": "L1"}))),
-    )
-    .await;
-    let err = second.error.expect("double-stop must error");
-    assert_eq!(err.code, ErrorCode::InvalidParams.as_i32());
-    assert!(err.message.contains("L1"));
   }
 
   /// The residency fields are tri-state on the wire, because `Ctrl+P` re-saves a

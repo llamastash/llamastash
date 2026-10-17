@@ -1478,12 +1478,15 @@ mod tests {
   }
 
   #[test]
-  fn a_lemonade_model_shows_only_what_lemonade_declares() {
-    let mut s = LaunchPickerState::for_model("Qwen2.5-7B");
-    s.model_backend = BackendChoice::Explicit("lemonade".into());
-    // Lemonade loads over HTTP and declares one knob. There is no Backend row:
-    // a model lives in exactly one backend's catalog, so there is nothing to
-    // choose.
+  fn a_backend_that_declares_no_static_knobs_shows_only_preset_and_extras() {
+    // Resolved from the registry so the test names no backend: today the
+    // user-declared server entries are the engines that bring no knob set.
+    let scope = no_knob_backend_id();
+    let mut s = LaunchPickerState::for_model("qwen3:0.6b");
+    s.model_backend = BackendChoice::from_id(scope);
+    // Such a backend loads through its own launcher and declares no static
+    // knobs. There is no Backend row: a model lives in exactly one backend's
+    // catalog, so there is nothing to choose.
     let visible: Vec<PickerField> = s
       .ordered_fields()
       .into_iter()
@@ -1491,17 +1494,29 @@ mod tests {
       .collect();
     assert_eq!(
       visible,
-      vec![PickerField::Preset, row("ctx-size"), PickerField::Extras],
-      "lemonade picker is preset + ctx + extras, nothing else"
+      vec![PickerField::Preset, PickerField::Extras],
+      "a knobless backend's picker shows only what it declares"
     );
-    assert_eq!(s.active_backend_id(), "lemonade");
+    assert_eq!(s.active_backend_id(), scope);
+  }
+
+  /// The id of a registered backend that declares no static knobs, or the
+  /// suite's own failure if none exists to test against.
+  fn no_knob_backend_id() -> &'static str {
+    use crate::backend::Backend;
+    crate::backend::Backends::all()
+      .into_iter()
+      .find(|b| b.knobs().is_empty())
+      .expect("a backend that declares no static knobs")
+      .id()
   }
 
   #[test]
   fn a_row_the_active_backend_does_not_declare_is_not_visible() {
     let mut s = LaunchPickerState::for_model("m");
-    s.model_backend = BackendChoice::Explicit("lemonade".into());
-    // `flash-attn` is llama.cpp's; Lemonade never declared it.
+    s.model_backend = BackendChoice::from_id(no_knob_backend_id());
+    // `flash-attn` belongs to the default backend; a knobless backend never
+    // declared it.
     assert!(!s.field_visible(row("flash-attn")));
     assert!(s.def(kid("flash-attn")).is_none());
   }

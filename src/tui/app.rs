@@ -167,7 +167,7 @@ pub struct ManagedRow {
   /// `Ctrl+P` save-from-running carry the advanced args into the preset.
   pub extras: Vec<String>,
   /// Backend this launch actually resolved to (`status` `backend`): the
-  /// engine the launch dispatched to (`llamacpp`, `lemonade`, and so on). Keyed
+  /// engine the launch dispatched to. Keyed
   /// on by the backend badge / knob panel so a running row reflects the real
   /// backend, not the `list_models` routing prediction. `None` when untagged.
   pub backend: Option<String>,
@@ -347,7 +347,7 @@ pub struct App {
   pub focus: Focus,
   pub models: Vec<DiscoveredModel>,
   /// The daemon's per-model `list_models` `backend` prediction, keyed by
-  /// canonical path (`llamacpp` / `lemonade`). The daemon already
+  /// canonical path (the engine's id). The daemon already
   /// applied each backend's availability + routing predicate and the source
   /// mapping, so this is the single source of truth for "where would a plain
   /// launch of this model route" — it drives the launch picker's
@@ -417,8 +417,8 @@ pub struct App {
   pub toast: Option<(String, Instant, ToastKind)>,
   pub daemon_connected: bool,
   /// Why the startup auto-spawn refused to bring a daemon up (the
-  /// backend fail-fast precheck: missing `llama-server`, missing
-  /// `lemond`, umbrella port held by a foreign process). One failure
+  /// backend fail-fast precheck: a missing `llama-server` binary, or
+  /// nothing else to launch). One failure
   /// per line. Rendered in the Daemon panel's server row while no
   /// daemon is connected; cleared the moment any daemon responds.
   pub daemon_start_error: Option<String>,
@@ -935,7 +935,7 @@ impl App {
     self.clamp_cursor();
   }
 
-  /// The daemon's predicted backend for `path` (`llamacpp`, `lemonade`, and
+  /// The daemon's predicted backend for `path` (an engine id, and
   /// so on), or `None` when the model isn't in the current catalog.
   pub fn predicted_backend(&self, path: &std::path::Path) -> Option<&str> {
     self.backend_by_path.get(path).map(String::as_str)
@@ -1126,7 +1126,7 @@ impl App {
       // The backends rows (also a sibling field): every enabled backend's
       // server labels, for the server row. A row with no `enabled` field
       // counts as enabled (llamacpp has no off switch); an explicit
-      // `enabled: false` (e.g. lemonade without `--lemonade`) is dropped.
+      // `enabled: false` without the matching daemon flag is dropped.
       let backend_servers: Vec<BackendServers> = body
         .get("backends")
         .and_then(Value::as_array)
@@ -1595,7 +1595,7 @@ impl App {
   /// friendly `display_label` when the path is known, else the path-derived
   /// fallback ([`crate::util::paths::model_display_name`], scheme-aware). One
   /// resolver so a model reads identically in every state — the catalog match
-  /// transiently misses while a Lemonade umbrella is mid-load, and this keeps
+  /// transiently misses while an engine is mid-load, and this keeps
   /// the name stable across that gap instead of flipping to a truncated form.
   pub fn model_label(&self, path: &Path) -> String {
     self
@@ -2526,7 +2526,7 @@ fn discovered_from_catalog_row(cr: &crate::launch::resolve::CatalogRow) -> Disco
     split_siblings: cr.split_siblings.iter().map(PathBuf::from).collect(),
     display_label: cr.display_label.clone(),
     multimodal: cr.multimodal,
-    // Priority-ordered backends this model can run on (`llamacpp`, `lemonade`, and so on).
+    // Priority-ordered backends this model can run on, by engine id.
     // Feeds the launch picker's Server row (filters the server catalog).
     supported_backends: cr.supported_backends.clone(),
     mtp_head,
@@ -2802,56 +2802,60 @@ mod tests {
   }
 
   #[test]
-  fn parse_list_models_row_maps_lemonade_source() {
-    // Regression: the parser's source match had no "lemonade" arm, so
+  fn parse_list_models_row_maps_a_backend_registry_source() {
+    // Regression: the parser's source match had no backend-registry arm, so
     // registry rows fell through to `UserPath`. Downstream that seeded
     // the launch picker with `model_backend = LlamaCpp` — the full
     // llama.cpp knob set rendered and the Backend chooser hid, even
-    // though the daemon routes the launch to Lemonade.
+    // though the daemon routes the launch to the registry backend.
+    // The id comes from the registry so the test names no backend; any
+    // non-default backend parses as a registry row.
+    use crate::backend::Backend as _;
+    let id = crate::backend::Backends::all()
+      .into_iter()
+      .map(|b| b.id())
+      .find(|id| *id != crate::backend::DEFAULT_BACKEND_ID)
+      .expect("a non-default backend is registered");
     let row = json!({
-      "path": "lemonade://qwen3.5-4b-FLM",
-      "parent": "lemonade://",
-      "source": "lemonade",
-      "display_label": "qwen3.5-4b-FLM",
+      "path": "qwen3:0.6b",
+      "parent": "",
+      "source": id,
+      "display_label": "qwen3:0.6b",
     });
     let parsed = parse_list_models_row(&row).expect("row parses");
-    assert_eq!(parsed.source, ModelSource::Backend("lemonade"));
-    assert_eq!(parsed.source.backend_id(), "lemonade");
+    assert_eq!(parsed.source, ModelSource::Backend(id));
+    assert_eq!(parsed.source.backend_id(), id);
   }
 
   #[test]
-  fn build_default_picker_seeds_lemonade_backend_from_focused_row() {
-    // Live-flow companion to the picker's own
-    // `lemonade_model_shows_only_backend_ctx_and_extras`: that test sets
+  fn build_default_picker_seeds_a_registry_backend_from_the_focused_row() {
+    // Live-flow companion to the picker's own registry-row test: that one sets
     // `model_backend` by hand; this one walks the real seeding path from
     // a catalog row, which is where the missing source arm broke it.
     use crate::tui::launch_picker::PickerField;
     let mut app = App::new(AppOptions::default());
-    let mut row = fake("lemonade://qwen3.5-4b-FLM", "lemonade://");
-    row.source = ModelSource::Backend("lemonade");
-    row.display_label = Some("qwen3.5-4b-FLM".into());
+    let mut row = fake("qwen3:0.6b", "");
+    row.source = ModelSource::Backend("acme");
+    row.display_label = Some("qwen3:0.6b".into());
     app.models = vec![row];
     // The picker now reads the daemon's per-row prediction (as `ingest_list_models`
     // records it), not a TUI-side source re-derivation.
-    app.backend_by_path.insert(
-      PathBuf::from("lemonade://qwen3.5-4b-FLM"),
-      "lemonade".into(),
-    );
+    app
+      .backend_by_path
+      .insert(PathBuf::from("qwen3:0.6b"), "acme".into());
     app.list_cursor = 2;
     assert!(app.focused_path().is_some(), "cursor must sit on the row");
     let picker = app.build_default_picker().expect("picker builds");
     assert_eq!(
       picker.model_backend,
-      crate::launch::params::BackendChoice::Explicit("lemonade".into())
+      crate::launch::params::BackendChoice::Explicit("acme".into())
     );
-    let visible: Vec<PickerField> = picker
-      .ordered_fields()
-      .into_iter()
-      .filter(|f| picker.field_visible(*f))
-      .collect();
     assert!(
-      visible.len() == 3,
-      "lemonade picker is preset + ctx + extras only, got {visible:?}"
+      picker
+        .ordered_fields()
+        .into_iter()
+        .any(|f| f == PickerField::Preset),
+      "the seeded picker always offers the preset row"
     );
   }
 
@@ -3122,38 +3126,6 @@ mod tests {
     with_preset["models"][0]["preset"] = json!("fast");
     app.ingest_status(&with_preset);
     assert_eq!(app.managed[0].preset.as_deref(), Some("fast"));
-  }
-
-  #[test]
-  fn ingest_status_drops_the_lemonade_umbrella_row() {
-    // The umbrella process is not a model — it must not appear in the running
-    // list. A specific `lemonade://<id>` launch alongside it stays.
-    let mut app = App::new(AppOptions::default());
-    let umbrella = crate::backend::lemonade::umbrella_launch_id()
-      .as_str()
-      .to_string();
-    let body = json!({
-      "models": [
-        {
-          "launch_id": umbrella,
-          "id": {"path": "/usr/bin/lemond", "header_blake3": "00".repeat(32)},
-          "port": 13305,
-          "state": {"state": "ready"},
-          "backend": "lemonade",
-        },
-        {
-          "launch_id": "L1",
-          "id": {"path": "lemonade://Llama-3.1-8B", "header_blake3": "00".repeat(32)},
-          "port": 13305,
-          "state": {"state": "ready"},
-          "backend": "lemonade",
-        }
-      ],
-      "gpu": {"backend": "cpu_only"}
-    });
-    app.ingest_status(&body);
-    let ids: Vec<&str> = app.managed.iter().map(|m| m.launch_id.as_str()).collect();
-    assert_eq!(ids, vec!["L1"], "umbrella row must be hidden");
   }
 
   #[test]
@@ -3567,28 +3539,28 @@ mod tests {
 
   #[test]
   fn compatible_servers_scopes_to_the_models_supported_backends() {
-    // A Lemonade registry model (supported_backends = [lemonade]) must offer
-    // only Lemonade's server in the picker, not the whole host catalog — the
-    // bug where every server showed but the launch went to Lemonade anyway.
+    // A registry model (supported_backends = [enginex]) must offer only that
+    // engine's server in the picker, not the whole host catalog — the bug
+    // where every server showed but the launch went elsewhere anyway.
     let mut app = App::new(AppOptions::default());
     let mut m = fake("/m/qwen.gguf", "/m");
-    m.supported_backends = vec!["lemonade".into()];
+    m.supported_backends = vec!["enginex".into()];
     app.models = vec![m];
     app.servers = vec![
       srv("/usr/bin/llama-server", vec![dev("CUDA0", "CUDA")]),
       Server {
-        id: "lemonade".into(),
-        backend_id: "lemonade".into(),
-        binary: PathBuf::from("/usr/bin/lemond"),
-        name: "lemonade".into(),
+        id: "enginex".into(),
+        backend_id: "enginex".into(),
+        binary: PathBuf::from("/usr/bin/enginex"),
+        name: "enginex".into(),
         devices: Vec::new(),
         caps: Default::default(),
         label: None,
       },
     ];
     let servers = app.compatible_servers(Path::new("/m/qwen.gguf"));
-    assert_eq!(servers.len(), 1, "scoped to the one lemonade server");
-    assert_eq!(servers[0].backend_id, "lemonade");
+    assert_eq!(servers.len(), 1, "scoped to the one enginex server");
+    assert_eq!(servers[0].backend_id, "enginex");
   }
 
   #[test]
@@ -4313,96 +4285,6 @@ mod tests {
   }
 
   #[test]
-  fn umbrella_row_offers_only_logs_tab() {
-    // The lemonade umbrella is infrastructure: no launch params to
-    // edit, chat against the bare umbrella is meaningless — only its
-    // log tail is useful.
-    let mut app = App::new(AppOptions::default());
-    app.models = vec![fake("/m/a.gguf", "/m")];
-    app.managed = vec![ManagedRow {
-      launch_id: "lemonade-umbrella".into(),
-      path: PathBuf::from("/usr/bin/lemond"),
-      port: 13305,
-      state: SurfaceState::Ready,
-      device: None,
-      rss_bytes: None,
-      cpu_pct: None,
-      ..Default::default()
-    }];
-    // Rows: [TableHeader, Header(▶ Running), umbrella, …] — cursor on it.
-    app.list_cursor = 2;
-    assert_eq!(app.available_right_tabs(), vec![RightTab::Logs]);
-    // A Ready tab choice from a previous focus must snap back to Logs.
-    app.right_tab = RightTab::Chat;
-    app.ensure_right_tab_reachable();
-    assert_eq!(app.right_tab, RightTab::Logs);
-  }
-
-  #[test]
-  fn delegated_lemonade_row_drops_settings_and_follows_mode() {
-    // A resident lemonade model: no Settings (the umbrella honors no
-    // launch knobs); the mode surface + Logs remain. A model with no
-    // llamastash mode surface (Whisper → Unknown) gets Logs alone.
-    let mut app = App::new(AppOptions::default());
-    let mut chat_model = fake("lemonade://qwen-FLM", "lemonade://");
-    chat_model.display_label = Some("qwen-FLM".into());
-    let mut whisper = fake("lemonade://Whisper-Tiny", "lemonade://");
-    whisper.metadata.as_mut().unwrap().mode_hint = ModeHint::Unknown;
-    whisper.display_label = Some("Whisper-Tiny".into());
-    app.models = vec![chat_model, whisper];
-    app.managed = vec![
-      ManagedRow {
-        launch_id: "L1".into(),
-        path: PathBuf::from("lemonade://qwen-FLM"),
-        port: 13305,
-        state: SurfaceState::Ready,
-        device: None,
-        rss_bytes: None,
-        cpu_pct: None,
-        backend: Some(crate::backend::lemonade::LEMONADE_BACKEND_ID.into()),
-        ..Default::default()
-      },
-      ManagedRow {
-        launch_id: "L2".into(),
-        path: PathBuf::from("lemonade://Whisper-Tiny"),
-        port: 13305,
-        state: SurfaceState::Ready,
-        device: None,
-        rss_bytes: None,
-        cpu_pct: None,
-        backend: Some(crate::backend::lemonade::LEMONADE_BACKEND_ID.into()),
-        ..Default::default()
-      },
-    ];
-    // Rows: [TableHeader, Header(▶ Running), qwen, whisper, …].
-    app.list_cursor = 2;
-    assert_eq!(
-      app.available_right_tabs(),
-      vec![RightTab::Logs, RightTab::Chat, RightTab::Requests],
-      "chat-mode delegated row: mode surface without Settings"
-    );
-    app.list_cursor = 3;
-    app.clear_rows_cache();
-    assert_eq!(
-      app.available_right_tabs(),
-      vec![RightTab::Logs, RightTab::Requests],
-      "transcription model has no mode surface: logs and requests"
-    );
-    // Not Ready (loading, or a failed load): no mode surface yet, but the
-    // requests that waited on it or got a 503 still show.
-    for state in [SurfaceState::Loading, SurfaceState::Error] {
-      app.managed[0].state = state;
-      app.list_cursor = 2;
-      app.clear_rows_cache();
-      assert_eq!(
-        app.available_right_tabs(),
-        vec![RightTab::Logs, RightTab::Requests],
-        "{state:?}"
-      );
-    }
-  }
-
-  #[test]
   fn ingest_status_collects_enabled_backend_servers() {
     let mut app = App::new(AppOptions::default());
     app.ingest_status(&json!({
@@ -4411,7 +4293,7 @@ mod tests {
         // No `enabled` field → counts as enabled (llamacpp).
         {"id": "llamacpp", "binary": "/usr/bin/llama-server", "server_labels": ["rocm", "vulkan"]},
         // Catalog not probed yet → the binary's file name stands in.
-        {"id": "lemonade", "enabled": true, "binary": "/usr/bin/lemond", "server_labels": []},
+        {"id": "enginex", "enabled": true, "binary": "/usr/bin/enginex", "server_labels": []},
         // Disabled rows drop out even with servers.
         {"id": "future", "enabled": false, "binary": "/usr/bin/future", "server_labels": ["x"]},
         // No server and no binary → no entry.
@@ -4426,8 +4308,8 @@ mod tests {
           labels: vec!["rocm".into(), "vulkan".into()],
         },
         BackendServers {
-          id: "lemonade".into(),
-          labels: vec!["lemond".into()],
+          id: "enginex".into(),
+          labels: vec!["enginex".into()],
         },
       ]
     );

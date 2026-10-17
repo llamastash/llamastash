@@ -287,16 +287,6 @@ bench = false
 test = false
 doc = false
 
-# Test-only fake `lemond` umbrella (OpenAI-compatible) under the same
-# feature flag. Integration tests spawn it via `CARGO_BIN_EXE_fake_lemond`.
-[[bin]]
-name = "fake_lemond"
-path = "tests/fixtures/fake_lemond.rs"
-required-features = ["test-fixtures"]
-bench = false
-test = false
-doc = false
-
 # Fake `vllm` launcher for the vLLM backend integration tests — mirrors the
 # slow engine-init window and the served-model-name contract readiness keys
 # on. Spawned via `CARGO_BIN_EXE_fake_vllm_server`; injected as

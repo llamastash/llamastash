@@ -1209,13 +1209,7 @@ fn apply_delete_model(app: &mut App) {
 /// so the hint and the keybinding stay in lock-step.
 fn delete_refusal_reason(app: &App) -> Option<&'static str> {
   use crate::tui::status_icons::SurfaceState;
-  // Lemonade registry models are served by the umbrella, not stored as a local
-  // GGUF — there is nothing on disk to unlink, and llamastash does not manage
-  // the Lemonade registry. Refuse with guidance instead of a failed `unlink`.
   if let Some(path) = app.focused_path() {
-    if crate::backend::lemonade::registry_name_from_path(&path).is_some() {
-      return Some("model is managed by Lemonade — delete it via Lemonade");
-    }
     if !app.has_local_file(&path) {
       return Some("model is declared in config.yaml — remove it there");
     }
@@ -1908,7 +1902,7 @@ fn dispatch_launch(
 ///
 /// Prefers the **port-stable proxy** when it's listening *and auth-free*: one
 /// origin that survives relaunches (the direct backend port is ephemeral),
-/// speaks `/v1/` for every backend (it translates to lemonade's `/api/v1/`
+/// speaks `/v1/` for every backend (it translates a backend's own prefix
 /// internally), and routes by the model id. But an **auth-enforced** proxy
 /// would `401` a keyless pasted command, so in that case (or when the proxy is
 /// off) it falls back to the backend's own loopback port, which takes no auth
@@ -2912,25 +2906,23 @@ mod tests {
   }
 
   #[test]
-  fn ctrl_d_on_lemonade_model_refuses_with_toast() {
-    // A Lemonade model is a registry entry (synthetic `lemonade://` path), not
-    // a local GGUF — Ctrl+D must refuse with guidance, not stage a delete that
-    // would fail on a non-existent file.
+  fn ctrl_d_on_a_registry_model_refuses_with_toast() {
+    // A config-declared registry row has no local GGUF — Ctrl+D must refuse
+    // with guidance, not stage a delete that would fail on a missing file.
     let mut app = App::new(Default::default());
-    app.models = vec![fake_model_for_events(
-      "lemonade://Llama-3.1-8B",
-      "lemonade://",
-    )];
+    let mut model = fake_model_for_events("flm-qwen3-06b", "");
+    model.source = crate::discovery::ModelSource::Backend("acme");
+    app.models = vec![model];
     app.go_top();
     pump_input(&mut app, key(KeyCode::Char('d'), KeyModifiers::CONTROL));
     assert!(
       app.confirm_dialog.is_none(),
-      "Lemonade registry row must not stage a delete"
+      "a registry row must not stage a delete"
     );
     let toast = app.toast_message().unwrap_or("");
     assert!(
-      toast.contains("Lemonade"),
-      "expected a Lemonade-delete toast, got `{toast}`"
+      toast.contains("config.yaml"),
+      "expected a declared-in-config delete toast, got `{toast}`"
     );
   }
 
@@ -5265,10 +5257,6 @@ mod tests {
     RequestsScope::Launch(id.to_string())
   }
 
-  fn model_scope(path: &str) -> RequestsScope {
-    RequestsScope::Model(path.to_string())
-  }
-
   #[test]
   fn requests_are_polled_only_while_the_tab_is_open_on_a_launched_model() {
     let mut app = app_on_requests_tab();
@@ -5303,34 +5291,6 @@ mod tests {
 
   /// A backend whose models are delegated to a shared umbrella, taken from
   /// the registry so the test names no backend of its own.
-  fn managed_multiplexer_backend() -> String {
-    use crate::backend::Backend as _;
-    crate::backend::Backends::all()
-      .into_iter()
-      .find(|b| crate::backend::is_managed_multiplexer(b.id()))
-      .map(|b| b.id().to_string())
-      .expect("a managed multiplexer backend is registered")
-  }
-
-  #[test]
-  fn a_delegated_multiplexer_row_polls_its_model_not_the_umbrella() {
-    // The umbrella has no requests of its own to scope by: its models'
-    // requests are filed under the model path, so that is what the tab asks
-    // for. Keyed on the backend's lifecycle, not a backend id.
-    let mut app = app_on_requests_tab();
-    app.managed[0].backend = Some(managed_multiplexer_backend());
-    assert_eq!(
-      requests_poll_target(&app),
-      Some(model_scope("/m/qwen.gguf"))
-    );
-    apply_refresh(
-      &mut app,
-      requests_tick(model_scope("/m/qwen.gguf"), &[4, 3]),
-    );
-    assert_eq!(app.requests.scope, Some(model_scope("/m/qwen.gguf")));
-    assert_eq!(app.requests.rows.len(), 2);
-  }
-
   #[test]
   fn moving_focus_or_closing_the_tab_drops_the_other_launches_rows() {
     let mut app = app_on_requests_tab();

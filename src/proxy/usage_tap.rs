@@ -6,8 +6,9 @@
 //! bytes and looks for three objects by key once the response has ended:
 //!
 //! - `usage`: token counts (OpenAI `prompt_tokens` / `completion_tokens`,
-//!   Anthropic and Responses `input_tokens` / `output_tokens`), and
-//!   `completion_tokens_per_second` on servers that report speed there.
+//!   Anthropic and Responses `input_tokens` / `output_tokens`), and speed where
+//!   the server reports it here: `completion_tokens_per_second`, or
+//!   `decoding_speed_tps` with `prefill_speed_tps`.
 //! - `timings`: the server's own counters (`prompt_n`, `prompt_ms`,
 //!   `cache_n`, `predicted_n`) and `predicted_per_second`.
 //! - `metrics`: `tokens_per_second`, on servers that attach per-request
@@ -153,6 +154,7 @@ struct Fields {
   cache_creation_input_tokens: Option<u64>,
   completion_tokens: Option<u64>,
   usage_tps: Option<f64>,
+  usage_prefill_tps: Option<f64>,
   prompt_n: Option<u64>,
   prompt_ms: Option<f64>,
   cache_n: Option<u64>,
@@ -182,8 +184,9 @@ impl Fields {
       );
       set(
         &mut self.usage_tps,
-        rate(&obj, "completion_tokens_per_second"),
+        rate(&obj, "completion_tokens_per_second").or_else(|| rate(&obj, "decoding_speed_tps")),
       );
+      set(&mut self.usage_prefill_tps, rate(&obj, "prefill_speed_tps"));
       // The cached count lives in a nested object on the OpenAI routes.
       set(
         &mut self.cached_in_prompt_details,
@@ -231,7 +234,8 @@ impl Fields {
     let prefill_tps = match (self.prompt_n, self.prompt_ms) {
       (Some(tokens), Some(ms)) if tokens > 0 => usable_speed(tokens as f64 * 1000.0 / ms),
       _ => None,
-    };
+    }
+    .or(self.usage_prefill_tps);
     let cached = self
       .cache_n
       .or(self.cached_in_prompt_details)
@@ -813,6 +817,23 @@ data: [DONE]
     assert_eq!(usage_of(in_usage).tokens_per_second, Some(55.5));
     let in_metrics = r#"{"usage":{"prompt_tokens":10,"completion_tokens":20},"metrics":{"time_to_first_token_ms":12.0,"tokens_per_second":61.25}}"#;
     assert_eq!(usage_of(in_metrics).tokens_per_second, Some(61.25));
+  }
+
+  #[test]
+  fn speed_reported_under_usage_is_read_from_both_spellings() {
+    // A body captured from FastFlowLM on an AMD NPU: no `timings`, no
+    // `metrics`, and its own names for both speeds.
+    let body = r#"{"model":"qwen3:0.6b","usage":{"prompt_tokens":14,
+      "prompt_tokens_details":{"cached_tokens":0},"completion_tokens":12,
+      "prefill_speed_tps":27.665165623284167,"decoding_speed_tps":97.59191938907458}}"#;
+    let u = usage_of(body);
+    assert_eq!(u.prompt_tokens, Some(14));
+    assert_eq!(u.completion_tokens, Some(12));
+    assert_eq!(u.cached_tokens, Some(0));
+    assert_eq!(u.tokens_per_second, Some(97.59191938907458));
+    assert!(!u.tokens_per_second_estimated);
+    assert_eq!(u.prefill_tokens_per_second, Some(27.665165623284167));
+    assert!(!u.prefill_estimated);
   }
 
   #[test]

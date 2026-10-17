@@ -37,6 +37,8 @@
 //! - `--print-env <VAR>` (test-only, repeatable — print `env VAR=<value>` to
 //!   stdout at start, so a test can read the child's environment from its log)
 //! - `--print-argv` (test-only — print `argv <args…>` to stdout at start)
+//! - `--print-listing <path>` (test-only, one-shot — print that file to stdout
+//!   and exit, standing in for an engine's `list --json`)
 //! - `--list-devices` (one-shot, mirrors real `llama-server`: prints a
 //!   fake adapter table and exits *without* serving). The number of
 //!   adapters comes from the `FAKE_LLAMA_DEVICES` env var, default `0`
@@ -241,6 +243,28 @@ async fn main() {
   // launch-device catalog probe runs exactly `<binary> --list-devices`,
   // so honour it here and exit before binding any socket. Count comes
   // from `FAKE_LLAMA_DEVICES` (default 0 → inert / CPU-only).
+  // `--print-listing <path>` is a one-shot stand-in for an engine that owns a
+  // model store: it prints a JSON listing and exits, so a `rows_from` entry can
+  // be tested without an engine. A missing file exits non-zero, like the real
+  // thing when its binary or store is absent.
+  let argv: Vec<String> = std::env::args().collect();
+  if let Some(i) = argv.iter().position(|a| a == "--print-listing") {
+    let Some(path) = argv.get(i + 1) else {
+      eprintln!("fake-llama-server: --print-listing needs a path");
+      std::process::exit(2);
+    };
+    match std::fs::read_to_string(path) {
+      Ok(body) => {
+        print!("{body}");
+        return;
+      }
+      Err(e) => {
+        eprintln!("fake-llama-server: cannot read {path}: {e}");
+        std::process::exit(1);
+      }
+    }
+  }
+
   if std::env::args().skip(1).any(|a| a == "--list-devices") {
     print_fake_devices();
     return;

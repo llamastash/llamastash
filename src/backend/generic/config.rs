@@ -79,6 +79,61 @@ pub struct GenericServer {
   /// pin a level pick the highest.
   #[serde(default)]
   pub reasoning_effort_default: Option<String>,
+  /// Mint one row per model the engine reports, instead of the single row this
+  /// entry would otherwise make. See `rows_from` in `docs/usage.md`.
+  #[serde(default)]
+  pub rows_from: Option<RowsFrom>,
+}
+
+/// A `rows_from` block: the listing command and how its items map to rows.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub struct RowsFrom {
+  /// The command to run, argv-style. No shell, so no quoting.
+  pub command: Vec<String>,
+  /// Dot path to the array of models in the JSON body (`models`). Omit when the
+  /// body is the array itself.
+  #[serde(default)]
+  pub items: Option<String>,
+  /// Dot path to the model's name inside one item. Required: it becomes the row
+  /// name, `{name}` at launch, and the name the engine reads from a request.
+  pub name: RowField,
+  /// Dot path or condition an item must satisfy to become a row: `installed`, or
+  /// `{path: label, contains: audio}`.
+  #[serde(default)]
+  pub when: Option<When>,
+  #[serde(default)]
+  pub arch: Option<RowField>,
+  #[serde(default)]
+  pub params: Option<RowField>,
+  #[serde(default)]
+  pub quant: Option<RowField>,
+  /// Dot path to the model's own context length, used for the Ctx column and
+  /// the default when the entry sets no `ctx`.
+  #[serde(default)]
+  pub ctx: Option<RowField>,
+  /// Dot path to the model's resident size in GiB, used for the size column and
+  /// the admission gate. Falls back to the entry's `memory_gib`.
+  #[serde(default)]
+  pub memory_gib: Option<RowField>,
+}
+
+/// A dot path in one listing item. Typed by use, not by shape: the same string
+/// is a name, a label or a number depending on the field it maps to.
+pub type RowField = String;
+
+/// A `when` filter: a bare dot path (truthy), or a value or array-member test.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum When {
+  Path(String),
+  Match {
+    path: String,
+    #[serde(default)]
+    equals: Option<String>,
+    #[serde(default)]
+    contains: Option<String>,
+  },
 }
 
 // `memory_gib` is the only float, and validation refuses a NaN, so equality
@@ -324,6 +379,43 @@ impl GenericConfig {
             "`memory_gib` applies only without `model`; a catalog model is sized from its GGUF"
               .into(),
           ));
+        }
+      }
+      if let Some(spec) = &s.rows_from {
+        if s.model.is_some() {
+          return Err(entry(
+            "`rows_from` mints rows, so it cannot combine with `model`".into(),
+          ));
+        }
+        if spec.command.is_empty() || spec.command.iter().any(|a| a.is_empty()) {
+          return Err(entry(
+            "`rows_from.command` must be a non-empty argv list".into(),
+          ));
+        }
+        for (field, path) in [
+          ("name", Some(&spec.name)),
+          ("items", spec.items.as_ref()),
+          ("arch", spec.arch.as_ref()),
+          ("params", spec.params.as_ref()),
+          ("quant", spec.quant.as_ref()),
+          ("ctx", spec.ctx.as_ref()),
+          ("memory_gib", spec.memory_gib.as_ref()),
+        ] {
+          if path.is_some_and(|p| p.trim().is_empty()) {
+            return Err(entry(format!("`rows_from.{field}` is empty")));
+          }
+        }
+        if let Some(When::Match {
+          path,
+          equals,
+          contains,
+        }) = &spec.when
+        {
+          if path.trim().is_empty() || equals.is_some() == contains.is_some() {
+            return Err(entry(
+              "`rows_from.when` needs a `path` and exactly one of `equals` or `contains`".into(),
+            ));
+          }
         }
       }
       let is_blank = |v: &Option<String>| v.as_deref().is_some_and(|v| v.trim().is_empty());
@@ -703,6 +795,7 @@ servers:
       vision: false,
       reasoning_effort: vec![],
       reasoning_effort_default: None,
+      rows_from: None,
     };
     let split = Path::new("/hf/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf");
     let other = Path::new("/hf/gemma-4-Q4_K_M.gguf");

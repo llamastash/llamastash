@@ -744,11 +744,9 @@ fn focused_row_is_deletable(app: &App, rows: &[list_pane::ListRow]) -> bool {
   use crate::tui::status_icons::SurfaceState;
   match rows.get(app.list_cursor) {
     Some(list_pane::ListRow::Model { state, path, .. }) => {
-      // Lemonade registry and config-declared rows have no local file to
-      // unlink — never deletable (mirrors `events::delete_refusal_reason`).
-      crate::backend::lemonade::registry_name_from_path(path).is_none()
-        && app.has_local_file(path)
-        && matches!(state, SurfaceState::NotLaunched | SurfaceState::Stopped)
+      // Registry and config-declared rows have no local file to unlink —
+      // never deletable (mirrors `events::delete_refusal_reason`).
+      app.has_local_file(path) && matches!(state, SurfaceState::NotLaunched | SurfaceState::Stopped)
     }
     _ => false,
   }
@@ -1290,15 +1288,29 @@ mod tests {
         "{s:?} must block delete"
       );
     }
-    // Lemonade registry models are never deletable, even when idle — there's no
-    // local file to unlink.
-    let mut lemon = model_row(SurfaceState::NotLaunched);
-    if let ListRow::Model { path, .. } = &mut lemon {
-      *path = PathBuf::from("lemonade://Llama-3.1-8B");
+    // A backend-registry row has no local file to unlink, so it is never
+    // deletable — even when idle.
+    use crate::discovery::{DiscoveredModel, ModelSource};
+    let mut registry_app = App::new(AppOptions::default());
+    registry_app.models = vec![DiscoveredModel {
+      path: PathBuf::from("flm-qwen3-06b"),
+      parent: PathBuf::from(""),
+      source: ModelSource::Backend("acme"),
+      metadata: None,
+      parse_error: None,
+      split_siblings: Vec::new(),
+      display_label: None,
+      multimodal: None,
+      supported_backends: vec!["acme".into()],
+      mtp_head: None,
+    }];
+    let mut registry_row = model_row(SurfaceState::NotLaunched);
+    if let ListRow::Model { path, .. } = &mut registry_row {
+      *path = PathBuf::from("flm-qwen3-06b");
     }
     assert!(
-      !focused_row_is_deletable(&app, &[lemon]),
-      "Lemonade registry row must never be deletable"
+      !focused_row_is_deletable(&registry_app, &[registry_row]),
+      "a registry row must never be deletable"
     );
   }
 

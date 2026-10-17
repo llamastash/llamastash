@@ -155,7 +155,7 @@ pub struct ManagedSpawn {
   pub origin: LaunchOrigin,
   /// Strict-fit ctx-clamp readiness gate, populated by the caller
   /// only for fit-governed launches. `None` leaves the readiness path
-  /// untouched (pinned ctx, missing trained-window metadata, Lemonade
+  /// untouched (pinned ctx, missing trained-window metadata, delegated
   /// rows). See [`FitGate`].
   pub fit_gate: Option<FitGate>,
   /// The id of the backend this launch resolved to. The probe task uses it to
@@ -322,7 +322,7 @@ impl ManagedModel {
   /// background probe sees the child's endpoint answer — so a caller that
   /// must talk to that endpoint has to wait for it, or it races the
   /// child's bind and hits connection-refused on a cold start (the
-  /// Lemonade preload path). Polls the state until `Ready` (`Ok`), a
+  /// delegated preload path). Polls the state until `Ready` (`Ok`), a
   /// terminal non-ready state (`Err` with the cause), or `timeout`
   /// elapses while still starting up (`Err`).
   pub async fn wait_until_ready(&self, timeout: Duration) -> Result<(), String> {
@@ -1313,7 +1313,7 @@ mod tests {
 
   #[tokio::test]
   async fn wait_until_ready_observes_a_late_ready_transition() {
-    // The Lemonade preload's exact shape: handle is at Loading, a
+    // The delegated preload's exact shape: handle is at Loading, a
     // separate task flips it to Ready shortly after — the waiter must
     // see it rather than racing ahead.
     let m = test_model(ManagedState::Loading);

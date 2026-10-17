@@ -142,15 +142,6 @@ mod tests {
   use crate::daemon::registry::LaunchId;
   use crate::daemon::supervisor::test_support;
 
-  /// Resolved the way [`crate::backend::umbrella_owner`] does, so the
-  /// test names no backend.
-  fn umbrella_id() -> LaunchId {
-    crate::backend::Backends::all()
-      .into_iter()
-      .find_map(|b| crate::backend::Backend::umbrella_launch_id(&b))
-      .expect("a managed-multiplexer backend exposing an umbrella launch id")
-  }
-
   fn idle_inputs() -> (SupervisorRegistry, Arc<AtomicUsize>) {
     (SupervisorRegistry::new(), Arc::new(AtomicUsize::new(0)))
   }
@@ -166,20 +157,6 @@ mod tests {
     let (supervisors, connections) = idle_inputs();
     connections.store(1, Ordering::Relaxed);
     assert!(is_busy(&supervisors, &connections).await);
-  }
-
-  /// The shared umbrella is daemon-owned infra, not user work — a host
-  /// running one must still idle out. Regression: a bare "registry is
-  /// empty" check never idles on such a host.
-  #[tokio::test]
-  async fn an_infra_umbrella_alone_is_not_busy() {
-    let (supervisors, connections) = idle_inputs();
-    let umbrella = umbrella_id();
-    assert!(crate::backend::is_infra_launch(&umbrella));
-    supervisors
-      .insert(umbrella, test_support::in_state(ManagedState::Ready))
-      .await;
-    assert!(!is_busy(&supervisors, &connections).await);
   }
 
   #[tokio::test]

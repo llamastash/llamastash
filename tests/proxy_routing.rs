@@ -1612,39 +1612,3 @@ async fn an_upstream_that_dies_mid_body_is_logged_as_upstream_error() {
   shutdown_listener(shutdown, listener_handle).await;
   std::fs::remove_dir_all(&dir).ok();
 }
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_503_for_a_model_whose_umbrella_is_down_is_filed_under_the_model() {
-  // A model a managed multiplexer serves, with no umbrella running.
-  let path = "lemonade://qwen-npu";
-  let model = DiscoveredModel {
-    source: ModelSource::Backend("lemonade"),
-    ..discovered(path, Some("qwen-npu"), "qwen3")
-  };
-  let (state, ctx) = proxy_state_and_ctx(
-    vec![model],
-    SupervisorRegistry::new(),
-    DEFAULT_BODY_LIMIT_BYTES,
-  )
-  .await;
-  let (addr, shutdown, listener_handle) = spawn_listener(state).await;
-
-  let body = r#"{"model":"qwen-npu","messages":[]}"#;
-  let (status, _, response) = http_post(addr, "/v1/chat/completions", body, &[]).await;
-  assert_eq!(status, 503);
-  let v: Value = serde_json::from_slice(&response).expect("json");
-  assert_eq!(v["error"]["type"], "backend_unavailable");
-
-  let tail = ctx.requests.tail(
-    LogScope::Model {
-      path: path.to_string(),
-    },
-    10,
-  );
-  assert_eq!(tail.rows.len(), 1, "the 503 shows under the model");
-  assert_eq!(tail.rows[0].error.as_deref(), Some("backend_unavailable"));
-  assert_eq!(tail.rows[0].model.as_deref(), Some("qwen-npu"));
-  assert_eq!(tail.summary.errors, 1);
-
-  shutdown_listener(shutdown, listener_handle).await;
-}

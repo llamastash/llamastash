@@ -32,8 +32,7 @@
 //!   produces a [`LaunchPlan::DelegateToManager`] carrying the umbrella
 //!   [`ProcessLaunchSpec`] + the model to serve. [`Backend::prepare_launch`]
 //!   stays synchronous for both shapes — the async API call happens when the
-//!   plan is *executed*. Lemonade ([`lemonade`]) is the first
-//!   managed-multiplexer backend.
+//!   plan is *executed*. No backend produces the delegate shape today.
 //!
 //! # Generalized identity
 //!
@@ -45,7 +44,6 @@
 
 pub mod generic;
 pub mod identity;
-pub mod lemonade;
 pub mod llama_cpp;
 pub mod server;
 pub mod sglang;
@@ -76,7 +74,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::backend::generic::GenericBackend;
 use crate::backend::identity::ModelIdentity;
-use crate::backend::lemonade::LemonadeBackend;
 use crate::backend::llama_cpp::LlamaCppBackend;
 use crate::backend::sglang::SglangBackend;
 use crate::backend::vllm::VllmBackend;
@@ -350,7 +347,7 @@ pub trait Backend {
   /// Network-affecting flag heads this backend refuses in `extras` /
   /// native-knob values **on top of** the base loopback/credential denylist
   /// ([`crate::launch::params::FORBIDDEN_ADVANCED_PREFIXES`]). Default empty:
-  /// llama.cpp and Lemonade add nothing.
+  /// llama.cpp adds nothing.
   fn forbidden_extra_heads(&self) -> &'static [&'static str] {
     &[]
   }
@@ -489,7 +486,7 @@ pub trait Backend {
   /// contract).
   ///
   /// Default `false`: llama.cpp (runs every GGUF) and a registry backend
-  /// (Lemonade) claim nothing *specially* here. Discovery records the first
+  /// claim nothing *specially* here. Discovery records the first
   /// claiming backend's id as the model's `routed_backend`, and the `list`
   /// badge / launch routing read that — so a new special-routing backend needs
   /// only override this, with no discovery edit.
@@ -590,7 +587,7 @@ pub trait Backend {
   /// `--device` selectors it accepts). `None` when the probe ran and failed
   /// (missing binary, non-zero exit, timeout), so "no devices" and "couldn't
   /// tell" stay apart. Default `Some(empty)` — a backend with no
-  /// device-selection surface (Lemonade). llama.cpp overrides with its
+  /// device-selection surface adds nothing. llama.cpp overrides with its
   /// `--list-devices` probe.
   fn probe_devices(&self, _binary: &Path) -> Option<Vec<Device>> {
     Some(Vec::new())
@@ -1036,7 +1033,6 @@ pub trait Backend {
 #[serde(default, deny_unknown_fields, rename_all = "snake_case")]
 pub struct BackendConfig {
   pub llamacpp: crate::backend::llama_cpp::LlamaCppConfig,
-  pub lemonade: crate::backend::lemonade::LemonadeConfig,
   pub vllm: crate::backend::vllm::VllmConfig,
   pub sglang: crate::backend::sglang::SglangConfig,
   pub generic: crate::backend::generic::GenericConfig,
@@ -1052,8 +1048,6 @@ pub struct BackendConfig {
 pub enum Backends {
   /// Direct, zero-overhead llama.cpp (process-per-model).
   LlamaCpp(LlamaCppBackend),
-  /// Lemonade (`lemond`) managed-multiplexer — one umbrella, many models.
-  Lemonade(LemonadeBackend),
   /// vLLM — direct process-per-model for safetensors HF repos.
   Vllm(VllmBackend),
   /// SGLang — direct process-per-model for safetensors HF repos.
@@ -1074,7 +1068,6 @@ macro_rules! for_each_backend {
   ($self:expr, $b:ident => $body:expr) => {
     match $self {
       Backends::LlamaCpp($b) => $body,
-      Backends::Lemonade($b) => $body,
       Backends::Vllm($b) => $body,
       Backends::Sglang($b) => $body,
       Backends::Generic($b) => $body,
@@ -1093,7 +1086,6 @@ impl Backends {
   pub fn all() -> Vec<Backends> {
     vec![
       Backends::LlamaCpp(LlamaCppBackend::new()),
-      Backends::Lemonade(LemonadeBackend::new()),
       Backends::Vllm(VllmBackend::new()),
       Backends::Sglang(SglangBackend::new()),
       Backends::Generic(GenericBackend::new()),
@@ -1825,7 +1817,7 @@ pub fn resolve_identity_for_path(
 /// only.
 ///
 /// A bare `contains` was safe while every marker was a long compound basename
-/// (`llama-server`, `lemond`), where a `-cuda` / `-vulkan` build suffix is
+/// (`llama-server`), where a `-cuda` / `-vulkan` build suffix is
 /// certainly the same program and `comm`'s 15-char cap can truncate it. It
 /// stops being safe once a backend registers a short single-token marker: a
 /// four-character token is a substring of unrelated tools on the host, and
@@ -1989,7 +1981,6 @@ mod tests {
       );
     }
   }
-  use crate::backend::lemonade::LEMONADE_BACKEND_ID;
 
   #[test]
   fn process_launch_spec_is_constructible_and_readable() {
@@ -2030,10 +2021,6 @@ mod tests {
     use crate::gguf::identity::compute;
 
     let gguf = ModelIdentity::Gguf(compute("/m/model.gguf", b"hdr"));
-    let lemon = ModelIdentity::Backend(BackendModelId {
-      backend: LEMONADE_BACKEND_ID.into(),
-      name: "Qwen2.5-7B-Instruct-GGUF".into(),
-    });
     // A backend-registry identity for an *unknown* backend falls back to the
     // safe direct path.
     let unknown = ModelIdentity::Backend(BackendModelId {
@@ -2042,27 +2029,16 @@ mod tests {
     });
 
     // Auto runs the R13 identity rule; GGUF + explicit llama.cpp both bind
-    // the direct backend; a Lemonade identity binds Lemonade.
+    // the direct backend.
     assert_eq!(resolve_backend(&gguf, BackendChoice::Auto).id(), "llamacpp");
     assert_eq!(
       resolve_backend(&gguf, BackendChoice::Explicit("llamacpp".into())).id(),
       "llamacpp"
     );
     assert_eq!(
-      resolve_backend(&lemon, BackendChoice::Auto).id(),
-      "lemonade"
-    );
-    assert_eq!(
       resolve_backend(&unknown, BackendChoice::Auto).id(),
       "llamacpp",
       "no concrete backend for an unknown registry identity → safe direct fallback"
-    );
-
-    // An explicit override wins over the identity rule: force Lemonade
-    // even for a GGUF identity.
-    assert_eq!(
-      resolve_backend(&gguf, BackendChoice::Explicit("lemonade".into())).id(),
-      "lemonade"
     );
 
     // The default choice is Auto.
@@ -2100,17 +2076,6 @@ mod tests {
       Lifecycle::ProcessPerModel
     );
 
-    // A Lemonade-registry identity binds the managed-multiplexer backend.
-    let lemon = ModelIdentity::Backend(BackendModelId {
-      backend: LEMONADE_BACKEND_ID.into(),
-      name: "Qwen2.5-7B-Instruct-GGUF".into(),
-    });
-    assert_eq!(backend_for_identity(&lemon).id(), "lemonade");
-    assert_eq!(
-      backend_for_identity(&lemon).lifecycle(),
-      Lifecycle::ManagedMultiplexer
-    );
-
     // A backend-registry identity for an unknown backend falls back to the
     // safe direct path.
     let unknown = ModelIdentity::Backend(BackendModelId {
@@ -2125,10 +2090,6 @@ mod tests {
     let llama = Backends::LlamaCpp(LlamaCppBackend::new());
     assert_eq!(llama.id(), "llamacpp");
     assert_eq!(llama.lifecycle(), Lifecycle::ProcessPerModel);
-
-    let lemon = Backends::Lemonade(LemonadeBackend::new());
-    assert_eq!(lemon.id(), "lemonade");
-    assert_eq!(lemon.lifecycle(), Lifecycle::ManagedMultiplexer);
 
     // The dispatch enum routes prepare_launch to the process-per-model plan.
     use crate::launch::mode::LaunchMode;
@@ -2195,17 +2156,13 @@ mod tests {
     // construction (one `all()` line), which is what makes it surface in
     // `status` / `doctor` / `--backend` without editing those sites.
     let ids: Vec<&str> = Backends::all().iter().map(|b| b.id()).collect();
-    assert_eq!(
-      ids,
-      vec!["llamacpp", "lemonade", "vllm", "sglang", "generic"]
-    );
+    assert_eq!(ids, vec!["llamacpp", "vllm", "sglang", "generic"]);
     // Forwarding through the macro reaches each variant's real lifecycle.
     let by_id: std::collections::BTreeMap<&str, Lifecycle> = Backends::all()
       .iter()
       .map(|b| (b.id(), b.lifecycle()))
       .collect();
     assert_eq!(by_id["llamacpp"], Lifecycle::ProcessPerModel);
-    assert_eq!(by_id["lemonade"], Lifecycle::ManagedMultiplexer);
     assert_eq!(by_id["vllm"], Lifecycle::ProcessPerModel);
     assert_eq!(by_id["sglang"], Lifecycle::ProcessPerModel);
   }
@@ -2253,20 +2210,21 @@ mod tests {
   #[test]
   fn claimants_are_walked_in_priority_order_not_registration_order() {
     let sorted: Vec<&str> = claimants_by_priority().iter().map(|b| b.id()).collect();
-    let registered: Vec<&str> = Backends::all().iter().map(|b| b.id()).collect();
-    assert_ne!(
-      sorted, registered,
-      "registration order already is priority order, so this test proves nothing; \
-       re-derive it against the real priorities"
-    );
+    // The routing order the docs promise, pinned by id: the default engine
+    // first, then the safetensors engines (vLLM ahead of SGLang), then the
+    // config-declared entries. Registration order happens to match today, so
+    // the explicit expectation plus the priority check below are what carry the
+    // guarantee that the walk is by priority.
+    assert_eq!(sorted, vec!["llamacpp", "vllm", "sglang", "generic"]);
 
     let priorities: Vec<i32> = claimants_by_priority()
       .iter()
       .map(|b| b.launch_priority())
       .collect();
     assert!(
-      priorities.windows(2).all(|w| w[0] >= w[1]),
-      "not priority-ordered: {:?}",
+      priorities.windows(2).all(|w| w[0] > w[1]),
+      "priorities must be strictly descending so the order cannot ride on \
+       registration order: {:?}",
       sorted.iter().zip(&priorities).collect::<Vec<_>>()
     );
   }

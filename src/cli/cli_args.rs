@@ -409,15 +409,6 @@ pub struct DaemonStartArgs {
   /// firewalled network. A loud warning prints regardless.
   #[arg(long)]
   pub insecure_no_auth: bool,
-  /// Enable the opt-in **experimental** Lemonade (`lemond`) backend for
-  /// this daemon: run Lemonade discovery and supervise/route to the
-  /// `lemond` umbrella. OR-ed with `backend.lemonade.enabled: true` in
-  /// `config.yaml` and the `LLAMASTASH_LEMONADE` env var
-  /// (`1`/`true`/`yes`/`on`) — any of the three turns it on. Experimental:
-  /// behaviour and config may change. llamastash never installs `lemond`;
-  /// set it up manually (see `docs/lemonade-setup.md`).
-  #[arg(long)]
-  pub lemonade: bool,
   /// Force-enable the vLLM backend for safetensors HF repos, overriding
   /// `backend.vllm.enabled: false`. vLLM is otherwise **on by default**
   /// whenever a `vllm` launcher is found (on `PATH` or via
@@ -433,8 +424,8 @@ pub struct DaemonStartArgs {
   #[arg(long)]
   pub sglang: bool,
   /// Start the daemon even if an *indicated* backend can't initialize —
-  /// the `llama-server` binary isn't found, or the Lemonade umbrella port
-  /// is already taken / `lemond` is missing. Without this, `daemon start`
+  /// the `llama-server` binary isn't found and nothing else can launch.
+  /// Without this, `daemon start`
   /// fails fast with an error rather than coming up silently degraded. With
   /// it, the daemon starts anyway and the failed backend is simply
   /// unavailable (surfaced in `status` and the TUI server-info section).
@@ -2078,7 +2069,6 @@ mod tests {
       assert!(!bare.no_proxy_fallback);
       assert!(bare.proxy_host.is_none());
       assert!(!bare.insecure_no_auth);
-      assert!(!bare.lemonade);
       assert!(!bare.vllm);
       assert!(!bare.sglang);
       assert!(!bare.force);
@@ -2124,7 +2114,6 @@ mod tests {
       assert!(parsed_start_args(verb, &["--no-proxy-fallback"]).no_proxy_fallback);
 
       // Each backend opt-in flag lands on its own bool.
-      assert!(parsed_start_args(verb, &["--lemonade"]).lemonade);
       assert!(parsed_start_args(verb, &["--vllm"]).vllm);
       assert!(parsed_start_args(verb, &["--sglang"]).sglang);
 

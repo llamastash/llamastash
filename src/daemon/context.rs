@@ -110,12 +110,12 @@ pub struct MethodContext {
   pub ipc_url: Option<String>,
   /// All backend configuration, grouped under `backend:` in `config.yaml`.
   /// Each backend reads its own typed sub-config (`backend.llamacpp` /
-  /// `backend.lemonade` and the other engines) through its `available`/`installed`/
+  /// `backend.<id>` and the other engines) through its `available`/`installed`/
   /// launch hooks; the generic context names no backend. Defaults to the
   /// factory config, so catalog-only tests never touch an external binary.
   pub backend: crate::backend::BackendConfig,
-  /// Per-backend force-enable flags keyed by backend id (`--lemonade` /
-  /// `LLAMASTASH_LEMONADE`, and the same for each optional engine). A backend folds its own
+  /// Per-backend force-enable flags keyed by backend id (the `daemon
+  /// start` engine flags and their env vars). A backend folds its own
   /// entry into its `available` predicate alongside the config `enabled`
   /// tri-state; an absent key means "not forced". Keyed by id so the type names
   /// no backend.
@@ -393,23 +393,11 @@ impl MethodContext {
     self.backend_force = force;
     self
   }
-
-  /// Whether the Lemonade backend is available on this daemon. Thin wrapper
-  /// over [`crate::backend::Backend::available`] — the availability logic lives
-  /// in the backend's own file. Retained only for the remaining direct callers;
-  /// prefer iterating the registry (`Backends::all()` + `available`).
-  pub fn lemonade_available(&self) -> bool {
-    use crate::backend::Backend;
-    crate::backend::lemonade::LemonadeBackend::new().available(self)
-  }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::backend::lemonade::{LemonadeBackend, LEMONADE_BACKEND_ID};
-  use crate::backend::{Backend, BackendConfig};
-  use crate::daemon::shutdown::ShutdownToken;
 
   #[tokio::test]
   async fn a_launch_read_waits_for_the_server_catalog_to_load() {
@@ -438,39 +426,5 @@ mod tests {
       ServerCatalog::default().loaded().await.is_empty(),
       "the default counts as loaded"
     );
-  }
-
-  /// The force-enable map key must match each backend's own id const, or the
-  /// `--lemonade` (and env) force can never override an explicit
-  /// `enabled: false`. Points `binary` at a real file (this test binary) so
-  /// availability's binary-resolve half passes under the `test-fixtures` build,
-  /// which compiles out the PATH search — isolating the force-key logic.
-  #[test]
-  fn backend_force_key_overrides_explicit_off() {
-    let exe = std::env::current_exe().expect("current exe");
-    let force: std::collections::BTreeMap<String, bool> = [(LEMONADE_BACKEND_ID.to_string(), true)]
-      .into_iter()
-      .collect();
-    let backend = BackendConfig {
-      lemonade: crate::config::LemonadeConfig {
-        enabled: Some(false),
-        servers: vec![crate::backend::ServerConfig {
-          binary: exe,
-          name: None,
-        }],
-        port: 13305,
-      },
-      ..Default::default()
-    };
-    let ctx = MethodContext::new(ShutdownToken::new()).with_backend(backend.clone(), force);
-    assert!(
-      LemonadeBackend::new().available(&ctx),
-      "lemonade force must override an explicit enabled:false"
-    );
-
-    // Without the force entries, the explicit `enabled: false` wins → unavailable.
-    let ctx_off = MethodContext::new(ShutdownToken::new())
-      .with_backend(backend, std::collections::BTreeMap::new());
-    assert!(!LemonadeBackend::new().available(&ctx_off));
   }
 }

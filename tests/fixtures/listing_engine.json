@@ -1,0 +1,25 @@
+{
+  "models": [
+    {
+      "model": "listed:one",
+      "installed": true,
+      "footprint": 0.7,
+      "default_context_length": 32768,
+      "details": { "family": "fam-one", "parameter_size": "0.6B", "quantization_level": "Q4_1" }
+    },
+    {
+      "model": "listed:two",
+      "installed": false,
+      "footprint": 9.9,
+      "default_context_length": 131072,
+      "details": { "family": "fam-two", "parameter_size": "8B", "quantization_level": "Q4_K_M" }
+    },
+    {
+      "model": "listed:three",
+      "installed": true,
+      "footprint": 1.25,
+      "default_context_length": 448,
+      "details": { "family": "fam-three", "parameter_size": "1B", "quantization_level": "Q4_1" }
+    }
+  ]
+}

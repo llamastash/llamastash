@@ -256,7 +256,7 @@ fn legend_section() -> Section {
         "RAM/CPU/port{}",
         crate::tui::right_pane::SHARED_UMBRELLA_MARKER
       ),
-      "shared Lemonade umbrella (one process serves all Lemonade models)".to_string(),
+      "shared umbrella (one process serves every model of that backend)".to_string(),
     ),
   ];
   for (glyph, desc) in crate::discovery::Multimodal::LEGEND {

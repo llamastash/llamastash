@@ -269,10 +269,10 @@ mod tests {
     assert_eq!(ModelSource::HuggingFace.label(), "huggingface");
     assert_eq!(ModelSource::Ollama.label(), "ollama");
     assert_eq!(ModelSource::LmStudio.label(), "lm-studio");
-    assert_eq!(ModelSource::Backend("lemonade").label(), "lemonade");
+    assert_eq!(ModelSource::Backend("acme").label(), "acme");
     assert_eq!(
-      ModelSource::from_label("lemonade"),
-      Some(ModelSource::Backend("lemonade"))
+      ModelSource::from_label("llamacpp"),
+      Some(ModelSource::Backend("llamacpp"))
     );
     assert_eq!(ModelSource::from_label("nope"), None);
 
@@ -286,6 +286,6 @@ mod tests {
     ] {
       assert_eq!(src.backend_id(), "llamacpp", "{src:?}");
     }
-    assert_eq!(ModelSource::Backend("lemonade").backend_id(), "lemonade");
+    assert_eq!(ModelSource::Backend("acme").backend_id(), "acme");
   }
 }

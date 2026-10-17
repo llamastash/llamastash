@@ -397,8 +397,8 @@ async fn forward_request(state: Arc<ProxyState>, req: Request<Incoming>) -> Prox
       "backend_unavailable",
       &format!(
         "`{requested_model}` is served by the {backend} backend, but the llamastash managed \
-         instance is not running; set up {backend} and start the daemon with `--lemonade` \
-         (see docs/lemonade-setup.md)"
+         instance is not running; set up {backend}, enable it, and start it again \
+         (see `docs/usage.md`)"
       ),
     ),
   };

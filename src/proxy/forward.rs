@@ -76,7 +76,7 @@ pub(crate) struct Target<'a> {
   pub served_model_key: &'a crate::gguf::identity::ModelId,
   /// Upstream path prefix prepended to the inbound path before the
   /// request is sent (`None` for direct llama.cpp, which serves OpenAI
-  /// at `/v1/...`; `Some("/api")` for the Lemonade umbrella, which
+  /// at `/v1/...`; `Some("/api")` for an umbrella that serves
   /// serves it at `/api/v1/...`). Lets one forward path target backends
   /// whose OpenAI surface lives under different roots.
   pub upstream_path_prefix: Option<&'a str>,
@@ -139,7 +139,7 @@ pub(crate) async fn forward_to_upstream(
     .path_and_query()
     .map(|p| p.as_str())
     .unwrap_or("/");
-  // Lemonade serves OpenAI under `/api/v1/...`; llama.cpp under `/v1/...`.
+  // A multiplexer umbrella can serve OpenAI under `/api/v1/...`; llama.cpp
   // The prefix (if any) is prepended so the same forward path reaches both.
   let prefix = upstream_path_prefix.unwrap_or("");
   let upstream_url = format!("http://127.0.0.1:{port}{prefix}{path_and_query}");

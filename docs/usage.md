@@ -10,7 +10,7 @@ This is the reference for the non-interactive CLI surface and the TUI keybinding
 
 **Model references.** `start`, `stop`, `logs`, `requests`, `presets`, `favorites` all accept the same model reference: an absolute path, a canonical model id, or a case-insensitive substring of the file name or its parent directory. Ambiguous references exit `66` with a disambiguation list.
 
-**Launch names.** One model can run several times at once, each under a name you choose: `start qwen3 --name coder`, then `start qwen3 --name writer`. The launch is then addressable as `<model-ref>@<name>` everywhere a reference is taken (`stop qwen3@coder`, `logs qwen3@coder`, `show qwen3@coder`) and as `<model-id>@<name>` in a request's `body.model` on the proxy. A bare `stop coder` works too when exactly one live launch answers to that name; a launch that failed to load keeps its row but stops holding the address, so the name reaches the copy that is actually running and only falls back to the failed one when nothing else answers. Names are unique per model, case-insensitive, limited to letters/digits/`-`/`_` (so the address always parses back), live only as long as the launch, and are refused for backends that serve every model from one shared process (Lemonade), where a second launch is not a second instance.
+**Launch names.** One model can run several times at once, each under a name you choose: `start qwen3 --name coder`, then `start qwen3 --name writer`. The launch is then addressable as `<model-ref>@<name>` everywhere a reference is taken (`stop qwen3@coder`, `logs qwen3@coder`, `show qwen3@coder`) and as `<model-id>@<name>` in a request's `body.model` on the proxy. A bare `stop coder` works too when exactly one live launch answers to that name; a launch that failed to load keeps its row but stops holding the address, so the name reaches the copy that is actually running and only falls back to the failed one when nothing else answers. Names are unique per model, case-insensitive, limited to letters/digits/`-`/`_` (so the address always parses back), live only as long as the launch, and are refused for a backend that serves every model from one shared process, where a second launch is not a second instance.
 
 ## Platform requirements
 
@@ -66,7 +66,7 @@ model_paths: # Extra dirs to scan. Repeatable on the CLI as -p/--model-path.
   - /opt/llms
 
 backend: # Per-engine config, one block per backend. llama.cpp is the
-         # always-on default (no enable toggle); lemonade, vllm and sglang
+         # always-on default (no enable toggle); vLLM and SGLang
          # are optional, each default-on when its own binary resolves.
   llamacpp:
     servers: # Build/binary variants. First = default (auto/no-device launches),
@@ -82,11 +82,7 @@ backend: # Per-engine config, one block per backend. llama.cpp is the
     strict_fit: false # Refuse (vs degrade) an unplaceable --fit. Env: LLAMASTASH_STRICT_FIT.
     jinja: true # Emit --jinja every launch (tool calling). Config-only.
     map_anthropic_effort: true # Map Anthropic output_config.effort to the engine kwarg. Config-only.
-  lemonade:
-    # servers: [{ binary: /opt/lemonade/lemond }] # lemond path; else PATH.
-    # enabled: # tri-state: unset=auto, true=force on, false=force off.
-    # port: 13305 # lemond umbrella port.
-  generic: # Any other OpenAI-compatible server (ds4, gufo, Halogen). See §"Generic backend".
+  generic: # Any other OpenAI-compatible server (ds4, gufo, Halogen, lemond). See §"Generic backend".
     # servers: [{ name: ds4, model: "DeepSeek-V4-*", binary: /opt/ds4/ds4-server, ... }]
 
 disable_scan: false # Equivalent to LLAMASTASH_NO_SCAN=1.
@@ -317,7 +313,7 @@ Row shape:
 
 A model running more than once gets **one row per launch**, and a named launch renders `<model>@<name>` in NAME. That joined string is the address: paste it into a client's `model` field, or hand it to `stop` / `logs` / `show`.
 
-The table columns are `NAME [REPO] ARCH PARAMS QUANT CTX SIZE MODE [BACKEND] STATUS [DEVICE]` — the TUI Models list shows the same set minus `REPO`, which is CLI-only (the TUI groups rows under a repo section header instead), with `DEVICE` gated on the same "some single server offers more than one device" rule the TUI uses (`cli::resolve::multi_device`). `MODE` shows the catalog's mode hint (`chat` / `embedding` / `rerank`). `REPO` is where the model lives in short form — `unsloth/Qwen3.8-27B-GGUF` for an HF or LM Studio cache entry, the parent directory's name for anything else; it is empty for a source that names its own origin (Ollama, Lemonade), and the column is dropped when no row has one. It is also the prefix of the repo-qualified id the proxy publishes when two models share a file name (see [Model ids on the proxy](#model-ids-on-the-proxy)). `BACKEND` appears only when some model is served by more than one backend (or a non-default one); `DEVICE` appears only on multi-GPU hosts and reads `all` for a running launch that targets every GPU (no `--device`), the explicit selector when pinned, and `?` otherwise — matching the TUI's Device column. When piped, the same columns print as tab-separated rows.
+The table columns are `NAME [REPO] ARCH PARAMS QUANT CTX SIZE MODE [BACKEND] STATUS [DEVICE]` — the TUI Models list shows the same set minus `REPO`, which is CLI-only (the TUI groups rows under a repo section header instead), with `DEVICE` gated on the same "some single server offers more than one device" rule the TUI uses (`cli::resolve::multi_device`). `MODE` shows the catalog's mode hint (`chat` / `embedding` / `rerank`). `REPO` is where the model lives in short form — `unsloth/Qwen3.8-27B-GGUF` for an HF or LM Studio cache entry, the parent directory's name for anything else; it is empty for a source that names its own origin (Ollama), and the column is dropped when no row has one. It is also the prefix of the repo-qualified id the proxy publishes when two models share a file name (see [Model ids on the proxy](#model-ids-on-the-proxy)). `BACKEND` appears only when some model is served by more than one backend (or a non-default one); `DEVICE` appears only on multi-GPU hosts and reads `all` for a running launch that targets every GPU (no `--device`), the explicit selector when pinned, and `?` otherwise — matching the TUI's Device column. When piped, the same columns print as tab-separated rows.
 
 ### `llamastash show <model-ref>`
 
@@ -345,7 +341,7 @@ Launch a model. `run` is a visible alias for `start` — same flags, same behavi
 ```
 llamastash start <ref> [--name LABEL] [--preset NAME] [--ctx N] [--port N] [--wait] [--force]
                      [--reasoning on|off] [--mode chat|embedding|rerank]
-                     [--backend auto|llamacpp|lemonade|vllm|sglang|generic] [--server <id>]
+                     [--backend auto|llamacpp|vllm|sglang|generic] [--server <id>]
                      [--<advanced-knob> ...] [-- <llama-server-flags>...]
 ```
 
@@ -353,7 +349,7 @@ llamastash start <ref> [--name LABEL] [--preset NAME] [--ctx N] [--port N] [--wa
 
 `--backend` defaults to `auto` (picks the engine by model identity: a GGUF runs on llama.cpp, a safetensors repo on vLLM or SGLang). Override it to force a specific engine.
 
-`--server <id>` picks a specific **server** — one build/binary of a backend (`llamacpp-vulkan`, `llamacpp-cuda`, `vllm`, or a generic entry's `generic-<name>`). It determines which binary spawns and, when `--backend` is unset, which backend runs the model (the server's owning backend). Server ids auto-derive as `<backend>-<compute>` from each build's own device names (or the bare backend id for a device-less engine like vLLM or Lemonade), overridable with a per-server `name:`; list them from `status` (the `servers` array; `status --json` mirrors it). A `--device <selector>` already implies its owning server, so `--server` is for picking a build with no device pin. The pick persists in `last_params`, so a relaunch reuses it — in the TUI it reopens the launch picker's `server` row on that build.
+`--server <id>` picks a specific **server** — one build/binary of a backend (`llamacpp-vulkan`, `llamacpp-cuda`, `vllm`, or a generic entry's `generic-<name>`). It determines which binary spawns and, when `--backend` is unset, which backend runs the model (the server's owning backend). Server ids auto-derive as `<backend>-<compute>` from each build's own device names (or the bare backend id for a device-less engine like vLLM), overridable with a per-server `name:`; list them from `status` (the `servers` array; `status --json` mirrors it). A `--device <selector>` already implies its owning server, so `--server` is for picking a build with no device pin. The pick persists in `last_params`, so a relaunch reuses it — in the TUI it reopens the launch picker's `server` row on that build.
 
 Every knob any backend declares is a first-class `start` flag — `--n-gpu-layers`, `--threads`, `--device`, `--tensor-split`, `--main-gpu`, `--split-mode`, `--flash-attn`, `--cache-type-k`/`-v`, `--batch-size`, `--load-mode`, and the same for every other backend's own tunables. The flag is spelled the way the engine spells it. Run `start --help` for the full list, grouped by the backend that declares each; `llamastash knobs` lists them with value ranges and choices. Flags, editor rows and preset keys are all generated from one declaration per knob, so no surface can be missing one. Booleans take `--flash-attn` (= on) or `--flash-attn=false`. Anything `start` doesn't recognise as a knob — including `llama-server`'s single-dash shorts like `-ngl` — still works verbatim after `--`. A knob set both inline and after `--` resolves to the `--` value.
 
@@ -506,7 +502,7 @@ The `backends` section lists every backend with its install state and its server
 backends
   llamacpp  ✓ installed    rocm|vulkan
   generic   ✓ installed    gufo|halogen-flash-next
-  lemonade  not installed  cpu|npu  (umbrella: disabled)
+  vllm      not installed  cpu|gpu
 ```
 
 A server reads as its configured `name:`, else the compute backends its device probe found (`rocm`, `rocm+vulkan`, `cpu` for a llama.cpp build whose probe lists no GPU), else its build folder when two unnamed builds share those or its `--list-devices` probe failed (the binary's file name for a flat install such as `/usr/bin/llama-server`). A repeated label gets `-2`, `-3`. A generic entry reads as its `name:` with or without `model:`. A backend with no server shows its accelerators instead. The labels are `server_labels` on each `backends` row in `--json`, and the TUI Daemon panel's `server` row shows the same: `llamacpp (rocm|vulkan) · generic (gufo|halogen-flash-next)`, with the build a focused launch runs on in green when it isn't the default.
@@ -691,11 +687,11 @@ llamastash daemon status [--json]   # PID + uptime + connections + managed launc
 
 `daemon start` detaches into the background by default and returns once the socket is bound. Pass `--foreground` (or `-f`) to keep the daemon attached to the terminal — useful when a process supervisor (systemd, runit, container `CMD`) owns the lifecycle and needs to see stdout/stderr directly.
 
-Without `llama-server`, `daemon start` refuses unless another backend is enabled (Lemonade, vLLM, SGLang, or a `backend.generic` entry). On such a host those backends launch as usual and only llama.cpp launches fail. `--force` starts the daemon either way.
+Without `llama-server`, `daemon start` refuses unless another backend is enabled (vLLM, SGLang, or a `backend.generic` entry). On such a host those backends launch as usual and only llama.cpp launches fail. `--force` starts the daemon either way.
 
 `daemon restart` is `stop` followed by `start`: it shuts the running daemon down over IPC, waits for that process to exit, then brings a new one up. It takes the same flag set as `daemon start` (`--proxy-port`, `--ollama-compat`, `--proxy-host`, the backend opt-ins, `--force`, `--foreground`), and that is how the new daemon is configured — those flags are per-invocation, so repeat the ones the running daemon was started with. Use it after hand-editing `config.yaml`, which the daemon only reads at boot. Three differences from typing the pair yourself. The new daemon's flags and `config.yaml` are resolved before the running daemon is touched, so a bad flag or a broken config file leaves the running daemon up. With nothing running it is just `start`. And if the old daemon is still exiting when the stop window closes, `restart` fails instead of starting on top of a daemon that has not let go of the lockfile (`daemon stop --force`, then retry). The fail-fast backend check is the exception: it runs in the start half, because the running daemon legitimately holds the ports that check probes. Running models go down with the old daemon and are not brought back — `start` what you need afterwards.
 
-`daemon stop` calls the IPC `shutdown` RPC, then waits for the daemon process to actually exit before printing `daemon: stopped` — up to 10 s, or the longest managed-launch stop grace plus 5 s when that is longer — so `daemon stop && daemon start` never races the dying daemon's lockfile or its managed `lemond` umbrella. If teardown outlives the wait it falls back to `daemon: shutdown requested (still exiting, pid N)`. When `runtime.json` is missing (the IPC channel can't be opened because a stale daemon from an older version is holding the lockfile) pass `--force` (or `-f`) to fall back to a `SIGTERM` on the PID recorded in `daemon.pid`. The CLI auto-detects this state on every command and prints the exact `kill` / `--force` invocation needed. A `runtime.json` left behind by a crash — a handshake with no process holding the lock — is cleared by `stop` and `restart`, which then report `daemon: not running`.
+`daemon stop` calls the IPC `shutdown` RPC, then waits for the daemon process to actually exit before printing `daemon: stopped` — up to 10 s, or the longest managed-launch stop grace plus 5 s when that is longer — so `daemon stop && daemon start` never races the dying daemon's lockfile. If teardown outlives the wait it falls back to `daemon: shutdown requested (still exiting, pid N)`. When `runtime.json` is missing (the IPC channel can't be opened because a stale daemon from an older version is holding the lockfile) pass `--force` (or `-f`) to fall back to a `SIGTERM` on the PID recorded in `daemon.pid`. The CLI auto-detects this state on every command and prints the exact `kill` / `--force` invocation needed. A `runtime.json` left behind by a crash — a handshake with no process holding the lock — is cleared by `stop` and `restart`, which then report `daemon: not running`.
 
 `daemon status --json` emits the raw `version` IPC response (the same `{name, version, protocol_version, pid, uptime_seconds, connections}` object an agent would get by hitting the UDS directly). The plain form is a human key/value block and is not a stable machine contract — agents should always use `--json`.
 
@@ -917,13 +913,50 @@ Two shapes:
 | `args` | no | argv after `binary`, with placeholders. |
 | `knobs` | no | Knob declarations, below. |
 | `env` | no | Extra env for the child, with placeholders. |
-| `memory_gib` | no | Admission demand for a row without `model` (a `model` launch is sized from its GGUF). Unset means no memory gating. |
+| `memory_gib` | no | Admission demand for a row without `model` (a `model` launch is sized from its GGUF). Unset means no memory gating. With `rows_from` it is the fallback for items whose own size field is missing. |
+| `rows_from` | no | Mint one row per model an engine reports instead of writing them out. See [Minting rows from an engine's own listing](#minting-rows-from-an-engines-own-listing). |
 | `stop_grace_secs` | no | Minimum SIGTERM-to-SIGKILL grace on every stop path: `stop`, `stop --all`, idle eviction, daemon shutdown. A shorter `--grace` is raised to it. |
 | `ready_timeout_secs` | no | Readiness timeout, replacing the default probe budget. |
 | `modes` | no | The endpoints the server answers: any of `chat`, `embedding`, `rerank` (e.g. `[chat]`). The proxy refuses a `/v1/embeddings` or `/v1/rerank` request for an entry that doesn't list that mode with a `400 unsupported_endpoint`, before starting it, and `/v1/models` lists the entry under its first mode. Default: all modes, so the engine answers or refuses each request itself. |
 | `arch`, `params`, `quant`, `ctx` | no | Row info for an entry without `model`, for the Arch, Params, Quant and Ctx columns of `list`, `show` and the TUI (`params: 80B`, `quant: Q4_K_M`, `ctx: 262144`). Strings show as written; the TUI shortens Ctx (`256k`). `arch` also ranks proxy fallback candidates like a GGUF's arch, but picks no `arch_defaults`. `ctx` defaults to the `ctx: true` knob's `default`; Size comes from `memory_gib` and Mode from `modes`. Refused with `model`, since those rows read their GGUF. A `ctx` below a `--ctx` you pass prints the "exceeds native context" warning. |
 | `vision`, `reasoning_effort`, `reasoning_effort_default` | no | What the server accepts, for an entry without `model`, since there is no GGUF to read it from. `vision: true` marks it as taking images, and `reasoning_effort` lists the effort levels it accepts (e.g. `[low, medium, xhigh]`), which also marks it as a reasoning model. Levels are lowercase letters, digits, `-` and `_`, sent as written. `none` in the list means thinking can be turned off; `[none]` alone marks a reasoning model with no levels to pick, so Zed sends earlier thinking back and no tool gets an effort control. `reasoning_effort_default` names the level the server uses when a request sends none; it must be in the list and not `none`. Unset, Codex and Zed, which write one level, write the highest. `integrations` writes all of this into tool configs the way it does for a GGUF with a vision projector and a chat-template effort list (see [`integrations`](#llamastash-integrations-tools)), and the TUI shows the vision glyph. LlamaStash does not check any of it against the server. Refused with `model`. |
 | `rewrite_model` | no | `true` makes the proxy replace `body.model` with the launch's `{name}` value. Set it for a server that refuses any other model name (gufo's `--served-model-name`), so a plain id sent to a named launch, or `<model>@<other>` sent to the unnamed one, still reaches it. Default `false`: the body is forwarded unchanged. With it on, the proxy rebuilds each JSON body's top level (keys in their original order, nested values copied byte for byte), so a large body is held twice while it is rewritten. |
+
+### Minting rows from an engine's own listing
+
+An engine that owns its model store knows which models are installed, what context each one wants and what it costs to keep. `rows_from` asks it, once per rescan, and mints a row per model, so `config.yaml` carries the launch and nothing else:
+
+```yaml
+backend:
+  generic:
+    servers:
+      - name: flm
+        binary: ~/.local/opt/fastflowlm/flm
+        args: [serve, "{name}", --host, "{host}", -p, "{port}", --cors, "0"]
+        ready: /v1/version
+        rows_from:
+          command: [~/.local/opt/fastflowlm/flm, list, --filter, installed, --json]
+          items: models
+          name: model
+          when: installed
+          arch: details.family
+          params: details.parameter_size
+          quant: details.quantization_level
+          ctx: default_context_length
+          memory_gib: footprint
+```
+
+| Field | Required | Meaning |
+|---|---|---|
+| `command` | yes | The listing command, argv-style. No shell, so no quoting. The first word may start with `~/`. |
+| `items` | no | Dot path to the array of models in the JSON body (`models` above). Omit when the body is the array. |
+| `name` | yes | Dot path to the model's name in one item. It becomes the row name, `{name}` at launch, and the name clients send, so it must be the tag the engine reads from a request (`qwen3:0.6b`). It cannot contain a space, `/`, `@` or `\|`. |
+| `when` | no | Keep only items that pass: a bare dot path taken as truthy (`installed`), or `{path: label, contains: audio}` (a list member or a substring), or `{path: details.family, equals: qwen3}`. There is no negating form, so a filter that means "LLMs only" has to name what you want. |
+| `arch`, `params`, `quant`, `ctx`, `memory_gib` | no | Dot paths to each model's own Arch, Params, Quant, Ctx and size in GiB. `ctx` and `memory_gib` fall back to the entry's `ctx` and `memory_gib` when an item has no such field; the size feeds the Size column, the probe budget and the admission gate per model. |
+
+What the minted rows look like: one row per kept item, named by its own tag, published at `generic://<entry>/<tag>` and served by that entry, so `llamastash start qwen3:0.6b`, a proxy request naming it and `--ctx` for it all work with no `proxy.aliases` line. Knobs, `modes`, `ready`, `args` and `binary` come from the entry and are shared by its rows, so a `ctx: true` knob default applies to every model of that entry; leave such a default out and the engine uses each model's own context. The listing runs at daemon start and again on the daemon's periodic resweep (every 30 s), so a newly downloaded tag shows up on its own; editing the entry itself needs a daemon restart. `llamastash status` and `llamastash list` show minted rows like any other row.
+
+Two limits follow from the shape. A listing command that is missing, fails or prints something that is not JSON mints nothing and logs one line, so an engine that is briefly unavailable empties its own rows rather than the catalog. And minting assumes one process per model, because each row launches the entry on its own port: an engine that fronts every model in one server (Lemonade's `lemond`) needs the alias form in [Running Lemonade as a generic server](#running-lemonade-as-a-generic-server) instead.
 
 **Placeholders** in `args` and `env`: `{port}`, `{host}` (always `127.0.0.1`), `{name}` (the id `/v1/models` publishes for the model, repo-qualified when another model shares its name; `id@launch` for a named launch), `{model}`, and `{<knob id>}`. An unknown placeholder is refused at config load. Braces that don't hold a plain identifier (`{"a": 1}`) stay literal.
 
@@ -1198,6 +1231,119 @@ What the dedicated backend did that the generic entry doesn't:
 
 Two `ds4-server` behaviors to know about. Its `/v1/models` always lists both `deepseek-v4-flash` and `deepseek-v4-pro`, whatever is loaded; chat requests echo back the `model` you send, so no `rewrite_model` is needed. And `--kv-disk-dir` is ds4's own persistent cache: it holds conversation data under ds4's permissions at exactly the path you give, so point it at a private directory. See [DSpark speculative decoding](#dspark-speculative-decoding) for the DSpark caveats.
 
+### Running Lemonade as a generic server
+
+[Lemonade](https://github.com/lemonade-sdk/lemonade) runs one long-lived `lemond` that serves every model it has downloaded and loads each one on the first request that names it. Tested on a Strix Halo host on 2026-10-17 with `lemond` 2026.42.1 (the upstream release of that date), its `llamacpp:rocm` backend at b11395, and `unsloth/Qwen3-0.6B-GGUF`. Full write-up: [`docs/testing/2026-10-17-batch1-lemonade-flm-whisper.md`](testing/2026-10-17-batch1-lemonade-flm-whisper.md).
+
+```yaml
+backend:
+  generic:
+    servers:
+      - name: lemonade                              # server id: generic-lemonade
+        binary: /usr/bin/lemond
+        args: ["--port", "{port}", "--host", "{host}", "--no-broadcast",
+               "--log-file", "disabled"]
+        ready: /live
+        ready_timeout_secs: 90
+        stop_grace_secs: 20                         # lemond needs ~6 s to exit on SIGTERM
+        memory_gib: 1
+
+proxy:
+  aliases:
+    Qwen3-0.6B-GGUF: lemonade                      # one alias per Lemonade model you name
+```
+
+`lemond` picks its own port for nothing and takes the one llamastash reserves, so it publishes one row (`lemonade`) no client can send as `body.model`. The alias is what clients use, and the alias string survives into the forwarded body, which is how `lemond` finds the model: `curl :11435/v1/chat/completions -d '{"model":"Qwen3-0.6B-GGUF",...}'` came back in 1.9 s (cold, including Lemonade's own model load) at 103 t/s, and auto-start through the alias works. `GET http://127.0.0.1:13305/api/v1/models?show_all=true` lists every name the engine will accept (179 on that build). `stop_grace_secs` is not decoration: `lemond` takes about 6 s to exit, over the 5 s default grace.
+
+What one entry does not do:
+
+- **The model list is not the catalog.** LlamaStash shows one `lemonade` row, not Lemonade's models. Each name a client should use needs its own `proxy.aliases` line, and nothing warns you when an alias names a model Lemonade does not have.
+- **One launch, one umbrella, every model inside it.** `stop` takes the umbrella down (measured 4.7 s), not one model. Two launched models means two `lemond` processes at about 38 MB each idle, and no shared residency.
+- **No context control.** `lemond` takes context as the `ctx_size` field of its `POST /api/v1/load`, which argv cannot reach. You get whatever `~/.config/lemonade/config.json` says, and `--ctx` on a generic entry does nothing here.
+- **`lemond`'s own children show up as `external`.** The `llama-server` it spawns appears in `status` as an unmanaged row.
+
+### Running an AMD NPU engine (FastFlowLM) as a generic server
+
+[FastFlowLM](https://github.com/ROCm/FastFlowLM) (`flm`) runs LLMs, Whisper ASR and embedding models on AMD XDNA2 NPUs. It speaks the OpenAI shape, so it needs no dedicated backend. Tested 2026-10-17 with `flm` v1.0.9 (portable `fastflowlm_1.0.9_linux.tar.gz`) on kernel 7.2.10 with the in-tree `amdxdna`, firmware 1.1.2.65, `xrt` + `xrt-plugin-amdxdna`, and `flm validate` passing.
+
+```yaml
+backend:
+  generic:
+    servers:
+      - name: "qwen3:0.6b"                          # the name must be flm's own model tag
+        binary: ~/.local/opt/fastflowlm/flm
+        args: [serve, "{name}", --host, "{host}", -p, "{port}", --cors, "0"]
+        ready: /v1/version          # flm serves no /health; it loads before it binds
+        ready_timeout_secs: 180
+        stop_grace_secs: 20
+        memory_gib: 2
+        arch: qwen3
+        params: 0.6B
+        quant: q4nx
+        ctx: 32768
+        modes: [chat]
+        knobs:
+          - {flag: --ctx-len, id: ctx-len, ctx: true, default: "32768"}
+          - {flag: --pmode, default: performance}    # powersaver | balanced | performance | turbo
+```
+
+The `name` is the load-bearing line. FLM switches models on the `model` field of a request and the proxy forwards that field unchanged, so the row id has to be the engine's tag: an entry called `flm-qwen3-06b` got `{"error":"Failed to load flm-qwen3-06b model!"}`, and naming it `qwen3:0.6b` (with `{name}` in `args`, so the tag is written once) works. Verified: 82.9 t/s decode for `qwen3:0.6b` on the NPU through the proxy, 0.66 s round trip, `--ctx 8192` reaching the child as `--ctx-len 8192` through the `ctx: true` knob.
+
+To carry every tag you have downloaded rather than one, mint the rows from FLM's own store and drop the per-model blocks:
+
+```yaml
+backend:
+  generic:
+    servers:
+      - name: flm
+        binary: ~/.local/opt/fastflowlm/flm
+        args: [serve, "{name}", --host, "{host}", -p, "{port}", --cors, "0"]
+        ready: /v1/version
+        ready_timeout_secs: 180
+        stop_grace_secs: 20
+        modes: [chat]
+        rows_from:
+          command: [~/.local/opt/fastflowlm/flm, list, --filter, installed, --json]
+          items: models
+          name: model
+          when: {path: label, contains: reasoning}   # reasoning LLMs; see the note below
+          arch: details.family
+          params: details.parameter_size
+          quant: details.quantization_level
+          ctx: default_context_length
+          memory_gib: footprint
+        knobs:
+          - {flag: --ctx-len, id: ctx-len, ctx: true}
+          - {flag: --pmode, default: performance}    # powersaver | balanced | performance | turbo
+```
+
+After `llamastash daemon restart` the catalog lists `qwen3:0.6b` and every other installed tag FLM labels `reasoning`, each with its own arch, params, quant, context and footprint, and each one starts and answers by name with no `proxy.aliases` line. The `--ctx-len` knob declares no default, so each model starts with the context FLM's listing gives it (`default_context_length`, 32768 for `qwen3:0.6b`), and `--ctx` reaches FLM because that knob carries `ctx: true`; drop the knob and `--ctx` is accepted but goes nowhere (`resolved_ctx` stays empty), the minted context is only a display value. Pick the filter by what FLM actually labels: on v1.0.9 the reasoning filter keeps the reasoning models and drops audio, but LLMs with no label at all (gemma3, llama3.1, llama3.2, lfm2, phi4-mini, qwen2.5-it) are dropped too, while `when: installed` keeps everything installed including whisper. There is no "not" filter, so a filter that means "LLMs only" has to name what you want. See [Minting rows from an engine's own listing](#minting-rows-from-an-engines-own-listing).
+
+ASR and embedding are separate processes, one NPU model per type: `flm serve --asr 1` (or `-e 1`) takes no model tag and answers `POST /v1/audio/transcriptions`. That route is not one the llamastash proxy forwards (see the caveat in [Proxy routes](#proxy-openai-compatible-listener)), so an ASR entry is supervised, ready-polled and stopped by llamastash but its clients post to the launch port from `llamastash status` directly. FLM also answers the Ollama shapes (`/api/tags`, `/api/chat`, `/api/generate`, `/api/ps`, `/api/npu/status`) on the same port.
+
+Three FLM notes: `/v1/models` lists FLM's whole model list, not what you downloaded; a request for a tag you do not have makes FLM try to download it; and its speed lands in `usage.decoding_speed_tps` and `usage.prefill_speed_tps`, which the request log reads, so `llamastash requests` shows FLM's own numbers rather than an estimate.
+
+### Running whisper.cpp as a generic server
+
+`whisper-server` (whisper.cpp v1.8.4 tested 2026-10-17, from `lemonade backends install whispercpp:cpu`) serves two routes: `GET /health` and `POST /inference` (multipart `file=@clip.wav`, replies `{"text": ...}`). It has no `/v1/models`. Two flags rename its own routes onto the OpenAI transcription shape, measured on v1.8.4: `--request-path /v1/audio --inference-path /transcriptions` answers `POST /v1/audio/transcriptions` with 200 and `{"text": ...}`, and the plain `/inference` then 404s. The llamastash proxy does not forward that route yet (see [Proxy routes](#proxy-openai-compatible-listener)), so an ASR client posts to the launch port from `llamastash status`.
+
+```yaml
+backend:
+  generic:
+    servers:
+      - name: whisper-tiny
+        binary: ~/.cache/lemonade/bin/whispercpp/cpu/whisper-server
+        args: [-m, /path/to/huggingface/hub/models--ggerganov--whisper.cpp/snapshots/<rev>/ggml-tiny.bin,
+               --host, "{host}", --port, "{port}",
+               --request-path, /v1/audio, --inference-path, /transcriptions]
+        env:
+          LD_LIBRARY_PATH: ~/.cache/lemonade/bin/whispercpp/cpu   # the binary's own dir
+        ready: /health
+        memory_gib: 1
+```
+
+Two gotchas: the binary needs `LD_LIBRARY_PATH` set to its own directory or it dies with `libwhisper.so.1: cannot open shared object file` (exit 127), and a leading `~/` in an `env` value resolves to your home directory the way `binary` does (the rest of the value is passed through, so a `~` in the middle of a path list is literal). Its weights are `ggml-*.bin`, which the model scanner does not list, so the path lives in the entry. Like any ASR engine it is launch-managed only: `/v1/audio/transcriptions` is not a proxied route yet, so clients post to the launch port.
+
 ## Proxy (OpenAI-compatible listener)
 
 The daemon binds a single OpenAI-compatible HTTP proxy on `127.0.0.1:11435` (default mode) so any agent that speaks the OpenAI REST shape — OpenCode, Pi (pi.dev), the OpenAI SDKs, Cline, llm-cli — can talk to every discovered model through one stable URL. The default port is `11435` (one above Ollama's `11434`) so llamastash co-exists with an installed Ollama daemon without a collision. If the base port is taken the listener walks up to `11440` and binds the first free slot — the actual address is reported via `llamastash status` / the TUI Daemon pane under `proxy.listen`.
@@ -1206,7 +1352,7 @@ The installable Agent Skills bundle for this flow lives under [`skills/llamastas
 
 The proxy resolves `body.model` against the same fuzzy matcher `llamastash start <ref>` uses, forwards the request byte-for-byte to the matching `llama-server` child, and streams the response back. If the named model isn't running, the proxy auto-starts it (replaying `last_params`, else `arch_defaults`). A model that is already *loading* is waited on rather than started again, no matter which surface launched it, so a request arriving mid-load never yields a second copy of the same model. The launch mode follows the endpoint that triggered it (`/v1/embeddings` starts the model in embedding mode, `/v1/rerank` in rerank mode), then the recorded `last_params` mode, then the GGUF's own hint; a model whose hint says `chat` is never started in embedding or rerank mode, since that would lock it out of chat completions for its whole lifetime. If the launch fails and another model is already Ready, the proxy falls back to it and stamps `x-llamastash-served-by` + `x-llamastash-fallback-reason: launch_failed` headers on the response. Substitution is observable; no extra round-trip is needed to discover what served the request. The full mechanism — coalesced launches, family-MRU fallback selection, scope boundaries — is documented in [`docs/plans/2026-05-21-001-feat-proxy-router-plan.md`](https://github.com/llamastash/llamastash/blob/main/docs/plans/2026-05-21-001-feat-proxy-router-plan.md).
 
-Routes served: `/v1/models`, `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/rerank`, the OpenAI `/v1/responses` (+ `/v1/responses/input_tokens`), and the Anthropic `/v1/messages` + `/v1/messages/count_tokens`.
+Routes served: `/v1/models`, `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/rerank`, the OpenAI `/v1/responses` (+ `/v1/responses/input_tokens`), and the Anthropic `/v1/messages` + `/v1/messages/count_tokens`. Nothing else is forwarded, including `/v1/audio/transcriptions`: a server whose only API is off that list (whisper.cpp, or FastFlowLM's ASR endpoint) is launched and supervised by llamastash but only reachable on its own port from `llamastash status`.
 
 ### Model ids on the proxy
 
@@ -1250,7 +1396,7 @@ A value is any reference `llamastash list` shows — a plain name, a repo-qualif
 
 A listed alias is a second row for a model that already has its own id, and both listings sort by name, so a client that defaults to the first row may land on the alias instead of the model's own name — same model, different label. In `/api/tags` the alias row carries the model's `digest` and `details`, so a client that identifies models by digest sees one model under two names.
 
-An alias whose value names no model outright 404s, and the daemon logs one warning naming the alias and what it points at — which covers a value that matches nothing and one that only matches as a substring. A value two models answer to comes back as the same `ambiguous_model` answer with both candidates that a client sending that name itself would get, and the same warning says naming one of them is your call. So the daemon warns once about an alias that takes a name some longer file name already answered to on its own, since that moves clients that were working. The request body keeps the name the client sent, as it does for any reference the proxy resolves: an engine that answers only to the name it was served with needs `rewrite_model: true` on its generic entry (see [Generic backend](#generic-backend)). vLLM also answers only to the name it serves (the repo id) and has no such hatch yet, so an alias of a vLLM model gets vLLM's `404`. A managed multiplexer (Lemonade) chooses its model from that name and has no such hatch, so an alias of a model it serves does not reach it.
+An alias whose value names no model outright 404s, and the daemon logs one warning naming the alias and what it points at — which covers a value that matches nothing and one that only matches as a substring. A value two models answer to comes back as the same `ambiguous_model` answer with both candidates that a client sending that name itself would get, and the same warning says naming one of them is your call. So the daemon warns once about an alias that takes a name some longer file name already answered to on its own, since that moves clients that were working. The request body keeps the name the client sent, as it does for any reference the proxy resolves: an engine that answers only to the name it was served with needs `rewrite_model: true` on its generic entry (see [Generic backend](#generic-backend)). vLLM also answers only to the name it serves (the repo id) and has no such hatch yet, so an alias of a vLLM model gets vLLM's `404`. An engine that picks the model from the request body also answers an alias: the alias string survives into the forwarded body, so it loads the model the name names. That is how a generic entry that fronts a multi-model engine gets addressed per model (see [Running Lemonade as a generic server](#running-lemonade-as-a-generic-server)).
 
 Alias names match case-insensitively, like model references do. Editing the map takes a daemon restart.
 
@@ -2049,7 +2195,7 @@ These are the defaults. Override any binding via the `keybindings:` block in `co
 
 An HF-shaped tree that is *not* under the configured cache root (an rsynced backup, a restored archive) never gets the recursive removal — it falls back to per-file unlinking.
 
-Refusals: a running, loading or errored launch (stop it first), and Lemonade registry models (delete those through Lemonade — there is no local GGUF).
+Refusals: a running, loading or errored launch (stop it first), and a row with no local file to unlink (a `backend.generic` entry or a backend registry row).
 
 ### Terminal bell (on by default)
 

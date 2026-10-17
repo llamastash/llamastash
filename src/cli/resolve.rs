@@ -80,7 +80,7 @@ pub struct RunningRow {
   pub preset_count: u32,
   /// Default preset name (config-only) for this model, or `None`.
   pub preset_default: Option<String>,
-  /// Backend this launch resolved to (`llamacpp` / `lemonade`),
+  /// Backend this launch resolved to (the engine's id),
   /// mirrored from the IPC `status` row's `backend` field. `None` on a row
   /// the daemon didn't tag; defaults to `llamacpp` semantics downstream.
   pub backend: Option<String>,

@@ -51,8 +51,8 @@ pub struct DaemonState {
 pub struct LastParamsEntry {
   pub id: ModelIdentity,
   pub params: LaunchParams,
-  /// The backend id this launch *resolved* to (`llamacpp` / `lemonade` /
-  /// `lemonade`) — the cross-backend contamination guard (D-contamination). The
+  /// The backend id this launch *resolved* to — the cross-backend
+  /// contamination guard (D-contamination). The
   /// persisted `params.backend` choice stays `auto` for an auto-routed
   /// launch, so it can't serve as the tag. `default`/`skip_serializing_if`
   /// keep a llama.cpp row byte-stable: the field is omitted when it holds the
@@ -136,7 +136,7 @@ pub struct RunningSnapshot {
   /// JSON stays human-readable.
   pub started_at: u64,
   /// The `L#` launch handle assigned by [`crate::daemon::registry::SupervisorRegistry::next_id`].
-  /// Stamped on every row: a **delegated** (Lemonade) row has no supervisor of
+  /// Stamped on every row: a **delegated** (multiplexer) row has no supervisor of
   /// its own, so the snapshot is the sole home for its id (`status` reads it,
   /// `stop_model` reverse-maps it to the umbrella model name); a **process** row
   /// records it too so `backend_for_launch` can resolve the launch's backend and
@@ -159,12 +159,12 @@ pub struct RunningSnapshot {
   pub preset: Option<String>,
   pub params: LaunchParams,
   /// What `--fit` actually chose, read from the child's `/props` once
-  /// on Ready. Empty for adopted/external/Lemonade rows and until
+  /// on Ready. Empty for adopted/external/delegated rows and until
   /// the fetch lands. `#[serde(default)]` keeps older rows loading.
   #[serde(default)]
   pub actuals: crate::daemon::actuals::Actuals,
-  /// The backend id this launch *resolved* to (`llamacpp` / `lemonade` /
-  /// `lemonade`). Stamped at spawn (unlike `last_params.resolved_backend`, which
+  /// The backend id this launch *resolved* to. Stamped at spawn (unlike
+  /// `last_params.resolved_backend`, which
   /// waits for Ready), so `status` can report the *real* backend on a Loading
   /// row and the orphan sweep can dispatch adoption on it instead of a
   /// fragile process-name match. Same `default`/`skip_serializing_if` as the

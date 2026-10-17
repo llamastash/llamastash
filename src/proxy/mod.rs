@@ -50,15 +50,6 @@ pub(crate) mod test_support {
     supervisor::{test_support::parked, ManagedState},
   };
 
-  /// The managed multiplexer's umbrella launch id, resolved the way
-  /// [`crate::backend::umbrella_owner`] does, so a test names no backend.
-  pub(crate) fn umbrella_id() -> LaunchId {
-    crate::backend::Backends::all()
-      .into_iter()
-      .find_map(|b| crate::backend::Backend::umbrella_launch_id(&b))
-      .expect("a managed-multiplexer backend exposing an umbrella launch id")
-  }
-
   /// A `ProxyState` whose registry holds `(launch id, state, path, port)`.
   /// The catalog stays empty, so served names fall back to the file stem.
   pub(crate) async fn state_with(rows: &[(&str, ManagedState, &str, u16)]) -> Arc<ProxyState> {

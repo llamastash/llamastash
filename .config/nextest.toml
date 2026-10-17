@@ -18,7 +18,7 @@
 daemon-bound = { max-threads = 8 }
 
 [[profile.default.overrides]]
-filter = 'binary(/^(proxy_|daemon_|control_plane|supervisor_|start_model|lemonade_|tui_|init_orchestration|list_models|cli_integration|uat_lifecycle|generic_backend|preset_config_ipc|sglang_backend|vllm_backend)/)'
+filter = 'binary(/^(proxy_|daemon_|control_plane|supervisor_|start_model|tui_|init_orchestration|list_models|cli_integration|uat_lifecycle|generic_backend|generic_rows_from|preset_config_ipc|sglang_backend|vllm_backend)/)'
 test-group = 'daemon-bound'
 
 [profile.ci]
@@ -33,5 +33,5 @@ slow-timeout = { period = "60s", terminate-after = 3 }
 # Profile overrides don't inherit the default profile's, so repeat the
 # daemon-bound assignment here for the CI profile.
 [[profile.ci.overrides]]
-filter = 'binary(/^(proxy_|daemon_|control_plane|supervisor_|start_model|lemonade_|tui_|init_orchestration|list_models|cli_integration|uat_lifecycle|generic_backend|preset_config_ipc|sglang_backend|vllm_backend)/)'
+filter = 'binary(/^(proxy_|daemon_|control_plane|supervisor_|start_model|tui_|init_orchestration|list_models|cli_integration|uat_lifecycle|generic_backend|generic_rows_from|preset_config_ipc|sglang_backend|vllm_backend)/)'
 test-group = 'daemon-bound'

@@ -108,9 +108,27 @@ pub fn compose(
   let env = entry
     .env
     .iter()
-    .map(|(k, v)| (k.clone(), OsString::from(substitute(v, &lookup))))
+    .map(|(k, v)| {
+      (
+        k.clone(),
+        OsString::from(expand_home(&substitute(v, &lookup))),
+      )
+    })
     .collect();
   Ok(Composed { argv, env })
+}
+
+/// A leading `~/` in a substituted env value, expanded like `binary` is. The
+/// rest of the string is left alone: only the leading `~/` is unambiguous, and a
+/// `LD_LIBRARY_PATH` written as `~/.cache/...` otherwise fails at exec with a
+/// loader error that does not point back at the path.
+fn expand_home(value: &str) -> String {
+  if value.starts_with("~/") {
+    return crate::util::paths::expand_user_path(std::path::Path::new(value))
+      .to_string_lossy()
+      .into_owned();
+  }
+  value.to_string()
 }
 
 /// Knob ids of `entry` referenced by a placeholder in `args` or `env`.
@@ -157,6 +175,38 @@ servers:
   }
 
   const NO_MODEL: &str = "";
+  #[test]
+  fn an_env_value_with_a_leading_home_prefix_resolves() {
+    // A loader error at exec (`libfoo.so.1: cannot open shared object file`,
+    // exit 127) does not point back at the path, so `~/` must resolve here.
+    let mut entry = entries().servers[0].clone();
+    entry
+      .env
+      .insert("LD_LIBRARY_PATH".into(), "~/lib/{name}".into());
+    entry.env.insert("KEEP".into(), "a:~/b".into());
+    let out = compose(
+      &entry,
+      &KnobSet::new(),
+      &[],
+      41000,
+      "argv-gufo",
+      std::path::Path::new(NO_MODEL),
+    )
+    .unwrap();
+    let home = crate::util::paths::home_dir().expect("home dir");
+    let get = |k: &str| {
+      out
+        .env
+        .iter()
+        .find(|(name, _)| name == k)
+        .map(|(_, v)| v.to_string_lossy().into_owned())
+    };
+    assert_eq!(
+      get("LD_LIBRARY_PATH"),
+      Some(home.join("lib/argv-gufo").to_string_lossy().into_owned())
+    );
+    assert_eq!(get("KEEP").as_deref(), Some("a:~/b"), "only a leading `~/`");
+  }
 
   fn strs(v: &[OsString]) -> Vec<String> {
     v.iter().map(|s| s.to_string_lossy().into_owned()).collect()

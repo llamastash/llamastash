@@ -585,9 +585,9 @@ fn render_header_name(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Pa
 /// always visible (paths have no whitespace, so ratatui's default
 /// word-wrap would just truncate them). Blank when nothing is focused.
 fn render_header_path(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
-  // Lemonade registry rows reserve zero height for the path (see
+  // File-less registry rows reserve zero height for the path (see
   // `focused_path_line_count`); nothing to paint.
-  if focused_is_lemonade_registry(app) {
+  if focused_is_fileless_row(app) {
     return;
   }
   let Some(path) = focused_path(app) else {
@@ -614,7 +614,7 @@ fn render_header_badge(frame: &mut Frame<'_>, area: Rect, badge: &BackendBadge, 
     .add_modifier(Modifier::BOLD);
   // Each backend id is its own accent-filled chip, separated by a plain
   // (no-background) space so two backends read as two distinct badges
-  // (` lemonade ` ` llamacpp `) rather than one merged strip.
+  // (` enginex ` ` llamacpp `) rather than one merged strip.
   let mut spans: Vec<Span<'static>> = Vec::with_capacity(badge.ids.len() * 2);
   for id in &badge.ids {
     if !spans.is_empty() {
@@ -634,13 +634,12 @@ fn focused_path(app: &App) -> Option<std::path::PathBuf> {
     .or_else(|| app.focused_path())
 }
 
-/// Whether the focused row is a Lemonade registry model (synthetic
-/// `lemonade://<id>` path). Such rows have no real file on disk — the path is
-/// dead weight (it repeats the name + the ` lemonade ` badge), so the header
-/// drops the path row for them.
-fn focused_is_lemonade_registry(app: &App) -> bool {
+/// Whether the focused row is a backend-registry model with no file on disk
+/// behind it. The path is dead weight there (it repeats the name + the backend
+/// badge), so the header drops the path row for them.
+fn focused_is_fileless_row(app: &App) -> bool {
   match focused_path(app) {
-    Some(p) => crate::backend::lemonade::registry_name_from_path(&p).is_some(),
+    Some(p) => !app.has_local_file(&p),
     None => false,
   }
 }
@@ -650,7 +649,7 @@ fn focused_is_lemonade_registry(app: &App) -> bool {
 /// Backend-agnostic so a future backend adds a chip without touching the layout.
 struct BackendBadge {
   /// One or more backend ids, priority-ordered. Each renders as its own
-  /// accent-filled chip (` lemonade `, ` llamacpp `) with a plain gap between, so a
+  /// accent-filled chip (` enginex `, ` llamacpp `) with a plain gap between, so a
   /// multi-backend model reads as separate badges. Owned so it names any
   /// backend generically.
   ids: Vec<String>,
@@ -665,7 +664,7 @@ struct BackendBadge {
 /// even for a compatible file force-run on the default). A **selected** row
 /// shows every backend that can serve the model — its `supported_backends`
 /// (priority order, so llama.cpp is **not hidden** when a second engine also
-/// serves the model, e.g. ` lemonade  llamacpp `), falling back to the
+/// serves the model, e.g. ` enginex  llamacpp `), falling back to the
 /// `list_models` routing prediction, then the discovery-source backend.
 ///
 /// Every model with a resolved backend carries a chip, including plain
@@ -712,8 +711,8 @@ fn focused_backend_badge(app: &App) -> Option<BackendBadge> {
 /// variable-height slot for the path row so the path wraps cleanly
 /// without pushing tab content off-screen on pathological paths.
 fn focused_path_line_count(app: &App, inner_width: u16) -> u16 {
-  // Lemonade registry models have no real file path — drop the row entirely.
-  if focused_is_lemonade_registry(app) {
+  // File-less registry rows have no real path — drop the row entirely.
+  if focused_is_fileless_row(app) {
     return 0;
   }
   let Some(path) = focused_path(app) else {
@@ -760,7 +759,7 @@ fn wrap_path_chunks(s: &str, width: usize, max_lines: usize) -> Vec<String> {
   out
 }
 
-/// Suffix marking a value shared across all Lemonade models by the one umbrella
+/// Suffix marking a value shared across every model of one umbrella process
 /// process — its port, RAM, and CPU are the umbrella's, not per-model. Same `*`
 /// the Host pane uses for shared/aggregate pools (`MEM*` / `GPU*`); explained in
 /// the help overlay's Legend.
@@ -979,20 +978,20 @@ mod tests {
   }
 
   #[test]
-  fn lemonade_badge_renders_chip() {
+  fn registry_backend_badge_renders_chip() {
     // Running row keys on the launch's real backend (mirrors the setup above).
     let mut app = App::new(AppOptions::default());
     app.models = vec![fake_model()];
     app.managed = vec![ready_managed("npu-model", None, None)];
     app.list_cursor = 2;
-    app.managed[0].backend = Some("lemonade".into());
-    let badge = focused_backend_badge(&app).expect("running lemonade → badge");
-    assert_eq!(badge.ids, vec!["lemonade".to_string()]);
+    app.managed[0].backend = Some("enginex".into());
+    let badge = focused_backend_badge(&app).expect("running enginex → badge");
+    assert_eq!(badge.ids, vec!["enginex".to_string()]);
 
-    // A selected (not-running) Lemonade-registry model badges from its source.
+    // A selected (not-running) registry model badges from its source.
     let mut sel_app = App::new(AppOptions::default());
     let mut m = fake_model();
-    m.source = crate::discovery::ModelSource::Backend("lemonade");
+    m.source = crate::discovery::ModelSource::Backend("enginex");
     let model_path = m.path.clone();
     sel_app.models = vec![m];
     // Land the cursor on the model row (past any section headers).
@@ -1001,8 +1000,8 @@ mod tests {
       .iter()
       .position(|r| r.path() == Some(model_path.as_path()))
       .expect("model row present");
-    let sel_badge = focused_backend_badge(&sel_app).expect("lemonade source → badge");
-    assert_eq!(sel_badge.ids, vec!["lemonade".to_string()]);
+    let sel_badge = focused_backend_badge(&sel_app).expect("enginex source → badge");
+    assert_eq!(sel_badge.ids, vec!["enginex".to_string()]);
   }
 
   #[test]
@@ -1020,7 +1019,7 @@ mod tests {
       .expect("model row present");
     let badge = focused_backend_badge(&app).expect("selected multi-backend → badge");
     // llama.cpp is not hidden when a second engine also serves the model —
-    // and each id is a separate chip (` lemonade ` ` llamacpp `), not one merged strip.
+    // and each id is a separate chip (` enginex ` ` llamacpp `), not one merged strip.
     assert_eq!(
       badge.ids,
       vec!["enginex".to_string(), "llamacpp".to_string()]
@@ -1087,7 +1086,7 @@ mod tests {
   }
 
   #[test]
-  fn header_stats_shows_ctx_and_marks_lemonade_shared() {
+  fn header_stats_shows_ctx() {
     let mut app = App::new(AppOptions::default());
     app.models = vec![fake_model()];
     app.managed = vec![ready_managed("qwen", Some(4_000_000), Some(1.0))];
@@ -1100,29 +1099,24 @@ mod tests {
       !s.contains('*'),
       "llama.cpp must not carry the shared marker: {s:?}"
     );
-
-    // Lemonade → port/RAM/CPU carry the shared-umbrella marker.
-    app.managed[0].backend = Some("lemonade".into());
-    let lemon = render_stats_text(&app);
-    assert!(
-      lemon.contains('*'),
-      "lemonade row must carry the shared marker: {lemon:?}"
-    );
   }
 
   #[test]
-  fn lemonade_registry_drops_the_path_row() {
+  fn a_fileless_registry_row_drops_the_path_row() {
     let mut app = App::new(AppOptions::default());
-    app.models = vec![fake_model()];
-    app.managed = vec![ready_managed("Llama-3.1-8B", None, None)];
-    app.managed[0].path = PathBuf::from("lemonade://Llama-3.1-8B");
-    app.managed[0].backend = Some("lemonade".into());
+    let mut m = fake_model();
+    m.path = PathBuf::from("flm-qwen3-06b");
+    m.source = crate::discovery::ModelSource::Backend("enginex");
+    app.models = vec![m];
+    app.managed = vec![ready_managed("flm-qwen3-06b", None, None)];
+    app.managed[0].path = PathBuf::from("flm-qwen3-06b");
+    app.managed[0].backend = Some("enginex".into());
     app.list_cursor = 2;
-    assert!(focused_is_lemonade_registry(&app));
+    assert!(focused_is_fileless_row(&app));
     assert_eq!(
       focused_path_line_count(&app, 50),
       0,
-      "lemonade path row must reserve zero height"
+      "a fileless row must reserve zero height for the path"
     );
   }
 

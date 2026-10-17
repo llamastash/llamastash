@@ -62,7 +62,7 @@ pub struct SupervisorRegistry {
   /// on `Drop`, which cannot await.
   reserved_names: Arc<StdMutex<BTreeSet<(String, String)>>>,
   /// Per-delegated-model state for managed-multiplexer backends
-  /// (Lemonade), keyed by registry model name. Delegated models have
+  /// (managed multiplexer), keyed by registry model name. Delegated models have
   /// no supervisor of their own — the umbrella is the only process —
   /// so the background preload task records its outcome here
   /// (`Loading` → `Ready` / `Error{cause}`) and the `status`

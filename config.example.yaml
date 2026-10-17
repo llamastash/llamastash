@@ -471,7 +471,7 @@ proxy:
 # ─── Backend engines ──────────────────────────────────────────────
 #
 # All backend configuration lives under `backend:`. llama.cpp is the
-# always-on default engine (no enable toggle); Lemonade, vLLM and SGLang
+# always-on default engine (no enable toggle); vLLM and SGLang
 # are optional engines, each default-on when its own binary resolves.
 # `generic` runs any other OpenAI-compatible server you declare (ds4,
 # gufo, Halogen, …).
@@ -544,43 +544,6 @@ backend:
     #
     # Sources — CLI: (none) · Env: (none, config-only).
     map_anthropic_effort: true
-
-  # ── Lemonade (NPU / multi-engine backend) [EXPERIMENTAL] ──
-  #
-  # EXPERIMENTAL: behaviour and these keys may change. A second backend
-  # for engines llama.cpp can't reach — NPU inference on AMD Ryzen AI /
-  # XDNA, plus ROCm / ONNX / others — via the Lemonade (`lemond`) managed
-  # umbrella.
-  #
-  # Default-on when the `lemond` binary resolves (like vLLM): if `lemond`
-  # is on PATH (or `binary` below points at it) the daemon runs Lemonade
-  # discovery + umbrella unless `enabled: false`. Zero footprint when the
-  # binary is absent. llamastash never installs `lemond` — you set it up
-  # yourself and point us at it (see docs/lemonade-setup.md).
-  lemonade:
-    # Force the backend on or off. Tri-state — leave unset (commented,
-    # the shown default) for auto: on whenever `lemond` resolves; `true`
-    # to force on; `false` to force off even when the binary is present.
-    #
-    # Sources — CLI: daemon start --lemonade (force on) ·
-    #           Env: LLAMASTASH_LEMONADE=1 (force on).
-    # (The flag and env only force on; `false` here still wins as an
-    # explicit off.)
-    enabled: true
-
-    # The user's `lemond` umbrella binary (single-entry `servers` list —
-    # Lemonade runs one umbrella). Leave empty to fall back to a `lemond`
-    # (or `lemonade`) found on `$PATH`.
-    #
-    # Sources — CLI: (none) · Env: (none). Config-only.
-    servers:
-      - binary: /opt/lemonade/lemond
-
-    # Loopback port the `lemond` umbrella binds and that discovery probes
-    # for the model list. Defaults to Lemonade's own default (13305).
-    #
-    # Sources — CLI: (none) · Env: (none). Config-only.
-    port: 13305
 
   # vLLM — serves safetensors HuggingFace repos (the non-GGUF half of your
   # cache), so it sits alongside llama.cpp rather than competing for the
@@ -759,6 +722,27 @@ backend:
         # vision: true                     # takes image input
         # reasoning_effort: [low, medium, xhigh]   # also marks it a reasoning model
         # reasoning_effort_default: medium  # what the server uses when none is sent
+      # Instead of writing one entry per model an engine owns, mint a row per
+      # model its own listing reports. `command` is argv (no shell); the rest are
+      # dot paths into one item of its JSON. `name` is required and becomes the
+      # row name and `{name}`; `when` keeps truthy items, or use
+      # `{path: label, contains: audio}` / `{path: details.family, equals: qwen3}`.
+      # Missing, failing or non-JSON output mints nothing. See docs/usage.md §
+      # Minting rows from an engine's own listing.
+      # - name: flm
+      #   binary: ~/.local/opt/fastflowlm/flm
+      #   args: [serve, "{name}", --port, "{port}"]
+      #   ready: /v1/version
+      #   rows_from:
+      #     command: [~/.local/opt/fastflowlm/flm, list, --filter, installed, --json]
+      #     items: models            # omit when the body is the array itself
+      #     name: model
+      #     when: installed
+      #     arch: details.family
+      #     params: details.parameter_size
+      #     quant: details.quantization_level
+      #     ctx: default_context_length
+      #     memory_gib: footprint     # GiB
 
 # ─── Keybindings ──────────────────────────────────────────────────
 #

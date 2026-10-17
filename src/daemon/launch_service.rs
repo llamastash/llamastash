@@ -858,7 +858,7 @@ pub(crate) async fn compose_and_spawn(
   // native knobs — but only through the backend-matched `last_params` gate
   // above (D-contamination), so a relaunch re-applies its backend's own knobs
   // while a cross-backend run inherits nothing. Empty for
-  // llama.cpp / Lemonade.
+  // whichever engine it resolved to.
   // Seed the resolved backend's config-derived launch knobs into
   // `backend_knobs`, fresh each launch (config projection, not user intent) —
   // llama.cpp projects `jinja` / `strict_fit` / `fit_ctx_floor` here, so the
@@ -2000,7 +2000,6 @@ mod tests {
   use tokio::sync::RwLock;
 
   use super::*;
-  use crate::config::LemonadeConfig;
   use crate::daemon::context::LaunchEnv;
   use crate::daemon::probe::ProbeOptions;
   use crate::daemon::registry::SupervisorRegistry;
@@ -2303,112 +2302,6 @@ mod tests {
     );
     let unrelated = vec![OsString::from("--threads"), OsString::from("8")];
     assert!(!extras_manage_mmproj(&unrelated));
-  }
-
-  #[tokio::test]
-  async fn lemonade_start_without_binary_releases_reserved_port() {
-    use crate::config::loader::PortRange;
-    use crate::gguf::test_fixtures::build_minimal_gguf;
-    use crate::launch::params::BackendChoice;
-
-    // A real (minimal) GGUF on disk so `compose_and_spawn` clears header
-    // resolution and reaches the backend-selection seam.
-    let dir = tempfile::tempdir().expect("tempdir");
-    let model_path = dir.path().join("tiny.gguf");
-    std::fs::write(&model_path, build_minimal_gguf("llama")).expect("write gguf");
-
-    // A single-port range on a probe-clear port. Find one the allocator
-    // accepts (tolerates TIME_WAIT), then release it so the run under test
-    // starts from an empty reservation set.
-    let registry = SupervisorRegistry::new();
-    let mut found = None;
-    for _ in 0..16 {
-      let l = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("ephemeral port");
-      let p = l.local_addr().unwrap().port();
-      drop(l);
-      let range = PortRange { start: p, end: p };
-      if registry.reserve_port(None, &[], &range).await.is_ok() {
-        registry.release_reserved_port(p).await;
-        found = Some(p);
-        break;
-      }
-    }
-    let port = found.expect("at least one of 16 attempts lands on a probe-clear port");
-    let range = PortRange {
-      start: port,
-      end: port,
-    };
-
-    let env = LaunchEnv {
-      // Never spawned on this path — the managed-multiplexer arm errors out
-      // before any process launch.
-      binary: Some(PathBuf::from("/nonexistent/llama-server")),
-      port_range: range,
-      log_dir: dir.path().to_path_buf(),
-      probe: ProbeOptions::default(),
-      arch_defaults: Default::default(),
-      servers: Default::default(),
-      default_launch_mode: Default::default(),
-    };
-
-    // Lemonade enabled but pointed at a binary that does not exist. The
-    // explicit-`binary` branch never falls back to PATH, so resolution is
-    // deterministically `None` even on a host that has a real `lemond`
-    // installed — the test can't be fooled by the dev machine's PATH.
-    let ctx = MethodContext::new(ShutdownToken::new())
-      .with_supervisors(registry)
-      .with_launch_env(env)
-      .with_backend(
-        crate::backend::BackendConfig {
-          lemonade: LemonadeConfig {
-            enabled: Some(true),
-            servers: vec![crate::backend::ServerConfig {
-              binary: PathBuf::from("/nonexistent/lemond-xyz"),
-              name: None,
-            }],
-            port: 13305,
-          },
-          ..Default::default()
-        },
-        std::collections::BTreeMap::new(),
-      );
-
-    let parsed = StartParams {
-      model_path,
-      // Force the managed-multiplexer seam: an explicit Lemonade override
-      // outranks the GGUF identity rule.
-      backend: Some(BackendChoice::Explicit("lemonade".into())),
-      ..Default::default()
-    };
-
-    // `StartedLaunch` (the Ok variant) isn't `Debug`, so match rather than
-    // `expect_err`.
-    let err = match compose_and_spawn(
-      &ctx,
-      parsed,
-      crate::daemon::supervisor::LaunchOrigin::Manual,
-    )
-    .await
-    {
-      Ok(_) => panic!("unresolvable lemond binary must error"),
-      Err(e) => e,
-    };
-    assert_eq!(err.code, ErrorCode::InvalidParams.as_i32());
-    assert!(
-      err.message.contains("lemond"),
-      "error should name the missing lemond binary, got: {}",
-      err.message
-    );
-
-    // The reservation must have been released: the single-port range is
-    // allocatable again only if `compose_and_spawn` dropped its hold on the
-    // error path (otherwise the range is exhausted and this errors).
-    let reclaimed = ctx
-      .supervisors
-      .reserve_port(None, &[], &range)
-      .await
-      .expect("reserved port must be released on the lemonade-unavailable error path");
-    assert_eq!(reclaimed, port);
   }
 
   /// A `MethodContext` wired with a real launch env and a minimal GGUF on

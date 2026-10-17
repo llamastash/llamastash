@@ -52,8 +52,8 @@ cp -L "$SRC_CONFIG" "$LLAMASTASH_CONFIG_DIR/config.yaml"
 power_watchdog_start "$$"
 power_traps_install
 
-# --force: skip the managed lemonade umbrella so a real lemond on :13305 does not
-# block the sandbox daemon.
+# --force: skip the backend precheck so a host without a usable llama-server
+# still starts the sandbox daemon.
 start_daemon() { "$BIN" daemon start --force >/dev/null 2>&1; sleep 3; }
 
 # Stop the previous model and restart the daemon so the next preset starts from a

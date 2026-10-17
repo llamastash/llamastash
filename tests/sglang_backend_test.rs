@@ -16,7 +16,7 @@ const ALLOWED: &[&str] = &[
   "src/backend/mod.rs",
   "src/config/mod.rs",
   // The daemon force-flag is user-facing CLI surface, so it names the backend
-  // by design — the same sanctioned exception `--lemonade` / `--vllm` / the
+  // by design — the same sanctioned exception `--vllm` / the
   // other safetensors engine carry.
   "src/cli/cli_args.rs",
   "src/cli/daemon.rs",

@@ -729,7 +729,6 @@ mod shared_ids {
     assert_eq!(
       shared,
       vec![
-        "ctx-size",
         // The two safetensors engines spell these the same way and `validate`
         // holds their kinds identical.
         "quantization",

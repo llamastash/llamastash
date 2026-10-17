@@ -24,7 +24,6 @@ use std::{
   time::Duration,
 };
 
-use llamastash::backend::lemonade::umbrella_launch_id;
 use llamastash::backend::llama_cpp::LlamaCppBackend;
 use llamastash::daemon::context::MethodContext;
 use llamastash::daemon::probe::ProbeOptions;
@@ -993,59 +992,6 @@ async fn api_ps_returns_ready_supervisor_with_documented_fields() {
   assert_eq!(row["details"]["parameter_size"], "7B");
 
   let _ = live.stop(Duration::from_secs(3)).await;
-  shutdown_listener(shutdown, handle).await;
-  std::fs::remove_dir_all(&dir).ok();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn api_ps_excludes_the_lemonade_umbrella_supervisor() {
-  // Regression guard for the /api/ps drift fix. The Lemonade umbrella is
-  // a multiplexer process, not a servable model, so /api/ps must skip the
-  // supervisor parked under `umbrella_launch_id()`. The umbrella here is
-  // deliberately Ready, so only the launch-id check — not the Ready gate —
-  // can keep it out of the listing.
-  let dir = unique_temp_dir("ps-umbrella");
-  let log_dir = dir.join("logs");
-  std::fs::create_dir_all(&log_dir).unwrap();
-  let servable = write_gguf(&dir, "qwen3-servable.gguf", "qwen3");
-  let umbrella = write_gguf(&dir, "umbrella.gguf", "qwen3");
-
-  let registry = SupervisorRegistry::new();
-  // One genuinely servable model under a normal launch id.
-  let live = pre_launch(&servable, &registry, &log_dir, LaunchMode::Chat).await;
-  // A second Ready supervisor parked under the umbrella id.
-  let umbrella_model =
-    spawn_ready_model(&umbrella, &log_dir, LaunchMode::Chat, "umbrella.log").await;
-  registry
-    .insert(umbrella_launch_id(), umbrella_model.clone())
-    .await;
-
-  let mut servable_row = make_model(
-    servable.to_str().unwrap(),
-    Some("qwen3:7b"),
-    "qwen3",
-    ModeHint::Chat,
-  );
-  servable_row.path = servable.clone();
-  let state = proxy_state_with_models_and_registry(vec![servable_row], registry).await;
-  let (addr, shutdown, handle) = spawn_listener(state).await;
-
-  let (status, body) = http_get(addr, "/api/ps").await;
-  assert_eq!(status, 200);
-  let v: Value = serde_json::from_slice(&body).expect("json body");
-  let arr = v["models"].as_array().expect("models array");
-  assert_eq!(
-    arr.len(),
-    1,
-    "umbrella supervisor must be excluded; only the servable model remains: {v}"
-  );
-  assert_eq!(
-    arr[0]["name"], "qwen3:7b",
-    "the surviving row is the servable model, not the umbrella"
-  );
-
-  let _ = live.stop(Duration::from_secs(3)).await;
-  let _ = umbrella_model.stop(Duration::from_secs(3)).await;
   shutdown_listener(shutdown, handle).await;
   std::fs::remove_dir_all(&dir).ok();
 }

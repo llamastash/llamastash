@@ -31,7 +31,7 @@ pub(crate) fn caret(palette: &Palette) -> Span<'static> {
 /// A model-list column cell (Arch / Quant / Mode / …): `value` when it's a
 /// real value, else `placeholder`. Treats an empty string and the `unknown`
 /// sentinels (`Quant::Unknown` → `"Unknown"`, `ModeHint::Unknown` → `"unknown"`)
-/// as missing, so a registry-served model with no GGUF header (Lemonade) reads
+/// as missing, so a registry-served model with no GGUF header reads
 /// with the same placeholder as any other absent column. Shared by the TUI list
 /// pane (`—`) and the CLI `list` table (`?`) so the two never drift.
 pub(crate) fn list_cell(value: Option<&str>, placeholder: &str) -> String {

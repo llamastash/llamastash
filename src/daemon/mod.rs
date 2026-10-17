@@ -50,7 +50,6 @@ use self::{
 };
 use crate::backend::BackendConfig;
 use crate::config::loader::{PortRange, ProxyConfig};
-use crate::config::LemonadeConfig;
 use crate::daemon::context::{LaunchEnv, MethodContext, PersistedState};
 use crate::daemon::probe::ProbeOptions;
 use crate::discovery::ModelCatalog;
@@ -115,8 +114,8 @@ pub struct DaemonOptions {
   /// Each backend reads its own sub-config through its hooks (the server catalog
   /// is built from `configured_servers`).
   pub backend: BackendConfig,
-  /// Per-backend force-enable flags keyed by backend id (`--lemonade` /
-  /// `LLAMASTASH_LEMONADE`, and the same for each optional engine). Kept separate from the
+  /// Per-backend force-enable flags keyed by backend id (the `daemon
+  /// start` engine flags and their env vars). Kept separate from the
   /// config so the detached re-exec can re-append the flags (env/flag don't
   /// survive detach; config does). An absent key means "not forced".
   pub backend_force: std::collections::BTreeMap<String, bool>,
@@ -130,7 +129,7 @@ pub struct DaemonOptions {
   /// discover them.
   pub control_plane_port: u16,
   /// `daemon start --force`: came up despite an *indicated* backend failing
-  /// its precheck (missing `llama-server`, missing/blocked Lemonade umbrella).
+  /// its precheck (a missing `llama-server` with nothing else to launch).
   /// The CLI gate (`precheck_indicated_backends`) is what enforces fail-fast;
   /// this only needs to ride through the detached re-exec so the foreground
   /// child skips the same gate the parent already waived.
@@ -182,16 +181,7 @@ impl DaemonOptions {
       // from the test's standpoint. Tests that *do* want the proxy
       // off can flip `enabled` after construction.
       proxy: ProxyConfig::default(),
-      // Lemonade defaults **off** for test daemons: the on-when-found gate
-      // would otherwise pick up a host `lemond` and make model counts /
-      // backend rows non-deterministic. Tests that want it set it explicitly.
-      backend: BackendConfig {
-        lemonade: LemonadeConfig {
-          enabled: Some(false),
-          ..LemonadeConfig::default()
-        },
-        ..BackendConfig::default()
-      },
+      backend: BackendConfig::default(),
       backend_force: std::collections::BTreeMap::new(),
       // Port `0` makes every test pick an ephemeral free slot — no
       // cross-test contention on the
@@ -314,9 +304,7 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   // produces a working daemon with an empty catalog — `list_models`
   // returns `{"models": []}`.
   let catalog = ModelCatalog::new();
-  // Backends decide per rescan whether they contribute rows (Lemonade only
-  // when enabled and installed, so a standard install never contacts
-  // `lemond`).
+  // Backends decide per rescan whether they contribute rows.
   let mut discovery_opts = opts.discovery.clone();
   // Safetensors / HF-repo discovery, generically over whichever backends are
   // available and project rows from the shared enumerator. An install with
