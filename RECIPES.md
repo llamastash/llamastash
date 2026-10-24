@@ -638,6 +638,22 @@ After `llamastash daemon restart` the catalog lists `qwen3:0.6b` and every other
 
 ASR and embedding are separate processes, one NPU model per type: `flm serve --asr 1` (or `-e 1`) takes no model tag and answers `POST /v1/audio/transcriptions`. Give that entry `modes: [stt]` (an embedding one `modes: [embedding]`) and the proxy forwards the route to it, upload included, so its clients post to the proxy rather than the launch port `llamastash status` shows. FLM also answers the Ollama shapes (`/api/tags`, `/api/chat`, `/api/generate`, `/api/ps`, `/api/npu/status`) on the same port.
 
+```yaml
+backend:
+  generic:
+    servers:
+      - name: whisper-npu
+        binary: ~/.local/opt/fastflowlm/flm
+        args: [serve, --asr, "1", --host, "{host}", -p, "{port}", --cors, "0"]
+        ready: /v1/version
+        ready_timeout_secs: 180
+        stop_grace_secs: 20
+        memory_gib: 2
+        modes: [stt]
+```
+
+Verified on `flm` v1.0.10 with `Whisper-V3-Turbo-NPU2` on the NPU: an 11 s speech clip posted to the proxy came back with the right words in 2.8 s TTFB (3.8 s total), addressed by the entry name, by a `proxy.aliases` name (`whisper-1: whisper-npu`, logged as `alias` in `requests`), and by a name nothing answers to, which the mode fallback stamps `x-llamastash-served-by: whisper-npu` and `x-llamastash-fallback-reason: mode_match`. FLM echoes whatever `model` the request sent. `/v1/audio/translations` is a 404 from FLM itself: it serves transcriptions only.
+
 Three FLM notes: `/v1/models` lists FLM's whole model list, not what you downloaded; a request for a tag you do not have makes FLM try to download it; and its speed lands in `usage.decoding_speed_tps` and `usage.prefill_speed_tps`, which the request log reads, so `llamastash requests` shows FLM's own numbers rather than an estimate.
 
 ### whisper.cpp
@@ -716,28 +732,50 @@ backend:
 
 ### stable-diffusion.cpp
 
-`sd-server` from [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) serves OpenAI's `POST /v1/images/generations` and `/v1/images/edits` plus the A1111 API under `/sdapi/v1`. Tested with build `master-995-fd21ecf` (two builds behind `master-997` at the time) built with CUDA, running MOSS-Image (`MOSS-Image-SFT-Q4_K.gguf` with a Qwen3.5 9B text encoder and the FLUX.2 VAE) on an RTX 3050 Ti with 4 GB, which needs `--offload-to-cpu`.
+`sd-server` from [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) serves OpenAI's `POST /v1/images/generations` and `/v1/images/edits` plus the A1111 API under `/sdapi/v1`. Two builds and two models are verified:
+
+| Build | Host | Model | Result at 1024x1024 |
+|---|---|---|---|
+| CUDA, `master-995-fd21ecf` | Dell XPS 15, RTX 3050 Ti 4 GB, needs `--offload-to-cpu` | MOSS-Image SFT (`MOSS-Image-SFT-Q4_K.gguf`, Qwen3.5 9B encoder, FLUX.2 VAE) | correct 512x512 and 1024x1024 PNG, slow: the 4 GB card streams every layer from RAM |
+| HIP, `master-1000-95ff762` (`-DSD_HIPBLAS=ON -DGPU_TARGETS=gfx1151`) | Flow Z13, Radeon 8060S (gfx1151, unified) | MOSS-Image SFT Q8_0 + Qwen3.5 9B Q4_K_M | 5m26s including load and first-run graph build, 10.2 GiB resident, flash attention on (`HIP MMA`) |
+| HIP, same build | Flow Z13 | Krea 2 Base Q4_K_M (`Krea-2-Base-Q4_K_M.gguf`, Qwen3-VL 4B Q4_K_M, Wan 2.1 VAE) | 9m57s at 20 steps, 9m36s at 28, 9.5 GiB resident. Text inside the image needs about 28 steps before it is legible; at 20 it comes out garbled |
+
+No `--offload-to-cpu` on the Z13: 124 GiB of unified memory holds both engines' weights on the GPU, and the log says so (`VRAM 10213.61MB, RAM 0.00MB`). Weights come from the repos each model's own doc names: MOSS-Image from `leejet/MOSS-Image-SFT-GGUF` plus `unsloth/Qwen3.5-9B-GGUF`, the FLUX.2 VAE from `Comfy-Org/MOSS-Image`, `tokenizer.json` from `OpenMOSS-Team/MOSS-Image-Base`; Krea 2 from `realrebelai/KREA-2_GGUFs` plus `Qwen/Qwen3-VL-4B-Instruct-GGUF`, the Wan 2.1 VAE from `Comfy-Org/Wan_2.1_ComfyUI_repackaged`.
 
 ```yaml
 backend:
   generic:
     servers:
       - name: moss-image
-        binary: /path/to/stable-diffusion.cpp/build-cuda/bin/sd-server
-        args: [--diffusion-model, /path/to/MOSS-Image-SFT-Q4_K.gguf,
+        binary: /path/to/stable-diffusion.cpp/build-hip/bin/sd-server
+        args: [--diffusion-model, /path/to/MOSS-Image-SFT-Q8_0.gguf,
                --llm, /path/to/Qwen3.5-9B-Q4_K_M.gguf,
                --vae, /path/to/flux2-vae.safetensors,
-               --tokenizer, /path/to/tokenizer.json,
-               --offload-to-cpu, --cfg-scale, "3.0",
+               --tokenizer, /path/to/moss-image-tokenizer.json,
+               --cfg-scale, "3.0",
                --listen-ip, "{host}", --listen-port, "{port}"]
         ready: /v1/models
         modes: [image]
         routes: [/sdapi/v1]   # the A1111 API, for clients that speak it
-        memory_gib: 10
+        memory_gib: 14
+        ready_timeout_secs: 300
+
+      - name: krea2
+        binary: /path/to/stable-diffusion.cpp/build-hip/bin/sd-server
+        args: [--diffusion-model, /path/to/Krea-2-Base-Q4_K_M.gguf,
+               --llm, /path/to/Qwen3VL-4B-Instruct-Q4_K_M.gguf,
+               --vae, /path/to/wan_2.1_vae.safetensors,
+               --cfg-scale, "3.5",
+               --listen-ip, "{host}", --listen-port, "{port}"]
+        ready: /v1/models
+        modes: [image]
+        memory_gib: 12
         ready_timeout_secs: 300
 ```
 
-`{"model":"dall-e-3","prompt":"...","size":"512x512","response_format":"b64_json"}` reaches the entry through the mode fallback and returns a 512x512 PNG; a multipart `POST /v1/images/edits` with an `image` file works the same way. `GET :11435/sdapi/v1/samplers` and `POST /sdapi/v1/txt2img` go to the engine through the declared prefix, and the request log lists them under `/sdapi/v1`.
+MOSS needs the external `tokenizer.json`: its Qwen3.5 vocabulary is not the Qwen tokenizer embedded in the file, and without `--tokenizer` the prompts encode wrong. The `--cfg-scale` values are the engine's own recipe defaults (MOSS 3.0, Krea 2 3.5 against a 7.0 server default), so they belong on argv. Sides must be divisible by 16.
+
+`{"model":"dall-e-3","prompt":"...","size":"512x512","response_format":"b64_json"}` reaches the entry through the mode fallback and returns a PNG; a multipart `POST /v1/images/edits` with an `image` file works the same way. `GET :11435/sdapi/v1/samplers` and `POST /sdapi/v1/txt2img` go to the engine through the declared prefix, and the request log lists them under `/sdapi/v1`. The OpenAI endpoint itself takes only `prompt`, `n`, `size`, `output_format` and `output_compression`; steps, guidance, seed and `flow_shift` go in as ` <sd_cpp_extra_args>{"steps":28,"seed":1234}</sd_cpp_extra_args>` appended to the prompt, which is how a client sets them without a restart.
 
 sd-server prints `listening on` before it binds and exits 0 when the bind fails, so a launch that loses its port to a process that is still shutting down shows up as `launch_failed` with a clean exit. Starting it again works.
 
