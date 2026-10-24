@@ -15,6 +15,7 @@
 
 ### Fixed
 
+- `llamastash init` installs the ROCm llama.cpp build again. The extraction size caps now follow the asset the GitHub API declared (16× its compressed bytes, floored at 2 GiB) instead of a flat 1 GiB per entry, which refused `libggml-hip.so` once it grew to 1.09 GiB; the free-space precheck budgets a ROCm download by what it actually unpacks to instead of 3x its size ([#119](https://github.com/llamastash/llamastash/issues/119)).
 - A request naming a media endpoint that no entry declares says so, and one that several entries declare but none has started says how many there are. Before, both read as a name to add to `proxy.aliases`.
 
 ## [0.9.1] — 2026-10-19

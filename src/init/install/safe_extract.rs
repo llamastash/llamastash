@@ -4,9 +4,14 @@
 //! - entries whose path resolves outside the destination directory
 //!   (`..`, absolute paths, FIFOs/devices, out-of-tree symlinks),
 //! - hardlinks (no in-tree hardlink ergonomics worth the risk),
-//! - total uncompressed size > 2 GiB,
-//! - per-entry compression ratio > 100×,
+//! - total uncompressed size above `ExtractLimits::total_bytes`,
+//! - a single entry above `ExtractLimits::per_entry_bytes`,
 //! - archives with > 10 000 entries.
+//!
+//! The size caps scale with the asset the GitHub API declared (see
+//! [`ExtractLimits::for_asset`]), because llama.cpp's own blobs keep
+//! growing: `libggml-hip.so` alone declared 1.09 GiB at `b11804` and a
+//! flat 1 GiB per-entry cap refused the whole ROCm release (issue #119).
 //!
 //! Symlinks are allowed *only* when the resolved target lives inside
 //! the extraction root. llama.cpp release tarballs rely on this for
@@ -27,21 +32,59 @@ use tar::EntryType;
 use super::InstallError;
 
 pub const MAX_ENTRIES: usize = 10_000;
-pub const MAX_TOTAL_UNCOMPRESSED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-/// Per-entry uncompressed cap. No single archive entry may declare
-/// more than 1 GiB uncompressed (half the archive-wide cap).
-/// Together with `MAX_TOTAL_UNCOMPRESSED_BYTES` and the
-/// 10,000-entry cap these provide an upper bound on any bomb
-/// shape that doesn't rely on a single huge entry.
+/// Floor for the uncompressed-total cap, used when the archive's own
+/// asset size is unknown. `ExtractLimits::for_asset` raises it for
+/// archives whose declared size justifies more.
+pub const MIN_TOTAL_UNCOMPRESSED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// Most uncompressed bytes an archive may claim per compressed byte it
+/// ships. Measured on `b11804` assets: the ROCm build unpacks 4.9×
+/// (one 1.09 GiB `libggml-hip.so`), the Windows ROCm zip 4.6×, a CUDA
+/// build 1.4× and its `cudart-` bundle 1.5×. 16× leaves headroom for
+/// upstream growth while still tying the bomb bound to bytes actually
+/// downloaded from the pinned release host.
+const MAX_UNPACK_RATIO: u64 = 16;
+
+/// The entry-count and size caps applied to one archive.
 ///
-/// (A per-entry compression-ratio guard was intentionally not
+/// (A per-entry compression-ratio guard is deliberately not
 /// included: tar's high-level reader does not expose per-entry
 /// compressed bytes when the gz stream wraps the whole archive,
 /// so any ratio computed from declared-size / archive-compressed-
 /// length would not actually measure per-entry compression and
 /// would give a false sense of defense. The absolute caps cover
 /// the same threat surface.)
-pub const MAX_PER_ENTRY_UNCOMPRESSED_BYTES: u64 = 1024 * 1024 * 1024;
+#[derive(Debug, Clone, Copy)]
+pub struct ExtractLimits {
+  pub max_entries: usize,
+  pub total_bytes: u64,
+  /// One entry may claim the whole archive budget, so this tracks
+  /// `total_bytes` rather than a fixed fraction of it.
+  pub per_entry_bytes: u64,
+}
+
+impl Default for ExtractLimits {
+  fn default() -> Self {
+    Self::for_asset(None)
+  }
+}
+
+impl ExtractLimits {
+  /// Caps for an archive whose GitHub asset row declares `asset_bytes`
+  /// (compressed). Unknown declared size falls back to
+  /// `MIN_TOTAL_UNCOMPRESSED_BYTES`.
+  pub fn for_asset(asset_bytes: Option<u64>) -> Self {
+    let total = asset_bytes
+      .map(|bytes| bytes.saturating_mul(MAX_UNPACK_RATIO))
+      .unwrap_or(0)
+      .max(MIN_TOTAL_UNCOMPRESSED_BYTES);
+    Self {
+      max_entries: MAX_ENTRIES,
+      total_bytes: total,
+      per_entry_bytes: total,
+    }
+  }
+}
 
 #[derive(Debug, Clone)]
 pub struct ExtractedBinary {
@@ -60,6 +103,7 @@ pub fn safe_extract_tar_gz<R: Read>(
   archive: R,
   dest_root: &Path,
   version_dir_name: &str,
+  limits: ExtractLimits,
 ) -> Result<ExtractedBinary, InstallError> {
   std::fs::create_dir_all(dest_root).map_err(|e| InstallError::Io(e.to_string()))?;
   if let Some(existing) = existing_install(dest_root, version_dir_name)? {
@@ -76,7 +120,7 @@ pub fn safe_extract_tar_gz<R: Read>(
     use std::os::unix::fs::PermissionsExt;
     let _ = std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o700));
   }
-  let mut caps = Caps::default();
+  let mut caps = Caps::new(limits);
 
   let gz = GzDecoder::new(archive);
   let mut tar = tar::Archive::new(gz);
@@ -153,7 +197,7 @@ pub fn safe_extract_tar_gz<R: Read>(
       std::fs::create_dir_all(parent).map_err(|e| InstallError::Io(e.to_string()))?;
     }
     let mut out = std::fs::File::create(&target).map_err(|e| InstallError::Io(e.to_string()))?;
-    copy_capped(&mut entry, &mut out)?;
+    copy_capped(&mut entry, &mut out, caps.limits.per_entry_bytes)?;
     drop(out);
     #[cfg(unix)]
     {
@@ -209,9 +253,13 @@ pub fn safe_extract_tar_gz<R: Read>(
 /// an `$ORIGIN` rpath. Same size and entry caps. Each file lands through
 /// a temp file and a rename, so an interrupted run leaves no partial
 /// library behind; an existing file of the same name is replaced.
-pub fn safe_extract_libs_tar_gz<R: Read>(archive: R, dest_dir: &Path) -> Result<(), InstallError> {
+pub fn safe_extract_libs_tar_gz<R: Read>(
+  archive: R,
+  dest_dir: &Path,
+  limits: ExtractLimits,
+) -> Result<(), InstallError> {
   let mut tar = tar::Archive::new(GzDecoder::new(archive));
-  let mut caps = Caps::default();
+  let mut caps = Caps::new(limits);
   let mut written = 0usize;
   for entry in tar
     .entries()
@@ -239,7 +287,7 @@ pub fn safe_extract_libs_tar_gz<R: Read>(archive: R, dest_dir: &Path) -> Result<
       .prefix(&format!(".{name}.tmp."))
       .tempfile_in(dest_dir)
       .map_err(|e| InstallError::Io(e.to_string()))?;
-    copy_capped(&mut entry, tmp.as_file_mut())?;
+    copy_capped(&mut entry, tmp.as_file_mut(), caps.limits.per_entry_bytes)?;
     tmp
       .persist(dest_dir.join(name))
       .map_err(|e| InstallError::Io(format!("persist {name}: {e}")))?;
@@ -297,12 +345,21 @@ fn entry_path<R: Read>(entry: &tar::Entry<'_, R>) -> Result<(PathBuf, String), I
 struct Caps {
   entries: usize,
   total: u64,
+  limits: ExtractLimits,
 }
 
 impl Caps {
+  fn new(limits: ExtractLimits) -> Self {
+    Self {
+      entries: 0,
+      total: 0,
+      limits,
+    }
+  }
+
   fn count(&mut self) -> Result<(), InstallError> {
     self.entries += 1;
-    if self.entries > MAX_ENTRIES {
+    if self.entries > self.limits.max_entries {
       return Err(unsafe_entry(
         "",
         format!("entry count exceeded the {MAX_ENTRIES} cap"),
@@ -313,20 +370,24 @@ impl Caps {
 
   /// Charge a file entry's declared size, before anything is written.
   fn charge(&mut self, path: &str, size: u64) -> Result<(), InstallError> {
-    if size > MAX_PER_ENTRY_UNCOMPRESSED_BYTES {
+    if size > self.limits.per_entry_bytes {
       return Err(unsafe_entry(
         path,
         format!(
           "entry size {size} exceeds per-entry cap of \
-           {MAX_PER_ENTRY_UNCOMPRESSED_BYTES} bytes"
+           {} bytes",
+          self.limits.per_entry_bytes
         ),
       ));
     }
     self.total = self.total.saturating_add(size);
-    if self.total > MAX_TOTAL_UNCOMPRESSED_BYTES {
+    if self.total > self.limits.total_bytes {
       return Err(unsafe_entry(
         path,
-        format!("total uncompressed size exceeded the {MAX_TOTAL_UNCOMPRESSED_BYTES}-byte cap"),
+        format!(
+          "total uncompressed size exceeded the {}-byte cap",
+          self.limits.total_bytes
+        ),
       ));
     }
     Ok(())
@@ -334,8 +395,12 @@ impl Caps {
 }
 
 /// Copy at most the per-entry cap, whatever size the header declared.
-fn copy_capped(entry: &mut impl Read, out: &mut impl std::io::Write) -> Result<(), InstallError> {
-  let mut limited = entry.take(MAX_PER_ENTRY_UNCOMPRESSED_BYTES);
+fn copy_capped(
+  entry: &mut impl Read,
+  out: &mut impl std::io::Write,
+  cap: u64,
+) -> Result<(), InstallError> {
+  let mut limited = entry.take(cap);
   std::io::copy(&mut limited, out).map_err(|e| InstallError::Io(e.to_string()))?;
   Ok(())
 }
@@ -352,16 +417,27 @@ pub fn safe_extract(
   archive_path: &Path,
   dest_root: &Path,
   version_dir_name: &str,
+  limits: ExtractLimits,
 ) -> Result<ExtractedBinary, InstallError> {
   let lower = archive_name.to_ascii_lowercase();
   if lower.ends_with(".tar.gz") || lower.ends_with(".tgz") {
     let file = std::fs::File::open(archive_path).map_err(|e| InstallError::Io(e.to_string()))?;
-    return safe_extract_tar_gz(std::io::BufReader::new(file), dest_root, version_dir_name);
+    return safe_extract_tar_gz(
+      std::io::BufReader::new(file),
+      dest_root,
+      version_dir_name,
+      limits,
+    );
   }
   #[cfg(windows)]
   if lower.ends_with(".zip") {
     let file = std::fs::File::open(archive_path).map_err(|e| InstallError::Io(e.to_string()))?;
-    return safe_extract_zip(std::io::BufReader::new(file), dest_root, version_dir_name);
+    return safe_extract_zip(
+      std::io::BufReader::new(file),
+      dest_root,
+      version_dir_name,
+      limits,
+    );
   }
   #[cfg(not(windows))]
   if lower.ends_with(".zip") {
@@ -392,6 +468,7 @@ pub fn safe_extract_zip<R: Read + std::io::Seek>(
   archive: R,
   dest_root: &Path,
   version_dir_name: &str,
+  limits: ExtractLimits,
 ) -> Result<ExtractedBinary, InstallError> {
   std::fs::create_dir_all(dest_root).map_err(|e| InstallError::Io(e.to_string()))?;
   if let Some(existing) = existing_install(dest_root, version_dir_name)? {
@@ -408,7 +485,7 @@ pub fn safe_extract_zip<R: Read + std::io::Seek>(
     zip::ZipArchive::new(archive).map_err(|e| InstallError::Io(format!("zip open: {e}")))?;
 
   let entry_count = archive.len();
-  if entry_count > MAX_ENTRIES {
+  if entry_count > limits.max_entries {
     return Err(InstallError::UnsafeArchive {
       path: String::new(),
       reason: format!("zip entry count {entry_count} exceeds the {MAX_ENTRIES} cap"),
@@ -458,21 +535,23 @@ pub fn safe_extract_zip<R: Read + std::io::Seek>(
     }
 
     let declared_size = entry.size();
-    if declared_size > MAX_PER_ENTRY_UNCOMPRESSED_BYTES {
+    if declared_size > limits.per_entry_bytes {
       return Err(InstallError::UnsafeArchive {
         path: raw_name,
         reason: format!(
           "zip entry size {declared_size} exceeds per-entry cap of \
-           {MAX_PER_ENTRY_UNCOMPRESSED_BYTES} bytes"
+           {} bytes",
+          limits.per_entry_bytes
         ),
       });
     }
     total_uncompressed = total_uncompressed.saturating_add(declared_size);
-    if total_uncompressed > MAX_TOTAL_UNCOMPRESSED_BYTES {
+    if total_uncompressed > limits.total_bytes {
       return Err(InstallError::UnsafeArchive {
         path: raw_name,
         reason: format!(
-          "zip total uncompressed size exceeded the {MAX_TOTAL_UNCOMPRESSED_BYTES}-byte cap"
+          "zip total uncompressed size exceeded the {}-byte cap",
+          limits.total_bytes
         ),
       });
     }
@@ -482,9 +561,8 @@ pub fn safe_extract_zip<R: Read + std::io::Seek>(
     }
     let mut out = std::fs::File::create(&target).map_err(|e| InstallError::Io(e.to_string()))?;
     // Cap the stream itself in case the declared size lied: read at
-    // most MAX_PER_ENTRY_UNCOMPRESSED_BYTES regardless of what the
-    // header said.
-    let mut limited = (&mut entry).take(MAX_PER_ENTRY_UNCOMPRESSED_BYTES);
+    // most `limits.per_entry_bytes` regardless of what the header said.
+    let mut limited = (&mut entry).take(limits.per_entry_bytes);
     std::io::copy(&mut limited, &mut out).map_err(|e| InstallError::Io(e.to_string()))?;
     drop(out);
 
@@ -687,7 +765,8 @@ mod tests {
       write_file_entry(tar, "build/bin/README.md", b"docs");
     });
     let dest = temp_dir("happy");
-    let out = safe_extract_tar_gz(archive.as_slice(), &dest, "b9999").expect("extract");
+    let out = safe_extract_tar_gz(archive.as_slice(), &dest, "b9999", ExtractLimits::default())
+      .expect("extract");
     assert!(out.path.is_file());
     assert!(out.path.ends_with("build/bin/llama-server"));
     #[cfg(unix)]
@@ -710,7 +789,7 @@ mod tests {
     });
     let dest = temp_dir("libs-flat");
     std::fs::write(dest.join("llama-server"), b"bin").unwrap();
-    safe_extract_libs_tar_gz(archive.as_slice(), &dest).expect("extract");
+    safe_extract_libs_tar_gz(archive.as_slice(), &dest, ExtractLimits::default()).expect("extract");
     assert_eq!(
       std::fs::read(dest.join("libcudart.so.13")).unwrap(),
       b"libcudart.so.13"
@@ -725,7 +804,7 @@ mod tests {
     let dest = temp_dir("libs-refuse");
     let exe = build_archive(|tar| write_file_entry(tar, "top/llama-server", b"swap"));
     assert!(matches!(
-      safe_extract_libs_tar_gz(exe.as_slice(), &dest),
+      safe_extract_libs_tar_gz(exe.as_slice(), &dest, ExtractLimits::default()),
       Err(InstallError::UnsafeArchive { .. })
     ));
     assert!(!dest.join("llama-server").exists());
@@ -739,9 +818,9 @@ mod tests {
         .append_data(&mut header, "top/libcudart.so.13", &[][..])
         .unwrap();
     });
-    assert!(safe_extract_libs_tar_gz(link.as_slice(), &dest).is_err());
+    assert!(safe_extract_libs_tar_gz(link.as_slice(), &dest, ExtractLimits::default()).is_err());
     let empty = build_archive(|_| {});
-    assert!(safe_extract_libs_tar_gz(empty.as_slice(), &dest).is_err());
+    assert!(safe_extract_libs_tar_gz(empty.as_slice(), &dest, ExtractLimits::default()).is_err());
     std::fs::remove_dir_all(&dest).ok();
   }
 
@@ -783,7 +862,8 @@ mod tests {
         .unwrap();
     });
     let dest = temp_dir("hardlink");
-    let err = safe_extract_tar_gz(archive.as_slice(), &dest, "b9999").unwrap_err();
+    let err = safe_extract_tar_gz(archive.as_slice(), &dest, "b9999", ExtractLimits::default())
+      .unwrap_err();
     assert!(
       matches!(err, InstallError::UnsafeArchive { ref reason, .. } if reason.contains("hardlink")),
       "expected hardlink refusal, got {err:?}"
@@ -805,7 +885,8 @@ mod tests {
         .unwrap();
     });
     let dest = temp_dir("symlink-abs");
-    let err = safe_extract_tar_gz(archive.as_slice(), &dest, "b9999").unwrap_err();
+    let err = safe_extract_tar_gz(archive.as_slice(), &dest, "b9999", ExtractLimits::default())
+      .unwrap_err();
     assert!(
       matches!(err, InstallError::UnsafeArchive { ref reason, .. } if reason.contains("absolute")),
       "expected absolute-target refusal, got {err:?}"
@@ -830,7 +911,8 @@ mod tests {
         .unwrap();
     });
     let dest = temp_dir("fifo-entry");
-    let err = safe_extract_tar_gz(archive.as_slice(), &dest, "b9999").unwrap_err();
+    let err = safe_extract_tar_gz(archive.as_slice(), &dest, "b9999", ExtractLimits::default())
+      .unwrap_err();
     assert!(
       matches!(err, InstallError::UnsafeArchive { ref reason, .. } if reason.contains("unsupported entry type")),
       "expected unsupported-entry-type refusal, got {err:?}"
@@ -857,7 +939,8 @@ mod tests {
         .unwrap();
     });
     let dest = temp_dir("symlink-no-target");
-    let err = safe_extract_tar_gz(archive.as_slice(), &dest, "b9999").unwrap_err();
+    let err = safe_extract_tar_gz(archive.as_slice(), &dest, "b9999", ExtractLimits::default())
+      .unwrap_err();
     assert!(
       matches!(err, InstallError::UnsafeArchive { ref reason, .. } if reason.contains("no target") || reason.contains("empty")),
       "expected no-target or empty-target refusal, got {err:?}"
@@ -882,7 +965,8 @@ mod tests {
       tar.append_data(&mut header, "loop", &[][..]).unwrap();
     });
     let dest = temp_dir("self-loop-symlink");
-    let err = safe_extract_tar_gz(archive.as_slice(), &dest, "b9999").unwrap_err();
+    let err = safe_extract_tar_gz(archive.as_slice(), &dest, "b9999", ExtractLimits::default())
+      .unwrap_err();
     assert!(
       matches!(err, InstallError::UnsafeArchive { ref reason, .. } if reason.contains("strict subpath") || reason.contains("empty")),
       "expected self-loop refusal, got {err:?}"
@@ -902,7 +986,8 @@ mod tests {
       tar.append_data(&mut header, "evil-link", &[][..]).unwrap();
     });
     let dest = temp_dir("symlink-escape");
-    let err = safe_extract_tar_gz(archive.as_slice(), &dest, "b9999").unwrap_err();
+    let err = safe_extract_tar_gz(archive.as_slice(), &dest, "b9999", ExtractLimits::default())
+      .unwrap_err();
     assert!(
       matches!(err, InstallError::UnsafeArchive { ref reason, .. } if reason.contains("escapes")),
       "expected dotdot-escape refusal, got {err:?}"
@@ -936,7 +1021,8 @@ mod tests {
         .unwrap();
     });
     let dest = temp_dir("soname-chain");
-    let out = safe_extract_tar_gz(archive.as_slice(), &dest, "b9999").expect("extract");
+    let out = safe_extract_tar_gz(archive.as_slice(), &dest, "b9999", ExtractLimits::default())
+      .expect("extract");
     let dir = out.path.parent().unwrap();
     let unversioned = dir.join("libllama.so");
     let soname = dir.join("libllama.so.0");
@@ -969,7 +1055,8 @@ mod tests {
       write_file_entry(tar, "build/bin/some-other-binary", b"surprise");
     });
     let dest = temp_dir("no-binary");
-    let err = safe_extract_tar_gz(archive.as_slice(), &dest, "b9999").unwrap_err();
+    let err = safe_extract_tar_gz(archive.as_slice(), &dest, "b9999", ExtractLimits::default())
+      .unwrap_err();
     assert!(
       matches!(err, InstallError::UnsafeArchive { ref reason, .. } if reason.contains("llama-server")),
       "expected llama-server-missing refusal, got {err:?}"
@@ -1010,7 +1097,8 @@ mod tests {
       }
     });
     let dest = temp_dir("entry-count");
-    let err = safe_extract_tar_gz(archive.as_slice(), &dest, "b9999").unwrap_err();
+    let err = safe_extract_tar_gz(archive.as_slice(), &dest, "b9999", ExtractLimits::default())
+      .unwrap_err();
     assert!(
       matches!(err, InstallError::UnsafeArchive { ref reason, .. } if reason.contains("entry count")),
       "expected entry-count cap refusal, got {err:?}"
@@ -1021,17 +1109,18 @@ mod tests {
   #[test]
   fn refuses_archive_with_single_entry_over_per_entry_cap() {
     let archive = build_archive(|tar| {
-      // Declare > MAX_PER_ENTRY_UNCOMPRESSED_BYTES (1 GiB) on one
+      // Declare more than the floor per-entry cap (2 GiB) on one
       // entry. The body bytes are empty; the cap check reads the
       // header's declared size.
       write_zero_body_with_declared_size(
         tar,
         "build/bin/llama-server",
-        MAX_PER_ENTRY_UNCOMPRESSED_BYTES + 1,
+        ExtractLimits::default().per_entry_bytes + 1,
       );
     });
     let dest = temp_dir("per-entry-cap");
-    let err = safe_extract_tar_gz(archive.as_slice(), &dest, "b9999").unwrap_err();
+    let err = safe_extract_tar_gz(archive.as_slice(), &dest, "b9999", ExtractLimits::default())
+      .unwrap_err();
     assert!(
       matches!(err, InstallError::UnsafeArchive { ref reason, .. } if reason.contains("per-entry cap")),
       "expected per-entry cap refusal, got {err:?}"
@@ -1039,19 +1128,59 @@ mod tests {
     std::fs::remove_dir_all(&dest).ok();
   }
 
-  // Note: `MAX_TOTAL_UNCOMPRESSED_BYTES` (2 GiB) is not unit-tested
-  // directly here because tripping it would require either
-  // physically authoring a multi-GiB archive (CI-prohibitive) or
-  // populating the tar header with a size larger than the body's
-  // actual bytes (which the tar reader rejects with a structural
-  // "unexpected EOF during skip" before the cap check fires). The
-  // accumulator is straightforward arithmetic
-  // (`total_uncompressed.saturating_add(entry_size)`) and is
-  // statically observable; the per-entry cap test above exercises
-  // the same comparison path. Production binaries hit this branch
-  // whenever a real GH Releases tarball ships >2 GiB uncompressed,
-  // which the integration test (a real download) catches if it
-  // ever happens.
+  /// Measured on the real `llama-b11804-bin-ubuntu-rocm-10.0-x64.tar.gz`
+  /// (249,908,117 bytes), whose biggest entry `libggml-hip.so` declares
+  /// 1,172,883,432 bytes. The old flat 1 GiB per-entry cap refused the
+  /// whole ROCm release (#119); caps derived from the asset's own size
+  /// accept it.
+  #[test]
+  fn derived_limits_accept_the_real_rocm_blob_size() {
+    let limits = ExtractLimits::for_asset(Some(249_908_117));
+    let mut caps = Caps::new(limits);
+    assert!(
+      caps
+        .charge("llama-b11804/libggml-hip.so", 1_172_883_432)
+        .is_ok(),
+      "the real ROCm blob must fit its derived caps: {limits:?}"
+    );
+    assert!(caps.charge("llama-b11804/llama-server", 5_282_968).is_ok());
+  }
+
+  #[test]
+  fn derived_limits_scale_with_declared_asset_size_and_floor_at_two_gib() {
+    assert_eq!(
+      ExtractLimits::for_asset(None).total_bytes,
+      MIN_TOTAL_UNCOMPRESSED_BYTES
+    );
+    assert_eq!(
+      ExtractLimits::for_asset(Some(1024)).total_bytes,
+      MIN_TOTAL_UNCOMPRESSED_BYTES
+    );
+    assert_eq!(
+      ExtractLimits::for_asset(Some(1024 * 1024 * 1024)).total_bytes,
+      16 * 1024 * 1024 * 1024
+    );
+  }
+
+  /// The total cap is what bounds a bomb that spreads across many
+  /// entries. Checked on `Caps` directly: authoring a multi-GiB archive
+  /// in a unit test is CI-prohibitive, and a tar header that lies about
+  /// its size is rejected structurally before the cap check fires.
+  #[test]
+  fn total_cap_refuses_once_exceeded() {
+    let limits = ExtractLimits {
+      total_bytes: 100,
+      per_entry_bytes: 60,
+      ..ExtractLimits::default()
+    };
+    let mut caps = Caps::new(limits);
+    assert!(caps.charge("a", 60).is_ok());
+    let err = caps.charge("b", 60).unwrap_err();
+    assert!(
+      matches!(&err, InstallError::UnsafeArchive { reason, .. } if reason.contains("-byte cap")),
+      "expected total-cap refusal, got {err:?}"
+    );
+  }
 
   #[test]
   fn second_call_against_existing_dir_finds_binary_via_scan() {
@@ -1063,7 +1192,13 @@ mod tests {
       write_file_entry(tar, "build/bin/llama-server", b"v1");
     });
     let dest = temp_dir("existing");
-    let out_a = safe_extract_tar_gz(archive_a.as_slice(), &dest, "b9999").expect("first extract");
+    let out_a = safe_extract_tar_gz(
+      archive_a.as_slice(),
+      &dest,
+      "b9999",
+      ExtractLimits::default(),
+    )
+    .expect("first extract");
     assert!(out_a.path.is_file());
     // Second archive places the binary at a different relative
     // path. If the early-return code naively joined the new
@@ -1072,7 +1207,13 @@ mod tests {
     let archive_b = build_archive(|tar| {
       write_file_entry(tar, "binaries/llama-server", b"v1");
     });
-    let out_b = safe_extract_tar_gz(archive_b.as_slice(), &dest, "b9999").expect("second extract");
+    let out_b = safe_extract_tar_gz(
+      archive_b.as_slice(),
+      &dest,
+      "b9999",
+      ExtractLimits::default(),
+    )
+    .expect("second extract");
     assert!(
       out_b.path.is_file(),
       "early-return must locate the binary actually on disk, got {}",
@@ -1090,7 +1231,14 @@ mod tests {
     // actionable refusal — callers should not silently pass through.
     let dest = temp_dir("dispatch-bad-ext");
     let src = on_disk("dispatch-bad-ext", b"not an archive");
-    let err = safe_extract("artifact.exe", &src, &dest, "b9999").unwrap_err();
+    let err = safe_extract(
+      "artifact.exe",
+      &src,
+      &dest,
+      "b9999",
+      ExtractLimits::default(),
+    )
+    .unwrap_err();
     assert!(
       matches!(err, InstallError::UnsafeArchive { ref reason, .. } if reason.contains("unsupported archive extension")),
       "expected unsupported-extension refusal, got {err:?}"
@@ -1105,8 +1253,14 @@ mod tests {
     });
     let dest = temp_dir("dispatch-targz");
     let src = on_disk("dispatch-targz", &archive);
-    let out = safe_extract("llama-b9999-bin-ubuntu-x64.tar.gz", &src, &dest, "b9999")
-      .expect("tar.gz route");
+    let out = safe_extract(
+      "llama-b9999-bin-ubuntu-x64.tar.gz",
+      &src,
+      &dest,
+      "b9999",
+      ExtractLimits::default(),
+    )
+    .expect("tar.gz route");
     assert!(out.path.ends_with("build/bin/llama-server"));
     std::fs::remove_dir_all(&dest).ok();
   }
@@ -1116,7 +1270,14 @@ mod tests {
   fn safe_extract_refuses_zip_on_non_windows() {
     let dest = temp_dir("dispatch-zip-not-windows");
     let src = on_disk("dispatch-zip-not-windows", b"PK\x03\x04");
-    let err = safe_extract("llama-b9999-bin-win-cpu-x64.zip", &src, &dest, "b9999").unwrap_err();
+    let err = safe_extract(
+      "llama-b9999-bin-win-cpu-x64.zip",
+      &src,
+      &dest,
+      "b9999",
+      ExtractLimits::default(),
+    )
+    .unwrap_err();
     assert!(
       matches!(err, InstallError::UnsafeArchive { ref reason, .. } if reason.contains("only supported on Windows")),
       "expected non-Windows zip refusal, got {err:?}"
@@ -1156,7 +1317,13 @@ mod tests {
         write_zip_file(w, "README.txt", b"docs");
       });
       let dest = temp_dir("zip-happy");
-      let out = safe_extract_zip(Cursor::new(archive), &dest, "b9999").expect("zip extract");
+      let out = safe_extract_zip(
+        Cursor::new(archive),
+        &dest,
+        "b9999",
+        ExtractLimits::default(),
+      )
+      .expect("zip extract");
       assert!(out.path.is_file(), "binary not extracted");
       assert!(out.path.ends_with("llama-server.exe"));
       std::fs::remove_dir_all(&dest).ok();
@@ -1168,7 +1335,13 @@ mod tests {
         write_zip_file(w, "other.exe", b"MZ");
       });
       let dest = temp_dir("zip-no-binary");
-      let err = safe_extract_zip(Cursor::new(archive), &dest, "b9999").unwrap_err();
+      let err = safe_extract_zip(
+        Cursor::new(archive),
+        &dest,
+        "b9999",
+        ExtractLimits::default(),
+      )
+      .unwrap_err();
       assert!(
         matches!(err, InstallError::UnsafeArchive { ref reason, .. } if reason.contains("llama-server.exe")),
         "expected missing-binary refusal, got {err:?}"
@@ -1185,7 +1358,13 @@ mod tests {
         write_zip_file(w, "../escape.exe", b"evil");
       });
       let dest = temp_dir("zip-traversal");
-      let err = safe_extract_zip(Cursor::new(archive), &dest, "b9999").unwrap_err();
+      let err = safe_extract_zip(
+        Cursor::new(archive),
+        &dest,
+        "b9999",
+        ExtractLimits::default(),
+      )
+      .unwrap_err();
       assert!(
         matches!(err, InstallError::UnsafeArchive { .. }),
         "expected traversal refusal, got {err:?}"
@@ -1200,8 +1379,14 @@ mod tests {
       });
       let dest = temp_dir("dispatch-zip");
       let src = on_disk("dispatch-zip", &archive);
-      let out =
-        safe_extract("llama-b9999-bin-win-cpu-x64.zip", &src, &dest, "b9999").expect("zip route");
+      let out = safe_extract(
+        "llama-b9999-bin-win-cpu-x64.zip",
+        &src,
+        &dest,
+        "b9999",
+        ExtractLimits::default(),
+      )
+      .expect("zip route");
       assert!(out.path.ends_with("llama-server.exe"));
       std::fs::remove_dir_all(&dest).ok();
     }
@@ -1220,7 +1405,8 @@ mod tests {
     let archive = build_archive(|tar| {
       write_file_entry(tar, "build/bin/llama-server", b"new binary");
     });
-    let err = safe_extract_tar_gz(archive.as_slice(), &dest, "b9999").unwrap_err();
+    let err = safe_extract_tar_gz(archive.as_slice(), &dest, "b9999", ExtractLimits::default())
+      .unwrap_err();
     assert!(
       matches!(err, InstallError::UnsafeArchive { ref reason, .. } if reason.contains("llama-server")),
       "expected actionable missing-binary error, got {err:?}"

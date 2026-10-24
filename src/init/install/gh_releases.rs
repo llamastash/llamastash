@@ -28,7 +28,9 @@ use crate::gpu::GpuInfo;
 use crate::init::detection::{CpuArch, HardwareSnapshot, OsFamily};
 use crate::init::fetch::{FetchClient, FetchError};
 
-use super::safe_extract::{existing_install, safe_extract, safe_extract_libs_tar_gz};
+use super::safe_extract::{
+  existing_install, safe_extract, safe_extract_libs_tar_gz, ExtractLimits,
+};
 use super::{sha256_file, BinaryInstall, GhBuild, InstallError};
 use crate::init::snapshot::InstallMethod;
 
@@ -48,9 +50,26 @@ const RELEASES_MAX_BYTES: u64 = 2 * 1024 * 1024;
 /// fetched is the Linux CUDA 12.8 runtime bundle, 594 MB at `b11316`.
 const ASSET_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
-/// Disk needed per byte downloaded: the archive while it extracts, plus
-/// the extracted files (the CUDA 12.8 runtime bundle unpacks to 1.5x).
-const DISK_PER_DOWNLOADED_BYTE: u64 = 3;
+/// Free-space multiplier per byte of archive: the archive on disk plus
+/// what it unpacks to. Measured at `b11804`: a CUDA build and its
+/// `cudart-` bundle together need 2.4x, the ROCm builds 5.9x (a 1.09 GiB
+/// `libggml-hip.so` inside a 250 MB archive). The flat 3x under-called
+/// ROCm, so the precheck passed at 750 MB and extraction then needed
+/// 1.4 GiB.
+const DISK_SLACK_DEFAULT: u64 = 3;
+
+/// Same, for the ROCm family, which ships one very large HIP blob.
+const DISK_SLACK_ROCM: u64 = 7;
+
+/// Free space to hold while downloading and extracting `asset`.
+fn disk_need_bytes(asset: &Download) -> u64 {
+  let slack = if asset.asset_name.contains("-rocm-") {
+    DISK_SLACK_ROCM
+  } else {
+    DISK_SLACK_DEFAULT
+  };
+  asset.size.saturating_mul(slack)
+}
 
 /// Budget for the first `--list-devices` after a CUDA install, which
 /// loads about 1 GB of CUDA libraries from a cold disk.
@@ -531,17 +550,16 @@ pub async fn install_picked(
     (Some(libs), Some(found)) if libs_marker(&found.path, libs)?.exists() => None,
     (libs, _) => libs.as_ref(),
   };
-  let archive_bytes = if existing.is_none() {
-    pick.archive.size
+  let mut need = if existing.is_none() {
+    disk_need_bytes(&pick.archive)
   } else {
     0
   };
-  let to_download = archive_bytes + libs.map_or(0, |l| l.size);
-  crate::init::download::precheck_disk(
-    install_root,
-    to_download.saturating_mul(DISK_PER_DOWNLOADED_BYTE),
-  )
-  .map_err(|e| InstallError::Io(e.to_string()))?;
+  if let Some(libs) = libs {
+    need = need.saturating_add(disk_need_bytes(libs));
+  }
+  crate::init::download::precheck_disk(install_root, need)
+    .map_err(|e| InstallError::Io(e.to_string()))?;
   let extracted = match existing {
     Some(found) => found,
     None => {
@@ -551,6 +569,7 @@ pub async fn install_picked(
         archive.path(),
         install_root,
         &dir_name,
+        ExtractLimits::for_asset(Some(pick.archive.size)),
       )?
     }
   };
@@ -560,7 +579,11 @@ pub async fn install_picked(
     let lib_archive = download_verified(fetch, libs, install_root).await?;
     let file =
       std::fs::File::open(lib_archive.path()).map_err(|e| InstallError::Io(e.to_string()))?;
-    safe_extract_libs_tar_gz(std::io::BufReader::new(file), dir)?;
+    safe_extract_libs_tar_gz(
+      std::io::BufReader::new(file),
+      dir,
+      ExtractLimits::for_asset(Some(libs.size)),
+    )?;
     // Written last, so an interrupted extract is redone on the next run.
     std::fs::write(libs_marker(&extracted.path, libs)?, b"")
       .map_err(|e| InstallError::Io(e.to_string()))?;
@@ -1115,6 +1138,41 @@ mod tests {
       },
       runtime_libs: None,
     }
+  }
+
+  fn download(name: &str, size: u64) -> Download {
+    Download {
+      asset_name: name.into(),
+      url: String::new(),
+      sha256: String::new(),
+      size,
+    }
+  }
+
+  /// Sizes and unpacked totals measured on the real `b11804` assets.
+  /// ROCm packs one 1.09 GiB HIP blob, so a flat multiplier sized for
+  /// CUDA under-books it and extraction fails after the download.
+  #[test]
+  fn disk_precheck_budgets_rocm_for_its_hip_blob() {
+    let linux = download("llama-b11804-bin-ubuntu-rocm-10.0-x64.tar.gz", 249_908_117);
+    // archive 249,908,117 + unpacked 1,229,319,446
+    assert!(disk_need_bytes(&linux) >= 1_479_227_563);
+    let windows = download("llama-b11804-bin-win-rocm-10.0-x64.zip", 263_465_134);
+    // archive 263,465,134 + unpacked 1,217,472,285
+    assert!(disk_need_bytes(&windows) >= 1_480_937_419);
+  }
+
+  /// The same precheck must not balloon for CUDA, or a disk that fits the
+  /// install refuses it: a CUDA 12.8 build plus its bundle costs 1.86 GiB.
+  #[test]
+  fn disk_precheck_does_not_overbudget_a_cuda_install() {
+    let main = download("llama-b11804-bin-ubuntu-cuda-12.8-x64.tar.gz", 177_931_030);
+    let libs = download(
+      "cudart-llama-b11804-bin-ubuntu-cuda-12.8-x64.tar.gz",
+      594_377_688,
+    );
+    let need = disk_need_bytes(&main) + disk_need_bytes(&libs);
+    assert!((1_862_402_516..2_500_000_000).contains(&need), "{need}");
   }
 
   #[test]

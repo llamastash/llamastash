@@ -122,7 +122,7 @@ Verification of external contracts is **explicitly part of Unit 1's pre-implemen
 - **Snapshot JSON schema shape** → forward-compatible envelope: `{schema_version: u32, bundle_date: ISO-8601, min_version: semver, models: [{repo, file, architecture, quant, params, weights_bytes, benchmark_score: {value, source}, tok_s_factor, recency}]}`. Recommender ignores unknown fields; older binaries refuse a snapshot whose `min_version` exceeds their own build.
 - **CI partial-source-failure handling** → last-known-good fallback: the refresh script writes a candidate snapshot but only promotes it to the daily Release asset if (a) every source returned data and (b) the 16/20 corpus passes the failure threshold. Otherwise it auto-files a recalibration issue; the previous Release stays live. doctor's "remote unreachable since" finding (R74) catches the prolonged-degraded case.
 - **`vram_gb` aggregation rule** → `min(device.total_memory_bytes)` for Nvidia/Amd (single-GPU placement is the limiting case); `total_memory_bytes × 0.75` for AppleMetal; `null` for CpuOnly + Unknown. Pin in `detection.rs`.
-- **Archive-bomb defenses** → entry count cap 10 000, total uncompressed cap 2 GiB, per-entry compression-ratio cap 100×, refuse hardlinks. All applied during extraction, before atomic rename.
+- **Archive-bomb defenses** → entry count cap 10 000, total uncompressed cap 2 GiB, per-entry compression-ratio cap 100×, refuse hardlinks. All applied during extraction, before atomic rename. _(Superseded 2026-10-24: the size caps derive from the asset's own declared size — 16× its compressed bytes, floored at 2 GiB — so a bigger upstream blob no longer needs a new constant; llama.cpp's `libggml-hip.so` alone declared 1.09 GiB at `b11804` and the flat 1 GiB per-entry cap refused the whole ROCm release ([#119](https://github.com/llamastash/llamastash/issues/119)). The per-entry ratio cap never shipped: tar does not expose per-entry compressed bytes when one gz stream wraps the archive, so any ratio there measured nothing.)_
 - **Wizard-direct `--version` probe env-strip** → `Command::env_clear()` then re-apply the supervisor's minimum env (`PATH`, `HOME`, `USER`, `LANG`); `LLAMA_ARG_*` and `HF_TOKEN` stripped explicitly.
 
 ### Deferred to Implementation
@@ -605,7 +605,7 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 **Approach:**
 - Asset selection: GH Releases REST API → JSON → pick first asset whose name matches the (platform, variant) regex the spike pinned. Variant table per Key Decisions / R52.
 - Checksum: prefer discrete `.sha256` asset; fallback to parsing the rendered release body for the canonical `sha256:` line if the spike confirms that's the only path. Verification happens **before** extraction.
-- Extraction safety: refuse `..` / absolute / device / FIFO / out-of-tree symlinks / hardlinks; cap entry count at 10 000; cap total uncompressed size at 2 GiB; cap per-entry compression ratio at 100×. Extract into `<dir>.tmp.<pid>` then atomic rename to `<XDG_DATA_HOME>/llamastash/llama-cpp/<version>/` (mode 0700).
+- Extraction safety: refuse `..` / absolute / device / FIFO / out-of-tree symlinks / hardlinks; cap entry count at 10 000; cap total and per-entry uncompressed size at `max(2 GiB, 16 × the asset's declared size)` (see Key Decisions, archive-bomb defenses). Extract into `<dir>.tmp.<pid>` then atomic rename to `<XDG_DATA_HOME>/llamastash/llama-cpp/<version>/` (mode 0700).
 - Final binary is `chmod 0700`. Recorded digest persists into `_init_snapshot.llama_server_digest`.
 - "Point at existing binary" path: the install module also owns the integrity check (resolve symlink → target owner us-or-root, parent-dir + target mode, digest record). `--yes` mode auto-pre-selects an existing binary only if integrity passes; failure aborts with exit 72.
 - Rate-limit handling (R71): retry once with exponential backoff, then fall back to offering the "point at existing binary" path.
@@ -623,7 +623,7 @@ vram_unknown_branch: prompt user for VRAM estimate; fall back to CPU bucket
 - *Error path*: archive entry with absolute path → refused.
 - *Error path*: archive entry with out-of-tree symlink target → refused.
 - *Error path*: archive with > 10 000 entries → refused.
-- *Error path*: archive total uncompressed size > 2 GiB → refused mid-extraction (streaming check).
+- *Error path*: archive total uncompressed size over the derived cap → refused mid-extraction (streaming check).
 - *Error path*: archive entry with > 100× compression ratio → refused (bomb defense).
 - *Error path*: archive entry that is a hardlink → refused.
 - *Error path*: GH API returns 403 rate-limit → retry once, fall back to custom-path offer.
