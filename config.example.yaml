@@ -187,7 +187,7 @@ daemon:
   # Additional reserve from currently available RAM on Apple Silicon.
   # Integer 0..99; default 25. Other hosts are unchanged. Open apps are
   # already counted as used. Lower values leave less room for growth.
-  # TUI Alt+M edits this live; hand-edits require a daemon restart.
+  # TUI m edits this live; hand-edits require a daemon restart.
   apple_memory_reserve_percent: 25
 
   # Models to start when the daemon comes up — the always-warm list (an
@@ -835,7 +835,7 @@ keybindings:
   focus_settings_tab: S
   focus_requests_tab: Q # i.e. shift+q, the `q` underlined in the tab label; R is Rerank
   open_hf_dialog: P # i.e. shift+p — "Pull"
-  open_memory_reserve: alt+m # Apple Silicon memory reserve
+  open_memory_reserve: m # Apple Silicon memory reserve; default alias: alt+m
 
   # ── Models list local actions ─────────────────────────────
   open_filter: "/"

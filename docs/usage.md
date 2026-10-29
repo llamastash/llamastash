@@ -192,7 +192,7 @@ Bare letters are for tool actions (`f` favorite, `e` edit, `u/c/p` yank, `t` the
 | `clear_filter`                          | `Esc`                             | Filter input                                                                       |
 | `toggle_favorite`                       | `f`                               | List                                                                               |
 | `open_launch_picker`                    | `Enter`                           | List                                                                               |
-| `open_memory_reserve` | `alt+m` | Nav focuses — Apple Silicon memory reserve editor |
+| `open_memory_reserve` | `m` · `alt+m` | Nav focuses — Apple Silicon memory reserve editor |
 | `open_hf_dialog`                        | `shift+p`                         | List — "Pull" mnemonic                                                             |
 | `submit`                                | `Enter`                           | Filter, right pane, embed, rerank, confirm popup, HF dialog                        |
 | `cancel`                                | `Esc`                             | Confirm popup, HF dialog                                                           |
@@ -451,7 +451,7 @@ already counted as used. It is a conservative default, not a Metal hardware
 limit. The engine's own memory limits, the model estimate (including compute
 overhead), and reservations for other launches remain separate.
 
-From the Models list or right pane, **Alt+M** (**⌥M** on macOS) opens the
+From the Models list or right pane, **m** opens the
 memory reserve editor. Enter a whole percentage from **0 to 99**. The dialog
 previews available RAM, the additional reserve and the resulting launch
 budget. Enter saves; Esc cancels (both follow the configured submit/cancel
@@ -459,6 +459,11 @@ bindings). A save preserves comments in `config.yaml` and changes admission
 for future CLI, TUI and proxy launches immediately, without restarting the
 daemon or its running models. Recent failed auto-starts can still be in the
 proxy's normal retry cooldown; changing the reserve does not clear it.
+
+**Alt+M** is an alternate shortcut. In macOS Terminal, this alias requires
+[Use Option as Meta key](https://support.apple.com/guide/terminal/trmlkbrd/mac);
+plain **m** works without changing the terminal's keyboard settings. Neither
+shortcut captures text typed into the filter or a chat input.
 
 ```yaml
 daemon:
@@ -1952,7 +1957,7 @@ These are the defaults. Override any binding via the `keybindings:` block in `co
 | `Enter`                                       | On an idle model: open the launch picker. On a model that is running: focus the right pane on its first tab (`Requests`), with no picker staged                                                                                                              |
 | `u` / `c` / `p`                               | Yank URL / curl / model path. `y` is a vi-style alias for `c`.                                                                                                                                           |
 | `t` / `Shift+T`                               | Cycle theme forward / backward                                                                                                                                                                           |
-| `Alt+M` (`⌥M` on macOS) | Edit the Apple Silicon memory reserve with a live budget preview; saves to `daemon.apple_memory_reserve_percent`. |
+| `m` · `Alt+M` | Edit the Apple Silicon memory reserve with a live budget preview; saves to `daemon.apple_memory_reserve_percent`. |
 | `Alt+L` (`⌥L` on macOS)                       | Cycle the left/right pane split through `left_pane_ratios` (wide mode; session-only). `100` hides the right pane, `0` hides the list.                                                                    |
 | `Tab` / `Shift+Tab`                           | Move focus across panes (`h` / `l` do the same — Left/Right arrows are intentionally unbound on Models to avoid an asymmetric pane-jump)                                                                 |
 | `Shift+M` / `Shift+L` / `Shift+C` / `Shift+S` / `Shift+Q` | Jump focus to Models / Logs / Chat / Settings / Requests respectively. `L` and `C` only fire when the focused model is running, `Q` when it has a launch.                                    |
