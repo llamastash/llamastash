@@ -468,6 +468,8 @@ pub struct App {
   /// `Ctrl+P` save-preset dialog. `Some(_)` while the modal is open; the
   /// input pump routes keys to its name / overwrite stages.
   pub save_preset_dialog: Option<crate::tui::save_preset_dialog::SavePresetDialog>,
+  pub memory_dialog: Option<crate::tui::memory_dialog::MemoryDialog>,
+  pub memory_budget: Option<crate::daemon::memory_policy::MemoryBudget>,
   /// `Alt+⏎` launch-name dialog. `Some(_)` while the modal is open; on accept
   /// the normal launch picker opens carrying the typed name.
   pub launch_name_dialog: Option<crate::tui::launch_name_dialog::LaunchNameDialog>,
@@ -680,6 +682,8 @@ impl App {
       confirm_dialog: None,
       hf_dialog: None,
       save_preset_dialog: None,
+      memory_dialog: None,
+      memory_budget: None,
       launch_name_dialog: None,
       download_strip: crate::tui::download_strip::DownloadStripState::default(),
       bell_watch: Vec::new(),
@@ -1138,6 +1142,9 @@ impl App {
     } else {
       self.external.clear();
     }
+    self.memory_budget = body
+      .pointer("/daemon/memory")
+      .and_then(|value| serde_json::from_value(value.clone()).ok());
     if let Some(daemon) = body.get("daemon") {
       // Preserve the proxy snapshot — it lives in a sibling field
       // (`body["proxy"]`) but on the same daemon-info struct so the

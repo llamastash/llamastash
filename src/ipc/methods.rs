@@ -42,6 +42,31 @@ pub async fn dispatch_request(ctx: &MethodContext, req: Request) -> Response {
 
   match req.method.as_str() {
     "ping" => Response::ok(id, json!("pong")),
+    "memory_reserve_set" => {
+      #[derive(Deserialize)]
+      #[serde(deny_unknown_fields)]
+      struct Params {
+        #[serde(deserialize_with = "crate::config::loader::deserialize_memory_reserve_percent")]
+        apple_memory_reserve_percent: u8,
+      }
+      match parse_params::<Params>(req.params) {
+        Err(error) => Response::err(id, error),
+        Ok(params) => match ctx
+          .memory_policy
+          .set(params.apple_memory_reserve_percent)
+          .await
+        {
+          Ok(()) => Response::ok(
+            id,
+            json!({"apple_memory_reserve_percent": params.apple_memory_reserve_percent}),
+          ),
+          Err(error) => Response::err(
+            id,
+            ErrorObject::new(ErrorCode::InternalError, error.to_string()),
+          ),
+        },
+      }
+    }
     "version" => {
       let uptime_secs = ctx.started_at.elapsed().as_secs();
       let connections = ctx.active_connections.load(Ordering::Relaxed);
@@ -523,6 +548,7 @@ const PUBLIC_METHODS: &[&str] = &[
   "presets_delete",
   "presets_show",
   "presets_all",
+  "memory_reserve_set",
   "favorite_add",
   "favorite_remove",
   "favorite_list",

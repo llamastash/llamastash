@@ -125,6 +125,7 @@ pub struct MethodContext {
   /// launches; settled (released) when each child reaches Ready / Error
   /// / Stopped. In-memory by design.
   pub admission: Arc<crate::launch::admission::Ledger>,
+  pub memory_policy: crate::daemon::memory_policy::MemoryPolicy,
   /// The `daemon.preload:` list as configured, empty when nothing was set.
   /// Reported on `status.daemon.preload` so a caller can tell "preload
   /// configured" from "preload has nothing to start"; the entries themselves are
@@ -304,9 +305,15 @@ impl MethodContext {
       backend: crate::backend::BackendConfig::default(),
       backend_force: std::collections::BTreeMap::new(),
       admission: Arc::new(crate::launch::admission::Ledger::default()),
+      memory_policy: crate::daemon::memory_policy::MemoryPolicy::default(),
       preload: Arc::new(Vec::new()),
       aliases: std::sync::Arc::new(crate::proxy::alias::AliasTable::default()),
     }
+  }
+
+  pub fn with_memory_policy(mut self, policy: crate::daemon::memory_policy::MemoryPolicy) -> Self {
+    self.memory_policy = policy;
+    self
   }
 
   /// Builder helper: install the `proxy.aliases` table. One table per daemon,

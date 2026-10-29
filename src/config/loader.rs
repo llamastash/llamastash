@@ -176,6 +176,9 @@ pub struct DaemonConfig {
   /// `nvidia-smi` / `rocm-smi` are spawned, at the cost of a less
   /// responsive host pane.
   pub metrics_interval_secs: u64,
+  /// Additional share of available RAM reserved on Apple Silicon, from 0 to 99.
+  #[serde(deserialize_with = "deserialize_memory_reserve_percent")]
+  pub apple_memory_reserve_percent: u8,
   /// Models to start when the daemon comes up, in list order. Each entry is a
   /// model reference (`list` name, path, or `<model>@<preset>`), or the path to
   /// a launch file (`.yaml`/`.yml`). A preset can also opt in on its own with
@@ -183,6 +186,18 @@ pub struct DaemonConfig {
   /// unloads them. A refused entry (admission, unknown model) logs and is
   /// skipped — preload never blocks boot.
   pub preload: Vec<String>,
+}
+
+pub(crate) fn deserialize_memory_reserve_percent<'de, D: serde::Deserializer<'de>>(
+  deserializer: D,
+) -> Result<u8, D::Error> {
+  let percent = u8::deserialize(deserializer)?;
+  if percent > 99 {
+    return Err(serde::de::Error::custom(
+      "apple_memory_reserve_percent must be between 0 and 99",
+    ));
+  }
+  Ok(percent)
 }
 
 impl DaemonConfig {
@@ -209,6 +224,7 @@ impl Default for DaemonConfig {
       probe_timeout_secs: 120,
       idle_timeout_secs: 0,
       metrics_interval_secs: 1,
+      apple_memory_reserve_percent: crate::launch::headroom::DEFAULT_APPLE_RESERVE_PERCENT,
       preload: Vec::new(),
     }
   }
@@ -1681,6 +1697,28 @@ daemon:
       ..Default::default()
     };
     assert_eq!(daemon.idle_timeout(), None);
+  }
+
+  #[test]
+  fn apple_memory_reserve_config_validates_and_keeps_default() {
+    let default: Config = yaml_serde::from_str("{}").unwrap();
+    assert_eq!(default.daemon.apple_memory_reserve_percent, 25);
+    for percent in [0, 10, 25, 99] {
+      let cfg: Config = yaml_serde::from_str(&format!(
+        "daemon:\n  apple_memory_reserve_percent: {percent}\n"
+      ))
+      .unwrap();
+      assert_eq!(cfg.daemon.apple_memory_reserve_percent, percent);
+    }
+    for value in ["-1", "100", "256", "10.5", "nope", "null"] {
+      assert!(
+        yaml_serde::from_str::<Config>(&format!(
+          "daemon:\n  apple_memory_reserve_percent: {value}\n"
+        ))
+        .is_err(),
+        "{value}"
+      );
+    }
   }
 
   /// Unlike the two timers, `0` here is a reset rather than an off

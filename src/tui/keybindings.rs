@@ -209,6 +209,7 @@ pub enum Action {
   /// view/layout action, so `Alt` rather than the `Shift` (navigate) or
   /// `Ctrl` (destructive) namespaces.
   CyclePaneRatio,
+  OpenMemoryReserve,
   /// Snap focus back to the Models list. Bound to `Esc` in the
   /// right pane (closes the pane) and in the AdvancedPanel
   /// overlay. The LaunchPicker is no longer a modal — Settings
@@ -568,6 +569,11 @@ fn build_default_bindings() -> Vec<Binding> {
     action: Action::CyclePaneRatio, scopes: FocusSet::NAV,
     hint: "split", description: Some("cycle pane split"),
     chords: [(KeyCode::Char('l'), KeyModifiers::ALT, crate::alt_label!("L"), CAT_GLOBAL)],
+  });
+  v.extend_from_slice(&binds! {
+    action: Action::OpenMemoryReserve, scopes: FocusSet::NAV,
+    hint: "memory", description: Some("edit Apple Silicon memory reserve"),
+    chords: [(KeyCode::Char('m'), KeyModifiers::ALT, crate::alt_label!("M"), CAT_GLOBAL)],
   });
   // ─── Daemon-level / destructive (all behind Ctrl) ───────────
   v.extend_from_slice(&binds! {
@@ -1191,6 +1197,7 @@ impl Action {
     ("cycle_theme", Action::CycleTheme),
     ("cycle_theme_prev", Action::CycleThemePrev),
     ("cycle_pane_ratio", Action::CyclePaneRatio),
+    ("open_memory_reserve", Action::OpenMemoryReserve),
     ("open_hf_dialog", Action::OpenHfDialog),
     ("save_preset", Action::SavePreset),
     ("focus_list", Action::FocusList),

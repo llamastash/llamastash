@@ -45,6 +45,12 @@ struct GlobalChip {
 /// display order): `pull` survives longest, then `help`, `quit`,
 /// `panes`, `theme`, and `scroll` drops first.
 const GLOBAL_CHIPS: &[GlobalChip] = &[
+  GlobalChip {
+    description: "memory",
+    focus: Focus::List,
+    actions: &[Action::OpenMemoryReserve],
+    rank: 45,
+  },
   // Surface the HF pull dialog opener first so first-time users see
   // the affordance without opening the help overlay. `OpenHfDialog`
   // is a global (`FocusSet::NAV`) binding — it fires from the model
@@ -200,6 +206,13 @@ fn pane_chip_labels(bindings: &[Binding]) -> Vec<String> {
 fn resolved_chips(app: &App) -> Vec<RankedChip> {
   GLOBAL_CHIPS
     .iter()
+    .filter(|chip| {
+      chip.actions != [Action::OpenMemoryReserve]
+        || app
+          .memory_budget
+          .as_ref()
+          .is_some_and(|budget| budget.apple_unified)
+    })
     .filter_map(|chip| {
       chip_keys(app, chip)
         .map(|keys| RankedChip::new(chip.rank, format!("{keys}:{}", chip.description)))

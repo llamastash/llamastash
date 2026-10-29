@@ -469,7 +469,7 @@ impl Backend for VllmBackend {
     // an unsampled host has no pool total to size a fraction against.
     if user_cap {
       if let Some(s) = snapshot.as_ref().filter(|_| sampled) {
-        let free = crate::launch::admission::effective_free_bytes(s);
+        let free = crate::launch::admission::effective_free_bytes(s, ctx.memory_policy.percent());
         if let Some(util) = knob_bytes(params, "kv_cache_memory_bytes")
           .and_then(|cap| startup_utilization(free, weights_bytes, cap, s.ram_total_bytes))
         {
@@ -480,7 +480,7 @@ impl Backend for VllmBackend {
     }
     let (cap, utilization) = match snapshot.as_ref().filter(|_| sampled) {
       Some(s) => {
-        let free = crate::launch::admission::effective_free_bytes(s);
+        let free = crate::launch::admission::effective_free_bytes(s, ctx.memory_policy.percent());
         // On an APU, GPU memory *is* system RAM, and vLLM sizes its KV cache
         // to fill whatever `gpu_memory_utilization` allows — a fraction of
         // the **pool**, not of the model. Measured on a 121 GB Strix Halo:

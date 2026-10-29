@@ -335,6 +335,7 @@ pub struct DaemonHealth {
   /// Boot preload as configured: `{entries, presets}`. `None` against a daemon
   /// that predates the field.
   pub preload: Option<Value>,
+  pub memory: Option<Value>,
 }
 
 fn parse_daemon_health(v: &Value) -> Option<DaemonHealth> {
@@ -359,6 +360,7 @@ fn parse_daemon_health(v: &Value) -> Option<DaemonHealth> {
       .and_then(Value::as_str)
       .map(str::to_string),
     preload: obj.get("preload").cloned(),
+    memory: obj.get("memory").cloned(),
   })
 }
 
@@ -739,6 +741,23 @@ fn single_or_error(matches: Vec<&RunningRow>, reference: &str) -> Result<Running
 
 #[cfg(test)]
 mod tests {
+  #[test]
+  fn memory_reserve_status_survives_cli_parse_and_render() {
+    let budget = serde_json::json!({"apple_memory_reserve_percent": 10, "apple_unified": true, "available_bytes": 40, "admissible_bytes": 36});
+    let daemon = super::parse_daemon_health(&serde_json::json!({"pid": 1, "memory": budget}));
+    let snapshot = super::StatusSnapshot {
+      models: vec![],
+      external: vec![],
+      gpu: serde_json::Value::Null,
+      host: serde_json::Value::Null,
+      daemon,
+      proxy: serde_json::Value::Null,
+      backends: serde_json::Value::Null,
+      servers: serde_json::Value::Null,
+    };
+    let rendered = crate::cli::output::status_json(&snapshot);
+    assert_eq!(rendered["daemon"]["memory"], budget);
+  }
   use super::*;
 
   /// A canned HTTP reply, served twice so a test can prove the stub was reached

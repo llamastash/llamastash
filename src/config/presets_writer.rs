@@ -31,6 +31,9 @@ pub fn upsert_preset(
   name: &str,
   body: &impl Serialize,
 ) -> Result<(), WriteError> {
+  let _mutation = crate::config::writer::CONFIG_MUTATION
+    .lock()
+    .unwrap_or_else(std::sync::PoisonError::into_inner);
   // Resolve a symlinked config to its real target (the link is preserved).
   let target = preflight(config_path)?;
   let source = yaml_edit::read_source(config_path)?;
@@ -48,6 +51,9 @@ pub fn upsert_preset(
 /// whole model key, or the whole `presets:` key) left behind is pruned.
 /// Returns `false` when the preset wasn't present, so nothing was written.
 pub fn remove_preset(config_path: &Path, model_key: &str, name: &str) -> Result<bool, WriteError> {
+  let _mutation = crate::config::writer::CONFIG_MUTATION
+    .lock()
+    .unwrap_or_else(std::sync::PoisonError::into_inner);
   let target = preflight(config_path)?;
   let source = yaml_edit::read_source(config_path)?;
   match yaml_edit::remove(&source, &[PRESETS_KEY, model_key, ENTRIES_KEY, name])? {

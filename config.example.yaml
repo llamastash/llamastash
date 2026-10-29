@@ -184,6 +184,12 @@ daemon:
   # tick would spin the sampler.
   metrics_interval_secs: 1
 
+  # Additional reserve from currently available RAM on Apple Silicon.
+  # Integer 0..99; default 25. Other hosts are unchanged. Open apps are
+  # already counted as used. Lower values leave less room for growth.
+  # TUI Alt+M edits this live; hand-edits require a daemon restart.
+  apple_memory_reserve_percent: 25
+
   # Models to start when the daemon comes up — the always-warm list (an
   # embedder a script hits every minute, the one coding model you open
   # first). Each entry is a `list` name or path, a `<model>@<preset>`
@@ -829,6 +835,7 @@ keybindings:
   focus_settings_tab: S
   focus_requests_tab: Q # i.e. shift+q, the `q` underlined in the tab label; R is Rerank
   open_hf_dialog: P # i.e. shift+p — "Pull"
+  open_memory_reserve: alt+m # Apple Silicon memory reserve
 
   # ── Models list local actions ─────────────────────────────
   open_filter: "/"

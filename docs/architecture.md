@@ -222,6 +222,15 @@ On a UMA host the gate budgets `min(ram_free, gtt_free)` (`admission::effective_
 
 **Make-room, then refuse.** When admission refuses a **proxy auto-start**, the proxy does not answer 503 yet: `eviction::make_room` takes the refusal's own numbers back out of the error `data` and unloads idle launches, least-recently-used first (MRU stamps, a launch never touched sorts oldest), stopping at the first set whose credit covers the shortfall. Then it waits for the sampled free memory to catch up (up to 20 s, or two sampler ticks when `daemon.metrics_interval_secs` is above 10 s, since the retry is priced on the same sample) and retries the launch once; admission runs again and stays the authority. It is all-or-nothing: if every eligible launch together cannot cover the shortfall, nothing is stopped, because unloading models for a launch that still will not fit is a pure loss. Never a candidate: a launch with a request in flight, a non-auto-start launch (manual or preloaded), a launch whose preset pins `idle_ttl_secs: 0`, and one nothing can size. A launch is stopped only after a fresh check that it is still `Ready` with nothing in flight, since selection happens up to the stop grace before the stop. Credit uses `launch_resident_bytes`, the same figure admission measures a launch with, so a launch and a split GGUF are both sized across every shard. `start --force` and the CLI/TUI paths never make room; the refusal stands and `--force` is the operator's own override.
 
+**Live Apple admission reserve.** `daemon.apple_memory_reserve_percent` defaults
+to 25 and accepts integers from 0 to 99. `daemon::memory_policy::MemoryPolicy`
+serializes updates, writes the one config leaf through the comment-preserving
+writer, then publishes the new percentage. A failed write leaves admission
+unchanged. In-process reserve and preset writers share a lock so a concurrent preset edit
+cannot overwrite the reserve edit. Admission, proxy make-room waits and the
+backends' shared-memory budget calculations read the same live value; other
+pool types retain their original policy. Running launches are unaffected.
+
 ### DeepSeek-V4 KV estimate
 
 deepseek4 KV is modeled from the header in `gguf::memory` (per-layer `attention.compress_ratios` + `attention.key_length`: a raw recent window plus `ctx / ratio` compressed rows of F32 latents), whichever server runs the file. The generic GQA figure over-counts ~8x at long context. ds4 itself runs as a `backend.generic` entry (`docs/usage.md` § Running ds4 as a generic server).
@@ -543,6 +552,11 @@ JSON-RPC error codes follow the spec (`-32601 Method not found`, `-32602 Invalid
 
 `proxy_aliases` audits the `proxy.aliases` table against the catalog: the table is built once per daemon (`src/proxy/alias.rs`) and shared with the proxy through `MethodContext`, so its once-per-name warn set is one object process-wide. The same states the audit reports, the two proxy listings act on and the startup report logs — the report runs once the catalog has its first row, because before it does every target would read `dead`.
 
+`memory_reserve_set` takes `{apple_memory_reserve_percent: 0..99}` and returns
+the saved percentage. Unknown fields and invalid values are refused. A save
+requires a writable config path. The TUI's Alt+M editor uses this method and
+only reports success after the daemon has persisted the change.
+
 ### `status` response shape
 
 Beyond the `models` / `external` / `gpu` shapes, the `status` response carries these top-level objects. All of them mirror into the CLI's `status --json` (`src/cli/output.rs::status_json`), so agents on the CLI surface see the same view as raw IPC clients.
@@ -558,6 +572,7 @@ Beyond the `models` / `external` / `gpu` shapes, the `status` response carries t
   - `gpu_devices` (`Option<[…]>`) — present only on multi-GPU / multi-backend hosts, one row per device: `{selector, backend, name, total_memory_bytes, used_memory_bytes?, utilization_pct?, temperature_c?}` (`?` = omitted when the vendor tool doesn't surface it). `selector` is a backend-prefixed *display* label (`Nvidia0`, `Amd0`), **not** a `--device` value — launch selection draws from the `servers` catalog instead.
 - **`servers`** — `{id, backend_id, binary, name, devices, label?}` per configured server. Every launch-device surface reads this (it replaced the old flat `device_catalog`). `label` is the display name: the configured `name:`, else the probed compute backends (`rocm+vulkan`), else the build folder on a collision or a failed probe (`probe_devices` returns `None`), else the backend's `deviceless_accelerator` when its probe answered with no devices (llama.cpp: `cpu`); repeats get `-2`; omitted when none applies.
 - **`backends`** — one row per registered backend: `{id, installed, accelerators, server_labels, enabled?, binary?}`. `server_labels` is one label per `servers` entry of that backend, in catalog order, then the backend's `status_server_labels` (generic: entries without `model:`, which never reach the catalog); a server without a `label` reads as the backend's `accelerators` joined with `|`, else its binary's file name.
+- **`daemon.memory`** — `{apple_memory_reserve_percent, apple_unified, available_bytes, admissible_bytes}`. The byte figures are sampled total-minus-used RAM and the post-reserve launch budget before in-flight reservations; they are null without an Apple Silicon memory sample. Host memory gauges continue to show raw totals.
 - **`daemon.build`** — semver from `CARGO_PKG_VERSION`; matches `--version`.
 - **`daemon.server_path`** — absolute path to the `llama-server` binary resolved at startup, `null` when unset.
 - **`daemon.preload`** — `{entries, presets}`: the `daemon.preload:` list as configured and the number of preset entries pinning `preload: true`. Always present, empty when nothing is configured, so "preload not asked for" is distinguishable from "not read". Whether a given entry actually came up is visible in `models[]`, because a preloaded launch is an ordinary running row (`origin: manual`) that a refusal skips with one log line.
