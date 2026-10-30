@@ -452,10 +452,12 @@ limit. The engine's own memory limits, the model estimate (including compute
 overhead), and reservations for other launches remain separate.
 
 From the Models list or right pane, **m** opens the
-memory reserve editor. Enter a whole percentage from **0 to 99**. The dialog
-previews available RAM, the additional reserve and the resulting launch
-budget. Enter saves; Esc cancels (both follow the configured submit/cancel
-bindings). A save preserves comments in `config.yaml` and changes admission
+memory reserve editor. Enter a whole percentage from **0 to 99** in the
+highlighted reserve field. The live breakdown separates available RAM, the
+additional reserve and the resulting launch budget; a bar shows their shares.
+Invalid input leaves the estimate blank until corrected. Enter saves; Esc
+cancels (both follow the configured submit/cancel bindings). A save preserves
+comments in `config.yaml` and changes admission
 for future CLI, TUI and proxy launches immediately, without restarting the
 daemon or its running models. Recent failed auto-starts can still be in the
 proxy's normal retry cooldown; changing the reserve does not clear it.
