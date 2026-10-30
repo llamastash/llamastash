@@ -554,7 +554,7 @@ JSON-RPC error codes follow the spec (`-32601 Method not found`, `-32602 Invalid
 
 `memory_reserve_set` takes `{apple_memory_reserve_percent: 0..99}` and returns
 the saved percentage. Unknown fields and invalid values are refused. A save
-requires a writable config path. The TUI's Alt+M editor uses this method and
+requires a writable config path. The TUI's m-key editor uses this method and
 only reports success after the daemon has persisted the change.
 
 ### `status` response shape

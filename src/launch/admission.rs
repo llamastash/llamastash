@@ -391,7 +391,7 @@ pub fn pool_fraction_beyond_weights(host: &DemandInputs, fraction: f64) -> u64 {
 /// GPU allocation, and `ram_free` still guards the rare case where
 /// system RAM is the tighter constraint. Apple Silicon has no GTT carve
 /// (it leaves `uma_shared_*` unset), so it falls back to `ram_free` with
-/// its 0.75 headroom.
+/// its configured headroom (0.75 by default).
 ///
 /// This is the host-wide figure. A launch uses [`effective_free_bytes_for`]
 /// with [`gtt_only_budget`], which differs only inside an LXC container.

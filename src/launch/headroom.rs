@@ -8,10 +8,10 @@
 //!
 //! Two questions live here so they have exactly one answer:
 //!
-//! 1. **Usable fraction** of a pool's raw total: how much can be handed
+//! 1. **Usable fraction** of a pool's available memory: how much can be handed
 //!    to a model before the OS and other resident consumers are
-//!    starved. Apple's unified pool defaults to the historical `0.75`, with an
-//!    explicit user override for the additional reserve from available RAM. An AMD/Intel
+//!    starved. Apple's unified pool defaults to the historical `0.75`, with a
+//!    configurable reserve from available RAM. An AMD/Intel
 //!    integrated UMA pool and a discrete VRAM pool are budgeted at the
 //!    full total and lean on the overhead band below for their margin —
 //!    we do not invent an unmeasured fraction for them.
@@ -54,9 +54,9 @@ pub const OVERHEAD_BAND_NATIVE_BYTES: u64 = 512 * 1024 * 1024;
 /// per the spike.
 pub const OVERHEAD_BAND_VULKAN_BYTES: u64 = 1024 * 1024 * 1024;
 
-/// Usable fraction of a pool's available memory. The only value below 1.0 is
-/// Apple's default `0.75` can be changed with the configured reserve; every
-/// other pool is budgeted at full total and relies on
+/// Usable fraction of a pool's available memory. Apple's default `0.75` can
+/// be changed with the configured reserve; every other pool is budgeted at
+/// full available memory and relies on
 /// [`overhead_band_bytes`] for its safety margin.
 pub fn usable_fraction(pool: PoolKind, apple_reserve_percent: u8) -> f64 {
   match pool {
@@ -65,7 +65,7 @@ pub fn usable_fraction(pool: PoolKind, apple_reserve_percent: u8) -> f64 {
   }
 }
 
-/// Apply [`usable_fraction`] to a raw pool total, returning the bytes
+/// Apply [`usable_fraction`] to available memory, returning the bytes
 /// admission may hand out before the OS/app headroom is at risk.
 pub fn admissible_bytes(raw_total: u64, pool: PoolKind, apple_reserve_percent: u8) -> u64 {
   (raw_total as f64 * usable_fraction(pool, apple_reserve_percent)) as u64
