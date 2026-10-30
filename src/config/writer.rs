@@ -27,6 +27,9 @@ use std::path::{Path, PathBuf};
 use yaml_serde::Value;
 
 use super::yaml_edit;
+
+// Reserve edits and preset edits share a file; serialize their read/modify/write.
+pub(crate) static CONFIG_MUTATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
 pub use crate::util::config_patch::{DiffEntry, DiffKind};
 
 /// Outcome of a successful merge-and-write. `diff` is the set of keys
@@ -208,6 +211,9 @@ fn resolve_write_target(path: &Path) -> PathBuf {
 /// hand-written comments and formatting survive (the old whole-file
 /// re-serialise stripped them on every run).
 pub fn merge_and_write(path: &Path, additions: Value) -> Result<WriteOutcome, WriteError> {
+  let _mutation = CONFIG_MUTATION
+    .lock()
+    .unwrap_or_else(std::sync::PoisonError::into_inner);
   // Resolve a symlinked config to its real target (the link is preserved).
   let target = preflight(path)?;
   // Read the source text once — comments live here and must survive. The

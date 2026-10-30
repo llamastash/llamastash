@@ -209,6 +209,7 @@ pub enum Action {
   /// view/layout action, so `Alt` rather than the `Shift` (navigate) or
   /// `Ctrl` (destructive) namespaces.
   CyclePaneRatio,
+  OpenMemoryReserve,
   /// Snap focus back to the Models list. Bound to `Esc` in the
   /// right pane (closes the pane) and in the AdvancedPanel
   /// overlay. The LaunchPicker is no longer a modal — Settings
@@ -568,6 +569,14 @@ fn build_default_bindings() -> Vec<Binding> {
     action: Action::CyclePaneRatio, scopes: FocusSet::NAV,
     hint: "split", description: Some("cycle pane split"),
     chords: [(KeyCode::Char('l'), KeyModifiers::ALT, crate::alt_label!("L"), CAT_GLOBAL)],
+  });
+  v.extend_from_slice(&binds! {
+    action: Action::OpenMemoryReserve, scopes: FocusSet::NAV,
+    hint: "memory", description: Some("edit Apple Silicon memory reserve"),
+    chords: [
+      (KeyCode::Char('m'), KeyModifiers::NONE, "m", CAT_GLOBAL),
+      (KeyCode::Char('m'), KeyModifiers::ALT, crate::alt_label!("M"), NO_CAT),
+    ],
   });
   // ─── Daemon-level / destructive (all behind Ctrl) ───────────
   v.extend_from_slice(&binds! {
@@ -1191,6 +1200,7 @@ impl Action {
     ("cycle_theme", Action::CycleTheme),
     ("cycle_theme_prev", Action::CycleThemePrev),
     ("cycle_pane_ratio", Action::CyclePaneRatio),
+    ("open_memory_reserve", Action::OpenMemoryReserve),
     ("open_hf_dialog", Action::OpenHfDialog),
     ("save_preset", Action::SavePreset),
     ("focus_list", Action::FocusList),
@@ -1562,6 +1572,34 @@ mod tests {
     assert_eq!(
       action_for(Focus::List, KeyCode::Char('L'), KeyModifiers::SHIFT),
       Some(Action::FocusLogsTab)
+    );
+  }
+
+  #[test]
+  fn memory_reserve_has_a_plain_key_without_capturing_text_input() {
+    let keymap = KeyMap::default();
+    for focus in [Focus::List, Focus::RightPane] {
+      for mods in [KeyModifiers::NONE, KeyModifiers::ALT] {
+        assert_eq!(
+          keymap.action_for(focus, KeyCode::Char('m'), mods),
+          Some(Action::OpenMemoryReserve)
+        );
+      }
+    }
+    for focus in [
+      Focus::Filter,
+      Focus::ChatInput,
+      Focus::EmbedInput,
+      Focus::RerankInput,
+    ] {
+      assert_eq!(
+        keymap.action_for(focus, KeyCode::Char('m'), KeyModifiers::NONE),
+        None
+      );
+    }
+    assert_eq!(
+      keymap.action_for(Focus::RightPane, KeyCode::Char('M'), KeyModifiers::SHIFT),
+      Some(Action::FocusList)
     );
   }
 

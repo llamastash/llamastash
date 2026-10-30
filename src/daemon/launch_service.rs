@@ -1224,7 +1224,11 @@ pub(crate) async fn spawn_supervised(
           .is_some_and(|b| crate::backend::Backend::gpu_resident(b, &launch_params, layer_count));
         let gtt_only = crate::launch::admission::gtt_only_budget(&snapshot, gpu_resident);
         (
-          crate::launch::admission::effective_free_bytes_for(&snapshot, gtt_only),
+          crate::launch::admission::effective_free_bytes_for(
+            &snapshot,
+            gtt_only,
+            ctx.memory_policy.percent(),
+          ),
           gtt_only,
         )
       };

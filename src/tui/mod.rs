@@ -31,6 +31,7 @@ pub mod launch_picker;
 pub mod layout;
 pub mod list_pane;
 pub mod logo_pane;
+pub mod memory_dialog;
 pub mod oai_client;
 pub mod render;
 pub mod right_pane;

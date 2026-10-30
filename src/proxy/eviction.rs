@@ -458,8 +458,11 @@ async fn wait_for_room(state: &Arc<ProxyState>, needed: u64) {
   };
   let deadline = Instant::now() + room_wait_window(state.ctx.host_metrics_interval);
   while Instant::now() < deadline {
-    let free = crate::launch::admission::effective_free_bytes(&slot.read().await.clone())
-      .saturating_sub(state.ctx.admission.reserved_bytes());
+    let free = crate::launch::admission::effective_free_bytes(
+      &slot.read().await.clone(),
+      state.ctx.memory_policy.percent(),
+    )
+    .saturating_sub(state.ctx.admission.reserved_bytes());
     if free >= needed {
       return;
     }

@@ -192,6 +192,7 @@ Bare letters are for tool actions (`f` favorite, `e` edit, `u/c/p` yank, `t` the
 | `clear_filter`                          | `Esc`                             | Filter input                                                                       |
 | `toggle_favorite`                       | `f`                               | List                                                                               |
 | `open_launch_picker`                    | `Enter`                           | List                                                                               |
+| `open_memory_reserve` | `m` · `alt+m` | Nav focuses — Apple Silicon memory reserve editor |
 | `open_hf_dialog`                        | `shift+p`                         | List — "Pull" mnemonic                                                             |
 | `submit`                                | `Enter`                           | Filter, right pane, embed, rerank, confirm popup, HF dialog                        |
 | `cancel`                                | `Esc`                             | Confirm popup, HF dialog                                                           |
@@ -441,6 +442,41 @@ Validation is stricter than `config.yaml`'s, because a hand-authored file has no
 The last three rows are the deliberate difference from `config.yaml`, where each of them is dropped with a line in the daemon's log file and the launch goes ahead without it. A misspelled `backend:` is the worst of the set: it silently picks a different engine and still reports success. Only the selected entry is checked — a typo in an entry you didn't launch stays silent, though a bad field on the `default:` / `entries:` block itself is always caught.
 
 YAML merge keys work: `<<: *base` is expanded before the file is validated or parsed, so a shared anchor contributes its knobs to the entry that merges it, and a typo riding in through an anchor is caught like any other. Merges are shallow, per key, as YAML defines them — an entry with its own `knobs:` map replaces the anchor's rather than extending it.
+
+#### Memory reserve on Apple Silicon
+
+LlamaStash reserves 25% of currently available RAM before admitting a launch
+on Apple Silicon. This is an additional margin: running applications are
+already counted as used. It is a conservative default, not a Metal hardware
+limit. The engine's own memory limits, the model estimate (including compute
+overhead), and reservations for other launches remain separate.
+
+From the Models list or right pane, **m** opens the
+memory reserve editor. Enter a whole percentage from **0 to 99** in the
+highlighted reserve field. The live breakdown separates available RAM, the
+additional reserve and the resulting launch budget; a bar shows their shares.
+Invalid input leaves the estimate blank until corrected. Enter saves; Esc
+cancels (both follow the configured submit/cancel bindings). A save preserves
+comments in `config.yaml` and changes admission
+for future CLI, TUI and proxy launches immediately, without restarting the
+daemon or its running models. Recent failed auto-starts can still be in the
+proxy's normal retry cooldown; changing the reserve does not clear it.
+
+**Alt+M** is an alternate shortcut. In macOS Terminal, this alias requires
+[Use Option as Meta key](https://support.apple.com/guide/terminal/trmlkbrd/mac);
+plain **m** works without changing the terminal's keyboard settings. Neither
+shortcut captures text typed into the filter or a chat input.
+
+```yaml
+daemon:
+  apple_memory_reserve_percent: 25
+```
+
+Hand-editing this key requires a daemon restart. It has no effect on other
+platforms. `0` removes the percentage reserve while retaining demand checks
+and in-flight reservations; it does not guarantee that a launch fits or change
+an engine's allocation ceiling. Choose a lower reserve only with room for
+application and model memory growth, and observe memory pressure and swap.
 
 #### `--force` (launch through an admission refusal)
 
@@ -1923,6 +1959,7 @@ These are the defaults. Override any binding via the `keybindings:` block in `co
 | `Enter`                                       | On an idle model: open the launch picker. On a model that is running: focus the right pane on its first tab (`Requests`), with no picker staged                                                                                                              |
 | `u` / `c` / `p`                               | Yank URL / curl / model path. `y` is a vi-style alias for `c`.                                                                                                                                           |
 | `t` / `Shift+T`                               | Cycle theme forward / backward                                                                                                                                                                           |
+| `m` · `Alt+M` | Edit the Apple Silicon memory reserve with a live budget preview; saves to `daemon.apple_memory_reserve_percent`. |
 | `Alt+L` (`⌥L` on macOS)                       | Cycle the left/right pane split through `left_pane_ratios` (wide mode; session-only). `100` hides the right pane, `0` hides the list.                                                                    |
 | `Tab` / `Shift+Tab`                           | Move focus across panes (`h` / `l` do the same — Left/Right arrows are intentionally unbound on Models to avoid an asymmetric pane-jump)                                                                 |
 | `Shift+M` / `Shift+L` / `Shift+C` / `Shift+S` / `Shift+Q` | Jump focus to Models / Logs / Chat / Settings / Requests respectively. `L` and `C` only fire when the focused model is running, `Q` when it has a launch.                                    |

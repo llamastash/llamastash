@@ -280,6 +280,7 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
         .and_then(|env| env.binary.as_ref())
         .map(|b| b.display().to_string()),
       "ipc_url": ctx.ipc_url,
+      "memory": ctx.memory_policy.budget(ctx.host_metrics.as_ref()).await,
       "preload": {
         "entries": ctx.preload.iter().cloned().collect::<Vec<_>>(),
         "presets": preload_presets,

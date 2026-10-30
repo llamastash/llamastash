@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Added
+
+- Apple Silicon memory reserve can be adjusted in the TUI with a live launch-budget preview; changes persist and apply without restarting the daemon ([#126](https://github.com/llamastash/llamastash/pull/126)).
+
 ## [0.10.1] — 2026-10-30
 
 This release rebuilds the recommender's model catalog. `data/frontier-models.yaml` is a curated list of current open models read straight from HuggingFace, with sizes from the real GGUF files and scores from the Artificial Analysis Intelligence Index instead of whichllm, whose reworked index reads outdated bounds. Quants down to Q2 now ship for models of 20B and up, and the recommender can pick a MoE model that does not fit VRAM on a discrete GPU with its experts in system RAM, ranked lower by how much of it spills. `/metrics` reports which preset a running launch resolved from, and [`RECIPES.md`](RECIPES.md) has an MLX recipe for mlx-lm and oMLX.

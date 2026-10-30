@@ -16,6 +16,7 @@ pub mod host_metrics;
 pub mod idle;
 pub mod launch_service;
 pub mod lockfile;
+pub mod memory_policy;
 pub mod orphans;
 pub mod ports;
 pub mod preload;
@@ -145,6 +146,7 @@ pub struct DaemonOptions {
   /// comment-safely. `None` disables write-through (tests / no config file)
   /// — mutations stay in-memory.
   pub config_path: Option<PathBuf>,
+  pub apple_memory_reserve_percent: u8,
   /// How often to re-run the full GPU vendor probe chain, or `None` to
   /// probe only at startup. From [`crate::config::GpuConfig::reprobe_interval`].
   pub gpu_reprobe_interval: Option<Duration>,
@@ -191,6 +193,7 @@ impl DaemonOptions {
       force: false,
       presets: std::collections::BTreeMap::new(),
       config_path: None,
+      apple_memory_reserve_percent: crate::launch::headroom::DEFAULT_APPLE_RESERVE_PERCENT,
       // Sourced from the config factory so the defaults are defined once.
       gpu_reprobe_interval: crate::config::GpuConfig::default().reprobe_interval(),
       idle_timeout: crate::config::DaemonConfig::default().idle_timeout(),
@@ -227,6 +230,7 @@ impl DaemonOptions {
       force: false,
       presets: std::collections::BTreeMap::new(),
       config_path: None,
+      apple_memory_reserve_percent: crate::launch::headroom::DEFAULT_APPLE_RESERVE_PERCENT,
       // Sourced from the config factory so the defaults are defined once.
       gpu_reprobe_interval: crate::config::GpuConfig::default().reprobe_interval(),
       idle_timeout: crate::config::DaemonConfig::default().idle_timeout(),
@@ -414,6 +418,10 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
     .with_sampler(sampler)
     .with_state(persisted)
     .with_presets(preset_store)
+    .with_memory_policy(memory_policy::MemoryPolicy::new(
+      opts.apple_memory_reserve_percent,
+      opts.config_path.clone(),
+    ))
     .with_external(external_combined)
     .with_proxy_status(std::sync::Arc::clone(&proxy_status_cell))
     .with_preload(opts.preload.clone())
