@@ -2,7 +2,7 @@
 
 ### Added
 
-- Apple Silicon memory reserve can be adjusted in the TUI with a live launch-budget preview; changes persist and apply without restarting the daemon.
+- Apple Silicon memory reserve can be adjusted in the TUI with a live launch-budget preview; changes persist and apply without restarting the daemon ([#126](https://github.com/llamastash/llamastash/pull/126)).
 
 ## [0.10.1] — 2026-10-30
 
