@@ -573,11 +573,16 @@ vllm:time_to_first_token_seconds_count{model_name=\"fake\"} 1\n",
       //   __TEST_EMIT_TIMINGS__    → a chunked stream that ends with a chunk
       //                              carrying `timings`, shaped like the
       //                              one real llama-server b11390 sends.
+      //   __TEST_EMIT_USAGE__      → the same shape, but the last chunk carries
+      //                              `usage` and no `timings`, so the proxy has
+      //                              token counts and no server-reported speed
+      //                              and has to estimate it.
       //   __TEST_SLOW_STREAM__     → send the first frame, wait, then the rest,
       //                              so a test can hang up mid-stream.
       //   __TEST_TRUNCATE_STREAM__ → promise more bytes than are sent, then
       //                              close: an upstream that died mid-body.
       let want_timings = body_text.contains("__TEST_EMIT_TIMINGS__");
+      let want_usage = body_text.contains("__TEST_EMIT_USAGE__");
       let want_slow = body_text.contains("__TEST_SLOW_STREAM__");
       let want_truncated = body_text.contains("__TEST_TRUNCATE_STREAM__");
       // Mirror real llama-server's OpenAI-compat behavior: echo
@@ -603,6 +608,14 @@ vllm:time_to_first_token_seconds_count{model_name=\"fake\"} 1\n",
           m = echoed_model
         );
         write_response(&mut wr, 200, "text/event-stream", stream.as_bytes()).await?;
+      } else if want_usage {
+        let stream = format!(
+          "data: {{\"choices\":[{{\"finish_reason\":null,\"index\":0,\"delta\":{{\"content\":\"hi\"}}}}],\"model\":\"{m}\",\"object\":\"chat.completion.chunk\"}}\n\n\
+           data: {{\"choices\":[{{\"finish_reason\":\"stop\",\"index\":0,\"delta\":{{}}}}],\"model\":\"{m}\",\"object\":\"chat.completion.chunk\",\"usage\":{{\"prompt_tokens\":41,\"completion_tokens\":3,\"total_tokens\":44}}}}\n\n\
+           data: [DONE]\n\n",
+          m = echoed_model
+        );
+        write_chunked_stream(&mut wr, &stream).await?;
       } else if want_timings {
         let stream = format!(
           "data: {{\"choices\":[{{\"finish_reason\":null,\"index\":0,\"delta\":{{\"content\":\"hi\"}}}}],\"model\":\"{m}\",\"object\":\"chat.completion.chunk\"}}\n\n\
@@ -612,13 +625,7 @@ vllm:time_to_first_token_seconds_count{model_name=\"fake\"} 1\n",
         );
         // Chunked, the way real llama-server streams: the body ends with
         // the zero-length chunk, not at a promised length.
-        let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
-        wr.write_all(head.as_bytes()).await?;
-        for event in stream.split_inclusive("\n\n") {
-          wr.write_all(format!("{:x}\r\n{event}\r\n", event.len()).as_bytes())
-            .await?;
-        }
-        wr.write_all(b"0\r\n\r\n").await?;
+        write_chunked_stream(&mut wr, &stream).await?;
       } else if want_slow || want_truncated {
         let first = format!(
           "data: {{\"model\":\"{m}\",\"choices\":[{{\"delta\":{{\"content\":\"hi\"}}}}]}}\n\n",
@@ -799,6 +806,22 @@ vllm:time_to_first_token_seconds_count{model_name=\"fake\"} 1\n",
 fn extract_body_model(body: &str) -> Option<String> {
   let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
   parsed.get("model")?.as_str().map(|s| s.to_string())
+}
+
+/// A server-sent body sent as HTTP chunked transfer encoding, ending with the
+/// zero-length chunk the way a real streaming server ends.
+async fn write_chunked_stream<W>(wr: &mut W, body: &str) -> std::io::Result<()>
+where
+  W: AsyncWriteExt + Unpin,
+{
+  let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+  wr.write_all(head.as_bytes()).await?;
+  for event in body.split_inclusive("\n\n") {
+    wr.write_all(format!("{:x}\r\n{event}\r\n", event.len()).as_bytes())
+      .await?;
+  }
+  wr.write_all(b"0\r\n\r\n").await?;
+  Ok(())
 }
 
 async fn write_response<W>(wr: &mut W, status: u16, ctype: &str, body: &[u8]) -> std::io::Result<()>

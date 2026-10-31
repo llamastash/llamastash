@@ -26,7 +26,7 @@ use crate::cli::exit_codes::{
   UNKNOWN, USAGE,
 };
 use crate::cli::resolve::{
-  fetch_catalog, fetch_status, resolve_model_or_launch, CatalogRow, RunningRow,
+  fetch_catalog, fetch_status, resolve_model_or_launch, CatalogRow, RunningRow, StatusSnapshot,
 };
 use crate::cli::start::{poll_until_settled, start_row_with_preset};
 use crate::config::Config;
@@ -47,25 +47,13 @@ pub async fn handle(args: SessionArgs, cli: &Cli, config: &Config) -> CliResult 
   let catalog = fetch_catalog(&mut client).await?;
   let status = fetch_status(&mut client).await?;
   // The tool's traffic has to reach a proxy that is actually serving, so this
-  // is settled before anything is started or written. `proxy_url` is the one
+  // is settled before anything is started or written. `proxy_base_url` is the one
   // rule for which address that is (a port that moved, a `--proxy-port` launch).
-  let proxy_base_url = proxy_url::from_proxy_block(&status.proxy).ok_or_else(|| {
-    let state = status
-      .proxy
-      .get("status")
-      .and_then(Value::as_str)
-      .unwrap_or("unknown");
-    CliExit::new(
-      DAEMON_UNREACHABLE,
-      format!(
-        "the proxy is not listening ({state}); a session tool routes its model traffic through it"
-      ),
-    )
-  })?;
+  let proxy_base_url = proxy_base_url(&status)?;
   // A real bearer key is the only secret in this launch, so it is the only value
   // `--dry-run` masks. The stub a keyless proxy ignores is safe to show.
   let secret = config.proxy.effective_api_key();
-  let api_key = secret.clone().unwrap_or_else(|| KEYLESS_STUB.to_string());
+  let api_key = proxy_api_key(config);
 
   let tool = match args.tool {
     Some(tool) => tool,
@@ -117,6 +105,34 @@ pub async fn handle(args: SessionArgs, cli: &Cli, config: &Config) -> CliResult 
 /// Stand-in for a launch that writes no file. Only a tool that generates one
 /// (pi) ever has its real path read, and by then the real dir is in hand.
 const NO_FILES_DIR: &str = "";
+
+/// The address a client must send model traffic to: the one the running proxy
+/// listens on, which is not always the configured one (a port that moved past a
+/// busy one, a `daemon start --proxy-port`).
+pub(crate) fn proxy_base_url(status: &StatusSnapshot) -> Result<String, CliExit> {
+  proxy_url::from_proxy_block(&status.proxy).ok_or_else(|| {
+    let state = status
+      .proxy
+      .get("status")
+      .and_then(Value::as_str)
+      .unwrap_or("unknown");
+    CliExit::new(
+      DAEMON_UNREACHABLE,
+      format!(
+        "the proxy is not listening ({state}); this command routes its model traffic through it"
+      ),
+    )
+  })
+}
+
+/// The bearer key to send the proxy, or the stub a keyless proxy ignores but
+/// clients that require a non-empty key still need.
+pub(crate) fn proxy_api_key(config: &Config) -> String {
+  config
+    .proxy
+    .effective_api_key()
+    .unwrap_or_else(|| KEYLESS_STUB.to_string())
+}
 
 /// The tool's binary on `PATH`. The patcher names the program without a model in
 /// the way, so this can run before the pickers and before anything is started.
@@ -320,7 +336,7 @@ fn fill(target: &mut Target, catalog: &[CatalogRow], config: &Config) {
   );
 }
 
-fn published_id(catalog: &[CatalogRow], row: &CatalogRow) -> String {
+pub(crate) fn published_id(catalog: &[CatalogRow], row: &CatalogRow) -> String {
   published_ids_for(catalog, std::slice::from_ref(row))
     .into_iter()
     .next()
@@ -433,7 +449,7 @@ fn non_chat_mode(target: &Target) -> Option<&'static str> {
 
 /// The same rule for a row on its own, before a launch or preset is known, which
 /// is all the model picker has to judge. `id` is the id the tool will be handed.
-fn not_chat(row: &CatalogRow, id: &str) -> Option<&'static str> {
+pub(crate) fn not_chat(row: &CatalogRow, id: &str) -> Option<&'static str> {
   if PatchModel::from_catalog_row(row, id.to_string()).is_embed {
     return Some("an embedding");
   }

@@ -16,7 +16,7 @@
 # ~16 s local run. A 3-4 core CI runner never reaches 8 anyway.
 [test-groups]
 daemon-bound = { max-threads = 8 }
-# `session_cli` and `cli_integration_test` boot their daemons through the CLI, and a CLI daemon binds the
+# `session_cli`, `cli_integration_test` and `cli_bench` boot their daemons through the CLI, and a CLI daemon binds the
 # control plane on `DEFAULT_CONTROL_PORT` and only probes 5 ports above it. That
 # one window is shared by every daemon on the host — including a developer's own
 # running daemon — so a sixth daemon at once exits 71 before binding. Four leaves
@@ -24,7 +24,7 @@ daemon-bound = { max-threads = 8 }
 control-plane-bound = { max-threads = 4 }
 
 [[profile.default.overrides]]
-filter = 'binary(/^(session_|cli_integration)/)'
+filter = 'binary(/^(session_|cli_integration|cli_bench)/)'
 test-group = 'control-plane-bound'
 
 [[profile.default.overrides]]
@@ -47,5 +47,5 @@ filter = 'binary(/^(proxy_|daemon_|control_plane|supervisor_|start_model|tui_|in
 test-group = 'daemon-bound'
 
 [[profile.ci.overrides]]
-filter = 'binary(/^(session_|cli_integration)/)'
+filter = 'binary(/^(session_|cli_integration|cli_bench)/)'
 test-group = 'control-plane-bound'

@@ -685,6 +685,47 @@ fn a_model_with_no_mode_hint_starts_as_chat_for_a_session() {
   assert!(std::fs::read_to_string(&dump).is_ok(), "the tool ran");
 }
 
+/// `@auto` is pure fit, so the launch it starts carries no preset name, exactly
+/// like `start --preset auto`. A stamped `auto` would claim a preset that is the
+/// absence of one.
+#[test]
+fn an_auto_session_launch_stamps_no_preset() {
+  let daemon = Daemon::start(None);
+  let tools = temp("tools");
+  let dump = tools.join("dump");
+  fake_tool(&tools, "codex", &dump);
+  let out = daemon
+    .cmd()
+    .env("PATH", path_with(&tools))
+    .args(["session", "codex", "chat@auto"])
+    .output()
+    .expect("run session");
+  assert!(
+    out.status.success(),
+    "session failed: {}{}",
+    String::from_utf8_lossy(&out.stdout),
+    String::from_utf8_lossy(&out.stderr)
+  );
+  let status = daemon
+    .cmd()
+    .args(["status", "--json"])
+    .output()
+    .expect("status");
+  let models = stdout_json(&status)["models"]
+    .as_array()
+    .expect("models array")
+    .clone();
+  let launch = models
+    .iter()
+    .find(|m| m["name"].as_str() == Some("auto"))
+    .or_else(|| models.first())
+    .expect("the session's launch");
+  assert!(
+    launch["preset"].is_null(),
+    "pure fit stamps no preset: {launch}"
+  );
+}
+
 #[test]
 fn a_tool_that_is_not_installed_is_a_binary_not_found() {
   let daemon = Daemon::start(None);

@@ -2,6 +2,7 @@
 
 ### Added
 
+- `llamastash bench <model-ref> [--preset a,b]` gives load time, prompt-processing speed, generation speed and time to first token per preset, read from the same numbers `llamastash requests` reports, so a knob change can be compared without the maintainer scripts in `scripts/bench/`. Plan: [`docs/plans/2026-10-31-001-feat-cli-bench-plan.md`](docs/plans/2026-10-31-001-feat-cli-bench-plan.md).
 - The HuggingFace pull dialog opens on the models the recommender ranks for this hardware instead of an empty search box: the same list `init` and `llamastash recommend` offer, in the search table's columns with the recommended quant and a fit mark, under a note saying what they are, with Enter opening the entry's GGUF repo at the recommended quant. The dialog also fetches the daily benchmark snapshot `init` ranks against (once per session, skipped offline) and re-ranks when it lands, so the two lists stop disagreeing because the bundled snapshot lags. Plan: [`docs/plans/2026-10-30-001-feat-tui-pull-recommended-models-plan.md`](docs/plans/2026-10-30-001-feat-tui-pull-recommended-models-plan.md).
 
 ### Changed

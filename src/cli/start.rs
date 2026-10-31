@@ -19,7 +19,9 @@ use std::path::PathBuf;
 
 use serde_json::{json, Value};
 
-use crate::cli::cli_args::{Cli, CtxArg, LaunchMode as CliLaunchMode, ReasoningFlag, StartArgs};
+use crate::cli::cli_args::{
+  Cli, CtxArg, LaunchMode as CliLaunchMode, LaunchOverrides, ReasoningFlag, StartArgs,
+};
 use crate::cli::client::connect_or_spawn;
 use crate::cli::exit_codes::{CliExit, CliResult, BINARY_NOT_FOUND, LAUNCH_FAILED, USAGE};
 use crate::cli::resolve::{
@@ -84,10 +86,10 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
     (None, None) => "default",
   };
 
-  // Preset baseline → IPC params. `presets_show` returns the saved
-  // params so the daemon doesn't have to re-resolve the model id.
-  let mut params = match (&from_file, args.preset.as_ref()) {
-    (Some(sel), _) => partial_params_from_launch(
+  // Preset baseline → IPC params. A launch file carries its own self-contained
+  // baseline; everything else comes from `presets_show`.
+  let params = match &from_file {
+    Some(sel) => partial_params_from_launch(
       &crate::launch::presets::materialize_preset(
         &sel.preset_name,
         &sel.body,
@@ -95,109 +97,21 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
       )
       .params,
     ),
-    (None, Some(preset_name)) if !preset_is_auto => {
-      fetch_preset_params(&mut client, &row.path, preset_name).await?
-    }
-    _ => PartialParams::default(),
+    None => preset_baseline(&mut client, &row, args.preset.as_deref()).await?,
   };
 
-  // Mode, resolved after the preset fetch so a `mode:` pin is in hand — a
-  // preset that says `mode: embedding` has to reach the launch, not just the
-  // config file. `None` means nothing chose one and the daemon decides.
-  let mode = resolve_mode(&row, args.mode, params.mode.as_deref())?;
-
-  match args.ctx {
-    // A pinned count rides the top-level `ctx` (emitted inline as `-c`).
-    Some(CtxArg::Value(n)) => params.ctx = Some(n),
-    // `auto` sets the knob's Auto state so `--fit` governs the window;
-    // it must not also set top-level ctx (that would pin `-c`).
-    Some(CtxArg::Auto) => {
-      if let Some(def) = crate::launch::knobs::def_for_backend_concept(
-        args
-          .backend
-          .as_deref()
-          .unwrap_or(crate::backend::DEFAULT_BACKEND_ID),
-        Concept::ContextLength,
-      ) {
-        params.knobs.set_auto(def.knob_id());
-      }
-    }
-    None => {}
-  }
-  if let Some(port) = args.port {
-    params.port = Some(port);
-  }
-  if let Some(r) = args.reasoning {
-    params.reasoning = Some(matches!(r, ReasoningFlag::On));
-  }
-  // MTP overrides layer over any preset baseline, like `--ctx` / `--reasoning`:
-  // the hand-written flags fold straight into the knob map, so they ride the
-  // same User layer as every other flag.
-  if let Some(m) = args.mtp {
-    m.store(&mut params.knobs);
-  }
-  if let Some(n) = args.mtp_draft_n {
-    params.knobs.set_by_name("mtp-draft-n", n.to_string());
-  }
-  let (cli_knobs, cli_extras) = parse_cli_knobs(&args.knobs.tokens, &args.extra)?;
-  // Layer per-invocation overrides onto the preset baseline instead of
-  // replacing it — a CLI `--threads` must not wipe a preset's other
-  // knobs.
-  params.knobs.overlay(&cli_knobs);
-  // Only replace preset extras when the invocation supplied some; an
-  // inline-only launch keeps the preset's passthrough flags.
-  if !cli_extras.is_empty() {
-    params.extras = cli_extras;
-  }
-
-  // Warning surfaces (kept best-effort; never block the launch):
-  // ctx > native max should advise rather than refuse, per R12.
-  // Gated on `!args.json` so the warning text doesn't mix into the
-  // structured stderr stream agents read when capturing both streams.
-  if !args.json {
-    if let (Some(ctx), Some(native)) = (params.ctx, row.native_ctx) {
-      if (ctx as u64) > native {
-        eprintln!(
-          "{}",
-          crate::cli::colors::warning(&format!(
-            "--ctx {ctx} exceeds native context length {native} for {}; the supervisor will still try",
-            row.name()
-          ))
-        );
-      }
-    }
-  }
-
-  // An explicit flag beats the preset's pin; the preset beats nothing at all.
-  let backend = args.backend.as_deref().or(params.backend.as_deref());
-  let mut server = args.server.as_deref().or(params.server.as_deref());
-  // The daemon lets a server's own backend win over the requested one, and it
-  // cannot tell a preset's pin from a typed `--server`. Drop a pin that belongs
-  // to another backend here, so `--backend` still wins over it.
-  if let (Some(want), None, Some(pinned)) = (
-    args.backend.as_deref(),
-    args.server.as_deref(),
-    params.server.as_deref(),
-  ) {
-    let status = crate::cli::resolve::fetch_status(&mut client).await?;
-    if pinned_server_is_foreign(&status.servers, pinned, want) {
-      server = None;
-    }
-  }
-  // Already trimmed and charset-checked by the flag's value parser, so what the
-  // daemon receives is exactly what it can stamp and compare.
-  let launch_name = args.name.as_deref();
-  let payload = build_payload(
-    &row.path,
-    mode,
+  let payload = start_payload(
+    &mut client,
+    &row,
     &params,
-    backend,
-    server,
+    &args.overrides,
     selection,
-    args.force,
-    launch_name,
     stamped_preset,
-  );
+    args.force,
+    args.name.as_deref(),
+    args.json,
+  )
+  .await?;
   let resp = client
     .call("start_model", Some(payload))
     .await
@@ -356,26 +270,171 @@ pub(crate) async fn start_row_with_preset(
   preset: Option<&str>,
   mode: Option<CliLaunchMode>,
 ) -> Result<Value, CliExit> {
-  // `presets_show` returns the saved params so the daemon doesn't have to
-  // re-resolve the model id; no preset means the daemon applies the model's
-  // own `default:`.
-  let params = match preset {
-    Some(name) => fetch_preset_params(client, &row.path, name).await?,
-    None => PartialParams::default(),
-  };
-  let mode = resolve_mode(row, mode, params.mode.as_deref())?;
-  let selection = if preset.is_some() {
+  let params = preset_baseline(client, row, preset).await?;
+  // The reserved `auto` is pure fit, so it selects like `start --preset auto`
+  // and stamps no preset name: an `auto` row would claim a preset that is the
+  // absence of one.
+  let pure_fit = preset == Some(crate::launch::presets::AUTO_DEFAULT);
+  let selection = if pure_fit {
+    "auto"
+  } else if preset.is_some() {
     "explicit"
   } else {
     "default"
   };
-  let payload = build_payload(
-    &row.path, mode, &params, None, None, selection, false, None, preset,
-  );
+  let stamped_preset = preset.filter(|p| *p != crate::launch::presets::AUTO_DEFAULT);
+  let overrides = LaunchOverrides {
+    mode,
+    ..LaunchOverrides::default()
+  };
+  let payload = start_payload(
+    client,
+    row,
+    &params,
+    &overrides,
+    selection,
+    stamped_preset,
+    false,
+    None,
+    false,
+  )
+  .await?;
   client
     .call("start_model", Some(payload))
     .await
     .map_err(|e| map_start_error(e, row))
+}
+
+/// The preset baseline a launch flattens from: the named preset's saved params,
+/// or nothing for no preset and for the reserved `auto` (pure fit).
+///
+/// `presets_show` returns the saved params so the daemon doesn't have to
+/// re-resolve the model id; no preset means the daemon applies the model's own
+/// `default:` itself. An unknown name is a usage error here, before any launch.
+pub(crate) async fn preset_baseline(
+  client: &mut Client,
+  row: &CatalogRow,
+  preset: Option<&str>,
+) -> Result<PartialParams, CliExit> {
+  match preset.filter(|p| *p != crate::launch::presets::AUTO_DEFAULT) {
+    Some(name) => fetch_preset_params(client, &row.path, name).await,
+    None => Ok(PartialParams::default()),
+  }
+}
+
+/// The `start_model` payload for one catalog row: mode resolution, the
+/// per-launch overrides layered over the preset baseline, and the payload build.
+/// `start` and `bench` both go through here so a preset cannot layer differently
+/// on the two surfaces.
+#[allow(clippy::too_many_arguments)] // one arg per launch input either command sets
+pub(crate) async fn start_payload(
+  client: &mut Client,
+  row: &CatalogRow,
+  base: &PartialParams,
+  overrides: &LaunchOverrides,
+  selection: &str,
+  stamped_preset: Option<&str>,
+  force: bool,
+  name: Option<&str>,
+  json: bool,
+) -> Result<Value, CliExit> {
+  // Mode, resolved after the preset baseline so a `mode:` pin is in hand — a
+  // preset that says `mode: embedding` has to reach the launch, not just the
+  // config file. `None` means nothing chose one and the daemon decides.
+  let mut params = base.clone();
+  let mode = resolve_mode(row, overrides.mode, params.mode.as_deref())?;
+
+  match overrides.ctx {
+    // A pinned count rides the top-level `ctx` (emitted inline as `-c`).
+    Some(CtxArg::Value(n)) => params.ctx = Some(n),
+    // `auto` sets the knob's Auto state so `--fit` governs the window;
+    // it must not also set top-level ctx (that would pin `-c`).
+    Some(CtxArg::Auto) => {
+      if let Some(def) = crate::launch::knobs::def_for_backend_concept(
+        overrides
+          .backend
+          .as_deref()
+          .unwrap_or(crate::backend::DEFAULT_BACKEND_ID),
+        Concept::ContextLength,
+      ) {
+        params.knobs.set_auto(def.knob_id());
+      }
+    }
+    None => {}
+  }
+  if let Some(port) = overrides.port {
+    params.port = Some(port);
+  }
+  if let Some(r) = overrides.reasoning {
+    params.reasoning = Some(matches!(r, ReasoningFlag::On));
+  }
+  // MTP overrides layer over any preset baseline, like `--ctx` / `--reasoning`:
+  // the hand-written flags fold straight into the knob map, so they ride the
+  // same User layer as every other flag.
+  if let Some(m) = overrides.mtp {
+    m.store(&mut params.knobs);
+  }
+  if let Some(n) = overrides.mtp_draft_n {
+    params.knobs.set_by_name("mtp-draft-n", n.to_string());
+  }
+  let (cli_knobs, cli_extras) = parse_cli_knobs(&overrides.knobs.tokens, &overrides.extra)?;
+  // Layer per-invocation overrides onto the preset baseline instead of
+  // replacing it — a CLI `--threads` must not wipe a preset's other
+  // knobs.
+  params.knobs.overlay(&cli_knobs);
+  // Only replace preset extras when the invocation supplied some; an
+  // inline-only launch keeps the preset's passthrough flags.
+  if !cli_extras.is_empty() {
+    params.extras = cli_extras;
+  }
+
+  // Warning surfaces (kept best-effort; never block the launch):
+  // ctx > native max should advise rather than refuse, per R12.
+  // Gated on `!json` so the warning text doesn't mix into the
+  // structured stderr stream agents read when capturing both streams.
+  if !json {
+    if let (Some(ctx), Some(native)) = (params.ctx, row.native_ctx) {
+      if (ctx as u64) > native {
+        eprintln!(
+          "{}",
+          crate::cli::colors::warning(&format!(
+            "--ctx {ctx} exceeds native context length {native} for {}; the supervisor will still try",
+            row.name()
+          ))
+        );
+      }
+    }
+  }
+
+  // An explicit flag beats the preset's pin; the preset beats nothing at all.
+  let backend = overrides.backend.as_deref().or(params.backend.as_deref());
+  let mut server = overrides.server.as_deref().or(params.server.as_deref());
+  // The daemon lets a server's own backend win over the requested one, and it
+  // cannot tell a preset's pin from a typed `--server`. Drop a pin that belongs
+  // to another backend here, so `--backend` still wins over it.
+  if let (Some(want), None, Some(pinned)) = (
+    overrides.backend.as_deref(),
+    overrides.server.as_deref(),
+    params.server.as_deref(),
+  ) {
+    let status = crate::cli::resolve::fetch_status(client).await?;
+    if pinned_server_is_foreign(&status.servers, pinned, want) {
+      server = None;
+    }
+  }
+  // Already trimmed and charset-checked by the flag's value parser, so what the
+  // daemon receives is exactly what it can stamp and compare.
+  Ok(build_payload(
+    &row.path,
+    mode,
+    &params,
+    backend,
+    server,
+    selection,
+    force,
+    name,
+    stamped_preset,
+  ))
 }
 
 /// One-line readiness summary appended under the `start` headline when
@@ -426,6 +485,7 @@ fn select_start_row(
       return Ok(direct_catalog_row(
         path,
         args
+          .overrides
           .mode
           .expect("direct_path_candidate requires explicit mode"),
       ));
@@ -450,7 +510,7 @@ fn direct_path_candidate(model: &str, args: &StartArgs) -> Result<Option<PathBuf
   if !path.is_file() && crate::backend::synthetic_identity_for_path(&path).is_none() {
     return Ok(None);
   }
-  if args.mode.is_none() {
+  if args.overrides.mode.is_none() {
     return Err(CliExit::new(
       USAGE,
       format!(
@@ -493,7 +553,7 @@ fn direct_catalog_row(path: PathBuf, mode: CliLaunchMode) -> CatalogRow {
 }
 
 #[derive(Debug, Default, Clone)]
-struct PartialParams {
+pub(crate) struct PartialParams {
   ctx: Option<u32>,
   port: Option<u16>,
   reasoning: Option<bool>,
@@ -743,7 +803,7 @@ fn build_payload(
   Value::Object(obj)
 }
 
-fn map_start_error(e: crate::ipc::ClientError, row: &CatalogRow) -> CliExit {
+pub(crate) fn map_start_error(e: crate::ipc::ClientError, row: &CatalogRow) -> CliExit {
   use crate::backend::Backend;
   use crate::ipc::protocol::ErrorCode;
   use crate::ipc::ClientError;
@@ -1281,16 +1341,7 @@ mod tests {
       model: Some(model.clone()),
       name: None,
       preset: None,
-      ctx: None,
-      port: None,
-      reasoning: None,
-      mode: None,
-      knobs: crate::cli::knob_flags::KnobFlags::default(),
-      extra: vec![],
-      backend: None,
-      server: None,
-      mtp: None,
-      mtp_draft_n: None,
+      overrides: LaunchOverrides::default(),
       json: false,
       wait: false,
       force: false,
@@ -1310,16 +1361,10 @@ mod tests {
       model: Some(model.clone()),
       name: None,
       preset: None,
-      ctx: None,
-      port: None,
-      reasoning: None,
-      mode: Some(CliLaunchMode::Chat),
-      knobs: crate::cli::knob_flags::KnobFlags::default(),
-      extra: vec![],
-      backend: None,
-      server: None,
-      mtp: None,
-      mtp_draft_n: None,
+      overrides: LaunchOverrides {
+        mode: Some(CliLaunchMode::Chat),
+        ..LaunchOverrides::default()
+      },
       json: false,
       wait: false,
       force: false,
@@ -1345,16 +1390,10 @@ mod tests {
       model: Some(path.display().to_string()),
       name: None,
       preset: None,
-      ctx: None,
-      port: None,
-      reasoning: None,
-      mode: Some(CliLaunchMode::Chat),
-      knobs: crate::cli::knob_flags::KnobFlags::default(),
-      extra: vec![],
-      backend: None,
-      server: None,
-      mtp: None,
-      mtp_draft_n: None,
+      overrides: LaunchOverrides {
+        mode: Some(CliLaunchMode::Chat),
+        ..LaunchOverrides::default()
+      },
       json: false,
       wait: false,
       force: false,
@@ -1397,16 +1436,10 @@ mod tests {
       model: Some(path.display().to_string()),
       name: None,
       preset: None,
-      ctx: None,
-      port: None,
-      reasoning: None,
-      mode: Some(CliLaunchMode::Chat),
-      knobs: crate::cli::knob_flags::KnobFlags::default(),
-      extra: vec![],
-      backend: None,
-      server: None,
-      mtp: None,
-      mtp_draft_n: None,
+      overrides: LaunchOverrides {
+        mode: Some(CliLaunchMode::Chat),
+        ..LaunchOverrides::default()
+      },
       json: false,
       wait: false,
       force: false,

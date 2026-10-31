@@ -217,6 +217,12 @@ pub enum Command {
   Logs(LogsArgs),
   /// Show the requests the proxy handled, newest first.
   Requests(RequestsArgs),
+  /// Measure a model's speed, one row per preset.
+  ///
+  /// Per preset: start the model, send a fixed prompt a few times through the
+  /// proxy, read the speeds the request log already holds for those requests,
+  /// and stop the launch. Chat models only.
+  Bench(BenchArgs),
   /// Manage named launch presets for a model.
   Presets(PresetsArgs),
   /// Pull a model from `HuggingFace`.
@@ -472,6 +478,80 @@ pub struct StartArgs {
   /// last-used params), the clean way to ignore prior launch state.
   #[arg(long, value_name = "NAME")]
   pub preset: Option<String>,
+  /// Every per-launch override, shared with `bench` so the two commands
+  /// layer a preset the same way.
+  #[command(flatten)]
+  pub overrides: LaunchOverrides,
+
+  /// Emit JSON instead of human-readable success prose. Stable
+  /// shape: `{ "name", "launch_id", "port", "pid", "preset",
+  /// "path" }`. Also carries `layer_sources` (the layer each resolved knob
+  /// came from) when any knob resolved from a real layer. With `--wait`,
+  /// also carries `state` and `resolved_ctx`.
+  #[arg(long)]
+  pub json: bool,
+  /// Block until the model finishes loading (reaches Ready or Error),
+  /// then report the resolved context window `--fit` chose. Default is
+  /// fire-and-forget: `start` returns as soon as the daemon accepts the
+  /// launch, while the model is still loading. Useful for big models
+  /// where you want the resolved ctx without a follow-up `status`.
+  #[arg(long)]
+  pub wait: bool,
+  /// Launch even when the memory admission gate says the model will not
+  /// fit. The gate's projection is printed as a warning instead of
+  /// refusing, and the launch proceeds. Use it when you know the
+  /// projection is wrong for your setup; if it was right, the host runs
+  /// out of memory and the OOM killer picks the victim, which may not be
+  /// this model.
+  #[arg(long)]
+  pub force: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct BenchArgs {
+  /// Model reference: name substring, absolute path, or canonical model id.
+  /// Chat models only; a model that is already running is refused.
+  pub model: String,
+  /// Saved presets to bench, comma-separated, in order; `auto` benches pure fit
+  /// (no preset, no last-used params). Without it, one cycle on the model's
+  /// `default:` preset, the baseline a plain `start` uses. Every preset gets the
+  /// same per-launch overrides below.
+  #[arg(long, value_name = "A,B", value_delimiter = ',')]
+  pub preset: Vec<String>,
+  /// Requests per preset, at least 1. The numbers are the median over the runs
+  /// that finished.
+  #[arg(long, value_name = "N", default_value_t = DEFAULT_BENCH_RUNS, value_parser = clap::value_parser!(u32).range(1..))]
+  pub runs: u32,
+  /// Generation cap per request.
+  #[arg(long, value_name = "N", default_value_t = DEFAULT_BENCH_MAX_TOKENS, value_parser = clap::value_parser!(u32).range(1..))]
+  pub max_tokens: u32,
+  /// Prompt to send instead of the built-in one. Each run still gets a
+  /// `Run <n>.` prefix so the prompt cache cannot answer it.
+  #[arg(long, value_name = "TEXT", conflicts_with = "prompt_file")]
+  pub prompt: Option<String>,
+  /// Read the prompt from this file instead of `--prompt` or the built-in one.
+  #[arg(long, value_name = "PATH")]
+  pub prompt_file: Option<PathBuf>,
+  /// Emit `{ "model", "runs", "max_tokens", "results" }` as JSON, with the
+  /// per-run samples under each result. Progress lines go to stderr instead.
+  #[arg(long)]
+  pub json: bool,
+  /// The per-launch overrides, layered over each preset exactly as `start`
+  /// layers them.
+  #[command(flatten)]
+  pub overrides: LaunchOverrides,
+}
+
+/// Requests per preset when `--runs` is absent.
+pub const DEFAULT_BENCH_RUNS: u32 = 3;
+
+/// Generation cap per request when `--max-tokens` is absent.
+pub const DEFAULT_BENCH_MAX_TOKENS: u32 = 256;
+
+/// The per-launch flags that layer over a preset baseline: the same set `start`
+/// takes and `bench` must take, held once so the two cannot drift.
+#[derive(Args, Debug, Clone, Default)]
+pub struct LaunchOverrides {
   /// Context length override. A token count pins `-c`; the literal
   /// `auto` delegates the window to llama-server's `--fit` (the knob's
   /// Auto state).
@@ -524,29 +604,6 @@ pub struct StartArgs {
   /// resolves on; unset leaves the serving backend on its own default.
   #[arg(long, value_name = "N")]
   pub mtp_draft_n: Option<u32>,
-
-  /// Emit JSON instead of human-readable success prose. Stable
-  /// shape: `{ "name", "launch_id", "port", "pid", "preset",
-  /// "path" }`. Also carries `layer_sources` (the layer each resolved knob
-  /// came from) when any knob resolved from a real layer. With `--wait`,
-  /// also carries `state` and `resolved_ctx`.
-  #[arg(long)]
-  pub json: bool,
-  /// Block until the model finishes loading (reaches Ready or Error),
-  /// then report the resolved context window `--fit` chose. Default is
-  /// fire-and-forget: `start` returns as soon as the daemon accepts the
-  /// launch, while the model is still loading. Useful for big models
-  /// where you want the resolved ctx without a follow-up `status`.
-  #[arg(long)]
-  pub wait: bool,
-  /// Launch even when the memory admission gate says the model will not
-  /// fit. The gate's projection is printed as a warning instead of
-  /// refusing, and the launch proceeds. Use it when you know the
-  /// projection is wrong for your setup; if it was right, the host runs
-  /// out of memory and the OOM killer picks the victim, which may not be
-  /// this model.
-  #[arg(long)]
-  pub force: bool,
 }
 
 /// Validate a `--backend <id>` value against the live registry (plus `auto`),
@@ -2297,12 +2354,12 @@ mod tests {
       Some(Command::Start(args)) => {
         assert_eq!(args.model.as_deref(), Some("qwen-coder"));
         assert_eq!(args.preset.as_deref(), Some("coding"));
-        assert_eq!(args.ctx, Some(CtxArg::Value(32768)));
-        assert_eq!(args.port, Some(41150));
-        assert_eq!(args.reasoning, Some(ReasoningFlag::On));
-        assert_eq!(args.mode, Some(LaunchMode::Chat));
+        assert_eq!(args.overrides.ctx, Some(CtxArg::Value(32768)));
+        assert_eq!(args.overrides.port, Some(41150));
+        assert_eq!(args.overrides.reasoning, Some(ReasoningFlag::On));
+        assert_eq!(args.overrides.mode, Some(LaunchMode::Chat));
         assert_eq!(
-          args.extra,
+          args.overrides.extra,
           vec![OsString::from("--threads"), OsString::from("8")]
         );
       }
@@ -2316,6 +2373,68 @@ mod tests {
     assert!(result.is_err());
   }
 
+  /// `bench` cycles a comma list in order, and the two counts have defaults.
+  #[test]
+  fn bench_presets_parse_as_a_comma_list_in_order() {
+    match parse(&["bench", "qwen", "--preset", "coder,fast"]).command {
+      Some(Command::Bench(args)) => {
+        assert_eq!(args.model, "qwen");
+        assert_eq!(args.preset, vec!["coder".to_string(), "fast".to_string()]);
+        assert_eq!(args.runs, DEFAULT_BENCH_RUNS);
+        assert_eq!(args.max_tokens, DEFAULT_BENCH_MAX_TOKENS);
+      }
+      other => panic!("expected Bench, got {other:?}"),
+    }
+  }
+
+  /// A zero count would ask for nothing to measure, and two prompt sources leave
+  /// the run with no way to say which one it benched.
+  #[test]
+  fn bench_refuses_a_zero_count_and_two_prompts() {
+    assert!(Cli::try_parse_from(["llamastash", "bench", "qwen", "--runs", "0"]).is_err());
+    assert!(
+      Cli::try_parse_from(["llamastash", "bench", "qwen", "--max-tokens", "0"]).is_err(),
+      "a zero cap sends a request that generates nothing"
+    );
+    assert!(Cli::try_parse_from([
+      "llamastash",
+      "bench",
+      "qwen",
+      "--prompt",
+      "hi",
+      "--prompt-file",
+      "p.txt",
+    ])
+    .is_err());
+  }
+
+  /// `bench` layers the same per-launch overrides `start` takes, including the
+  /// inline knob flags and the trailing `--` tail.
+  #[test]
+  fn bench_takes_the_shared_per_launch_overrides() {
+    match parse(&[
+      "bench",
+      "qwen",
+      "--ctx",
+      "4096",
+      "--threads",
+      "8",
+      "--",
+      "--foo",
+    ])
+    .command
+    {
+      Some(Command::Bench(args)) => {
+        assert_eq!(args.overrides.ctx, Some(CtxArg::Value(4096)));
+        assert_eq!(
+          args.overrides.extra,
+          vec![OsString::from("--foo")],
+          "the tail survives to the launch"
+        );
+      }
+      other => panic!("expected Bench, got {other:?}"),
+    }
+  }
   #[test]
   fn stop_no_args_opens_picker_at_runtime() {
     // After the picker landed, `llamastash stop` is allowed at the

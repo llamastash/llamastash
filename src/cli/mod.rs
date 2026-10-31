@@ -7,6 +7,7 @@
 //! documented exit-code table without losing the message.
 
 pub mod api_key;
+pub mod bench;
 pub mod cli_args;
 pub mod client;
 pub(crate) mod colors;
@@ -120,6 +121,7 @@ pub async fn dispatch(mut cli: Cli, config: LoadedConfig) -> Result<i32> {
     Some(Command::Status(args)) => status::handle(args, &cli, resolved_config).await,
     Some(Command::Logs(args)) => logs::handle(args, &cli, resolved_config).await,
     Some(Command::Requests(args)) => requests::handle(args, &cli, resolved_config).await,
+    Some(Command::Bench(args)) => bench::handle(args, &cli, resolved_config).await,
     Some(Command::Presets(args)) => presets::handle(args, &cli, resolved_config).await,
     Some(Command::Favorites(args)) => favorites::handle(args, &cli, resolved_config).await,
     Some(Command::LastParams(args)) => last_params::handle(args, &cli, resolved_config).await,
