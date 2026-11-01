@@ -1037,6 +1037,12 @@ _Shared context: `DeletePlan` in [`src/discovery/delete.rs`](src/discovery/delet
 
 - [ ] **A repo published into the shared blob store between the plan and the delete leaves an orphan payload.** huggingface_hub (checked against 2.3.0) moves the download to `blobs/<etag>` as a plain file before it publishes it to the store, so no `.part` or `.incomplete` shows in between, and a repo removed in that window leaves the store copy with a `.refs` line for a repo that is gone. The re-plan at confirm does not close it: nothing on disk says the publish is mid-flight.
 
+- [ ] **The TUI and the daemon each carry the delete refusal rules.** `delete_refusal_reason_for` in [`src/tui/events.rs`](src/tui/events.rs) and `live_launch_refusal` in [`src/ipc/methods.rs`](src/ipc/methods.rs) hold the same three messages as separate literals, and the TUI maps a `stopping` launch to `NotLaunched`, so its popup opens for a delete the daemon then refuses. Share the strings and block `stopping` in the TUI too.
+
+- [ ] **`spawn_delete` in [`src/tui/events.rs`](src/tui/events.rs) has no test.** It is what clears the `deleting…` marker when the daemon is unreachable or the call fails; neither branch is exercised.
+
+- [ ] **A delete slower than the 120 s client timeout reports exit `75` after the daemon removed the model.** The daemon's blocking removal runs to its end; `llamastash delete` gives up at `ENGINE_CALL_TIMEOUT` ([`src/ipc/client.rs`](src/ipc/client.rs)). Seen only in reasoning, not on hardware.
+
 #### Batch L23 - discovery scan correctness
 
 _Shared context: `default_set` in [`src/discovery/known_caches.rs`](src/discovery/known_caches.rs), the scan -> `replace_all` path in [`src/discovery/scanner.rs`](src/discovery/scanner.rs) and [`src/discovery/catalog.rs`](src/discovery/catalog.rs)._

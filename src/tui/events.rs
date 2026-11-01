@@ -1557,7 +1557,12 @@ fn apply_confirmed(app: &mut App, action: ConfirmAction, writer: Option<&mpsc::S
           app.delete_in_flight = Some(plan.primary.clone());
           app.show_toast(format!("deleting {display_name}"));
         }
-        Err(_) => app.show_error_toast("delete failed — writer offline".to_string()),
+        Err(mpsc::error::TrySendError::Full(_)) => app.show_error_toast(
+          "delete not sent — the daemon is still busy with an earlier call, try again".to_string(),
+        ),
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+          app.show_error_toast("delete failed — writer offline".to_string())
+        }
       }
     }
     ConfirmAction::CancelDownload { .. } => {

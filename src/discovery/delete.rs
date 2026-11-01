@@ -82,9 +82,6 @@ impl DeletePlan {
     // Taking a repo directory the client was not shown is growth. Losing one is
     // not: a second model can join the repo while the prompt is open, and the
     // per-file plan that replaces the whole-directory one removes less.
-    // Taking a repo directory the client was not shown is growth. Losing one is
-    // not: a second model can join the repo while the prompt is open, and the
-    // per-file plan that replaces the whole-directory one removes less.
     if let Some(repo) = self.hf_repo_dir.as_deref() {
       if Some(repo) != expected_repo_dir {
         return true;
