@@ -261,27 +261,6 @@ pub fn plan_for_path(path: &Path, catalog: &[DiscoveredModel]) -> Option<DeleteP
   ))
 }
 
-/// What a delete run off the draw thread reports back: the paths to drop from the
-/// list and the daemon's catalog, and the toast text or the error.
-#[derive(Debug)]
-pub struct DeleteOutcome {
-  pub forget: Vec<PathBuf>,
-  pub result: Result<String, String>,
-}
-
-/// [`execute`] for a worker thread.
-pub fn run(plan: &DeletePlan) -> DeleteOutcome {
-  DeleteOutcome {
-    forget: plan
-      .files()
-      .into_iter()
-      .map(Path::to_path_buf)
-      .chain(plan.hf_repo_dir.clone())
-      .collect(),
-    result: execute(plan).map_err(|e| e.to_string()),
-  }
-}
-
 /// Carry out `plan`, returning a human-readable summary for the toast.
 ///
 /// A missing file is not an error: discovery can lag a delete that happened

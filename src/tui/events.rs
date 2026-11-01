@@ -11,7 +11,6 @@
 //!   cheap) so a transient daemon restart doesn't poison the
 //!   long-lived channel.
 
-use crate::discovery::delete::DeleteOutcome;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -89,8 +88,16 @@ pub enum Event {
   /// HF download progress / completion. Pushed by
   /// `spawn_download_task`.
   Download(crate::tui::download_strip::DownloadEvent),
-  /// A delete that `apply_confirmed` moved onto a worker thread has finished.
+  /// A `delete_model` the writer task ran has finished.
   Delete(DeleteOutcome),
+}
+
+/// What a finished delete reports: the rows to drop from the list, and the
+/// daemon's summary or the reason it refused.
+#[derive(Debug)]
+pub struct DeleteOutcome {
+  pub forget: Vec<PathBuf>,
+  pub result: Result<String, String>,
 }
 
 /// Commands the input pump asks the writer task to forward to the
@@ -135,9 +142,14 @@ pub enum WriterCmd {
   /// large `crate::launch::knobs::KnobSet` doesn't bloat the other tiny variants.
   SavePreset(Box<SavePresetCmd>),
   SetMemoryReserve(MemoryReserve),
-  /// `forget_models` — after a delete, so the next `list_models` refresh
-  /// does not bring the deleted rows back before the daemon rescans.
-  ForgetModels(Vec<PathBuf>),
+  /// `delete_model` — remove the model at `path`. `files` and `repo_dir` are
+  /// the plan the popup showed: the daemon refuses a fresh plan that reaches
+  /// past them, and the outcome carries them as the rows to drop.
+  DeleteModel {
+    path: PathBuf,
+    files: Vec<PathBuf>,
+    repo_dir: Option<PathBuf>,
+  },
 }
 
 /// Payload for [`WriterCmd::SavePreset`].
@@ -1528,15 +1540,25 @@ fn apply_confirmed(app: &mut App, action: ConfirmAction, writer: Option<&mpsc::S
         app.show_toast(reason);
         return;
       }
-      let Some(tx) = require_events_tx(app, "delete") else {
+      let Some(tx) = writer else {
+        app.show_error_toast("delete unavailable — no daemon writer attached".to_string());
         return;
       };
-      app.delete_in_flight = Some(plan.primary.clone());
-      app.show_toast(format!("deleting {display_name}"));
-      // A multi-GB removal blocks on the filesystem, so it stays off the draw thread.
-      tokio::task::spawn_blocking(move || {
-        let _ = tx.blocking_send(Event::Delete(crate::discovery::delete::run(&plan)));
-      });
+      // The daemon re-plans and refuses anything past this, so what the popup
+      // showed is the most the delete is allowed to remove. The removal itself
+      // blocks on the filesystem, so the writer runs it off the draw thread.
+      let cmd = WriterCmd::DeleteModel {
+        path: plan.primary.clone(),
+        files: plan.files().into_iter().map(Path::to_path_buf).collect(),
+        repo_dir: plan.hf_repo_dir.clone(),
+      };
+      match tx.try_send(cmd) {
+        Ok(()) => {
+          app.delete_in_flight = Some(plan.primary.clone());
+          app.show_toast(format!("deleting {display_name}"));
+        }
+        Err(_) => app.show_error_toast("delete failed — writer offline".to_string()),
+      }
     }
     ConfirmAction::CancelDownload { .. } => {
       use crate::tui::download_strip::CancelOutcome;
@@ -2184,6 +2206,12 @@ pub fn spawn_writer(
         handle_restart_daemon(&socket, daemon_opts.clone(), feedback.clone()).await;
         continue;
       }
+      if matches!(cmd, WriterCmd::DeleteModel { .. }) {
+        // A multi-GB `remove_dir_all` runs to its end however long it takes, so
+        // it gets its own task and stop/start commands behind it still go out.
+        spawn_delete(cmd, socket.clone(), feedback.clone());
+        continue;
+      }
       let mut client = match Client::connect(&socket).await {
         Ok(c) => c,
         Err(e) => {
@@ -2269,6 +2297,40 @@ pub fn spawn_writer(
     }
   });
   tx
+}
+
+/// Run one `delete_model` off the writer queue and always answer with
+/// `Event::Delete`, connect failure and RPC error included, so the
+/// `deleting…` marker cannot stay stuck because the daemon was unreachable.
+fn spawn_delete(cmd: WriterCmd, socket: PathBuf, feedback: Option<mpsc::Sender<Event>>) {
+  tokio::spawn(async move {
+    let forget = match &cmd {
+      WriterCmd::DeleteModel {
+        files, repo_dir, ..
+      } => files.iter().cloned().chain(repo_dir.clone()).collect(),
+      _ => Vec::new(),
+    };
+    let (method, params) = encode_writer_cmd(cmd);
+    let result = match Client::connect(&socket).await {
+      Err(e) => Err(format!("writer connect failed: {e}")),
+      Ok(mut client) => client
+        .call(method, Some(params))
+        .await
+        .map(|resp| {
+          resp
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("deleted")
+            .to_string()
+        })
+        .map_err(|e| format!("{e}")),
+    };
+    if let Some(fb) = &feedback {
+      let _ = fb
+        .send(Event::Delete(DeleteOutcome { forget, result }))
+        .await;
+    }
+  });
 }
 
 /// Two-phase daemon restart: the shared graceful stop
@@ -2449,7 +2511,14 @@ pub fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
       }
       ("presets_save", payload)
     }
-    WriterCmd::ForgetModels(paths) => ("forget_models", json!({ "paths": paths })),
+    WriterCmd::DeleteModel {
+      path,
+      files,
+      repo_dir,
+    } => (
+      "delete_model",
+      json!({ "path": path, "expect": { "files": files, "repo_dir": repo_dir } }),
+    ),
   }
 }
 
@@ -2702,7 +2771,7 @@ fn handle_event(app: &mut App, evt: Event, writer_tx: &mpsc::Sender<WriterCmd>) 
       true
     }
     Event::Delete(outcome) => {
-      apply_delete_done(app, outcome, writer_tx);
+      apply_delete_done(app, outcome);
       true
     }
   }
@@ -3008,10 +3077,11 @@ fn tick_has_time_decay_ui(app: &App) -> bool {
 }
 
 /// Apply a finished delete: on success drop its rows from the list; on failure
-/// leave the list alone so a retry hits the same target. The daemon is told either
-/// way: `remove_dir_all` can fail partway with some files already gone, and it
-/// drops only the rows whose files are.
-fn apply_delete_done(app: &mut App, outcome: DeleteOutcome, writer: &mpsc::Sender<WriterCmd>) {
+/// leave the list alone so a retry hits the same target. The daemon has already
+/// dropped its own rows on both outcomes, so nothing goes back to it:
+/// `remove_dir_all` can fail partway with some files gone, and it forgets only
+/// the rows whose files are.
+fn apply_delete_done(app: &mut App, outcome: DeleteOutcome) {
   app.delete_in_flight = None;
   match &outcome.result {
     Ok(summary) => {
@@ -3023,9 +3093,6 @@ fn apply_delete_done(app: &mut App, outcome: DeleteOutcome, writer: &mpsc::Sende
       app.show_toast(summary.as_str());
     }
     Err(e) => app.show_error_toast(format!("delete failed: {e}")),
-  }
-  if let Err(e) = writer.try_send(WriterCmd::ForgetModels(outcome.forget)) {
-    log::debug!("tui: forget_models not sent ({e})");
   }
 }
 
@@ -3362,45 +3429,38 @@ mod tests {
     }
   }
 
-  /// Run a staged delete from a `#[test]`: the worker on a private runtime, then
-  /// its outcome through the same handler the event loop uses. Returns what the
-  /// handler sent to the daemon writer.
-  fn confirm_and_run(
+  /// Confirm a staged delete the way the key handler does, and return what the
+  /// confirm put on the daemon writer channel. The daemon does the removal, so
+  /// the TUI side of a delete is this command plus the reply handled below.
+  fn confirm_delete(
     app: &mut App,
     plan: crate::discovery::delete::DeletePlan,
     name: &str,
   ) -> Vec<WriterCmd> {
-    let rt = tokio::runtime::Builder::new_multi_thread()
-      .worker_threads(2)
-      .enable_all()
-      .build()
-      .expect("test runtime");
-    let (tx, mut rx) = mpsc::channel::<Event>(4);
     let (writer_tx, mut writer_rx) = mpsc::channel::<WriterCmd>(4);
-    app.events_tx = Some(tx);
-    rt.block_on(async {
-      apply_confirmed(
-        app,
-        ConfirmAction::DeleteModel {
-          plan: Box::new(plan),
-          display_name: name.into(),
-        },
-        None,
-      );
-      assert!(
-        app.delete_in_flight.is_some(),
-        "the worker is marked running"
-      );
-      let Some(Event::Delete(outcome)) = rx.recv().await else {
-        panic!("the delete worker sent no outcome");
-      };
-      apply_delete_done(app, outcome, &writer_tx);
-    });
-    assert!(
-      app.delete_in_flight.is_none(),
-      "the outcome clears the marker"
+    apply_confirmed(
+      app,
+      ConfirmAction::DeleteModel {
+        plan: Box::new(plan),
+        display_name: name.into(),
+      },
+      Some(&writer_tx),
     );
     std::iter::from_fn(|| writer_rx.try_recv().ok()).collect()
+  }
+
+  /// The reply shape the writer sends for a delete command, so a test can drive
+  /// the same handler the event loop uses without a daemon behind it.
+  fn delete_outcome(cmd: &WriterCmd, result: Result<String, String>) -> DeleteOutcome {
+    match cmd {
+      WriterCmd::DeleteModel {
+        files, repo_dir, ..
+      } => DeleteOutcome {
+        forget: files.iter().cloned().chain(repo_dir.clone()).collect(),
+        result,
+      },
+      other => panic!("expected a delete command, got {other:?}"),
+    }
   }
 
   /// The popup was staged for `a`, then `a` started and the list restructured, so
@@ -3422,16 +3482,13 @@ mod tests {
     ];
     app.managed = vec![ready_managed_for_events(&a.to_string_lossy(), 41234)];
     app.list_cursor = row_index_of(&app, &b);
-    apply_confirmed(
-      &mut app,
-      ConfirmAction::DeleteModel {
-        plan: Box::new(DeletePlan::single(a.clone())),
-        display_name: "a".into(),
-      },
-      None,
-    );
+    let sent = confirm_delete(&mut app, DeletePlan::single(a.clone()), "a");
     assert!(a.exists(), "the model that started keeps its file");
-    assert!(app.delete_in_flight.is_none(), "and no worker was started");
+    assert!(sent.is_empty(), "and nothing is sent to the daemon");
+    assert!(
+      app.delete_in_flight.is_none(),
+      "and no delete is marked running"
+    );
     assert_eq!(
       app.toast_message(),
       Some("model is running — stop the launch first")
@@ -3439,71 +3496,140 @@ mod tests {
     let _ = std::fs::remove_dir_all(&dir);
   }
 
-  /// The row goes, its sibling quant stays, the toast is the summary as it is, and
-  /// the daemon is told about the file that went and nothing else.
+  /// The confirm hands the whole delete to the daemon and touches no file
+  /// itself: the command carries exactly the plan the popup was showing.
   #[test]
-  fn a_confirmed_delete_drops_only_its_own_row() {
-    use crate::discovery::delete::DeletePlan;
+  fn a_confirmed_delete_sends_the_staged_plan_to_the_daemon() {
+    let dir = crate::util::test_temp::unique_temp_dir("delete-sends");
+    let model = dir.join("gemma-4-Q4_K_M.gguf");
+    let projector = dir.join("mmproj-gemma-4-f16.gguf");
+    for f in [&model, &projector] {
+      std::fs::write(f, b"weights").unwrap();
+    }
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events(
+      &model.to_string_lossy(),
+      &dir.to_string_lossy(),
+    )];
+    let plan = crate::discovery::delete::plan(&app.models[0], &app.models, None);
+    let sent = confirm_delete(&mut app, plan, "gemma");
+    match sent.as_slice() {
+      [WriterCmd::DeleteModel {
+        path,
+        files,
+        repo_dir,
+      }] => {
+        assert_eq!(path, &model);
+        assert!(
+          files.contains(&projector),
+          "the projector the popup named rides along: {files:?}"
+        );
+        assert_eq!(repo_dir, &None, "no HF repo here");
+      }
+      other => panic!("expected exactly one delete command, got {other:?}"),
+    }
+    assert_eq!(
+      app.delete_in_flight.as_deref(),
+      Some(model.as_path()),
+      "the marker is set once the command is away"
+    );
+    assert!(
+      model.exists() && projector.exists(),
+      "the TUI removes nothing itself"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+  }
+
+  /// A delete with no writer attached is unavailable, and the marker stays clear
+  /// so the next keystroke is not blocked by a delete that never started.
+  #[test]
+  fn a_delete_with_no_writer_is_unavailable() {
+    let mut app = App::new(Default::default());
+    apply_confirmed(
+      &mut app,
+      ConfirmAction::DeleteModel {
+        plan: Box::new(crate::discovery::delete::DeletePlan::single("/m/a.gguf")),
+        display_name: "a".into(),
+      },
+      None,
+    );
+    assert!(app.delete_in_flight.is_none(), "nothing was started");
+    assert!(
+      app
+        .toast_message()
+        .unwrap_or_default()
+        .contains("no daemon writer"),
+      "the toast says why: {:?}",
+      app.toast_message()
+    );
+  }
+
+  /// The row goes, its sibling quant stays, and the toast is the daemon summary
+  /// as it is. Nothing goes back to the writer: the daemon dropped its own rows.
+  #[test]
+  fn a_finished_delete_drops_only_its_own_row() {
     let dir = crate::util::test_temp::unique_temp_dir("delete-own-row");
-    let repo = dir.join("models--o--r/snapshots/rev");
-    let a = repo.join("a-Q4.gguf");
-    let b = repo.join("b-Q8.gguf");
-    std::fs::create_dir_all(&repo).unwrap();
+    let a = dir.join("a-Q4.gguf");
+    let b = dir.join("b-Q8.gguf");
     for f in [&a, &b] {
       std::fs::write(f, b"weights").unwrap();
     }
     let mut app = App::new(Default::default());
+    app.delete_in_flight = Some(a.clone());
     app.models = vec![
       fake_model_for_events(&a.to_string_lossy(), &dir.to_string_lossy()),
       fake_model_for_events(&b.to_string_lossy(), &dir.to_string_lossy()),
     ];
-    let sent = confirm_and_run(&mut app, DeletePlan::single(a.clone()), "a");
-    assert!(!a.exists() && b.exists());
+    apply_delete_done(
+      &mut app,
+      DeleteOutcome {
+        forget: vec![a.clone()],
+        result: Ok("deleted a-Q4.gguf".into()),
+      },
+    );
     assert_eq!(
       app
         .models
         .iter()
         .map(|m| m.path.clone())
         .collect::<Vec<_>>(),
-      vec![b.clone()]
+      vec![b.clone()],
+      "only the deleted row leaves the list"
     );
     assert_eq!(app.toast_message(), Some("deleted a-Q4.gguf"));
     assert!(
-      matches!(sent.as_slice(), [WriterCmd::ForgetModels(paths)] if paths == &vec![a.clone()]),
-      "the daemon forgets the deleted file only, got {sent:?}"
+      app.delete_in_flight.is_none(),
+      "the outcome clears the marker"
     );
     let _ = std::fs::remove_dir_all(&dir);
   }
 
-  /// A failed delete keeps the row, clears the marker and says why.
+  /// A refused or failed delete keeps the row for a retry, clears the marker, and
+  /// says why.
   #[test]
   fn a_failed_delete_keeps_the_row() {
-    use crate::discovery::delete::DeletePlan;
     let dir = crate::util::test_temp::unique_temp_dir("delete-failed");
-    let repo = dir.join("models--o--r");
-    let a = repo.join("snapshots/rev/a.gguf");
-    std::fs::create_dir_all(a.parent().unwrap()).unwrap();
+    let a = dir.join("a.gguf");
     std::fs::write(&a, b"weights").unwrap();
-    // A pull landed a part file after the popup was staged.
-    std::fs::create_dir_all(repo.join("blobs")).unwrap();
-    std::fs::write(repo.join("blobs").join("x.part"), b"half").unwrap();
-    let mut staged = DeletePlan::single(a.clone());
-    staged.hf_repo_dir = Some(repo.clone());
     let mut app = App::new(Default::default());
+    app.delete_in_flight = Some(a.clone());
     app.models = vec![fake_model_for_events(
       &a.to_string_lossy(),
       &dir.to_string_lossy(),
     )];
-    let sent = confirm_and_run(&mut app, staged, "a");
-    assert!(a.exists(), "nothing was removed under the download");
-    assert_eq!(app.models.len(), 1, "the row stays for a retry");
-    assert!(
-      matches!(sent.as_slice(), [WriterCmd::ForgetModels(_)]),
-      "and the daemon is asked to re-check the files, got {sent:?}"
+    apply_delete_done(
+      &mut app,
+      DeleteOutcome {
+        forget: vec![a.clone()],
+        result: Err("model is running - stop the launch first".into()),
+      },
     );
+    assert_eq!(app.models.len(), 1, "the row stays for a retry");
+    assert!(app.delete_in_flight.is_none(), "and the marker clears");
     assert!(
-      app.toast_message().unwrap_or_default().contains("download"),
-      "the toast says why"
+      app.toast_message().unwrap_or_default().contains("running"),
+      "the toast says why: {:?}",
+      app.toast_message()
     );
     let _ = std::fs::remove_dir_all(&dir);
   }
@@ -3558,8 +3684,9 @@ mod tests {
       fake_model_for_events(&b.to_string_lossy(), &dir.to_string_lossy()),
     ];
     app.list_cursor = row_index_of(&app, &b);
-    confirm_and_run(&mut app, DeletePlan::single(b.clone()), "b");
-    assert!(!b.exists());
+    let sent = confirm_delete(&mut app, DeletePlan::single(b.clone()), "b");
+    let outcome = delete_outcome(&sent[0], Ok("deleted b".into()));
+    apply_delete_done(&mut app, outcome);
     assert_eq!(
       app.focused_path().as_deref(),
       Some(a.as_path()),
