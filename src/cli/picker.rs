@@ -7,7 +7,7 @@
 //! The cliclack call itself runs inside `spawn_blocking` because the underlying
 //! terminal reads are sync.
 
-use std::io::IsTerminal;
+use std::io::{self, IsTerminal, Read, Write};
 
 use crate::cli::exit_codes::{CliExit, MODEL_NOT_FOUND, USAGE};
 use crate::cli::resolve::{CatalogRow, RunningRow};
@@ -37,6 +37,21 @@ impl PromptError {
 /// Whether a picker may be offered at all: a TTY to draw on and no `--json`.
 pub fn interactive(json: bool) -> bool {
   !json && std::io::stdin().is_terminal()
+}
+
+/// Print `question` and read one line, answering whether the caller said yes.
+/// The one stdin reader behind every `[y/N]` prompt, so the destructive verbs
+/// parse the same answer. Anything but a bare `y`/`yes` declines.
+pub(crate) fn confirm_line<R: Read, W: Write>(
+  input: &mut R,
+  out: &mut W,
+  question: &str,
+) -> io::Result<bool> {
+  write!(out, "{question}")?;
+  out.flush()?;
+  let mut buf = String::new();
+  io::BufReader::new(input).read_to_string(&mut buf)?;
+  Ok(matches!(buf.trim().to_lowercase().as_str(), "y" | "yes"))
 }
 
 /// Refuse the picker up front when the caller can't drive it. `session` words
@@ -153,6 +168,8 @@ fn catalog_hint(r: &CatalogRow) -> String {
 
 #[cfg(test)]
 mod tests {
+  use std::io::Cursor;
+
   use super::*;
 
   #[test]
@@ -176,5 +193,42 @@ mod tests {
   #[test]
   fn json_rules_out_a_picker_even_on_a_tty() {
     assert!(!interactive(true));
+  }
+
+  /// `y` and `yes` in any case confirm; everything else, including an EOF with
+  /// nothing on it, declines.
+  #[test]
+  fn confirm_line_reads_y_yes_and_nothing_else() {
+    for answer in ["y\n", "YES\n", " Y "] {
+      let mut out = Vec::new();
+      assert!(
+        confirm_line(&mut Cursor::new(answer.as_bytes()), &mut out, "go? [y/N] ").expect("read"),
+        "`{answer}` should confirm"
+      );
+    }
+    for answer in ["", "\n", "n\n", "No\n", "maybe\n"] {
+      let mut out = Vec::new();
+      assert!(
+        !confirm_line(&mut Cursor::new(answer.as_bytes()), &mut out, "go? [y/N] ").expect("read"),
+        "`{answer}` should decline"
+      );
+    }
+  }
+
+  /// The question is what the caller sees, so a shared reader cannot quietly
+  /// reword one verb's prompt.
+  #[test]
+  fn confirm_line_prints_the_question_it_is_given() {
+    let mut out = Vec::new();
+    confirm_line(
+      &mut Cursor::new(b"y\n"),
+      &mut out,
+      "stop 3 managed launch(es)? [y/N] ",
+    )
+    .expect("read");
+    assert_eq!(
+      String::from_utf8(out).expect("utf8"),
+      "stop 3 managed launch(es)? [y/N] "
+    );
   }
 }

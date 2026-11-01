@@ -55,6 +55,11 @@ pub const INIT_DOWNLOAD_FAILED: i32 = 73;
 /// didn't reach a healthy `/v1/chat/completions` response (probe
 /// timeout, OOM at load, binary --version probe failed).
 pub const INIT_SMOKE_FAILED: i32 = 74;
+/// `llamastash delete` did not remove the model: the daemon refused it (not a
+/// catalog row, a launch still holds the file, the plan grew past what was
+/// shown) or the removal itself failed. Distinct from `STOP_FAILED` so agents
+/// can branch on "tried to delete, it did not go".
+pub const DELETE_FAILED: i32 = 75;
 
 /// Result type for CLI handlers. `Ok(())` exits zero; `Err(CliExit)`
 /// prints the message to stderr and exits with the bound code.
@@ -167,6 +172,7 @@ mod tests {
       INIT_ABORTED,
       INIT_DOWNLOAD_FAILED,
       INIT_SMOKE_FAILED,
+      DELETE_FAILED,
     ];
     let mut sorted = codes.to_vec();
     sorted.sort_unstable();
