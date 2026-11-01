@@ -541,22 +541,6 @@ _Shared context: Alias resolution in the proxy, the `/v1/models` and `/api/tags`
 
 Minor release. Batches 5 and 6 are the new surfaces: `llamastash bench` for per-preset speed numbers, and `llamastash delete` so an agent can remove a model it pulled. Batch 1 is the only one that can delete the wrong file. Batch 2 is the discovery scan duplicating or resurrecting rows. Batch 3 is what a media launch reports and when the catalog is ready. Batch 4 is three small fixes where the user is shown a number or a flag that is not the one they got.
 
-### Batch 1: delete safety
-
-_Shared context: `DeletePlan` in [`src/tui/delete.rs`](src/tui/delete.rs), the `Ctrl+D` path in [`src/tui/events.rs`](src/tui/events.rs), the HF cache repo layout in `util::model_caches`._
-
-- [ ] **A delete popup can promise a whole-directory removal that `execute` then refuses.** `DeletePlan::describe` picks its wording from the plan shape (`src/tui/delete.rs:107-112`), while `execute` refuses a directory primary inside a cache repo that still holds another listed model (`src/tui/delete.rs:300-306`). Reachable on a repo with a safetensors main revision plus a GGUF on another revision: the snapshot directory row is `in_hf_cache` but not the last model in the repo. Safe direction — nothing is deleted — but the wording contradicts the outcome. Either give `describe` an arm for that shape or refuse in `delete_refusal_reason` so the keystroke toasts before a popup opens.
-
-- [ ] **A model listed in a repo while the delete popup is open goes with a whole-repo delete.** `plan` decides `hf_repo_dir` when `Ctrl+D` is pressed and `execute` runs that answer unchanged; only a download part file and the launch refusals are checked again at confirm. A rescan that lists a second model in the repo before the confirm gets removed with it. Re-plan against the live catalog at confirm and refuse anything bigger than the popup named, or have `execute` refuse when the repo's snapshots hold a file the plan does not name. (`src/tui/delete.rs`, `src/tui/events.rs`) The shared-store publish has the same gap: huggingface_hub (checked against 2.3.0) moves the download to `blobs/<etag>` as a plain file before it publishes it to the store, so no `.part` or `.incomplete` shows in between, and a repo removed in that window leaves the store copy with a `.refs` line for a repo that is gone.
-
-### Batch 2: discovery scan correctness
-
-_Shared context: `default_set` in [`src/discovery/known_caches.rs`](src/discovery/known_caches.rs), the scan -> `replace_all` path in [`src/discovery/scanner.rs`](src/discovery/scanner.rs) and [`src/discovery/catalog.rs`](src/discovery/catalog.rs)._
-
-- [ ] **Two scan roots that name one directory list every model twice.** `default_set` canonicalizes user paths (`canonical_or_raw(p)`, `src/discovery/known_caches.rs:53`) but pushes the default cache roots raw (`:71`, `:83`, `:98`), and `push_unique` dedups on that string (`:131`) — so a default cache reached through a symlink or a macOS firmlink, plus the user's own path for the same directory, yields two roots for one tree. Dedup cannot collapse it because the `seen` set is per-root (`src/discovery/scanner.rs:927`), so one payload surfaces as two rows and the twins disagree about which repo they belong to, which is the comparison the whole-repo gate and the shared-blob refs run on. Canonicalize the default roots the way user paths are.
-
-- [ ] **A stale discovery scan can resurrect a deleted row.** `ModelCatalog::replace_all` overwrites wholesale and carries no scan id, so a `full_rescan` that walked the tree before a delete — the periodic one, a watcher-triggered one, or a client-requested one — can land its `replace_all` after `forget_missing` and put the deleted row back until the next scan. Stamp each scan and ignore a `replace_all` from an older one. (`src/discovery/catalog.rs`)
-
 ### Batch 3: media launch reporting and first-scan readiness
 
 _Shared context: the launch table in `src/cli/status.rs` and the TUI, the `mode_hint` a generic launch records, and the boot scan `daemon start` kicks off._
@@ -1041,3 +1025,19 @@ _Shared context: the Requests tab summary strip and rows in `src/tui/tabs`, `src
 
 - [ ] The Requests tab summary is at least two lines wide at any pane width, so a very short pane gives the table a row or two. Sweep the tab's usable minimum and either raise the pane floor or fold the two rows into one under some width. Seen 2026-10-16 rendering the narrow golden fixture at 40 columns, where the strip is 9 lines and one table row fits under it.
 - [ ] The help overlay counts one line per Legend row for its scroll maximum (`legend_lines.len()` in `src/tui/help_overlay.rs` ~166), but a long description wraps on a narrow terminal, so the rows under it can end up unreachable. Measured only at 140 columns. Count wrapped lines, or cap the description width.
+
+#### Batch L22 delete safety
+
+_Shared context: `DeletePlan` in [`src/tui/delete.rs`](src/tui/delete.rs), the `Ctrl+D` path in [`src/tui/events.rs`](src/tui/events.rs), the HF cache repo layout in `util::model_caches`._
+
+- [ ] **A delete popup can promise a whole-directory removal that `execute` then refuses.** `DeletePlan::describe` picks its wording from the plan shape (`src/tui/delete.rs:107-112`), while `execute` refuses a directory primary inside a cache repo that still holds another listed model (`src/tui/delete.rs:300-306`). Reachable on a repo with a safetensors main revision plus a GGUF on another revision: the snapshot directory row is `in_hf_cache` but not the last model in the repo. Safe direction — nothing is deleted — but the wording contradicts the outcome. Either give `describe` an arm for that shape or refuse in `delete_refusal_reason` so the keystroke toasts before a popup opens.
+
+- [ ] **A model listed in a repo while the delete popup is open goes with a whole-repo delete.** `plan` decides `hf_repo_dir` when `Ctrl+D` is pressed and `execute` runs that answer unchanged; only a download part file and the launch refusals are checked again at confirm. A rescan that lists a second model in the repo before the confirm gets removed with it. Re-plan against the live catalog at confirm and refuse anything bigger than the popup named, or have `execute` refuse when the repo's snapshots hold a file the plan does not name. (`src/tui/delete.rs`, `src/tui/events.rs`) The shared-store publish has the same gap: huggingface_hub (checked against 2.3.0) moves the download to `blobs/<etag>` as a plain file before it publishes it to the store, so no `.part` or `.incomplete` shows in between, and a repo removed in that window leaves the store copy with a `.refs` line for a repo that is gone.
+
+#### Batch L23: discovery scan correctness
+
+_Shared context: `default_set` in [`src/discovery/known_caches.rs`](src/discovery/known_caches.rs), the scan -> `replace_all` path in [`src/discovery/scanner.rs`](src/discovery/scanner.rs) and [`src/discovery/catalog.rs`](src/discovery/catalog.rs)._
+
+- [ ] **Two scan roots that name one directory list every model twice.** `default_set` canonicalizes user paths (`canonical_or_raw(p)`, `src/discovery/known_caches.rs:53`) but pushes the default cache roots raw (`:71`, `:83`, `:98`), and `push_unique` dedups on that string (`:131`) — so a default cache reached through a symlink or a macOS firmlink, plus the user's own path for the same directory, yields two roots for one tree. Dedup cannot collapse it because the `seen` set is per-root (`src/discovery/scanner.rs:927`), so one payload surfaces as two rows and the twins disagree about which repo they belong to, which is the comparison the whole-repo gate and the shared-blob refs run on. Canonicalize the default roots the way user paths are.
+
+- [ ] **A stale discovery scan can resurrect a deleted row.** `ModelCatalog::replace_all` overwrites wholesale and carries no scan id, so a `full_rescan` that walked the tree before a delete — the periodic one, a watcher-triggered one, or a client-requested one — can land its `replace_all` after `forget_missing` and put the deleted row back until the next scan. Stamp each scan and ignore a `replace_all` from an older one. (`src/discovery/catalog.rs`)
