@@ -2460,10 +2460,6 @@ mod tests {
     );
   }
 
-  /// The warning is the whole user-facing contract of `--force`: it is the
-  /// only signal that a launch went through a refusal, and nothing asserted
-  /// it reached the caller. Needs a binary that actually spawns, so the
-  /// launch gets far enough to return its advisories.
   /// A binary that spawns and exits at once, so a launch gets far enough to
   /// hand back its advisories. The probe flips it to Error on its own
   /// schedule; `spawn_supervised` is fire-and-forget and has already returned
@@ -2477,6 +2473,10 @@ mod tests {
     binary
   }
 
+  /// The warning is the whole user-facing contract of `--force`: it is the
+  /// only signal that a launch went through a refusal, and nothing asserted
+  /// it reached the caller. Needs a binary that actually spawns, so the
+  /// launch gets far enough to return its advisories.
   #[cfg(unix)]
   #[tokio::test]
   async fn force_surfaces_the_projection_as_a_warning() {
@@ -2567,9 +2567,9 @@ mod tests {
     );
     // The case has to exist: under the architecture default the resolver
     // really does drop the knob, so the silence below is a decision and not an
-    // empty `dropped` list.
+    // empty `dropped` list. The fixture launch resolves to the default backend.
     let dropped = crate::launch::knobs::resolve_layered(
-      "llama",
+      crate::backend::DEFAULT_BACKEND_ID,
       &[(crate::launch::params::LayerLabel::ArchDefault, &arch_knobs)],
     )
     .dropped;
