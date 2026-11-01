@@ -362,7 +362,7 @@ pub const DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(300);
 /// Header over the recommendation list. Says both what to type and what
 /// the rows underneath are, because the empty field is also the dialog's
 /// landing screen.
-const RECOMMENDATIONS_NOTE: &str = "Start typing to search HuggingFace, or paste an owner/repo slug. Below are the models recommended for this hardware.";
+const RECOMMENDATIONS_NOTE: &str = "Start typing to search HuggingFace, or paste an owner/repo slug. Below are the models recommended for this hardware. `~` sizes are estimates; the file list shows each file's real size and fit.";
 
 /// Inputs to [`crate::init::recommender::vram_fit_for_file`] the file
 /// picker carries across render frames. Lifted into its own struct so
@@ -1107,8 +1107,9 @@ fn render_recommendation_header(palette: &Palette) -> Line<'static> {
 /// `init`'s prose read one set of numbers. The verdict is the file picker's own
 /// glyph for that download, so the row and the file `Enter` preselects agree.
 ///
-/// TODO: the size column is the catalog's `weights_bytes`, so a row can list a
-/// model the File picker then marks `✗` for the real file. Tracked in TODO.md.
+/// A `synthetic` row sizes its quant from the upstream weights instead of a real
+/// GGUF file, so its size and verdict carry a `~` — the file list can disagree
+/// with them.
 fn render_recommendation_row(
   selected: bool,
   rec: &Recommendation,
@@ -1121,7 +1122,7 @@ fn render_recommendation_row(
   if selected {
     style = style.add_modifier(Modifier::REVERSED);
   }
-  let (repo, size_bytes, params) = match &rec.kind {
+  let (repo, size_bytes, params, estimated) = match &rec.kind {
     // The param count comes straight off the entry, formatted the way a search
     // row formats it. `facts.params` is the recommender's bucket (32B, 70B+),
     // which belongs in the prose `init` prints, not under a `params` header.
@@ -1129,15 +1130,20 @@ fn render_recommendation_row(
       entry.repo.as_str(),
       Some(entry.weights_bytes),
       format_param_count(entry.params),
+      entry.gguf_publisher == "synthetic",
     ),
     // The list filters to curated rows; a foreign row keeps the columns
     // aligned and shows nothing.
-    _ => ("", None, "-".to_string()),
+    _ => ("", None, "-".to_string(), false),
   };
   let facts = rec.facts.clone().unwrap_or_default();
   let params = crate::tui::fmt::truncate_end(&params, PARAMS_COL);
   let size = match size_bytes {
-    Some(bytes) => crate::tui::fmt::format_bytes(bytes),
+    Some(bytes) => format!(
+      "{}{}",
+      if estimated { "~" } else { "" },
+      crate::tui::fmt::format_bytes(bytes)
+    ),
     None => "-".to_string(),
   };
   let quant = if facts.quant.is_empty() {
@@ -1152,7 +1158,8 @@ fn render_recommendation_row(
     Some(pct) => format!("{} spill ~{pct}%", FileFit::Tight.glyph()),
     None => {
       let fit = ctx.fit_for(size_bytes);
-      format!("{} {}", fit.glyph(), fit.word())
+      let mark = if estimated { "~" } else { "" };
+      format!("{} {}{}", fit.glyph(), mark, fit.word())
     }
   };
   Line::from(vec![
@@ -2208,6 +2215,77 @@ mod tests {
       ..Default::default()
     };
     assert!(unknown.recommendations(&snapshot).is_empty());
+  }
+
+  /// `(size, fit)` as the table lays them out for one recommendation row.
+  fn row_size_and_fit(rec: &Recommendation, ctx: &HardwareFitContext) -> (String, String) {
+    let line = render_recommendation_row(
+      false,
+      rec,
+      ctx,
+      30,
+      crate::theme::palette_for(crate::theme::ThemeName::Macchiato),
+    );
+    let cells: Vec<String> = line
+      .spans
+      .iter()
+      .map(|s| s.content.as_ref().trim().to_string())
+      .collect();
+    // prefix+repo, fmt, params, size, quant, fit
+    (cells[3].clone(), cells[5].clone())
+  }
+
+  /// A `synthetic` row sizes its quant from the upstream weights instead of a
+  /// real GGUF file, so the row has to read as an estimate. A real publisher's
+  /// row reports a real file and must not carry the mark.
+  #[test]
+  fn a_synthetic_row_marks_its_size_and_fit_as_estimates() {
+    let snapshot = crate::init::benchmark::load_bundled();
+    let ctx = HardwareFitContext {
+      backend: "cuda".into(),
+      vram_bytes: Some(4 * 1024 * 1024 * 1024),
+      ram_total_bytes: 16 * 1024 * 1024 * 1024,
+      ctx_tokens: crate::init::recommender::DEFAULT_CTX,
+      ..Default::default()
+    };
+    // Spill rows take their own fit branch and are pinned elsewhere, so the
+    // picks here are the plain fits/oversizes.
+    let recs = ctx.recommendations(&snapshot);
+    let pick = |synthetic: bool| {
+      recs
+        .iter()
+        .find(|rec| {
+          let spills = rec
+            .facts
+            .as_ref()
+            .is_some_and(|f| f.spill_percent.is_some());
+          match &rec.kind {
+            RecommendationKind::Curated { entry } => {
+              !spills && (entry.gguf_publisher == "synthetic") == synthetic
+            }
+            _ => false,
+          }
+        })
+        .expect("the bundled list has a synthetic and a real-publisher pick")
+    };
+    let (est_size, est_fit) = row_size_and_fit(pick(true), &ctx);
+    assert!(
+      est_size.starts_with('~'),
+      "a synthetic size has to read as an estimate: {est_size:?}"
+    );
+    assert!(
+      est_fit.contains(" ~"),
+      "a synthetic verdict has to read as an estimate: {est_fit:?}"
+    );
+    let (real_size, real_fit) = row_size_and_fit(pick(false), &ctx);
+    assert!(
+      !real_size.contains('~'),
+      "a real file's size is not an estimate: {real_size:?}"
+    );
+    assert!(
+      !real_fit.contains('~'),
+      "a real file's verdict is not an estimate: {real_fit:?}"
+    );
   }
 
   #[test]
