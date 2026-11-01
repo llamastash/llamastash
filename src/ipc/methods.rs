@@ -4,7 +4,12 @@
 //! `HashMap<&str, fn>`) avoids dynamic-dispatch plumbing for what is,
 //! in practice, a small fixed set of methods.
 
-use std::{ffi::OsString, path::PathBuf, sync::atomic::Ordering, time::Duration};
+use std::{
+  ffi::OsString,
+  path::{Path, PathBuf},
+  sync::atomic::Ordering,
+  time::Duration,
+};
 
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -166,7 +171,7 @@ pub async fn dispatch_request(ctx: &MethodContext, req: Request) -> Response {
     "presets_all" => Response::ok(id, presets_all_handler(ctx).await),
     "favorite_add" => respond(id, favorite_add_handler(ctx, req.params).await),
     "favorite_remove" => respond(id, favorite_remove_handler(ctx, req.params).await),
-    "forget_models" => respond(id, forget_models_handler(ctx, req.params).await),
+    "delete_model" => respond(id, delete_model_handler(ctx, req.params).await),
     "favorite_list" => respond(id, favorite_list_handler(ctx).await),
     "last_params_list" => respond(id, last_params_list_handler(ctx).await),
     other => Response::err(
@@ -584,7 +589,7 @@ const PUBLIC_METHODS: &[&str] = &[
   "favorite_add",
   "favorite_remove",
   "favorite_list",
-  "forget_models",
+  "delete_model",
   "last_params_list",
 ];
 
@@ -1078,19 +1083,139 @@ async fn favorite_remove_handler(
 }
 
 #[derive(Debug, Deserialize)]
-struct ForgetModelsParams {
-  paths: Vec<PathBuf>,
+struct DeleteModelParams {
+  path: PathBuf,
+  /// Answer with the plan and remove nothing, so the client can show it first.
+  #[serde(default)]
+  plan_only: bool,
+  /// The files and repo directory the client showed its user. A fresh plan that
+  /// reaches past this refuses. Absent means the caller accepted whatever the
+  /// catalog says now (`--yes` without a prompt).
+  #[serde(default)]
+  expect: Option<DeleteExpect>,
 }
 
-/// A client that deleted model files tells the daemon, so `list_models` stops
-/// listing them now instead of after the next rescan.
-async fn forget_models_handler(
+#[derive(Debug, Deserialize)]
+struct DeleteExpect {
+  files: Vec<PathBuf>,
+  #[serde(default)]
+  repo_dir: Option<PathBuf>,
+}
+
+/// A refusal: nothing was removed, and the message names the next step. The
+/// wording matches the TUI's delete toasts so both clients say the same thing.
+fn delete_refusal(reason: impl Into<String>) -> ErrorObject {
+  ErrorObject::new(ErrorCode::InvalidParams, reason.into())
+}
+
+/// The refusal for something still holding the file open, if there is one.
+/// `Stopped` is the only state a delete goes through: every other one means a
+/// process has the file or is about to.
+async fn live_launch_refusal(ctx: &MethodContext, path: &Path) -> Result<(), ErrorObject> {
+  for (_, managed) in ctx.supervisors.snapshot().await {
+    if managed.params().model_path != path {
+      continue;
+    }
+    let reason = match managed.state().await {
+      ManagedState::Stopped => continue,
+      ManagedState::Error { .. } => "launch is in error — stop it first, then delete",
+      _ => "model is running — stop the launch first",
+    };
+    return Err(delete_refusal(reason));
+  }
+  if ctx
+    .external
+    .read()
+    .await
+    .iter()
+    .any(|e| e.model_path.as_deref() == Some(path))
+  {
+    return Err(delete_refusal(
+      "model is open in an external process — close it first",
+    ));
+  }
+  Ok(())
+}
+
+/// Plan, check, remove and forget one model, in the daemon.
+///
+/// Two rules keep an irreversible removal honest. Only a catalog row is
+/// deletable, so the control plane never unlinks a path a client merely names.
+/// And the daemon re-plans against its own catalog and HF cache root: the
+/// client sends back only what it showed its user, so a plan that grew since —
+/// a repo that just lost its last other quant, a companion that just lost the
+/// neighbour that paired with it — refuses rather than removing files nobody
+/// confirmed. A plan that came back smaller runs.
+async fn delete_model_handler(
   ctx: &MethodContext,
   params: Option<Value>,
 ) -> Result<Value, ErrorObject> {
-  let parsed: ForgetModelsParams = parse_params(params)?;
-  let dropped = ctx.catalog.forget_missing(&parsed.paths).await;
-  Ok(json!({ "dropped": dropped }))
+  let parsed: DeleteModelParams = parse_params(params)?;
+  let catalog = ctx.catalog.snapshot().await;
+  let Some(row) = catalog.iter().find(|m| m.path == parsed.path) else {
+    return Err(delete_refusal(format!(
+      "`{}` is not a model in the catalog — nothing to delete",
+      parsed.path.display()
+    )));
+  };
+  if !row.source.has_local_file() {
+    return Err(delete_refusal(
+      "model is declared in config.yaml — remove it there",
+    ));
+  }
+  live_launch_refusal(ctx, &parsed.path).await?;
+
+  let cache_root = crate::init::download::hf_cache_dir().ok();
+  let plan = crate::discovery::delete::plan(row, &catalog, cache_root.as_deref());
+  let display_name = row
+    .display_label
+    .clone()
+    .unwrap_or_else(|| crate::util::paths::model_file_label(&row.path));
+  let mut reply = json!({
+    "path": row.path,
+    "files": plan.files(),
+    "repo_dir": plan.hf_repo_dir,
+    "description": plan.describe(&display_name),
+  });
+  if parsed.plan_only {
+    return Ok(reply);
+  }
+  if let Some(expect) = &parsed.expect {
+    if plan.removes_more_than(&expect.files, expect.repo_dir.as_deref()) {
+      return Err(delete_refusal(
+        "the delete plan grew since it was shown — nothing was removed, plan          against the current list and try again",
+      ));
+    }
+  }
+  let forget: Vec<PathBuf> = plan
+    .files()
+    .into_iter()
+    .map(Path::to_path_buf)
+    .chain(plan.hf_repo_dir.clone())
+    .collect();
+  let executed =
+    tokio::task::spawn_blocking(move || crate::discovery::delete::execute(&plan)).await;
+  // On both outcomes, as the TUI's forget did before: `remove_dir_all` can fail
+  // partway with some files already gone, and it drops only the rows whose files
+  // are.
+  ctx.catalog.forget_missing(&forget).await;
+  let message = match executed {
+    Ok(Ok(message)) => message,
+    Ok(Err(e)) => {
+      return Err(ErrorObject::new(
+        ErrorCode::InternalError,
+        format!("delete failed: {e}"),
+      ))
+    }
+    Err(e) => {
+      return Err(ErrorObject::new(
+        ErrorCode::InternalError,
+        format!("delete worker failed: {e}"),
+      ))
+    }
+  };
+  reply["message"] = json!(message);
+  Ok(reply)
 }
 
 async fn favorite_list_handler(ctx: &MethodContext) -> Result<Value, ErrorObject> {
@@ -1159,39 +1284,257 @@ mod tests {
     }
   }
 
-  /// The call a TUI delete makes so the row does not come back on the next
-  /// refresh: rows whose files are gone drop, a live row stays, and `dropped`
-  /// counts what left.
+  /// `delete_model` over one plain GGUF row: the file goes, the row goes, and
+  /// the reply names both plus the summary.
   #[tokio::test]
-  async fn forget_models_drops_gone_rows_and_keeps_the_live_one() {
-    let dir = crate::test_support::unique_temp_dir("ls-ipc", "forget");
-    let live = dir.join("live.gguf");
-    std::fs::write(&live, b"GGUF").expect("write model");
-    let gone = dir.join("gone.gguf");
+  async fn delete_model_removes_the_files_and_the_row() {
+    let dir = crate::test_support::unique_temp_dir("ls-ipc", "del-one");
+    let path = dir.join("solo.gguf");
+    std::fs::write(&path, b"GGUF").expect("write model");
     let ctx = ctx();
-    for path in [&live, &gone] {
-      ctx.catalog.upsert(row(path)).await;
-    }
-    assert_eq!(ctx.catalog.len().await, 2);
+    ctx.catalog.upsert(row(&path)).await;
 
-    let value = forget_models_handler(&ctx, Some(json!({ "paths": [dir.clone()] })))
+    let value = delete_model_handler(&ctx, Some(json!({ "path": path })))
       .await
-      .expect("drops the gone row");
-    assert_eq!(value, json!({ "dropped": 1 }));
-    let left: Vec<std::path::PathBuf> = ctx
-      .catalog
-      .snapshot()
-      .await
-      .into_iter()
-      .map(|m| m.path)
-      .collect();
-    assert_eq!(left, vec![live]);
-
-    let err = forget_models_handler(&ctx, None)
-      .await
-      .expect_err("paths are required");
-    assert_eq!(err.code, ErrorCode::InvalidParams.as_i32());
+      .expect("deletes the row");
+    assert_eq!(value["path"], json!(path));
+    assert_eq!(value["files"], json!([path]));
+    assert!(value["repo_dir"].is_null(), "no HF repo here");
+    assert!(
+      value["description"].as_str().unwrap().contains("solo.gguf"),
+      "the description names the model: {value}"
+    );
+    assert!(value["message"].as_str().unwrap().contains("deleted"));
+    assert!(!path.exists(), "the file is gone");
+    assert!(ctx.catalog.snapshot().await.is_empty(), "the row is gone");
     let _ = std::fs::remove_dir_all(&dir);
+  }
+
+  /// `plan_only` answers the same shape without touching anything, which is what
+  /// the CLI prompt runs on.
+  #[tokio::test]
+  async fn delete_model_plan_only_removes_nothing() {
+    let dir = crate::test_support::unique_temp_dir("ls-ipc", "del-plan");
+    let path = dir.join("planned.gguf");
+    std::fs::write(&path, b"GGUF").expect("write model");
+    let ctx = ctx();
+    ctx.catalog.upsert(row(&path)).await;
+
+    let value = delete_model_handler(&ctx, Some(json!({ "path": path, "plan_only": true })))
+      .await
+      .expect("plans");
+    assert_eq!(value["files"], json!([path]));
+    assert!(
+      value.get("message").is_none(),
+      "a plan carries no delete summary: {value}"
+    );
+    assert!(path.exists(), "nothing was removed");
+    assert_eq!(ctx.catalog.snapshot().await.len(), 1, "the row stays");
+    let _ = std::fs::remove_dir_all(&dir);
+  }
+
+  /// A split set goes whole: every shard named by the plan is unlinked, so a
+  /// plain `rm` of the launch path is not what the caller gets.
+  #[tokio::test]
+  async fn delete_model_removes_every_shard_of_a_split_set() {
+    let dir = crate::test_support::unique_temp_dir("ls-ipc", "del-split");
+    let one = dir.join("big-00001-of-00002.gguf");
+    let two = dir.join("big-00002-of-00002.gguf");
+    for p in [&one, &two] {
+      std::fs::write(p, b"GGUF").expect("write shard");
+    }
+    let mut r = row(&one);
+    r.split_siblings = vec![two.clone()];
+    let ctx = ctx();
+    ctx.catalog.upsert(r).await;
+
+    delete_model_handler(&ctx, Some(json!({ "path": one })))
+      .await
+      .expect("deletes the set");
+    assert!(!one.exists() && !two.exists(), "both shards are gone");
+    assert!(ctx.catalog.snapshot().await.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+  }
+
+  /// The trust boundary: a real file the catalog never listed is not the
+  /// daemon's to remove.
+  #[tokio::test]
+  async fn delete_model_refuses_a_path_that_is_not_a_catalog_row() {
+    let dir = crate::test_support::unique_temp_dir("ls-ipc", "del-foreign");
+    let path = dir.join("unlisted.gguf");
+    std::fs::write(&path, b"GGUF").expect("write model");
+    let ctx = ctx();
+
+    let err = delete_model_handler(&ctx, Some(json!({ "path": path })))
+      .await
+      .expect_err("an unlisted path is refused");
+    assert_eq!(err.code, ErrorCode::InvalidParams.as_i32());
+    assert!(
+      err.message.contains("not a model in the catalog"),
+      "{}",
+      err.message
+    );
+    assert!(path.exists(), "nothing was removed");
+    let _ = std::fs::remove_dir_all(&dir);
+  }
+
+  /// A config- or backend-declared row has no file of its own.
+  #[tokio::test]
+  async fn delete_model_refuses_a_config_declared_row() {
+    let ctx = ctx();
+    let mut r = row(std::path::Path::new("cfg://my-server"));
+    r.source = crate::discovery::ModelSource::Config;
+    ctx.catalog.upsert(r).await;
+
+    let err = delete_model_handler(&ctx, Some(json!({ "path": "cfg://my-server" })))
+      .await
+      .expect_err("a declared row is refused");
+    assert_eq!(err.code, ErrorCode::InvalidParams.as_i32());
+    assert!(err.message.contains("config.yaml"), "{}", err.message);
+  }
+
+  /// Every live launch state blocks the delete; a stopped one does not, because
+  /// nothing holds the file any more.
+  #[tokio::test]
+  async fn delete_model_refuses_a_launch_that_is_not_stopped() {
+    use crate::daemon::registry::LaunchId;
+    use crate::daemon::supervisor::{test_support::parked, ManagedState};
+    for (state, blocks) in [
+      (ManagedState::Ready, true),
+      (ManagedState::Launching, true),
+      (ManagedState::Loading, true),
+      (ManagedState::Stopping, true),
+      (
+        ManagedState::Error {
+          cause: "probe timeout".into(),
+        },
+        true,
+      ),
+      (ManagedState::Stopped, false),
+    ] {
+      let dir = crate::test_support::unique_temp_dir("ls-ipc", "del-launch");
+      let path = dir.join("launched.gguf");
+      std::fs::write(&path, b"GGUF").expect("write model");
+      let ctx = ctx();
+      ctx.catalog.upsert(row(&path)).await;
+      ctx
+        .supervisors
+        .insert(
+          LaunchId::from_counter(1),
+          parked(state.clone(), &path.to_string_lossy(), 41100),
+        )
+        .await;
+
+      let result = delete_model_handler(&ctx, Some(json!({ "path": path.clone() }))).await;
+      if blocks {
+        let err = result.expect_err("a live launch blocks the delete");
+        assert_eq!(err.code, ErrorCode::InvalidParams.as_i32());
+        assert!(path.exists(), "{} keeps its file", state.label());
+        assert_eq!(ctx.catalog.snapshot().await.len(), 1, "and keeps its row");
+      } else {
+        result.expect("a stopped launch does not block");
+        assert!(!path.exists(), "a stopped launch lets the delete through");
+      }
+      let _ = std::fs::remove_dir_all(&dir);
+    }
+  }
+
+  /// An `llama-server` the daemon does not own can hold the file open too.
+  #[tokio::test]
+  async fn delete_model_refuses_an_external_process_on_that_path() {
+    let dir = crate::test_support::unique_temp_dir("ls-ipc", "del-external");
+    let path = dir.join("shared.gguf");
+    std::fs::write(&path, b"GGUF").expect("write model");
+    let ctx = ctx();
+    ctx.catalog.upsert(row(&path)).await;
+    ctx
+      .external
+      .write()
+      .await
+      .push(crate::daemon::orphans::ExternalProcess {
+        pid: 4242,
+        cmdline: "llama-server -m ...".into(),
+        model_path: Some(path.clone()),
+        start_time_secs: 0,
+        port: None,
+        launched_by_llamastash: false,
+        name: None,
+      });
+
+    let err = delete_model_handler(&ctx, Some(json!({ "path": path.clone() })))
+      .await
+      .expect_err("the external process blocks the delete");
+    assert!(err.message.contains("external process"), "{}", err.message);
+    assert!(path.exists(), "nothing was removed");
+    let _ = std::fs::remove_dir_all(&dir);
+  }
+
+  /// A projector the client was never shown is the case that made this check:
+  /// the neighbour that paired with it left the catalog, so the fresh plan picks
+  /// it up and the delete would take a file the prompt never named.
+  #[tokio::test]
+  async fn delete_model_refuses_a_plan_beyond_what_the_client_was_shown() {
+    let dir = crate::test_support::unique_temp_dir("ls-ipc", "del-grew");
+    let model = dir.join("gemma-4-Q4_K_M.gguf");
+    let projector = dir.join("mmproj-gemma-4-f16.gguf");
+    for p in [&model, &projector] {
+      std::fs::write(p, b"GGUF").expect("write model");
+    }
+    let ctx = ctx();
+    ctx.catalog.upsert(row(&model)).await;
+
+    let err = delete_model_handler(
+      &ctx,
+      Some(json!({
+        "path": model,
+        "expect": { "files": [model] },
+      })),
+    )
+    .await
+    .expect_err("the projector was not part of the shown plan");
+    assert_eq!(err.code, ErrorCode::InvalidParams.as_i32());
+    assert!(err.message.contains("grew"), "{}", err.message);
+    assert!(
+      model.exists() && projector.exists(),
+      "a refusal removes nothing"
+    );
+    assert_eq!(ctx.catalog.snapshot().await.len(), 1, "and forgets nothing");
+    let _ = std::fs::remove_dir_all(&dir);
+  }
+
+  /// The other direction runs: what the client accepted covered more than the
+  /// fresh plan needs, so everything it agrees to is inside the shown set.
+  #[tokio::test]
+  async fn delete_model_runs_when_the_plan_is_smaller_than_the_expectation() {
+    let dir = crate::test_support::unique_temp_dir("ls-ipc", "del-smaller");
+    let model = dir.join("gemma-4-Q4_K_M.gguf");
+    let projector = dir.join("mmproj-gemma-4-f16.gguf");
+    for p in [&model, &projector] {
+      std::fs::write(p, b"GGUF").expect("write model");
+    }
+    let ctx = ctx();
+    ctx.catalog.upsert(row(&model)).await;
+
+    delete_model_handler(
+      &ctx,
+      Some(json!({
+        "path": model,
+        "expect": { "files": [model, projector] },
+      })),
+    )
+    .await
+    .expect("a smaller plan runs");
+    assert!(!model.exists() && !projector.exists(), "both went");
+    let _ = std::fs::remove_dir_all(&dir);
+  }
+
+  /// A params body the handler cannot read is a usage error, not a crash.
+  #[tokio::test]
+  async fn delete_model_requires_a_path() {
+    let err = delete_model_handler(&ctx(), Some(json!({ "plan_only": true })))
+      .await
+      .expect_err("path is required");
+    assert_eq!(err.code, ErrorCode::InvalidParams.as_i32());
   }
 
   /// A header read for a model the catalog has no row for went onto a blocking
@@ -1366,6 +1709,14 @@ mod tests {
     let mut expected = PUBLIC_METHODS.to_vec();
     expected.sort();
     assert_eq!(methods, expected);
+    assert!(
+      methods.contains(&"delete_model"),
+      "clients feature-detect the delete here"
+    );
+    assert!(
+      !methods.contains(&"forget_models"),
+      "the TUI is not the one dropping rows any more"
+    );
   }
 
   #[tokio::test]

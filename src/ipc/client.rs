@@ -38,7 +38,7 @@ pub const ENGINE_CALL_TIMEOUT: Duration = Duration::from_secs(120);
 /// which overrides both (`stop` sizes one from the grace period).
 fn timeout_for(method: &str) -> Duration {
   match method {
-    "start_model" | "stop_model" | "stop_all" => ENGINE_CALL_TIMEOUT,
+    "start_model" | "stop_model" | "stop_all" | "delete_model" => ENGINE_CALL_TIMEOUT,
     _ => DEFAULT_CALL_TIMEOUT,
   }
 }
