@@ -349,6 +349,7 @@ mod tests {
       state_cause: None,
       pid: Some(1),
       mode: "chat".into(),
+      mode_hint: None,
       name: None,
       ready_at: None,
       params: None,

@@ -742,6 +742,42 @@ servers:
     shutdown(client, daemon).await;
   }
 
+  /// A media launch's status row names the mode its entry answers beside the
+  /// launch's own mode, and a plain entry declares nothing. The launch mode stays
+  /// `chat` because a media mode arrives with the request's endpoint and changes
+  /// no argv; `mode_hint` is the half the operator is looking for.
+  #[tokio::test]
+  async fn media_launch_row_carries_its_declared_mode() {
+    let (mut client, daemon) = boot(opts(unique_temp("declared-mode"), None)).await;
+    // The same flag `llamastash start` waits on: a booted daemon must already
+    // have it set, or every start pays the wait.
+    let ready = client
+      .call("catalog_ready", Some(json!({ "wait_ms": 0 })))
+      .await
+      .expect("catalog_ready");
+    assert_eq!(
+      ready["first_scan"],
+      json!(true),
+      "the boot scan flag never flipped"
+    );
+    wait_listed(&mut client, "gen-stt").await;
+    wait_listed(&mut client, "gen-chat").await;
+
+    let stt = start(&mut client, json!({ "model_path": "generic://gen-stt" })).await;
+    let stt_row = wait_state(&mut client, &stt, "ready").await;
+    assert_eq!(stt_row["mode"], json!("chat"), "{stt_row}");
+    assert_eq!(stt_row["mode_hint"], json!("stt"), "{stt_row}");
+
+    let chat = start(&mut client, json!({ "model_path": "generic://gen-chat" })).await;
+    let chat_row = wait_state(&mut client, &chat, "ready").await;
+    assert_eq!(chat_row["mode"], json!("chat"), "{chat_row}");
+    assert!(
+      chat_row.get("mode_hint").is_none(),
+      "an entry with no media mode declares nothing: {chat_row}"
+    );
+    shutdown(client, daemon).await;
+  }
+
   /// `/v1/systemone` takes no mode, so a chat entry answers it by name.
   #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
   async fn systemone_forwards_to_the_named_entry() {

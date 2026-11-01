@@ -39,6 +39,12 @@ pub struct RunningRow {
   pub id: Option<Value>,
   pub port: u16,
   pub mode: String,
+  /// The mode the catalog row declares, present only when that mode is a media
+  /// route (`image` / `tts` / `stt`) the entry answers instead of the launch's
+  /// own mode. Those modes change no argv, so `mode` alone reads `chat` for an
+  /// `stt` or `image` launch; the MODE column prefers this. Mirrors `list`'s
+  /// `metadata.mode_hint`.
+  pub mode_hint: Option<String>,
   /// User-chosen name for this launch. When set, the launch is
   /// addressable by `<model-id>@<name>` in `stop`, `logs`, and the
   /// proxy's `body.model`. `None` for unnamed launches.
@@ -138,6 +144,44 @@ pub async fn fetch_catalog(client: &mut Client) -> Result<Vec<CatalogRow>, CliEx
       .filter_map(|row| serde_json::from_value(row).ok())
       .collect(),
   )
+}
+
+/// How long `start` waits for a daemon whose first scan has not landed. The
+/// scan is a walk of the model roots, so it is seconds; this is the generous
+/// end. shortcut: a fixed bound rather than a config key — raise it if a real
+/// library legitimately needs a longer first walk.
+pub const FIRST_SCAN_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// One `catalog_ready` ask. Held under the IPC client's own call timeout, so a
+/// walk slower than that is re-asked for rather than tripping the call.
+const SCAN_WAIT_SLICE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Whether the daemon's first catalog scan has landed, waiting for it in asks
+/// of at most 2 s until `budget` runs out. A `budget` of zero asks once and
+/// answers immediately. Best-effort: a daemon that cannot answer (an older
+/// build) or a reply that cannot be read counts as landed, because the
+/// alternative is stalling every `start` for a wait nobody asked for.
+pub async fn first_scan_landed(client: &mut Client, budget: std::time::Duration) -> bool {
+  let started = std::time::Instant::now();
+  loop {
+    let left = budget.saturating_sub(started.elapsed());
+    let params = serde_json::json!({ "wait_ms": SCAN_WAIT_SLICE.min(left).as_millis() as u64 });
+    match client.call("catalog_ready", Some(params)).await {
+      Ok(body) => {
+        if body
+          .get("first_scan")
+          .and_then(Value::as_bool)
+          .unwrap_or(true)
+        {
+          return true;
+        }
+      }
+      Err(_) => return true,
+    }
+    if started.elapsed() >= budget {
+      return false;
+    }
+  }
 }
 
 /// The `proxy.aliases` table as the daemon audits it: one `{name, target, state}`
@@ -454,6 +498,10 @@ fn parse_running_row(v: &Value) -> Option<RunningRow> {
   let preset_count = v.get("preset_count").and_then(Value::as_u64).unwrap_or(0) as u32;
   let preset_default = v.get("default").and_then(Value::as_str).map(str::to_string);
   let backend = v.get("backend").and_then(Value::as_str).map(str::to_string);
+  let mode_hint = v
+    .get("mode_hint")
+    .and_then(Value::as_str)
+    .map(str::to_string);
   let name = v.get("name").and_then(Value::as_str).map(str::to_string);
   let preset = v.get("preset").and_then(Value::as_str).map(str::to_string);
   let stop_grace_secs = v
@@ -467,6 +515,7 @@ fn parse_running_row(v: &Value) -> Option<RunningRow> {
     id,
     port,
     mode,
+    mode_hint,
     name,
     preset,
     state,
@@ -748,20 +797,77 @@ mod tests {
     let addr = listener.local_addr().expect("stub addr");
     let handle = std::thread::spawn(move || {
       use std::io::{Read, Write};
-      for stream in listener.incoming().take(2) {
-        let Ok(mut socket) = stream else { continue };
-        let mut buf = [0u8; 4096];
-        let _ = socket.read(&mut buf);
-        let _ = socket.write_all(
-          format!(
-            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{reply}",
-            reply.len()
+      // Answer every request on a connection, not just the first: hyper keeps
+      // the connection and reuses it, and a stub that stops after one reply
+      // turns the caller's second ask into a transport error.
+      let reply_one = |socket: &mut std::net::TcpStream| -> bool {
+        // Read the whole request, body included: a caller that sends params
+        // would otherwise still be writing when the reply goes out.
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let head_end = loop {
+          if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            break pos + 4;
+          }
+          match socket.read(&mut chunk) {
+            Ok(0) | Err(_) => return false,
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+          }
+        };
+        let head = String::from_utf8_lossy(&buf[..head_end]).to_lowercase();
+        let need = head
+          .split("content-length:")
+          .nth(1)
+          .and_then(|rest| rest.trim().split(char::is_whitespace).next())
+          .and_then(|n| n.parse::<usize>().ok())
+          .unwrap_or(0);
+        while buf.len() < head_end + need {
+          match socket.read(&mut chunk) {
+            Ok(0) | Err(_) => return false,
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+          }
+        }
+        socket
+          .write_all(
+            format!(
+              "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{reply}",
+              reply.len()
+            )
+            .as_bytes(),
           )
-          .as_bytes(),
-        );
+          .is_ok()
+      };
+      for stream in listener.incoming().take(8) {
+        let Ok(mut socket) = stream else { continue };
+        while reply_one(&mut socket) {}
       }
     });
     (addr, handle)
+  }
+
+  /// The wait `start` does before resolving a reference: a scan that has landed
+  /// answers at once, and one that has not is re-asked until the budget is spent
+  /// rather than held open on a single call past the client's own timeout.
+  #[tokio::test]
+  async fn first_scan_wait_reasks_until_the_budget_runs_out() {
+    let (addr, _stub) = stub_ipc(r#"{"jsonrpc":"2.0","id":1,"result":{"first_scan":false}}"#);
+    let mut client = Client::with_url_and_token(&format!("http://{addr}"), "test").expect("client");
+    let started = std::time::Instant::now();
+    assert!(
+      !super::first_scan_landed(&mut client, std::time::Duration::from_millis(120)).await,
+      "a scan that never lands must not read as landed"
+    );
+    assert!(started.elapsed() >= std::time::Duration::from_millis(120));
+
+    let (done_addr, _done) = stub_ipc(r#"{"jsonrpc":"2.0","id":1,"result":{"first_scan":true}}"#);
+    let mut ready =
+      Client::with_url_and_token(&format!("http://{done_addr}"), "test").expect("client");
+    let landed_at = std::time::Instant::now();
+    assert!(super::first_scan_landed(&mut ready, super::FIRST_SCAN_WAIT).await);
+    assert!(
+      landed_at.elapsed() < std::time::Duration::from_secs(1),
+      "a ready daemon must not cost a wait"
+    );
   }
 
   /// A daemon that cannot produce the alias table leaves that half of
@@ -1074,6 +1180,7 @@ mod tests {
         id: None,
         port: 41100,
         mode: "chat".into(),
+        mode_hint: None,
         name: None,
         state: "ready".into(),
         state_cause: None,
@@ -1097,6 +1204,7 @@ mod tests {
         id: None,
         port: 41101,
         mode: "chat".into(),
+        mode_hint: None,
         name: None,
         state: "ready".into(),
         state_cause: None,
@@ -1127,6 +1235,7 @@ mod tests {
       id: None,
       port: 41100,
       mode: "chat".into(),
+      mode_hint: None,
       name: None,
       state: "ready".into(),
       state_cause: None,
@@ -1156,6 +1265,7 @@ mod tests {
       id: None,
       port,
       mode: "chat".into(),
+      mode_hint: None,
       name: None,
       state: "ready".into(),
       state_cause: None,

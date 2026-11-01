@@ -527,6 +527,7 @@ The daemon dispatches on `req.method`. Wire format: `{"jsonrpc": "2.0", "id": <i
 | `ping`, `version`, `shutdown` | Liveness, build metadata, graceful exit |
 | `list_models` | Catalog snapshot |
 | `status` | Managed launches + external + GPU info + daemon health block |
+| `catalog_ready` | `{wait_ms?}`: `{first_scan}` — whether the discovery task's first scan has landed, waiting up to `wait_ms` for it. Read-only; what `llamastash start` blocks on so a model on disk is not reported as unknown seconds after `daemon start` |
 | `proxy_aliases` | The `proxy.aliases` table audited against the current catalog: `{aliases: [{name, target, state}]}` in config order, `state` one of `ok` / `shadowed` / `dead` / `ambiguous` / `chain`. Read-only; what `list --json` prints under `aliases` |
 | `start_model` | Spawn supervisor for a model |
 | `stop_model`, `stop_all` | Stop a managed launch / all managed launches |
@@ -541,7 +542,9 @@ The daemon dispatches on `req.method`. Wire format: `{"jsonrpc": "2.0", "id": <i
 
 JSON-RPC error codes follow the spec (`-32601 Method not found`, `-32602 Invalid params`, etc.) plus `InternalError` for daemon-side faults. The `capabilities` method enumerates supported methods so clients can feature-detect.
 
-`proxy_aliases` audits the `proxy.aliases` table against the catalog: the table is built once per daemon (`src/proxy/alias.rs`) and shared with the proxy through `MethodContext`, so its once-per-name warn set is one object process-wide. The same states the audit reports, the two proxy listings act on and the startup report logs — the report runs once the catalog has its first row, because before it does every target would read `dead`.
+`proxy_aliases` audits the `proxy.aliases` table against the catalog: the table is built once per daemon (`src/proxy/alias.rs`) and shared with the proxy through `MethodContext`, so its once-per-name warn set is one object process-wide. The same states the audit reports, the two proxy listings act on and the startup report acts on — the report runs once the catalog has its first row, because before it does every target would read `dead`.
+
+Catalog readiness is a flag on `ModelCatalog` (`first_scan_completed` / `wait_first_scan`), set by the discovery task as soon as its initial scan has replaced the catalog. Nothing polls it: a client that must resolve a reference asks `catalog_ready` and blocks on the same signal, so the wait costs nothing on a daemon that has already scanned and ends the moment the scan does. `list` and `status` never wait, so a daemon mid-scan still answers immediately with what it has.
 
 ### `status` response shape
 

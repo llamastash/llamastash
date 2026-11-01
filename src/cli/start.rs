@@ -23,7 +23,8 @@ use crate::cli::cli_args::{Cli, CtxArg, LaunchMode as CliLaunchMode, ReasoningFl
 use crate::cli::client::connect_or_spawn;
 use crate::cli::exit_codes::{CliExit, CliResult, BINARY_NOT_FOUND, LAUNCH_FAILED, USAGE};
 use crate::cli::resolve::{
-  fetch_catalog, model_miss, resolve_model_with_candidates, CatalogRow, ResolveError,
+  fetch_catalog, first_scan_landed, model_miss, resolve_model_with_candidates, CatalogRow,
+  ResolveError, FIRST_SCAN_WAIT,
 };
 use crate::cli::tail_args::parse_tail_args;
 use crate::config::Config;
@@ -44,6 +45,7 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
   };
 
   let mut client = connect_or_spawn(cli, config).await?;
+  wait_for_first_scan(&mut client, args.json).await;
   let rows = fetch_catalog(&mut client).await?;
 
   let row = match (&from_file, args.model.as_deref()) {
@@ -409,6 +411,32 @@ fn print_wait_followup(settled: Option<&crate::cli::resolve::RunningRow>) {
         colors::dim("waiting timed out"),
       );
     }
+  }
+}
+
+/// Let the daemon's first catalog scan land before a reference is resolved
+/// against it. A daemon still walking its model roots lists nothing, so a
+/// `start` typed a moment after `daemon start` reported
+/// `no model matches ... (0 known)` on a model sitting on disk.
+async fn wait_for_first_scan(client: &mut crate::ipc::Client, json: bool) {
+  // The zero-wait ask is the fast path: one cheap round trip and no message in
+  // the normal case, where the scan landed long ago.
+  if first_scan_landed(client, std::time::Duration::ZERO).await {
+    return;
+  }
+  if !json {
+    eprintln!(
+      "{}",
+      crate::cli::colors::dim("waiting for the daemon's first model scan ...")
+    );
+  }
+  if !first_scan_landed(client, FIRST_SCAN_WAIT).await && !json {
+    eprintln!(
+      "{}",
+      crate::cli::colors::dim(
+        "first scan still running; a model that is not listed yet may need a retry"
+      )
+    );
   }
 }
 

@@ -688,6 +688,7 @@ mod tests {
       id: None,
       port: 41100,
       mode: mode.to_string(),
+      mode_hint: None,
       name: name.map(str::to_string),
       preset: None,
       state: "ready".into(),

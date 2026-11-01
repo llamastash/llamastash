@@ -545,11 +545,11 @@ Minor release. Batches 5 and 6 are the new surfaces: `llamastash bench` for per-
 
 _Shared context: the launch table in `src/cli/status.rs` and the TUI, the `mode_hint` a generic launch records, and the boot scan `daemon start` kicks off._
 
-- [ ] A launch of an `stt` or `image` entry prints `MODE chat` in the `status` launch table while `list --json` reports the row's `mode_hint` correctly, so the media half of a launch is invisible in the one place an operator looks. Seen 2026-10-24 on a FastFlowLM ASR and on both sd.cpp image entries. Run log: [`docs/testing/2026-10-24-media-z13-sdcpp-flm.md`](docs/testing/2026-10-24-media-z13-sdcpp-flm.md) § Gaps.
+- [x] ~~A launch of an `stt` or `image` entry prints `MODE chat` in the `status` launch table while `list --json` reports the row's `mode_hint` correctly, so the media half of a launch is invisible in the one place an operator looks. Seen 2026-10-24 on a FastFlowLM ASR and on both sd.cpp image entries. Run log: [`docs/testing/2026-10-24-media-z13-sdcpp-flm.md`](docs/testing/2026-10-24-media-z13-sdcpp-flm.md) § Gaps.~~ — done: a launch of a declared media entry carries `mode_hint` alongside `mode` (`status --json`), and the MODE column prints it, so an ASR launch reads `stt` and an sd.cpp launch `image`. The launch's own `mode` is unchanged: `image` / `tts` / `stt` arrive with the request's endpoint and change no argv, which is why it says `chat`. Plan: [`docs/plans/2026-11-01-001-fix-r18-batch-3-plan.md`](docs/plans/2026-11-01-001-fix-r18-batch-3-plan.md)
 
-- [ ] `llamastash start <entry>` right after `daemon start` fails with `no model matches ... (0 known)` until the first scan lands a few seconds later. Same family as the Lemonade umbrella case in [`docs/testing/2026-10-17-batch1-lemonade-flm-whisper.md`](docs/testing/2026-10-17-batch1-lemonade-flm-whisper.md): nothing blocks on, or re-runs, the boot scan. Either make `start` wait for the first scan, or have `daemon start` return once the catalog is built.
+- [x] ~~`llamastash start <entry>` right after `daemon start` fails with `no model matches ... (0 known)` until the first scan lands a few seconds later. Same family as the Lemonade umbrella case in [`docs/testing/2026-10-17-batch1-lemonade-flm-whisper.md`](docs/testing/2026-10-17-batch1-lemonade-flm-whisper.md): nothing blocks on, or re-runs, the boot scan. Either make `start` wait for the first scan, or have `daemon start` return once the catalog is built.~~ — done: the catalog carries a first-scan-done flag the discovery task sets, the read-only `catalog_ready` IPC method waits on it, and `start` asks before resolving, so it waits up to 30 s instead of missing. `list` and `status` still answer immediately with whatever the scan has found.
 
-- [ ] Bare OpenAI media names (`whisper-1`, `dall-e-3`) stop resolving as soon as a second entry declares the same mode. The refusal is correct but does not name `proxy.aliases` as the fix; one sentence in the media section of `docs/usage.md`.
+- [x] ~~Bare OpenAI media names (`whisper-1`, `dall-e-3`) stop resolving as soon as a second entry declares the same mode. The refusal is correct but does not name `proxy.aliases` as the fix; one sentence in the media section of `docs/usage.md`.~~ — done: the media section says a second engine declaring one mode costs the bare names and that a `proxy.aliases` line settles it. The refusal text is unchanged.
 
 ### Batch 4: small standalone fixes
 
@@ -575,7 +575,9 @@ _Shared context: `DeletePlan`, `plan_for_path` and `execute` in [`src/tui/delete
 
 ## Next
 
-_Empty as of 2026-10-31: what was here went into the R18 checklist or into a High / Low roadmap batch. New loose items land here until the next release is planned._
+- [ ] `/v1/models` has the same media gap `status` just lost: a running launch prints the launch's own mode, so an `stt` or `image` entry that is up lists as `chat` while the same row dormant lists as `stt`. `docs/usage.md` documents both halves of that. Either print the declared mode for a media launch there too, or say in the OAI surface docs why the two differ. Plan: [`docs/plans/2026-11-01-001-fix-r18-batch-3-plan.md`](docs/plans/2026-11-01-001-fix-r18-batch-3-plan.md)
+
+_Empty as of 2026-10-31 apart from the line above: what was here went into the R18 checklist or into a High / Low roadmap batch. New loose items land here until the next release is planned._
 
 ## General Roadmap
 
