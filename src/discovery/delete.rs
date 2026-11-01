@@ -79,12 +79,22 @@ impl DeletePlan {
     expected_files: &[PathBuf],
     expected_repo_dir: Option<&Path>,
   ) -> bool {
-    if self.hf_repo_dir.as_deref() != expected_repo_dir {
-      return true;
+    // Taking a repo directory the client was not shown is growth. Losing one is
+    // not: a second model can join the repo while the prompt is open, and the
+    // per-file plan that replaces the whole-directory one removes less.
+    // Taking a repo directory the client was not shown is growth. Losing one is
+    // not: a second model can join the repo while the prompt is open, and the
+    // per-file plan that replaces the whole-directory one removes less.
+    if let Some(repo) = self.hf_repo_dir.as_deref() {
+      if Some(repo) != expected_repo_dir {
+        return true;
+      }
     }
     let named: std::collections::HashSet<&Path> =
       expected_files.iter().map(PathBuf::as_path).collect();
-    self.files().into_iter().any(|f| !named.contains(f))
+    self.files().into_iter().any(|file| {
+      !named.contains(file) && !expected_repo_dir.is_some_and(|repo| file.starts_with(repo))
+    })
   }
 
   /// Confirm-popup body: what is going, and why it is more than one file.
@@ -1500,6 +1510,34 @@ mod tests {
     let plan = DeletePlan::single("/m/a.gguf");
     let files = vec![PathBuf::from("/m/a.gguf"), PathBuf::from("/m/mmproj.gguf")];
     assert!(!plan.removes_more_than(&files, None));
+  }
+
+  /// Another model left the cache repo while the client was deciding, so the
+  /// fresh plan names single files inside the directory that was shown instead
+  /// of the whole directory. That is less, not more.
+  #[test]
+  fn a_plan_that_lost_its_repo_dir_removes_nothing_more() {
+    let plan = DeletePlan {
+      primary: PathBuf::from("/cache/models--o--r/snapshots/rev/a.gguf"),
+      ..DeletePlan::default()
+    };
+    let files = vec![PathBuf::from("/cache/models--o--r/snapshots/rev/a.gguf")];
+    assert!(
+      !plan.removes_more_than(&files, Some(Path::new("/cache/models--o--r"))),
+      "a file inside the directory that was shown was already shown"
+    );
+  }
+
+  /// Losing the repo directory only reads as smaller while the files it now
+  /// names sit inside what the client was shown.
+  #[test]
+  fn a_plan_that_lost_its_repo_dir_but_names_a_foreign_file_removes_more() {
+    let plan = DeletePlan {
+      primary: PathBuf::from("/elsewhere/a.gguf"),
+      ..DeletePlan::default()
+    };
+    let files = vec![PathBuf::from("/cache/models--o--r/snapshots/rev/a.gguf")];
+    assert!(plan.removes_more_than(&files, Some(Path::new("/cache/models--o--r"))));
   }
 
   fn symlink_or_copy(target: &Path, link: &Path) {
