@@ -360,15 +360,16 @@ pub struct HfDialogState {
 pub const DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(300);
 
 /// Header over the recommendation list, because the empty field is also the
-/// dialog's landing screen: what the rows are, and what the `~` on one means.
+/// dialog's landing screen: what the rows are, and what a `~` means. One word
+/// covers both uses: an estimated size and fit, and a `spill ~42%` figure, which
+/// is worked out from that same estimated size.
 /// What to type is not here — the search line above the box already says it.
 ///
 /// Length is the constraint: this box is two wrapped lines and the note is
 /// silently clipped, not grown. The narrowest frame that renders (60 columns)
 /// gives it 48 cells, so the text stays under about 85 characters; the
 /// `hf_search_empty_narrow` golden pins that it survives whole.
-const RECOMMENDATIONS_NOTE: &str =
-  "Recommended for this hardware. `~` marks an estimated size and fit.";
+const RECOMMENDATIONS_NOTE: &str = "Recommended for this hardware. `~` marks an estimate.";
 
 /// Prefix on a size or fit verdict read off the upstream weights rather than a
 /// GGUF file on disk.
@@ -1142,7 +1143,7 @@ fn render_recommendation_row(
       entry.repo.as_str(),
       Some(entry.weights_bytes),
       format_param_count(entry.params),
-      entry.gguf_publisher == "synthetic",
+      entry.gguf_publisher == crate::init::download::SYNTHETIC_PUBLISHER,
     ),
     // The list filters to curated rows; a foreign row keeps the columns
     // aligned and shows nothing.
@@ -1208,7 +1209,7 @@ fn curated_target(rec: &Recommendation) -> Option<(String, String)> {
   let RecommendationKind::Curated { entry } = &rec.kind else {
     return None;
   };
-  let repo = if entry.gguf_publisher == "synthetic" {
+  let repo = if entry.gguf_publisher == crate::init::download::SYNTHETIC_PUBLISHER {
     crate::init::download::synthetic_publisher_fallbacks(&entry.repo)
       .into_iter()
       .next()
@@ -2268,7 +2269,7 @@ mod tests {
       .find(|rec| {
         matches!(
           &rec.kind,
-          RecommendationKind::Curated { entry } if entry.gguf_publisher == "synthetic"
+          RecommendationKind::Curated { entry } if entry.gguf_publisher == crate::init::download::SYNTHETIC_PUBLISHER
         )
       })
       .expect("the bundled list has a synthetic pick");
@@ -2276,10 +2277,23 @@ mod tests {
     if let RecommendationKind::Curated { entry } = &mut rec.kind {
       entry.weights_bytes = 12u64 * 1024 * 1024 * 1024 * 1024;
     }
-    let (size, _) = row_size_and_fit(&rec, &ctx);
-    assert!(
-      size.starts_with(ESTIMATE_MARK) && size.chars().count() <= SIZE_COL,
-      "the marked size has to stay inside {SIZE_COL} cells: {size:?}"
+    let mut unmarked = rec.clone();
+    if let RecommendationKind::Curated { entry } = &mut unmarked.kind {
+      entry.gguf_publisher = "bartowski".into();
+    }
+    // Width of every cell before `fit`: the mark must not move `quant` or `fit`.
+    let lead_width = |row: &Recommendation| {
+      let palette = crate::theme::palette_for(crate::theme::ThemeName::Macchiato);
+      render_recommendation_row(false, row, &ctx, 30, palette).spans[..5]
+        .iter()
+        .map(|s| s.width())
+        .sum::<usize>()
+    };
+    assert!(row_size_and_fit(&rec, &ctx).0.starts_with(ESTIMATE_MARK));
+    assert_eq!(
+      lead_width(&rec),
+      lead_width(&unmarked),
+      "the marked size pushed the columns after it"
     );
   }
 
@@ -2309,7 +2323,8 @@ mod tests {
             .is_some_and(|f| f.spill_percent.is_some());
           match &rec.kind {
             RecommendationKind::Curated { entry } => {
-              !spills && (entry.gguf_publisher == "synthetic") == synthetic
+              !spills
+                && (entry.gguf_publisher == crate::init::download::SYNTHETIC_PUBLISHER) == synthetic
             }
             _ => false,
           }
@@ -2406,7 +2421,7 @@ mod tests {
       RecommendationKind::Curated { entry } => (
         entry.quant.clone(),
         entry.repo.clone(),
-        entry.gguf_publisher == "synthetic",
+        entry.gguf_publisher == crate::init::download::SYNTHETIC_PUBLISHER,
       ),
       _ => panic!("expected a curated pick at index 2"),
     };

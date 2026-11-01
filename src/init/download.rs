@@ -1002,6 +1002,10 @@ pub(crate) fn pick_quant_match(candidates: &[String], quant: &str) -> Option<Str
   matches.first().map(|s| (*s).clone())
 }
 
+/// `gguf_publisher` of a catalog row that names the upstream safetensors repo:
+/// its GGUF comes from a community mirror and its size is estimated.
+pub const SYNTHETIC_PUBLISHER: &str = "synthetic";
+
 /// Trusted converter repo candidates for a `synthetic`-publisher snapshot
 /// row. The source repo `Owner/Name` ships safetensors only; these
 /// repos commonly host community GGUF conversions of the same weights.

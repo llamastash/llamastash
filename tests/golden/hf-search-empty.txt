@@ -6,7 +6,7 @@
 │VRAM ██┌ HuggingFace — Search · type to search · ↑/↓:row · ⏎:open · Esc:stop edit ────────────────────────────┐ ◡◡ ██ │
 │backend│ search: (type a query or paste owner/repo)                                                           │████▀  │
 └───────│ sort: ↓ downloads  ·  page 1                                                                         │───────┘
-┌ Models│ Recommended for this hardware. `~` marks an estimated size and fit.                                  │t ─────┐
+┌ Models│ Recommended for this hardware. `~` marks an estimate.                                                │t ─────┐
 │   Name│                                                                                                      │       │
 │▶ Runni│   repo                                  fmt   params    size  quant     fit                          │       │
 │ ● qwen│ ▌ fixture/Mid-Instruct-GGUF             GGUF     27B     16G  Q6_K      ⚠ tight                      │       │

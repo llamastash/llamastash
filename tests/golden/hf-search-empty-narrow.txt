@@ -7,7 +7,7 @@
 │bac│ search: (type a query or paste owner/repo)       │   │
 └───│ sort: ↓ downloads  ·  page 1                     │───┘
 ┌ Mo│ Recommended for this hardware. `~` marks an      │ ──┐
-│   │ estimated size and fit.                          │e  │
+│   │ estimate.                                        │e  │
 │▶ R│   repo                                  fmt   pa │   │
 │ ● │ ▌ fixture/Mid-Instruct-GGUF             GGUF     │G  │
 │★ F│   fixture/Vast-Sparse-Instruct-GGUF     GGUF     │   │

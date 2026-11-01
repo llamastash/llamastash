@@ -539,7 +539,7 @@ _Shared context: Alias resolution in the proxy, the `/v1/models` and `/api/tags`
 
 ## R18 (v0.11.0 checklist)
 
-Minor release. Batches 5 and 6 are the new surfaces: `llamastash bench` for per-preset speed numbers, and `llamastash delete` so an agent can remove a model it pulled. Batch 1 is the only one that can delete the wrong file. Batch 2 is the discovery scan duplicating or resurrecting rows. Batch 3 is what a media launch reports and when the catalog is ready. Batch 4 is three small fixes where the user is shown a number or a flag that is not the one they got.
+Minor release. Batches 5 and 6 are the new surfaces: `llamastash bench` for per-preset speed numbers, and `llamastash delete` so an agent can remove a model it pulled. Batch 3 is what a media launch reports and when the catalog is ready. Batch 4 is three small fixes where the user is shown a number or a flag that is not the one they got.
 
 ### Batch 3: media launch reporting and first-scan readiness
 
@@ -567,7 +567,7 @@ _Shared context: a new verb in `src/cli/` over `src/ipc/methods.rs`, the `--json
 
 ### Batch 6: `llamastash delete` — the CRUD verb missing from the agent contract
 
-_Shared context: `DeletePlan`, `plan_for_path` and `execute` in [`src/tui/delete.rs`](src/tui/delete.rs), a new method in `src/ipc/methods.rs`, the `--yes` non-TTY rule `stop --all` already follows, `docs/usage.md`. Moves with Batch 1, which is in the same code._
+_Shared context: `DeletePlan`, `plan_for_path` and `execute` in [`src/tui/delete.rs`](src/tui/delete.rs), a new method in `src/ipc/methods.rs`, the `--yes` non-TTY rule `stop --all` already follows, `docs/usage.md`. Moves with Batch L22 (delete safety), which is in the same code._
 
 - [ ] **Deleting a model is TUI-only**, so an agent can pull a model but never remove one. `delete::plan_for_path` / `execute` have exactly two callers, both in `src/tui/events.rs`; there is no `delete` subcommand (the CLI's `Delete` is `presets delete`) and no `delete_model` IPC method. It is the one CRUD verb off the agent contract, and it is not a scope boundary.
   - `DeletePlan` encodes six things `rm -rf` gets wrong: split-set shards, an mmproj projector another model still pairs with, a separate MTP draft head, a cache repo that still holds a second quant, HF blob symlinks shared between snapshots, and whether there are blobs to promise back at all. vLLM widened this with directory-shaped rows and the nested-GGUF case, so the newest model type is also the one only a human can delete.
@@ -1029,7 +1029,7 @@ _Shared context: the Requests tab summary strip and rows in `src/tui/tabs`, `src
 - [ ] The Requests tab summary is at least two lines wide at any pane width, so a very short pane gives the table a row or two. Sweep the tab's usable minimum and either raise the pane floor or fold the two rows into one under some width. Seen 2026-10-16 rendering the narrow golden fixture at 40 columns, where the strip is 9 lines and one table row fits under it.
 - [ ] The help overlay counts one line per Legend row for its scroll maximum (`legend_lines.len()` in `src/tui/help_overlay.rs` ~166), but a long description wraps on a narrow terminal, so the rows under it can end up unreachable. Measured only at 140 columns. Count wrapped lines, or cap the description width.
 
-#### Batch L22 delete safety
+#### Batch L22 - delete safety
 
 _Shared context: `DeletePlan` in [`src/tui/delete.rs`](src/tui/delete.rs), the `Ctrl+D` path in [`src/tui/events.rs`](src/tui/events.rs), the HF cache repo layout in `util::model_caches`._
 
@@ -1037,7 +1037,7 @@ _Shared context: `DeletePlan` in [`src/tui/delete.rs`](src/tui/delete.rs), the `
 
 - [ ] **A model listed in a repo while the delete popup is open goes with a whole-repo delete.** `plan` decides `hf_repo_dir` when `Ctrl+D` is pressed and `execute` runs that answer unchanged; only a download part file and the launch refusals are checked again at confirm. A rescan that lists a second model in the repo before the confirm gets removed with it. Re-plan against the live catalog at confirm and refuse anything bigger than the popup named, or have `execute` refuse when the repo's snapshots hold a file the plan does not name. (`src/tui/delete.rs`, `src/tui/events.rs`) The shared-store publish has the same gap: huggingface_hub (checked against 2.3.0) moves the download to `blobs/<etag>` as a plain file before it publishes it to the store, so no `.part` or `.incomplete` shows in between, and a repo removed in that window leaves the store copy with a `.refs` line for a repo that is gone.
 
-#### Batch L23: discovery scan correctness
+#### Batch L23 - discovery scan correctness
 
 _Shared context: `default_set` in [`src/discovery/known_caches.rs`](src/discovery/known_caches.rs), the scan -> `replace_all` path in [`src/discovery/scanner.rs`](src/discovery/scanner.rs) and [`src/discovery/catalog.rs`](src/discovery/catalog.rs)._
 
