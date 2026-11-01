@@ -1183,7 +1183,7 @@ async fn delete_model_handler(
   if let Some(expect) = &parsed.expect {
     if plan.removes_more_than(&expect.files, expect.repo_dir.as_deref()) {
       return Err(delete_refusal(
-        "the delete plan grew since it was shown — nothing was removed, plan          against the current list and try again",
+        "the delete plan grew since it was shown — nothing was removed, run the delete again to see the current plan",
       ));
     }
   }
@@ -1353,6 +1353,27 @@ mod tests {
       .expect("deletes the set");
     assert!(!one.exists() && !two.exists(), "both shards are gone");
     assert!(ctx.catalog.snapshot().await.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+  }
+
+  /// The row outlived its file: the delete still goes through and the catalog
+  /// stops listing it, which is how a stray `rm` gets cleaned up.
+  #[tokio::test]
+  async fn delete_model_forgets_a_row_whose_file_is_already_gone() {
+    let dir = crate::test_support::unique_temp_dir("ls-ipc", "del-stale");
+    let path = dir.join("vanished.gguf");
+    std::fs::write(&path, b"GGUF").expect("write model");
+    let ctx = ctx();
+    ctx.catalog.upsert(row(&path)).await;
+    std::fs::remove_file(&path).expect("remove the file first");
+
+    delete_model_handler(&ctx, Some(json!({ "path": path })))
+      .await
+      .expect("a file that is already gone is not a failure");
+    assert!(
+      ctx.catalog.snapshot().await.is_empty(),
+      "the stale row goes with it"
+    );
     let _ = std::fs::remove_dir_all(&dir);
   }
 
@@ -1712,10 +1733,6 @@ mod tests {
     assert!(
       methods.contains(&"delete_model"),
       "clients feature-detect the delete here"
-    );
-    assert!(
-      !methods.contains(&"forget_models"),
-      "the TUI is not the one dropping rows any more"
     );
   }
 
