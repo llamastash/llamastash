@@ -36,10 +36,10 @@ pub async fn handle(args: DeleteArgs, cli: &Cli, config: &Config) -> CliResult {
       ));
     }
     let plan = plan_of(&mut client, &path).await?;
-    if !cli.quiet {
-      for line in plan_lines(&plan) {
-        println!("{line}");
-      }
+    // Not gated on `--quiet`: this is the one view of what the delete removes,
+    // and a quiet run still has to see it before agreeing to it.
+    for line in plan_lines(&plan) {
+      println!("{line}");
     }
     if !confirm(&row.name())? {
       if !cli.quiet {
