@@ -2565,6 +2565,18 @@ mod tests {
       arch_knobs.set_by_name("reasoning-parser", "qwen3"),
       "the fixture knob must resolve"
     );
+    // The case has to exist: under the architecture default the resolver
+    // really does drop the knob, so the silence below is a decision and not an
+    // empty `dropped` list.
+    let dropped = crate::launch::knobs::resolve_layered(
+      "llama",
+      &[(crate::launch::params::LayerLabel::ArchDefault, &arch_knobs)],
+    )
+    .dropped;
+    assert!(
+      dropped.iter().any(|id| id.as_str() == "reasoning-parser"),
+      "the arch-default knob has to reach `dropped`: {dropped:?}"
+    );
     if let Some(env) = ctx.launch.as_mut() {
       env.binary = Some(spawnable_stub(dir.path()));
       // The GGUF the fixture writes declares this architecture.
