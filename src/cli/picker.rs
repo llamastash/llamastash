@@ -7,7 +7,7 @@
 //! The cliclack call itself runs inside `spawn_blocking` because the underlying
 //! terminal reads are sync.
 
-use std::io::{self, IsTerminal, Read, Write};
+use std::io::{self, BufRead, IsTerminal, Read, Write};
 
 use crate::cli::exit_codes::{CliExit, MODEL_NOT_FOUND, USAGE};
 use crate::cli::resolve::{CatalogRow, RunningRow};
@@ -50,7 +50,9 @@ pub(crate) fn confirm_line<R: Read, W: Write>(
   write!(out, "{question}")?;
   out.flush()?;
   let mut buf = String::new();
-  io::BufReader::new(input).read_to_string(&mut buf)?;
+  // One line, not the whole stream: a terminal stays open after the answer, and
+  // reading to EOF there waits for a second Enter nobody is going to press.
+  io::BufReader::new(input).read_line(&mut buf)?;
   Ok(matches!(buf.trim().to_lowercase().as_str(), "y" | "yes"))
 }
 
@@ -213,6 +215,33 @@ mod tests {
         "`{answer}` should decline"
       );
     }
+  }
+
+  /// A terminal hands over one line and stays open, so the reader has to stop at
+  /// the newline. This reader hands over "y\n" and then refuses to give anything
+  /// else, which is what waiting for EOF would do to a real prompt.
+  #[test]
+  fn confirm_line_stops_at_the_first_line() {
+    struct OneLineOnly(&'static [u8]);
+    impl Read for OneLineOnly {
+      fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.0.is_empty() {
+          return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "the terminal is still open",
+          ));
+        }
+        let n = self.0.len().min(buf.len());
+        buf[..n].copy_from_slice(&self.0[..n]);
+        self.0 = &self.0[n..];
+        Ok(n)
+      }
+    }
+    let mut out = Vec::new();
+    assert!(
+      confirm_line(&mut OneLineOnly(b"y\n"), &mut out, "go? [y/N] ").expect("reads one line"),
+      "a typed y confirms without waiting for the end of input"
+    );
   }
 
   /// The question is what the caller sees, so a shared reader cannot quietly
