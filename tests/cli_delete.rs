@@ -134,6 +134,12 @@ impl Daemon {
     out
   }
 
+  /// Run one command and hand back the raw output, for a case that asserts on
+  /// stderr as well as the code.
+  fn try_run(&self, args: &[&str]) -> std::process::Output {
+    self.cmd().args(args).output().expect("run")
+  }
+
   /// Run one command expected to fail, and return its exit code.
   fn fail(&self, args: &[&str]) -> i32 {
     let out = self.cmd().args(args).output().expect("run");
@@ -195,6 +201,23 @@ fn stdout_json(out: &std::process::Output) -> Value {
   serde_json::from_slice(&out.stdout).expect("valid json on stdout")
 }
 
+/// Every path that must not delete something, in one daemon: no terminal
+/// without `--yes`, `--json` without `--yes`, and a reference that resolves to
+/// nothing. Nothing on disk changes on any of them.
+#[test]
+fn a_delete_that_cannot_run_says_which_rule_it_hit() {
+  let daemon = Daemon::start("refusals");
+  let path = daemon.model_path("gone.gguf");
+  // `Command::output()` gives the child no terminal, which is the case here.
+  assert_eq!(daemon.fail(&["delete", "gone"]), 64);
+  assert!(path.exists(), "the no-TTY refusal removes nothing");
+  assert_eq!(daemon.fail(&["delete", "gone", "--json"]), 64);
+  assert!(path.exists(), "the --json refusal removes nothing");
+  // An unresolved reference stays a model problem (66), not a delete failure.
+  assert_eq!(daemon.fail(&["delete", "no-such-model", "--yes"]), 66);
+  assert!(daemon.model_path("busy.gguf").exists());
+}
+
 /// `--yes --json` deletes: the file is gone, the reply says so, and the catalog
 /// no longer lists it.
 #[test]
@@ -223,32 +246,6 @@ fn a_delete_with_yes_removes_the_file_and_the_row() {
   );
 }
 
-/// No TTY and no `--yes` is a refusal, with the file untouched: the same rule
-/// `stop --all` follows.
-#[test]
-fn a_delete_without_yes_in_a_pipe_refuses() {
-  let daemon = Daemon::start("pipe");
-  let path = daemon.model_path("gone.gguf");
-  assert_eq!(daemon.fail(&["delete", "gone"]), 64);
-  assert!(path.exists(), "nothing was removed");
-}
-
-/// `--json` never prompts either, so it needs `--yes` the same way.
-#[test]
-fn a_json_delete_without_yes_refuses() {
-  let daemon = Daemon::start("json-no-yes");
-  assert_eq!(daemon.fail(&["delete", "gone", "--json"]), 64);
-  assert!(daemon.model_path("gone.gguf").exists());
-}
-
-/// A reference the catalog cannot resolve stays a model problem (66), not a
-/// delete failure (75).
-#[test]
-fn an_unknown_reference_is_not_found() {
-  let daemon = Daemon::start("unknown");
-  assert_eq!(daemon.fail(&["delete", "no-such-model", "--yes"]), 66);
-}
-
 /// A launch still holds the file, so the daemon refuses and the CLI reports the
 /// refusal as its own failure class.
 #[test]
@@ -256,6 +253,12 @@ fn a_running_model_cannot_be_deleted() {
   let daemon = Daemon::start("running");
   daemon.run(&["start", "busy", "--wait", "--json"]);
   let path = daemon.model_path("busy.gguf");
-  assert_eq!(daemon.fail(&["delete", "busy", "--yes"]), 75);
+  let out = daemon.try_run(&["delete", "busy", "--yes"]);
+  assert_eq!(out.status.code(), Some(75), "stderr: {}", stderr(&out));
+  assert!(
+    stderr(&out).contains("stop the launch first"),
+    "the refusal reaches the user: {}",
+    stderr(&out)
+  );
   assert!(path.exists(), "the running model keeps its file");
 }
