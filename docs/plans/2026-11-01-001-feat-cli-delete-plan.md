@@ -108,7 +108,7 @@ sequenceDiagram
 
 ## Implementation Units
 
-- [ ] **U1: Move the plan/execute module out of the TUI**
+- [x] **U1: Move the plan/execute module out of the TUI**
 
 **Goal:** `src/tui/delete.rs` becomes `src/discovery/delete.rs`, with a containment check the daemon will use.
 
@@ -134,7 +134,7 @@ sequenceDiagram
 
 **Verification:** the crate builds; the moved tests pass under `--lib discovery::delete`.
 
-- [ ] **U2: `delete_model` IPC method; drop `forget_models`**
+- [x] **U2: `delete_model` IPC method; drop `forget_models`**
 
 **Goal:** the daemon refuses, plans, deletes and forgets in one handler.
 
@@ -168,7 +168,7 @@ sequenceDiagram
 
 **Verification:** `--lib ipc::methods` passes; `forget_models` has no remaining reference in `src/`.
 
-- [ ] **U3: `llamastash delete <model>`**
+- [x] **U3: `llamastash delete <model>`**
 
 **Goal:** the CLI verb on top of `delete_model`.
 
@@ -199,7 +199,7 @@ sequenceDiagram
 
 **Verification:** `--test cli_delete` and `--lib cli::` pass.
 
-- [ ] **U4: TUI `Ctrl+D` through `delete_model`**
+- [x] **U4: TUI `Ctrl+D` through `delete_model`**
 
 **Goal:** the TUI has no local delete path left.
 
@@ -229,7 +229,7 @@ sequenceDiagram
 
 **Verification:** `--lib tui::events` passes. E2E in step 8: TUI `Ctrl+D` on a temp model against an isolated daemon.
 
-- [ ] **U5: Docs, CHANGELOG, TODO**
+- [x] **U5: Docs, CHANGELOG, TODO**
 
 **Goal:** docs match the new surface in the same branch.
 
