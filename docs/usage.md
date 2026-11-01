@@ -1776,7 +1776,7 @@ The global `--quiet` drops the one-line note on stderr before the tool takes the
 
 | Input                                                        | Outcome                                                                                                                                        |
 | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| no MODEL, a chat launch is live (`launching` / `loading` / `ready`) | The one with the highest launch number (`L<n>`), which is the newest start; waits for Ready unless `--dry-run` was given.                                              |
+| no MODEL, a chat launch is live (`launching` / `loading` / `ready`) | The one with the highest launch number (`L<n>`), which is the newest start; waits for Ready unless `--dry-run` was given. A launch of a declared `image` / `tts` / `stt` entry is not one, though its MODE reads `chat`. |
 | no MODEL, no chat launch live, on a terminal       | A picker over the catalog's chat models, the same list `start` shows without a model. What you pick is started, then handed to the tool.                    |
 | no MODEL, no chat launch live, not on a terminal   | Exit `66`: no chat model is running, start one or pass MODEL. With `--json` the picker is off too.                                                    |
 | MODEL is a `proxy.aliases` name and no catalog model has it   | The alias target resolves instead, the proxy's own precedence. A model that owns the name wins.                                                    |

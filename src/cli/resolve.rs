@@ -790,17 +790,21 @@ fn single_or_error(matches: Vec<&RunningRow>, reference: &str) -> Result<Running
 mod tests {
   use super::*;
 
-  /// A canned HTTP reply, served twice so a test can prove the stub was reached
-  /// before asserting on what the client does with it.
-  fn stub_ipc(reply: &'static str) -> (std::net::SocketAddr, std::thread::JoinHandle<()>) {
+  /// Canned HTTP replies, served in request order and repeating the last one, so
+  /// one reply pins a fixed answer and a pair watches a caller re-ask. A test
+  /// also asserts the stub was reached before reading what the client does with
+  /// it.
+  fn stub_ipc(replies: &[&'static str]) -> (std::net::SocketAddr, std::thread::JoinHandle<()>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("stub bind");
     let addr = listener.local_addr().expect("stub addr");
+    let replies = replies.to_vec();
     let handle = std::thread::spawn(move || {
       use std::io::{Read, Write};
+      let mut asked: usize = 0;
       // Answer every request on a connection, not just the first: hyper keeps
       // the connection and reuses it, and a stub that stops after one reply
       // turns the caller's second ask into a transport error.
-      let reply_one = |socket: &mut std::net::TcpStream| -> bool {
+      let reply_one = |socket: &mut std::net::TcpStream, reply: &str| -> bool {
         // Read the whole request, body included: a caller that sends params
         // would otherwise still be writing when the reply goes out.
         let mut buf = Vec::new();
@@ -839,7 +843,9 @@ mod tests {
       };
       for stream in listener.incoming().take(8) {
         let Ok(mut socket) = stream else { continue };
-        while reply_one(&mut socket) {}
+        while reply_one(&mut socket, replies[asked.min(replies.len() - 1)]) {
+          asked += 1;
+        }
       }
     });
     (addr, handle)
@@ -850,7 +856,7 @@ mod tests {
   /// rather than held open on a single call past the client's own timeout.
   #[tokio::test]
   async fn first_scan_wait_reasks_until_the_budget_runs_out() {
-    let (addr, _stub) = stub_ipc(r#"{"jsonrpc":"2.0","id":1,"result":{"first_scan":false}}"#);
+    let (addr, _stub) = stub_ipc(&[r#"{"jsonrpc":"2.0","id":1,"result":{"first_scan":false}}"#]);
     let mut client = Client::with_url_and_token(&format!("http://{addr}"), "test").expect("client");
     let started = std::time::Instant::now();
     assert!(
@@ -859,7 +865,8 @@ mod tests {
     );
     assert!(started.elapsed() >= std::time::Duration::from_millis(120));
 
-    let (done_addr, _done) = stub_ipc(r#"{"jsonrpc":"2.0","id":1,"result":{"first_scan":true}}"#);
+    let (done_addr, _done) =
+      stub_ipc(&[r#"{"jsonrpc":"2.0","id":1,"result":{"first_scan":true}}"#]);
     let mut ready =
       Client::with_url_and_token(&format!("http://{done_addr}"), "test").expect("client");
     let landed_at = std::time::Instant::now();
@@ -867,6 +874,40 @@ mod tests {
     assert!(
       landed_at.elapsed() < std::time::Duration::from_secs(1),
       "a ready daemon must not cost a wait"
+    );
+  }
+
+  /// A walk that lands partway through the wait releases it on the next ask, so
+  /// `start` pays for the walk and not for the wait slice around it.
+  #[tokio::test]
+  async fn first_scan_wait_releases_when_the_scan_lands_midway() {
+    let (addr, _stub) = stub_ipc(&[
+      r#"{"jsonrpc":"2.0","id":1,"result":{"first_scan":false}}"#,
+      r#"{"jsonrpc":"2.0","id":1,"result":{"first_scan":true}}"#,
+    ]);
+    let mut client = Client::with_url_and_token(&format!("http://{addr}"), "test").expect("client");
+    assert!(
+      super::first_scan_landed(&mut client, super::FIRST_SCAN_WAIT).await,
+      "the ask after the scan lands must read as landed"
+    );
+  }
+
+  /// A daemon from before this method exists refuses it. That counts as landed:
+  /// the alternative is that every `start` against an old daemon waits for a
+  /// scan this build has no way to hear about.
+  #[tokio::test]
+  async fn first_scan_wait_treats_a_daemon_without_the_method_as_landed() {
+    let (addr, _stub) =
+      stub_ipc(&[r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"unknown method"}}"#]);
+    let mut client = Client::with_url_and_token(&format!("http://{addr}"), "test").expect("client");
+    let started = std::time::Instant::now();
+    assert!(
+      super::first_scan_landed(&mut client, super::FIRST_SCAN_WAIT).await,
+      "an older daemon must not cost a start its 30 s"
+    );
+    assert!(
+      started.elapsed() < std::time::Duration::from_secs(1),
+      "a refusal answers at once"
     );
   }
 
@@ -896,7 +937,7 @@ mod tests {
     );
 
     let (missing_addr, _missing) =
-      stub_ipc(r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"unknown method"}}"#);
+      stub_ipc(&[r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"unknown method"}}"#]);
     let mut old_daemon =
       Client::with_url_and_token(&format!("http://{missing_addr}"), "test").expect("client");
     assert!(
@@ -912,7 +953,7 @@ mod tests {
       "a daemon that has never heard of the method is no aliases"
     );
 
-    let (blank_addr, _blank) = stub_ipc(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#);
+    let (blank_addr, _blank) = stub_ipc(&[r#"{"jsonrpc":"2.0","id":1,"result":{}}"#]);
     let mut no_table =
       Client::with_url_and_token(&format!("http://{blank_addr}"), "test").expect("client");
     assert!(

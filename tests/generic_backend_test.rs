@@ -749,10 +749,12 @@ servers:
   #[tokio::test]
   async fn media_launch_row_carries_its_declared_mode() {
     let (mut client, daemon) = boot(opts(unique_temp("declared-mode"), None)).await;
-    // The same flag `llamastash start` waits on: a booted daemon must already
-    // have it set, or every start pays the wait.
+    wait_listed(&mut client, "gen-stt").await;
+    wait_listed(&mut client, "gen-chat").await;
+    // The same flag `llamastash start` waits on. Asked with a wait rather than
+    // `wait_ms: 0`, because a boot scan on a slow runner can still be walking.
     let ready = client
-      .call("catalog_ready", Some(json!({ "wait_ms": 0 })))
+      .call("catalog_ready", Some(json!({ "wait_ms": 3_000 })))
       .await
       .expect("catalog_ready");
     assert_eq!(
@@ -760,8 +762,6 @@ servers:
       json!(true),
       "the boot scan flag never flipped"
     );
-    wait_listed(&mut client, "gen-stt").await;
-    wait_listed(&mut client, "gen-chat").await;
 
     let stt = start(&mut client, json!({ "model_path": "generic://gen-stt" })).await;
     let stt_row = wait_state(&mut client, &stt, "ready").await;

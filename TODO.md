@@ -576,6 +576,7 @@ _Shared context: `DeletePlan`, `plan_for_path` and `execute` in [`src/tui/delete
 ## Next
 
 - [ ] `/v1/models` has the same media gap `status` just lost: a running launch prints the launch's own mode, so an `stt` or `image` entry that is up lists as `chat` while the same row dormant lists as `stt`. `docs/usage.md` documents both halves of that. Either print the declared mode for a media launch there too, or say in the OAI surface docs why the two differ. Plan: [`docs/plans/2026-11-01-001-fix-r18-batch-3-plan.md`](docs/plans/2026-11-01-001-fix-r18-batch-3-plan.md)
+- [ ] `supervisor_ipc_test::status_lists_active_supervised_model` flakes under a full parallel suite run: it gives the host-metrics sampler 4 s to prime (`tests/supervisor_ipc_test.rs:127`) and one local run of 3485 tests hit that while every other test file was compiling and running. It passes alone and under the `ci` profile, where `retries = 2` hides it. Either widen that poll to the daemon-bound group's usual budget or drop the sampler wait from the row assertions.
 
 _Empty as of 2026-10-31 apart from the line above: what was here went into the R18 checklist or into a High / Low roadmap batch. New loose items land here until the next release is planned._
 

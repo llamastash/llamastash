@@ -367,13 +367,23 @@ fn catalog_row(catalog: &[CatalogRow], path: &str) -> Result<CatalogRow, CliExit
 }
 
 /// The most recently started live chat launch. Launch ids are never reused, so
-/// the highest `L<n>` is the newest start.
+/// the highest `L<n>` is the newest start. A media launch records `mode: "chat"`
+/// because a media mode arrives with the request's endpoint and changes no argv,
+/// so its declared mode is what says it cannot carry a session.
 fn latest_chat_launch(running: &[RunningRow]) -> Option<RunningRow> {
   running
     .iter()
-    .filter(|r| r.mode == "chat" && LIVE_STATES.contains(&r.state.as_str()))
+    .filter(|r| r.mode == "chat" && !declared_media_mode(r.mode_hint.as_deref()))
+    .filter(|r| LIVE_STATES.contains(&r.state.as_str()))
     .max_by_key(|r| launch_number(r))
     .cloned()
+}
+
+/// Whether a declared mode is one an engine answers only on its own media
+/// endpoint: `image`, `tts` or `stt`.
+fn declared_media_mode(hint: Option<&str>) -> bool {
+  use crate::launch::mode::LaunchMode;
+  hint.is_some_and(|h| LaunchMode::from_label(h).is_some_and(|m| m.is_declared_only()))
 }
 
 /// The live launch a resolved model plus optional name means. A named reference
@@ -792,6 +802,27 @@ mod tests {
       live("L3", "/m/rerank.gguf", "rerank", None),
     ];
     assert!(latest_chat_launch(&running).is_none());
+  }
+
+  #[test]
+  fn a_media_launch_is_not_the_latest_chat_launch() {
+    let mut whisper = live("L9", "/m/whisper.gguf", "chat", None);
+    whisper.mode_hint = Some("stt".into());
+    let running = vec![live("L2", "/m/chat.gguf", "chat", None), whisper];
+    assert_eq!(
+      latest_chat_launch(&running)
+        .expect("a chat launch")
+        .launch_id,
+      "L2",
+      "the newest launch is the transcriber, but that is not a chat model"
+    );
+
+    let mut sd = live("L4", "/m/sd.gguf", "chat", None);
+    sd.mode_hint = Some("image".into());
+    assert!(
+      latest_chat_launch(&[sd]).is_none(),
+      "a daemon with only media launches has nothing to hand a tool"
+    );
   }
 
   #[test]

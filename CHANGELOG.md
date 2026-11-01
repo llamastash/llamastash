@@ -12,6 +12,10 @@
 - `init` and `recommend --json` report each recommendation's numbers as a `facts` object (`params`, `quant`, `peak_bytes`, `host_total`, `bench`, `spill_percent`) instead of a pre-rendered `justification` string; the one-line prose is rendered from it, as are the TUI's columns.
 - On a host whose sampler found several GPU backends (`multi`), the pull dialog reads the hardware from its NVIDIA or AMD card instead of treating the host as having no usable GPU, so hybrid laptops get per-file fit marks and recommendations too.
 
+### Fixed
+
+- `llamastash session` with no model picks the running chat model even when a media launch was started after it. The newest launch won, and the newest was an `stt` or `image` launch, so the command refused with `... is a speech-to-text model` while a real chat model was up.
+
 ## [0.10.1] — 2026-10-30
 
 This release rebuilds the recommender's model catalog. `data/frontier-models.yaml` is a curated list of current open models read straight from HuggingFace, with sizes from the real GGUF files and scores from the Artificial Analysis Intelligence Index instead of whichllm, whose reworked index reads outdated bounds. Quants down to Q2 now ship for models of 20B and up, and the recommender can pick a MoE model that does not fit VRAM on a discrete GPU with its experts in system RAM, ranked lower by how much of it spills. `/metrics` reports which preset a running launch resolved from, and [`RECIPES.md`](RECIPES.md) has an MLX recipe for mlx-lm and oMLX.
