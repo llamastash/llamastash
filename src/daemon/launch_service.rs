@@ -924,14 +924,32 @@ pub(crate) async fn compose_and_spawn(
   // `Config.default_launch_mode` (+ `LLAMASTASH_DEFAULT_LAUNCH_MODE`),
   // threaded through `LaunchEnv`.
   crate::launch::knobs::seed_layerless(&mut resolved, knob_scope, env.default_launch_mode);
+  // Non-fatal advisories accumulated across composition, surfaced on the
+  // `StartedLaunch` (CLI human output / TUI toast).
+  let mut warnings: Vec<String> = Vec::new();
   // A knob some layer supplied that this backend cannot honour is dropped and
   // surfaced rather than silently emitted (R6). The whole-map contamination
   // gate the old shape needed is gone: the resolver carries values across a
   // backend switch by concept instead of throwing the lot away.
+  //
+  // The warning is against the **user** layer, not the resolved set: the
+  // resolved set carries the resolver's own answers (a model-default
+  // `reasoning`, an arch default), so warning on those made every launch on a
+  // narrow-capability backend announce a knob the user never touched.
   for dropped_id in &resolved.dropped {
     log::info!(
       "{resolved_backend_id}: knob `{dropped_id}` is not honoured by this backend; dropped"
     );
+    // An `Auto` value emits nothing, so nothing the user asked for was lost.
+    if user_knobs
+      .get(*dropped_id)
+      .is_some_and(|value| !value.is_auto())
+    {
+      warnings.push(format!(
+        "{resolved_backend_id} does not take the `{dropped_id}` knob; it was not passed to the \
+         engine. Put the flag in a preset's `extras:` to pass it as-is."
+      ));
+    }
   }
   // Project resolved ctx/reasoning back onto the top-level
   // `LaunchParams` fields — `compose` emits them inline (ctx as
@@ -1054,9 +1072,6 @@ pub(crate) async fn compose_and_spawn(
     }
   }
 
-  // Non-fatal advisories accumulated across composition, surfaced on the
-  // `StartedLaunch` (CLI human output / TUI toast).
-  let mut warnings: Vec<String> = Vec::new();
   // Resolve the effective MTP directive (KD1 hard gate): fold the user's intent
   // with real capability — the embedded nextn head from the GGUF header, or a
   // separate `mtp-*.gguf` drafter on disk. A force-on non-capable model warns +
@@ -1081,16 +1096,6 @@ pub(crate) async fn compose_and_spawn(
   } else {
     None
   };
-  // Dropped-knob surfacing (R6): typed knobs the user set that the resolved
-  // backend can't honor are silently dropped from argv — tell the user which.
-  // A llama.cpp-only knob on a model another backend serves warns, for example.
-  //
-  // Against the **user** layer, not the resolved set. The resolved set carries
-  // the resolver's own answers (a model-default `reasoning`, an arch default),
-  // so every launch on a narrow-capability backend warned that it had dropped a
-  // knob the user never touched — noise on a bare `start`, on the surface where
-  // a real dropped knob most needs to be noticed.
-
   // Native-knob auto-resolution: a backend resolves its own **Auto** native
   // knobs from live host context (e.g. enabling disk streaming when residency
   // won't fit), mutating `backend_knobs` in place — the uniform knob
@@ -2459,18 +2464,25 @@ mod tests {
   /// only signal that a launch went through a refusal, and nothing asserted
   /// it reached the caller. Needs a binary that actually spawns, so the
   /// launch gets far enough to return its advisories.
+  /// A binary that spawns and exits at once, so a launch gets far enough to
+  /// hand back its advisories. The probe flips it to Error on its own
+  /// schedule; `spawn_supervised` is fire-and-forget and has already returned
+  /// the warnings by then.
+  #[cfg(unix)]
+  fn spawnable_stub(dir: &std::path::Path) -> PathBuf {
+    let binary = dir.join("noop-server");
+    std::fs::write(&binary, "#!/bin/sh\nexit 0\n").expect("write stub");
+    std::fs::set_permissions(&binary, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+      .expect("chmod stub");
+    binary
+  }
+
   #[cfg(unix)]
   #[tokio::test]
   async fn force_surfaces_the_projection_as_a_warning() {
     let (mut ctx, model_path, dir) = ctx_with_env_and_gguf().await;
     starve_host(&mut ctx);
-    // A child that spawns and exits at once. The probe then flips the launch
-    // to Error on its own schedule; `spawn_supervised` is fire-and-forget and
-    // has already handed back the warnings by then.
-    let binary = dir.path().join("noop-server");
-    std::fs::write(&binary, "#!/bin/sh\nexit 0\n").expect("write stub");
-    std::fs::set_permissions(&binary, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-      .expect("chmod stub");
+    let binary = spawnable_stub(dir.path());
     if let Some(env) = ctx.launch.as_mut() {
       env.binary = Some(binary);
     }
@@ -2500,6 +2512,82 @@ mod tests {
     assert!(
       ctx.admission.reserved_bytes() > 0,
       "a forced launch has to hold a reservation"
+    );
+  }
+
+  /// A knob another backend declares reaches the CLI's `--` tail parser, so a
+  /// launch that resolves elsewhere drops it. The warning is the only place the
+  /// user learns the engine never got it.
+  #[cfg(unix)]
+  #[tokio::test]
+  async fn a_dropped_user_knob_is_warned_about() {
+    let (mut ctx, model_path, dir) = ctx_with_env_and_gguf().await;
+    if let Some(env) = ctx.launch.as_mut() {
+      env.binary = Some(spawnable_stub(dir.path()));
+    }
+    let mut knobs = crate::launch::knobs::KnobSet::new();
+    // A knob only one other backend declares, so this launch has to drop it.
+    assert!(
+      knobs.set_by_name("reasoning-parser", "qwen3"),
+      "the fixture knob must resolve"
+    );
+    let started = compose_and_spawn(
+      &ctx,
+      StartParams {
+        model_path,
+        mode: Some(LaunchModeWire::Chat),
+        knobs,
+        ..StartParams::default()
+      },
+      LaunchOrigin::Manual,
+    )
+    .await
+    .expect("the stub launch starts");
+    assert!(
+      started
+        .warnings
+        .iter()
+        .any(|w| w.contains("reasoning-parser") && w.contains("extras")),
+      "the dropped knob is not surfaced in {:?}",
+      started.warnings
+    );
+  }
+
+  /// A knob a default layer supplies is not the user's, so its drop stays
+  /// silent: warning on those made every launch on a narrow-capability backend
+  /// noisy about a knob nobody set.
+  #[cfg(unix)]
+  #[tokio::test]
+  async fn a_dropped_knob_from_a_default_layer_stays_quiet() {
+    let (mut ctx, model_path, dir) = ctx_with_env_and_gguf().await;
+    let mut arch_knobs = crate::launch::knobs::KnobSet::new();
+    assert!(
+      arch_knobs.set_by_name("reasoning-parser", "qwen3"),
+      "the fixture knob must resolve"
+    );
+    if let Some(env) = ctx.launch.as_mut() {
+      env.binary = Some(spawnable_stub(dir.path()));
+      // The GGUF the fixture writes declares this architecture.
+      env.arch_defaults.insert("llama".to_string(), arch_knobs);
+    }
+    let started = compose_and_spawn(
+      &ctx,
+      StartParams {
+        model_path,
+        mode: Some(LaunchModeWire::Chat),
+        ..StartParams::default()
+      },
+      LaunchOrigin::Manual,
+    )
+    .await
+    .expect("the stub launch starts");
+    assert!(
+      started
+        .warnings
+        .iter()
+        .all(|w| !w.contains("reasoning-parser")),
+      "a knob no user layer set must not warn: {:?}",
+      started.warnings
     );
   }
 
