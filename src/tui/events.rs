@@ -11,7 +11,7 @@
 //!   cheap) so a transient daemon restart doesn't poison the
 //!   long-lived channel.
 
-use crate::tui::delete::DeleteOutcome;
+use crate::discovery::delete::DeleteOutcome;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -1244,8 +1244,14 @@ fn apply_delete_model(app: &mut App) {
     return;
   }
   let display_name = app.display_name_for(&path);
-  let plan = Box::new(crate::tui::delete::plan_for_path(&path, &app.models));
-  app.confirm_dialog = Some(ConfirmAction::DeleteModel { plan, display_name });
+  let Some(plan) = crate::discovery::delete::plan_for_path(&path, &app.models) else {
+    app.show_toast("model is no longer in the list — refresh and try again");
+    return;
+  };
+  app.confirm_dialog = Some(ConfirmAction::DeleteModel {
+    plan: Box::new(plan),
+    display_name,
+  });
 }
 
 /// Returns the toast message describing why a delete of `path` must refuse, or
@@ -1529,7 +1535,7 @@ fn apply_confirmed(app: &mut App, action: ConfirmAction, writer: Option<&mpsc::S
       app.show_toast(format!("deleting {display_name}"));
       // A multi-GB removal blocks on the filesystem, so it stays off the draw thread.
       tokio::task::spawn_blocking(move || {
-        let _ = tx.blocking_send(Event::Delete(crate::tui::delete::run(&plan)));
+        let _ = tx.blocking_send(Event::Delete(crate::discovery::delete::run(&plan)));
       });
     }
     ConfirmAction::CancelDownload { .. } => {
@@ -3361,7 +3367,7 @@ mod tests {
   /// handler sent to the daemon writer.
   fn confirm_and_run(
     app: &mut App,
-    plan: crate::tui::delete::DeletePlan,
+    plan: crate::discovery::delete::DeletePlan,
     name: &str,
   ) -> Vec<WriterCmd> {
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -3402,7 +3408,7 @@ mod tests {
   /// named.
   #[test]
   fn a_confirmed_delete_refuses_a_launch_that_started_under_the_popup() {
-    use crate::tui::delete::DeletePlan;
+    use crate::discovery::delete::DeletePlan;
     let dir = crate::util::test_temp::unique_temp_dir("delete-started");
     let a = dir.join("a.gguf");
     let b = dir.join("b.gguf");
@@ -3437,7 +3443,7 @@ mod tests {
   /// the daemon is told about the file that went and nothing else.
   #[test]
   fn a_confirmed_delete_drops_only_its_own_row() {
-    use crate::tui::delete::DeletePlan;
+    use crate::discovery::delete::DeletePlan;
     let dir = crate::util::test_temp::unique_temp_dir("delete-own-row");
     let repo = dir.join("models--o--r/snapshots/rev");
     let a = repo.join("a-Q4.gguf");
@@ -3472,7 +3478,7 @@ mod tests {
   /// A failed delete keeps the row, clears the marker and says why.
   #[test]
   fn a_failed_delete_keeps_the_row() {
-    use crate::tui::delete::DeletePlan;
+    use crate::discovery::delete::DeletePlan;
     let dir = crate::util::test_temp::unique_temp_dir("delete-failed");
     let repo = dir.join("models--o--r");
     let a = repo.join("snapshots/rev/a.gguf");
@@ -3539,7 +3545,7 @@ mod tests {
   /// models, so it has to land somewhere the user can act on again.
   #[test]
   fn a_delete_leaves_the_cursor_on_a_live_row() {
-    use crate::tui::delete::DeletePlan;
+    use crate::discovery::delete::DeletePlan;
     let dir = crate::util::test_temp::unique_temp_dir("delete-cursor");
     let a = dir.join("a.gguf");
     let b = dir.join("b.gguf");

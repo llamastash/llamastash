@@ -636,7 +636,7 @@ pub enum ConfirmAction {
   /// resolved when the key is pressed so the popup can name what goes
   /// and the confirm handler does no fresh discovery.
   DeleteModel {
-    plan: Box<crate::tui::delete::DeletePlan>,
+    plan: Box<crate::discovery::delete::DeletePlan>,
     display_name: String,
   },
   /// `Ctrl+X:cancel download` — abort the currently-active HF
