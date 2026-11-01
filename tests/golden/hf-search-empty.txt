@@ -6,8 +6,8 @@
 │VRAM ██┌ HuggingFace — Search · type to search · ↑/↓:row · ⏎:open · Esc:stop edit ────────────────────────────┐ ◡◡ ██ │
 │backend│ search: (type a query or paste owner/repo)                                                           │████▀  │
 └───────│ sort: ↓ downloads  ·  page 1                                                                         │───────┘
-┌ Models│ Start typing to search HuggingFace, or paste an owner/repo slug. Below are the models recommended    │t ─────┐
-│   Name│ for this hardware. `~` sizes are estimates; the file list shows each file's real size and fit.       │       │
+┌ Models│ Recommended for this hardware. `~` marks an estimated size and fit.                                  │t ─────┐
+│   Name│                                                                                                      │       │
 │▶ Runni│   repo                                  fmt   params    size  quant     fit                          │       │
 │ ● qwen│ ▌ fixture/Mid-Instruct-GGUF             GGUF     27B     16G  Q6_K      ⚠ tight                      │       │
 │★ Favor│   fixture/Vast-Sparse-Instruct-GGUF     GGUF     80B     34G  Q3_K_M    ⚠ spill ~42%                 │       │

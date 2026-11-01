@@ -257,6 +257,15 @@ fn hf_search_empty_golden_render_matches_fixture() {
 
 #[cfg_attr(target_os = "macos", ignore = "fixture uses Linux key glyphs")]
 #[test]
+fn hf_search_empty_narrow_golden_render_matches_fixture() {
+  // The narrowest frame that renders at all, pinned so the `~` explanation in
+  // the note above the list cannot grow past what two wrapped lines hold.
+  let rendered = render_to_lines_at(&mut seeded_hf_empty_search_app(), 60, HEIGHT).join("\n");
+  assert_golden_text(rendered + "\n", "tests/golden/hf-search-empty-narrow.txt");
+}
+
+#[cfg_attr(target_os = "macos", ignore = "fixture uses Linux key glyphs")]
+#[test]
 fn hf_files_golden_render_matches_fixture() {
   assert_golden(&mut seeded_hf_files_app(), "tests/golden/hf-files.txt");
 }

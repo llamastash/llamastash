@@ -359,10 +359,20 @@ pub struct HfDialogState {
 /// search). Matches the HuggingFace web UI cadence.
 pub const DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(300);
 
-/// Header over the recommendation list. Says both what to type and what
-/// the rows underneath are, because the empty field is also the dialog's
-/// landing screen.
-const RECOMMENDATIONS_NOTE: &str = "Start typing to search HuggingFace, or paste an owner/repo slug. Below are the models recommended for this hardware. `~` sizes are estimates; the file list shows each file's real size and fit.";
+/// Header over the recommendation list, because the empty field is also the
+/// dialog's landing screen: what the rows are, and what the `~` on one means.
+/// What to type is not here — the search line above the box already says it.
+///
+/// Length is the constraint: this box is two wrapped lines and the note is
+/// silently clipped, not grown. The narrowest frame that renders (60 columns)
+/// gives it 48 cells, so the text stays under about 85 characters; the
+/// `hf_search_empty_narrow` golden pins that it survives whole.
+const RECOMMENDATIONS_NOTE: &str =
+  "Recommended for this hardware. `~` marks an estimated size and fit.";
+
+/// Prefix on a size or fit verdict read off the upstream weights rather than a
+/// GGUF file on disk.
+const ESTIMATE_MARK: &str = "~";
 
 /// Inputs to [`crate::init::recommender::vram_fit_for_file`] the file
 /// picker carries across render frames. Lifted into its own struct so
@@ -1122,6 +1132,8 @@ fn render_recommendation_row(
   if selected {
     style = style.add_modifier(Modifier::REVERSED);
   }
+  // A `synthetic` curated entry sizes its quant from the upstream weights, so
+  // its size and verdict are estimates and the row says so.
   let (repo, size_bytes, params, estimated) = match &rec.kind {
     // The param count comes straight off the entry, formatted the way a search
     // row formats it. `facts.params` is the recommender's bucket (32B, 70B+),
@@ -1139,10 +1151,13 @@ fn render_recommendation_row(
   let facts = rec.facts.clone().unwrap_or_default();
   let params = crate::tui::fmt::truncate_end(&params, PARAMS_COL);
   let size = match size_bytes {
-    Some(bytes) => format!(
-      "{}{}",
-      if estimated { "~" } else { "" },
-      crate::tui::fmt::format_bytes(bytes)
+    Some(bytes) => crate::tui::fmt::truncate_end(
+      &format!(
+        "{}{}",
+        if estimated { ESTIMATE_MARK } else { "" },
+        crate::tui::fmt::format_bytes(bytes)
+      ),
+      SIZE_COL,
     ),
     None => "-".to_string(),
   };
@@ -1158,7 +1173,7 @@ fn render_recommendation_row(
     Some(pct) => format!("{} spill ~{pct}%", FileFit::Tight.glyph()),
     None => {
       let fit = ctx.fit_for(size_bytes);
-      let mark = if estimated { "~" } else { "" };
+      let mark = if estimated { ESTIMATE_MARK } else { "" };
       format!("{} {}{}", fit.glyph(), mark, fit.word())
     }
   };
@@ -2233,6 +2248,39 @@ mod tests {
       .collect();
     // prefix+repo, fmt, params, size, quant, fit
     (cells[3].clone(), cells[5].clone())
+  }
+
+  /// The size column is fixed and the `~` mark shares it, so a mark on a wide
+  /// value must not push `quant` and `fit` out of line.
+  #[test]
+  fn a_marked_size_stays_inside_its_column() {
+    let snapshot = crate::init::benchmark::load_bundled();
+    let ctx = HardwareFitContext {
+      backend: "cuda".into(),
+      vram_bytes: Some(4 * 1024 * 1024 * 1024),
+      ram_total_bytes: 16 * 1024 * 1024 * 1024,
+      ctx_tokens: crate::init::recommender::DEFAULT_CTX,
+      ..Default::default()
+    };
+    let mut rec = ctx
+      .recommendations(&snapshot)
+      .into_iter()
+      .find(|rec| {
+        matches!(
+          &rec.kind,
+          RecommendationKind::Curated { entry } if entry.gguf_publisher == "synthetic"
+        )
+      })
+      .expect("the bundled list has a synthetic pick");
+    // Twelve TiB: `format_bytes` gives six cells, so the mark needs a seventh.
+    if let RecommendationKind::Curated { entry } = &mut rec.kind {
+      entry.weights_bytes = 12u64 * 1024 * 1024 * 1024 * 1024;
+    }
+    let (size, _) = row_size_and_fit(&rec, &ctx);
+    assert!(
+      size.starts_with(ESTIMATE_MARK) && size.chars().count() <= SIZE_COL,
+      "the marked size has to stay inside {SIZE_COL} cells: {size:?}"
+    );
   }
 
   /// A `synthetic` row sizes its quant from the upstream weights instead of a
