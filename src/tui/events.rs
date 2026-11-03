@@ -855,11 +855,8 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
       }
     }
     Action::LaunchNamed => {
-      // `Alt+⏎` on the launch picker: name this launch before dispatching it.
-      // A plain `⏎` (Submit) is untouched and launches unnamed. Scoped to the
-      // picker rather than the list so the name is asked for once the launch
-      // is otherwise ready to go — and so accepting can submit the picker
-      // that is already open instead of staging a fresh one.
+      // `Alt+⏎`: name this launch before dispatching it, from the list or the
+      // picker. A plain `⏎` is untouched and launches unnamed.
       if settings_inline_edit_open(app) {
         return;
       }
@@ -5245,6 +5242,29 @@ mod tests {
     pump_input(&mut app, key(KeyCode::Up, KeyModifiers::NONE));
     pump_input(&mut app, key(KeyCode::Up, KeyModifiers::NONE));
     assert_eq!(app.running_view_scroll.get(), 0, "↑ saturates at 0");
+  }
+
+  #[test]
+  fn alt_enter_from_the_list_and_ctrl_r_from_chat_input_both_fire() {
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.go_top();
+    pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::ALT));
+    assert!(app.launch_name_dialog.is_some());
+
+    let mut chat = App::new(Default::default());
+    chat.focus = Focus::ChatInput;
+    chat.chat.prompt.enter_edit();
+    pump_input(&mut chat, key(KeyCode::Char('r'), KeyModifiers::CONTROL));
+    assert!(matches!(
+      chat.confirm_dialog,
+      Some(crate::tui::app::ConfirmAction::RestartDaemon)
+    ));
+    assert_eq!(
+      chat.chat.prompt.buffer(),
+      "",
+      "Ctrl+R must not type into the prompt"
+    );
   }
 
   #[test]

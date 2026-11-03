@@ -9,6 +9,7 @@
 
 ### Changed
 
+- TUI global chords reach further: `Ctrl+K` works from the right pane like `Ctrl+R`, `Alt+⏎` names a launch from the Models list as well as Settings, and `Ctrl+C` / `Ctrl+R` / `Ctrl+K` / `Ctrl+S` / `Ctrl+X` / `Ctrl+P` / `Alt+L` also fire while typing in the Chat, Embed and Rerank inputs.
 - TUI popups share one frame and one button row: key chips on a lighter background with lowercase labels, Submit / Cancel follow `keybindings:` rebinds in every popup, and yes/no prompts (confirm, preset overwrite, HF pull confirm) also take `y` / `n`.
 - `llamastash start <model>` waits for a freshly started daemon's first catalog scan instead of failing with `no model matches ... (0 known)` on a model that is on disk.
 - A launch of a declared `stt` / `image` / `tts` entry prints that mode in the `status` launch table (`mode_hint` in `status --json`) instead of `chat`, the routing-only mode that changes nothing about the launch.

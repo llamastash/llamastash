@@ -176,15 +176,15 @@ Bare letters are for tool actions (`f` favorite, `e` edit, `u/c/p` yank, `t` the
 
 | Action name                             | Default key(s)                    | Where it fires                                                                     |
 | --------------------------------------- | --------------------------------- | ---------------------------------------------------------------------------------- |
-| `quit`                                  | `q` · `ctrl+c`                    | Nav focuses                                                                        |
+| `quit`                                  | `q` · `ctrl+c`                    | Nav focuses; `ctrl+c` also from the chat / embed / rerank inputs                    |
 | `toggle_help`                           | `?`                               | Nav focuses                                                                        |
 | `cycle_theme`                           | `t`                               | Nav focuses                                                                        |
 | `cycle_theme_prev`                      | `shift+t`                         | Nav focuses — walks the theme list in reverse                                      |
-| `restart_daemon`                        | `ctrl+r`                          | Nav focuses — confirmation popup                                                   |
-| `kill_daemon`                           | `ctrl+k`                          | List — confirmation popup                                                          |
-| `stop_model`                            | `ctrl+s`                          | Nav focuses — confirmation popup                                                   |
+| `restart_daemon`                        | `ctrl+r`                          | Nav focuses and text inputs — confirmation popup                                   |
+| `kill_daemon`                           | `ctrl+k`                          | Nav focuses and text inputs — confirmation popup                                   |
+| `stop_model`                            | `ctrl+s`                          | Nav focuses and text inputs — confirmation popup                                   |
 | `delete_model`                          | `ctrl+d`                          | List — confirmation popup (refuses on a running launch)                            |
-| `cancel_download`                       | `ctrl+x`                          | Nav focuses — confirmation popup                                                   |
+| `cancel_download`                       | `ctrl+x`                          | Nav focuses and text inputs — confirmation popup                                   |
 | `move_up` / `move_down`                 | `↑` · `k`, `↓` · `j`              | Nav focuses, HF dialog                                                             |
 | `page_up` / `page_down`                 | `PgUp` / `PgDn`                   | List                                                                               |
 | `go_top` / `go_bottom`                  | `g` · `Home`, `G` · `End`         | List                                                                               |
@@ -205,7 +205,7 @@ Bare letters are for tool actions (`f` favorite, `e` edit, `u/c/p` yank, `t` the
 | `focus_requests_tab`                    | `Shift+Q`                         | Nav focuses, gated on a model that has a launch                                    |
 | `next_field` / `prev_field`             | `↓` / `↑`                         | Rerank input — cycles Query / Candidate                                            |
 | `cycle_value_next` / `cycle_value_prev` | `→` / `←`                         | Right pane (Settings) — cycles the focused row's value (incl. the preset row, and the `server` row when a model has >1 compatible build) |
-| `save_preset`                           | `Ctrl+P`                          | Save the settings in view as a named preset (name prompt → confirm). Settings pane always (the form, or a running model); Models list only on a running row |
+| `save_preset`                           | `Ctrl+P`                          | Save the settings in view as a named preset (name prompt → confirm). Settings pane and text inputs always (the form, or a running model); Models list only on a running row |
 | `enter_edit` / `exit_edit`              | `e` / `Esc`                       | Right pane → tab input                                                             |
 | `send_chat`                             | `Enter`                           | Chat input                                                                         |
 | `insert_newline`                        | `Shift+Enter`                     | All input focuses (kitty-protocol terminals only)                                  |
@@ -2054,6 +2054,7 @@ These are the defaults. Override any binding via the `keybindings:` block in `co
 | `/`                                           | Open filter (predicate applies live as you type; `Enter` drills into the focused result; `Esc` walks back: exit edit → clear → close)                                                                     |
 | `f`                                           | Toggle favorite on focused model                                                                                                                                                                         |
 | `Enter`                                       | On an idle model: open the launch picker. On a model that is running: focus the right pane on its first tab (`Requests`), with no picker staged                                                                                                              |
+| `Alt+Enter` (`⌥⏎` on macOS)                   | On an idle model: open the launch picker and ask for a launch name (same as `Alt+Enter` in Settings) |
 | `u` / `c` / `p`                               | Yank URL / curl / model path. `y` is a vi-style alias for `c`.                                                                                                                                           |
 | `t` / `Shift+T`                               | Cycle theme forward / backward                                                                                                                                                                           |
 | `m` · `Alt+M` | Edit unified-memory headroom with a live budget preview; saves to `daemon.unified_memory_reserve_percent`. |
@@ -2062,11 +2063,13 @@ These are the defaults. Override any binding via the `keybindings:` block in `co
 | `Shift+M` / `Shift+L` / `Shift+C` / `Shift+S` / `Shift+Q` | Jump focus to Models / Logs / Chat / Settings / Requests respectively. `L` and `C` only fire when the focused model is running, `Q` when it has a launch.                                    |
 | `Shift+P`                                     | Open the HuggingFace pull dialog (Models list focus only — search + sort + paginate, download via the pinned status strip). "P" for Pull.                                                                |
 | `Ctrl+P`                                      | Save the launch settings in view (the Settings form's knobs, or a running model's live knobs) as a named preset in `config.yaml` — prompts for a name, then an overwrite confirm if it already exists. "P" for Preset.                                                              |
-| `Ctrl+S`                                      | Stop the focused running launch (any nav focus; opens a confirmation popup)                                                                                                                              |
-| `Ctrl+R`                                      | Restart the daemon (any nav focus; opens a confirmation popup)                                                                                                                                           |
-| `Ctrl+K`                                      | Kill the daemon entirely (List focus; opens a confirmation popup)                                                                                                                                        |
+| `Ctrl+S`                                      | Stop the focused running launch (any nav focus or text input; opens a confirmation popup)                                                                                                                              |
+| `Ctrl+R`                                      | Restart the daemon (any nav focus or text input; opens a confirmation popup)                                                                                                                                           |
+| `Ctrl+K`                                      | Kill the daemon entirely (any nav focus or text input; opens a confirmation popup)                                                                                                                                        |
 | `Ctrl+D`                                      | Delete the focused model from disk (idle rows only: `NotLaunched` / `Stopped` — opens a confirmation popup naming every file that goes). See [Deleting a model](#deleting-a-model).                       |
 | `Ctrl+X`                                      | Cancel the currently-active HF download (any focus; opens a confirmation popup; queued pulls stay in line — press again on the next promoted pull)                                                       |
+
+`Ctrl+C`, `Ctrl+R`, `Ctrl+K`, `Ctrl+S`, `Ctrl+X`, `Ctrl+P` and `Alt+L` also work while typing in the Chat / Embed / Rerank inputs; plain keys type into the field there.
 
 ### Deleting a model
 

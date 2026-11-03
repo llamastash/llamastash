@@ -548,10 +548,13 @@ fn build_default_bindings() -> Vec<Binding> {
   v.extend_from_slice(&binds! {
     action: Action::Quit, scopes: FocusSet::NAV,
     hint: "quit", description: None,
-    chords: [
-      (KeyCode::Char('q'), KeyModifiers::NONE, "q", CAT_GLOBAL),
-      (KeyCode::Char('c'), KeyModifiers::CONTROL, crate::ctrl_label!("c"), CAT_GLOBAL),
-    ],
+    chords: [(KeyCode::Char('q'), KeyModifiers::NONE, "q", CAT_GLOBAL)],
+  });
+  // Ctrl / Alt chords type nothing, so they also fire from the text inputs.
+  v.extend_from_slice(&binds! {
+    action: Action::Quit, scopes: FocusSet::TUI,
+    hint: "quit", description: None,
+    chords: [(KeyCode::Char('c'), KeyModifiers::CONTROL, crate::ctrl_label!("c"), CAT_GLOBAL)],
   });
   v.extend_from_slice(&binds! {
     action: Action::CycleTheme, scopes: FocusSet::NAV,
@@ -566,7 +569,7 @@ fn build_default_bindings() -> Vec<Binding> {
   // View/layout (Alt namespace). `Alt+l` reports as lowercase `l` + ALT
   // (no Shift), unlike the Shift-letter jumps that match uppercase.
   v.extend_from_slice(&binds! {
-    action: Action::CyclePaneRatio, scopes: FocusSet::NAV,
+    action: Action::CyclePaneRatio, scopes: FocusSet::TUI,
     hint: "split", description: Some("cycle pane split"),
     chords: [(KeyCode::Char('l'), KeyModifiers::ALT, crate::alt_label!("L"), CAT_GLOBAL)],
   });
@@ -580,17 +583,17 @@ fn build_default_bindings() -> Vec<Binding> {
   });
   // ─── Daemon-level / destructive (all behind Ctrl) ───────────
   v.extend_from_slice(&binds! {
-    action: Action::RestartDaemon, scopes: FocusSet::NAV,
+    action: Action::RestartDaemon, scopes: FocusSet::TUI,
     hint: "restart", description: Some("restart daemon"),
     chords: [(KeyCode::Char('r'), KeyModifiers::CONTROL, crate::ctrl_label!("r"), CAT_GLOBAL)],
   });
   v.extend_from_slice(&binds! {
-    action: Action::KillDaemon, scopes: FocusSet::LIST,
+    action: Action::KillDaemon, scopes: FocusSet::TUI,
     hint: "kill", description: Some("kill daemon"),
     chords: [(KeyCode::Char('k'), KeyModifiers::CONTROL, crate::ctrl_label!("k"), CAT_GLOBAL)],
   });
   v.extend_from_slice(&binds! {
-    action: Action::StopModel, scopes: FocusSet::NAV,
+    action: Action::StopModel, scopes: FocusSet::TUI,
     hint: "stop", description: Some("stop launch"),
     chords: [(KeyCode::Char('s'), KeyModifiers::CONTROL, crate::ctrl_label!("s"), CAT_STOP)],
   });
@@ -600,12 +603,12 @@ fn build_default_bindings() -> Vec<Binding> {
     chords: [(KeyCode::Char('d'), KeyModifiers::CONTROL, crate::ctrl_label!("d"), CAT_MODELS)],
   });
   v.extend_from_slice(&binds! {
-    action: Action::CancelDownload, scopes: FocusSet::NAV,
+    action: Action::CancelDownload, scopes: FocusSet::TUI,
     hint: "cancel", description: Some("cancel download"),
     chords: [(KeyCode::Char('x'), KeyModifiers::CONTROL, crate::ctrl_label!("x"), CAT_GLOBAL)],
   });
   v.extend_from_slice(&binds! {
-    action: Action::SavePreset, scopes: FocusSet::NAV,
+    action: Action::SavePreset, scopes: FocusSet::TUI,
     hint: "save preset", description: Some("save settings as a preset"),
     chords: [(KeyCode::Char('p'), KeyModifiers::CONTROL, crate::ctrl_label!("p"), CAT_SETTINGS)],
   });
@@ -822,7 +825,7 @@ fn build_default_bindings() -> Vec<Binding> {
     chords: [(KeyCode::Enter, KeyModifiers::NONE, ENTER_LABEL, CAT_MODELS)],
   });
   v.extend_from_slice(&binds! {
-    action: Action::LaunchNamed, scopes: FocusSet::RIGHT_PANE,
+    action: Action::LaunchNamed, scopes: FocusSet::NAV,
     hint: "launch as…", description: Some("launch under a name"),
     chords: [(KeyCode::Enter, KeyModifiers::ALT, ALT_ENTER_LABEL, CAT_MODELS)],
   });
@@ -1553,7 +1556,7 @@ mod tests {
   }
 
   #[test]
-  fn alt_l_cycles_pane_ratio_from_nav_not_from_inputs() {
+  fn alt_l_cycles_pane_ratio_from_nav_and_inputs() {
     // Alt+l (no Shift -> lowercase 'l') cycles the split from any nav focus.
     assert_eq!(
       action_for(Focus::List, KeyCode::Char('l'), KeyModifiers::ALT),
@@ -1563,15 +1566,58 @@ mod tests {
       action_for(Focus::RightPane, KeyCode::Char('l'), KeyModifiers::ALT),
       Some(Action::CyclePaneRatio)
     );
-    // Not bound in text inputs, so typing there is unaffected.
+    // Text inputs never type an Alt chord, so it fires there too; a bare `l` still types.
     assert_eq!(
       action_for(Focus::ChatInput, KeyCode::Char('l'), KeyModifiers::ALT),
+      Some(Action::CyclePaneRatio)
+    );
+    assert_eq!(
+      action_for(Focus::ChatInput, KeyCode::Char('l'), KeyModifiers::NONE),
       None
     );
     // Doesn't shadow the existing Shift+L (jump to Logs tab).
     assert_eq!(
       action_for(Focus::List, KeyCode::Char('L'), KeyModifiers::SHIFT),
       Some(Action::FocusLogsTab)
+    );
+  }
+
+  #[test]
+  fn global_ctrl_and_alt_chords_fire_from_every_pane_and_text_input() {
+    let keymap = KeyMap::default();
+    let chords = [
+      ('c', KeyModifiers::CONTROL, Action::Quit),
+      ('r', KeyModifiers::CONTROL, Action::RestartDaemon),
+      ('k', KeyModifiers::CONTROL, Action::KillDaemon),
+      ('s', KeyModifiers::CONTROL, Action::StopModel),
+      ('x', KeyModifiers::CONTROL, Action::CancelDownload),
+      ('p', KeyModifiers::CONTROL, Action::SavePreset),
+      ('l', KeyModifiers::ALT, Action::CyclePaneRatio),
+    ];
+    for focus in [
+      Focus::List,
+      Focus::RightPane,
+      Focus::ChatInput,
+      Focus::EmbedInput,
+      Focus::RerankInput,
+    ] {
+      for (c, mods, action) in chords {
+        assert_eq!(
+          keymap.action_for(focus, KeyCode::Char(c), mods),
+          Some(action),
+          "{focus:?} {mods:?}+{c}"
+        );
+      }
+      assert_eq!(
+        keymap.action_for(focus, KeyCode::Enter, KeyModifiers::ALT),
+        matches!(focus, Focus::List | Focus::RightPane).then_some(Action::LaunchNamed),
+        "{focus:?} alt+enter"
+      );
+    }
+    // Plain `q` must still type into a text input.
+    assert_eq!(
+      keymap.action_for(Focus::ChatInput, KeyCode::Char('q'), KeyModifiers::NONE),
+      None
     );
   }
 
@@ -1738,10 +1784,10 @@ mod tests {
       action_for(Focus::ChatInput, KeyCode::Char('r'), KeyModifiers::NONE),
       Some(Action::ToggleThinkCollapse),
     );
-    // The old `Ctrl+R` chord is gone.
+    // `Ctrl+R` no longer toggles reasoning; it is the global daemon restart.
     assert_eq!(
       action_for(Focus::ChatInput, KeyCode::Char('r'), KeyModifiers::CONTROL),
-      None,
+      Some(Action::RestartDaemon),
     );
   }
 
