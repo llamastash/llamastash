@@ -763,13 +763,18 @@ async fn case_variant_of_a_live_name_reuses_that_launch() {
   .await;
   let (addr, shutdown, listener_handle) = spawn_listener(state).await;
 
-  let (status1, _, _) = http_post(
+  let (status1, _, body1) = http_post(
     addr,
     "/v1/chat/completions",
     r#"{"model":"qwen3@coder","messages":[]}"#,
   )
   .await;
-  assert_eq!(status1, 200, "first named launch must succeed");
+  assert_eq!(
+    status1,
+    200,
+    "first named launch must succeed: {}",
+    String::from_utf8_lossy(&body1)
+  );
   let port1 = ctx.state.snapshot().await.running[0].port;
 
   let (status2, _, _) = http_post(

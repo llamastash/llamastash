@@ -21,6 +21,18 @@ The test reserves two ephemeral ports to force a `prefer_port` collision, and a 
 
 Recovery: `gh run rerun <id> --failed`, once. It passed on the second attempt on 2026-10-30. If it fails a second time on the same commit, the test needs work before the release goes out: harden the port reservation on `main`, get `ci` green, then move the tag (`git tag -f vX.Y.Z && git push -f origin vX.Y.Z` before anything has been published from it, deleting the GitHub release first with `gh release delete vX.Y.Z` if `create-release` made one; or cut the next patch version if anything was published).
 
+## `release-gate (macos-cpu-only)` on `case_variant_of_a_live_name_reuses_that_launch`
+
+`tests/proxy_fallback.rs`, `first named launch must succeed` with `left: 503`. The first auto-start failed fast and the proxy answered `launch_failed`; the assertion message carries the response body, whose `cause` says why. Seen once, on v0.11.0's second gate attempt, while the Linux gate passed and the test passed 40 threaded local runs. Probably the same port race as above: the test's launch range is built from just-released ephemeral ports. Tracked in `TODO.md` under `## Next`.
+
+Recovery: `gh run rerun <id> --failed`. If it comes back, read the `cause` in the message before touching the test.
+
+## A macOS job `cancelled` with no steps
+
+The job annotation reads `The job was not acquired by Runner of type hosted even after multiple attempts` and `Due to capacity constraints, jobs targeting macOS arm64 runners may experience longer queue times`. GitHub had no macOS arm64 runner and gave up after about 15 minutes; no code ran. Hit twice on v0.11.0, once on `release-gate (macos-cpu-only)` and once on `build aarch64-apple-darwin`. Read it with `gh api repos/llamastash/llamastash/check-runs/<job-id>/annotations --jq '.[].message'`.
+
+Recovery: `gh run rerun <id> --failed`. When it hits a build after `create-release`, the release is already public without that target's assets and every publish job is skipped until the rerun passes.
+
 ## Daemon-spawning tests timing out in a local pre-push run
 
 `cli_integration_test` and friends time out at 20-44 s when the box is busy (a model server loaded, a package sync, a build). The hook aborts the push with only `error: test run failed` in the log, so run the suite yourself to see which test tripped:
