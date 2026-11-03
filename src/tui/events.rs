@@ -144,7 +144,7 @@ pub enum WriterCmd {
   SetMemoryReserve(MemoryReserve),
   /// `delete_model` — remove the model at `path`. `files` and `repo_dir` are
   /// the plan the popup showed: the daemon refuses a fresh plan that reaches
-  /// past them, and the outcome carries them as the rows to drop.
+  /// past them.
   DeleteModel {
     path: PathBuf,
     files: Vec<PathBuf>,
