@@ -143,7 +143,6 @@ pub fn render(
   );
   let title = format!("Save preset · {}", dialog.model_name);
   let inner = popup::frame(frame, rect, Spec::new(&title), palette);
-  let tone = palette.accent;
 
   let chunks = Layout::default()
     .direction(Direction::Vertical)
@@ -163,11 +162,7 @@ pub fn render(
       )));
       frame.render_widget(prompt, chunks[0]);
 
-      let input_line = Paragraph::new(Line::from(vec![
-        Span::styled("› ", Style::default().fg(tone)),
-        Span::styled(dialog.input.buffer(), palette.text_style()),
-        Span::styled("▏", Style::default().fg(tone)),
-      ]));
+      let input_line = Paragraph::new(popup::input_line(dialog.input.buffer(), true, palette));
       frame.render_widget(input_line, chunks[1]);
 
       if let Some(err) = &dialog.error {

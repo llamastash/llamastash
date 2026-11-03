@@ -7,7 +7,7 @@ use ratatui::{
   widgets::{Paragraph, Wrap},
   Frame,
 };
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 use crate::daemon::memory_policy::MemoryBudget;
 use crate::launch::headroom::MemoryReserve;
@@ -134,30 +134,6 @@ fn preview_lines(
   ]
 }
 
-// Keep the end of a long or wide input visible without letting its cursor
-// escape the field into the default-value hint.
-fn input_tail(input: &str) -> String {
-  let marker = if input.width() > 4 {
-    crate::tui::glyphs::active().ellipsis()
-  } else {
-    ""
-  };
-  let budget = 4usize.saturating_sub(marker.width());
-  let mut width = 0;
-  let tail: String = input
-    .chars()
-    .rev()
-    .take_while(|c| {
-      width += c.width().unwrap_or(0);
-      width <= budget
-    })
-    .collect::<Vec<_>>()
-    .into_iter()
-    .rev()
-    .collect();
-  format!("{marker}{tail}")
-}
-
 pub fn render(
   frame: &mut Frame<'_>,
   area: Rect,
@@ -205,21 +181,21 @@ pub fn render(
       Constraint::Length(1),
     ])
     .split(inner);
-    let tone = if dialog.error.is_some() {
-      palette.error_style()
-    } else {
-      palette.accent_style()
-    };
     frame.render_widget(
       Paragraph::new(Span::styled("Reserve", palette.label_style())),
       chunks[0],
     );
-    let field = Rect::new(inner.x + 10, inner.y, 6, 1);
-    let visible = input_tail(dialog.input.buffer());
+    // Ends before the right-aligned default hint so long input can't paint over it.
+    let field_w = inner
+      .width
+      .saturating_sub(if inner.width >= 32 { 22 } else { 10 });
     frame.render_widget(
-      Paragraph::new(format!(" {visible}"))
-        .style(tone.bg(palette.selection).add_modifier(Modifier::BOLD)),
-      field,
+      Paragraph::new(popup::input_line(
+        dialog.input.buffer(),
+        !dialog.saving,
+        palette,
+      )),
+      Rect::new(inner.x + 10, inner.y, field_w, 1),
     );
     if inner.width >= 32 {
       frame.render_widget(
@@ -289,9 +265,6 @@ pub fn render(
       )
     };
     frame.render_widget(Paragraph::new(status).wrap(Wrap { trim: false }), chunks[6]);
-    if !dialog.saving {
-      frame.set_cursor_position((field.x + 1 + visible.width() as u16, field.y));
-    }
   }
   if dialog.saving {
     popup::render_busy(frame, footer, "saving", palette);
@@ -450,12 +423,14 @@ mod tests {
   }
 
   #[test]
-  fn long_wide_input_keeps_its_cursor_inside_the_field() {
+  fn long_input_uses_the_shared_caret_and_leaves_the_default_hint_visible() {
     let app = App::new(AppOptions::default());
     let mut dialog = MemoryDialog::open(MemoryReserve::percent(25).unwrap());
-    dialog.input.set_text("bad input 日本語999");
+    dialog
+      .input
+      .set_text("bad input 日本語999 and then some more text");
     let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
-    terminal
+    let drawn = terminal
       .draw(|frame| {
         render(
           frame,
@@ -466,12 +441,27 @@ mod tests {
         )
       })
       .unwrap();
-    let cursor = terminal.get_cursor_position().unwrap();
-    let cell = &terminal.backend().buffer()[(cursor.x, cursor.y)];
-    assert_eq!(
-      cell.bg,
-      crate::theme::palette_for(ThemeName::Macchiato).selection
-    );
-    assert!(input_tail(dialog.input.buffer()).width() <= 4);
+    let text: String = drawn.buffer.content.iter().map(|c| c.symbol()).collect();
+    assert!(text.contains("› bad input"));
+    assert!(text.contains("Default 0%"));
+    let short = MemoryDialog::open(MemoryReserve::percent(25).unwrap());
+    let short_drawn = terminal
+      .draw(|frame| {
+        render(
+          frame,
+          frame.area(),
+          &app,
+          &short,
+          crate::theme::palette_for(ThemeName::Macchiato),
+        )
+      })
+      .unwrap();
+    let short_text: String = short_drawn
+      .buffer
+      .content
+      .iter()
+      .map(|c| c.symbol())
+      .collect();
+    assert!(short_text.contains(&format!("› 25{}", crate::tui::glyphs::active().caret())));
   }
 }

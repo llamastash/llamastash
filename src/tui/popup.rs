@@ -206,6 +206,19 @@ pub fn render_busy(frame: &mut Frame<'_>, rect: Rect, text: &str, palette: &Pale
   );
 }
 
+/// A popup's single-line text input: accent `› ` prompt, the text, and the
+/// shared caret while editing.
+pub fn input_line(buffer: &str, editing: bool, palette: &Palette) -> Line<'static> {
+  let mut spans = vec![
+    Span::styled("› ", palette.accent_style()),
+    Span::styled(buffer.to_string(), palette.text_style()),
+  ];
+  if editing {
+    spans.push(crate::tui::fmt::caret(palette));
+  }
+  Line::from(spans)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PopupKey {
   Submit,
