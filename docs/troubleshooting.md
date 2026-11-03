@@ -270,7 +270,7 @@ On a detected UMA host, press **m** in the TUI to inspect additional memory
 headroom. `auto` retains the platform default (Apple 25%, other UMA 0%); a lower
 explicit percentage cannot remove driver limits or engine cache/OS reserves.
 See [memory reserve](usage.md#memory-reserve-on-unified-memory-hosts) for the
-pool calculation and development-build key rename.
+pool calculation.
 
 If you know the projection is wrong for your setup, `llamastash start <model> --force` launches anyway and prints the refusal as a warning (also carried in `--json` as `warnings`). There is no safety net behind it: if the projection was right, the host runs out of memory and the kernel's OOM killer picks a victim, which may be a different process entirely.
 

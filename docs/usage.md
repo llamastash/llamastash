@@ -494,13 +494,6 @@ AMD LXC container, a fully GPU-resident launch can use the separate GTT-only
 budget; launches with CPU-side weights retain the RAM/GTT minimum. Reducing
 headroom does not guarantee a launch fits. Observe memory pressure and swap.
 
-**Development-build rename:** the unmerged Apple-only feature used
-`daemon.apple_memory_reserve_percent`. Rename that key to
-`daemon.unified_memory_reserve_percent`, keeping its numeric value (for example,
-`1` stays `1`). There is no legacy alias. Omit the key or use `auto` to restore
-the platform default. Installations still running the Apple-only build must
-keep the old key until upgrading.
-
 #### `--force` (launch through an admission refusal)
 
 A launch whose projected demand exceeds the sampled free memory is refused before spawn, with the demand, the effective free, and what to do about it. `--force` turns that refusal into a warning and launches anyway:

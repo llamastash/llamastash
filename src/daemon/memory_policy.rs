@@ -24,7 +24,6 @@ struct Inner {
 pub struct MemoryBudget {
   pub unified_memory_reserve_percent: MemoryReserve,
   pub default_reserve_percent: Option<u8>,
-  pub unified: bool,
   pub available_bytes: Option<u64>,
   pub admissible_bytes: Option<u64>,
 }
@@ -99,7 +98,6 @@ impl MemoryBudget {
     let mut budget = Self {
       unified_memory_reserve_percent: reserve,
       default_reserve_percent,
-      unified: default_reserve_percent.is_some(),
       available_bytes,
       admissible_bytes: None,
     };
@@ -107,11 +105,11 @@ impl MemoryBudget {
     budget
   }
 
+  // The default arrives over the wire; an out-of-range one would underflow the preview.
   pub fn supports_editing(&self) -> bool {
-    self.unified
-      && self
-        .default_reserve_percent
-        .is_some_and(|percent| percent <= 99)
+    self
+      .default_reserve_percent
+      .is_some_and(|percent| percent <= 99)
   }
 
   pub fn preview(&self, reserve: MemoryReserve) -> Option<u64> {

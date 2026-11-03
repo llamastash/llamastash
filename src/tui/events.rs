@@ -687,9 +687,7 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
             budget.unified_memory_reserve_percent,
           ))
         }
-        None => app.show_error_toast(
-          "Memory reserve editing requires a unified-memory daemon with policy support.",
-        ),
+        None => app.show_error_toast(memory_reserve_unavailable(app)),
       }
     }
     Action::Submit => match app.focus {
@@ -1296,6 +1294,17 @@ fn delete_refusal_reason(app: &App) -> Option<&'static str> {
     .focused_path()
     .as_ref()
     .and_then(|path| delete_refusal_reason_for(app, path))
+}
+
+fn memory_reserve_unavailable(app: &App) -> &'static str {
+  use crate::daemon::host_metrics::HostMetricsSnapshot;
+  if app.memory_budget.is_none() {
+    "This daemon has no memory reserve support; restart it with the current llamastash."
+  } else if app.host_metrics.gpu_backend == HostMetricsSnapshot::UNINITIALIZED_BACKEND {
+    "Waiting for the first memory sample; try again in a few seconds."
+  } else {
+    "Memory reserve only applies to unified-memory hosts."
+  }
 }
 
 fn handle_memory_reserve_input(
@@ -3023,6 +3032,18 @@ mod tests {
   use crossterm::event::{KeyEvent, KeyModifiers};
 
   #[test]
+  fn unavailable_reserve_toast_names_the_reason() {
+    use crate::daemon::host_metrics::HostMetricsSnapshot;
+    let mut app = App::new(AppOptions::default());
+    assert!(memory_reserve_unavailable(&app).contains("no memory reserve support"));
+    app.memory_budget = Some(MemoryBudget::from_snapshot(MemoryReserve::AUTO, None));
+    app.host_metrics.gpu_backend = HostMetricsSnapshot::UNINITIALIZED_BACKEND.into();
+    assert!(memory_reserve_unavailable(&app).contains("first memory sample"));
+    app.host_metrics.gpu_backend = HostMetricsSnapshot::BACKEND_NVIDIA.into();
+    assert!(memory_reserve_unavailable(&app).contains("unified-memory hosts"));
+  }
+
+  #[test]
   fn reserve_editor_uses_uma_support_and_auto_survives_encoding() {
     for backend in ["apple_metal", "amd", "nvidia", "unknown"] {
       let host = crate::daemon::host_metrics::HostMetricsSnapshot {
@@ -3055,8 +3076,8 @@ mod tests {
     for memory in [
       serde_json::Value::Null,
       serde_json::json!({"apple_memory_reserve_percent": 25, "apple_unified": true}),
-      serde_json::json!({"unified_memory_reserve_percent": "auto", "unified": false}),
-      serde_json::json!({"unified_memory_reserve_percent": "auto", "unified": true, "default_reserve_percent": 255}),
+      serde_json::json!({"unified_memory_reserve_percent": "auto"}),
+      serde_json::json!({"unified_memory_reserve_percent": "auto", "default_reserve_percent": 255}),
     ] {
       let mut app = App::new(AppOptions::default());
       app.ingest_status(&serde_json::json!({"daemon": {"memory": memory}}));
@@ -3075,7 +3096,6 @@ mod tests {
     app.memory_budget = Some(crate::daemon::memory_policy::MemoryBudget {
       unified_memory_reserve_percent: MemoryReserve::AUTO,
       default_reserve_percent: Some(25),
-      unified: true,
       available_bytes: Some(40 * 1024 * 1024 * 1024),
       admissible_bytes: Some(30 * 1024 * 1024 * 1024),
     });
@@ -3173,8 +3193,8 @@ mod tests {
     for saving in [false, true] {
       for memory in [
         serde_json::Value::Null,
-        serde_json::json!({"unified_memory_reserve_percent": "auto", "unified": false}),
-        serde_json::json!({"unified_memory_reserve_percent": "auto", "unified": true, "default_reserve_percent": 255}),
+        serde_json::json!({"unified_memory_reserve_percent": "auto"}),
+        serde_json::json!({"unified_memory_reserve_percent": "auto", "default_reserve_percent": 255}),
       ] {
         let mut app = App::new(AppOptions::default());
         let mut dialog = crate::tui::memory_dialog::MemoryDialog::open(MemoryReserve::AUTO);

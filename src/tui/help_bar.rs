@@ -36,6 +36,8 @@ struct GlobalChip {
   focus: Focus,
   actions: &'static [Action],
   rank: u8,
+  /// `None` shows the chip whenever its key is bound.
+  visible: Option<fn(&App) -> bool>,
 }
 
 /// Canonical list of global chips, in left-to-right **display** order.
@@ -50,6 +52,12 @@ const GLOBAL_CHIPS: &[GlobalChip] = &[
     focus: Focus::List,
     actions: &[Action::OpenMemoryReserve],
     rank: 45,
+    visible: Some(|app| {
+      app
+        .memory_budget
+        .as_ref()
+        .is_some_and(|budget| budget.supports_editing())
+    }),
   },
   // Surface the HF pull dialog opener first so first-time users see
   // the affordance without opening the help overlay. `OpenHfDialog`
@@ -61,12 +69,14 @@ const GLOBAL_CHIPS: &[GlobalChip] = &[
     focus: Focus::List,
     actions: &[Action::OpenHfDialog],
     rank: 10,
+    visible: None,
   },
   GlobalChip {
     description: "help",
     focus: Focus::List,
     actions: &[Action::ToggleHelp],
     rank: 20,
+    visible: None,
   },
   // Tab cycles panes everywhere now. `panes` surfaces both
   // directions; the picker prefers `Tab` for forward and
@@ -77,6 +87,7 @@ const GLOBAL_CHIPS: &[GlobalChip] = &[
     focus: Focus::List,
     actions: &[Action::NextFocus, Action::PrevFocus],
     rank: 40,
+    visible: None,
   },
   // `↑↓:scroll` mirrors the per-pane bottom-border scroll chip
   // (`right_pane::bidirectional_chip`) but surfaces it always-on so
@@ -88,6 +99,7 @@ const GLOBAL_CHIPS: &[GlobalChip] = &[
     focus: Focus::List,
     actions: &[Action::MoveUp, Action::MoveDown],
     rank: 60,
+    visible: None,
   },
   // RestartDaemon (Ctrl+R) and KillDaemon (Ctrl+K) intentionally
   // do NOT appear in the global hint strip. Both are confirmation-
@@ -100,12 +112,14 @@ const GLOBAL_CHIPS: &[GlobalChip] = &[
     focus: Focus::List,
     actions: &[Action::CycleTheme],
     rank: 50,
+    visible: None,
   },
   GlobalChip {
     description: "quit",
     focus: Focus::List,
     actions: &[Action::Quit],
     rank: 30,
+    visible: None,
   },
 ];
 
@@ -206,13 +220,7 @@ fn pane_chip_labels(bindings: &[Binding]) -> Vec<String> {
 fn resolved_chips(app: &App) -> Vec<RankedChip> {
   GLOBAL_CHIPS
     .iter()
-    .filter(|chip| {
-      chip.actions != [Action::OpenMemoryReserve]
-        || app
-          .memory_budget
-          .as_ref()
-          .is_some_and(|budget| budget.supports_editing())
-    })
+    .filter(|chip| chip.visible.is_none_or(|visible| visible(app)))
     .filter_map(|chip| {
       chip_keys(app, chip)
         .map(|keys| RankedChip::new(chip.rank, format!("{keys}:{}", chip.description)))

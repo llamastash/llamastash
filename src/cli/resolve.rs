@@ -790,9 +790,11 @@ fn single_or_error(matches: Vec<&RunningRow>, reference: &str) -> Result<Running
 
 #[cfg(test)]
 mod tests {
+  use super::*;
+
   #[test]
   fn memory_reserve_status_survives_cli_parse_and_render() {
-    let budget = serde_json::json!({"unified_memory_reserve_percent": 10, "unified": true, "default_reserve_percent": 25, "available_bytes": 40, "admissible_bytes": 36});
+    let budget = serde_json::json!({"unified_memory_reserve_percent": 10, "default_reserve_percent": 25, "available_bytes": 40, "admissible_bytes": 36});
     let daemon = super::parse_daemon_health(&serde_json::json!({"pid": 1, "memory": budget}));
     let snapshot = super::StatusSnapshot {
       models: vec![],
@@ -807,7 +809,6 @@ mod tests {
     let rendered = crate::cli::output::status_json(&snapshot);
     assert_eq!(rendered["daemon"]["memory"], budget);
   }
-  use super::*;
 
   /// Canned HTTP replies, served in request order and repeating the last one, so
   /// one reply pins a fixed answer and a pair watches a caller re-ask. A test

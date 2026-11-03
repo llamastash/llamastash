@@ -3,6 +3,13 @@
 //! UMA defaults preserve Apple's historical 25% reserve and add no percentage
 //! on other shared pools. Explicit overrides affect only UMA, after pool caps.
 //! Engine overhead and in-flight reservations remain separate from headroom.
+//!
+//! The **fixed overhead band** per GPU backend covers what a successful load
+//! consumes beyond `weights + KV cache` (compute buffers, driver-side
+//! allocations the GGUF header can't predict). Values are the conservative
+//! defaults from `docs/spikes/2026-05-19-vram-overhead-band.md`; the spike
+//! marks them unverified, so the stance is "err high" and they must not be
+//! silently tightened.
 
 use std::{fmt, str::FromStr};
 

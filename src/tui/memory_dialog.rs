@@ -359,7 +359,6 @@ mod tests {
     let budget = MemoryBudget {
       unified_memory_reserve_percent: MemoryReserve::AUTO,
       default_reserve_percent: Some(25),
-      unified: true,
       available_bytes: Some(40 * 1024 * 1024 * 1024),
       admissible_bytes: Some(30 * 1024 * 1024 * 1024),
     };
@@ -386,7 +385,6 @@ mod tests {
     app.memory_budget = Some(MemoryBudget {
       unified_memory_reserve_percent: MemoryReserve::AUTO,
       default_reserve_percent: Some(255),
-      unified: true,
       available_bytes: Some(40 * 1024 * 1024 * 1024),
       admissible_bytes: None,
     });
@@ -433,7 +431,6 @@ mod tests {
       app.memory_budget = Some(MemoryBudget {
         unified_memory_reserve_percent: MemoryReserve::AUTO,
         default_reserve_percent: Some(25),
-        unified: true,
         available_bytes: Some(40 * 1024 * 1024 * 1024),
         admissible_bytes: Some(30 * 1024 * 1024 * 1024),
       });
