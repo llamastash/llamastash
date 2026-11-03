@@ -95,6 +95,9 @@ pub fn spawn(catalog: ModelCatalog, opts: DiscoveryOptions) -> tokio::task::Join
 async fn run(catalog: ModelCatalog, opts: DiscoveryOptions) {
   // Initial scan: drain every scanner row into the catalog.
   full_rescan(&catalog, &opts).await;
+  // The catalog now holds what the disk does, so a client that connected
+  // mid-walk and waited on this can resolve a model reference.
+  catalog.first_scan_completed();
 
   // Build per-root watcher descriptors. HuggingFace's hub layout is
   // deeply nested (`models--<owner>--<repo>/snapshots/<rev>/blobs/`
@@ -408,6 +411,8 @@ mod tests {
       tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert_eq!(catalog.len().await, 2);
+    // The flag clients wait on flips with the scan.
+    assert!(catalog.first_scan_done());
     fs::remove_dir_all(&dir).ok();
   }
 

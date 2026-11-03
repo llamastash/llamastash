@@ -527,6 +527,7 @@ The daemon dispatches on `req.method`. Wire format: `{"jsonrpc": "2.0", "id": <i
 | `ping`, `version`, `shutdown` | Liveness, build metadata, graceful exit |
 | `list_models` | Catalog snapshot |
 | `status` | Managed launches + external + GPU info + daemon health block |
+| `catalog_ready` | `{wait_ms?}`: `{first_scan}` — whether the discovery task's first scan has landed, waiting up to `wait_ms` for it. Read-only; what `llamastash start` blocks on so a model on disk is not reported as unknown seconds after `daemon start` |
 | `proxy_aliases` | The `proxy.aliases` table audited against the current catalog: `{aliases: [{name, target, state}]}` in config order, `state` one of `ok` / `shadowed` / `dead` / `ambiguous` / `chain`. Read-only; what `list --json` prints under `aliases` |
 | `start_model` | Spawn supervisor for a model |
 | `stop_model`, `stop_all` | Stop a managed launch / all managed launches |
@@ -541,7 +542,9 @@ The daemon dispatches on `req.method`. Wire format: `{"jsonrpc": "2.0", "id": <i
 
 JSON-RPC error codes follow the spec (`-32601 Method not found`, `-32602 Invalid params`, etc.) plus `InternalError` for daemon-side faults. The `capabilities` method enumerates supported methods so clients can feature-detect.
 
-`proxy_aliases` audits the `proxy.aliases` table against the catalog: the table is built once per daemon (`src/proxy/alias.rs`) and shared with the proxy through `MethodContext`, so its once-per-name warn set is one object process-wide. The same states the audit reports, the two proxy listings act on and the startup report logs — the report runs once the catalog has its first row, because before it does every target would read `dead`.
+`proxy_aliases` audits the `proxy.aliases` table against the catalog: the table is built once per daemon (`src/proxy/alias.rs`) and shared with the proxy through `MethodContext`, so its once-per-name warn set is one object process-wide. The same states the audit reports, the two proxy listings act on and the startup report acts on — the report runs once the catalog has its first row, because before it does every target would read `dead`.
+
+Catalog readiness is a flag on `ModelCatalog` (`first_scan_completed` / `wait_first_scan`), set by the discovery task as soon as its initial scan has replaced the catalog. Nothing polls it: a client that must resolve a reference asks `catalog_ready` and blocks on the same signal, so the wait costs nothing on a daemon that has already scanned and ends the moment the scan does. `list` and `status` never wait, so a daemon mid-scan still answers immediately with what it has.
 
 ### `status` response shape
 
@@ -568,6 +571,7 @@ Beyond the `models` / `external` / `gpu` shapes, the `status` response carries t
   - `preset_count: u32` (how many presets the model resolves, per-model ∪ arch) and `default: Option<String>` (the config-only default preset name). The full set lives in `presets_list`.
   - `preset: Option<String>` — the preset this launch actually resolved: the name a client flattened (`start --preset`, a launch file, the TUI's named cycle stop, sent as the `preset` start param), the one a `<model>@<name>` auto-start address selected, or the model's config `default:` on a no-selection launch. Omitted entirely when no preset was in play (`--preset auto` included), the same only-when-set convention `name` uses. Distinct from `default` above, which is the config hint regardless of what launched. Rendered as a read-only `preset` row in the TUI running view and in `show`'s running block.
   - `backend: String` — the backend the launch actually resolved to, stamped on the running snapshot at spawn, so it stays honest when `--backend` overrides the routing prediction.
+  - `mode_hint: Option<String>` — `image`, `tts` or `stt` when the model's catalog row declares that media mode, omitted otherwise. Such a launch keeps `mode: "chat"`, because the media mode is picked per request by the endpoint and changes no argv; this is the field that names what the launch answers, and `status` prints it in its MODE column.
   - `stop_grace_secs: u64` — the backend's floor under every stop grace (a generic entry's `stop_grace_secs`), omitted when there is none. The `shutdown` response carries the longest one as `stop_grace_secs`, and `daemon stop` waits that long plus a margin.
   - `params.knobs` — the knobs the launch dispatched with, keyed by declared id; `params.server` — the server id the launch picked (`null` when it took the backend's default), rendered as a read-only `server` row in the TUI running view.
 

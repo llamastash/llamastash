@@ -541,31 +541,15 @@ _Shared context: Alias resolution in the proxy, the `/v1/models` and `/api/tags`
 
 Minor release. Batches 5 and 6 are the new surfaces: `llamastash bench` for per-preset speed numbers, and `llamastash delete` so an agent can remove a model it pulled. Batch 1 is the only one that can delete the wrong file. Batch 2 is the discovery scan duplicating or resurrecting rows. Batch 3 is what a media launch reports and when the catalog is ready. Batch 4 is three small fixes where the user is shown a number or a flag that is not the one they got.
 
-### Batch 1: delete safety
-
-_Shared context: `DeletePlan` in [`src/tui/delete.rs`](src/tui/delete.rs), the `Ctrl+D` path in [`src/tui/events.rs`](src/tui/events.rs), the HF cache repo layout in `util::model_caches`._
-
-- [ ] **A delete popup can promise a whole-directory removal that `execute` then refuses.** `DeletePlan::describe` picks its wording from the plan shape (`src/tui/delete.rs:107-112`), while `execute` refuses a directory primary inside a cache repo that still holds another listed model (`src/tui/delete.rs:300-306`). Reachable on a repo with a safetensors main revision plus a GGUF on another revision: the snapshot directory row is `in_hf_cache` but not the last model in the repo. Safe direction — nothing is deleted — but the wording contradicts the outcome. Either give `describe` an arm for that shape or refuse in `delete_refusal_reason` so the keystroke toasts before a popup opens.
-
-- [ ] **A model listed in a repo while the delete popup is open goes with a whole-repo delete.** `plan` decides `hf_repo_dir` when `Ctrl+D` is pressed and `execute` runs that answer unchanged; only a download part file and the launch refusals are checked again at confirm. A rescan that lists a second model in the repo before the confirm gets removed with it. Re-plan against the live catalog at confirm and refuse anything bigger than the popup named, or have `execute` refuse when the repo's snapshots hold a file the plan does not name. (`src/tui/delete.rs`, `src/tui/events.rs`) The shared-store publish has the same gap: huggingface_hub (checked against 2.3.0) moves the download to `blobs/<etag>` as a plain file before it publishes it to the store, so no `.part` or `.incomplete` shows in between, and a repo removed in that window leaves the store copy with a `.refs` line for a repo that is gone.
-
-### Batch 2: discovery scan correctness
-
-_Shared context: `default_set` in [`src/discovery/known_caches.rs`](src/discovery/known_caches.rs), the scan -> `replace_all` path in [`src/discovery/scanner.rs`](src/discovery/scanner.rs) and [`src/discovery/catalog.rs`](src/discovery/catalog.rs)._
-
-- [ ] **Two scan roots that name one directory list every model twice.** `default_set` canonicalizes user paths (`canonical_or_raw(p)`, `src/discovery/known_caches.rs:53`) but pushes the default cache roots raw (`:71`, `:83`, `:98`), and `push_unique` dedups on that string (`:131`) — so a default cache reached through a symlink or a macOS firmlink, plus the user's own path for the same directory, yields two roots for one tree. Dedup cannot collapse it because the `seen` set is per-root (`src/discovery/scanner.rs:927`), so one payload surfaces as two rows and the twins disagree about which repo they belong to, which is the comparison the whole-repo gate and the shared-blob refs run on. Canonicalize the default roots the way user paths are.
-
-- [ ] **A stale discovery scan can resurrect a deleted row.** `ModelCatalog::replace_all` overwrites wholesale and carries no scan id, so a `full_rescan` that walked the tree before a delete — the periodic one, a watcher-triggered one, or a client-requested one — can land its `replace_all` after `forget_missing` and put the deleted row back until the next scan. Stamp each scan and ignore a `replace_all` from an older one. (`src/discovery/catalog.rs`)
-
 ### Batch 3: media launch reporting and first-scan readiness
 
 _Shared context: the launch table in `src/cli/status.rs` and the TUI, the `mode_hint` a generic launch records, and the boot scan `daemon start` kicks off._
 
-- [ ] A launch of an `stt` or `image` entry prints `MODE chat` in the `status` launch table while `list --json` reports the row's `mode_hint` correctly, so the media half of a launch is invisible in the one place an operator looks. Seen 2026-10-24 on a FastFlowLM ASR and on both sd.cpp image entries. Run log: [`docs/testing/2026-10-24-media-z13-sdcpp-flm.md`](docs/testing/2026-10-24-media-z13-sdcpp-flm.md) § Gaps.
+- [x] ~~A launch of an `stt` or `image` entry prints `MODE chat` in the `status` launch table while `list --json` reports the row's `mode_hint` correctly, so the media half of a launch is invisible in the one place an operator looks. Seen 2026-10-24 on a FastFlowLM ASR and on both sd.cpp image entries. Run log: [`docs/testing/2026-10-24-media-z13-sdcpp-flm.md`](docs/testing/2026-10-24-media-z13-sdcpp-flm.md) § Gaps.~~ — done: a launch of a declared media entry carries `mode_hint` alongside `mode` (`status --json`), and the MODE column prints it, so an ASR launch reads `stt` and an sd.cpp launch `image`. The launch's own `mode` is unchanged: `image` / `tts` / `stt` arrive with the request's endpoint and change no argv, which is why it says `chat`. Plan: [`docs/plans/2026-11-01-001-fix-r18-batch-3-plan.md`](docs/plans/2026-11-01-001-fix-r18-batch-3-plan.md)
 
-- [ ] `llamastash start <entry>` right after `daemon start` fails with `no model matches ... (0 known)` until the first scan lands a few seconds later. Same family as the Lemonade umbrella case in [`docs/testing/2026-10-17-batch1-lemonade-flm-whisper.md`](docs/testing/2026-10-17-batch1-lemonade-flm-whisper.md): nothing blocks on, or re-runs, the boot scan. Either make `start` wait for the first scan, or have `daemon start` return once the catalog is built.
+- [x] ~~`llamastash start <entry>` right after `daemon start` fails with `no model matches ... (0 known)` until the first scan lands a few seconds later. Same family as the Lemonade umbrella case in [`docs/testing/2026-10-17-batch1-lemonade-flm-whisper.md`](docs/testing/2026-10-17-batch1-lemonade-flm-whisper.md): nothing blocks on, or re-runs, the boot scan. Either make `start` wait for the first scan, or have `daemon start` return once the catalog is built.~~ — done: the catalog carries a first-scan-done flag the discovery task sets, the read-only `catalog_ready` IPC method waits on it, and `start` asks before resolving, so it waits up to 30 s instead of missing. `list` and `status` still answer immediately with whatever the scan has found.
 
-- [ ] Bare OpenAI media names (`whisper-1`, `dall-e-3`) stop resolving as soon as a second entry declares the same mode. The refusal is correct but does not name `proxy.aliases` as the fix; one sentence in the media section of `docs/usage.md`.
+- [x] ~~Bare OpenAI media names (`whisper-1`, `dall-e-3`) stop resolving as soon as a second entry declares the same mode. The refusal is correct but does not name `proxy.aliases` as the fix; one sentence in the media section of `docs/usage.md`.~~ — done: the media section says a second engine declaring one mode costs the bare names and that a `proxy.aliases` line settles it. The refusal text is unchanged.
 
 ### Batch 4: small standalone fixes
 
@@ -591,7 +575,10 @@ _Shared context: `DeletePlan`, `plan_for_path` and `execute` in [`src/tui/delete
 
 ## Next
 
-_Empty as of 2026-10-31: what was here went into the R18 checklist or into a High / Low roadmap batch. New loose items land here until the next release is planned._
+- [ ] `/v1/models` has the same media gap `status` just lost: a running launch prints the launch's own mode, so an `stt` or `image` entry that is up lists as `chat` while the same row dormant lists as `stt`. `docs/usage.md` documents both halves of that. Either print the declared mode for a media launch there too, or say in the OAI surface docs why the two differ. Plan: [`docs/plans/2026-11-01-001-fix-r18-batch-3-plan.md`](docs/plans/2026-11-01-001-fix-r18-batch-3-plan.md)
+- [ ] `supervisor_ipc_test::status_lists_active_supervised_model` flakes under a full parallel suite run: it gives the host-metrics sampler 4 s to prime (`tests/supervisor_ipc_test.rs:127`) and one local run of 3485 tests hit that while every other test file was compiling and running. It passes alone and under the `ci` profile, where `retries = 2` hides it. Either widen that poll to the daemon-bound group's usual budget or drop the sampler wait from the row assertions.
+
+_Empty as of 2026-10-31 apart from the line above: what was here went into the R18 checklist or into a High / Low roadmap batch. New loose items land here until the next release is planned._
 
 ## General Roadmap
 
@@ -1041,3 +1028,19 @@ _Shared context: the Requests tab summary strip and rows in `src/tui/tabs`, `src
 
 - [ ] The Requests tab summary is at least two lines wide at any pane width, so a very short pane gives the table a row or two. Sweep the tab's usable minimum and either raise the pane floor or fold the two rows into one under some width. Seen 2026-10-16 rendering the narrow golden fixture at 40 columns, where the strip is 9 lines and one table row fits under it.
 - [ ] The help overlay counts one line per Legend row for its scroll maximum (`legend_lines.len()` in `src/tui/help_overlay.rs` ~166), but a long description wraps on a narrow terminal, so the rows under it can end up unreachable. Measured only at 140 columns. Count wrapped lines, or cap the description width.
+
+#### Batch L22 delete safety
+
+_Shared context: `DeletePlan` in [`src/tui/delete.rs`](src/tui/delete.rs), the `Ctrl+D` path in [`src/tui/events.rs`](src/tui/events.rs), the HF cache repo layout in `util::model_caches`._
+
+- [ ] **A delete popup can promise a whole-directory removal that `execute` then refuses.** `DeletePlan::describe` picks its wording from the plan shape (`src/tui/delete.rs:107-112`), while `execute` refuses a directory primary inside a cache repo that still holds another listed model (`src/tui/delete.rs:300-306`). Reachable on a repo with a safetensors main revision plus a GGUF on another revision: the snapshot directory row is `in_hf_cache` but not the last model in the repo. Safe direction — nothing is deleted — but the wording contradicts the outcome. Either give `describe` an arm for that shape or refuse in `delete_refusal_reason` so the keystroke toasts before a popup opens.
+
+- [ ] **A model listed in a repo while the delete popup is open goes with a whole-repo delete.** `plan` decides `hf_repo_dir` when `Ctrl+D` is pressed and `execute` runs that answer unchanged; only a download part file and the launch refusals are checked again at confirm. A rescan that lists a second model in the repo before the confirm gets removed with it. Re-plan against the live catalog at confirm and refuse anything bigger than the popup named, or have `execute` refuse when the repo's snapshots hold a file the plan does not name. (`src/tui/delete.rs`, `src/tui/events.rs`) The shared-store publish has the same gap: huggingface_hub (checked against 2.3.0) moves the download to `blobs/<etag>` as a plain file before it publishes it to the store, so no `.part` or `.incomplete` shows in between, and a repo removed in that window leaves the store copy with a `.refs` line for a repo that is gone.
+
+#### Batch L23: discovery scan correctness
+
+_Shared context: `default_set` in [`src/discovery/known_caches.rs`](src/discovery/known_caches.rs), the scan -> `replace_all` path in [`src/discovery/scanner.rs`](src/discovery/scanner.rs) and [`src/discovery/catalog.rs`](src/discovery/catalog.rs)._
+
+- [ ] **Two scan roots that name one directory list every model twice.** `default_set` canonicalizes user paths (`canonical_or_raw(p)`, `src/discovery/known_caches.rs:53`) but pushes the default cache roots raw (`:71`, `:83`, `:98`), and `push_unique` dedups on that string (`:131`) — so a default cache reached through a symlink or a macOS firmlink, plus the user's own path for the same directory, yields two roots for one tree. Dedup cannot collapse it because the `seen` set is per-root (`src/discovery/scanner.rs:927`), so one payload surfaces as two rows and the twins disagree about which repo they belong to, which is the comparison the whole-repo gate and the shared-blob refs run on. Canonicalize the default roots the way user paths are.
+
+- [ ] **A stale discovery scan can resurrect a deleted row.** `ModelCatalog::replace_all` overwrites wholesale and carries no scan id, so a `full_rescan` that walked the tree before a delete — the periodic one, a watcher-triggered one, or a client-requested one — can land its `replace_all` after `forget_missing` and put the deleted row back until the next scan. Stamp each scan and ignore a `replace_all` from an older one. (`src/discovery/catalog.rs`)
