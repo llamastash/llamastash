@@ -80,6 +80,7 @@ pub(crate) fn handle_hf_dialog_input(
   // helpers can keep their `Option<Sender>` signature without forcing
   // every caller to thread the tx explicitly.
   let events_tx = app.events_tx.clone();
+  let popup_key = crate::tui::popup::key(app, key, true);
   let outcome = {
     let Some(state) = app.hf_dialog.as_mut() else {
       return;
@@ -159,19 +160,19 @@ pub(crate) fn handle_hf_dialog_input(
         }
         _ => HfDialogOutcome::None,
       },
-      HfStage::Confirm => match key.code {
-        KeyCode::Esc => {
+      HfStage::Confirm => match popup_key {
+        crate::tui::popup::PopupKey::Cancel => {
           state.back_to_picker();
           HfDialogOutcome::None
         }
-        KeyCode::Enter => {
+        crate::tui::popup::PopupKey::Submit => {
           if let Some((repo, row)) = state.take_confirm_target() {
             HfDialogOutcome::EnqueuePull { repo, row }
           } else {
             HfDialogOutcome::Close
           }
         }
-        _ => HfDialogOutcome::None,
+        crate::tui::popup::PopupKey::Other => HfDialogOutcome::None,
       },
     }
   };

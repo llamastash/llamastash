@@ -984,6 +984,16 @@ impl App {
     Some(format!("{}:{}", b.label, description))
   }
 
+  /// Whether a popup owns the screen, so background panes take no mouse input.
+  pub fn modal_open(&self) -> bool {
+    self.hf_dialog.is_some()
+      || self.confirm_dialog.is_some()
+      || self.memory_dialog.is_some()
+      || self.save_preset_dialog.is_some()
+      || self.launch_name_dialog.is_some()
+      || self.show_help
+  }
+
   /// Resolve the live label (`Esc`, `Enter`, `Ctrl+X`, …) for
   /// `(focus, action)`, falling back to `fallback` when the action
   /// is unbound. Used by dialog renderers that want a single-token

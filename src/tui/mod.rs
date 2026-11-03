@@ -33,6 +33,7 @@ pub mod list_pane;
 pub mod logo_pane;
 pub mod memory_dialog;
 pub mod oai_client;
+pub mod popup;
 pub mod render;
 pub mod right_pane;
 pub mod save_preset_dialog;

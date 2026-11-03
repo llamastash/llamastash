@@ -9,6 +9,7 @@
 
 ### Changed
 
+- TUI popups share one frame and one button row: key chips on a lighter background with lowercase labels, Submit / Cancel follow `keybindings:` rebinds in every popup, and yes/no prompts (confirm, preset overwrite, HF pull confirm) also take `y` / `n`.
 - `llamastash start <model>` waits for a freshly started daemon's first catalog scan instead of failing with `no model matches ... (0 known)` on a model that is on disk.
 - A launch of a declared `stt` / `image` / `tts` entry prints that mode in the `status` launch table (`mode_hint` in `status --json`) instead of `chat`, the routing-only mode that changes nothing about the launch.
 - The media docs say a second engine declaring one mode costs the bare OpenAI names, and that `proxy.aliases` settles it.

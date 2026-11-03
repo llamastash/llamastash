@@ -19,7 +19,7 @@ use std::time::Instant;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear, Padding, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::discovery::split_gguf::parse_shard_name;
@@ -34,6 +34,7 @@ use crate::theme::Palette;
 use crate::tui::app::App;
 use crate::tui::input_field::{InputField, InputOutcome};
 use crate::tui::keybindings::{Action as KeyAction, Focus};
+use crate::tui::popup::{self, Button, Size, Spec};
 
 /// Three-state modal contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -871,30 +872,24 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   let Some(state) = app.hf_dialog.as_ref() else {
     return;
   };
-  let modal = crate::tui::layout::centered_rect(86, 70, area);
-  frame.render_widget(Clear, modal);
-  crate::tui::render::paint_theme_bg(frame, modal, palette);
+  let modal = popup::area(area, Size::Percent { x: 86, y: 70 });
   let stage = match state.stage {
     HfStage::Search => "Search",
     HfStage::FilePicker => "Files",
     HfStage::Confirm => "Confirm",
   };
-  // Stage name + key hints both ride in the title bar (hints muted,
-  // after a `·` separator), the same shape the help overlay uses.
-  let title = Line::from(vec![
-    Span::styled(format!(" HuggingFace — {stage} "), palette.title_style()),
-    Span::styled(
-      format!("· {} ", stage_hints(app, state)),
-      palette.muted_style(),
-    ),
-  ]);
-  let block = palette
-    .panel()
-    .title(title)
-    .padding(Padding::horizontal(1))
-    .build();
-  let inner = block.inner(modal);
-  frame.render_widget(block, modal);
+  // Key hints ride in the title bar, the same shape the help overlay uses.
+  let title = format!("HuggingFace — {stage}");
+  let hints = [stage_hints(app, state)];
+  let inner = popup::frame(
+    frame,
+    modal,
+    Spec {
+      hints: &hints,
+      ..Spec::new(&title)
+    },
+    palette,
+  );
 
   let layout = Layout::default()
     .direction(Direction::Vertical)
@@ -990,7 +985,8 @@ fn stage_hints(app: &App, state: &HfDialogState) -> String {
       format!("e:edit · {arrows}:row · {submit}:open · o:sort · n/p:page · {cancel}:close")
     }
     HfStage::FilePicker => format!("{arrows}:file · {submit}:select · {cancel}:back"),
-    HfStage::Confirm => format!("{submit}:pull · {cancel}:back"),
+    // The confirm stage shows its keys as buttons.
+    HfStage::Confirm => String::new(),
   }
 }
 
@@ -1524,19 +1520,19 @@ fn render_confirm_body(
     ]),
     Line::from(Span::raw("")),
     Line::from(Span::styled(
-      format!(
-        "Press {} to confirm — the download enqueues in the status strip.",
-        dialog_label(app, KeyAction::Submit, crate::tui::keybindings::ENTER_LABEL)
-      ),
+      "The download enqueues in the status strip.",
       palette.muted_style(),
     )),
-    Line::from(Span::styled(
-      format!(
-        "{} returns to the file picker.",
-        dialog_label(app, KeyAction::Cancel, crate::tui::keybindings::ESC_LABEL)
-      ),
-      palette.muted_style(),
-    )),
+    Line::from(Span::raw("")),
+    popup::buttons(
+      app,
+      &[
+        Button::submit("pull").yes_no(),
+        Button::cancel("back").yes_no(),
+      ],
+      palette,
+    )
+    .centered(),
   ];
   frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
 }

@@ -142,7 +142,7 @@ Set `theme: custom` and define a `custom_theme:` block to ship a personal palett
 | `panel_title`                                                                             | Block-title text — `Host`, `Daemon`, `Models`                                                               |
 | `label`                                                                                   | In-panel label prefixes (`CPU`, `socket`, …) and list group headers (`★ Favorites`, folder paths)           |
 | `muted`                                                                                   | Secondary text + hint separators                                                                            |
-| `selection`                                                                               | Reserved surface tone (used by future overlays)                                                             |
+| `selection`                                                                               | Popup button key chips and the memory reserve input field                                                   |
 | `highlight`                                                                               | Selected-row background in the Models list. Set to `reset` to fall back to `Modifier::REVERSED`.            |
 | `success` / `warning` / `error`                                                           | Per-state row colours + gauge tiers                                                                         |
 | `status_loading` / `status_ready` / `status_error` / `status_stopped` / `status_external` | Status-glyph colours in the model list                                                                      |
@@ -194,8 +194,8 @@ Bare letters are for tool actions (`f` favorite, `e` edit, `u/c/p` yank, `t` the
 | `open_launch_picker`                    | `Enter`                           | List                                                                               |
 | `open_memory_reserve` | `m` · `alt+m` | Nav focuses — unified-memory reserve editor |
 | `open_hf_dialog`                        | `shift+p`                         | List — "Pull" mnemonic                                                             |
-| `submit`                                | `Enter`                           | Filter, right pane, embed, rerank, confirm popup, HF dialog                        |
-| `cancel`                                | `Esc`                             | Confirm popup, HF dialog                                                           |
+| `submit`                                | `Enter`                           | Filter, right pane, embed, rerank, HF dialog, every popup (confirm, save preset, launch name, memory reserve, HF confirm); yes/no popups also take `y` |
+| `cancel`                                | `Esc`                             | HF dialog, every popup; yes/no popups also take `n`                                |
 | `yank_url` / `yank_curl` / `yank_path`  | `u`, `c` · `y`, `p`               | Nav focuses — `y` is a vi-style alias for `c`                                      |
 | `next_focus` / `prev_focus`             | `Tab` · `l`, `Shift+Tab` · `h`    | Universal pane cycle (TUI focuses); vi aliases are nav-only                        |
 | `focus_list`                            | `Esc` · `Shift+M`                 | Right pane / tab inputs                                                            |

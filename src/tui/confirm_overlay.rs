@@ -5,14 +5,13 @@
 //! `events::handle_key` for the key-routing precedence.
 
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::theme::Palette;
 use crate::tui::app::{App, ConfirmAction, ConfirmSeverity};
-use crate::tui::keybindings::{Action as KeyAction, Focus};
+use crate::tui::popup::{self, Button, Size, Spec};
 
 /// Render the confirmation popup. Caller should only invoke this
 /// when `app.confirm_dialog` is `Some(...)`.
@@ -28,28 +27,28 @@ pub fn render(
   // Tone the border/title off the action's severity: red for prompts
   // that lose work (stop/kill/delete/cancel), the warning hue for
   // neutral/additive prompts so red stays meaningful.
-  let tone = match action.severity() {
-    ConfirmSeverity::Destructive => palette.error,
-    ConfirmSeverity::Neutral => palette.warning,
+  let (tone, primary) = match action.severity() {
+    ConfirmSeverity::Destructive => (palette.error, Button::destructive("confirm")),
+    ConfirmSeverity::Neutral => (palette.warning, Button::submit("confirm")),
   };
-
-  let rect = crate::tui::layout::centered_abs(area, 60, 8, 4, 2);
-  frame.render_widget(Clear, rect);
-  // Restore the theme surface tone after `Clear` so the popup
-  // body reads on `palette.bg` instead of the terminal default.
-  // Mono opts out (`palette.bg == Color::Reset`).
-  crate::tui::render::paint_theme_bg(frame, rect, palette);
-
-  let block = palette
-    .panel()
-    .title(Line::from(Span::styled(
-      format!(" {title} "),
-      Style::default().fg(tone).add_modifier(Modifier::BOLD),
-    )))
-    .border(tone)
-    .build();
-  let inner = block.inner(rect);
-  frame.render_widget(block, rect);
+  let rect = popup::area(
+    area,
+    Size::Fixed {
+      w: 60,
+      h: 8,
+      x_margin: 4,
+      y_margin: 2,
+    },
+  );
+  let inner = popup::frame(
+    frame,
+    rect,
+    Spec {
+      tone: Some(tone),
+      ..Spec::new(title)
+    },
+    palette,
+  );
 
   let chunks = Layout::default()
     .direction(Direction::Vertical)
@@ -61,27 +60,15 @@ pub fn render(
     .alignment(Alignment::Center);
   frame.render_widget(prompt, chunks[0]);
 
-  // Resolve the Submit/Cancel labels live from the keymap so a
-  // config rebind flows through. `y` / `n` are hardcoded char-
-  // matches in the dispatcher (see `events::handle_key`) and stay
-  // as the universal foot-gun-resistant fallback regardless of
-  // what the user maps Submit/Cancel to.
-  let submit_label = keymap_label(app, KeyAction::Submit, crate::tui::keybindings::ENTER_LABEL);
-  let cancel_label = keymap_label(app, KeyAction::Cancel, crate::tui::keybindings::ESC_LABEL);
-  let hint = Paragraph::new(Line::from(vec![
-    Span::styled(
-      format!("{submit_label} / y"),
-      Style::default().fg(palette.success),
-    ),
-    Span::styled(" confirm  ·  ", palette.muted_style()),
-    Span::styled(
-      format!("{cancel_label} / n"),
-      Style::default().fg(palette.warning),
-    ),
-    Span::styled(" cancel", palette.muted_style()),
-  ]))
-  .alignment(Alignment::Center);
-  frame.render_widget(hint, chunks[1]);
+  // Any key other than Submit / `y` cancels (see `events::handle_key`), so a
+  // stray keypress can't drop a running model or kill the daemon.
+  popup::render_buttons(
+    frame,
+    chunks[1],
+    app,
+    &[primary.yes_no(), Button::cancel("cancel").yes_no()],
+    palette,
+  );
 }
 
 /// Title + body text for a confirm action. Kept here so the action
@@ -129,14 +116,6 @@ fn describe(action: &ConfirmAction) -> (&'static str, String) {
   }
 }
 
-/// Thin shim over [`App::resolve_label`] specialised to
-/// [`Focus::ConfirmPopup`] so the per-line key chips below stay
-/// compact. Falls back to a literal default when the user has
-/// unbound the action entirely so the popup still reads sensibly.
-fn keymap_label(app: &App, action: KeyAction, fallback: &str) -> String {
-  app.resolve_label(Focus::ConfirmPopup, action, fallback)
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -149,10 +128,13 @@ mod tests {
     use crate::tui::keybindings::{ENTER_LABEL, ESC_LABEL};
     let app = App::new(AppOptions::default());
     assert_eq!(
-      keymap_label(&app, KeyAction::Submit, "fallback"),
+      popup::key_label(&app, crate::tui::keybindings::Action::Submit),
       ENTER_LABEL
     );
-    assert_eq!(keymap_label(&app, KeyAction::Cancel, "fallback"), ESC_LABEL);
+    assert_eq!(
+      popup::key_label(&app, crate::tui::keybindings::Action::Cancel),
+      ESC_LABEL
+    );
   }
 
   #[test]
@@ -217,6 +199,9 @@ mod tests {
       keymap,
       ..AppOptions::default()
     });
-    assert_eq!(keymap_label(&app, KeyAction::Submit, "Enter"), "F12");
+    assert_eq!(
+      popup::key_label(&app, crate::tui::keybindings::Action::Submit),
+      "F12"
+    );
   }
 }

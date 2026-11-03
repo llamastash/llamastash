@@ -205,13 +205,7 @@ fn handle_mouse(
   writer: Option<&mpsc::Sender<WriterCmd>>,
 ) {
   use crossterm::event::{MouseButton, MouseEventKind};
-  if app.hf_dialog.is_some()
-    || app.confirm_dialog.is_some()
-    || app.memory_dialog.is_some()
-    || app.save_preset_dialog.is_some()
-    || app.launch_name_dialog.is_some()
-    || app.show_help
-  {
+  if app.modal_open() {
     return;
   }
   match m.kind {
@@ -321,10 +315,7 @@ fn handle_key(app: &mut App, key: KeyEvent, writer: Option<&mpsc::Sender<WriterC
   // key still cancels via the foot-gun-resistant catchall so a
   // stray keypress can't drop a running model or kill the daemon.
   if app.confirm_dialog.is_some() {
-    let bound = app.action_for(Focus::ConfirmPopup, key.code, key.modifiers);
-    let confirmed = matches!(bound, Some(Action::Submit))
-      || matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y'));
-    if confirmed {
+    if crate::tui::popup::key(app, key, true) == crate::tui::popup::PopupKey::Submit {
       let pending = app.confirm_dialog.take();
       if let Some(action) = pending {
         apply_confirmed(app, action, writer);
@@ -1312,18 +1303,19 @@ fn handle_memory_reserve_input(
   key: KeyEvent,
   writer: Option<&mpsc::Sender<WriterCmd>>,
 ) {
-  let action = app.action_for(Focus::ConfirmPopup, key.code, key.modifiers);
+  use crate::tui::popup::PopupKey;
+  let pressed = crate::tui::popup::key(app, key, false);
   let Some(dialog) = app.memory_dialog.as_mut() else {
     return;
   };
   if dialog.saving {
     return;
   }
-  if action == Some(Action::Cancel) {
+  if pressed == PopupKey::Cancel {
     app.memory_dialog = None;
     return;
   }
-  if action == Some(Action::Submit) {
+  if pressed == PopupKey::Submit {
     match dialog.reserve() {
       Err(message) => dialog.error = Some(message.into()),
       Ok(percent) => match writer {
@@ -1352,46 +1344,45 @@ fn handle_save_preset_input(
   key: KeyEvent,
   writer: Option<&mpsc::Sender<WriterCmd>>,
 ) {
-  use crate::tui::input_field::InputOutcome;
+  use crate::tui::popup::PopupKey;
   use crate::tui::save_preset_dialog::SaveStage;
+  let Some(stage) = app.save_preset_dialog.as_ref().map(|d| d.stage) else {
+    return;
+  };
+  let pressed = crate::tui::popup::key(app, key, stage == SaveStage::Confirm);
   let Some(dialog) = app.save_preset_dialog.as_mut() else {
     return;
   };
-  match dialog.stage {
-    SaveStage::Name => {
-      // Esc cancels the whole dialog (ahead of the input's exit-edit).
-      if matches!(key.code, KeyCode::Esc) {
-        app.save_preset_dialog = None;
-        return;
-      }
-      match dialog.input.handle_key(key) {
-        InputOutcome::Submit => {
-          if dialog.name().is_empty() {
-            dialog.error = Some("name must not be empty".into());
-            return;
-          }
-          dialog.error = None;
-          if dialog.name_needs_confirm() {
-            dialog.stage = SaveStage::Confirm;
-            return;
-          }
-          // New name → fall through to commit (borrow released below).
-        }
-        InputOutcome::Handled => {
-          dialog.error = None;
-          return;
-        }
-        InputOutcome::PassThrough => return,
-      }
+  match (stage, pressed) {
+    (SaveStage::Name, PopupKey::Cancel) => {
+      app.save_preset_dialog = None;
+      return;
     }
-    SaveStage::Confirm => match key.code {
-      KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {} // commit below
-      KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
-        dialog.stage = SaveStage::Name;
+    (SaveStage::Name, PopupKey::Submit) => {
+      if dialog.name().is_empty() {
+        dialog.error = Some("name must not be empty".into());
         return;
       }
-      _ => return,
-    },
+      dialog.error = None;
+      if dialog.name_needs_confirm() {
+        dialog.stage = SaveStage::Confirm;
+        return;
+      }
+      // New name → fall through to commit (borrow released below).
+    }
+    (SaveStage::Name, PopupKey::Other) => {
+      // Submit and Cancel come from the keymap above, never from the field.
+      if dialog.input.handle_key(key) == crate::tui::input_field::InputOutcome::Handled {
+        dialog.error = None;
+      }
+      return;
+    }
+    (SaveStage::Confirm, PopupKey::Submit) => {} // commit below
+    (SaveStage::Confirm, PopupKey::Cancel) => {
+      dialog.stage = SaveStage::Name;
+      return;
+    }
+    (SaveStage::Confirm, PopupKey::Other) => return,
   }
   commit_save_preset(app, writer);
 }
@@ -1429,17 +1420,17 @@ fn handle_launch_name_input(
   key: KeyEvent,
   writer: Option<&mpsc::Sender<WriterCmd>>,
 ) {
-  use crate::tui::input_field::InputOutcome;
+  use crate::tui::popup::PopupKey;
+  let pressed = crate::tui::popup::key(app, key, false);
   let Some(dialog) = app.launch_name_dialog.as_mut() else {
     return;
   };
-  // Esc cancels the whole dialog (ahead of the input's exit-edit).
-  if matches!(key.code, KeyCode::Esc) {
-    app.launch_name_dialog = None;
-    return;
-  }
-  match dialog.input.handle_key(key) {
-    InputOutcome::Submit => {
+  match pressed {
+    PopupKey::Cancel => {
+      app.launch_name_dialog = None;
+      return;
+    }
+    PopupKey::Submit => {
       // Nothing typed at all launches unnamed; anything else must survive the
       // same `validate_launch_name` the CLI's `--name` parser applies.
       if !dialog.input.buffer().is_empty() {
@@ -1451,11 +1442,13 @@ fn handle_launch_name_input(
       dialog.error = None;
       // Borrow released below; the picker launches carrying the typed name.
     }
-    InputOutcome::Handled => {
-      dialog.error = None;
+    PopupKey::Other => {
+      // Submit and Cancel come from the keymap above, never from the field.
+      if dialog.input.handle_key(key) == crate::tui::input_field::InputOutcome::Handled {
+        dialog.error = None;
+      }
       return;
     }
-    InputOutcome::PassThrough => return,
   }
   commit_launch_name(app, writer);
 }
@@ -3030,6 +3023,77 @@ mod tests {
   use super::*;
   use crate::tui::app::AppOptions;
   use crossterm::event::{KeyEvent, KeyModifiers};
+
+  fn press(app: &mut App, code: KeyCode) {
+    handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), None);
+  }
+
+  #[test]
+  fn text_popups_type_y_and_n_and_follow_a_rebound_cancel() {
+    let mut keymap = crate::tui::keybindings::KeyMap::default();
+    let overrides = [("cancel".to_string(), "f3".to_string())]
+      .into_iter()
+      .collect();
+    assert!(keymap.apply_overrides(&overrides).is_empty());
+    let mut app = App::new(AppOptions {
+      keymap,
+      ..AppOptions::default()
+    });
+    app.launch_name_dialog = Some(crate::tui::launch_name_dialog::LaunchNameDialog::open(
+      "a.gguf".into(),
+    ));
+    press(&mut app, KeyCode::Char('y'));
+    press(&mut app, KeyCode::Char('n'));
+    assert_eq!(
+      app.launch_name_dialog.as_ref().unwrap().input.buffer(),
+      "yn"
+    );
+    press(&mut app, KeyCode::F(3));
+    assert!(app.launch_name_dialog.is_none());
+  }
+
+  #[test]
+  fn save_preset_overwrite_prompt_takes_y_n_and_ignores_other_keys() {
+    use crate::tui::save_preset_dialog::{SavePresetArgs, SavePresetDialog, SaveStage};
+    let mut app = App::new(AppOptions::default());
+    let mut dialog = SavePresetDialog::open(SavePresetArgs {
+      model_path: PathBuf::from("/m/a.gguf"),
+      model_name: "a.gguf".into(),
+      knobs: crate::launch::knobs::KnobSet::new(),
+      extras: Vec::new(),
+      backend: None,
+      server: None,
+      existing: vec!["dup".into()],
+      arch_shadow: Vec::new(),
+    });
+    dialog.input.set_text("dup");
+    app.save_preset_dialog = Some(dialog);
+    let stage = |a: &App| a.save_preset_dialog.as_ref().map(|d| d.stage);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(stage(&app), Some(SaveStage::Confirm));
+    press(&mut app, KeyCode::Char('x'));
+    assert_eq!(stage(&app), Some(SaveStage::Confirm));
+    press(&mut app, KeyCode::Char('n'));
+    assert_eq!(stage(&app), Some(SaveStage::Name));
+  }
+
+  #[test]
+  fn hf_confirm_stage_takes_n_to_go_back() {
+    use crate::tui::hf_dialog::{HardwareFitContext, HfDialogState, HfStage};
+    let mut app = App::new(AppOptions::default());
+    let mut state = HfDialogState::open(false, HardwareFitContext::default());
+    state.stage = HfStage::Confirm;
+    app.hf_dialog = Some(state);
+    crate::tui::hf_pull::handle_hf_dialog_input(
+      &mut app,
+      KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+      None,
+    );
+    assert_eq!(
+      app.hf_dialog.as_ref().map(|s| s.stage),
+      Some(HfStage::FilePicker)
+    );
+  }
 
   #[test]
   fn unavailable_reserve_toast_names_the_reason() {

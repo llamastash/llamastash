@@ -4,7 +4,7 @@ use ratatui::{
   layout::{Constraint, Layout, Rect},
   style::Modifier,
   text::{Line, Span},
-  widgets::{Clear, Padding, Paragraph, Wrap},
+  widgets::{Paragraph, Wrap},
   Frame,
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -15,7 +15,7 @@ use crate::theme::Palette;
 use crate::tui::{
   app::App,
   input_field::InputField,
-  keybindings::{Action, Focus},
+  popup::{self, Button, Size, Spec},
 };
 
 #[derive(Debug, Clone)]
@@ -165,20 +165,25 @@ pub fn render(
   dialog: &MemoryDialog,
   palette: &Palette,
 ) {
-  let rect = crate::tui::layout::centered_abs(area, 74, 19, 2, 1);
-  frame.render_widget(Clear, rect);
-  crate::tui::render::paint_theme_bg(frame, rect, palette);
+  let rect = popup::area(
+    area,
+    Size::Fixed {
+      w: 74,
+      h: 19,
+      x_margin: 2,
+      y_margin: 1,
+    },
+  );
   let compact = rect.height < 19;
-  let block = palette
-    .panel()
-    .title(Line::styled(
-      " Unified memory reserve ",
-      palette.title_style(),
-    ))
-    .padding(Padding::new(2, 2, u16::from(!compact), u16::from(!compact)))
-    .build();
-  let inner = block.inner(rect);
-  frame.render_widget(block, rect);
+  let inner = popup::frame(
+    frame,
+    rect,
+    Spec {
+      pad_y: u16::from(!compact),
+      ..Spec::new("Unified memory reserve")
+    },
+    palette,
+  );
   if inner.width == 0 || inner.height == 0 {
     return;
   }
@@ -288,44 +293,17 @@ pub fn render(
       frame.set_cursor_position((field.x + 1 + visible.width() as u16, field.y));
     }
   }
-  let label = |action| {
-    app
-      .bindings_for(Focus::ConfirmPopup)
-      .iter()
-      .find(|b| b.action == action)
-      .map(|b| b.label.to_string())
-      .unwrap_or_default()
-  };
-  let actions = if dialog.saving {
-    Line::styled(
-      "Saving changes...",
-      palette.accent_style().add_modifier(Modifier::BOLD),
-    )
+  if dialog.saving {
+    popup::render_busy(frame, footer, "saving", palette);
   } else {
-    Line::from(vec![
-      Span::styled(
-        format!(" {} ", label(Action::Submit)),
-        palette
-          .success_style()
-          .bg(palette.selection)
-          .add_modifier(Modifier::BOLD),
-      ),
-      Span::styled(
-        if compact {
-          " Save    "
-        } else {
-          " Save changes    "
-        },
-        palette.text_style(),
-      ),
-      Span::styled(
-        format!(" {} ", label(Action::Cancel)),
-        palette.muted_style().bg(palette.selection),
-      ),
-      Span::styled(" Cancel", palette.muted_style()),
-    ])
-  };
-  frame.render_widget(Paragraph::new(actions), footer);
+    popup::render_buttons(
+      frame,
+      footer,
+      app,
+      &[Button::submit("save"), Button::cancel("cancel")],
+      palette,
+    );
+  }
 }
 
 #[cfg(test)]
@@ -459,9 +437,9 @@ mod tests {
         "36.0 GiB",
         "Cannot save:",
         "F2",
-        "Save",
+        "save",
         "F3",
-        "Cancel",
+        "cancel",
       ] {
         assert!(
           text.contains(required),

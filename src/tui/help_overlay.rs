@@ -17,12 +17,13 @@ use std::collections::BTreeMap;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear, Padding, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::theme::Palette;
 use crate::tui::app::App;
 use crate::tui::keybindings::{Action, Binding, Category, Focus};
+use crate::tui::popup::{self, Spec};
 
 /// Render the overlay. Caller is responsible for only invoking
 /// this when `app.show_help` is true. Layout is static — the active
@@ -35,17 +36,30 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
     2,
     2,
   );
-  frame.render_widget(Clear, rect);
-  crate::tui::render::paint_theme_bg(frame, rect, palette);
-
-  // Inner geometry is independent of the title text, so derive it from a
-  // bare panel first; the column packing and scroll math need it before
-  // the titled block is built.
-  let inner = palette
-    .panel()
-    .padding(Padding::horizontal(1))
-    .build()
-    .inner(rect);
+  // Title carries the close and scroll chips. The close chip lists both
+  // dismiss keys: `Esc` (hardcoded modal-dismiss in `events::handle_key`,
+  // not an Action, so always works) and the `toggle_help` live key
+  // (default `?`). Scroll keys come from the keymap too, so config
+  // overrides flow through.
+  let toggle_key = app
+    .bindings_for(Focus::List)
+    .iter()
+    .find(|b| b.action == Action::ToggleHelp)
+    .map(|b| b.label.to_string())
+    .unwrap_or_else(|| "?".to_string());
+  let hints = [
+    format!("Esc/{toggle_key}:close"),
+    format!("{}:scroll", scroll_hint_label(app)),
+  ];
+  let inner = popup::frame(
+    frame,
+    rect,
+    Spec {
+      hints: &hints,
+      ..Spec::new("Help")
+    },
+    palette,
+  );
 
   let sections = build_sections(app);
   let legend = legend_section();
@@ -69,36 +83,6 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   // Clamp so an over-advanced `help_scroll` can't run past the content.
   let max_scroll = content_height.saturating_sub(inner.height);
   let scroll_y = app.help_scroll.min(max_scroll);
-
-  // Title carries the close and scroll chips. The close chip lists both
-  // dismiss keys: `Esc` (hardcoded modal-dismiss in `events::handle_key`,
-  // not an Action, so always works) and the `toggle_help` live key
-  // (default `?`). Scroll keys come from the keymap too, so config
-  // overrides flow through.
-  let toggle_key = app
-    .bindings_for(Focus::List)
-    .iter()
-    .find(|b| b.action == Action::ToggleHelp)
-    .map(|b| b.label.to_string())
-    .unwrap_or_else(|| "?".to_string());
-  let block = palette
-    .panel()
-    .title(Line::from(vec![
-      Span::styled(
-        " Help ",
-        Style::default()
-          .fg(palette.panel_title)
-          .add_modifier(Modifier::BOLD),
-      ),
-      Span::styled(format!("· Esc/{toggle_key}:close "), palette.muted_style()),
-      Span::styled(
-        format!("· {}:scroll ", scroll_hint_label(app)),
-        palette.muted_style(),
-      ),
-    ]))
-    .padding(Padding::horizontal(1))
-    .build();
-  frame.render_widget(block, rect);
 
   // Keybinding columns fill the inner area, scrolled as one.
   let constraints: Vec<Constraint> = (0..n_cols)

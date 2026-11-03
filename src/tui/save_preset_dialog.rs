@@ -14,15 +14,15 @@
 use std::path::PathBuf;
 
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::theme::Palette;
 use crate::tui::app::App;
 use crate::tui::input_field::InputField;
-use crate::tui::keybindings::{Action as KeyAction, Focus};
+use crate::tui::popup::{self, Button, Size, Spec};
 
 /// Which step of the save flow is in view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,14 +124,6 @@ impl SavePresetDialog {
   }
 }
 
-/// Submit / Cancel chip labels resolved live from the keymap (so a
-/// config rebind flows through), scoped like the confirm popup. `y` / `n`
-/// stay hardcoded char-matches in the dispatcher, mirroring
-/// [`crate::tui::confirm_overlay`].
-fn keymap_label(app: &App, action: KeyAction, fallback: &str) -> String {
-  app.resolve_label(Focus::ConfirmPopup, action, fallback)
-}
-
 /// Render the modal. Caller invokes this only when the dialog is open.
 pub fn render(
   frame: &mut Frame<'_>,
@@ -140,25 +132,18 @@ pub fn render(
   dialog: &SavePresetDialog,
   palette: &Palette,
 ) {
-  use crate::tui::keybindings::{ENTER_LABEL, ESC_LABEL};
-  let submit = keymap_label(app, KeyAction::Submit, ENTER_LABEL);
-  let cancel = keymap_label(app, KeyAction::Cancel, ESC_LABEL);
-  let rect = crate::tui::layout::centered_abs(area, 60, 9, 4, 2);
-  frame.render_widget(Clear, rect);
-  crate::tui::render::paint_theme_bg(frame, rect, palette);
-
+  let rect = popup::area(
+    area,
+    Size::Fixed {
+      w: 60,
+      h: 9,
+      x_margin: 4,
+      y_margin: 2,
+    },
+  );
+  let title = format!("Save preset · {}", dialog.model_name);
+  let inner = popup::frame(frame, rect, Spec::new(&title), palette);
   let tone = palette.accent;
-  let block = palette
-    .panel()
-    .title(Line::from(Span::styled(
-      format!(" Save preset · {} ", dialog.model_name),
-      Style::default().fg(tone).add_modifier(Modifier::BOLD),
-    )))
-    .border(tone)
-    .padding(ratatui::widgets::Padding::horizontal(1))
-    .build();
-  let inner = block.inner(rect);
-  frame.render_widget(block, rect);
 
   let chunks = Layout::default()
     .direction(Direction::Vertical)
@@ -193,14 +178,13 @@ pub fn render(
         frame.render_widget(e, chunks[2]);
       }
 
-      let hint = Paragraph::new(Line::from(vec![
-        Span::styled(submit, Style::default().fg(palette.success)),
-        Span::styled(" save  ·  ", palette.muted_style()),
-        Span::styled(cancel, Style::default().fg(palette.warning)),
-        Span::styled(" cancel", palette.muted_style()),
-      ]))
-      .alignment(Alignment::Center);
-      frame.render_widget(hint, chunks[3]);
+      popup::render_buttons(
+        frame,
+        chunks[3],
+        app,
+        &[Button::submit("save"), Button::cancel("cancel")],
+        palette,
+      );
     }
     SaveStage::Confirm => {
       // Two flavors: overwriting the model's own preset, or shadowing an
@@ -219,10 +203,11 @@ pub fn render(
           dialog.model_name
         )
       };
-      let verb = if dialog.name_is_shadow() {
-        " override  ·  "
+      // An override leaves the arch preset intact; an overwrite replaces the old entry.
+      let primary = if dialog.name_is_shadow() {
+        Button::submit("override")
       } else {
-        " overwrite  ·  "
+        Button::destructive("overwrite")
       };
       let body = Paragraph::new(Line::from(Span::styled(question, palette.text_style())))
         .wrap(Wrap { trim: true })
@@ -234,20 +219,13 @@ pub fn render(
       };
       frame.render_widget(body, body_area);
 
-      let hint = Paragraph::new(Line::from(vec![
-        Span::styled(
-          format!("{submit} / y"),
-          Style::default().fg(palette.success),
-        ),
-        Span::styled(verb, palette.muted_style()),
-        Span::styled(
-          format!("{cancel} / n"),
-          Style::default().fg(palette.warning),
-        ),
-        Span::styled(" keep", palette.muted_style()),
-      ]))
-      .alignment(Alignment::Center);
-      frame.render_widget(hint, chunks[3]);
+      popup::render_buttons(
+        frame,
+        chunks[3],
+        app,
+        &[primary.yes_no(), Button::cancel("keep").yes_no()],
+        palette,
+      );
     }
   }
 }

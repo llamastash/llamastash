@@ -3,16 +3,16 @@
 │CPU  ███░░░░ 48% 54°C  ││port    48134 · pid 4242 · up 3h12m                                              ││  ▉    ▉  │
 │MEM  ██░░░░░ 11/32G    ││server  llamacpp (cuda)                                                          ││  █▃██▃█  │
 │GPU  ██████░ 84% 68°C  ││proxy   —                                                                        ││ █ ●  ● █ │
-│VRAM ██┌ HuggingFace — Confirm · ⏎:pull · Esc:back ───────────────────────────────────────────────────────────┐ ◡◡ ██ │
+│VRAM ██┌ HuggingFace — Confirm ───────────────────────────────────────────────────────────────────────────────┐ ◡◡ ██ │
 │backend│ search: qwen                                                                                         │████▀  │
 └───────│ sort: ↓ downloads  ·  page 1                                                                         │───────┘
 ┌ Models│ repo:  Qwen/Qwen3-7B-GGUF                                                                            │t ─────┐
 │   Name│ file:  qwen3-7b-q4_k_m.gguf                                                                          │       │
 │▶ Runni│ size:  4.2G                                                                                          │       │
 │ ● qwen│                                                                                                      │       │
-│★ Favor│ Press ⏎ to confirm — the download enqueues in the status strip.                                      │       │
-│ ★ mist│ Esc returns to the file picker.                                                                      │M · 31 │
-│───────│                                                                                                      │────── │
+│★ Favor│ The download enqueues in the status strip.                                                           │       │
+│ ★ mist│                                                                                                      │M · 31 │
+│───────│                                     ⏎ / y  pull     Esc / n  back                                    │────── │
 │m/x    │                                                                                                      │       │
 │ ★ mist│                                                                                                      │       │
 │m/y    │                                                                                                      │       │
