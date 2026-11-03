@@ -1,4 +1,4 @@
- LlamaStash v0.10.1   P:pull · ?:help · ↹/⇧↹:panes · q:quit
+ LlamaStash v0.11.0   P:pull · ?:help · ↹/⇧↹:panes · q:quit
 ┌ Host ─────────────────┐┌ Daemon ─────────────────────────┐
 │CPU  ███░░░░ 48% 54°C  ││port    48134 · pid 4242 · up 3h1│
 │MEM  ██░░░░░ 11/32G    ││server  llamacpp (cuda)          │

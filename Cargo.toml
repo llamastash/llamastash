@@ -1,6 +1,6 @@
 [package]
 name = "llamastash"
-version = "0.10.1"
+version = "0.11.0"
 authors = ["Deepu K Sasidharan <d4udts@gmail.com>"]
 description = "Zero-overhead, terminal-native local-LLM orchestrator. Run any engine, any model via the same proxy."
 documentation = "https://github.com/llamastash/llamastash"

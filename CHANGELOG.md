@@ -1,31 +1,41 @@
 ## [Unreleased]
 
+## [0.11.0] — 2026-11-03
+
+This release adds two CLI verbs so an agent can manage models without the TUI. `llamastash delete` removes a model's files through the daemon with the same plan the TUI's `Ctrl+D` shows, and refuses without `--yes` outside a TTY. `llamastash bench` starts a model once per preset and reports load time, prompt and generation speed and time to first token, in a table or `--json`. Unified-memory hosts get a configurable admission reserve (`daemon.unified_memory_reserve_percent`), the HuggingFace pull dialog opens on the models ranked for your hardware, and media launches now show `stt` / `image` instead of `chat` in `status`.
+
 ### Added
 
-- `llamastash delete <model-ref>` removes a model's files through the daemon, with the same plan the TUI's `Ctrl+D` shows: prompts on a TTY, refuses without `--yes` anywhere else, `--json`, and exit `75` when the delete does not happen. Plan: [`docs/plans/2026-11-01-001-feat-cli-delete-plan.md`](docs/plans/2026-11-01-001-feat-cli-delete-plan.md).
-- `llamastash bench <model-ref> [--preset a,b]` gives load time, context, token counts, prompt-processing speed, generation speed and time to first token per preset, read from the same numbers `llamastash requests` reports, so a knob change can be compared without the maintainer scripts in `scripts/bench/`. Plan: [`docs/plans/2026-10-31-001-feat-cli-bench-plan.md`](docs/plans/2026-10-31-001-feat-cli-bench-plan.md).
+- `llamastash delete <model-ref>` removes a model's files through the daemon, with the same plan the TUI's `Ctrl+D` shows: prompts on a TTY, refuses without `--yes` anywhere else, `--json`, and exit `75` when the delete does not happen. Plan: [`docs/plans/2026-11-01-001-feat-cli-delete-plan.md`](docs/plans/2026-11-01-001-feat-cli-delete-plan.md). ([#131](https://github.com/llamastash/llamastash/pull/131))
+- `llamastash bench <model-ref> [--preset a,b]` gives load time, context, token counts, prompt-processing speed, generation speed and time to first token per preset, read from the same numbers `llamastash requests` reports, so a knob change can be compared without the maintainer scripts in `scripts/bench/`. Plan: [`docs/plans/2026-10-31-001-feat-cli-bench-plan.md`](docs/plans/2026-10-31-001-feat-cli-bench-plan.md). ([#127](https://github.com/llamastash/llamastash/pull/127))
+- `daemon.unified_memory_reserve_percent` sets how much extra memory admission holds back on unified-memory hosts: `auto` keeps 25% on Apple Silicon and 0% elsewhere, or set an integer from 0 to 99. `m` in the TUI edits it with a live preview of the admission budget, and a save applies without a daemon restart. ([#126](https://github.com/llamastash/llamastash/pull/126))
 - The HuggingFace pull dialog opens on the models the recommender ranks for this hardware instead of an empty search box: the same list `init` and `llamastash recommend` offer, in the search table's columns with the recommended quant and a fit mark, under a note saying what they are, with Enter opening the entry's GGUF repo at the recommended quant. The dialog also fetches the daily benchmark snapshot `init` ranks against (once per session, skipped offline) and re-ranks when it lands, so the two lists stop disagreeing because the bundled snapshot lags. Plan: [`docs/plans/2026-10-30-001-feat-tui-pull-recommended-models-plan.md`](docs/plans/2026-10-30-001-feat-tui-pull-recommended-models-plan.md).
-
-- Unified-memory headroom can be adjusted in the TUI with a live admission-budget preview and platform-preserving automatic defaults; changes persist and apply without restarting the daemon ([#126](https://github.com/llamastash/llamastash/pull/126)).
 
 ### Changed
 
 - TUI global chords reach further: `Ctrl+K` works from the right pane like `Ctrl+R`, `Alt+⏎` names a launch from the Models list as well as Settings, and `Ctrl+C` / `Ctrl+R` / `Ctrl+K` / `Ctrl+S` / `Ctrl+X` / `Ctrl+P` / `Alt+L` also fire while typing in the Chat, Embed and Rerank inputs.
 - TUI popups share one frame and one button row: key chips on a lighter background with lowercase labels, Submit / Cancel follow `keybindings:` rebinds in every popup, and yes/no prompts (confirm, preset overwrite, HF pull confirm) also take `y` / `n`.
-- `llamastash start <model>` waits for a freshly started daemon's first catalog scan instead of failing with `no model matches ... (0 known)` on a model that is on disk.
-- A launch of a declared `stt` / `image` / `tts` entry prints that mode in the `status` launch table (`mode_hint` in `status --json`) instead of `chat`, the routing-only mode that changes nothing about the launch.
-- The media docs say a second engine declaring one mode costs the bare OpenAI names, and that `proxy.aliases` settles it.
-- Deleting a model runs in the daemon: the TUI's `Ctrl+D` and `llamastash delete` both call the new `delete_model` IPC method, which re-plans and refuses anything past what the client was shown, and `forget_models` is gone.
+- `llamastash start <model>` waits for a freshly started daemon's first catalog scan instead of failing with `no model matches ... (0 known)` on a model that is on disk. ([#128](https://github.com/llamastash/llamastash/pull/128))
+- A launch of a declared `stt` / `image` / `tts` entry prints that mode in the `status` launch table (`mode_hint` in `status --json`) instead of `chat`, the routing-only mode that changes nothing about the launch. ([#128](https://github.com/llamastash/llamastash/pull/128))
+- The media docs say a second engine declaring one mode costs the bare OpenAI names, and that `proxy.aliases` settles it. ([#128](https://github.com/llamastash/llamastash/pull/128))
+- Deleting a model runs in the daemon: the TUI's `Ctrl+D` and `llamastash delete` both call the new `delete_model` IPC method, which re-plans and refuses anything past what the client was shown, and `forget_models` is gone. ([#131](https://github.com/llamastash/llamastash/pull/131))
 - `init` and `recommend --json` report each recommendation's numbers as a `facts` object (`params`, `quant`, `peak_bytes`, `host_total`, `bench`, `spill_percent`) instead of a pre-rendered `justification` string; the one-line prose is rendered from it, as are the TUI's columns.
 - On a host whose sampler found several GPU backends (`multi`), the pull dialog reads the hardware from its NVIDIA or AMD card instead of treating the host as having no usable GPU, so hybrid laptops get per-file fit marks and recommendations too.
 
 ### Fixed
 
 - `Alt+⏎` in the Settings pane opens the launch-name dialog straight away. It did nothing until an arrow key or a value change had staged the launch picker.
-- `llamastash session` with no model picks the running chat model even when a media launch was started after it. The newest launch won, and the newest was an `stt` or `image` launch, so the command refused with `... is a speech-to-text model` while a real chat model was up.
-- The `requests` aggregates (`Agg tok/s`, `Agg PP tok/s` and their busy time) no longer read a wall-clock step or a resume from suspend as idle time.
-- A knob you set that the resolved backend cannot honour is named in the launch's warnings instead of vanishing from the command line silently.
-- A recommended row in the pull dialog marks its size and its fit verdict with `~`, so an estimated size no longer reads like the file list's real one.
+- `llamastash session` with no model picks the running chat model even when a media launch was started after it. The newest launch won, and the newest was an `stt` or `image` launch, so the command refused with `... is a speech-to-text model` while a real chat model was up. ([#128](https://github.com/llamastash/llamastash/pull/128))
+- The `requests` aggregates (`Agg tok/s`, `Agg PP tok/s` and their busy time) no longer read a wall-clock step or a resume from suspend as idle time. ([#129](https://github.com/llamastash/llamastash/pull/129))
+- A knob you set that the resolved backend cannot honour is named in the launch's warnings instead of vanishing from the command line silently. ([#129](https://github.com/llamastash/llamastash/pull/129))
+- A recommended row in the pull dialog marks its size and its fit verdict with `~`, so an estimated size no longer reads like the file list's real one. ([#129](https://github.com/llamastash/llamastash/pull/129))
+
+### Contributors
+
+Thanks to everyone who shipped code in this release:
+
+- [@howmuchcomputer](https://github.com/howmuchcomputer): configurable unified-memory reserve with a live budget preview in the TUI ([#126](https://github.com/llamastash/llamastash/pull/126))
+- [@deepu105](https://github.com/deepu105): everything else
 
 ## [0.10.1] — 2026-10-30
 
