@@ -2309,19 +2309,25 @@ pub fn spawn_writer(
 /// `deleting…` marker cannot stay stuck because the daemon was unreachable.
 fn spawn_delete(cmd: WriterCmd, socket: PathBuf, feedback: Option<mpsc::Sender<Event>>) {
   tokio::spawn(async move {
-    let forget = match &cmd {
-      WriterCmd::DeleteModel {
-        files, repo_dir, ..
-      } => files.iter().cloned().chain(repo_dir.clone()).collect(),
-      _ => Vec::new(),
-    };
     let (method, params) = encode_writer_cmd(cmd);
+    // Forget what the daemon removed, not what the popup showed: its fresh plan
+    // can be smaller, and the rows it kept must stay listed.
+    let mut forget = Vec::new();
     let result = match Client::connect(&socket).await {
       Err(e) => Err(format!("writer connect failed: {e}")),
       Ok(mut client) => client
         .call(method, Some(params))
         .await
         .map(|resp| {
+          forget = resp
+            .get("files")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .chain(resp.get("repo_dir"))
+            .filter_map(Value::as_str)
+            .map(PathBuf::from)
+            .collect();
           resp
             .get("message")
             .and_then(Value::as_str)

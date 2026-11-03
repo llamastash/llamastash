@@ -1083,6 +1083,7 @@ async fn favorite_remove_handler(
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct DeleteModelParams {
   path: PathBuf,
   /// Answer with the plan and remove nothing, so the client can show it first.
@@ -1096,6 +1097,7 @@ struct DeleteModelParams {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct DeleteExpect {
   files: Vec<PathBuf>,
   #[serde(default)]
@@ -1530,7 +1532,8 @@ mod tests {
     let dir = crate::test_support::unique_temp_dir("ls-ipc", "del-smaller");
     let model = dir.join("gemma-4-Q4_K_M.gguf");
     let projector = dir.join("mmproj-gemma-4-f16.gguf");
-    for p in [&model, &projector] {
+    let unrelated = dir.join("unrelated.gguf");
+    for p in [&model, &projector, &unrelated] {
       std::fs::write(p, b"GGUF").expect("write model");
     }
     let ctx = ctx();
@@ -1540,12 +1543,35 @@ mod tests {
       &ctx,
       Some(json!({
         "path": model,
-        "expect": { "files": [model, projector] },
+        "expect": { "files": [model, projector, unrelated] },
       })),
     )
     .await
     .expect("a smaller plan runs");
-    assert!(!model.exists() && !projector.exists(), "both went");
+    assert!(!model.exists() && !projector.exists(), "the plan went");
+    assert!(unrelated.exists(), "a shown file outside the plan stays");
+    let _ = std::fs::remove_dir_all(&dir);
+  }
+
+  /// A misspelt `expect` must not read as "no bound" and delete the whole fresh plan.
+  #[tokio::test]
+  async fn delete_model_refuses_unknown_fields() {
+    let dir = crate::test_support::unique_temp_dir("ls-ipc", "del-typo");
+    let model = dir.join("gemma-4-Q4_K_M.gguf");
+    std::fs::write(&model, b"GGUF").expect("write model");
+    let ctx = ctx();
+    ctx.catalog.upsert(row(&model)).await;
+
+    for params in [
+      json!({ "path": model, "expectd": { "files": [model] } }),
+      json!({ "path": model, "expect": { "files": [model], "repo": null } }),
+    ] {
+      let err = delete_model_handler(&ctx, Some(params))
+        .await
+        .expect_err("unknown field");
+      assert_eq!(err.code, ErrorCode::InvalidParams.as_i32());
+    }
+    assert!(model.exists(), "a refusal removes nothing");
     let _ = std::fs::remove_dir_all(&dir);
   }
 

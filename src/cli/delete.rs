@@ -119,7 +119,7 @@ fn confirm(name: &str) -> Result<bool, CliExit> {
     &mut io::stdout(),
     &format!("delete {name}? [y/N] "),
   )
-  .map_err(|e| CliExit::new(DELETE_FAILED, format!("confirm: {e}")))
+  .map_err(|e| CliExit::new(USAGE, format!("confirm: {e}")))
 }
 
 #[cfg(test)]

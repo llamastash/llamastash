@@ -151,8 +151,9 @@ impl Daemon {
     out.status.code().expect("exit code")
   }
 
+  /// Canonical, the form the daemon reports: macOS resolves `/tmp` to `/private/tmp`.
   fn model_path(&self, name: &str) -> PathBuf {
-    self.model_dir.join(name)
+    llamastash::util::paths::canonicalize(self.model_dir.join(name)).expect("model file")
   }
 
   /// Names the catalog still lists, as `list --json` reports them.
