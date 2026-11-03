@@ -860,7 +860,15 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
       // picker rather than the list so the name is asked for once the launch
       // is otherwise ready to go — and so accepting can submit the picker
       // that is already open instead of staging a fresh one.
-      if app.launch_picker.is_some() && !settings_inline_edit_open(app) {
+      if settings_inline_edit_open(app) {
+        return;
+      }
+      // Stage the picker the way a plain `⏎` does: Settings shows an idle
+      // row's form before any picker exists. A running row still needs `e`.
+      if app.launch_picker.is_none() && app.focused_managed().is_none() {
+        app.open_launch_picker();
+      }
+      if app.launch_picker.is_some() {
         app.open_launch_name_dialog();
       }
     }
@@ -5237,6 +5245,30 @@ mod tests {
     pump_input(&mut app, key(KeyCode::Up, KeyModifiers::NONE));
     pump_input(&mut app, key(KeyCode::Up, KeyModifiers::NONE));
     assert_eq!(app.running_view_scroll.get(), 0, "↑ saturates at 0");
+  }
+
+  #[test]
+  fn alt_enter_names_a_launch_from_settings_before_any_picker_exists() {
+    let mut app = App::new(Default::default());
+    app.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    app.go_top();
+    app.focus = Focus::RightPane;
+    app.right_tab = RightTab::Settings;
+    assert!(app.launch_picker.is_none());
+    pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::ALT));
+    assert!(app.launch_name_dialog.is_some());
+    assert!(app.launch_picker.is_some());
+
+    // A running row keeps its read-only view: `e` stages the picker first.
+    let mut running = App::new(Default::default());
+    running.models = vec![fake_model_for_events("/m/qwen.gguf", "/m")];
+    running.managed = vec![ready_managed_for_events("/m/qwen.gguf", 41100)];
+    running.go_top();
+    running.focus = Focus::RightPane;
+    running.right_tab = RightTab::Settings;
+    pump_input(&mut running, key(KeyCode::Enter, KeyModifiers::ALT));
+    assert!(running.launch_name_dialog.is_none());
+    assert!(running.launch_picker.is_none());
   }
 
   #[test]

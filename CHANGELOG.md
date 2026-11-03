@@ -18,6 +18,7 @@
 
 ### Fixed
 
+- `Alt+⏎` in the Settings pane opens the launch-name dialog straight away. It did nothing until an arrow key or a value change had staged the launch picker.
 - `llamastash session` with no model picks the running chat model even when a media launch was started after it. The newest launch won, and the newest was an `stt` or `image` launch, so the command refused with `... is a speech-to-text model` while a real chat model was up.
 - The `requests` aggregates (`Agg tok/s`, `Agg PP tok/s` and their busy time) no longer read a wall-clock step or a resume from suspend as idle time.
 - A knob you set that the resolved backend cannot honour is named in the launch's warnings instead of vanishing from the command line silently.
