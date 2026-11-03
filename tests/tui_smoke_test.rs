@@ -914,32 +914,14 @@ fn narrow_terminal_truncates_long_model_names_with_ellipsis() {
 }
 
 #[test]
-fn the_launch_picker_owns_launch_as_not_the_model_list() {
-  // The model list has exactly one launch key. Naming is asked for on the
-  // picker, once the launch is otherwise ready to go.
+fn alt_enter_asks_for_a_launch_name_from_the_list_or_the_picker() {
   let mut app = App::new(AppOptions::default());
   app.models = vec![fake_model("/m/qwen3.gguf", "/m")];
   app.go_top();
 
+  // From the list, Alt+Enter stages the picker and asks for the name.
   pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::ALT));
-  assert!(
-    app.launch_name_dialog.is_none() && app.launch_picker.is_none(),
-    "Alt+Enter is not a Models-list binding"
-  );
-
-  pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::NONE));
-  assert!(app.launch_picker.is_some(), "Enter opens the launch picker");
-  assert!(
-    app.launch_name_dialog.is_none(),
-    "…and only the picker — a plain Enter never asks for a name"
-  );
-
-  pump_input(&mut app, key(KeyCode::Enter, KeyModifiers::ALT));
-  assert!(
-    app.launch_name_dialog.is_some(),
-    "Alt+Enter on the picker asks for the name"
-  );
-
+  assert!(app.launch_name_dialog.is_some() && app.launch_picker.is_some());
   pump_input(&mut app, key(KeyCode::Esc, KeyModifiers::NONE));
   assert!(
     app.launch_name_dialog.is_none(),
@@ -948,6 +930,24 @@ fn the_launch_picker_owns_launch_as_not_the_model_list() {
   assert!(
     app.launch_picker.is_some(),
     "cancelling the name leaves the picker as it was"
+  );
+
+  let mut picker_first = App::new(AppOptions::default());
+  picker_first.models = vec![fake_model("/m/qwen3.gguf", "/m")];
+  picker_first.go_top();
+  pump_input(&mut picker_first, key(KeyCode::Enter, KeyModifiers::NONE));
+  assert!(
+    picker_first.launch_picker.is_some(),
+    "Enter opens the launch picker"
+  );
+  assert!(
+    picker_first.launch_name_dialog.is_none(),
+    "…and only the picker — a plain Enter never asks for a name"
+  );
+  pump_input(&mut picker_first, key(KeyCode::Enter, KeyModifiers::ALT));
+  assert!(
+    picker_first.launch_name_dialog.is_some(),
+    "Alt+Enter on the picker asks for the name"
   );
 }
 
