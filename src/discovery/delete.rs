@@ -8,7 +8,9 @@
 //! the freed space never shows up.
 //!
 //! The plan is resolved before the confirm prompt so the popup can say what is
-//! about to go and the confirm handler does no fresh discovery.
+//! about to go, and a client sends back what it showed: the daemon re-plans and
+//! refuses when the fresh answer would remove anything the client was not
+//! shown.
 
 use std::fs;
 use std::io;
@@ -66,6 +68,30 @@ impl DeletePlan {
     out.extend(self.mtp_head.as_deref());
     out.extend(self.orphan_companions.iter().map(PathBuf::as_path));
     out
+  }
+
+  /// True when this plan would unlink or remove anything `expected` (the files
+  /// and repo directory a client was shown) did not name. A re-plan may come
+  /// back smaller than what the client saw; anything bigger is a delete nobody
+  /// confirmed.
+  pub fn removes_more_than(
+    &self,
+    expected_files: &[PathBuf],
+    expected_repo_dir: Option<&Path>,
+  ) -> bool {
+    // Taking a repo directory the client was not shown is growth. Losing one is
+    // not: a second model can join the repo while the prompt is open, and the
+    // per-file plan that replaces the whole-directory one removes less.
+    if let Some(repo) = self.hf_repo_dir.as_deref() {
+      if Some(repo) != expected_repo_dir {
+        return true;
+      }
+    }
+    let named: std::collections::HashSet<&Path> =
+      expected_files.iter().map(PathBuf::as_path).collect();
+    self.files().into_iter().any(|file| {
+      !named.contains(file) && !expected_repo_dir.is_some_and(|repo| file.starts_with(repo))
+    })
   }
 
   /// Confirm-popup body: what is going, and why it is more than one file.
@@ -231,39 +257,15 @@ fn download_in_flight(repo_dir: &Path) -> bool {
 }
 
 /// [`plan`] against the live HF cache root, resolving `path` to its catalog
-/// row. A path with no row (the catalog refreshed underneath the cursor)
-/// degrades to a single-file plan rather than refusing.
-pub fn plan_for_path(path: &Path, catalog: &[DiscoveredModel]) -> DeletePlan {
-  let cache_root = crate::init::download::hf_cache_dir().ok();
-  match catalog.iter().find(|m| m.path == path) {
-    Some(target) => plan(target, catalog, cache_root.as_deref()),
-    None => DeletePlan {
-      primary: path.to_path_buf(),
-      cache_root,
-      ..DeletePlan::default()
-    },
-  }
-}
-
-/// What a delete run off the draw thread reports back: the paths to drop from the
-/// list and the daemon's catalog, and the toast text or the error.
-#[derive(Debug)]
-pub struct DeleteOutcome {
-  pub forget: Vec<PathBuf>,
-  pub result: Result<String, String>,
-}
-
-/// [`execute`] for a worker thread.
-pub fn run(plan: &DeletePlan) -> DeleteOutcome {
-  DeleteOutcome {
-    forget: plan
-      .files()
-      .into_iter()
-      .map(Path::to_path_buf)
-      .chain(plan.hf_repo_dir.clone())
-      .collect(),
-    result: execute(plan).map_err(|e| e.to_string()),
-  }
+/// row. `None` when the catalog has no row for it (the catalog refreshed
+/// underneath the cursor): only catalog rows are ever deleted.
+pub fn plan_for_path(path: &Path, catalog: &[DiscoveredModel]) -> Option<DeletePlan> {
+  let target = catalog.iter().find(|m| m.path == path)?;
+  Some(plan(
+    target,
+    catalog,
+    crate::init::download::hf_cache_dir().ok().as_deref(),
+  ))
 }
 
 /// Carry out `plan`, returning a human-readable summary for the toast.
@@ -1450,6 +1452,89 @@ mod tests {
       "the cache root itself is never the directory a delete removes wholesale"
     );
     let _ = fs::remove_dir_all(cache_root.parent().unwrap());
+  }
+
+  /// The guard on the daemon's re-plan: a plan that matches what the client was
+  /// shown removes nothing extra.
+  #[test]
+  fn a_plan_equal_to_what_the_client_was_shown_removes_nothing_more() {
+    let plan = DeletePlan {
+      primary: PathBuf::from("/m/a.gguf"),
+      shards: vec![PathBuf::from("/m/a-2.gguf")],
+      projector: Some(PathBuf::from("/m/mmproj.gguf")),
+      ..DeletePlan::default()
+    };
+    let files: Vec<PathBuf> = plan.files().into_iter().map(Path::to_path_buf).collect();
+    assert!(!plan.removes_more_than(&files, None));
+  }
+
+  /// The repo became the last one in its cache dir while the client was deciding,
+  /// so the fresh plan takes a directory the popup never named.
+  #[test]
+  fn a_plan_that_gained_a_repo_dir_removes_more() {
+    let plan = DeletePlan {
+      primary: PathBuf::from("/m/a.gguf"),
+      hf_repo_dir: Some(PathBuf::from("/cache/models--o--r")),
+      ..DeletePlan::default()
+    };
+    let files: Vec<PathBuf> = plan.files().into_iter().map(Path::to_path_buf).collect();
+    assert!(plan.removes_more_than(&files, None));
+    assert!(
+      plan.removes_more_than(&files, Some(Path::new("/cache/models--o--other"))),
+      "a different repo directory is also more"
+    );
+    assert!(
+      !plan.removes_more_than(&files, Some(Path::new("/cache/models--o--r"))),
+      "and the same one is not"
+    );
+  }
+
+  /// A companion that was paired with a neighbour until that neighbour left.
+  #[test]
+  fn a_plan_that_gained_a_companion_removes_more() {
+    let plan = DeletePlan {
+      primary: PathBuf::from("/m/a.gguf"),
+      projector: Some(PathBuf::from("/m/mmproj.gguf")),
+      ..DeletePlan::default()
+    };
+    assert!(plan.removes_more_than(&[PathBuf::from("/m/a.gguf")], None));
+  }
+
+  /// A smaller answer is fine: a companion the client was shown turned out to be
+  /// paired after all, so the fresh plan leaves it.
+  #[test]
+  fn a_plan_smaller_than_what_the_client_was_shown_removes_nothing_more() {
+    let plan = DeletePlan::single("/m/a.gguf");
+    let files = vec![PathBuf::from("/m/a.gguf"), PathBuf::from("/m/mmproj.gguf")];
+    assert!(!plan.removes_more_than(&files, None));
+  }
+
+  /// Another model left the cache repo while the client was deciding, so the
+  /// fresh plan names single files inside the directory that was shown instead
+  /// of the whole directory. That is less, not more.
+  #[test]
+  fn a_plan_that_lost_its_repo_dir_removes_nothing_more() {
+    let plan = DeletePlan {
+      primary: PathBuf::from("/cache/models--o--r/snapshots/rev/a.gguf"),
+      ..DeletePlan::default()
+    };
+    let files = vec![PathBuf::from("/cache/models--o--r/snapshots/rev/a.gguf")];
+    assert!(
+      !plan.removes_more_than(&files, Some(Path::new("/cache/models--o--r"))),
+      "a file inside the directory that was shown was already shown"
+    );
+  }
+
+  /// Losing the repo directory only reads as smaller while the files it now
+  /// names sit inside what the client was shown.
+  #[test]
+  fn a_plan_that_lost_its_repo_dir_but_names_a_foreign_file_removes_more() {
+    let plan = DeletePlan {
+      primary: PathBuf::from("/elsewhere/a.gguf"),
+      ..DeletePlan::default()
+    };
+    let files = vec![PathBuf::from("/cache/models--o--r/snapshots/rev/a.gguf")];
+    assert!(plan.removes_more_than(&files, Some(Path::new("/cache/models--o--r"))));
   }
 
   fn symlink_or_copy(target: &Path, link: &Path) {

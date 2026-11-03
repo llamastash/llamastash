@@ -152,11 +152,11 @@ The model list columns and hint chips both carry **priority ranks** rather than 
 
 ### Subcommands cover every TUI capability
 
-`list`, `start`, `stop`, `status`, `logs`, `requests`, `presets`, `favorites`, `last-params`, `daemon`, `init`, `doctor`, `pull`, `recommend` — see [`docs/usage.md` § Subcommands](docs/usage.md#subcommands) for the full reference. Every read+mutation command supports `--json` as the agent contract. `--no-spawn` opts out of daemon auto-spawn for scripts that want to fail fast.
+`list`, `start`, `stop`, `delete`, `status`, `logs`, `requests`, `presets`, `favorites`, `last-params`, `daemon`, `init`, `doctor`, `pull`, `recommend` — see [`docs/usage.md` § Subcommands](docs/usage.md#subcommands) for the full reference. Every read+mutation command supports `--json` as the agent contract. `--no-spawn` opts out of daemon auto-spawn for scripts that want to fail fast.
 
 ### Documented exit codes per failure class
 
-`66` for ambiguous model reference, `67` for launch failure, `69` for `pull` failure, `70` for missing `llama-server`, `72`/`73`/`74` for init phases. Pin against numbers, not message text — see [`docs/usage.md` § Exit codes](docs/usage.md#exit-codes) for the full table.
+`66` for ambiguous model reference, `67` for launch failure, `69` for `pull` failure, `70` for missing `llama-server`, `72`/`73`/`74` for init phases, `75` for a delete that did not happen. Pin against numbers, not message text — see [`docs/usage.md` § Exit codes](docs/usage.md#exit-codes) for the full table.
 
 ### Colored TTY output, byte-stable TSV when piped
 

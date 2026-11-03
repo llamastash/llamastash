@@ -14,6 +14,7 @@ pub(crate) mod colors;
 pub mod completions;
 pub mod config;
 pub mod daemon;
+pub mod delete;
 pub mod doctor;
 pub mod exit_codes;
 pub mod favorites;
@@ -118,6 +119,7 @@ pub async fn dispatch(mut cli: Cli, config: LoadedConfig) -> Result<i32> {
     Some(Command::List(args)) => list::handle(args, &cli, resolved_config).await,
     Some(Command::Start(args)) => start::handle(args, &cli, resolved_config).await,
     Some(Command::Stop(args)) => stop::handle(args, &cli, resolved_config).await,
+    Some(Command::Delete(args)) => delete::handle(args, &cli, resolved_config).await,
     Some(Command::Status(args)) => status::handle(args, &cli, resolved_config).await,
     Some(Command::Logs(args)) => logs::handle(args, &cli, resolved_config).await,
     Some(Command::Requests(args)) => requests::handle(args, &cli, resolved_config).await,

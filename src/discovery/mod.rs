@@ -16,6 +16,7 @@
 //! future safetensors engine adopts via a predicate + projection only.
 
 pub mod catalog;
+pub mod delete;
 pub mod hf_repos;
 pub mod known_caches;
 pub mod lm_studio;

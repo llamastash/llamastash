@@ -9,7 +9,7 @@
 //! caller intent and observed outcome is the trap this TTY guard
 //! closes.
 
-use std::io::{self, IsTerminal, Read, Write};
+use std::io::{self, IsTerminal, Read};
 
 use crate::cli::cli_args::{Cli, StopArgs};
 use crate::cli::client::connect_or_spawn;
@@ -319,17 +319,14 @@ fn confirm_or_refuse(models: &[RunningRow]) -> Result<bool, CliExit> {
 /// Pure-stdin version of `confirm_or_refuse` so tests can drive both
 /// branches without touching the real `stdin`.
 pub(crate) fn confirm_from<R: Read>(input: &mut R, models: &[RunningRow]) -> Result<bool, CliExit> {
-  print!("stop {n} managed launch(es)? [y/N] ", n = models.len());
-  io::stdout()
-    .flush()
-    .map_err(|e| CliExit::new(STOP_FAILED, format!("flush stdout: {e}")))?;
-  let mut buf = String::new();
-  let mut reader = io::BufReader::new(input);
-  reader
-    .read_to_string(&mut buf)
-    .map_err(|e| CliExit::new(STOP_FAILED, format!("read stdin: {e}")))?;
-  let answer = buf.trim().to_lowercase();
-  Ok(matches!(answer.as_str(), "y" | "yes"))
+  crate::cli::picker::confirm_line(input, &mut io::stdout(), &stop_prompt(models))
+    .map_err(|e| CliExit::new(STOP_FAILED, format!("confirm: {e}")))
+}
+
+/// The question `stop --all` asks. Its own function so the test can pin the
+/// wording the shared reader prints.
+fn stop_prompt(models: &[RunningRow]) -> String {
+  format!("stop {} managed launch(es)? [y/N] ", models.len())
 }
 
 #[cfg(test)]
@@ -443,6 +440,23 @@ mod tests {
     assert!(resolve_external_named(&rows, "coder")
       .expect("no ambiguity")
       .is_none());
+  }
+
+  /// The prompt text is part of what `stop --all` prints, and the shared reader
+  /// could reword it without any test above noticing.
+  #[test]
+  fn confirm_prints_the_stop_all_question() {
+    let mut out = Vec::new();
+    crate::cli::picker::confirm_line(
+      &mut std::io::Cursor::new(b"n\n"),
+      &mut out,
+      &stop_prompt(&dummy_rows()),
+    )
+    .expect("read");
+    assert_eq!(
+      String::from_utf8(out).expect("utf8"),
+      "stop 1 managed launch(es)? [y/N] "
+    );
   }
 
   #[test]

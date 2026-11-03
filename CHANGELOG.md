@@ -2,6 +2,7 @@
 
 ### Added
 
+- `llamastash delete <model-ref>` removes a model's files through the daemon, with the same plan the TUI's `Ctrl+D` shows: prompts on a TTY, refuses without `--yes` anywhere else, `--json`, and exit `75` when the delete does not happen. Plan: [`docs/plans/2026-11-01-001-feat-cli-delete-plan.md`](docs/plans/2026-11-01-001-feat-cli-delete-plan.md).
 - `llamastash bench <model-ref> [--preset a,b]` gives load time, context, token counts, prompt-processing speed, generation speed and time to first token per preset, read from the same numbers `llamastash requests` reports, so a knob change can be compared without the maintainer scripts in `scripts/bench/`. Plan: [`docs/plans/2026-10-31-001-feat-cli-bench-plan.md`](docs/plans/2026-10-31-001-feat-cli-bench-plan.md).
 - The HuggingFace pull dialog opens on the models the recommender ranks for this hardware instead of an empty search box: the same list `init` and `llamastash recommend` offer, in the search table's columns with the recommended quant and a fit mark, under a note saying what they are, with Enter opening the entry's GGUF repo at the recommended quant. The dialog also fetches the daily benchmark snapshot `init` ranks against (once per session, skipped offline) and re-ranks when it lands, so the two lists stop disagreeing because the bundled snapshot lags. Plan: [`docs/plans/2026-10-30-001-feat-tui-pull-recommended-models-plan.md`](docs/plans/2026-10-30-001-feat-tui-pull-recommended-models-plan.md).
 
@@ -14,6 +15,7 @@
 - `llamastash start <model>` waits for a freshly started daemon's first catalog scan instead of failing with `no model matches ... (0 known)` on a model that is on disk.
 - A launch of a declared `stt` / `image` / `tts` entry prints that mode in the `status` launch table (`mode_hint` in `status --json`) instead of `chat`, the routing-only mode that changes nothing about the launch.
 - The media docs say a second engine declaring one mode costs the bare OpenAI names, and that `proxy.aliases` settles it.
+- Deleting a model runs in the daemon: the TUI's `Ctrl+D` and `llamastash delete` both call the new `delete_model` IPC method, which re-plans and refuses anything past what the client was shown, and `forget_models` is gone.
 - `init` and `recommend --json` report each recommendation's numbers as a `facts` object (`params`, `quant`, `peak_bytes`, `host_total`, `bench`, `spill_percent`) instead of a pre-rendered `justification` string; the one-line prose is rendered from it, as are the TUI's columns.
 - On a host whose sampler found several GPU backends (`multi`), the pull dialog reads the hardware from its NVIDIA or AMD card instead of treating the host as having no usable GPU, so hybrid laptops get per-file fit marks and recommendations too.
 

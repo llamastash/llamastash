@@ -7,7 +7,7 @@
 //! The cliclack call itself runs inside `spawn_blocking` because the underlying
 //! terminal reads are sync.
 
-use std::io::IsTerminal;
+use std::io::{self, BufRead, IsTerminal, Read, Write};
 
 use crate::cli::exit_codes::{CliExit, MODEL_NOT_FOUND, USAGE};
 use crate::cli::resolve::{CatalogRow, RunningRow};
@@ -37,6 +37,23 @@ impl PromptError {
 /// Whether a picker may be offered at all: a TTY to draw on and no `--json`.
 pub fn interactive(json: bool) -> bool {
   !json && std::io::stdin().is_terminal()
+}
+
+/// Print `question` and read one line, answering whether the caller said yes.
+/// The one stdin reader behind every `[y/N]` prompt, so the destructive verbs
+/// parse the same answer. Anything but a bare `y`/`yes` declines.
+pub(crate) fn confirm_line<R: Read, W: Write>(
+  input: &mut R,
+  out: &mut W,
+  question: &str,
+) -> io::Result<bool> {
+  write!(out, "{question}")?;
+  out.flush()?;
+  let mut buf = String::new();
+  // One line, not the whole stream: a terminal stays open after the answer, and
+  // reading to EOF there waits for a second Enter nobody is going to press.
+  io::BufReader::new(input).read_line(&mut buf)?;
+  Ok(matches!(buf.trim().to_lowercase().as_str(), "y" | "yes"))
 }
 
 /// Refuse the picker up front when the caller can't drive it. `session` words
@@ -153,6 +170,8 @@ fn catalog_hint(r: &CatalogRow) -> String {
 
 #[cfg(test)]
 mod tests {
+  use std::io::Cursor;
+
   use super::*;
 
   #[test]
@@ -176,5 +195,69 @@ mod tests {
   #[test]
   fn json_rules_out_a_picker_even_on_a_tty() {
     assert!(!interactive(true));
+  }
+
+  /// `y` and `yes` in any case confirm; everything else, including an EOF with
+  /// nothing on it, declines.
+  #[test]
+  fn confirm_line_reads_y_yes_and_nothing_else() {
+    for answer in ["y\n", "YES\n", " Y "] {
+      let mut out = Vec::new();
+      assert!(
+        confirm_line(&mut Cursor::new(answer.as_bytes()), &mut out, "go? [y/N] ").expect("read"),
+        "`{answer}` should confirm"
+      );
+    }
+    for answer in ["", "\n", "n\n", "No\n", "maybe\n"] {
+      let mut out = Vec::new();
+      assert!(
+        !confirm_line(&mut Cursor::new(answer.as_bytes()), &mut out, "go? [y/N] ").expect("read"),
+        "`{answer}` should decline"
+      );
+    }
+  }
+
+  /// A terminal hands over one line and stays open, so the reader has to stop at
+  /// the newline. This reader hands over "y\n" and then refuses to give anything
+  /// else, which is what waiting for EOF would do to a real prompt.
+  #[test]
+  fn confirm_line_stops_at_the_first_line() {
+    struct OneLineOnly(&'static [u8]);
+    impl Read for OneLineOnly {
+      fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.0.is_empty() {
+          return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "the terminal is still open",
+          ));
+        }
+        let n = self.0.len().min(buf.len());
+        buf[..n].copy_from_slice(&self.0[..n]);
+        self.0 = &self.0[n..];
+        Ok(n)
+      }
+    }
+    let mut out = Vec::new();
+    assert!(
+      confirm_line(&mut OneLineOnly(b"y\n"), &mut out, "go? [y/N] ").expect("reads one line"),
+      "a typed y confirms without waiting for the end of input"
+    );
+  }
+
+  /// The question is what the caller sees, so a shared reader cannot quietly
+  /// reword one verb's prompt.
+  #[test]
+  fn confirm_line_prints_the_question_it_is_given() {
+    let mut out = Vec::new();
+    confirm_line(
+      &mut Cursor::new(b"y\n"),
+      &mut out,
+      "stop 3 managed launch(es)? [y/N] ",
+    )
+    .expect("read");
+    assert_eq!(
+      String::from_utf8(out).expect("utf8"),
+      "stop 3 managed launch(es)? [y/N] "
+    );
   }
 }

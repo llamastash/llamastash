@@ -149,7 +149,7 @@ mod tests {
       ConfirmAction::KillDaemon,
       ConfirmAction::RestartDaemon,
       ConfirmAction::DeleteModel {
-        plan: Box::new(crate::tui::delete::DeletePlan::single("/m/x.gguf")),
+        plan: Box::new(crate::discovery::delete::DeletePlan::single("/m/x.gguf")),
         display_name: "x".into(),
       },
       ConfirmAction::CancelDownload {

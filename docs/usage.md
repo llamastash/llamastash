@@ -530,6 +530,22 @@ llamastash stop <target>     # exit 68 on failure, 66 on no match
 llamastash stop --all [-y]   # confirms unless -y is set
 ```
 
+### `llamastash delete <model-ref>`
+
+Remove one model's files from disk. The daemon plans the removal and runs it, so what goes is what `Ctrl+D` would show in the TUI (see [§ Deleting a model](#deleting-a-model)): split shards, an unpaired `mmproj-*.gguf` projector, a separate `mtp-*.gguf` draft head, the HuggingFace blobs behind the snapshot symlinks, and the whole `models--<owner>--<repo>` directory when the row is the last model in it. `<model-ref>` resolves the way `start` resolves one; a reference that matches zero or several models exits `66`.
+
+```
+llamastash delete qwen          # shows the plan, asks [y/N]
+llamastash delete qwen --yes    # deletes without asking
+llamastash delete qwen --yes --json
+```
+
+On a TTY without `--yes` it prints the daemon's plan — the description plus every file — and asks `[y/N]`. Declining prints `delete: cancelled` and exits `0`. With no terminal, or with `--json`, it refuses with `64` rather than prompt into a pipe, the same rule `stop --all` follows. `--yes` skips the plan and the prompt, so whatever the catalog says now is what goes.
+
+The daemon refuses, removing nothing, for a path that is not one of its catalog rows, a config- or backend-declared row with no file of its own, a file a launch still holds (any state but stopped, an external `llama-server` included), and a plan that has grown past what the client was shown. A refusal or a failed removal exits `75`.
+
+`--json` success: `{ "deleted": true, "path", "files", "repo_dir", "message" }`.
+
 ### `llamastash status [target]`
 
 Snapshot of daemon health, managed launches, external (unmanaged) `llama-server` processes, and the GPU backend. `--json` mirrors the daemon's `status` IPC shape and adds a `daemon` block:
@@ -2036,6 +2052,7 @@ Source of truth: `src/cli/exit_codes.rs`. Codes are part of the public CLI contr
 | `72` | `INIT_ABORTED`         | `init` aborted before smoke — integrity check failed, archive defenses tripped, user declined confirm, or non-TTY config step without explicit consent |
 | `73` | `INIT_DOWNLOAD_FAILED` | `init`'s model-download step failed (distinct from `PULL_FAILED` so agents branch on cause)                                                            |
 | `74` | `INIT_SMOKE_FAILED`    | `init`'s smoke phase failed (binary doesn't run cleanly under `--version`)                                                                             |
+| `75` | `DELETE_FAILED`        | `delete` did not remove the model: the daemon refused it (not a catalog row, a launch still holds the file, the plan grew past what was shown) or the removal itself failed. A refusal removes nothing. |
 
 `doctor` always exits `0` — severity lives in the findings array.
 
@@ -2084,11 +2101,11 @@ These are the defaults. Override any binding via the `keybindings:` block in `co
 | The shared-store file behind that blob   | When huggingface_hub (1.32.0+) keeps one shared copy per file (`<cache>/blobs/<xx>/<hash>`, marked by `.huggingface-shared-blobs`) and the repo blob links to it. It goes once its `.refs` lists no other repo still linking it, under its `.lock`, as `hf` does. Anything the sweep cannot check keeps the file: a `.refs` that is missing or unreadable, a listed reference it cannot read, a line outside the cache-relative contract, or a `.lock` another process still holds after half a second. The log says which. |
 | The whole `models--<owner>--<repo>` dir | Only when the row is the **last** model in that repo and nothing is being downloaded into it — then every revision, ref and blob goes, shared-store files included under the rule above. A repo holding a second quant takes the per-file path instead, so the survivor keeps its bytes. |
 
-The delete runs on a background worker, so removing a multi-GB model does not freeze the UI. The row shows a muted `deleting…` marker until it finishes, `Ctrl+D` refuses a second delete meanwhile, and the first `q` asks again before quitting. The row then leaves the list at once: the TUI tells the daemon (`forget_models`), which drops it and asks for a rescan, instead of waiting for the 5-minute rescan that catches a change deep inside an HF repo.
+The delete runs in the daemon (`delete_model`), so removing a multi-GB model does not freeze the UI. The row shows a muted `deleting…` marker until the reply comes back, `Ctrl+D` refuses a second delete meanwhile, and the first `q` asks again before quitting. The row then leaves the list at once: the daemon drops it and asks for a rescan, instead of waiting for the 5-minute rescan that catches a change deep inside an HF repo.
 
 An HF-shaped tree that is *not* under the configured cache root (an rsynced backup, a restored archive) never gets the recursive removal — it falls back to per-file unlinking. So does a cache root that is itself named `models--…`.
 
-Refusals: a running, loading or errored launch (stop it first) and a row with no local file to unlink (a `backend.generic` entry or a backend registry row). They are asked again when you confirm, for the model the popup named, so a launch that started while the popup was open still blocks. A repo with a half-written part under `blobs/` (a pull from this TUI or another client) is not removed wholesale; if a pull starts after the popup opens, the delete fails with a toast and removes nothing.
+Refusals: a running, loading or errored launch (stop it first) and a row with no local file to unlink (a `backend.generic` entry or a backend registry row). They are asked again when you confirm, for the model the popup named, so a launch that started while the popup was open still blocks. The daemon checks them again before it removes anything, and re-plans against its own catalog: if the fresh plan would take more than the popup named, the delete refuses and nothing goes, so a companion or a whole cache repo that only became part of the deal while you were reading the popup is never removed unasked. A repo with a half-written part under `blobs/` (a pull from this TUI or another client) is not removed wholesale; if a pull starts after the popup opens, the delete fails with a toast and removes nothing.
 
 ### Terminal bell (on by default)
 

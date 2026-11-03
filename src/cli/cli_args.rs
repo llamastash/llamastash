@@ -211,6 +211,13 @@ pub enum Command {
   Start(StartArgs),
   /// Stop a running model.
   Stop(StopArgs),
+  /// Delete a model's files from disk.
+  ///
+  /// The daemon does the removal, so the shards, projector, draft head and
+  /// HuggingFace blobs a model really spans go with it. Without `--yes` it shows
+  /// that plan on a TTY and asks. With `--yes`, or wherever stdin is not a
+  /// terminal, nothing is shown first.
+  Delete(DeleteArgs),
   /// Show daemon and running-model status.
   Status(StatusArgs),
   /// Tail or follow a running model's log.
@@ -663,6 +670,23 @@ pub struct StopArgs {
   /// Emit JSON instead of human-readable success prose. Stable
   /// shape: `{ "stopped": [...], "count": N }` for `--all`, a
   /// single-row object for one-shot stop.
+  #[arg(long)]
+  pub json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct DeleteArgs {
+  /// Model reference: substring of name, absolute path, or canonical model id.
+  /// Same matcher `start` and `/v1/...` use, so any name that works on one
+  /// surface works here. A reference that matches zero or several models is an
+  /// error, never a guess.
+  pub model: String,
+  /// Delete without showing the plan or asking.
+  #[arg(short, long)]
+  pub yes: bool,
+  /// Emit JSON instead of human-readable prose. Stable shape:
+  /// `{ "deleted": true, "path", "files", "repo_dir", "message" }`. Refuses
+  /// without `--yes` rather than prompt into a pipe.
   #[arg(long)]
   pub json: bool,
 }
@@ -2365,6 +2389,31 @@ mod tests {
       }
       other => panic!("expected Start, got {other:?}"),
     }
+  }
+
+  /// `delete` takes one reference and two flags, and nothing else.
+  #[test]
+  fn delete_takes_a_model_yes_and_json() {
+    match parse(&["delete", "qwen", "--yes", "--json"]).command {
+      Some(Command::Delete(args)) => {
+        assert_eq!(args.model, "qwen");
+        assert!(args.yes && args.json);
+      }
+      other => panic!("expected Delete, got {other:?}"),
+    }
+    match parse(&["delete", "qwen", "-y"]).command {
+      Some(Command::Delete(args)) => assert!(args.yes && !args.json),
+      other => panic!("expected Delete, got {other:?}"),
+    }
+    let bare = parse(&["delete", "/m/qwen.gguf"]);
+    match bare.command {
+      Some(Command::Delete(args)) => assert_eq!(args.model, "/m/qwen.gguf"),
+      other => panic!("expected Delete, got {other:?}"),
+    }
+    assert!(
+      Cli::try_parse_from(["llamastash", "delete"]).is_err(),
+      "a delete without a model is a usage error"
+    );
   }
 
   #[test]
