@@ -75,6 +75,24 @@ fn upsert_leaf(source: &str, path: &[&str], leaf: &Leaf<'_>) -> Result<String, W
   let doc = Document::new(source.to_string()).map_err(|e| WriteError::Patch(e.to_string()))?;
   let root = parse(source, Path::new("config.yaml"))?;
 
+  // Appending block lines after a flow root creates a second YAML document.
+  if let Ok(top) = doc.top_feature() {
+    if top.kind() != FeatureKind::BlockMapping {
+      if is_vacant(&root) {
+        return Ok(replace_span(
+          source,
+          top.location.byte_span,
+          &render_chain(path, leaf, 0)?,
+        ));
+      }
+      return Err(if root.is_mapping() {
+        flow_err("document root")
+      } else {
+        scalar_err("document root")
+      });
+    }
+  }
+
   // Deepest existing prefix: `i` leading segments of `path` that resolve.
   let mut i = 0usize;
   {
@@ -463,7 +481,7 @@ fn guard_ancestors_block(doc: &Document, path: &[&str], i: usize) -> Result<(), 
 
 fn flow_err(key: &str) -> WriteError {
   WriteError::Patch(format!(
-    "config key `{key}` uses flow / non-block style; edit it by hand or convert it to block style before writing there"
+    "convert `{key}` to block YAML before saving; non-empty flow mappings are not editable here"
   ))
 }
 
@@ -588,6 +606,9 @@ pub(crate) fn read_source(path: &Path) -> Result<String, WriteError> {
 /// Atomically write `body` to `path` (mode 0600), via the shared
 /// [`crate::util::atomic_write::write_secure`] guards.
 pub(crate) fn write_config(path: &Path, body: &str) -> Result<(), WriteError> {
+  // Validate the complete splice before the atomic rename can replace a config.
+  yaml_serde::from_str::<YamlValue>(body)
+    .map_err(|e| WriteError::Patch(format!("edited config is invalid YAML: {e}")))?;
   if let Some(parent) = path.parent() {
     std::fs::create_dir_all(parent).map_err(|e| WriteError::Io {
       path: parent.to_path_buf(),
@@ -615,6 +636,18 @@ mod tests {
 
   fn parse_ok(s: &str) -> YamlValue {
     yaml_serde::from_str(s).expect("valid yaml")
+  }
+
+  #[test]
+  fn invalid_splice_is_rejected_before_replacing_the_config() {
+    let dir = crate::util::test_temp::unique_temp_dir("invalid-config-splice");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.yaml");
+    let original = "theme: latte\n";
+    std::fs::write(&path, original).unwrap();
+    assert!(write_config(&path, "{}\ndaemon:\n  unified_memory_reserve_percent: 10\n").is_err());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    std::fs::remove_dir_all(dir).unwrap();
   }
 
   #[test]

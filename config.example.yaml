@@ -184,6 +184,13 @@ daemon:
   # tick would spin the sampler.
   metrics_interval_secs: 1
 
+  # Additional headroom on detected unified-memory hosts, after GPU pool caps.
+  # auto retains 25% on Apple Silicon and 0% on other UMA; or set integer 0..99.
+  # Discrete GPU/CPU-only hosts are unchanged. Engine safety reserves and
+  # in-flight reservations remain separate, including when this is 0.
+  # TUI m edits this live; hand-edits require a daemon restart.
+  unified_memory_reserve_percent: auto
+
   # Models to start when the daemon comes up — the always-warm list (an
   # embedder a script hits every minute, the one coding model you open
   # first). Each entry is a `list` name or path, a `<model>@<preset>`
@@ -829,6 +836,7 @@ keybindings:
   focus_settings_tab: S
   focus_requests_tab: Q # i.e. shift+q, the `q` underlined in the tab label; R is Rerank
   open_hf_dialog: P # i.e. shift+p — "Pull"
+  open_memory_reserve: m # Unified memory reserve; default alias: alt+m
 
   # ── Models list local actions ─────────────────────────────
   open_filter: "/"

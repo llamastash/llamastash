@@ -857,6 +857,7 @@ pub fn status_json(snap: &StatusSnapshot) -> Value {
       // Boot preload as configured, mirrored verbatim; omitted against an
       // older daemon that doesn't surface it.
       "preload": d.preload,
+      "memory": d.memory,
     })
   });
   let mut body = serde_json::json!({
@@ -1495,6 +1496,7 @@ mod tests {
         build: None,
         server_path: None,
         ipc_url: None,
+        memory: None,
         preload: None,
       }),
       proxy: Value::Null,
@@ -1523,6 +1525,7 @@ mod tests {
         build: None,
         server_path: None,
         ipc_url: None,
+        memory: None,
         preload: None,
       }),
       proxy: Value::Null,
@@ -1551,6 +1554,7 @@ mod tests {
       build: None,
       server_path: None,
       ipc_url: None,
+      memory: None,
       preload: None,
     };
     let listening = StatusSnapshot {
@@ -1701,6 +1705,7 @@ mod tests {
         build: Some("0.1.0".into()),
         server_path: Some("/usr/bin/llama-server".into()),
         ipc_url: Some("http://127.0.0.1:48134".into()),
+        memory: None,
         preload: Some(serde_json::json!({"entries": ["warm.gguf"], "presets": 1})),
       }),
       proxy: Value::Null,
@@ -2178,6 +2183,7 @@ mod tests {
         build: None,
         server_path: None,
         ipc_url: None,
+        memory: None,
         preload: None,
       }),
       proxy: proxy_value("disabled", None, None),
@@ -2207,6 +2213,7 @@ mod tests {
         build: None,
         server_path: None,
         ipc_url: None,
+        memory: None,
         preload: None,
       }),
       proxy: proxy_value("listening", Some("127.0.0.1:11434"), None),
@@ -2236,6 +2243,7 @@ mod tests {
         build: None,
         server_path: None,
         ipc_url: None,
+        memory: None,
         preload: None,
       }),
       proxy: proxy_value("port_in_use", Some("127.0.0.1:11434"), None),
@@ -2371,6 +2379,7 @@ mod tests {
         build: None,
         server_path: None,
         ipc_url: None,
+        memory: None,
         preload: None,
       }),
       proxy: proxy_value("unbound", Some("127.0.0.1:80"), Some("permission denied")),

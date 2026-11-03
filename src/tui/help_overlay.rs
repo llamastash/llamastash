@@ -603,13 +603,13 @@ mod tests {
     let mut app = App::new(AppOptions::default());
     let top = render_to_string(140, 16, &app);
     assert!(
-      !top.contains("unified memory"),
+      !top.contains("MEM*"),
       "legend should be below the fold at scroll=0:\n{top}"
     );
     app.help_scroll = 200;
     let bottom = render_to_string(140, 16, &app);
     assert!(
-      bottom.contains("unified memory"),
+      bottom.contains("MEM*") && bottom.contains("unified memory"),
       "scrolling down must reveal the legend:\n{bottom}"
     );
   }

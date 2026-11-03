@@ -192,6 +192,7 @@ Bare letters are for tool actions (`f` favorite, `e` edit, `u/c/p` yank, `t` the
 | `clear_filter`                          | `Esc`                             | Filter input                                                                       |
 | `toggle_favorite`                       | `f`                               | List                                                                               |
 | `open_launch_picker`                    | `Enter`                           | List                                                                               |
+| `open_memory_reserve` | `m` · `alt+m` | Nav focuses — unified-memory reserve editor |
 | `open_hf_dialog`                        | `shift+p`                         | List — "Pull" mnemonic                                                             |
 | `submit`                                | `Enter`                           | Filter, right pane, embed, rerank, confirm popup, HF dialog                        |
 | `cancel`                                | `Esc`                             | Confirm popup, HF dialog                                                           |
@@ -443,6 +444,62 @@ Validation is stricter than `config.yaml`'s, because a hand-authored file has no
 The last three rows are the deliberate difference from `config.yaml`, where each of them is dropped with a line in the daemon's log file and the launch goes ahead without it. A misspelled `backend:` is the worst of the set: it silently picks a different engine and still reports success. Only the selected entry is checked — a typo in an entry you didn't launch stays silent, though a bad field on the `default:` / `entries:` block itself is always caught.
 
 YAML merge keys work: `<<: *base` is expanded before the file is validated or parsed, so a shared anchor contributes its knobs to the entry that merges it, and a typo riding in through an anchor is caught like any other. Merges are shallow, per key, as YAML defines them — an entry with its own `knobs:` map replaces the anchor's rather than extending it.
+
+#### Memory reserve on unified-memory hosts
+
+`daemon.unified_memory_reserve_percent` controls additional admission headroom
+on detected unified-memory (UMA) hosts. The default, `auto`, preserves the
+existing policy: **25% on Apple Silicon**, **0% additional reserve on other
+UMA hosts**, including AMD/Intel integrated GPUs and NVIDIA coherent UMA.
+An integer **0–99** overrides that percentage. Discrete GPU and CPU-only hosts
+are unaffected.
+
+The percentage is taken from the available **pool**, after existing GPU limits
+have been applied. For example, 40 GiB available with a 10% reserve gives a
+36 GiB admission budget. On a GTT-limited host, 80 GiB of available RAM but only
+20 GiB of available GTT gives an 18 GiB budget at 10%. Existing applications
+are already counted as used. This headroom is a policy margin, not a change to
+the driver's allocation ceiling.
+
+From the Models list or right pane, **m** opens the memory reserve editor.
+Enter `auto` to restore the platform default, or a whole percentage from 0 to
+99. The highlighted field previews available pool memory, additional reserve,
+and admission budget. Invalid input leaves the estimate blank. Enter saves;
+Esc cancels (both follow the configured bindings). Saves preserve config
+comments and apply to future CLI, TUI, and proxy launches immediately, without
+restarting the daemon or its running models. A failed save leaves the live
+policy unchanged. An empty `{}` config is expanded to block style on save;
+non-empty flow mappings must be converted to block style before editing there.
+The modal ignores background mouse clicks and scrolls while editing or saving.
+Recent failed auto-starts can still be in the normal proxy
+retry cooldown; saving does not clear it.
+
+**Alt+M** remains an alias. In macOS Terminal, it requires
+[Use Option as Meta key](https://support.apple.com/guide/terminal/trmlkbrd/mac);
+plain **m** needs no terminal change. Neither captures text typed into a filter
+or chat input. The editor is unavailable without compatible daemon policy data
+or on a host not detected as UMA. If policy support disappears after opening,
+the editor closes; an in-flight save waits for its acknowledgment first.
+
+```yaml
+daemon:
+  unified_memory_reserve_percent: auto # or an integer 0..99
+```
+
+Hand-editing the key requires a daemon restart. `0` removes only this additional
+percentage: engine cache/OS reserves (including the vLLM and SGLang guards),
+compute overhead, demand checks, and in-flight reservations remain in effect.
+The preview is host-wide and precedes per-launch demand and reservations. In an
+AMD LXC container, a fully GPU-resident launch can use the separate GTT-only
+budget; launches with CPU-side weights retain the RAM/GTT minimum. Reducing
+headroom does not guarantee a launch fits. Observe memory pressure and swap.
+
+**Development-build rename:** the unmerged Apple-only feature used
+`daemon.apple_memory_reserve_percent`. Rename that key to
+`daemon.unified_memory_reserve_percent`, keeping its numeric value (for example,
+`1` stays `1`). There is no legacy alias. Omit the key or use `auto` to restore
+the platform default. Installations still running the Apple-only build must
+keep the old key until upgrading.
 
 #### `--force` (launch through an admission refusal)
 
@@ -2006,6 +2063,7 @@ These are the defaults. Override any binding via the `keybindings:` block in `co
 | `Enter`                                       | On an idle model: open the launch picker. On a model that is running: focus the right pane on its first tab (`Requests`), with no picker staged                                                                                                              |
 | `u` / `c` / `p`                               | Yank URL / curl / model path. `y` is a vi-style alias for `c`.                                                                                                                                           |
 | `t` / `Shift+T`                               | Cycle theme forward / backward                                                                                                                                                                           |
+| `m` · `Alt+M` | Edit unified-memory headroom with a live budget preview; saves to `daemon.unified_memory_reserve_percent`. |
 | `Alt+L` (`⌥L` on macOS)                       | Cycle the left/right pane split through `left_pane_ratios` (wide mode; session-only). `100` hides the right pane, `0` hides the list.                                                                    |
 | `Tab` / `Shift+Tab`                           | Move focus across panes (`h` / `l` do the same — Left/Right arrows are intentionally unbound on Models to avoid an asymmetric pane-jump)                                                                 |
 | `Shift+M` / `Shift+L` / `Shift+C` / `Shift+S` / `Shift+Q` | Jump focus to Models / Logs / Chat / Settings / Requests respectively. `L` and `C` only fire when the focused model is running, `Q` when it has a launch.                                    |
