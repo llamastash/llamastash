@@ -47,18 +47,6 @@ struct GlobalChip {
 /// display order): `pull` survives longest, then `help`, `quit`,
 /// `panes`, `theme`, and `scroll` drops first.
 const GLOBAL_CHIPS: &[GlobalChip] = &[
-  GlobalChip {
-    description: "memory",
-    focus: Focus::List,
-    actions: &[Action::OpenMemoryReserve],
-    rank: 45,
-    visible: Some(|app| {
-      app
-        .memory_budget
-        .as_ref()
-        .is_some_and(|budget| budget.supports_editing())
-    }),
-  },
   // Surface the HF pull dialog opener first so first-time users see
   // the affordance without opening the help overlay. `OpenHfDialog`
   // is a global (`FocusSet::NAV`) binding — it fires from the model
@@ -100,6 +88,18 @@ const GLOBAL_CHIPS: &[GlobalChip] = &[
     actions: &[Action::MoveUp, Action::MoveDown],
     rank: 60,
     visible: None,
+  },
+  GlobalChip {
+    description: "memory",
+    focus: Focus::List,
+    actions: &[Action::OpenMemoryReserve],
+    rank: 45,
+    visible: Some(|app| {
+      app
+        .memory_budget
+        .as_ref()
+        .is_some_and(|budget| budget.supports_editing())
+    }),
   },
   // RestartDaemon (Ctrl+R) and KillDaemon (Ctrl+K) intentionally
   // do NOT appear in the global hint strip. Both are confirmation-
