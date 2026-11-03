@@ -684,10 +684,16 @@ fn build_default_bindings() -> Vec<Binding> {
     hint: "next pane", description: None,
     chords: [(KeyCode::Tab, KeyModifiers::NONE, TAB_LABEL, CAT_GLOBAL)],
   });
+  // gt / gT are vim "tab next/prev" aliases. They are a two-key sequence, so
+  // dispatch lives in `events::handle_key`'s `pending_g_prefix` state machine;
+  // `KeyCode::Null` (never emitted) makes them display-only chords for help.
   v.extend_from_slice(&binds! {
     action: Action::NextFocus, scopes: FocusSet::NAV,
     hint: "next pane", description: None,
-    chords: [(KeyCode::Char('l'), KeyModifiers::NONE, "l", CAT_GLOBAL)],
+    chords: [
+      (KeyCode::Char('l'), KeyModifiers::NONE, "l", CAT_GLOBAL),
+      (KeyCode::Null, KeyModifiers::NONE, "gt", CAT_GLOBAL),
+    ],
   });
   v.extend_from_slice(&binds! {
     action: Action::PrevFocus, scopes: FocusSet::TUI,
@@ -697,25 +703,10 @@ fn build_default_bindings() -> Vec<Binding> {
   v.extend_from_slice(&binds! {
     action: Action::PrevFocus, scopes: FocusSet::NAV,
     hint: "prev pane", description: None,
-    chords: [(KeyCode::Char('h'), KeyModifiers::NONE, "h", CAT_GLOBAL)],
-  });
-  // gt / gT — vim "tab next/prev" aliases for NextFocus/PrevFocus.
-  // Dispatch lives in `events::handle_key`'s `pending_g_prefix` state
-  // machine, not here, because they're a two-key sequence and this
-  // table is single-chord. We surface them as display-only rows using
-  // `KeyCode::Null` (which terminals never emit) so the help overlay's
-  // `(action, description)` merge folds them into the existing
-  // `Tab,l,gt → next pane` and `Shift+Tab,h,gT → prev pane` rows.
-  // Same NAV scope as h/l so the row lands in the same focus group.
-  v.extend_from_slice(&binds! {
-    action: Action::NextFocus, scopes: FocusSet::NAV,
-    hint: "next pane", description: None,
-    chords: [(KeyCode::Null, KeyModifiers::NONE, "gt", CAT_GLOBAL)],
-  });
-  v.extend_from_slice(&binds! {
-    action: Action::PrevFocus, scopes: FocusSet::NAV,
-    hint: "prev pane", description: None,
-    chords: [(KeyCode::Null, KeyModifiers::NONE, "gT", CAT_GLOBAL)],
+    chords: [
+      (KeyCode::Char('h'), KeyModifiers::NONE, "h", CAT_GLOBAL),
+      (KeyCode::Null, KeyModifiers::NONE, "gT", CAT_GLOBAL),
+    ],
   });
   // ─── Shift-letter quick-jumps (navigation policy: Shift = navigate)
   v.extend_from_slice(&binds! {
