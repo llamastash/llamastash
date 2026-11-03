@@ -1,0 +1,30 @@
+ LlamaStash v0.10.1   P:pull · ?:help · ↹/⇧↹:panes · q:quit
+┌ Host ─────────────────┐┌ Daemon ─────────────────────────┐
+│CPU  ███░░░░ 48% 54°C  ││port    48134 · pid 4242 · up 3h1│
+│MEM  ██░░░░░ 11/32G    ││server  llamacpp (cuda)          │
+│GPU  ██████░ 84% 68°C  ││proxy   —                        │
+│VRA┌ HuggingFace — Search · type to search · ↑/↓:row ·┐★  │
+│bac│ search: (type a query or paste owner/repo)       │   │
+└───│ sort: ↓ downloads  ·  page 1                     │───┘
+┌ Mo│ Recommended for this hardware. `~` marks an      │ ──┐
+│   │ estimate.                                        │e  │
+│▶ R│   repo                                  fmt   pa │   │
+│ ● │ ▌ fixture/Mid-Instruct-GGUF             GGUF     │G  │
+│★ F│   fixture/Vast-Sparse-Instruct-GGUF     GGUF     │   │
+│ ★ │   fixture/Tiny-Instruct-GGUF            GGUF     │G  │
+│───│   fixture/Upstream-Instruct             GGUF     │───│
+│m/x│                                                  │   │
+│ ★ │                                                  │G  │
+│m/y│                                                  │   │
+│   │                                                  │G  │
+│   │                                                  │   │
+│   │                                                  │   │
+│   │                                                  │   │
+│   │                                                  │   │
+│   │                                                  │   │
+│   │                                                  │   │
+│   └──────────────────────────────────────────────────┘   │
+│                                                          │
+│                                                          │
+│                                                          │
+└ ◌ launching · ◐ loading · ● ready · ▲ error · ○ stopped ·┘

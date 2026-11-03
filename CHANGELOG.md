@@ -5,10 +5,22 @@
 - `llamastash bench <model-ref> [--preset a,b]` gives load time, context, token counts, prompt-processing speed, generation speed and time to first token per preset, read from the same numbers `llamastash requests` reports, so a knob change can be compared without the maintainer scripts in `scripts/bench/`. Plan: [`docs/plans/2026-10-31-001-feat-cli-bench-plan.md`](docs/plans/2026-10-31-001-feat-cli-bench-plan.md).
 - The HuggingFace pull dialog opens on the models the recommender ranks for this hardware instead of an empty search box: the same list `init` and `llamastash recommend` offer, in the search table's columns with the recommended quant and a fit mark, under a note saying what they are, with Enter opening the entry's GGUF repo at the recommended quant. The dialog also fetches the daily benchmark snapshot `init` ranks against (once per session, skipped offline) and re-ranks when it lands, so the two lists stop disagreeing because the bundled snapshot lags. Plan: [`docs/plans/2026-10-30-001-feat-tui-pull-recommended-models-plan.md`](docs/plans/2026-10-30-001-feat-tui-pull-recommended-models-plan.md).
 
+- Unified-memory headroom can be adjusted in the TUI with a live admission-budget preview and platform-preserving automatic defaults; changes persist and apply without restarting the daemon ([#126](https://github.com/llamastash/llamastash/pull/126)).
+
 ### Changed
 
+- `llamastash start <model>` waits for a freshly started daemon's first catalog scan instead of failing with `no model matches ... (0 known)` on a model that is on disk.
+- A launch of a declared `stt` / `image` / `tts` entry prints that mode in the `status` launch table (`mode_hint` in `status --json`) instead of `chat`, the routing-only mode that changes nothing about the launch.
+- The media docs say a second engine declaring one mode costs the bare OpenAI names, and that `proxy.aliases` settles it.
 - `init` and `recommend --json` report each recommendation's numbers as a `facts` object (`params`, `quant`, `peak_bytes`, `host_total`, `bench`, `spill_percent`) instead of a pre-rendered `justification` string; the one-line prose is rendered from it, as are the TUI's columns.
 - On a host whose sampler found several GPU backends (`multi`), the pull dialog reads the hardware from its NVIDIA or AMD card instead of treating the host as having no usable GPU, so hybrid laptops get per-file fit marks and recommendations too.
+
+### Fixed
+
+- `llamastash session` with no model picks the running chat model even when a media launch was started after it. The newest launch won, and the newest was an `stt` or `image` launch, so the command refused with `... is a speech-to-text model` while a real chat model was up.
+- The `requests` aggregates (`Agg tok/s`, `Agg PP tok/s` and their busy time) no longer read a wall-clock step or a resume from suspend as idle time.
+- A knob you set that the resolved backend cannot honour is named in the launch's warnings instead of vanishing from the command line silently.
+- A recommended row in the pull dialog marks its size and its fit verdict with `~`, so an estimated size no longer reads like the file list's real one.
 
 ## [0.10.1] — 2026-10-30
 

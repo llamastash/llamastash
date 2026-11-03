@@ -15,7 +15,9 @@ use crate::tui::delete::DeleteOutcome;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::daemon::memory_policy::MemoryBudget;
 use crate::ipc::Client;
+use crate::launch::headroom::MemoryReserve;
 use crate::tui::app::{App, ConfirmAction};
 use crate::tui::hf_pull::{
   apply_cancel_download, apply_download_event, apply_hf_dialog_event, apply_open_hf_dialog,
@@ -107,7 +109,9 @@ pub enum WriterCmd {
   /// `stop_model` — graceful shutdown of the supplied launch.
   /// Dispatched by the `s` hotkey when the cursor sits on a
   /// running managed row.
-  StopModel { launch_id: String },
+  StopModel {
+    launch_id: String,
+  },
   /// `shutdown` — ask the daemon itself to exit. Dispatched by
   /// the `Q` hotkey after the user confirms the popup.
   Shutdown,
@@ -130,6 +134,7 @@ pub enum WriterCmd {
   /// `presets_all` refresh reflects it. Boxed (like `StartModel`) so the
   /// large `crate::launch::knobs::KnobSet` doesn't bloat the other tiny variants.
   SavePreset(Box<SavePresetCmd>),
+  SetMemoryReserve(MemoryReserve),
   /// `forget_models` — after a delete, so the next `list_models` refresh
   /// does not bring the deleted rows back before the daemon rescans.
   ForgetModels(Vec<PathBuf>),
@@ -202,6 +207,7 @@ fn handle_mouse(
   use crossterm::event::{MouseButton, MouseEventKind};
   if app.hf_dialog.is_some()
     || app.confirm_dialog.is_some()
+    || app.memory_dialog.is_some()
     || app.save_preset_dialog.is_some()
     || app.launch_name_dialog.is_some()
     || app.show_help
@@ -326,6 +332,10 @@ fn handle_key(app: &mut App, key: KeyEvent, writer: Option<&mpsc::Sender<WriterC
     } else {
       app.confirm_dialog = None;
     }
+    return;
+  }
+  if app.memory_dialog.is_some() {
+    handle_memory_reserve_input(app, key, writer);
     return;
   }
   // Save-preset dialog steals input while open (text entry → overwrite
@@ -666,6 +676,22 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
     Action::ToggleFavorite => apply_toggle_favorite(app, writer),
     Action::OpenLaunchPicker => app.drill_into_focused_model(),
     Action::OpenHfDialog => apply_open_hf_dialog(app),
+    Action::OpenMemoryReserve => {
+      match app
+        .memory_budget
+        .as_ref()
+        .filter(|budget| budget.supports_editing())
+      {
+        Some(budget) => {
+          app.memory_dialog = Some(crate::tui::memory_dialog::MemoryDialog::open(
+            budget.unified_memory_reserve_percent,
+          ))
+        }
+        None => app.show_error_toast(
+          "Memory reserve editing requires a unified-memory daemon with policy support.",
+        ),
+      }
+    }
     Action::Submit => match app.focus {
       Focus::EmbedInput => apply_embed_submit(app),
       Focus::RerankInput => apply_rerank_submit(app),
@@ -1270,6 +1296,42 @@ fn delete_refusal_reason(app: &App) -> Option<&'static str> {
     .focused_path()
     .as_ref()
     .and_then(|path| delete_refusal_reason_for(app, path))
+}
+
+fn handle_memory_reserve_input(
+  app: &mut App,
+  key: KeyEvent,
+  writer: Option<&mpsc::Sender<WriterCmd>>,
+) {
+  let action = app.action_for(Focus::ConfirmPopup, key.code, key.modifiers);
+  let Some(dialog) = app.memory_dialog.as_mut() else {
+    return;
+  };
+  if dialog.saving {
+    return;
+  }
+  if action == Some(Action::Cancel) {
+    app.memory_dialog = None;
+    return;
+  }
+  if action == Some(Action::Submit) {
+    match dialog.reserve() {
+      Err(message) => dialog.error = Some(message.into()),
+      Ok(percent) => match writer {
+        Some(tx) => match tx.try_send(WriterCmd::SetMemoryReserve(percent)) {
+          Ok(()) => {
+            dialog.saving = true;
+            dialog.error = None;
+          }
+          Err(_) => dialog.error = Some("Could not queue save; try again.".into()),
+        },
+        None => dialog.error = Some("No daemon writer is connected.".into()),
+      },
+    }
+    return;
+  }
+  dialog.input.handle_key(key);
+  dialog.error = None;
 }
 
 /// Route a key to the open save-preset dialog. Name stage: typing edits
@@ -1985,6 +2047,7 @@ fn build_yank_text(app: &App, action: Action) -> Option<String> {
 /// snapshots and forwards them as `RefreshTick`s to the run loop.
 #[derive(Debug)]
 pub enum RefreshTick {
+  MemoryReserveSaved(MemoryBudget),
   Catalog(Value),
   Status(Value),
   Favorites(Value),
@@ -2120,7 +2183,11 @@ pub fn spawn_writer(
             // something happened.
             let _ = fb
               .send(Event::Refresh(RefreshTick::WriterError {
-                method: "connect",
+                method: if matches!(cmd, WriterCmd::SetMemoryReserve(_)) {
+                  "memory_reserve_set"
+                } else {
+                  "connect"
+                },
                 message,
               }))
               .await;
@@ -2143,6 +2210,22 @@ pub fn spawn_writer(
         // deepseek4 KV-blind, ssd_streaming bypass) as a toast — the TUI leg
         // of R6 / D-admission. Other methods carry no warnings.
         Ok(resp) => {
+          if method == "memory_reserve_set" {
+            if let Some(fb) = &feedback {
+              if let Ok(budget) = serde_json::from_value::<MemoryBudget>(resp.clone()) {
+                let _ = fb
+                  .send(Event::Refresh(RefreshTick::MemoryReserveSaved(budget)))
+                  .await;
+              } else {
+                let _ = fb
+                  .send(Event::Refresh(RefreshTick::WriterError {
+                    method,
+                    message: "daemon returned an invalid memory reserve response".into(),
+                  }))
+                  .await;
+              }
+            }
+          }
           if method == "start_model" {
             if let Some(id) = start_accepted_launch_id(&resp) {
               if let Some(fb) = &feedback {
@@ -2323,6 +2406,10 @@ pub fn encode_writer_cmd(cmd: WriterCmd) -> (&'static str, Value) {
       log::warn!("encode_writer_cmd reached RestartDaemon (should be short-circuited)");
       ("version", json!({}))
     }
+    WriterCmd::SetMemoryReserve(percent) => (
+      "memory_reserve_set",
+      json!({"unified_memory_reserve_percent": percent}),
+    ),
     WriterCmd::FavoriteAdd(p) => ("favorite_add", json!({ "model_path": p })),
     WriterCmd::FavoriteRemove(p) => ("favorite_remove", json!({ "model_path": p })),
     WriterCmd::SavePreset(cmd) => {
@@ -2668,11 +2755,24 @@ fn apply_refresh(app: &mut App, tick: RefreshTick) {
       app.bind_bell_watch(launch_id.as_str());
     }
     RefreshTick::WriterError { method, message } => {
+      if let Some(dialog) = app
+        .memory_dialog
+        .as_mut()
+        .filter(|dialog| dialog.saving && method == "memory_reserve_set")
+      {
+        dialog.saving = false;
+        dialog.error = Some(message.clone());
+      }
       // A refused start produces no row to watch, so its bell watch would hang
       // around. The error carries no path, so nothing is dropped here: that watch
       // never binds and ages out in `App::bell_tick`, while launches from the same
       // batch that did start keep theirs.
       app.show_error_toast(writer_error_toast(method, &message));
+    }
+    RefreshTick::MemoryReserveSaved(budget) => {
+      app.memory_budget = Some(budget);
+      app.memory_dialog = None;
+      app.show_toast("Memory reserve saved; applies to future launches immediately.");
     }
     RefreshTick::WriterInfo { message } => {
       app.show_toast(message);
@@ -2919,7 +3019,228 @@ fn apply_delete_done(app: &mut App, outcome: DeleteOutcome, writer: &mpsc::Sende
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::tui::app::AppOptions;
   use crossterm::event::{KeyEvent, KeyModifiers};
+
+  #[test]
+  fn reserve_editor_uses_uma_support_and_auto_survives_encoding() {
+    for backend in ["apple_metal", "amd", "nvidia", "unknown"] {
+      let host = crate::daemon::host_metrics::HostMetricsSnapshot {
+        gpu_backend: backend.into(),
+        unified: true,
+        ram_total_bytes: 64 * 1024 * 1024 * 1024,
+        ..Default::default()
+      };
+      let mut app = App::new(AppOptions::default());
+      app.memory_budget = Some(MemoryBudget::from_snapshot(
+        MemoryReserve::AUTO,
+        Some(&host),
+      ));
+      handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE),
+        None,
+      );
+      assert_eq!(
+        app.memory_dialog.as_ref().unwrap().reserve(),
+        Ok(MemoryReserve::AUTO)
+      );
+    }
+    let (method, params) = encode_writer_cmd(WriterCmd::SetMemoryReserve(MemoryReserve::AUTO));
+    assert_eq!(method, "memory_reserve_set");
+    assert_eq!(
+      params,
+      serde_json::json!({"unified_memory_reserve_percent": "auto"})
+    );
+    for memory in [
+      serde_json::Value::Null,
+      serde_json::json!({"apple_memory_reserve_percent": 25, "apple_unified": true}),
+      serde_json::json!({"unified_memory_reserve_percent": "auto", "unified": false}),
+      serde_json::json!({"unified_memory_reserve_percent": "auto", "unified": true, "default_reserve_percent": 255}),
+    ] {
+      let mut app = App::new(AppOptions::default());
+      app.ingest_status(&serde_json::json!({"daemon": {"memory": memory}}));
+      handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE),
+        None,
+      );
+      assert!(app.memory_dialog.is_none());
+    }
+  }
+
+  #[test]
+  fn memory_reserve_editor_waits_for_persisted_success() {
+    let mut app = App::new(AppOptions::default());
+    app.memory_budget = Some(crate::daemon::memory_policy::MemoryBudget {
+      unified_memory_reserve_percent: MemoryReserve::AUTO,
+      default_reserve_percent: Some(25),
+      unified: true,
+      available_bytes: Some(40 * 1024 * 1024 * 1024),
+      admissible_bytes: Some(30 * 1024 * 1024 * 1024),
+    });
+    let (tx, mut rx) = mpsc::channel(4);
+    handle_key(
+      &mut app,
+      KeyEvent::new(KeyCode::Char('m'), KeyModifiers::ALT),
+      Some(&tx),
+    );
+    let dialog = app.memory_dialog.as_mut().expect("memory editor");
+    dialog.input.set_text("100");
+    handle_key(
+      &mut app,
+      KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+      Some(&tx),
+    );
+    assert!(rx.try_recv().is_err());
+    assert!(app.memory_dialog.as_ref().unwrap().error.is_some());
+    app.memory_dialog.as_mut().unwrap().input.set_text("10");
+    handle_key(
+      &mut app,
+      KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+      Some(&tx),
+    );
+    assert!(
+      matches!(rx.try_recv(), Ok(WriterCmd::SetMemoryReserve(value)) if value == MemoryReserve::percent(10).unwrap())
+    );
+    assert!(app.memory_dialog.as_ref().unwrap().saving);
+    apply_refresh(
+      &mut app,
+      RefreshTick::WriterError {
+        method: "memory_reserve_set",
+        message: "permission denied".into(),
+      },
+    );
+    assert!(!app.memory_dialog.as_ref().unwrap().saving);
+    assert!(app
+      .memory_dialog
+      .as_ref()
+      .unwrap()
+      .error
+      .as_ref()
+      .unwrap()
+      .contains("permission denied"));
+    let mut saved = app.memory_budget.clone().unwrap();
+    saved.unified_memory_reserve_percent = MemoryReserve::percent(10).unwrap();
+    saved.admissible_bytes = saved.preview(saved.unified_memory_reserve_percent);
+    apply_refresh(&mut app, RefreshTick::MemoryReserveSaved(saved.clone()));
+    assert_eq!(app.memory_budget, Some(saved));
+    assert!(app.memory_dialog.is_none());
+  }
+
+  #[test]
+  fn memory_modal_shows_the_flow_config_recovery_instruction() {
+    use ratatui::{backend::TestBackend, Terminal};
+    let error = crate::config::yaml_edit::upsert(
+      "{theme: latte}\n",
+      &["daemon", "unified_memory_reserve_percent"],
+      "10",
+    )
+    .unwrap_err();
+    for (width, height) in [(80, 24), (60, 20)] {
+      let mut app = App::new(AppOptions::default());
+      let mut dialog = crate::tui::memory_dialog::MemoryDialog::open(MemoryReserve::AUTO);
+      dialog.saving = true;
+      app.memory_dialog = Some(dialog);
+      apply_refresh(
+        &mut app,
+        RefreshTick::WriterError {
+          method: "memory_reserve_set",
+          message: format!("daemon error -32603: {error}"),
+        },
+      );
+      let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+      let drawn = terminal
+        .draw(|frame| crate::tui::render::render(frame, &mut app))
+        .unwrap();
+      let text = drawn
+        .buffer
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+      for required in ["convert", "block YAML", "before saving"] {
+        assert!(
+          text.contains(required),
+          "{width}x{height}: missing {required}: {text}"
+        );
+      }
+    }
+  }
+
+  #[test]
+  fn memory_modal_closes_when_policy_support_disappears_but_waits_for_pending_saves() {
+    for saving in [false, true] {
+      for memory in [
+        serde_json::Value::Null,
+        serde_json::json!({"unified_memory_reserve_percent": "auto", "unified": false}),
+        serde_json::json!({"unified_memory_reserve_percent": "auto", "unified": true, "default_reserve_percent": 255}),
+      ] {
+        let mut app = App::new(AppOptions::default());
+        let mut dialog = crate::tui::memory_dialog::MemoryDialog::open(MemoryReserve::AUTO);
+        dialog.saving = saving;
+        app.memory_dialog = Some(dialog);
+        app.ingest_status(&serde_json::json!({"daemon": {"memory": memory}}));
+        assert_eq!(app.memory_dialog.is_some(), saving);
+      }
+    }
+  }
+
+  #[test]
+  fn memory_modal_blocks_mouse_clicks_and_scrolls() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::layout::Rect;
+    for saving in [false, true] {
+      let mut app = App::new(AppOptions::default());
+      app.options.mouse_focus = true;
+      app.models = (0..5)
+        .map(|i| fake_model_for_events(&format!("/m/{i}.gguf"), "/m"))
+        .collect();
+      app.focus = Focus::RightPane;
+      app.right_tab = RightTab::Logs;
+      app
+        .logs_state
+        .set_tail("1".into(), (0..20).map(|i| format!("line {i}")).collect());
+      app.hit_rects.borrow_mut().list_pane = Rect::new(0, 5, 40, 20);
+      let mut dialog = crate::tui::memory_dialog::MemoryDialog::open(MemoryReserve::AUTO);
+      dialog.saving = saving;
+      app.memory_dialog = Some(dialog);
+      for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::ScrollUp,
+        MouseEventKind::ScrollDown,
+      ] {
+        pump_input(
+          &mut app,
+          TermEvent::Mouse(MouseEvent {
+            kind,
+            column: 10,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+          }),
+        );
+        assert_eq!(app.focus, Focus::RightPane);
+        assert_eq!(app.logs_state.scroll_offset, 0);
+        assert_eq!(app.list_cursor, 0);
+      }
+    }
+  }
+
+  #[test]
+  fn memory_reserve_editor_cancel_dispatches_nothing() {
+    let mut app = App::new(AppOptions::default());
+    app.memory_dialog = Some(crate::tui::memory_dialog::MemoryDialog::open(
+      MemoryReserve::percent(25).unwrap(),
+    ));
+    let (tx, mut rx) = mpsc::channel(4);
+    handle_key(
+      &mut app,
+      KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+      Some(&tx),
+    );
+    assert!(app.memory_dialog.is_none());
+    assert!(rx.try_recv().is_err());
+  }
 
   fn key(code: KeyCode, mods: KeyModifiers) -> TermEvent {
     TermEvent::Key(KeyEvent::new(code, mods))
@@ -3928,7 +4249,7 @@ mod tests {
   fn the_daemon_reply_binds_the_queued_bell_watch() {
     // The reply names the launch, which is what stops the watch from being
     // satisfied by a row that was already there or by a later launch.
-    let mut app = App::new(crate::tui::app::AppOptions::default());
+    let mut app = App::new(AppOptions::default());
     app.queue_bell_watch("/m/qwen.gguf");
     apply_refresh(
       &mut app,
@@ -3956,7 +4277,7 @@ mod tests {
     // of launches from the same batch that did start. The watch that has no row
     // ages out in `App::bell_tick` instead.
     use crate::tui::app::BellWatch;
-    let mut app = App::new(crate::tui::app::AppOptions::default());
+    let mut app = App::new(AppOptions::default());
     app.bell_watch = vec![BellWatch::waiting("/m/qwen.gguf")];
     apply_refresh(
       &mut app,
@@ -4179,7 +4500,7 @@ mod tests {
 
   #[test]
   fn apply_refresh_writer_error_renders_a_toast() {
-    let mut app = App::new(crate::tui::app::AppOptions::default());
+    let mut app = App::new(AppOptions::default());
     apply_refresh(
       &mut app,
       RefreshTick::WriterError {

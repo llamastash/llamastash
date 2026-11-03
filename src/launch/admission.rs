@@ -34,7 +34,7 @@ use crate::gguf::header::GgufHeader;
 use crate::gguf::memory::{
   kv_bytes, parse_cache_type, EstimateOptions, DEFAULT_MTP_DRAFT_N, DEFAULT_N_SEQ,
 };
-use crate::launch::headroom::{admissible_bytes, overhead_band_bytes, PoolKind};
+use crate::launch::headroom::{admissible_bytes, overhead_band_bytes, MemoryReserve, PoolKind};
 
 /// One in-flight launch's hold on the budget, keyed by `launch_id`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,7 +142,7 @@ impl Ledger {
 }
 
 /// Headroom kind for the host's budget pool.
-fn pool_kind(snap: &HostMetricsSnapshot) -> PoolKind {
+pub(crate) fn pool_kind(snap: &HostMetricsSnapshot) -> PoolKind {
   if snap.gpu_backend == HostMetricsSnapshot::BACKEND_APPLE_METAL {
     PoolKind::AppleUnified
   } else if snap.unified {
@@ -391,12 +391,12 @@ pub fn pool_fraction_beyond_weights(host: &DemandInputs, fraction: f64) -> u64 {
 /// GPU allocation, and `ram_free` still guards the rare case where
 /// system RAM is the tighter constraint. Apple Silicon has no GTT carve
 /// (it leaves `uma_shared_*` unset), so it falls back to `ram_free` with
-/// its 0.75 headroom.
+/// its configured headroom (0.75 by default).
 ///
 /// This is the host-wide figure. A launch uses [`effective_free_bytes_for`]
 /// with [`gtt_only_budget`], which differs only inside an LXC container.
-pub fn effective_free_bytes(snap: &HostMetricsSnapshot) -> u64 {
-  effective_free_bytes_for(snap, false)
+pub fn effective_free_bytes(snap: &HostMetricsSnapshot, reserve: MemoryReserve) -> u64 {
+  effective_free_bytes_for(snap, false, reserve)
 }
 
 /// Whether a launch budgets GTT free alone instead of
@@ -423,13 +423,20 @@ fn lxc_amd_uma(snap: &HostMetricsSnapshot, in_lxc: bool) -> bool {
 }
 
 /// [`effective_free_bytes`], with `gtt_only` from [`gtt_only_budget`].
-pub fn effective_free_bytes_for(snap: &HostMetricsSnapshot, gtt_only: bool) -> u64 {
+pub fn effective_free_bytes_for(
+  snap: &HostMetricsSnapshot,
+  gtt_only: bool,
+  reserve: MemoryReserve,
+) -> u64 {
+  let available = available_pool_bytes(snap, gtt_only);
+  admissible_bytes(available, pool_kind(snap), reserve)
+}
+
+/// Available bytes before additional headroom or in-flight reservations.
+pub(crate) fn available_pool_bytes(snap: &HostMetricsSnapshot, gtt_only: bool) -> u64 {
   let ram_free = snap.ram_total_bytes.saturating_sub(snap.ram_used_bytes);
-  // Apple is unified by construction (the `|| apple_metal` just guards
-  // it); the host-pane VRAM gauge keys off the same `unified` flag.
-  let unified = snap.unified || snap.gpu_backend == HostMetricsSnapshot::BACKEND_APPLE_METAL;
-  if unified {
-    let pool_free = match snap.uma_shared_total_bytes {
+  if pool_kind(snap).default_reserve_percent().is_some() {
+    match snap.uma_shared_total_bytes {
       Some(gtt_total) => {
         let gtt_free = gtt_total.saturating_sub(snap.uma_shared_used_bytes.unwrap_or(0));
         if gtt_only {
@@ -439,14 +446,11 @@ pub fn effective_free_bytes_for(snap: &HostMetricsSnapshot, gtt_only: bool) -> u
         }
       }
       None => ram_free,
-    };
-    admissible_bytes(pool_free, pool_kind(snap))
+    }
   } else if let (Some(total), Some(used)) = (snap.gpu_mem_total_bytes, snap.gpu_mem_used_bytes) {
-    let vram_free = total.saturating_sub(used);
-    admissible_bytes(vram_free, PoolKind::DiscreteVram)
-      + admissible_bytes(ram_free, PoolKind::SystemRam)
+    total.saturating_sub(used).saturating_add(ram_free)
   } else {
-    admissible_bytes(ram_free, PoolKind::SystemRam)
+    ram_free
   }
 }
 
@@ -803,7 +807,7 @@ mod tests {
     // No sysfs GTT data on the snapshot → budget system-RAM free at the
     // IntegratedUma 1.0 fraction.
     let s = snap(HostMetricsSnapshot::BACKEND_AMD, true, 128 * GIB, 28 * GIB);
-    assert_eq!(effective_free_bytes(&s), 100 * GIB);
+    assert_eq!(effective_free_bytes(&s, MemoryReserve::AUTO), 100 * GIB);
   }
 
   #[test]
@@ -812,10 +816,37 @@ mod tests {
     let mut s = snap(HostMetricsSnapshot::BACKEND_AMD, true, 8 * GIB, 2 * GIB);
     s.uma_shared_total_bytes = Some(96 * GIB);
     s.uma_shared_used_bytes = Some(0);
-    assert_eq!(effective_free_bytes_for(&s, true), 96 * GIB);
-    assert_eq!(effective_free_bytes_for(&s, false), 6 * GIB);
+    assert_eq!(
+      effective_free_bytes_for(&s, true, MemoryReserve::AUTO),
+      96 * GIB
+    );
+    assert_eq!(
+      effective_free_bytes_for(&s, false, MemoryReserve::AUTO),
+      6 * GIB
+    );
     assert_eq!(engine_pool_total_bytes(&s, true), 96 * GIB);
     assert_eq!(engine_pool_total_bytes(&s, false), 8 * GIB);
+  }
+
+  #[test]
+  fn overrides_follow_pool_caps_including_the_lxc_exception() {
+    let mut host = snap(HostMetricsSnapshot::BACKEND_AMD, true, 8 * GIB, 2 * GIB);
+    host.uma_shared_total_bytes = Some(96 * GIB);
+    host.uma_shared_used_bytes = Some(16 * GIB);
+    let reserve = MemoryReserve::percent(25).unwrap();
+    assert_eq!(effective_free_bytes_for(&host, true, reserve), 60 * GIB);
+    assert_eq!(effective_free_bytes_for(&host, false, reserve), 9 * GIB / 2);
+    host.ram_total_bytes = 128 * GIB;
+    assert_eq!(effective_free_bytes(&host, reserve), 60 * GIB);
+    host.uma_shared_used_bytes = Some(97 * GIB);
+    assert_eq!(effective_free_bytes(&host, reserve), 0);
+    for backend in [
+      HostMetricsSnapshot::BACKEND_CPU_ONLY,
+      HostMetricsSnapshot::BACKEND_NVIDIA,
+    ] {
+      host = snap(backend, false, 64 * GIB, 24 * GIB);
+      assert_eq!(effective_free_bytes(&host, reserve), 40 * GIB);
+    }
   }
 
   #[test]
@@ -841,12 +872,12 @@ mod tests {
     s.uma_shared_total_bytes = Some(80 * GIB); // GTT cap ~50% of RAM
     s.uma_shared_used_bytes = Some(60 * GIB); // 20 GiB GTT free
                                               // ram_free is 80 GiB but GTT free is only 20 GiB → budget GTT.
-    assert_eq!(effective_free_bytes(&s), 20 * GIB);
+    assert_eq!(effective_free_bytes(&s, MemoryReserve::AUTO), 20 * GIB);
     // A 37 GiB launch is refused against the 20 GiB GTT pool, not
     // admitted against the 80 GiB system-RAM figure.
     let ledger = Ledger::default();
     assert!(ledger
-      .try_admit(1, 37 * GIB, effective_free_bytes(&s))
+      .try_admit(1, 37 * GIB, effective_free_bytes(&s, MemoryReserve::AUTO))
       .is_err());
   }
 
@@ -858,13 +889,13 @@ mod tests {
     s.uma_shared_total_bytes = Some(124 * GIB);
     s.uma_shared_used_bytes = Some(40 * GIB); // 84 GiB GTT free
                                               // ram_free 58 GiB < gtt_free 84 GiB → budget the RAM bound.
-    assert_eq!(effective_free_bytes(&s), 58 * GIB);
+    assert_eq!(effective_free_bytes(&s, MemoryReserve::AUTO), 58 * GIB);
   }
 
   #[test]
   fn apple_budget_applies_075_headroom() {
     let s = snap(HostMetricsSnapshot::BACKEND_APPLE_METAL, true, 64 * GIB, 0);
-    assert_eq!(effective_free_bytes(&s), 48 * GIB);
+    assert_eq!(effective_free_bytes(&s, MemoryReserve::AUTO), 48 * GIB);
   }
 
   #[test]
@@ -873,7 +904,7 @@ mod tests {
     s.gpu_mem_total_bytes = Some(24 * GIB);
     s.gpu_mem_used_bytes = Some(8 * GIB);
     // 16 GiB VRAM free + 64 GiB RAM free, both at 1.0 fraction.
-    assert_eq!(effective_free_bytes(&s), 80 * GIB);
+    assert_eq!(effective_free_bytes(&s, MemoryReserve::AUTO), 80 * GIB);
   }
 
   #[test]

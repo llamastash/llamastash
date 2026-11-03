@@ -1,28 +1,102 @@
 //! Centralized memory-headroom policy.
 //!
-//! The budget authority (admission control) and the refusal messages it
-//! produces are the *only* consumers. Every display surface — `status`,
-//! the TUI host pane, the doctor hardware section, the init banner —
-//! shows raw totals; the post-headroom number appears only when
-//! admission refuses or degrades a launch and needs to explain why.
-//!
-//! Two questions live here so they have exactly one answer:
-//!
-//! 1. **Usable fraction** of a pool's raw total: how much can be handed
-//!    to a model before the OS and other resident consumers are
-//!    starved. Apple's unified pool keeps the historical `0.75` (moved
-//!    here unchanged from `aggregate_vram_bytes`). An AMD/Intel
-//!    integrated UMA pool and a discrete VRAM pool are budgeted at the
-//!    full total and lean on the overhead band below for their margin —
-//!    we do not invent an unmeasured fraction for them.
-//! 2. **Fixed overhead band** per GPU backend: bytes a successful load
-//!    consumes beyond `weights + KV cache` (compute buffers, driver-side
-//!    allocations the GGUF header can't predict). Values are the
-//!    conservative defaults from `docs/spikes/2026-05-19-vram-overhead-band.md`;
-//!    the spike marks them unverified, so the stance is "err high" and
-//!    they must not be silently tightened.
+//! UMA defaults preserve Apple's historical 25% reserve and add no percentage
+//! on other shared pools. Explicit overrides affect only UMA, after pool caps.
+//! Engine overhead and in-flight reservations remain separate from headroom.
+
+use std::{fmt, str::FromStr};
+
+use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::daemon::host_metrics::HostMetricsSnapshot;
+
+pub const DEFAULT_APPLE_RESERVE_PERCENT: u8 = 25;
+
+/// Additional UMA headroom. An absent override retains the platform policy.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MemoryReserve(Option<u8>);
+
+impl MemoryReserve {
+  pub const AUTO: Self = Self(None);
+  pub const EXPECTED: &str = "auto or an integer from 0 to 99";
+
+  pub fn percent(percent: u8) -> Result<Self, &'static str> {
+    (percent <= 99)
+      .then_some(Self(Some(percent)))
+      .ok_or(Self::EXPECTED)
+  }
+
+  pub fn resolve(self, default_percent: u8) -> u8 {
+    self.0.unwrap_or(default_percent)
+  }
+
+  pub fn admissible_bytes(self, available: u64, default_percent: u8) -> u64 {
+    let fraction = f64::from(100u8.saturating_sub(self.resolve(default_percent))) / 100.0;
+    (available as f64 * fraction) as u64
+  }
+}
+
+impl fmt::Display for MemoryReserve {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match self.0 {
+      Some(percent) => write!(f, "{percent}"),
+      None => f.write_str("auto"),
+    }
+  }
+}
+
+impl FromStr for MemoryReserve {
+  type Err = &'static str;
+
+  fn from_str(value: &str) -> Result<Self, Self::Err> {
+    if value == "auto" {
+      Ok(Self::AUTO)
+    } else {
+      value
+        .parse::<u8>()
+        .map_err(|_| Self::EXPECTED)
+        .and_then(Self::percent)
+    }
+  }
+}
+
+impl Serialize for MemoryReserve {
+  fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+    match self.0 {
+      Some(percent) => serializer.serialize_u8(percent),
+      None => serializer.serialize_str("auto"),
+    }
+  }
+}
+
+impl<'de> Deserialize<'de> for MemoryReserve {
+  fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+    struct ReserveVisitor;
+    impl de::Visitor<'_> for ReserveVisitor {
+      type Value = MemoryReserve;
+
+      fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(MemoryReserve::EXPECTED)
+      }
+
+      fn visit_u64<E: de::Error>(self, value: u64) -> Result<Self::Value, E> {
+        u8::try_from(value)
+          .ok()
+          .and_then(|p| MemoryReserve::percent(p).ok())
+          .ok_or_else(|| E::custom(MemoryReserve::EXPECTED))
+      }
+
+      fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+        if value == "auto" {
+          Ok(MemoryReserve::AUTO)
+        } else {
+          Err(E::custom(MemoryReserve::EXPECTED))
+        }
+      }
+    }
+    deserializer.deserialize_any(ReserveVisitor)
+  }
+}
 
 /// The kind of physical memory pool a budget is being computed against.
 /// Determined by the GPU classification (see [`crate::gpu`]); the
@@ -32,15 +106,24 @@ pub enum PoolKind {
   /// Apple Silicon unified memory — one pool shared with the OS, sized
   /// generously so the historical OS/app headroom matters.
   AppleUnified,
-  /// AMD/Intel integrated UMA pool (carve-out + GTT on Strix Halo and
-  /// friends). Budgeted at full total; the overhead band carries the
-  /// margin.
+  /// Other shared pools, including AMD/Intel APUs and NVIDIA coherent UMA.
+  /// Auto adds no percentage; engine guards remain independent.
   IntegratedUma,
   /// A discrete GPU's dedicated VRAM. Budgeted at full total; the
   /// overhead band carries the margin.
   DiscreteVram,
   /// Host system RAM (the CPU-offload / spill pool on discrete hosts).
   SystemRam,
+}
+
+impl PoolKind {
+  pub fn default_reserve_percent(self) -> Option<u8> {
+    match self {
+      Self::AppleUnified => Some(DEFAULT_APPLE_RESERVE_PERCENT),
+      Self::IntegratedUma => Some(0),
+      Self::DiscreteVram | Self::SystemRam => None,
+    }
+  }
 }
 
 /// Overhead band for a CUDA / ROCm / Metal backend. Compute buffers and
@@ -52,21 +135,11 @@ pub const OVERHEAD_BAND_NATIVE_BYTES: u64 = 512 * 1024 * 1024;
 /// per the spike.
 pub const OVERHEAD_BAND_VULKAN_BYTES: u64 = 1024 * 1024 * 1024;
 
-/// Usable fraction of a pool's raw total. The only value below 1.0 is
-/// Apple's `0.75`, relocated unchanged from the old display path; every
-/// other pool is budgeted at full total and relies on
-/// [`overhead_band_bytes`] for its safety margin.
-pub fn usable_fraction(pool: PoolKind) -> f64 {
-  match pool {
-    PoolKind::AppleUnified => 0.75,
-    PoolKind::IntegratedUma | PoolKind::DiscreteVram | PoolKind::SystemRam => 1.0,
-  }
-}
-
-/// Apply [`usable_fraction`] to a raw pool total, returning the bytes
-/// admission may hand out before the OS/app headroom is at risk.
-pub fn admissible_bytes(raw_total: u64, pool: PoolKind) -> u64 {
-  (raw_total as f64 * usable_fraction(pool)) as u64
+/// Apply additional headroom to available UMA memory, leaving other pools alone.
+pub fn admissible_bytes(available: u64, pool: PoolKind, reserve: MemoryReserve) -> u64 {
+  pool.default_reserve_percent().map_or(available, |default| {
+    reserve.admissible_bytes(available, default)
+  })
 }
 
 /// Fixed overhead band for a GPU backend string (the `backend` tag on
@@ -90,28 +163,57 @@ mod tests {
   use super::*;
 
   #[test]
-  fn apple_keeps_three_quarters() {
-    assert_eq!(usable_fraction(PoolKind::AppleUnified), 0.75);
-    // 64 GiB unified → 48 GiB admissible, matching the old
-    // aggregate_vram_bytes Apple ratio that moved here.
-    let raw = 64 * 1024 * 1024 * 1024;
+  fn auto_preserves_platform_defaults_and_overrides_apply_only_to_uma() {
+    let free = 40 * 1024 * 1024 * 1024;
     assert_eq!(
-      admissible_bytes(raw, PoolKind::AppleUnified),
-      48 * 1024 * 1024 * 1024
+      admissible_bytes(free, PoolKind::AppleUnified, MemoryReserve::AUTO),
+      30 * 1024 * 1024 * 1024
     );
-  }
-
-  #[test]
-  fn non_apple_pools_use_full_total() {
-    let raw = 32 * 1024 * 1024 * 1024;
     for pool in [
       PoolKind::IntegratedUma,
       PoolKind::DiscreteVram,
       PoolKind::SystemRam,
     ] {
-      assert_eq!(usable_fraction(pool), 1.0);
-      assert_eq!(admissible_bytes(raw, pool), raw);
+      assert_eq!(admissible_bytes(free, pool, MemoryReserve::AUTO), free);
     }
+    for percent in [0, 10, 25, 99] {
+      let reserve = MemoryReserve::percent(percent).unwrap();
+      for pool in [PoolKind::AppleUnified, PoolKind::IntegratedUma] {
+        assert_eq!(
+          admissible_bytes(free, pool, reserve),
+          reserve.admissible_bytes(free, 0)
+        );
+      }
+      for pool in [PoolKind::DiscreteVram, PoolKind::SystemRam] {
+        assert_eq!(admissible_bytes(free, pool, reserve), free);
+      }
+    }
+  }
+
+  #[test]
+  fn reserve_scalar_roundtrips_strictly_in_json_and_yaml() {
+    for raw in ["\"auto\"", "0", "10", "99"] {
+      let reserve: MemoryReserve = serde_json::from_str(raw).unwrap();
+      assert_eq!(serde_json::to_string(&reserve).unwrap(), raw);
+      assert_eq!(
+        yaml_serde::from_str::<MemoryReserve>(&yaml_serde::to_string(&reserve).unwrap()).unwrap(),
+        reserve
+      );
+      assert_eq!(
+        reserve.to_string().parse::<MemoryReserve>().unwrap(),
+        reserve
+      );
+    }
+    for raw in [
+      "-1", "100", "256", "10.5", "10.0", "true", "null", "\"10\"", "\"AUTO\"", "[]", "{}",
+    ] {
+      assert!(serde_json::from_str::<MemoryReserve>(raw).is_err(), "{raw}");
+      assert!(yaml_serde::from_str::<MemoryReserve>(raw).is_err(), "{raw}");
+    }
+    assert_eq!(
+      yaml_serde::from_str::<MemoryReserve>("auto").unwrap(),
+      MemoryReserve::AUTO
+    );
   }
 
   #[test]

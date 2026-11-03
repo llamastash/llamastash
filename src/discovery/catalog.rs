@@ -36,13 +36,29 @@ use crate::launch::resolve::{CatalogRow, MtpCapability};
 /// in the map and in the view until the next rebuild: memory in proportion to how
 /// many models are on disk, never time on the request path. If that ever matters
 /// the fix is an `Arc` per row rather than a second `Vec`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ModelCatalog {
   inner: Arc<RwLock<CatalogSlot>>,
   /// Wakes the discovery task for a rescan outside the watcher's view: HF
   /// roots are watched shallow, so a file removed deep in a repo would
   /// otherwise stay listed until the periodic backstop.
   rescan: Arc<tokio::sync::Notify>,
+  /// Flipped by the discovery task when its first scan has landed. A client
+  /// that connects a moment after `daemon start` sees an empty catalog until
+  /// then, so `start` waits on this instead of reporting "no model matches
+  /// (0 known)" for a model that is on disk.
+  first_scan: Arc<tokio::sync::watch::Sender<bool>>,
+}
+
+impl Default for ModelCatalog {
+  fn default() -> Self {
+    let (first_scan, _) = tokio::sync::watch::channel(false);
+    Self {
+      inner: Arc::new(RwLock::new(CatalogSlot::default())),
+      rescan: Arc::new(tokio::sync::Notify::new()),
+      first_scan: Arc::new(first_scan),
+    }
+  }
 }
 
 /// The map plus the read views handed out to proxy readers.
@@ -142,6 +158,30 @@ impl ModelCatalog {
   /// Resolves once [`Self::forget_missing`] has asked for a rescan.
   pub async fn rescan_requested(&self) {
     self.rescan.notified().await;
+  }
+
+  /// Record that the initial scan has landed. Idempotent, and only the
+  /// discovery task's first scan calls it.
+  pub fn first_scan_completed(&self) {
+    self.first_scan.send_replace(true);
+  }
+
+  /// Whether the initial scan has landed. `false` only between the daemon
+  /// binding its socket and that scan finishing.
+  pub fn first_scan_done(&self) -> bool {
+    *self.first_scan.borrow()
+  }
+
+  /// Resolves once the initial scan has landed, immediately if it already has.
+  /// Returns early if the catalog itself is gone, so a caller never waits on a
+  /// daemon that is shutting down.
+  pub async fn wait_first_scan(&self) {
+    let mut rx = self.first_scan.subscribe();
+    while !*rx.borrow_and_update() {
+      if rx.changed().await.is_err() {
+        return;
+      }
+    }
   }
 
   /// Number of models currently surfaced.
@@ -556,5 +596,29 @@ mod tests {
       vision["multimodal"],
       json!({ "vision": true, "audio": false })
     );
+  }
+
+  /// A fresh catalog reads as "scan not landed", and both readers see the flip
+  /// once it has: the poll and the waiter.
+  #[tokio::test]
+  async fn first_scan_flag_starts_unset_and_wakes_the_waiter() {
+    let cat = ModelCatalog::new();
+    assert!(!cat.first_scan_done());
+    let waiter = {
+      let cat = cat.clone();
+      tokio::spawn(async move {
+        cat.wait_first_scan().await;
+      })
+    };
+    cat.first_scan_completed();
+    tokio::time::timeout(std::time::Duration::from_secs(1), waiter)
+      .await
+      .expect("waiter woken")
+      .expect("waiter task");
+    assert!(cat.first_scan_done());
+    // Waiting again after the fact returns at once.
+    tokio::time::timeout(std::time::Duration::from_secs(1), cat.wait_first_scan())
+      .await
+      .expect("already done");
   }
 }

@@ -469,7 +469,7 @@ impl Backend for VllmBackend {
     // an unsampled host has no pool total to size a fraction against.
     if user_cap {
       if let Some(s) = snapshot.as_ref().filter(|_| sampled) {
-        let free = crate::launch::admission::effective_free_bytes(s);
+        let free = crate::launch::admission::effective_free_bytes(s, ctx.memory_policy.reserve());
         if let Some(util) = knob_bytes(params, "kv_cache_memory_bytes")
           .and_then(|cap| startup_utilization(free, weights_bytes, cap, s.ram_total_bytes))
         {
@@ -480,7 +480,7 @@ impl Backend for VllmBackend {
     }
     let (cap, utilization) = match snapshot.as_ref().filter(|_| sampled) {
       Some(s) => {
-        let free = crate::launch::admission::effective_free_bytes(s);
+        let free = crate::launch::admission::effective_free_bytes(s, ctx.memory_policy.reserve());
         // On an APU, GPU memory *is* system RAM, and vLLM sizes its KV cache
         // to fill whatever `gpu_memory_utilization` allows — a fraction of
         // the **pool**, not of the model. Measured on a 121 GB Strix Halo:
@@ -1072,6 +1072,35 @@ mod tests {
       crate::daemon::context::MethodContext::new(crate::daemon::shutdown::ShutdownToken::new());
     ctx.host_metrics = Some(std::sync::Arc::new(tokio::sync::RwLock::new(snap)));
     ctx
+  }
+
+  #[tokio::test]
+  async fn additional_headroom_reaches_the_cache_guard_without_removing_its_reserve() {
+    use crate::{daemon::memory_policy::MemoryPolicy, launch::headroom::MemoryReserve};
+    const GIB: u64 = 1024 * 1024 * 1024;
+    let mut caps = Vec::new();
+    for setting in [
+      MemoryReserve::AUTO,
+      MemoryReserve::percent(0).unwrap(),
+      MemoryReserve::percent(50).unwrap(),
+    ] {
+      let ctx = ctx_with_host(uma_host(40 * GIB, 64 * GIB))
+        .with_memory_policy(MemoryPolicy::new(setting, None));
+      let mut p = params("/models/model");
+      let result = VllmBackend::new()
+        .resolve_knobs(&ctx, &mut p, 28 * GIB)
+        .await;
+      caps.push(knob_bytes(&p, "kv_cache_memory_bytes"));
+      if setting == MemoryReserve::percent(50).unwrap() {
+        assert!(result.refusal.is_some());
+      } else {
+        assert!(result.refusal.is_none());
+        let cap = caps.last().unwrap().unwrap();
+        assert!(cap > 0 && cap < 8 * GIB, "engine reserve must still bind");
+      }
+    }
+    assert_eq!(caps[0], caps[1], "auto preserves the pre-existing budget");
+    assert_eq!(caps[2], None);
   }
 
   /// The escape hatch the docs point at has to work on the host the docs are

@@ -192,6 +192,7 @@ Bare letters are for tool actions (`f` favorite, `e` edit, `u/c/p` yank, `t` the
 | `clear_filter`                          | `Esc`                             | Filter input                                                                       |
 | `toggle_favorite`                       | `f`                               | List                                                                               |
 | `open_launch_picker`                    | `Enter`                           | List                                                                               |
+| `open_memory_reserve` | `m` · `alt+m` | Nav focuses — unified-memory reserve editor |
 | `open_hf_dialog`                        | `shift+p`                         | List — "Pull" mnemonic                                                             |
 | `submit`                                | `Enter`                           | Filter, right pane, embed, rerank, confirm popup, HF dialog                        |
 | `cancel`                                | `Esc`                             | Confirm popup, HF dialog                                                           |
@@ -317,7 +318,7 @@ Row shape:
 
 A model running more than once gets **one row per launch**, and a named launch renders `<model>@<name>` in NAME. That joined string is the address: paste it into a client's `model` field, or hand it to `stop` / `logs` / `show`.
 
-The table columns are `NAME [REPO] ARCH PARAMS QUANT CTX SIZE MODE [BACKEND] STATUS [DEVICE]` — the TUI Models list shows the same set minus `REPO`, which is CLI-only (the TUI groups rows under a repo section header instead), with `DEVICE` gated on the same "some single server offers more than one device" rule the TUI uses (`cli::resolve::multi_device`). `MODE` shows the catalog's mode hint (`chat` / `embedding` / `rerank`). `REPO` is where the model lives in short form — `unsloth/Qwen3.8-27B-GGUF` for an HF or LM Studio cache entry, the parent directory's name for anything else; it is empty for a source that names its own origin (Ollama), and the column is dropped when no row has one. It is also the prefix of the repo-qualified id the proxy publishes when two models share a file name (see [Model ids on the proxy](#model-ids-on-the-proxy)). `BACKEND` appears only when some model is served by more than one backend (or a non-default one); `DEVICE` appears only on multi-GPU hosts and reads `all` for a running launch that targets every GPU (no `--device`), the explicit selector when pinned, and `?` otherwise — matching the TUI's Device column. When piped, the same columns print as tab-separated rows.
+The table columns are `NAME [REPO] ARCH PARAMS QUANT CTX SIZE MODE [BACKEND] STATUS [DEVICE]` — the TUI Models list shows the same set minus `REPO`, which is CLI-only (the TUI groups rows under a repo section header instead), with `DEVICE` gated on the same "some single server offers more than one device" rule the TUI uses (`cli::resolve::multi_device`). `MODE` shows the catalog's mode hint (`chat` / `embedding` / `rerank`, or the media mode a declared server answers: `image` / `tts` / `stt`). `REPO` is where the model lives in short form — `unsloth/Qwen3.8-27B-GGUF` for an HF or LM Studio cache entry, the parent directory's name for anything else; it is empty for a source that names its own origin (Ollama), and the column is dropped when no row has one. It is also the prefix of the repo-qualified id the proxy publishes when two models share a file name (see [Model ids on the proxy](#model-ids-on-the-proxy)). `BACKEND` appears only when some model is served by more than one backend (or a non-default one); `DEVICE` appears only on multi-GPU hosts and reads `all` for a running launch that targets every GPU (no `--device`), the explicit selector when pinned, and `?` otherwise — matching the TUI's Device column. When piped, the same columns print as tab-separated rows.
 
 ### `llamastash show <model-ref>`
 
@@ -341,6 +342,8 @@ The human output shows the same content as aligned key/value sections, including
 ### `llamastash start <model-ref> | llamastash run <model-ref>`
 
 Launch a model. `run` is a visible alias for `start` — same flags, same behavior; it exists as the shorter way to say "launch this". Layered resolution: catalog row → optional preset → per-invocation flags → trailing raw `llama-server` flags after `--`.
+
+A reference is resolved against the daemon's catalog, and a daemon that has just started is still building that catalog. `start` waits for that first scan rather than reporting `no model matches <ref> (0 known)` for a model that is on disk: it prints `waiting for the daemon's first model scan ...` and gives up after 30 s, which is far more than a normal walk of the model roots takes. `list` and `status` keep answering immediately while the scan runs, with whatever it has found so far.
 
 ```
 llamastash start <ref> [--name LABEL] [--preset NAME] [--ctx N] [--port N] [--wait] [--force]
@@ -442,6 +445,62 @@ The last three rows are the deliberate difference from `config.yaml`, where each
 
 YAML merge keys work: `<<: *base` is expanded before the file is validated or parsed, so a shared anchor contributes its knobs to the entry that merges it, and a typo riding in through an anchor is caught like any other. Merges are shallow, per key, as YAML defines them — an entry with its own `knobs:` map replaces the anchor's rather than extending it.
 
+#### Memory reserve on unified-memory hosts
+
+`daemon.unified_memory_reserve_percent` controls additional admission headroom
+on detected unified-memory (UMA) hosts. The default, `auto`, preserves the
+existing policy: **25% on Apple Silicon**, **0% additional reserve on other
+UMA hosts**, including AMD/Intel integrated GPUs and NVIDIA coherent UMA.
+An integer **0–99** overrides that percentage. Discrete GPU and CPU-only hosts
+are unaffected.
+
+The percentage is taken from the available **pool**, after existing GPU limits
+have been applied. For example, 40 GiB available with a 10% reserve gives a
+36 GiB admission budget. On a GTT-limited host, 80 GiB of available RAM but only
+20 GiB of available GTT gives an 18 GiB budget at 10%. Existing applications
+are already counted as used. This headroom is a policy margin, not a change to
+the driver's allocation ceiling.
+
+From the Models list or right pane, **m** opens the memory reserve editor.
+Enter `auto` to restore the platform default, or a whole percentage from 0 to
+99. The highlighted field previews available pool memory, additional reserve,
+and admission budget. Invalid input leaves the estimate blank. Enter saves;
+Esc cancels (both follow the configured bindings). Saves preserve config
+comments and apply to future CLI, TUI, and proxy launches immediately, without
+restarting the daemon or its running models. A failed save leaves the live
+policy unchanged. An empty `{}` config is expanded to block style on save;
+non-empty flow mappings must be converted to block style before editing there.
+The modal ignores background mouse clicks and scrolls while editing or saving.
+Recent failed auto-starts can still be in the normal proxy
+retry cooldown; saving does not clear it.
+
+**Alt+M** remains an alias. In macOS Terminal, it requires
+[Use Option as Meta key](https://support.apple.com/guide/terminal/trmlkbrd/mac);
+plain **m** needs no terminal change. Neither captures text typed into a filter
+or chat input. The editor is unavailable without compatible daemon policy data
+or on a host not detected as UMA. If policy support disappears after opening,
+the editor closes; an in-flight save waits for its acknowledgment first.
+
+```yaml
+daemon:
+  unified_memory_reserve_percent: auto # or an integer 0..99
+```
+
+Hand-editing the key requires a daemon restart. `0` removes only this additional
+percentage: engine cache/OS reserves (including the vLLM and SGLang guards),
+compute overhead, demand checks, and in-flight reservations remain in effect.
+The preview is host-wide and precedes per-launch demand and reservations. In an
+AMD LXC container, a fully GPU-resident launch can use the separate GTT-only
+budget; launches with CPU-side weights retain the RAM/GTT minimum. Reducing
+headroom does not guarantee a launch fits. Observe memory pressure and swap.
+
+**Development-build rename:** the unmerged Apple-only feature used
+`daemon.apple_memory_reserve_percent`. Rename that key to
+`daemon.unified_memory_reserve_percent`, keeping its numeric value (for example,
+`1` stays `1`). There is no legacy alias. Omit the key or use `auto` to restore
+the platform default. Installations still running the Apple-only build must
+keep the old key until upgrading.
+
 #### `--force` (launch through an admission refusal)
 
 A launch whose projected demand exceeds the sampled free memory is refused before spawn, with the demand, the effective free, and what to do about it. `--force` turns that refusal into a warning and launches anyway:
@@ -494,7 +553,7 @@ Snapshot of daemon health, managed launches, external (unmanaged) `llama-server`
 
 An `external` row is a `llama-server` the daemon didn't start. Its `port` is the `--port` / `-p` read off the process's own argv, or `null` when the argv carried none — the human table and the TUI then show no port rather than a `0` one — and `name` appears only on a row a crashed daemon left behind, which keeps its `<model>@<name>` address. The list refreshes every 30 s: a server you start by hand shows up within that window, and one you kill drops out of it.
 
-Each row in `models` carries `name` when the launch was started with `--name`, and `preset` when the launch resolved one — an explicit `--preset` / launch file / TUI preset stop, a `<model>@<preset>` auto-start address, or the model's config `default:`. Both keys are omitted, not nulled, when they don't apply; `preset` is the preset that actually launched this copy, unlike the sibling `default` field, which is the model's configured default either way. The human table has no MODEL column, so its NAME cell renders `<model>@<name>` for a named launch and the model alone otherwise: two different models both named `coder` stay tellable apart in the command you reach for to work out what to stop.
+Each row in `models` carries `name` when the launch was started with `--name`, and `preset` when the launch resolved one — an explicit `--preset` / launch file / TUI preset stop, a `<model>@<preset>` auto-start address, or the model's config `default:`. Both keys are omitted, not nulled, when they don't apply; `preset` is the preset that actually launched this copy, unlike the sibling `default` field, which is the model's configured default either way. A launch of a declared media entry also carries `mode_hint` (`image` / `tts` / `stt`), and the table's MODE column prints it in place of `mode`: those modes reach the engine through the request's endpoint and change nothing about the launch, so `mode` alone calls an `stt` or `image` launch `chat`. A row with nothing declared omits the key, and `mode` prints. The human table has no MODEL column, so its NAME cell renders `<model>@<name>` for a named launch and the model alone otherwise: two different models both named `coder` stay tellable apart in the command you reach for to work out what to stop.
 
 Each row also carries `request_stats`: totals of the proxy requests that launch has served, dropped when the launch stops (`requests`, `errors`, `avg_duration_ms`, `avg_ttfb_ms`, `tokens_per_second_avg`, `tokens_per_second_aggregate`, `busy_ms`, `tokens_per_second_last`, `prefill_tokens_per_second`, `hosts`, `connections`, `live_hosts`, `live_connections`, `prompt_tokens`, `cached_tokens`, `cache_hit_ratio`, `completion_tokens`, `auto_starts`, `evictions`). Counts are `0` and averages `null` until the first request. Field meanings are under [`llamastash requests`](#llamastash-requests-model-ref).
 
@@ -1081,7 +1140,7 @@ The proxy resolves `body.model` against the same fuzzy matcher `llamastash start
 
 Routes served: `/v1/models`, `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/rerank`, the OpenAI `/v1/responses` (+ `/v1/responses/input_tokens`), the Anthropic `/v1/messages` + `/v1/messages/count_tokens`, and the media routes `/v1/images/generations` `edits` `variations`, `/v1/audio/speech`, `/v1/audio/transcriptions` and `/v1/audio/translations`, and llama.cpp's decision-model route `/v1/systemone`. Nothing else is forwarded. A server whose only API is off that list (whisper.cpp's `/inference`, or an engine's `/props` or `/slots`) is launched and supervised by llamastash but that API is only reachable on its own port from `llamastash status`, unless the entry declares it: a [`routes`](#generic-backend) prefix on a generic entry forwards to that entry alone, matching on a slash boundary, taking any method, keeping the query and forwarding the body as it arrived. Before anything matches, `.` and `..` segments resolve, `%2e` counts as a dot and `\` is a separator, all of it the way the URL parser reads the path before sending, and repeated slashes collapse. So a prefix cannot be walked sideways into the rest of the engine: `/internal/../metrics`, `/internal/x\..\..\metrics` and `/internal/%2e%2e/metrics` all ask for `/metrics`, which the proxy answers itself or refuses. Nothing else is decoded: a `%2f` inside a segment reaches the engine as the escape it was written as. A trailing slash the client wrote survives to the engine (`/internal/` is asked for as `/internal/`) while matching drops it, since engines such as FastAPI and ComfyUI route `/x/` and `/x` apart. A configured prefix holding a dot segment is refused at load. Such a request logs under the declared prefix rather than the client's path, and it rewrites nothing — an engine that owns a path owns the name inside it. A prefix that overlaps a path the proxy answers itself is refused in a declaration: every route above, plus `/v1/models`, `/health`, `/metrics`, `/ui` and `/api`. That is the whole owned list, so an extra route of an engine's own (`/v1/foo`) is still a legal declaration.
 
-A media request picks its server by mode, not by name matching. The body's model — `model` in JSON, the `model` form field in a `multipart/form-data` upload — resolves like any other request, so naming a running entry works directly. A name no catalog row answers (`whisper-1`, `tts-1`, the names OpenAI clients send by default) gets one fallback: when exactly one Ready or launchable entry declares that route's mode, the proxy starts it and forwards the body as sent. whisper.cpp and sd.cpp ignore the name, Kokoro-FastAPI, Speaches and LocalAI map `tts-1` / `whisper-1` themselves, and an engine that only answers to its own name sets `rewrite_model: true`. The answer is stamped `x-llamastash-served-by` plus `x-llamastash-fallback-reason: mode_match` and logged as the request's fallback reason, so a substitution is never silent. Two entries declaring the mode with neither running, or none declaring it at all, is a `404 model_not_found` that says which of the two it found, rather than a guess. A media row is listed on `/v1/models` like any other and nothing there filters by mode; a dormant row prints the first mode its entry declares, so an entry with `modes: [stt]` lists as `stt` before anything starts, and a running launch prints the launch's own mode. A multipart upload is only read to find its `model` field; its bytes reach the engine unchanged. Built-in engines declare no media mode, so naming a GGUF on a media route is a `400 unsupported_endpoint`, not a launch.
+A media request picks its server by mode, not by name matching. The body's model — `model` in JSON, the `model` form field in a `multipart/form-data` upload — resolves like any other request, so naming a running entry works directly. A name no catalog row answers (`whisper-1`, `tts-1`, the names OpenAI clients send by default) gets one fallback: when exactly one Ready or launchable entry declares that route's mode, the proxy starts it and forwards the body as sent. whisper.cpp and sd.cpp ignore the name, Kokoro-FastAPI, Speaches and LocalAI map `tts-1` / `whisper-1` themselves, and an engine that only answers to its own name sets `rewrite_model: true`. The answer is stamped `x-llamastash-served-by` plus `x-llamastash-fallback-reason: mode_match` and logged as the request's fallback reason, so a substitution is never silent. Two entries declaring the mode with neither running, or none declaring it at all, is a `404 model_not_found` that says which of the two it found, rather than a guess. Adding a second image or `stt` engine therefore costs the bare OpenAI names: with two entries declaring one mode nothing can pick between them, so map `whisper-1` (or `dall-e-3`, `tts-1`) to the entry you want with a [`proxy.aliases`](#aliases) line. A media row is listed on `/v1/models` like any other and nothing there filters by mode; a dormant row prints the first mode its entry declares, so an entry with `modes: [stt]` lists as `stt` before anything starts, and a running launch prints the launch's own mode. A multipart upload is only read to find its `model` field; its bytes reach the engine unchanged. Built-in engines declare no media mode, so naming a GGUF on a media route is a `400 unsupported_endpoint`, not a launch.
 
 ### Model ids on the proxy
 
@@ -1853,7 +1912,7 @@ The global `--quiet` drops the one-line note on stderr before the tool takes the
 
 | Input                                                        | Outcome                                                                                                                                        |
 | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| no MODEL, a chat launch is live (`launching` / `loading` / `ready`) | The one with the highest launch number (`L<n>`), which is the newest start; waits for Ready unless `--dry-run` was given.                                              |
+| no MODEL, a chat launch is live (`launching` / `loading` / `ready`) | The one with the highest launch number (`L<n>`), which is the newest start; waits for Ready unless `--dry-run` was given. A launch of a declared `image` / `tts` / `stt` entry is not one, though its MODE reads `chat`. |
 | no MODEL, no chat launch live, on a terminal       | A picker over the catalog's chat models, the same list `start` shows without a model. What you pick is started, then handed to the tool.                    |
 | no MODEL, no chat launch live, not on a terminal   | Exit `66`: no chat model is running, start one or pass MODEL. With `--json` the picker is off too.                                                    |
 | MODEL is a `proxy.aliases` name and no catalog model has it   | The alias target resolves instead, the proxy's own precedence. A model that owns the name wins.                                                    |
@@ -2004,6 +2063,7 @@ These are the defaults. Override any binding via the `keybindings:` block in `co
 | `Enter`                                       | On an idle model: open the launch picker. On a model that is running: focus the right pane on its first tab (`Requests`), with no picker staged                                                                                                              |
 | `u` / `c` / `p`                               | Yank URL / curl / model path. `y` is a vi-style alias for `c`.                                                                                                                                           |
 | `t` / `Shift+T`                               | Cycle theme forward / backward                                                                                                                                                                           |
+| `m` · `Alt+M` | Edit unified-memory headroom with a live budget preview; saves to `daemon.unified_memory_reserve_percent`. |
 | `Alt+L` (`⌥L` on macOS)                       | Cycle the left/right pane split through `left_pane_ratios` (wide mode; session-only). `100` hides the right pane, `0` hides the list.                                                                    |
 | `Tab` / `Shift+Tab`                           | Move focus across panes (`h` / `l` do the same — Left/Right arrows are intentionally unbound on Models to avoid an asymmetric pane-jump)                                                                 |
 | `Shift+M` / `Shift+L` / `Shift+C` / `Shift+S` / `Shift+Q` | Jump focus to Models / Logs / Chat / Settings / Requests respectively. `L` and `C` only fire when the focused model is running, `Q` when it has a launch.                                    |
@@ -2069,7 +2129,7 @@ When enabled, left-click moves focus and the wheel replays the `↑`/`↓` actio
 
 Three-stage modal: **Search → File picker → Confirm**. Search runs live against the public `/api/models` endpoint (300 ms debounce); paste an `owner/repo[:filename]` slug + Enter to bypass search. Each search row carries a `fmt` column and two size columns — `params` (model parameter count, e.g. `35B`) and `size` (approximate download size, the representative GGUF file HF parsed, e.g. `5.3G`); the exact per-quant size lands in the File picker.
 
-While the search field is empty the dialog is not blank: it lists the models the recommender ranks for this hardware — the same recommender `init` and `llamastash recommend` run, against the VRAM and RAM the daemon reports — under a note saying so. It ranks from the benchmark snapshot built into the binary at once, then fetches the same daily snapshot `init` fetches (one background request per TUI session, skipped when offline) and re-ranks when a newer one arrives; offline or on any failure the bundled ranking stands, and that copy can be days older than what `init` saw. The rows use the search table's columns: `fmt`, `params` (the entry's real parameter count, not the recommender's size bucket) and `size` from the catalog entry, `quant` from the pick, and a `fit` verdict drawn with the File picker's own glyphs (`✓ fits` / `⚠ tight` / `✗ oversize`), or `⚠ spill ~40%` for a mixture-of-experts pick that runs with its experts in system RAM. `↑`/`↓` move the cursor over them and `Enter` opens that entry's GGUF repo with the recommended quant selected, so the short path through the dialog is open → Enter → Enter. On a host with several GPUs the ranking sizes against the smallest card the chosen backend can use — the same rule `init` uses — so a 2-GPU box is not ranked as one big GPU and a hybrid laptop is not ranked on its iGPU's memory. Clearing the field (Backspace or Esc on a resting field) drops the search results and any search still in flight, and the list comes back. A catalog row whose `gguf_publisher` is `synthetic` names the upstream safetensors repo, so it opens the first community GGUF mirror of it instead — the same fallback `init` walks. The list comes from the bundled benchmark snapshot, so it also shows with `--offline`. Typing replaces it with HF results. When the daemon reports no usable GPU backend the dialog keeps the plain "start typing" hint rather than guessing a ranking.
+While the search field is empty the dialog is not blank: it lists the models the recommender ranks for this hardware — the same recommender `init` and `llamastash recommend` run, against the VRAM and RAM the daemon reports — under a note saying so. It ranks from the benchmark snapshot built into the binary at once, then fetches the same daily snapshot `init` fetches (one background request per TUI session, skipped when offline) and re-ranks when a newer one arrives; offline or on any failure the bundled ranking stands, and that copy can be days older than what `init` saw. The rows use the search table's columns: `fmt`, `params` (the entry's real parameter count, not the recommender's size bucket) and `size` from the catalog entry, `quant` from the pick, and a `fit` verdict drawn with the File picker's own glyphs (`✓ fits` / `⚠ tight` / `✗ oversize`), or `⚠ spill ~40%` for a mixture-of-experts pick that runs with its experts in system RAM. `↑`/`↓` move the cursor over them and `Enter` opens that entry's GGUF repo with the recommended quant selected, so the short path through the dialog is open → Enter → Enter. On a host with several GPUs the ranking sizes against the smallest card the chosen backend can use — the same rule `init` uses — so a 2-GPU box is not ranked as one big GPU and a hybrid laptop is not ranked on its iGPU's memory. Clearing the field (Backspace or Esc on a resting field) drops the search results and any search still in flight, and the list comes back. A catalog row whose `gguf_publisher` is `synthetic` names the upstream safetensors repo, so it opens the first community GGUF mirror of it instead — the same fallback `init` walks. Its size is estimated from the upstream weights rather than read off a GGUF file, so the row prints it as `~2.1G` and its verdict as `✓ ~fits`; the File picker shows the real file's size and fit, which can differ. The list comes from the bundled benchmark snapshot, so it also shows with `--offline`. Typing replaces it with HF results. When the daemon reports no usable GPU backend the dialog keeps the plain "start typing" hint rather than guessing a ranking.
 
 `fmt` is the repo's weight format: `GGUF` for llama.cpp, `SFTN` for a safetensors repo (vLLM, SGLang), `-` when the repo publishes both or neither. Both formats are searched — the browser used to be GGUF-only, which left safetensors repos unfindable and so unpullable. The `init` wizard still searches GGUF only, since it is bootstrapping a first model for the default backend.
 

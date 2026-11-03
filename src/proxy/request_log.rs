@@ -36,6 +36,17 @@ pub(crate) fn clamp_limit(raw: Option<usize>) -> usize {
 /// Name of the request log file inside the daemon's log directory.
 pub const FILE_NAME: &str = "requests.jsonl";
 
+/// Origin for the rows' monotonic starts. The wall clock in `started_at_ms`
+/// steps (an NTP correction, a resume from suspend); the aggregate windows need
+/// a clock that cannot, or two requests that ran together read as two separate
+/// stretches of busy time.
+static MONO_ORIGIN: OnceLock<Instant> = OnceLock::new();
+
+/// Milliseconds since [`MONO_ORIGIN`].
+fn mono_ms() -> u64 {
+  MONO_ORIGIN.get_or_init(Instant::now).elapsed().as_millis() as u64
+}
+
 /// How many stopped launches keep their totals. A launch id is never reused,
 /// so totals deleted the moment a launch stops read as a counter reset to
 /// anything that keeps reading them.
@@ -111,6 +122,12 @@ pub struct RequestRow {
   pub seq: u64,
   /// Unix time in milliseconds when the proxy received the request.
   pub started_at_ms: u64,
+  /// Milliseconds since the daemon's monotonic origin (`MONO_ORIGIN`) when the
+  /// proxy received the request. The aggregate windows use this instead of
+  /// `started_at_ms`, so a clock step or a suspend cannot move them. It never
+  /// reaches the wire or the log file.
+  #[serde(skip)]
+  pub started_mono_ms: Option<u64>,
   /// Peer address of the client connection (`ip:port`).
   pub client: Option<String>,
   /// Request path, e.g. `/v1/chat/completions`.
@@ -217,6 +234,13 @@ impl RequestRow {
 
   fn is_success(&self) -> bool {
     self.state == RequestState::Done && self.status.is_some_and(|s| s < 400)
+  }
+
+  /// Where the row sits on the monotonic clock. Only a row that never went
+  /// through [`RequestLog::begin`] lacks it — a test row, or one read back from
+  /// the log file — and those never share a ring with rows that have one.
+  fn mono_start_ms(&self) -> u64 {
+    self.started_mono_ms.unwrap_or(self.started_at_ms)
   }
 
   /// The row's cells. `none` stands in for a value the log does not have.
@@ -618,7 +642,7 @@ impl Clients {
 /// where the mean cannot.
 #[derive(Default)]
 struct Throughput {
-  /// Generation windows as `(start, end)` in ms, on the rows' own clock.
+  /// Generation windows as `(start, end)` in ms, on the rows' monotonic clock.
   windows: Vec<(u64, u64)>,
   tokens: u64,
 }
@@ -641,6 +665,7 @@ impl Throughput {
     if row.state == RequestState::InFlight || tokens == 0 || pps <= 0.0 {
       return;
     }
+    let began = row.mono_start_ms();
     // Where prompt computation ended. The proxy watching a stream's first token
     // arrive is the direct answer. Failing that: a response that arrives whole
     // sends its first byte at the end of generation, so the prompt finished a
@@ -661,9 +686,9 @@ impl Throughput {
         .saturating_sub(generated)
         .min(ttfb)
     });
-    let end = row.started_at_ms.saturating_add(wait);
+    let end = began.saturating_add(wait);
     let span = (tokens as f64 / pps * 1000.0).round() as u64;
-    let start = end.saturating_sub(span).max(row.started_at_ms);
+    let start = end.saturating_sub(span).max(began);
     if start >= end {
       return;
     }
@@ -693,9 +718,10 @@ impl Throughput {
     // the request is what keeps a load that precedes generation, or a
     // non-streamed request whose first byte is the whole wait, from stretching
     // or collapsing the wall.
-    let end = row.started_at_ms.saturating_add(duration_ms);
+    let began = row.mono_start_ms();
+    let end = began.saturating_add(duration_ms);
     let span = (tokens as f64 / tps * 1000.0).round() as u64;
-    let start = end.saturating_sub(span).max(row.started_at_ms);
+    let start = end.saturating_sub(span).max(began);
     if start >= end {
       return;
     }
@@ -1027,11 +1053,13 @@ impl RequestLog {
   /// matches exactly, so a client cannot make it long.
   pub fn begin(&self, route: &str, client: Option<SocketAddr>) -> RequestRecord {
     let started_at_ms = crate::util::datetime::now_ms();
+    let started_mono_ms = Some(mono_ms());
     let mut inner = self.lock();
     inner.next_seq += 1;
     let row = RequestRow {
       seq: inner.next_seq,
       started_at_ms,
+      started_mono_ms,
       client: client.map(|c| c.to_string()),
       route: route.to_string(),
       ..RequestRow::default()
@@ -2024,6 +2052,87 @@ mod tests {
   }
 
   #[test]
+  fn aggregate_throughput_ignores_a_wall_clock_step() {
+    // Two requests that ran 5 s apart while the wall clock stepped an hour
+    // forward between them. On their monotonic starts they still half overlap,
+    // so the wall is 15 s; placed by the stepped wall clock they sit an hour
+    // apart and add up to 20 s of busy time for the same tokens.
+    let steady = throughput_of([
+      generated_row(0, 10_000, 100, 10.0),
+      generated_row(5_000, 10_000, 100, 10.0),
+    ]);
+    let stepped = throughput_of([
+      generated_row(0, 10_000, 100, 10.0),
+      RequestRow {
+        started_mono_ms: Some(5_000),
+        ..generated_row(3_600_000, 10_000, 100, 10.0)
+      },
+    ]);
+    assert_eq!(
+      stepped, steady,
+      "a stepped wall clock cannot move two requests apart"
+    );
+    assert_eq!(
+      throughput_of([
+        generated_row(0, 10_000, 100, 10.0),
+        generated_row(3_600_000, 10_000, 100, 10.0),
+      ])
+      .1,
+      Some(20_000),
+      "a row with no monotonic start falls back to the wall clock"
+    );
+  }
+
+  #[test]
+  fn prefill_aggregate_ignores_a_wall_clock_step() {
+    // The same for the prompt-computation wall: two 1,000-token prompts at
+    // 500 tok/s, one second apart in real time, share a second of that wall.
+    let prompt = |wall: u64, mono: Option<u64>| RequestRow {
+      started_at_ms: wall,
+      started_mono_ms: mono,
+      state: RequestState::Done,
+      status: Some(200),
+      ttfb_ms: Some(2_000),
+      duration_ms: Some(2_000),
+      prefill_tokens: Some(1_000),
+      prefill_tokens_per_second: Some(500.0),
+      ..RequestRow::default()
+    };
+    let busy_for = |rows: [RequestRow; 2]| {
+      let mut figures = RowFigures::default();
+      for row in rows {
+        figures.add(&row);
+      }
+      let mut summary = RequestSummary::default();
+      figures.stamp(&mut summary);
+      summary.prefill_busy_ms
+    };
+    assert_eq!(
+      busy_for([prompt(0, Some(0)), prompt(3_600_000, Some(1_000))]),
+      busy_for([prompt(0, None), prompt(1_000, None)]),
+      "the stepped wall clock cannot pull two shared prompts apart"
+    );
+    assert_eq!(
+      busy_for([prompt(0, None), prompt(3_600_000, None)]),
+      Some(4_000),
+      "without monotonic starts the two windows do sit apart"
+    );
+  }
+
+  #[test]
+  fn a_begun_row_carries_a_monotonic_start_that_never_reaches_the_wire() {
+    let log = RequestLog::new();
+    drop(log.begin(ROUTE, None));
+    let row = &log.tail(LogScope::All, 1).rows[0];
+    assert!(row.started_mono_ms.is_some());
+    let v = serde_json::to_value(row).unwrap();
+    assert!(
+      v.get("started_mono_ms").is_none(),
+      "the monotonic start is the daemon's own clock"
+    );
+  }
+
+  #[test]
   fn the_average_covers_the_rows_the_aggregate_counts() {
     let log = RequestLog::new();
     let usage = |tokens, tps| Usage {
@@ -2360,6 +2469,7 @@ mod tests {
         let mut inner = log.lock();
         let row = inner.rows.iter_mut().find(|r| r.seq == seq).unwrap();
         row.started_at_ms = start;
+        row.started_mono_ms = Some(start);
         row.duration_ms = Some(10_000);
       }
     }

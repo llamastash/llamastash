@@ -15,6 +15,26 @@ use crate::backend::Backend;
 use crate::daemon::context::MethodContext;
 use crate::daemon::host_metrics::HostMetricsSnapshot;
 
+/// The media mode the catalog row for `path` declares, as its wire label.
+///
+/// `image` / `tts` / `stt` reach a launch through the request's endpoint, not
+/// its argv, so the launch records `chat` and `status` needs the entry's own
+/// declaration to say what the row answers. Every other hint is what the row's
+/// `mode` already carries, so this returns `None` and `mode` stands.
+fn declared_media_mode(
+  models: &[crate::discovery::DiscoveredModel],
+  path: &std::path::Path,
+) -> Option<&'static str> {
+  use crate::launch::mode::LaunchMode;
+  models
+    .iter()
+    .find(|m| m.path == path)
+    .and_then(|m| m.metadata.as_ref())
+    .and_then(|md| LaunchMode::from_label(md.mode_hint.as_label()?))
+    .filter(|m| m.is_declared_only())
+    .map(|m| m.label())
+}
+
 /// Snapshot every active managed model plus the daemon's GPU info.
 /// `status` is read-only; never triggers any state-machine transitions.
 pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
@@ -27,6 +47,9 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
   // Config-preset hint inputs, snapshotted once for the whole model loop.
   let preset_rows = super::methods::catalog_rows(ctx).await;
   let preset_store = ctx.presets.snapshot().await;
+  // The catalog's declared modes, so a media launch can name what it answers.
+  // A shared view: one refcount bump, no per-row copy.
+  let catalog_models = ctx.catalog.shared_view().await;
   let mut models: Vec<Value> = Vec::with_capacity(snap.len());
   for (launch_id, model) in snap {
     let state = model.state().await;
@@ -161,6 +184,12 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
     if min_grace > 0 {
       row["stop_grace_secs"] = json!(min_grace);
     }
+    // The media mode the entry declares, omitted otherwise. `mode` alone calls
+    // an `stt` or `image` launch `chat`, because that mode is routing-only and
+    // changes no argv, so the media half of the launch would be invisible here.
+    if let Some(hint) = declared_media_mode(&catalog_models, &params.model_path) {
+      row["mode_hint"] = json!(hint);
+    }
     models.push(row);
   }
   // External — read-only rows for `llama-server` processes the
@@ -280,6 +309,7 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
         .and_then(|env| env.binary.as_ref())
         .map(|b| b.display().to_string()),
       "ipc_url": ctx.ipc_url,
+      "memory": ctx.memory_policy.budget(ctx.host_metrics.as_ref()).await,
       "preload": {
         "entries": ctx.preload.iter().cloned().collect::<Vec<_>>(),
         "presets": preload_presets,
@@ -753,5 +783,49 @@ mod tests {
     // An unrecognised selector contributes no accelerator class.
     assert_eq!(accelerator_from_selector("sycl0"), None);
     assert_eq!(accelerator_from_selector(""), None);
+  }
+
+  /// A declared media mode is what the launch answers, so the status row names
+  /// it; every other hint is what the row's `mode` already carries, and a path
+  /// with no catalog row (an adopted orphan) guesses nothing.
+  #[test]
+  fn declared_media_mode_names_only_the_media_modes() {
+    use super::declared_media_mode;
+    use crate::discovery::{DiscoveredModel, ModelSource};
+    use crate::gguf::metadata::ModeHint;
+    use std::path::{Path, PathBuf};
+
+    let row = |name: &str, hint: ModeHint| DiscoveredModel {
+      path: PathBuf::from(format!("/m/{name}.gguf")),
+      parent: PathBuf::from("/m"),
+      source: ModelSource::UserPath,
+      metadata: Some({
+        let mut md = crate::test_support::fake_metadata("qwen2");
+        md.mode_hint = hint;
+        md
+      }),
+      parse_error: None,
+      split_siblings: Vec::new(),
+      display_label: None,
+      multimodal: None,
+      supported_backends: vec![],
+      mtp_head: None,
+    };
+    let models = vec![
+      row("asr", ModeHint::Stt),
+      row("sd", ModeHint::Image),
+      row("tts", ModeHint::Tts),
+      row("embed", ModeHint::Embedding),
+      row("plain", ModeHint::Chat),
+      row("odd", ModeHint::Unknown),
+    ];
+    let declared = |name: &str| declared_media_mode(&models, Path::new(&format!("/m/{name}.gguf")));
+    assert_eq!(declared("asr"), Some("stt"));
+    assert_eq!(declared("sd"), Some("image"));
+    assert_eq!(declared("tts"), Some("tts"));
+    assert_eq!(declared("embed"), None);
+    assert_eq!(declared("plain"), None);
+    assert_eq!(declared("odd"), None);
+    assert_eq!(declared("gone"), None);
   }
 }

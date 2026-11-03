@@ -42,6 +42,30 @@ pub async fn dispatch_request(ctx: &MethodContext, req: Request) -> Response {
 
   match req.method.as_str() {
     "ping" => Response::ok(id, json!("pong")),
+    "memory_reserve_set" => {
+      #[derive(Deserialize)]
+      #[serde(deny_unknown_fields)]
+      struct Params {
+        unified_memory_reserve_percent: crate::launch::headroom::MemoryReserve,
+      }
+      match parse_params::<Params>(req.params) {
+        Err(error) => Response::err(id, error),
+        Ok(params) => match ctx
+          .memory_policy
+          .set(params.unified_memory_reserve_percent)
+          .await
+        {
+          Ok(()) => Response::ok(
+            id,
+            json!(ctx.memory_policy.budget(ctx.host_metrics.as_ref()).await),
+          ),
+          Err(error) => Response::err(
+            id,
+            ErrorObject::new(ErrorCode::InternalError, error.to_string()),
+          ),
+        },
+      }
+    }
     "version" => {
       let uptime_secs = ctx.started_at.elapsed().as_secs();
       let connections = ctx.active_connections.load(Ordering::Relaxed);
@@ -122,6 +146,7 @@ pub async fn dispatch_request(ctx: &MethodContext, req: Request) -> Response {
       Response::ok(id, body)
     }
     "status" => Response::ok(id, crate::ipc::status::status_response(ctx).await),
+    "catalog_ready" => respond(id, catalog_ready_handler(ctx, req.params).await),
     "proxy_aliases" => {
       // The `proxy.aliases` table as the catalog answers it right now, so an
       // agent can see a dead alias without sending a request that trips it.
@@ -468,6 +493,37 @@ async fn logs_tail_handler(
 }
 
 #[derive(Deserialize, Default)]
+struct CatalogReadyParams {
+  /// How long to wait for the first scan, in milliseconds. Absent or `0`
+  /// answers immediately.
+  #[serde(default)]
+  wait_ms: u64,
+}
+
+/// `catalog_ready`: whether the daemon's first catalog scan has landed, waiting
+/// up to `wait_ms` for it. Read-only. A client that has to resolve a model
+/// reference uses it rather than failing on a catalog still being built.
+async fn catalog_ready_handler(
+  ctx: &MethodContext,
+  params: Option<Value>,
+) -> Result<Value, ErrorObject> {
+  let parsed: CatalogReadyParams = match params {
+    Some(Value::Null) | None => CatalogReadyParams::default(),
+    other => parse_params(other)?,
+  };
+  let mut done = ctx.catalog.first_scan_done();
+  if !done && parsed.wait_ms > 0 {
+    done = tokio::time::timeout(
+      std::time::Duration::from_millis(parsed.wait_ms),
+      ctx.catalog.wait_first_scan(),
+    )
+    .await
+    .is_ok();
+  }
+  Ok(json!({ "first_scan": done }))
+}
+
+#[derive(Deserialize, Default)]
 struct RequestsTailParams {
   /// Catalog path of one model. Absent: every request.
   #[serde(default)]
@@ -511,6 +567,7 @@ const PUBLIC_METHODS: &[&str] = &[
   "shutdown",
   "list_models",
   "status",
+  "catalog_ready",
   "proxy_aliases",
   "start_model",
   "stop_model",
@@ -523,6 +580,7 @@ const PUBLIC_METHODS: &[&str] = &[
   "presets_delete",
   "presets_show",
   "presets_all",
+  "memory_reserve_set",
   "favorite_add",
   "favorite_remove",
   "favorite_list",
@@ -1697,5 +1755,44 @@ mod tests {
     let (zero, none) = preset_hint("/m/other.gguf", &rows, &store);
     assert_eq!(zero, 0);
     assert!(none.is_none());
+  }
+
+  /// `catalog_ready` answers at once when the scan has landed, waits for it when
+  /// it has not, and a `wait_ms` that runs out says so instead of hanging.
+  #[tokio::test]
+  async fn catalog_ready_reports_and_waits_for_the_first_scan() {
+    let c = ctx();
+    let no_wait = dispatch_request(&c, Request::new(1, "catalog_ready", None)).await;
+    assert_eq!(
+      no_wait.result.expect("null params parse")["first_scan"],
+      json!(false)
+    );
+    let started = std::time::Instant::now();
+    let short = dispatch_request(
+      &c,
+      Request::new(2, "catalog_ready", Some(json!({ "wait_ms": 40 }))),
+    )
+    .await;
+    assert_eq!(
+      short.result.expect("wait_ms is optional to honour")["first_scan"],
+      json!(false)
+    );
+    assert!(started.elapsed() >= std::time::Duration::from_millis(40));
+    c.catalog.first_scan_completed();
+    let done = dispatch_request(
+      &c,
+      Request::new(3, "catalog_ready", Some(json!({ "wait_ms": 5_000 }))),
+    )
+    .await;
+    assert_eq!(done.result.expect("scan landed")["first_scan"], json!(true));
+    // A params body that is neither null nor an object is refused, not ignored.
+    let bad = dispatch_request(&c, Request::new(4, "catalog_ready", Some(json!(7)))).await;
+    assert_eq!(
+      bad
+        .error
+        .expect("a bare number is not a params object")
+        .code,
+      ErrorCode::InvalidParams.as_i32()
+    );
   }
 }

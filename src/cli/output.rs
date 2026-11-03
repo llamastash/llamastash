@@ -597,7 +597,11 @@ pub fn status_human(snap: &StatusSnapshot) -> String {
         } else {
           r.state.clone()
         },
-        r.mode.clone(),
+        // The mode the entry declares when it answers a media route, else the
+        // launch's own mode: an `stt` or `image` launch records `chat` because
+        // the media mode changes no argv, so the hint is the only way this
+        // column can name what the launch actually serves.
+        r.mode_hint.clone().unwrap_or_else(|| r.mode.clone()),
         if tty {
           colors::port(r.port)
         } else {
@@ -774,6 +778,11 @@ pub fn status_json(snap: &StatusSnapshot) -> Value {
       obj.insert("model_path".into(), serde_json::json!(r.model_path));
       obj.insert("port".into(), serde_json::json!(r.port));
       obj.insert("mode".into(), serde_json::json!(r.mode));
+      // Present only for a launch whose entry declares a media mode, so an
+      // ordinary row keeps its shape.
+      if let Some(hint) = r.mode_hint.as_deref() {
+        obj.insert("mode_hint".into(), serde_json::json!(hint));
+      }
       if let Some(n) = r.name.as_deref() {
         obj.insert("name".into(), serde_json::json!(n));
       }
@@ -848,6 +857,7 @@ pub fn status_json(snap: &StatusSnapshot) -> Value {
       // Boot preload as configured, mirrored verbatim; omitted against an
       // older daemon that doesn't surface it.
       "preload": d.preload,
+      "memory": d.memory,
     })
   });
   let mut body = serde_json::json!({
@@ -1486,6 +1496,7 @@ mod tests {
         build: None,
         server_path: None,
         ipc_url: None,
+        memory: None,
         preload: None,
       }),
       proxy: Value::Null,
@@ -1514,6 +1525,7 @@ mod tests {
         build: None,
         server_path: None,
         ipc_url: None,
+        memory: None,
         preload: None,
       }),
       proxy: Value::Null,
@@ -1542,6 +1554,7 @@ mod tests {
       build: None,
       server_path: None,
       ipc_url: None,
+      memory: None,
       preload: None,
     };
     let listening = StatusSnapshot {
@@ -1592,6 +1605,7 @@ mod tests {
         id: Some(serde_json::json!({"path": "/m/a.gguf", "header_blake3": "deadbeef"})),
         port: 41100,
         mode: "chat".into(),
+        mode_hint: None,
         name: None,
         state: "ready".into(),
         state_cause: None,
@@ -1691,6 +1705,7 @@ mod tests {
         build: Some("0.1.0".into()),
         server_path: Some("/usr/bin/llama-server".into()),
         ipc_url: Some("http://127.0.0.1:48134".into()),
+        memory: None,
         preload: Some(serde_json::json!({"entries": ["warm.gguf"], "presets": 1})),
       }),
       proxy: Value::Null,
@@ -1756,6 +1771,7 @@ mod tests {
       state_cause: None,
       pid: Some(123),
       mode: "chat".into(),
+      mode_hint: None,
       name: None,
       ready_at: None,
       params: None,
@@ -1770,6 +1786,41 @@ mod tests {
       stop_grace_secs: 0,
       request_stats: None,
     }
+  }
+
+  /// A media launch names the mode its entry declares, in both the piped TSV and
+  /// `--json`, while a row with nothing declared keeps its exact shape.
+  #[test]
+  fn status_media_row_prints_the_declared_mode() {
+    let _g = ColorGuard::set(false);
+    let mut media = running("L1", "ready", 41100, "/m/whisper.gguf");
+    media.mode_hint = Some("stt".into());
+    let snap = StatusSnapshot {
+      models: vec![media, running("L2", "ready", 41101, "/m/qwen.gguf")],
+      external: vec![],
+      gpu: Value::Null,
+      host: Value::Null,
+      daemon: None,
+      proxy: Value::Null,
+      backends: Value::Null,
+      servers: Value::Null,
+    };
+    let tsv = status_human(&snap);
+    assert!(
+      tsv.contains("L1\tready\tstt\t41100"),
+      "declared mode missing: {tsv}"
+    );
+    assert!(
+      tsv.contains("L2\tready\tchat\t41101"),
+      "plain row lost its mode: {tsv}"
+    );
+    let v = status_json(&snap);
+    assert_eq!(v["models"][0]["mode"], serde_json::json!("chat"));
+    assert_eq!(v["models"][0]["mode_hint"], serde_json::json!("stt"));
+    assert!(
+      v["models"][1].get("mode_hint").is_none(),
+      "an undeclared row must not grow the key: {v}"
+    );
   }
 
   #[test]
@@ -2132,6 +2183,7 @@ mod tests {
         build: None,
         server_path: None,
         ipc_url: None,
+        memory: None,
         preload: None,
       }),
       proxy: proxy_value("disabled", None, None),
@@ -2161,6 +2213,7 @@ mod tests {
         build: None,
         server_path: None,
         ipc_url: None,
+        memory: None,
         preload: None,
       }),
       proxy: proxy_value("listening", Some("127.0.0.1:11434"), None),
@@ -2190,6 +2243,7 @@ mod tests {
         build: None,
         server_path: None,
         ipc_url: None,
+        memory: None,
         preload: None,
       }),
       proxy: proxy_value("port_in_use", Some("127.0.0.1:11434"), None),
@@ -2325,6 +2379,7 @@ mod tests {
         build: None,
         server_path: None,
         ipc_url: None,
+        memory: None,
         preload: None,
       }),
       proxy: proxy_value("unbound", Some("127.0.0.1:80"), Some("permission denied")),

@@ -391,7 +391,7 @@ impl Backend for SglangBackend {
     };
     let cap = match snapshot.as_ref().filter(|_| sampled) {
       Some(s) => {
-        let free = crate::launch::admission::effective_free_bytes(s);
+        let free = crate::launch::admission::effective_free_bytes(s, ctx.memory_policy.reserve());
         match guard::max_total_tokens_cap(
           free,
           weights_bytes,
@@ -578,6 +578,64 @@ fn sglang_argv(params: &LaunchParams, port: u16) -> Vec<std::ffi::OsString> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[tokio::test]
+  async fn additional_headroom_reaches_the_cache_guard_without_removing_its_reserve() {
+    use crate::{
+      daemon::{
+        context::MethodContext, host_metrics::HostMetricsSnapshot, memory_policy::MemoryPolicy,
+        shutdown::ShutdownToken,
+      },
+      launch::headroom::MemoryReserve,
+    };
+    const GIB: u64 = 1024 * 1024 * 1024;
+    let dir = crate::util::test_temp::unique_temp_dir("sglang-headroom");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+      dir.join("config.json"),
+      r#"{"num_hidden_layers":1,"num_attention_heads":1,"head_dim":128,"torch_dtype":"float16"}"#,
+    )
+    .unwrap();
+    let mut caps = Vec::new();
+    for setting in [
+      MemoryReserve::AUTO,
+      MemoryReserve::percent(0).unwrap(),
+      MemoryReserve::percent(50).unwrap(),
+    ] {
+      let mut ctx = MethodContext::new(ShutdownToken::new())
+        .with_memory_policy(MemoryPolicy::new(setting, None));
+      ctx.host_metrics = Some(std::sync::Arc::new(tokio::sync::RwLock::new(
+        HostMetricsSnapshot {
+          gpu_backend: HostMetricsSnapshot::BACKEND_AMD.into(),
+          unified: true,
+          ram_total_bytes: 64 * GIB,
+          ram_used_bytes: 24 * GIB,
+          ..Default::default()
+        },
+      )));
+      let mut p = params(dir.to_str().unwrap());
+      let result = SglangBackend::new()
+        .resolve_knobs(&ctx, &mut p, 28 * GIB)
+        .await;
+      caps.push(
+        p.knobs
+          .text_by_name_for(SGLANG_BACKEND_ID, "max-total-tokens"),
+      );
+      if setting == MemoryReserve::percent(50).unwrap() {
+        assert!(result.refusal.is_some());
+      } else {
+        assert!(result.refusal.is_none(), "{:?}", result.refusal);
+        assert_eq!(
+          caps.last().unwrap().as_deref(),
+          Some("8388608"),
+          "4 GiB cache after the 8 GiB engine reserve"
+        );
+      }
+    }
+    assert_eq!(caps[0], caps[1]);
+    assert_eq!(caps[2], None);
+    std::fs::remove_dir_all(dir).unwrap();
+  }
 
   /// A backend declares only what it actually honors: declaring a knob is
   /// claiming it, and a claimed knob renders an editor row and accepts a CLI
