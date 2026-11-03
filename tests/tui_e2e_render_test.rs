@@ -257,6 +257,15 @@ fn hf_search_empty_golden_render_matches_fixture() {
 
 #[cfg_attr(target_os = "macos", ignore = "fixture uses Linux key glyphs")]
 #[test]
+fn hf_search_empty_narrow_golden_render_matches_fixture() {
+  // The narrowest frame that renders at all, pinned so the `~` explanation in
+  // the note above the list cannot grow past what two wrapped lines hold.
+  let rendered = render_to_lines_at(&mut seeded_hf_empty_search_app(), 60, HEIGHT).join("\n");
+  assert_golden_text(rendered + "\n", "tests/golden/hf-search-empty-narrow.txt");
+}
+
+#[cfg_attr(target_os = "macos", ignore = "fixture uses Linux key glyphs")]
+#[test]
 fn hf_files_golden_render_matches_fixture() {
   assert_golden(&mut seeded_hf_files_app(), "tests/golden/hf-files.txt");
 }
@@ -400,11 +409,12 @@ fn seeded_hf_search_app() -> App {
   app
 }
 
-/// A three-row catalog written into the test, so the fixture pins the row
+/// A four-row catalog written into the test, so the fixture pins the row
 /// rendering rather than the shipped catalog's contents: a snapshot regen must
 /// not fail this golden. The rows cover the shapes a recommendation row takes —
-/// one that fits the GPU, one that runs tight, and a mixture-of-experts pick
-/// whose experts sit in system RAM.
+/// one that fits the GPU, one that runs tight, a mixture-of-experts pick whose
+/// experts sit in system RAM, and one whose publisher is `synthetic`, whose size
+/// is an estimate the File picker can contradict.
 fn recommendation_fixture_snapshot() -> llamastash::init::benchmark::BenchmarkSnapshot {
   let catalog = r#"{
     "schema_version": 1,
@@ -438,7 +448,14 @@ fn recommendation_fixture_snapshot() -> llamastash::init::benchmark::BenchmarkSn
         "task_hints": ["general"],
         "benchmark_score": { "value": 68.0, "source": "fixturebench" },
         "tok_s_factor": 1.8, "recency": 1.0, "source_hf_id": "fixture/Vast-Sparse",
-        "params_active": 3000000000, "is_moe": true, "gguf_publisher": "fixture" }
+        "params_active": 3000000000, "is_moe": true, "gguf_publisher": "fixture" },
+      { "id": "fixture-synthetic-q4-k-m", "repo": "fixture/Upstream-Instruct",
+        "file": "upstream-q4.gguf", "architecture": "llama", "quant": "Q4_K_M",
+        "params": 4000000000, "weights_bytes": 2254857830,
+        "task_hints": ["general"],
+        "benchmark_score": { "value": 55.0, "source": "fixturebench" },
+        "tok_s_factor": 3.0, "recency": 0.8, "source_hf_id": "fixture/Upstream-Instruct",
+        "gguf_publisher": "synthetic" }
     ]
   }"#;
   serde_json::from_str(catalog).expect("the golden fixture's catalog parses")
@@ -462,8 +479,8 @@ fn seeded_hf_empty_search_app() -> App {
   state.recs = state.hardware_fit_ctx.recommendations(&snapshot);
   assert_eq!(
     state.recs.len(),
-    3,
-    "the fixture catalog must rank all three rows, or the golden pins nothing",
+    4,
+    "the fixture catalog must rank all four rows, or the golden pins nothing",
   );
   app.hf_dialog = Some(state);
   app

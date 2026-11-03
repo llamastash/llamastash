@@ -18,6 +18,9 @@
 ### Fixed
 
 - `llamastash session` with no model picks the running chat model even when a media launch was started after it. The newest launch won, and the newest was an `stt` or `image` launch, so the command refused with `... is a speech-to-text model` while a real chat model was up.
+- The `requests` aggregates (`Agg tok/s`, `Agg PP tok/s` and their busy time) no longer read a wall-clock step or a resume from suspend as idle time.
+- A knob you set that the resolved backend cannot honour is named in the launch's warnings instead of vanishing from the command line silently.
+- A recommended row in the pull dialog marks its size and its fit verdict with `~`, so an estimated size no longer reads like the file list's real one.
 
 ## [0.10.1] — 2026-10-30
 

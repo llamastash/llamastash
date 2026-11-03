@@ -1007,7 +1007,7 @@ async fn run_models_step(
   let mut quant_hint: Option<String> = None;
   let (repo, pinned_filename, estimated_bytes) = match choice {
     ModelChoice::Curated(entry) => {
-      if entry.gguf_publisher == "synthetic" {
+      if entry.gguf_publisher == crate::init::download::SYNTHETIC_PUBLISHER {
         fallback_repos = crate::init::download::synthetic_publisher_fallbacks(&entry.repo);
         quant_hint = Some(entry.quant.clone());
       }
