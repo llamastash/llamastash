@@ -448,11 +448,7 @@ async fn forward_request(
       // looser `serves_mode` treats an entry with no `modes:` as an OpenAI server
       // for everything, which would let a plain chat entry take an upload it has
       // no endpoint for.
-      let serves = if mode.is_declared_only() {
-        b.declares_mode(&path, server.as_deref(), mode)
-      } else {
-        b.serves_mode(&path, server.as_deref(), mode)
-      };
+      let serves = route::launch_serves_mode(&b, &path, server.as_deref(), mode);
       if !serves {
         // Name the actual backend for the user (dynamic, so the code names none).
         let msg = format!(

@@ -4,6 +4,10 @@
 
 - A web page can no longer drive or read the proxy through its port: a foreign `Host` gets `403 forbidden_host` (the DNS-rebinding guard on a keyless loopback bind) and a foreign `Origin` gets `403 forbidden_origin` in every mode; extension and app scheme origins still pass.
 
+### Fixed
+
+- The family-MRU fallback only answers from a running model that serves the request's mode, and embeddings and rerank requests never fall back to another model at all.
+
 ## [0.11.0] — 2026-11-03
 
 This release adds two CLI verbs so an agent can manage models without the TUI. `llamastash delete` removes a model's files through the daemon with the same plan the TUI's `Ctrl+D` shows, and refuses without `--yes` outside a TTY. `llamastash bench` starts a model once per preset and reports load time, prompt and generation speed and time to first token, in a table or `--json`. Unified-memory hosts get a configurable admission reserve (`daemon.unified_memory_reserve_percent`), the HuggingFace pull dialog opens on the models ranked for your hardware, and media launches now show `stt` / `image` instead of `chat` in `status`.
