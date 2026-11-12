@@ -644,7 +644,12 @@ async fn list_models(state: Arc<ProxyState>) -> ProxyResponse {
   let state_snap = state.ctx.state.snapshot().await;
   for (named_id, r) in named_launch_ids(&state_snap.running, &ids) {
     if !rows.iter().any(|row| row.id == named_id) {
-      rows.push(ModelObject::new(named_id).with_mode(Some(r.params.mode.label())));
+      // A media launch records the chat mode its argv was composed for;
+      // the entry's own declaration is what the row really answers, the
+      // same rule `status` prints.
+      let mode = crate::ipc::status::declared_media_mode(&snap, &r.params.model_path)
+        .unwrap_or_else(|| r.params.mode.label());
+      rows.push(ModelObject::new(named_id).with_mode(Some(mode)));
     }
   }
   for (name, m) in alias_rows(&state, &cat, &snap) {

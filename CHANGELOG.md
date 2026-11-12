@@ -7,6 +7,7 @@
 ### Fixed
 
 - The family-MRU fallback only answers from a running model that serves the request's mode, and embeddings and rerank requests never fall back to another model at all.
+- A running `stt` / `image` / `tts` launch lists on `/v1/models` under its declared mode instead of `chat`, matching what `status` prints.
 
 ## [0.11.0] — 2026-11-03
 
