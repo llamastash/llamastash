@@ -57,6 +57,17 @@ async fn setup() -> (
   ShutdownToken,
   tokio::task::JoinHandle<()>,
 ) {
+  setup_with_key(None).await
+}
+
+async fn setup_with_key(
+  api_key: Option<&str>,
+) -> (
+  SocketAddr,
+  MethodContext,
+  ShutdownToken,
+  tokio::task::JoinHandle<()>,
+) {
   let dir = unique_temp("checks");
   let model_path = write_gguf(&dir, "qwen3.gguf", "qwen3");
   let registry = SupervisorRegistry::new();
@@ -104,8 +115,14 @@ async fn setup() -> (
     })
     .await;
   let ctx = MethodContext::with_catalog(ShutdownToken::new(), catalog).with_supervisors(registry);
-  let state =
-    ProxyState::from_context_with_auth(&ctx, false, true, None, DEFAULT_BODY_LIMIT_BYTES, true);
+  let state = ProxyState::from_context_with_auth(
+    &ctx,
+    false,
+    true,
+    api_key.map(str::to_string),
+    DEFAULT_BODY_LIMIT_BYTES,
+    true,
+  );
   let (addr, shutdown, handle) = spawn_listener(state).await;
   (addr, ctx, shutdown, handle)
 }
@@ -331,6 +348,54 @@ async fn same_origin_and_extension_origins_pass() {
   assert_eq!(status, 200);
   let (status, _) = raw_request(addr, "GET", "/ui", &own, &[("Origin", &origin)], None).await;
   assert_eq!(status, 302, "same-origin /ui keeps its redirect");
+  let _ = ctx;
+  shutdown_listener(shutdown, handle).await;
+}
+
+// ---- keyed bind ----
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn keyed_bind_refuses_foreign_origin_before_auth_and_leaves_host_to_the_key() {
+  let (addr, ctx, shutdown, handle) = setup_with_key(Some("sk-llamastash-test")).await;
+  let own = addr.to_string();
+  let (status, body) = raw_request(
+    addr,
+    "POST",
+    "/v1/chat/completions",
+    &own,
+    &[
+      ("Origin", "http://evil.example"),
+      ("Authorization", "Bearer sk-llamastash-test"),
+    ],
+    Some(("application/json", r#"{"model":"qwen3","messages":[]}"#)),
+  )
+  .await;
+  assert_forbidden(status, &body, "forbidden_origin");
+  // A reverse proxy in front may rewrite Host; with a key the key decides.
+  let (status, _) = raw_request(
+    addr,
+    "POST",
+    "/v1/chat/completions",
+    "llm.example.com",
+    &[],
+    Some(("application/json", r#"{"model":"qwen3","messages":[]}"#)),
+  )
+  .await;
+  assert_eq!(status, 401, "a foreign Host on a keyed bind reaches auth");
+  // The same reverse proxy over TLS: the page's origin is https on that host.
+  let (status, body) = raw_request(
+    addr,
+    "POST",
+    "/v1/chat/completions",
+    "llm.example.com",
+    &[
+      ("Origin", "https://llm.example.com"),
+      ("Authorization", "Bearer sk-llamastash-test"),
+    ],
+    Some(("application/json", r#"{"model":"qwen3","messages":[]}"#)),
+  )
+  .await;
+  assert_eq!(status, 200, "https same-host origin must serve: {body:?}");
   let _ = ctx;
   shutdown_listener(shutdown, handle).await;
 }

@@ -924,11 +924,8 @@ pub(crate) struct NotRunningPlan {
 ///      Reason is `launch_failed` when the pick shares the requested
 ///      arch (graceful in-family substitution) and `family_mismatch`
 ///      when the pick's arch differs or either side lacks arch metadata
-///      (the upstream output may not match request semantics, and
-///      clients that care should branch on the header). Embedding and
-///      rerank requests never fall back: another model's vectors or
-///      scores never match what the client indexed, so a failed launch
-///      there is the plain 503. If no Ready candidate exists
+///      (clients that care should branch on the header). Embedding and
+///      rerank requests never fall back. If no Ready candidate exists
 ///      → 503 `launch_failed` with the running list.
 ///
 /// `endpoint_mode` carries the mode the requested endpoint implies so
@@ -975,9 +972,7 @@ pub(crate) async fn handle_not_running(
       .await
     }
     LaunchOutcome::Failed { cause } => {
-      // Another model's vectors or scores never match what the client
-      // indexed, so embedding and rerank requests skip the fallback
-      // entirely.
+      // Another model's vectors or scores never match what the client indexed.
       if matches!(
         endpoint_mode,
         Some(LaunchMode::Embedding) | Some(LaunchMode::Rerank)
@@ -1037,13 +1032,8 @@ pub(crate) async fn handle_not_running(
 ///
 /// - `launch_failed`: in-family substitution. Both sides name the same
 ///   arch — the upstream output shape is what the client asked for.
-/// - `family_mismatch`: everything else. The picked supervisor's arch
-///   differs from the requested arch, or either side is missing
-///   metadata, so the client cannot trust the response shape. A chat
-///   request falling across arches (bert-arch pick for a llama request)
-///   lands here; embedding and rerank requests never reach this
-///   function at all. Clients that don't read response headers see
-///   surprising payloads; this is the header that lets them branch.
+/// - `family_mismatch`: the arches differ, or either side has none, so
+///   nothing proves the pick answers like the requested model.
 fn fallback_reason_for(requested: Option<&str>, picked: Option<&str>) -> &'static str {
   match (requested, picked) {
     (Some(a), Some(b)) if a == b => "launch_failed",
@@ -1111,15 +1101,8 @@ pub(crate) fn index_catalog_by_path(
 /// the supervisor snapshot (filtering to Ready), joins each row
 /// against the catalog snapshot to find the matching `arch`, and
 /// stamps the latest MRU timestamp.
-///
-/// `endpoint_mode` is what the failed request asked for; a Ready launch
-/// joins only when it serves that mode, asked of the backend the launch
-/// resolved to at spawn. A media request needs a launch whose entry
-/// declares the mode. A chat-shaped request (`None`) needs a launch
-/// composed in chat mode that serves chat — an entry launched for
-/// embedding mode, or one whose catalog hint names a media mode (those
-/// launch as `chat` while answering only their media route), is
-/// no chat stand-in.
+/// Only launches that serve `endpoint_mode` join. A media entry launches
+/// in chat mode, so a chat request also skips a row that declares a media mode.
 async fn collect_fallback_candidates(
   state: &Arc<ProxyState>,
   endpoint_mode: Option<LaunchMode>,
@@ -1272,8 +1255,6 @@ mod tests {
 
   #[test]
   fn no_arch_on_either_side_is_family_mismatch() {
-    // Neither side names an arch, so nothing proves the two models are
-    // in the same family; the header has to say "unverifiable".
     assert_eq!(fallback_reason_for(None, None), "family_mismatch");
   }
 

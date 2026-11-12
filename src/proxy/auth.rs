@@ -168,15 +168,10 @@ pub(crate) fn host_is_loopback(host: &str) -> bool {
     .is_ok_and(|ip| ip.is_loopback())
 }
 
-/// Whether an `Origin` header value may drive the proxy. An `http` page
-/// passes only against the very host it was served from (`https` can never
-/// match — the proxy has no TLS), so a cross-site request cannot ride a
-/// browser's cached credentials or cookie-free loopback trust. Extension /
-/// app schemes (`chrome-extension://`, `moz-extension://`,
-/// `safari-web-extension://`, `vscode-webview://`, `tauri://`) pass: a web
-/// page cannot send them, only an installed extension or app can, and
-/// Ollama allows them by default. `null` (sent by sandboxed iframes and
-/// `file://` pages, so a page can forge it) and every other origin fail.
+/// Whether an `Origin` header value may drive the proxy: the page's own host
+/// over `http` or `https` (`https` is a TLS reverse proxy in front of it), or
+/// an extension / app scheme, which a web page cannot send. `null` is refused
+/// because a sandboxed iframe or a `file://` page sends it.
 pub(crate) fn origin_is_allowed(origin: &str, host: Option<&str>) -> bool {
   let origin = origin.trim();
   if origin.eq_ignore_ascii_case("null") {
@@ -189,7 +184,7 @@ pub(crate) fn origin_is_allowed(origin: &str, host: Option<&str>) -> bool {
   if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
     return true;
   }
-  host.is_some_and(|h| format!("http://{h}").eq_ignore_ascii_case(origin))
+  host.is_some_and(|h| origin[scheme_end + 3..].eq_ignore_ascii_case(h))
 }
 
 /// Pull the password out of a `Basic base64(user:pass)` header value.
@@ -275,10 +270,14 @@ mod tests {
       "http://evil.example",
       Some("127.0.0.1:11435")
     ));
-    // The proxy has no TLS, so an https origin never matches.
+    // A TLS reverse proxy in front keeps the host and changes the scheme.
+    assert!(origin_is_allowed(
+      "https://llm.example.com",
+      Some("llm.example.com")
+    ));
     assert!(!origin_is_allowed(
-      "https://127.0.0.1:11435",
-      Some("127.0.0.1:11435")
+      "https://evil.example",
+      Some("llm.example.com")
     ));
     // A different spelling of the same machine is a different origin here.
     assert!(!origin_is_allowed(

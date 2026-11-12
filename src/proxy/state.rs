@@ -78,12 +78,7 @@ pub struct ProxyState {
   /// returns `false`, so the router skips the check entirely. Set once
   /// at daemon startup; never mutated thereafter.
   pub(crate) auth: super::auth::ProxyAuth,
-  /// `true` when the listener is bound to a loopback address (the default)
-  /// rather than a LAN interface. Gates the `Host` check in
-  /// [`crate::proxy::router`]: a loopback, keyless listener must still
-  /// refuse a DNS-rebound page, while a LAN bind already guards every
-  /// route with its bearer key. Set once at daemon startup from the
-  /// configured proxy host; never mutated thereafter.
+  /// Whether the listener binds a loopback address; gates the router's `Host` check.
   pub(crate) loopback_bind: bool,
   /// Inbound body size cap in bytes, applied to every body the proxy
   /// buffers before forwarding (data plane + `/ui`). From

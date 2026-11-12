@@ -130,42 +130,27 @@ pub async fn route(state: Arc<ProxyState>, req: Request<Incoming>) -> ProxyRespo
   let method = req.method().clone();
   let path = req.uri().path().to_string();
 
-  // Host / Origin checks, ahead of everything: a refused request must never
-  // reach the route table, an engine, or the request log.
-  //
-  // A keyless loopback listener trusts the address it binds, but the page at
-  // the other end of that address is picked by DNS: a DNS-rebound name
-  // resolves to 127.0.0.1 in the browser while its real host is foreign.
-  // The Host header is the one thing a rebinding page cannot forge. A LAN
-  // bind skips it — the bearer key already covers every route there.
-  // A missing Host passes: hyper needs it for HTTP/1.1, so only a
-  // hand-rolled non-browser client can omit it.
-  let host = req
-    .headers()
-    .get(hyper::header::HOST)
-    .and_then(|v| v.to_str().ok());
-  if state.loopback_bind && !state.auth.enforced() {
-    if let Some(h) = host {
-      if !auth::host_is_loopback(h) {
-        return error_response(
-          StatusCode::FORBIDDEN,
-          "forbidden_host",
-          &format!(
-            "this proxy listens on loopback and answers only Host localhost, \
-             127.0.0.1 or [::1]; got `{h}`"
-          ),
-        );
-      }
+  // Ahead of the route table, so a refused request reaches no engine and no log
+  // row. A header that is not text reads as "", which both checks refuse.
+  let header = |name| req.headers().get(name).map(|v| v.to_str().unwrap_or(""));
+  let host = header(hyper::header::HOST);
+  // DNS rebinding: the Host header is the one thing a rebound page cannot
+  // forge. Skipped with a key, which covers a reverse proxy that rewrites Host.
+  if let Some(h) = host.filter(|_| state.loopback_bind && !state.auth.enforced()) {
+    if !auth::host_is_loopback(h) {
+      return error_response(
+        StatusCode::FORBIDDEN,
+        "forbidden_host",
+        &format!(
+          "this proxy listens on loopback and answers only Host localhost, \
+           127.0.0.1 or [::1]; got `{h}`"
+        ),
+      );
     }
   }
-  // A cross-site `Origin` is refused in every mode, key included: a browser
-  // caches the `/ui` Basic credentials and would attach them to a cross-site
-  // form POST, so the key alone does not stop a page from driving the proxy.
-  if let Some(origin) = req
-    .headers()
-    .get(hyper::header::ORIGIN)
-    .and_then(|v| v.to_str().ok())
-  {
+  // Every mode, key included: a browser attaches cached `/ui` Basic
+  // credentials to a cross-site form POST.
+  if let Some(origin) = header(hyper::header::ORIGIN) {
     if !auth::origin_is_allowed(origin, host) {
       return error_response(
         StatusCode::FORBIDDEN,
