@@ -142,6 +142,56 @@ impl ProxyAuth {
   }
 }
 
+/// Whether a `Host` header value (with an optional `:port`) names loopback:
+/// `localhost`, any `*.localhost` name, or an IP literal inside
+/// `127.0.0.0/8` / `::1`. `*.localhost` counts because RFC 6761 makes
+/// browsers resolve the whole suffix to loopback, so a DNS-rebinding page
+/// cannot own such a name. Case-insensitive; everything else is refused.
+pub(crate) fn host_is_loopback(host: &str) -> bool {
+  let host = host.trim();
+  // An IPv6 literal keeps its brackets (`[::1]:11435`); a bare host may
+  // carry a `:port` made of digits (a bracket-less IPv6 is invalid in a
+  // Host header, so dropping only a numeric port cannot mangle a real one).
+  let bare = match host.split_once(']') {
+    Some((inner, _)) => inner.strip_prefix('[').unwrap_or(inner),
+    None => match host.rsplit_once(':') {
+      Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
+      _ => host,
+    },
+  };
+  let name = bare.to_ascii_lowercase();
+  if name == "localhost" || name.ends_with(".localhost") {
+    return true;
+  }
+  bare
+    .parse::<std::net::IpAddr>()
+    .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// Whether an `Origin` header value may drive the proxy. An `http` page
+/// passes only against the very host it was served from (`https` can never
+/// match — the proxy has no TLS), so a cross-site request cannot ride a
+/// browser's cached credentials or cookie-free loopback trust. Extension /
+/// app schemes (`chrome-extension://`, `moz-extension://`,
+/// `safari-web-extension://`, `vscode-webview://`, `tauri://`) pass: a web
+/// page cannot send them, only an installed extension or app can, and
+/// Ollama allows them by default. `null` (sent by sandboxed iframes and
+/// `file://` pages, so a page can forge it) and every other origin fail.
+pub(crate) fn origin_is_allowed(origin: &str, host: Option<&str>) -> bool {
+  let origin = origin.trim();
+  if origin.eq_ignore_ascii_case("null") {
+    return false;
+  }
+  let Some(scheme_end) = origin.find("://") else {
+    return false;
+  };
+  let scheme = &origin[..scheme_end];
+  if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+    return true;
+  }
+  host.is_some_and(|h| format!("http://{h}").eq_ignore_ascii_case(origin))
+}
+
 /// Pull the password out of a `Basic base64(user:pass)` header value.
 /// The username half is discarded — browsers send the proxy key as the
 /// password. Returns `None` when the scheme isn't `Basic`, the base64
@@ -188,6 +238,53 @@ mod tests {
     assert!(k.verify(k.as_str()));
     assert!(!k.verify("sk-llamastash-wrong"));
     assert!(!k.verify(""));
+  }
+
+  #[test]
+  fn host_is_loopback_accepts_loopback_names_and_literals() {
+    for ok in [
+      "127.0.0.1:11435",
+      "localhost",
+      "LOCALHOST:1",
+      "foo.localhost:11435",
+      "[::1]:11435",
+      "127.1.2.3",
+    ] {
+      assert!(host_is_loopback(ok), "{ok} must pass");
+    }
+    for bad in [
+      "evil.example",
+      "localhost.evil.example",
+      "192.168.1.5:11435",
+      "[::ffff:8.8.8.8]",
+      "",
+    ] {
+      assert!(!host_is_loopback(bad), "{bad} must be refused");
+    }
+  }
+
+  #[test]
+  fn origin_is_allowed_pins_same_origin_and_extension_schemes() {
+    assert!(origin_is_allowed(
+      "http://127.0.0.1:11435",
+      Some("127.0.0.1:11435")
+    ));
+    assert!(origin_is_allowed("chrome-extension://abc", None));
+    assert!(!origin_is_allowed("null", Some("127.0.0.1:11435")));
+    assert!(!origin_is_allowed(
+      "http://evil.example",
+      Some("127.0.0.1:11435")
+    ));
+    // The proxy has no TLS, so an https origin never matches.
+    assert!(!origin_is_allowed(
+      "https://127.0.0.1:11435",
+      Some("127.0.0.1:11435")
+    ));
+    // A different spelling of the same machine is a different origin here.
+    assert!(!origin_is_allowed(
+      "http://localhost:11435",
+      Some("127.0.0.1:11435")
+    ));
   }
 
   #[test]

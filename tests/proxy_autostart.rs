@@ -174,7 +174,8 @@ async fn build_state_with_aliases(
     aliases.iter().map(|(k, v)| (k.to_string(), v.to_string())),
   );
   let ctx = ctx.with_aliases(&aliases);
-  let state = ProxyState::from_context_with_auth(&ctx, false, true, None, DEFAULT_BODY_LIMIT_BYTES);
+  let state =
+    ProxyState::from_context_with_auth(&ctx, false, true, None, DEFAULT_BODY_LIMIT_BYTES, true);
   (state, ctx)
 }
 

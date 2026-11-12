@@ -78,6 +78,13 @@ pub struct ProxyState {
   /// returns `false`, so the router skips the check entirely. Set once
   /// at daemon startup; never mutated thereafter.
   pub(crate) auth: super::auth::ProxyAuth,
+  /// `true` when the listener is bound to a loopback address (the default)
+  /// rather than a LAN interface. Gates the `Host` check in
+  /// [`crate::proxy::router`]: a loopback, keyless listener must still
+  /// refuse a DNS-rebound page, while a LAN bind already guards every
+  /// route with its bearer key. Set once at daemon startup from the
+  /// configured proxy host; never mutated thereafter.
+  pub(crate) loopback_bind: bool,
   /// Inbound body size cap in bytes, applied to every body the proxy
   /// buffers before forwarding (data plane + `/ui`). From
   /// [`crate::config::loader::ProxyConfig::max_body_size`] (default
@@ -105,7 +112,8 @@ impl ProxyState {
   /// `ProxyConfig` (after the CLI / env OR-chain); `max_body_size` the
   /// resolved body cap. Auth is disabled (loopback, same-UID posture)
   /// — production uses [`Self::from_context_with_auth`] to attach a
-  /// bearer key. The `proxy.aliases` table rides in `ctx` like every other
+  /// bearer key, and the bind is loopback. The `proxy.aliases` table rides
+  /// in `ctx` like every other
   /// daemon-side handle, so the proxy and the `proxy_aliases` handler read one
   /// table with one warn set.
   pub fn from_context(
@@ -114,19 +122,28 @@ impl ProxyState {
     fallback_enabled: bool,
     max_body_size: usize,
   ) -> Arc<Self> {
-    Self::from_context_with_auth(ctx, ollama_compat, fallback_enabled, None, max_body_size)
+    Self::from_context_with_auth(
+      ctx,
+      ollama_compat,
+      fallback_enabled,
+      None,
+      max_body_size,
+      true,
+    )
   }
 
   /// Like [`Self::from_context`] but with a resolved bearer `api_key`
-  /// (`None` disables auth). The daemon's `run_foreground` passes the key from
-  /// the loaded [`crate::config::loader::ProxyConfig`]; tests use the keyless
-  /// [`Self::from_context`].
+  /// (`None` disables auth) and the resolved `loopback_bind` (whether the
+  /// listener binds a loopback address). The daemon's `run_foreground`
+  /// passes both from the loaded [`crate::config::loader::ProxyConfig`];
+  /// tests use the keyless [`Self::from_context`].
   pub fn from_context_with_auth(
     ctx: &MethodContext,
     ollama_compat: bool,
     fallback_enabled: bool,
     api_key: Option<String>,
     max_body_size: usize,
+    loopback_bind: bool,
   ) -> Arc<Self> {
     Arc::new(Self {
       http_client: Arc::new(build_http_client()),
@@ -138,6 +155,7 @@ impl ProxyState {
       fallback_enabled,
       auth: super::auth::ProxyAuth::new(api_key),
       max_body_size,
+      loopback_bind,
     })
   }
 }

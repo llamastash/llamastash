@@ -19,8 +19,10 @@ You can expect an acknowledgement within a few business days. If you don't hear 
 
 LlamaStash is **loopback-only by default**, with an opt-in LAN mode
 for the proxy data plane (behind a bearer key). The daemon binds two
-TCP listeners, both protected by file-system permissions on the
-daemon's state directory:
+TCP listeners. The control-plane token is protected by file-system
+permissions on the daemon's state directory; the proxy is not — its
+protection is the loopback bind, the checks below, and (on a LAN bind)
+its bearer key:
 
 - **Control plane** (JSON-RPC for the CLI / TUI): bound on
   `127.0.0.1:48134` (with a small port-scan window if the slot is
@@ -41,7 +43,12 @@ daemon's state directory:
   the operator passes `--insecure-no-auth`. The key is validated in
   constant time and never logged. TLS is not yet implemented, so LAN
   mode is plaintext HTTP — keep it on a trusted network or front it
-  with a TLS-terminating reverse proxy.
+  with a TLS-terminating reverse proxy. On a keyless loopback bind the
+  proxy also refuses a `Host` that is not `localhost` / `127.0.0.1` /
+  `::1` (`403 forbidden_host`, which blocks DNS rebinding), and in
+  every mode it refuses an `Origin` that is not the proxy's own origin
+  or an extension/app scheme (`403 forbidden_origin`, which blocks
+  cross-site requests and form posts).
 - Backend children (`llama-server`, `vllm`, `sglang`) **always** listen on
   `127.0.0.1` only. The proxy reaches them over loopback; the `extras`
   denylist (`--host`, `--listen`, `--bind`, `--api-key`, `--ssl-*`,
@@ -67,6 +74,10 @@ Issues we treat as in scope:
   `--insecure-no-auth` was not set. (A reachable proxy is *expected*
   once the operator opts into LAN mode with auth — that is not a
   vulnerability; an auth bypass is.)
+- Any path that lets a **web page drive or read the loopback proxy** —
+  a DNS-rebound `Host`, a cross-site request that survives the
+  `Host` / `Origin` checks, or a refused request that still reaches an
+  engine.
 - Token / key leakage via logs, env-var dumps, or error messages.
 - Memory-safety, deserialization, or path-traversal bugs in the
   daemon, CLI, or HTTP handlers.

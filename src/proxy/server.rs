@@ -508,6 +508,7 @@ mod tests {
       true,
       Some(api_key.to_string()),
       DEFAULT_BODY_LIMIT_BYTES,
+      true,
     );
     let token = ctx.shutdown.clone();
     let status = new_status_cell();

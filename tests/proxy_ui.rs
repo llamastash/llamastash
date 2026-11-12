@@ -172,6 +172,7 @@ async fn build_state_with_cap(
     true,
     api_key.map(str::to_string),
     max_body_size,
+    true,
   )
 }
 
@@ -187,7 +188,8 @@ async fn build_state_and_ctx(
   }
   let ctx =
     MethodContext::with_catalog(ShutdownToken::new(), catalog).with_supervisors(supervisors);
-  let state = ProxyState::from_context_with_auth(&ctx, false, true, None, DEFAULT_BODY_LIMIT_BYTES);
+  let state =
+    ProxyState::from_context_with_auth(&ctx, false, true, None, DEFAULT_BODY_LIMIT_BYTES, true);
   (state, ctx)
 }
 

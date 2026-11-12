@@ -115,6 +115,7 @@ async fn proxy_state_with_aliases(
     true,
     None,
     DEFAULT_BODY_LIMIT_BYTES,
+    true,
   )
 }
 

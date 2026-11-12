@@ -225,6 +225,14 @@ llamastash logs <launch-id> -f
 
 Once the underlying launch issue is fixed, the fallback path stops firing. To turn the fallback off entirely is tracked as a deferred decision in `TODO.md §R1` (`proxy.fallback: false`).
 
+## A browser page or extension gets `403 forbidden_origin` or `403 forbidden_host`
+
+**Symptom:** a web app or browser extension talking to the proxy gets `403` with `forbidden_origin` or `forbidden_host` where `curl` and the SDKs work.
+
+**Cause:** the proxy answers a browser only from origins it trusts. `forbidden_origin` means the page's `Origin` is neither the proxy's own `http://<host>` origin nor an extension/app scheme (`chrome-extension://`, `moz-extension://`, `safari-web-extension://`, `vscode-webview://`, `tauri://`). `forbidden_host` means the request reached the loopback proxy under a non-loopback `Host` — the DNS-rebinding guard.
+
+**Fix:** open the page from the proxy's own address (`http://127.0.0.1:11435/ui` or the same spelling your code calls), or use the built-in Web UI. A web app served from another origin (say `http://localhost:3000`) cannot call the proxy straight from the browser — there is no CORS opt-in; route the call through that app's own server. Extensions with an extension scheme pass as-is.
+
 ## Config rejected: unknown field ds4
 
 **Symptom:** every command fails with ``backend: unknown field `ds4` `` and a note that the ds4 backend was removed.
