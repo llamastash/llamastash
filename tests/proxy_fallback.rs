@@ -288,8 +288,8 @@ async fn fallback_to_different_arch_model_when_no_family_match() {
   let reason = header_value(&headers, "x-llamastash-fallback-reason").expect("fallback-reason");
   // Cross-arch fallback (qwen3 → llama) is observable via the
   // `family_mismatch` reason so clients can distinguish in-family
-  // substitution (graceful) from cross-arch fallback (different
-  // response shape — embeddings/rerank in particular).
+  // substitution (graceful) from cross-arch fallback (the response
+  // shape is not what the client asked for).
   assert_eq!(reason, "family_mismatch");
 
   stop_all(&ctx, &[live]).await;
@@ -441,6 +441,83 @@ async fn fallback_disabled_returns_503_instead_of_picking_other_model() {
     header_value(&headers, "x-llamastash-fallback-reason"),
     None,
     "fallback-reason header must not leak on 503"
+  );
+
+  stop_all(&ctx, &[live]).await;
+  shutdown_listener(shutdown, listener_handle).await;
+  std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- Mode-safe fallback: candidates must serve the request's mode ------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn embeddings_launch_failure_never_falls_back_to_a_chat_model() {
+  // Another model's vectors never match what the client indexed, so an
+  // embedding request whose auto-start fails gets the 503, not a chat
+  // model that is Ready.
+  let dir = unique_temp("emb-nofallback");
+  let log_dir = dir.join("logs");
+  std::fs::create_dir_all(&log_dir).unwrap();
+  let ready_path = write_gguf(&dir, "ready-qwen3.gguf", "qwen3");
+  let registry = SupervisorRegistry::new();
+  let live = pre_launch(&ready_path, &registry, &log_dir, LaunchMode::Chat).await;
+
+  let missing = dir.join("missing-qwen3.gguf");
+  let (state, ctx) = build_state(
+    vec![
+      discovered(&ready_path, Some("ready-qwen3"), Some("qwen3")),
+      discovered(&missing, Some("missing-qwen3"), Some("qwen3")),
+    ],
+    registry,
+    &log_dir,
+    allocate_port_range(),
+  )
+  .await;
+  let (addr, shutdown, listener_handle) = spawn_listener(state).await;
+
+  let body = r#"{"model":"missing-qwen3","input":["hi"]}"#;
+  let (status, headers, response) = http_post(addr, "/v1/embeddings", body).await;
+  assert_eq!(status, 503, "embeddings never fall back: {response:?}");
+  assert_eq!(
+    header_value(&headers, "x-llamastash-served-by"),
+    None,
+    "no fallback headers on the 503"
+  );
+
+  stop_all(&ctx, &[live]).await;
+  shutdown_listener(shutdown, listener_handle).await;
+  std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_request_does_not_fall_back_to_an_embedding_mode_launch() {
+  // The Ready launch was composed for embeddings (no chat pipeline in its
+  // argv), so it is no candidate for a chat request.
+  let dir = unique_temp("chat-vs-emb");
+  let log_dir = dir.join("logs");
+  std::fs::create_dir_all(&log_dir).unwrap();
+  let ready_path = write_gguf(&dir, "ready-emb.gguf", "qwen3");
+  let registry = SupervisorRegistry::new();
+  let live = pre_launch(&ready_path, &registry, &log_dir, LaunchMode::Embedding).await;
+
+  let missing = dir.join("missing-qwen3.gguf");
+  let (state, ctx) = build_state(
+    vec![
+      discovered(&ready_path, Some("ready-emb"), Some("qwen3")),
+      discovered(&missing, Some("missing-qwen3"), Some("qwen3")),
+    ],
+    registry,
+    &log_dir,
+    allocate_port_range(),
+  )
+  .await;
+  let (addr, shutdown, listener_handle) = spawn_listener(state).await;
+
+  let body = r#"{"model":"missing-qwen3","messages":[]}"#;
+  let (status, _headers, response) = http_post(addr, "/v1/chat/completions", body).await;
+  assert_eq!(
+    status, 503,
+    "an embedding launch cannot serve chat: {response:?}"
   );
 
   stop_all(&ctx, &[live]).await;

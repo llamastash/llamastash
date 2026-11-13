@@ -177,7 +177,7 @@ async fn build_state(
   );
   let ctx = ctx.with_aliases(&aliases);
   (
-    ProxyState::from_context_with_auth(&ctx, false, true, None, max_body_size),
+    ProxyState::from_context_with_auth(&ctx, false, true, None, max_body_size, true),
     ctx,
   )
 }

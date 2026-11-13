@@ -878,6 +878,24 @@ fn same_path(model_id_path: &std::path::Path, row_path: &str) -> bool {
   model_id_path.to_string_lossy() == row_path
 }
 
+/// Whether a Ready launch serves the endpoint's `mode`. The media modes
+/// (image / tts / stt) reach a launch only through an entry that declares
+/// them, so those need [`Backend::declares_mode`]; chat, embedding and
+/// rerank go through the looser [`Backend::serves_mode`].
+pub(crate) fn launch_serves_mode(
+  backend: &crate::backend::Backends,
+  path: &std::path::Path,
+  server: Option<&str>,
+  mode: LaunchMode,
+) -> bool {
+  use crate::backend::Backend;
+  if mode.is_declared_only() {
+    backend.declares_mode(path, server, mode)
+  } else {
+    backend.serves_mode(path, server, mode)
+  }
+}
+
 /// The [`RouteDecision::NotRunning`] payload, as the auto-start path needs it.
 pub(crate) struct NotRunningPlan {
   pub requested_model: String,
@@ -905,10 +923,9 @@ pub(crate) struct NotRunningPlan {
 ///      `x-llamastash-served-by` + `x-llamastash-fallback-reason`.
 ///      Reason is `launch_failed` when the pick shares the requested
 ///      arch (graceful in-family substitution) and `family_mismatch`
-///      when the pick is from a different arch (e.g. an embedding
-///      request fell through to a chat model — the upstream output
-///      will not match request semantics, and clients that care
-///      should branch on the header). If no Ready candidate exists
+///      when the pick's arch differs or either side lacks arch metadata
+///      (clients that care should branch on the header). Embedding and
+///      rerank requests never fall back. If no Ready candidate exists
 ///      → 503 `launch_failed` with the running list.
 ///
 /// `endpoint_mode` carries the mode the requested endpoint implies so
@@ -955,6 +972,13 @@ pub(crate) async fn handle_not_running(
       .await
     }
     LaunchOutcome::Failed { cause } => {
+      // Another model's vectors or scores never match what the client indexed.
+      if matches!(
+        endpoint_mode,
+        Some(LaunchMode::Embedding) | Some(LaunchMode::Rerank)
+      ) {
+        return super::router::answered(record, launch_failed_response(&cause, &requested_model));
+      }
       // Operator can disable the family-MRU fallback entirely (see
       // `ProxyConfig::fallback_enabled` and the `--no-proxy-fallback`
       // CLI / `LLAMASTASH_NO_PROXY_FALLBACK` env overrides). When
@@ -970,7 +994,7 @@ pub(crate) async fn handle_not_running(
       // which pivots on the requested row's arch (`None` when
       // discovery couldn't parse the GGUF header).
       let requested_arch = resolved_row.arch.as_deref();
-      let candidates = collect_fallback_candidates(state).await;
+      let candidates = collect_fallback_candidates(state, endpoint_mode).await;
       if let Some(pick) = pick_fallback(candidates, requested_arch) {
         state.mru.touch(&pick.model_id).await;
         let reason = fallback_reason_for(requested_arch, pick.arch.as_deref());
@@ -1006,19 +1030,13 @@ pub(crate) async fn handle_not_running(
 /// Pick the `x-llamastash-fallback-reason` value based on whether the
 /// picked candidate is in the same arch family as the failed request.
 ///
-/// - `launch_failed`: in-family substitution. Same arch (or both
-///   sides have no arch metadata) — the upstream output shape is
-///   what the client asked for.
-/// - `family_mismatch`: cross-arch fallback. The picked supervisor's
-///   arch differs from the requested arch, or one side is missing
-///   metadata. The upstream output shape is *not* what the client
-///   asked for (e.g. an embedding request answered by a chat model).
-///   Clients that don't read response headers will see surprising
-///   payloads; this is the header that lets them branch.
+/// - `launch_failed`: in-family substitution. Both sides name the same
+///   arch — the upstream output shape is what the client asked for.
+/// - `family_mismatch`: the arches differ, or either side has none, so
+///   nothing proves the pick answers like the requested model.
 fn fallback_reason_for(requested: Option<&str>, picked: Option<&str>) -> &'static str {
   match (requested, picked) {
     (Some(a), Some(b)) if a == b => "launch_failed",
-    (None, None) => "launch_failed",
     _ => "family_mismatch",
   }
 }
@@ -1083,7 +1101,12 @@ pub(crate) fn index_catalog_by_path(
 /// the supervisor snapshot (filtering to Ready), joins each row
 /// against the catalog snapshot to find the matching `arch`, and
 /// stamps the latest MRU timestamp.
-async fn collect_fallback_candidates(state: &Arc<ProxyState>) -> Vec<FallbackCandidate> {
+/// Only launches that serve `endpoint_mode` join. A media entry launches
+/// in chat mode, so a chat request also skips a row that declares a media mode.
+async fn collect_fallback_candidates(
+  state: &Arc<ProxyState>,
+  endpoint_mode: Option<LaunchMode>,
+) -> Vec<FallbackCandidate> {
   let sup_snap = state.ctx.supervisors.snapshot().await;
   // Index the catalog by canonical path so each supervisor entry can
   // attach arch + display label without re-walking the catalog.
@@ -1098,6 +1121,23 @@ async fn collect_fallback_candidates(state: &Arc<ProxyState>) -> Vec<FallbackCan
     let id = model.id().clone();
     let path_key = id.path.to_string_lossy().into_owned();
     let catalog_entry = by_path.get(&path_key);
+    let params = model.params();
+    let serves = match endpoint_mode {
+      Some(mode) => launch_serves_mode(model.backend(), &id.path, params.server.as_deref(), mode),
+      None => {
+        params.mode == LaunchMode::Chat
+          && launch_serves_mode(
+            model.backend(),
+            &id.path,
+            params.server.as_deref(),
+            LaunchMode::Chat,
+          )
+          && crate::ipc::status::declared_media_mode(&cat_snap, &id.path).is_none()
+      }
+    };
+    if !serves {
+      continue;
+    }
     let arch = catalog_entry
       .and_then(|m| m.metadata.as_ref())
       .and_then(|md| md.arch.clone());
@@ -1214,8 +1254,8 @@ mod tests {
   }
 
   #[test]
-  fn no_arch_on_either_side_is_launch_failed() {
-    assert_eq!(fallback_reason_for(None, None), "launch_failed");
+  fn no_arch_on_either_side_is_family_mismatch() {
+    assert_eq!(fallback_reason_for(None, None), "family_mismatch");
   }
 
   #[test]

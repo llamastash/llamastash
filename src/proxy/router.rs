@@ -31,6 +31,7 @@ use hyper::body::{Bytes, Incoming};
 use hyper::{Method, Request, Response, StatusCode};
 use serde_json::json;
 
+use super::auth;
 use super::forward;
 use super::ollama_compat::{
   digest_for_path, ModelDetails, PsModel, PsResponse, ShowRequest, ShowResponse, TagModel,
@@ -128,6 +129,36 @@ fn endpoint_mode(path: &str) -> Option<LaunchMode> {
 pub async fn route(state: Arc<ProxyState>, req: Request<Incoming>) -> ProxyResponse {
   let method = req.method().clone();
   let path = req.uri().path().to_string();
+
+  // Ahead of the route table, so a refused request reaches no engine and no log
+  // row. A header that is not text reads as "", which both checks refuse.
+  let header = |name| req.headers().get(name).map(|v| v.to_str().unwrap_or(""));
+  let host = header(hyper::header::HOST);
+  // DNS rebinding: the Host header is the one thing a rebound page cannot
+  // forge. Skipped with a key, which covers a reverse proxy that rewrites Host.
+  if let Some(h) = host.filter(|_| state.loopback_bind && !state.auth.enforced()) {
+    if !auth::host_is_loopback(h) {
+      return error_response(
+        StatusCode::FORBIDDEN,
+        "forbidden_host",
+        &format!(
+          "this proxy listens on loopback and answers only Host localhost, \
+           127.0.0.1 or [::1]; got `{h}`"
+        ),
+      );
+    }
+  }
+  // Every mode, key included: a browser attaches cached `/ui` Basic
+  // credentials to a cross-site form POST.
+  if let Some(origin) = header(hyper::header::ORIGIN) {
+    if !auth::origin_is_allowed(origin, host) {
+      return error_response(
+        StatusCode::FORBIDDEN,
+        "forbidden_origin",
+        &format!("origin `{origin}` is not allowed on this proxy"),
+      );
+    }
+  }
 
   // Bearer auth on the data plane. The liveness / identity probes
   // (`GET|HEAD /`, `GET /health`) stay open so health checks and the
@@ -402,11 +433,7 @@ async fn forward_request(
       // looser `serves_mode` treats an entry with no `modes:` as an OpenAI server
       // for everything, which would let a plain chat entry take an upload it has
       // no endpoint for.
-      let serves = if mode.is_declared_only() {
-        b.declares_mode(&path, server.as_deref(), mode)
-      } else {
-        b.serves_mode(&path, server.as_deref(), mode)
-      };
+      let serves = route::launch_serves_mode(&b, &path, server.as_deref(), mode);
       if !serves {
         // Name the actual backend for the user (dynamic, so the code names none).
         let msg = format!(
@@ -602,7 +629,12 @@ async fn list_models(state: Arc<ProxyState>) -> ProxyResponse {
   let state_snap = state.ctx.state.snapshot().await;
   for (named_id, r) in named_launch_ids(&state_snap.running, &ids) {
     if !rows.iter().any(|row| row.id == named_id) {
-      rows.push(ModelObject::new(named_id).with_mode(Some(r.params.mode.label())));
+      // A media launch records the chat mode its argv was composed for;
+      // the entry's own declaration is what the row really answers, the
+      // same rule `status` prints.
+      let mode = crate::ipc::status::declared_media_mode(&snap, &r.params.model_path)
+        .unwrap_or_else(|| r.params.mode.label());
+      rows.push(ModelObject::new(named_id).with_mode(Some(mode)));
     }
   }
   for (name, m) in alias_rows(&state, &cat, &snap) {

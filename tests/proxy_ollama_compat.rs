@@ -181,6 +181,7 @@ async fn build_state(
     true,
     None,
     DEFAULT_BODY_LIMIT_BYTES,
+    true,
   )
 }
 

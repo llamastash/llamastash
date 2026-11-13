@@ -21,7 +21,7 @@ use crate::daemon::host_metrics::HostMetricsSnapshot;
 /// its argv, so the launch records `chat` and `status` needs the entry's own
 /// declaration to say what the row answers. Every other hint is what the row's
 /// `mode` already carries, so this returns `None` and `mode` stands.
-fn declared_media_mode(
+pub(crate) fn declared_media_mode(
   models: &[crate::discovery::DiscoveredModel],
   path: &std::path::Path,
 ) -> Option<&'static str> {
