@@ -643,3 +643,74 @@ async fn make_room_skips_a_candidate_that_took_a_request() {
   let _ = busy.stop(Duration::from_secs(2)).await;
   std::fs::remove_dir_all(&dir).ok();
 }
+
+/// A launch the gate admitted and that then died is not a contradiction the
+/// launch path can use: demand is a floor and free memory is `MemAvailable`, so a
+/// resident mmap-backed engine reads as free. The death-triggered entry point is
+/// therefore asked for the whole demand rather than a shortfall — that is its
+/// only difference from a refusal, and this pair pins exactly that.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn launch_death_makes_room_when_the_gate_saw_plenty_of_room() {
+  let dir = unique_temp("make-room-death");
+  let log_dir = dir.join("logs");
+  std::fs::create_dir_all(&log_dir).unwrap();
+  let registry = SupervisorRegistry::new();
+  let resident = pre_launch(&log_dir, &registry, LaunchOrigin::AutoStart).await;
+  let persisted = PersistedState::new(DaemonState::default(), None);
+  stamp_row(&persisted, &registry, &resident, None, 500).await;
+  let state =
+    build_state_with_presets(registry, &log_dir, persisted, ConfigPresetStore::empty()).await;
+  state.touch_mru(resident.id()).await;
+
+  // 900 free against a 400 demand: a refusal shaped like this has no shortfall,
+  // so the refusal-triggered path is right to leave everything loaded.
+  let from_refusal = eviction::make_room(
+    &state,
+    &Refusal {
+      demand_bytes: 400,
+      effective_free_bytes: 900,
+      reserved_bytes: 0,
+    },
+    |_| {},
+  )
+  .await;
+  assert!(!from_refusal, "no shortfall, so nothing is unloaded");
+  assert!(
+    matches!(resident.state().await, ManagedState::Ready),
+    "a refusal with no shortfall unloaded a launch"
+  );
+
+  // The same 400 bytes asked for after a launch the gate admitted died: the
+  // 500-credit idle launch is unloaded for it.
+  let from_death = eviction::make_room_after_launch_death(&state, 400, |_| {}).await;
+  assert!(from_death, "400 demanded against 500 idle credit");
+  wait_until_not_ready(&resident, "the launch credited for the dead one").await;
+  std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The death trigger keeps the all-or-nothing rule: a resident launch credited
+/// under the dead launch's demand stays loaded rather than being unloaded for a
+/// retry that still would not fit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn launch_death_makes_no_room_when_nothing_covers_the_demand() {
+  let dir = unique_temp("make-room-death-short");
+  let log_dir = dir.join("logs");
+  std::fs::create_dir_all(&log_dir).unwrap();
+  let registry = SupervisorRegistry::new();
+  let resident = pre_launch(&log_dir, &registry, LaunchOrigin::AutoStart).await;
+  let persisted = PersistedState::new(DaemonState::default(), None);
+  stamp_row(&persisted, &registry, &resident, None, 100).await;
+  let state =
+    build_state_with_presets(registry, &log_dir, persisted, ConfigPresetStore::empty()).await;
+  state.touch_mru(resident.id()).await;
+
+  let from_death = eviction::make_room_after_launch_death(&state, 400, |_| {}).await;
+  assert!(!from_death, "100 freeable cannot cover a 400 demand");
+  sleep(Duration::from_millis(100)).await;
+  assert!(
+    matches!(resident.state().await, ManagedState::Ready),
+    "all-or-nothing unloaded a launch anyway"
+  );
+  let _ = resident.stop(Duration::from_secs(2)).await;
+  std::fs::remove_dir_all(&dir).ok();
+}

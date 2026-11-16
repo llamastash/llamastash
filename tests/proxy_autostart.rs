@@ -908,6 +908,159 @@ async fn auto_start_refusal_unloads_the_idle_model_and_retries_once() {
   shutdown_listener(token, handle).await;
 }
 
+/// The other way a launch can be refused: never. The gate admitted this one on a
+/// projection, and the engine died anyway — so the projection is no longer
+/// admissible evidence and a shortfall computed from it would keep refusing. The
+/// death alone has to buy the room: the idle auto-start gives its memory back and
+/// the launch runs once more, instead of the request failing with the memory still
+/// allocated to a model nobody asked for.
+#[tokio::test]
+async fn an_admitted_launch_that_dies_makes_room_and_retries() {
+  let dir = unique_temp("make-room-death");
+  let log_dir = dir.join("logs");
+  std::fs::create_dir_all(&log_dir).expect("mkdir logs");
+  let first = write_gguf(&dir, "first-Q4_K_M.gguf", "qwen2");
+  // `die-after-6000` is past the floor that separates a launch starved of memory
+  // from a launch that is simply broken.
+  let dying = write_gguf(&dir, "die-after-6000-second-Q4_K_M.gguf", "qwen2");
+  let (state, ctx) = build_state(
+    vec![
+      discovered(&first, None, "qwen2"),
+      discovered(&dying, None, "qwen2"),
+    ],
+    &log_dir,
+    allocate_wide_port_range(),
+  )
+  .await;
+  // The sampled pool is left alone on purpose: this launch is admitted.
+  let (addr, token, handle) = spawn_listener(state).await;
+  let body = |model: &str| format!(r#"{{"model":"{model}","messages":[]}}"#);
+
+  let (status, _, resp) = http_post(addr, "/v1/chat/completions", &body("first-Q4_K_M.gguf")).await;
+  assert_eq!(
+    status,
+    200,
+    "resident launch: {}",
+    String::from_utf8_lossy(&resp)
+  );
+  let first_launch = ctx.supervisors.snapshot().await[0].0.as_str().to_string();
+
+  let attempted = std::time::Instant::now();
+  let (status, _, resp) = http_post(
+    addr,
+    "/v1/chat/completions",
+    &body("die-after-6000-second-Q4_K_M.gguf"),
+  )
+  .await;
+  let elapsed = attempted.elapsed();
+
+  let resident: Vec<PathBuf> = ctx
+    .supervisors
+    .snapshot()
+    .await
+    .into_iter()
+    .map(|(_, m)| m.params().model_path.clone())
+    .collect();
+  assert!(
+    !resident.contains(&first),
+    "the death left the idle launch holding memory: {resident:?}"
+  );
+  // Two 6 s deaths, so a request that came back in one attempt's time never
+  // asked for room and never retried.
+  assert!(
+    elapsed > Duration::from_secs(11),
+    "the launch was not retried after the eviction ({elapsed:?})"
+  );
+
+  let row = finished_request(&ctx.requests).await;
+  assert!(row.auto_start);
+  assert_eq!(
+    row.evicted,
+    vec![first_launch],
+    "the row must name what a death-triggered eviction unloaded"
+  );
+  // The failure this replaces: with no eviction the resident model answers, and
+  // the client gets its 200 from a model it never named.
+  assert!(
+    row.fallback.is_none(),
+    "another model answered instead of room being made for the one asked for: {:?} ({status}): {}",
+    row.fallback,
+    String::from_utf8_lossy(&resp),
+  );
+
+  stop_all(&ctx).await;
+  shutdown_listener(token, handle).await;
+}
+
+/// A `stop` is a decision, not a memory failure. Stopping a model that is still
+/// loading must not be answered by launching it again — and certainly not by
+/// evicting whatever happened to be idle to make room for a model the operator
+/// just said they did not want.
+#[tokio::test]
+async fn stopping_a_launching_model_does_not_evict_to_fit_it() {
+  let dir = unique_temp("stop-during-load");
+  let log_dir = dir.join("logs");
+  std::fs::create_dir_all(&log_dir).expect("mkdir logs");
+  let first = write_gguf(&dir, "first-Q4_K_M.gguf", "qwen2");
+  // It would die at 60 s; this test stops it well before that, past the floor
+  // that separates a starved launch from a broken one.
+  let loading = write_gguf(&dir, "die-after-60000-second-Q4_K_M.gguf", "qwen2");
+  let (state, ctx) = build_state(
+    vec![
+      discovered(&first, None, "qwen2"),
+      discovered(&loading, None, "qwen2"),
+    ],
+    &log_dir,
+    allocate_wide_port_range(),
+  )
+  .await;
+  let (addr, token, handle) = spawn_listener(state).await;
+  let body = |model: &str| format!(r#"{{"model":"{model}","messages":[]}}"#);
+
+  let (status, _, resp) = http_post(addr, "/v1/chat/completions", &body("first-Q4_K_M.gguf")).await;
+  assert_eq!(
+    status,
+    200,
+    "resident launch: {}",
+    String::from_utf8_lossy(&resp)
+  );
+
+  let request = body("die-after-60000-second-Q4_K_M.gguf");
+  let in_flight =
+    tokio::spawn(async move { http_post(addr, "/v1/chat/completions", &request).await });
+  sleep(Duration::from_secs(6)).await;
+  let snapshot = ctx.supervisors.snapshot().await;
+  let (_, model) = snapshot
+    .iter()
+    .find(|(_, m)| m.params().model_path == loading)
+    .expect("the launch under stop is registered");
+  let _ = model.stop(Duration::from_millis(200)).await;
+  let _ = in_flight
+    .await
+    .expect("the request returns once the launch stops");
+
+  let resident: Vec<PathBuf> = ctx
+    .supervisors
+    .snapshot()
+    .await
+    .into_iter()
+    .map(|(_, m)| m.params().model_path.clone())
+    .collect();
+  assert!(
+    resident.contains(&first),
+    "a stop was answered by evicting the idle launch: {resident:?}"
+  );
+  let row = finished_request(&ctx.requests).await;
+  assert!(
+    row.evicted.is_empty(),
+    "a stop unloaded {} — only a launch that died may do that",
+    row.evicted.join(",")
+  );
+
+  stop_all(&ctx).await;
+  shutdown_listener(token, handle).await;
+}
+
 /// A client that gives up while make-room is still waiting for the memory
 /// to land. The unload already happened, so the row has to say so even
 /// though the request never got an answer.

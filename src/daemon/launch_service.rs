@@ -164,6 +164,11 @@ pub struct StartedLaunch {
   /// than what they asked for — against a daemon without name support the
   /// launch correctly reports unnamed. `None` for unnamed launches.
   pub(crate) name: Option<String>,
+  /// The bytes the admission gate priced this launch at, when the gate engaged
+  /// and admitted it. `None` when the gate was skipped (no host sample yet) or
+  /// bypassed (a disk-streaming launch). The proxy auto-start path reads it to
+  /// ask for room after a launch that was admitted and then died before Ready.
+  pub(crate) admitted_demand_bytes: Option<u64>,
   /// Non-fatal advisories surfaced to the caller (CLI human output / TUI toast):
   /// capability-dropped knobs, backend admission/knob-resolution notes, and the
   /// admission-bypass note. Empty on a clean launch.
@@ -1453,6 +1458,7 @@ pub(crate) async fn spawn_supervised(
     model,
     log_path,
     name,
+    admitted_demand_bytes: projected_demand_bytes,
     warnings,
     layer_sources,
   })
