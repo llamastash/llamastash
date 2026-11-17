@@ -7,9 +7,11 @@
 //! deterministic failure. The single-shot `Client` is also returned
 //! so callers can chain calls on the same connection.
 
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Result;
+use serde_json::Value;
 
 use crate::cli::cli_args::Cli;
 use crate::cli::exit_codes::{CliExit, DAEMON_UNREACHABLE};
@@ -75,14 +77,15 @@ pub async fn connect_or_spawn(cli: &Cli, config: &Config) -> Result<Client, CliE
         runtime_file::remove(&attach_dir);
         return spawn_and_attach(cli, config, &attach_dir).await;
       }
-      // Reconcile against the running daemon: if the user passed
+      // Reconcile against the running daemon: it may be from an older
+      // build than this client, and the user may have passed
       // `--llama-server` (or any other binary-resolving flag) on
-      // *this* invocation but the daemon was started earlier
-      // without it, the flag would be silently dropped. Detect the
-      // mismatch and restart the daemon with the new args — but
-      // only when no managed launches are running, so we never kill
-      // someone else's in-flight model on a stale daemon.
-      reconcile_binary_with_running_daemon(client, cli, config, &attach_dir).await
+      // *this* invocation while the daemon was started earlier
+      // without it, which would silently drop the flag. Restart the
+      // daemon when no managed launches are running, so we never kill
+      // someone else's in-flight model on a stale daemon; otherwise
+      // warn on stderr and keep the connection.
+      reconcile_with_running_daemon(client, cli, config, &attach_dir).await
     }
     Err(ClientError::Connect(_)) => {
       // Stale-daemon pre-flight: a live process owns `daemon.pid` but
@@ -144,96 +147,116 @@ async fn spawn_and_attach(
   }
 }
 
-/// Detect a stale `llama-server` binding on an already-running
-/// daemon and reconcile it. When `cli.llama_server` is set:
-///  1. Query `status` to find the daemon's current `server_path`.
-///  2. Resolve the CLI flag to its canonical path.
-///  3. If they differ AND no model is currently managed, send
-///     `shutdown` and re-spawn the daemon with the new args.
-///  4. If launches are running, log a warning and keep the existing
-///     connection — the user can stop the launches and re-run.
+/// What the reconcile step decided to do about a live daemon.
+#[derive(Debug, PartialEq, Eq)]
+enum ReconcileAction {
+  /// The daemon answers this client as it is.
+  Keep,
+  /// Shut the daemon down and spawn one from this build. `reason` is the
+  /// stderr line naming what changed.
+  Restart { reason: String },
+  /// Keep the connection and say why it was not updated.
+  Warn { message: String },
+}
+
+/// Decide from one `status` reply whether the running daemon serves this
+/// client. `client_build` is the client's `CARGO_PKG_VERSION`; `binary` is
+/// `None` when the invocation passed no binary-resolving flag, else
+/// `(the flag path, whether the daemon already runs it)`.
 ///
-/// All other states (flag unset, daemon already correct, query
-/// failed) pass through with the original client.
-async fn reconcile_binary_with_running_daemon(
-  mut client: Client,
-  cli: &Cli,
-  config: &Config,
-  attach_dir: &std::path::Path,
-) -> Result<Client, CliExit> {
-  let Some(cli_binary) = cli.llama_server.as_ref() else {
-    return Ok(client);
-  };
-  // `tokio::fs::canonicalize` so the reconcile gate doesn't block
-  // the async runtime on a slow inode lookup (network mounts,
-  // unresponsive filesystems).
-  let desired = match tokio::fs::canonicalize(cli_binary).await {
-    Ok(p) => p,
-    Err(_) => {
-      // Let the daemon-side locator surface the path error later;
-      // for the reconcile gate, fall back to the raw flag value so
-      // a missing file doesn't silently bypass the check.
-      cli_binary.clone()
-    }
-  };
-  let status = match client.call("status", None).await {
-    Ok(v) => v,
-    Err(_) => return Ok(client),
-  };
-  let current = status
-    .pointer("/daemon/server_path")
-    .and_then(|v| v.as_str())
-    .map(std::path::PathBuf::from);
+/// A build mismatch outranks a binary mismatch: the restart that fixes the
+/// build re-applies the flag too. A `status` with no `daemon.build` has
+/// nothing to compare, so only the binary check can act on it.
+fn reconcile_action(
+  status: &Value,
+  client_build: &str,
+  binary: Option<(&Path, bool)>,
+) -> ReconcileAction {
   let running = status
     .get("models")
     .and_then(|v| v.as_array())
     .map(|a| !a.is_empty())
     .unwrap_or(false);
-  // Canonicalize both sides so the comparison is stable across
-  // platforms. Windows `fs::canonicalize` returns a `\\?\C:\…`
-  // UNC-prefixed path; the daemon stores `server_path` as the raw
-  // input from CLI/env, which lacks the prefix. Comparing them
-  // verbatim falsely triggers a restart on every dispatch and the
-  // spawned re-exec panics because the test binary has no daemon
-  // entry point.
-  //
-  // Use `tokio::fs::canonicalize` here too so the reconcile gate
-  // doesn't block the async runtime on a slow inode lookup — same
-  // reasoning as `desired` above.
-  let current_canon = match current.as_ref() {
-    Some(c) => tokio::fs::canonicalize(c).await.ok(),
+  if let Some(build) = status.pointer("/daemon/build").and_then(|v| v.as_str()) {
+    if build != client_build {
+      return if running {
+        ReconcileAction::Warn {
+          message: format!(
+            "daemon: running build {build}, this client is {client_build}; stop the running \
+             models and run `llamastash daemon restart` to update it"
+          ),
+        }
+      } else {
+        ReconcileAction::Restart {
+          reason: format!("daemon: restarted to match this build ({build} → {client_build})"),
+        }
+      };
+    }
+  }
+  let Some((flag, binary_matches)) = binary else {
+    return ReconcileAction::Keep;
+  };
+  if binary_matches {
+    return ReconcileAction::Keep;
+  }
+  let current = status
+    .pointer("/daemon/server_path")
+    .and_then(|v| v.as_str())
+    .unwrap_or("—");
+  if running {
+    ReconcileAction::Warn {
+      message: format!(
+        "daemon already running with a different llama-server ({current}); ignored \
+         `--llama-server {}` because managed launches are active. Stop them and re-run to apply.",
+        flag.display()
+      ),
+    }
+  } else {
+    ReconcileAction::Restart {
+      reason: format!(
+        "daemon: restarting to adopt `--llama-server {}` (was: {current})",
+        flag.display()
+      ),
+    }
+  }
+}
+
+/// Reconcile a live daemon with this client: a daemon from an older build, or
+/// a `--llama-server` flag it was not started with. One `status` call answers
+/// both checks.
+///
+/// An idle daemon is shut down and re-spawned with this build and flags; with
+/// managed launches running the connection stays and the mismatch is reported
+/// on stderr, so no in-flight model is killed.
+///
+/// A `status` that fails passes the original client through: a reconcile
+/// problem must never fail the command that triggered it.
+async fn reconcile_with_running_daemon(
+  mut client: Client,
+  cli: &Cli,
+  config: &Config,
+  attach_dir: &std::path::Path,
+) -> Result<Client, CliExit> {
+  let status = match client.call("status", None).await {
+    Ok(v) => v,
+    Err(_) => return Ok(client),
+  };
+  let binary = match cli.llama_server.as_ref() {
+    Some(flag) => Some((flag.as_path(), daemon_binary_matches(&status, flag).await)),
     None => None,
   };
-  let matches = match (current_canon.as_ref(), current.as_ref()) {
-    (Some(canon), _) => canon == &desired,
-    (None, Some(raw)) => raw == &desired,
-    (None, None) => false,
+  let reason = match reconcile_action(&status, env!("CARGO_PKG_VERSION"), binary) {
+    ReconcileAction::Keep => return Ok(client),
+    ReconcileAction::Warn { message } => {
+      eprintln!("{}", crate::cli::colors::warning(&message));
+      log::warn!("{message}");
+      return Ok(client);
+    }
+    ReconcileAction::Restart { reason } => reason,
   };
-  if matches {
-    return Ok(client);
-  }
-  if running {
-    log::warn!(
-      "daemon already running with a different llama-server ({}); ignored \
-       `--llama-server {}` because managed launches are active. Stop them \
-       and re-run to apply.",
-      current
-        .as_ref()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "—".into()),
-      cli_binary.display()
-    );
-    return Ok(client);
-  }
-  log::info!(
-    "daemon: restarting to adopt `--llama-server {}` (was: {})",
-    cli_binary.display(),
-    current
-      .as_ref()
-      .map(|p| p.display().to_string())
-      .unwrap_or_else(|| "—".into())
-  );
-  // Re-spawn with the CLI flag flowing through `build_spawn_options`. The stop
+  eprintln!("{reason}");
+  log::info!("{reason}");
+  // Re-spawn with the CLI flags flowing through `build_spawn_options`. The stop
   // is the shared one (`daemon stop` / `daemon restart` / `Ctrl+R`): waiting on
   // the lockfile instead of the socket going quiet is what keeps the
   // replacement's `acquire` off a daemon that has not let go yet. Forgiving by
@@ -244,7 +267,7 @@ async fn reconcile_binary_with_running_daemon(
     Ok(StopOutcome::StillExiting { pid }) => {
       log::warn!("daemon: pid {pid} still exiting; the re-spawn may keep the old daemon");
     }
-    Err(e) => log::warn!("daemon: shutdown during --llama-server reconcile failed: {e}"),
+    Err(e) => log::warn!("daemon: shutdown during reconcile failed: {e}"),
   }
   let opts = build_spawn_options(cli, config)?;
   let attach_for_poll = opts.state_dir.clone();
@@ -252,8 +275,43 @@ async fn reconcile_binary_with_running_daemon(
     Ok(_) => await_socket(&attach_for_poll, Duration::from_secs(3)).await,
     Err(e) => Err(CliExit::new(
       DAEMON_UNREACHABLE,
-      format!("daemon: restart for --llama-server failed: {e}"),
+      format!("daemon: restart to reconcile the running daemon failed: {e}"),
     )),
+  }
+}
+
+/// Whether the running daemon already serves `desired`, the value of a
+/// binary-resolving flag.
+async fn daemon_binary_matches(status: &Value, desired: &Path) -> bool {
+  // `tokio::fs::canonicalize` so the reconcile gate doesn't block
+  // the async runtime on a slow inode lookup (network mounts,
+  // unresponsive filesystems).
+  let desired = match tokio::fs::canonicalize(desired).await {
+    Ok(p) => p,
+    // Let the daemon-side locator surface the path error later;
+    // for the reconcile gate, fall back to the raw flag value so
+    // a missing file doesn't silently bypass the check.
+    Err(_) => desired.to_path_buf(),
+  };
+  let current = status
+    .pointer("/daemon/server_path")
+    .and_then(|v| v.as_str())
+    .map(PathBuf::from);
+  // Canonicalize both sides so the comparison is stable across
+  // platforms. Windows `fs::canonicalize` returns a `\\?\C:\…`
+  // UNC-prefixed path; the daemon stores `server_path` as the raw
+  // input from CLI/env, which lacks the prefix. Comparing them
+  // verbatim falsely triggers a restart on every dispatch and the
+  // spawned re-exec panics because the test binary has no daemon
+  // entry point.
+  let current_canon = match current.as_ref() {
+    Some(c) => tokio::fs::canonicalize(c).await.ok(),
+    None => None,
+  };
+  match (current_canon.as_ref(), current.as_ref()) {
+    (Some(canon), _) => canon == &desired,
+    (None, Some(raw)) => raw == &desired,
+    (None, None) => false,
   }
 }
 
@@ -295,7 +353,84 @@ fn build_spawn_options(cli: &Cli, config: &Config) -> Result<DaemonOptions, CliE
 #[cfg(test)]
 mod tests {
   use super::*;
+  use serde_json::json;
   use std::time::{SystemTime, UNIX_EPOCH};
+
+  /// A `status` reply with the given `daemon.build` (absent when `None`)
+  /// and that many managed launches.
+  fn status(daemon_build: Option<&str>, launches: usize) -> Value {
+    let mut daemon = json!({ "server_path": "/usr/bin/llama-server" });
+    if let Some(b) = daemon_build {
+      daemon["build"] = json!(b);
+    }
+    json!({ "daemon": daemon, "models": vec![json!({ "port": 11435 }); launches] })
+  }
+
+  #[test]
+  fn reconcile_action_keeps_a_matching_build() {
+    let s = status(Some("0.11.0"), 0);
+    assert_eq!(reconcile_action(&s, "0.11.0", None), ReconcileAction::Keep);
+  }
+
+  #[test]
+  fn reconcile_action_restarts_an_idle_daemon_from_an_older_build() {
+    let s = status(Some("0.10.0"), 0);
+    match reconcile_action(&s, "0.11.0", None) {
+      ReconcileAction::Restart { reason } => {
+        assert!(
+          reason.contains("0.10.0") && reason.contains("0.11.0"),
+          "{reason}"
+        );
+      }
+      other => panic!("expected a restart, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn reconcile_action_warns_about_an_older_build_while_launches_run() {
+    let s = status(Some("0.10.0"), 1);
+    match reconcile_action(&s, "0.11.0", None) {
+      ReconcileAction::Warn { message } => {
+        assert!(message.contains("daemon restart"), "{message}");
+        assert!(message.contains("0.10.0"), "{message}");
+      }
+      other => panic!("expected a warning, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn reconcile_action_keeps_when_status_has_no_build() {
+    // A daemon old enough to omit `daemon.build` has nothing to compare.
+    let s = status(None, 0);
+    assert_eq!(reconcile_action(&s, "0.11.0", None), ReconcileAction::Keep);
+  }
+
+  #[test]
+  fn reconcile_action_still_restarts_for_a_binary_mismatch() {
+    let s = status(Some("0.11.0"), 0);
+    let flag = Path::new("/opt/llama-server");
+    match reconcile_action(&s, "0.11.0", Some((flag, false))) {
+      ReconcileAction::Restart { reason } => {
+        assert!(
+          reason.contains("--llama-server /opt/llama-server"),
+          "{reason}"
+        );
+      }
+      other => panic!("expected a restart, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn reconcile_action_warns_about_a_binary_mismatch_while_launches_run() {
+    let s = status(Some("0.11.0"), 2);
+    let flag = Path::new("/opt/llama-server");
+    match reconcile_action(&s, "0.11.0", Some((flag, false))) {
+      ReconcileAction::Warn { message } => {
+        assert!(message.contains("managed launches are active"), "{message}");
+      }
+      other => panic!("expected a warning, got {other:?}"),
+    }
+  }
 
   fn temp_state_dir(label: &str) -> std::path::PathBuf {
     let nanos = SystemTime::now()

@@ -139,8 +139,16 @@ fn daemon_row<'a>(app: &'a App, _budget: usize, palette: &'a Palette) -> Line<'a
     (true, Some(secs)) => format_uptime(secs),
     _ => dash.into(),
   };
+  // A daemon from another build answers differently than this client
+  // expects, and `connect_or_spawn` only restarted it when nothing was
+  // launched. Say which two builds disagree; the word `vs` keeps the
+  // ASCII glyph set whole.
+  let stale_build = match (app.daemon_connected, app.daemon_info.build.as_deref()) {
+    (true, Some(b)) if b != env!("CARGO_PKG_VERSION") => Some(b),
+    _ => None,
+  };
 
-  Line::from(vec![
+  let mut spans = vec![
     Span::styled(LABEL_PORT, palette.label_style()),
     Span::styled(port_val, palette.text_style()),
     Span::styled(
@@ -153,7 +161,18 @@ fn daemon_row<'a>(app: &'a App, _budget: usize, palette: &'a Palette) -> Line<'a
       palette.label_style(),
     ),
     Span::styled(uptime_val, palette.text_style()),
-  ])
+  ];
+  if let Some(b) = stale_build {
+    spans.push(Span::styled(
+      format!(" {} ", crate::tui::glyphs::active().middot()),
+      palette.label_style(),
+    ));
+    spans.push(Span::styled(
+      format!("build {b} vs {}", env!("CARGO_PKG_VERSION")),
+      palette.warning_style(),
+    ));
+  }
+  Line::from(spans)
 }
 
 /// Extract the port from an `http://host:port` URL. Returns `None`
@@ -561,10 +580,15 @@ mod tests {
   }
 
   fn render_lines(app: &App) -> Vec<String> {
+    render_lines_at(app, 50)
+  }
+
+  /// Same capture at a chosen width, for rows longer than 50 columns.
+  fn render_lines_at(app: &App, width: u16) -> Vec<String> {
     let palette = app.palette();
-    let mut term = Terminal::new(TestBackend::new(50, 7)).unwrap();
+    let mut term = Terminal::new(TestBackend::new(width, 7)).unwrap();
     term
-      .draw(|f| render(f, Rect::new(0, 0, 50, 7), app, palette))
+      .draw(|f| render(f, Rect::new(0, 0, width, 7), app, palette))
       .unwrap();
     let buf = term.backend().buffer().clone();
     let mut rows: Vec<String> = Vec::new();
@@ -665,6 +689,46 @@ mod tests {
     assert!(
       daemon_row.contains("up —"),
       "expected `up —` chunk when daemon disconnected, got: {daemon_row:?}"
+    );
+  }
+
+  #[test]
+  fn daemon_row_flags_a_daemon_build_that_differs_from_this_client() {
+    let mut app = App::new(AppOptions::default());
+    app.daemon_connected = true;
+    app.daemon_info = DaemonInfo {
+      pid: Some(1234),
+      uptime_seconds: Some(120),
+      build: Some("0.0.1".into()),
+      ..Default::default()
+    };
+    let daemon_row = render_lines_at(&app, 90)
+      .into_iter()
+      .find(|r| r.contains("port "))
+      .unwrap();
+    assert!(
+      daemon_row.contains("build 0.0.1 vs ") && daemon_row.contains(env!("CARGO_PKG_VERSION")),
+      "expected the two builds side by side, got: {daemon_row:?}"
+    );
+  }
+
+  #[test]
+  fn daemon_row_shows_no_build_text_when_the_builds_match() {
+    let mut app = App::new(AppOptions::default());
+    app.daemon_connected = true;
+    app.daemon_info = DaemonInfo {
+      pid: Some(1234),
+      uptime_seconds: Some(120),
+      build: Some(env!("CARGO_PKG_VERSION").into()),
+      ..Default::default()
+    };
+    let daemon_row = render_lines_at(&app, 90)
+      .into_iter()
+      .find(|r| r.contains("port "))
+      .unwrap();
+    assert!(
+      !daemon_row.contains("build"),
+      "matching builds should say nothing: {daemon_row:?}"
     );
   }
 
