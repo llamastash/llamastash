@@ -102,7 +102,7 @@ E2E (final review only, isolated daemon, never the user's): build, start a daemo
 
 ## Checklist
 
-- [ ] U1 log pump
-- [ ] U2 delete hub root
-- [ ] U3 build mismatch
-- [ ] U4 docs
+- [x] U1 log pump
+- [x] U2 delete hub root
+- [x] U3 build mismatch
+- [x] U4 docs

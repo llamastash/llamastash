@@ -1,5 +1,11 @@
 ## [Unreleased]
 
+### Fixed
+
+- An engine's log capture survives invalid UTF-8 in its output, and one log line is capped at 8 KiB, so a single bad byte or a runaway line no longer silences the Logs tab for the rest of the launch.
+- `llamastash delete` and the TUI's `Ctrl+D` free the disk for a model stored in a second Hugging Face hub root (`HF_HUB_CACHE` and friends), not only the first one.
+- A CLI or TUI from a newer build now notices a daemon from an older one: an idle daemon restarts with the new build, and a daemon with running models says so on stderr and in the TUI's Daemon row instead of answering with fields the client does not expect.
+
 ## [0.11.0] — 2026-11-03
 
 This release adds two CLI verbs so an agent can manage models without the TUI. `llamastash delete` removes a model's files through the daemon with the same plan the TUI's `Ctrl+D` shows, and refuses without `--yes` outside a TTY. `llamastash bench` starts a model once per preset and reports load time, prompt and generation speed and time to first token, in a table or `--json`. Unified-memory hosts get a configurable admission reserve (`daemon.unified_memory_reserve_percent`), the HuggingFace pull dialog opens on the models ranked for your hardware, and media launches now show `stt` / `image` instead of `chat` in `status`.

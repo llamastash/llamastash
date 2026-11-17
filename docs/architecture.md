@@ -420,9 +420,12 @@ counts as activity precisely so that doesn't happen mid-session.
 Every client-side path that has to know the daemon is gone waits on one
 function, `daemon::restart::shutdown_and_wait`: call the `shutdown` RPC, then
 poll the lockfile until the old process is gone. Four callers — `daemon stop`,
-`daemon restart`, the TUI's `Ctrl+R`, and the `--llama-server` reconcile in
-`cli::client::connect_or_spawn`, which re-spawns the running daemon on a
-different `llama-server`. Waiting on the lockfile is the whole point. The RPC
+`daemon restart`, the TUI's `Ctrl+R`, and the reconcile in
+`cli::client::connect_or_spawn`, which re-spawns the running daemon when it
+runs a different `llama-server` than this invocation asked for, or comes from
+an older build than this client (`daemon.build` in the `status` reply against
+the client's own version). Neither rule re-spawns a daemon that has managed
+launches; it keeps running and the client reports the mismatch instead. Waiting on the lockfile is the whole point. The RPC
 only *requests* teardown — the daemon still has to drain connections, stop
 every managed launch, and drop its `flock` — so a caller that returns on the
 answer races the replacement launch into "already running". The reconcile's
