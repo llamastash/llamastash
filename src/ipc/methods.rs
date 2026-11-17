@@ -1167,7 +1167,7 @@ async fn delete_model_handler(
   }
   live_launch_refusal(ctx, &parsed.path).await?;
 
-  let cache_root = crate::init::download::hf_cache_dir().ok();
+  let cache_root = crate::discovery::delete::hf_hub_root_for(&row.path);
   let plan = crate::discovery::delete::plan(row, &catalog, cache_root.as_deref());
   let display_name = row
     .display_label
