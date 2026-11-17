@@ -116,7 +116,7 @@ async fn status_lists_active_supervised_model() {
   // below would only verify the wire shape, not that the sampler
   // actually runs.
   let body = {
-    let deadline = std::time::Instant::now() + Duration::from_secs(4);
+    let deadline = std::time::Instant::now() + DAEMON_STARTUP_TIMEOUT;
     loop {
       let body = client.call("status", None).await.expect("status");
       let ram_total = body["host"]["ram_total_bytes"].as_u64().unwrap_or(0);

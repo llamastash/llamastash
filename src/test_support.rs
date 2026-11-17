@@ -39,30 +39,42 @@ pub fn unique_temp_dir(prefix: &str, label: &str) -> PathBuf {
   dir
 }
 
-/// A launch-pool port range for a test daemon.
-///
-/// Probes a batch of ephemeral ports at once and spans the lowest to the
-/// highest. The batch is the point: an ephemeral port is only ours until the
-/// probe listener drops, and the daemon does not bind it until several
-/// milliseconds later, so under a 40-way parallel test run another process
-/// routinely takes it in between. A range sized to exactly one port has
-/// nowhere to fall back and the launch dies with "no free port in N-N";
-/// a spread gives `ports::allocate` (which walks the range linearly) somewhere
-/// to land.
-pub fn allocate_port_range(probes: usize) -> crate::config::loader::PortRange {
-  let listeners: Vec<_> = (0..probes.max(1))
-    .map(|_| std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral"))
-    .collect();
-  let mut ports: Vec<u16> = listeners
-    .iter()
-    .map(|l| l.local_addr().expect("local_addr").port())
-    .collect();
-  ports.sort_unstable();
-  drop(listeners);
-  crate::config::loader::PortRange {
-    start: ports[0],
-    end: ports[ports.len() - 1],
+/// Test launch ranges are drawn from 20000-31999, below every OS's default
+/// ephemeral range (Linux starts at 32768, macOS and Windows at 49152). A port
+/// in the pool is never handed to a concurrent `bind(0)`, so no other test can
+/// take it between the probe here and the fake server's bind.
+const PORT_POOL: std::ops::Range<u16> = 20_000..32_000;
+
+const PORT_POOL_ATTEMPTS: u32 = 64;
+
+/// A launch-pool port range for a test daemon: `width` contiguous ports drawn
+/// from `PORT_POOL`, every one of them bindable on `127.0.0.1` when this
+/// returns. Some callers use `.start` alone as a listener port, so the whole
+/// window is probed, not just the first port; the rest give `ports::allocate`
+/// (which walks the range linearly) somewhere to land if a port goes busy.
+pub fn allocate_port_range(width: usize) -> crate::config::loader::PortRange {
+  use rand::TryRngCore;
+  let width = width.max(1) as u32;
+  let pool = PORT_POOL.end as u32 - PORT_POOL.start as u32;
+  assert!(width <= pool, "width {width} exceeds the port pool");
+  let starts = pool - width + 1;
+  for _ in 0..PORT_POOL_ATTEMPTS {
+    let offset = rand::rngs::OsRng
+      .try_next_u32()
+      .expect("OsRng must be available for test port allocation")
+      % starts;
+    let start = (PORT_POOL.start as u32 + offset) as u16;
+    let end = start + width as u16 - 1;
+    if (start..=end).all(crate::daemon::ports::try_bind_probe) {
+      return crate::config::loader::PortRange { start, end };
+    }
   }
+  panic!(
+    "no {}-port window in {}-{} bound on 127.0.0.1 in {PORT_POOL_ATTEMPTS} tries",
+    width,
+    PORT_POOL.start,
+    PORT_POOL.end - 1
+  );
 }
 
 /// Best-effort **synchronous** daemon shutdown, for test `Drop` guards (Drop
@@ -479,4 +491,23 @@ pub fn header_value<'a>(headers: &'a [(String, String)], name: &str) -> Option<&
     .iter()
     .find(|(k, _)| k.eq_ignore_ascii_case(name))
     .map(|(_, v)| v.as_str())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn allocate_port_range_returns_the_requested_width_inside_the_pool() {
+    for _ in 0..50 {
+      let range = allocate_port_range(8);
+      assert_eq!(range.end as u32 - range.start as u32 + 1, 8);
+      assert!(
+        range.start >= PORT_POOL.start,
+        "start {} too low",
+        range.start
+      );
+      assert!(range.end < PORT_POOL.end, "end {} too high", range.end);
+    }
+  }
 }

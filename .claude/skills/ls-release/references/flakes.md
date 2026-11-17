@@ -23,7 +23,7 @@ Recovery: `gh run rerun <id> --failed`, once. It passed on the second attempt on
 
 ## `release-gate (macos-cpu-only)` on `case_variant_of_a_live_name_reuses_that_launch`
 
-`tests/proxy_fallback.rs`, `first named launch must succeed` with `left: 503`. The first auto-start failed fast and the proxy answered `launch_failed`; the assertion message carries the response body, whose `cause` says why. Seen once, on v0.11.0's second gate attempt, while the Linux gate passed and the test passed 40 threaded local runs. Probably the same port race as above: the test's launch range is built from just-released ephemeral ports. Tracked in `TODO.md` under `## Next`.
+`tests/proxy_fallback.rs`, `first named launch must succeed` with `left: 503`. The first auto-start failed fast and the proxy answered `launch_failed`; the assertion message carries the response body, whose `cause` says why. Seen once, on v0.11.0's second gate attempt, while the Linux gate passed and the test passed 40 threaded local runs. Probably the same port race as above: the test's launch range is built from just-released ephemeral ports. Since 2026-11-17 `test_support::allocate_port_range` draws its ranges from ports 20000-31999, outside the OS ephemeral range, so a concurrent `bind(0)` can no longer take a range port.
 
 Recovery: `gh run rerun <id> --failed`. If it comes back, read the `cause` in the message before touching the test.
 
