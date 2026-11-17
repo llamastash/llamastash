@@ -44,8 +44,8 @@ its bearer key:
   constant time and never logged. TLS is not yet implemented, so LAN
   mode is plaintext HTTP — keep it on a trusted network or front it
   with a TLS-terminating reverse proxy. On a keyless loopback bind the
-  proxy also refuses a `Host` that is not `localhost` / `127.0.0.1` /
-  `::1` (`403 forbidden_host`, which blocks DNS rebinding), and in
+  proxy also refuses a `Host` that is not `localhost`, a `*.localhost`
+  name or a loopback IP (`403 forbidden_host`, which blocks DNS rebinding), and in
   every mode it refuses an `Origin` that is not the proxy's own origin
   or an extension/app scheme (`403 forbidden_origin`, which blocks
   cross-site requests and form posts).

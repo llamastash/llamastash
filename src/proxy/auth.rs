@@ -252,6 +252,8 @@ mod tests {
       "localhost.evil.example",
       "192.168.1.5:11435",
       "[::ffff:8.8.8.8]",
+      "localhost.",
+      "127.0.0.1:",
       "",
     ] {
       assert!(!host_is_loopback(bad), "{bad} must be refused");

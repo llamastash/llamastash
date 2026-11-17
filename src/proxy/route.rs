@@ -1132,7 +1132,9 @@ async fn collect_fallback_candidates(
             params.server.as_deref(),
             LaunchMode::Chat,
           )
-          && crate::ipc::status::declared_media_mode(&cat_snap, &id.path).is_none()
+          && catalog_entry
+            .and_then(|m| crate::ipc::status::row_media_mode(m))
+            .is_none()
       }
     };
     if !serves {

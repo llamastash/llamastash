@@ -138,12 +138,13 @@ pub async fn route(state: Arc<ProxyState>, req: Request<Incoming>) -> ProxyRespo
   // forge. Skipped with a key, which covers a reverse proxy that rewrites Host.
   if let Some(h) = host.filter(|_| state.loopback_bind && !state.auth.enforced()) {
     if !auth::host_is_loopback(h) {
+      log::debug!("proxy: refused Host `{h}` on {method} {path}");
       return error_response(
         StatusCode::FORBIDDEN,
         "forbidden_host",
         &format!(
           "this proxy listens on loopback and answers only Host localhost, \
-           127.0.0.1 or [::1]; got `{h}`"
+           a *.localhost name or a loopback IP; got `{h}`"
         ),
       );
     }
@@ -152,6 +153,7 @@ pub async fn route(state: Arc<ProxyState>, req: Request<Incoming>) -> ProxyRespo
   // credentials to a cross-site form POST.
   if let Some(origin) = header(hyper::header::ORIGIN) {
     if !auth::origin_is_allowed(origin, host) {
+      log::debug!("proxy: refused Origin `{origin}` on {method} {path}");
       return error_response(
         StatusCode::FORBIDDEN,
         "forbidden_origin",

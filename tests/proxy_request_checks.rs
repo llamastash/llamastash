@@ -176,6 +176,19 @@ async fn raw_request(
   (status, buf[head + 4..].to_vec())
 }
 
+/// Stop the fake engine, then the listener. A live child keeps the test
+/// process from exiting on Windows.
+async fn teardown(
+  ctx: MethodContext,
+  shutdown: ShutdownToken,
+  handle: tokio::task::JoinHandle<()>,
+) {
+  for (_, m) in ctx.supervisors.snapshot().await {
+    let _ = m.stop(Duration::from_secs(3)).await;
+  }
+  shutdown_listener(shutdown, handle).await;
+}
+
 /// The `http://<proxy>` origin of the running listener.
 fn own_origin(addr: SocketAddr) -> String {
   format!("http://{addr}")
@@ -228,12 +241,12 @@ async fn dns_rebound_host_is_refused() {
   .await;
   assert_forbidden(status, &body, "forbidden_host");
   assert_nothing_started(&ctx).await;
-  shutdown_listener(shutdown, handle).await;
+  teardown(ctx, shutdown, handle).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn loopback_host_spellings_pass() {
-  let (addr, _ctx, shutdown, handle) = setup().await;
+  let (addr, ctx, shutdown, handle) = setup().await;
   let own = addr.to_string();
   for host in ["localhost", "LOCALHOST", "127.0.0.1"] {
     let (status, body) = raw_request(addr, "GET", "/health", host, &[], None).await;
@@ -245,7 +258,7 @@ async fn loopback_host_spellings_pass() {
   // The literal with the real port passes too.
   let (status, _) = raw_request(addr, "GET", "/health", &own, &[], None).await;
   assert_eq!(status, 200);
-  shutdown_listener(shutdown, handle).await;
+  teardown(ctx, shutdown, handle).await;
 }
 
 // ---- hostile Origin ----
@@ -267,7 +280,7 @@ async fn cross_site_form_post_is_refused_and_starts_nothing() {
   .await;
   assert_forbidden(status, &body, "forbidden_origin");
   assert_nothing_started(&ctx).await;
-  shutdown_listener(shutdown, handle).await;
+  teardown(ctx, shutdown, handle).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -310,8 +323,19 @@ async fn cross_origin_read_and_null_origin_are_refused() {
   )
   .await;
   assert_forbidden(status, &body, "forbidden_origin");
+  // An Origin that is not visible ASCII cannot be compared, so it is refused.
+  let (status, body) = raw_request(
+    addr,
+    "GET",
+    "/health",
+    &own,
+    &[("Origin", "http://\u{e9}vil.example")],
+    None,
+  )
+  .await;
+  assert_forbidden(status, &body, "forbidden_origin");
   assert_nothing_started(&ctx).await;
-  shutdown_listener(shutdown, handle).await;
+  teardown(ctx, shutdown, handle).await;
 }
 
 // ---- what passes ----
@@ -348,8 +372,7 @@ async fn same_origin_and_extension_origins_pass() {
   assert_eq!(status, 200);
   let (status, _) = raw_request(addr, "GET", "/ui", &own, &[("Origin", &origin)], None).await;
   assert_eq!(status, 302, "same-origin /ui keeps its redirect");
-  let _ = ctx;
-  shutdown_listener(shutdown, handle).await;
+  teardown(ctx, shutdown, handle).await;
 }
 
 // ---- keyed bind ----
@@ -396,6 +419,5 @@ async fn keyed_bind_refuses_foreign_origin_before_auth_and_leaves_host_to_the_ke
   )
   .await;
   assert_eq!(status, 200, "https same-host origin must serve: {body:?}");
-  let _ = ctx;
-  shutdown_listener(shutdown, handle).await;
+  teardown(ctx, shutdown, handle).await;
 }
