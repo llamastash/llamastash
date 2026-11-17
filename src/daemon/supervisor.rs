@@ -18,7 +18,9 @@
 //!    `setsid` in `pre_exec` so the child survives daemon exit.
 //! 2. Spawn one tokio task per stream that tees lines to the log
 //!    file (rotating at 10 MiB, max 5 files per launch) and to a
-//!    bounded ring buffer of the last 4096 lines.
+//!    bounded ring buffer of the last 4096 lines. A line is capped at
+//!    8 KiB and decoded lossily, so engine output
+//!    that is not valid UTF-8 cannot stop the capture.
 //! 3. Hand the (pid, port) to `probe::poll_until_ready` with the
 //!    backend's readiness endpoint; on the ready status, transition
 //!    Loading → Ready. Timeout → Error.
@@ -32,7 +34,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, RwLock};
 
@@ -40,6 +42,10 @@ use tokio::sync::{Mutex, RwLock};
 const LOG_ROTATE_BYTES: u64 = 10 * 1024 * 1024;
 /// Keep this many rotated segments (`<base>.1` … `<base>.N`).
 const LOG_KEEP_SEGMENTS: usize = 5;
+/// Most bytes kept from a single engine log line; the rest is dropped.
+const MAX_LOG_LINE_BYTES: usize = 8 * 1024;
+/// Appended to a line the cap cut short.
+const TRUNCATED_SUFFIX: &str = " …[truncated]";
 
 use crate::backend::{Backend, Backends, ProcessLaunchSpec, Readiness};
 use crate::daemon::probe::{self, ProbeOutcome};
@@ -858,8 +864,9 @@ async fn pump_stream<R>(
   // Reuse one buffer across iterations instead of paying for a fresh
   // `to_string` + `format!` per line. The prefix never changes for a
   // given stream so we can format it once and snip the per-line body
-  // in place.
-  let mut line = String::new();
+  // in place. Bytes, not `String`: an engine that prints an invalid
+  // UTF-8 byte would make `read_line` fail and drop the pipe.
+  let mut line: Vec<u8> = Vec::with_capacity(256);
   let prefix = format!("[{source}] ");
   let mut scratch = String::with_capacity(256);
   // Disk writes can wedge transiently (full filesystem, fs remounted
@@ -871,14 +878,17 @@ async fn pump_stream<R>(
   // up in journal/stderr without spamming on every line.
   let mut disk_writes_disabled = false;
   loop {
-    line.clear();
-    match reader.read_line(&mut line).await {
-      Ok(0) => return,
-      Ok(_) => {
-        let trimmed = line.trim_end_matches(['\n', '\r']);
+    match read_capped_line(&mut reader, &mut line, MAX_LOG_LINE_BYTES).await {
+      Ok(None) => return,
+      Ok(Some(truncated)) => {
+        let text = String::from_utf8_lossy(&line);
+        let trimmed = text.trim_end_matches(['\n', '\r']);
         scratch.clear();
         scratch.push_str(&prefix);
         scratch.push_str(trimmed);
+        if truncated {
+          scratch.push_str(TRUNCATED_SUFFIX);
+        }
         // Ring buffer stores fully-prefixed lines so logs_tail can
         // emit them verbatim. One owned clone here is the cost; the
         // alternative (sharing through Arc<str>) costs more allocs
@@ -897,6 +907,59 @@ async fn pump_stream<R>(
       Err(e) => {
         log::warn!("supervisor: {source} stream read error: {e}");
         return;
+      }
+    }
+  }
+}
+
+/// Read one line into `buf`, keeping at most `cap` bytes and dropping
+/// the remainder of an over-long line up to its `\n`. Returns `None`
+/// at EOF with nothing read, else `Some(truncated)`.
+async fn read_capped_line<R>(
+  reader: &mut R,
+  buf: &mut Vec<u8>,
+  cap: usize,
+) -> std::io::Result<Option<bool>>
+where
+  R: AsyncBufRead + Unpin,
+{
+  buf.clear();
+  let mut truncated = false;
+  loop {
+    let filled = reader.fill_buf().await?;
+    if filled.is_empty() {
+      return Ok(if buf.is_empty() {
+        None
+      } else {
+        Some(truncated)
+      });
+    }
+    let have = filled.len();
+    if truncated {
+      match filled.iter().position(|&b| b == b'\n') {
+        Some(i) => {
+          reader.consume(i + 1);
+          return Ok(Some(true));
+        }
+        None => reader.consume(have),
+      }
+      continue;
+    }
+    let n = (cap - buf.len()).min(have);
+    match filled[..n].iter().position(|&b| b == b'\n') {
+      Some(i) => {
+        buf.extend_from_slice(&filled[..=i]);
+        reader.consume(i + 1);
+        return Ok(Some(false));
+      }
+      None => {
+        buf.extend_from_slice(&filled[..n]);
+        reader.consume(n);
+        // Bytes still buffered past the cap mean the line is longer
+        // than `cap`; the next pass drains the rest without storing.
+        if n < have {
+          truncated = true;
+        }
       }
     }
   }
@@ -1155,6 +1218,59 @@ mod tests {
     r.push_copy("c");
     r.push_copy("d");
     assert_eq!(r.tail(10), vec!["b", "c", "d"]);
+  }
+
+  #[tokio::test]
+  async fn read_capped_line_survives_invalid_utf8() {
+    // Two invalid bytes are just bytes; the pump decodes them lossy
+    // and keeps reading the lines after them.
+    let mut reader = BufReader::new(&b"ok\xff\xfe\nnext\n"[..]);
+    let mut buf = Vec::new();
+    assert_eq!(
+      read_capped_line(&mut reader, &mut buf, 256).await.unwrap(),
+      Some(false)
+    );
+    assert_eq!(String::from_utf8_lossy(&buf), "ok\u{FFFD}\u{FFFD}\n");
+    assert_eq!(
+      read_capped_line(&mut reader, &mut buf, 256).await.unwrap(),
+      Some(false)
+    );
+    assert_eq!(buf, b"next\n");
+    assert_eq!(
+      read_capped_line(&mut reader, &mut buf, 256).await.unwrap(),
+      None
+    );
+  }
+
+  #[tokio::test]
+  async fn read_capped_line_caps_a_long_line_and_resyncs() {
+    let mut reader = BufReader::new(&b"0123456789abcdef\nnext\n"[..]);
+    let mut buf = Vec::new();
+    assert_eq!(
+      read_capped_line(&mut reader, &mut buf, 8).await.unwrap(),
+      Some(true)
+    );
+    assert_eq!(buf, b"01234567");
+    assert_eq!(
+      read_capped_line(&mut reader, &mut buf, 8).await.unwrap(),
+      Some(false)
+    );
+    assert_eq!(buf, b"next\n");
+  }
+
+  #[tokio::test]
+  async fn read_capped_line_returns_a_final_line_without_newline() {
+    let mut reader = BufReader::new(&b"partial"[..]);
+    let mut buf = Vec::new();
+    assert_eq!(
+      read_capped_line(&mut reader, &mut buf, 256).await.unwrap(),
+      Some(false)
+    );
+    assert_eq!(buf, b"partial");
+    assert_eq!(
+      read_capped_line(&mut reader, &mut buf, 256).await.unwrap(),
+      None
+    );
   }
 
   #[test]
