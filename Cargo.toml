@@ -11,7 +11,7 @@ homepage = "https://llamastash.dev"
 readme = "README.md"
 license = "MIT"
 edition = "2021"
-rust-version = "1.95"
+rust-version = "1.97"
 # `cargo run` (without --bin) targets the real binary. The fixture
 # `[[bin]]` fixture entries (fake_llama_server, …) are only built
 # for tests under the `test-fixtures` feature, but cargo's run-target

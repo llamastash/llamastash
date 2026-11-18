@@ -51,7 +51,7 @@ Works with any AUR helper (`yay`, `paru`, `aurutils`, …) or a manual `makepkg 
 cargo install llamastash
 ```
 
-Builds from the published crate. Requires Rust 1.95+ (newer is fine). The `--locked` flag pins to the `Cargo.lock` shipped with the release for reproducibility.
+Builds from the published crate. Requires Rust 1.97+ (newer is fine). The `--locked` flag pins to the `Cargo.lock` shipped with the release for reproducibility.
 
 ### Option 5 — Build from source
 

@@ -15,6 +15,7 @@
 
 ### Changed
 
+- Building from source (`cargo install`) now needs Rust 1.97 or newer, up from 1.95, for yamlpath / yamlpatch 1.32.
 - Dependencies moved to their latest releases, including reqwest 0.13, sysinfo 0.40, rand 0.10, base64 0.23, sha2 0.11, windows 0.62 and yamlpath / yamlpatch 1.32.
 - `pull` and the TUI pull dialog run on hf-hub 1.0, which downloads Hugging Face's Xet-backed files (every GGUF repo checked) through Xet. The progress bar now moves in steps of up to a few hundred MB instead of smoothly, and the download can buffer up to 1/16 of RAM.
 
