@@ -851,6 +851,10 @@ _Shared context: `scripts/bench/`, `docs/benchmarks/`, the Z13 power-state contr
 
 - [ ] Investigate the NVIDIA +12-16% defaults-mode gap. Disclaimed at the top of `docs/benchmarks/linux-nvidia-final.md`, and the 2026-06-02 benchmark blog calls it not fully explained and promises a follow-up. On the next NVIDIA run, launch LlamaStash's spawn and raw llama-server with both invocations logged at maximum verbosity, then diff the effective argv (including what each side resolves n_gpu_layers to in defaults mode). 30-60 min of bench work.
 
+- [ ] **`llamastash bench` numbers do not match real agent use on `flash-next-halogen`.** Found 2026-11-10 on the Z13:
+  - **PP is a cache hit after the first bench.** [`run_prompt`](src/cli/bench.rs) adds `Run <n>.`, which is the same text on every invocation. Halogen's prompt cache is on disk and stays across restarts, so later benches compute 51 of 1011 tokens (`cached_tokens` 960). The table then shows 235 tok/s at 274 ms TTFT, against 1174 tok/s at 891 ms when cold. Fix: make the prefix unique per invocation (timestamp or random nonce). Also mark PP as cached, or drop it, when `cached_tokens > 0`.
+  - **TG depends on the reply type (MTP speculative decoding).** The built-in prompt asks for a one-sentence summary: 41.5 tok/s. A 700-word story gives 48 tok/s, Rust code gives 77 tok/s, and Pi sessions give 65-68 tok/s. Fix: change the built-in prompt to one with a code reply, or add a code prompt beside it, so TG is close to agent use.
+
 #### Batch L9 - vLLM backend
 
 _Shared context: `src/backend/vllm/`, its guard and knobs, `scripts/vllm/uat.sh`._
