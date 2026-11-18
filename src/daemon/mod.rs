@@ -748,7 +748,9 @@ fn lookup_live_process(pid: u32) -> LiveProcess {
   // with `with_processes` first refreshes every process (~100ms on a busy
   // host) before the single-pid refresh below does the real work.
   let refresh = ProcessRefreshKind::everything();
-  let mut sys = System::new();
+  let Ok(mut sys) = System::new() else {
+    return LiveProcess::default();
+  };
   sys.refresh_processes_specifics(
     sysinfo::ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
     true,

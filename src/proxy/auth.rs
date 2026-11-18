@@ -17,7 +17,7 @@ use base64::{
   Engine,
 };
 use hyper::header::{HeaderMap, AUTHORIZATION};
-use rand::TryRngCore;
+use rand::TryRng;
 
 use crate::util::http_auth::{constant_time_eq, extract_bearer};
 
@@ -40,9 +40,9 @@ impl ProxyApiKey {
   /// non-recoverable state `IpcToken::generate` treats as fatal.
   pub fn generate() -> Self {
     let mut bytes = [0u8; KEY_BYTES];
-    rand::rngs::OsRng
+    rand::rngs::SysRng
       .try_fill_bytes(&mut bytes)
-      .expect("OsRng must succeed for proxy key generation");
+      .expect("SysRng must succeed for proxy key generation");
     Self(format!("{KEY_PREFIX}{}", URL_SAFE_NO_PAD.encode(bytes)))
   }
 

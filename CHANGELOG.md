@@ -13,6 +13,11 @@
 - The family-MRU fallback only answers from a running model that serves the request's mode, and embeddings and rerank requests never fall back to another model at all.
 - A running `stt` / `image` / `tts` launch lists on `/v1/models` under its declared mode instead of `chat`, matching the `status` MODE column.
 
+### Changed
+
+- Dependencies moved to their latest releases, including reqwest 0.13, sysinfo 0.40, rand 0.10, base64 0.23, sha2 0.11, windows 0.62 and yamlpath / yamlpatch 1.32.
+- `pull` and the TUI pull dialog run on hf-hub 1.0, which downloads Hugging Face's Xet-backed files (every GGUF repo checked) through Xet. The progress bar now moves in steps of up to a few hundred MB instead of smoothly, and the download can buffer up to 1/16 of RAM.
+
 ## [0.11.0] — 2026-11-03
 
 This release adds two CLI verbs so an agent can manage models without the TUI. `llamastash delete` removes a model's files through the daemon with the same plan the TUI's `Ctrl+D` shows, and refuses without `--yes` outside a TTY. `llamastash bench` starts a model once per preset and reports load time, prompt and generation speed and time to first token, in a table or `--json`. Unified-memory hosts get a configurable admission reserve (`daemon.unified_memory_reserve_percent`), the HuggingFace pull dialog opens on the models ranked for your hardware, and media launches now show `stt` / `image` instead of `chat` in `status`.

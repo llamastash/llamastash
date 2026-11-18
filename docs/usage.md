@@ -240,7 +240,7 @@ The three `LLAMASTASH_*_DIR` overrides make it possible to run side-by-side daem
 
 ### Pinning a HuggingFace revision
 
-`llamastash init --recommended --model owner/repo --revision <SHA-or-branch>` threads the `--revision` value into hf-hub's `Repo::with_revision` so the byte-stream resolves at the supplied commit. Empty values are rejected at parse time. Use this when you need a reproducible model download — agents pinning environments should always pass a SHA rather than relying on the repo's default branch.
+`llamastash init --recommended --model owner/repo --revision <SHA-or-branch>` passes the `--revision` value to hf-hub as the revision for the file listing, size lookup and download, so the files resolve at the supplied commit. Empty values are rejected at parse time. Use this when you need a reproducible model download — agents pinning environments should always pass a SHA rather than relying on the repo's default branch.
 
 ### Preferring a Vulkan `llama-server` build
 

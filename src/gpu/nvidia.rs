@@ -136,9 +136,11 @@ fn fill_unified_memory(devices: &mut [GpuDevice]) {
   {
     return;
   }
-  let sys = System::new_with_specifics(
+  let Ok(sys) = System::new_with_specifics(
     RefreshKind::nothing().with_memory(MemoryRefreshKind::nothing().with_ram()),
-  );
+  ) else {
+    return;
+  };
   let total = sys.total_memory();
   let used = total.saturating_sub(sys.available_memory());
   for device in devices

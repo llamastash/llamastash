@@ -71,15 +71,15 @@ fn claim_start(start: u16) -> bool {
 /// A process that asks for more windows than the pool holds runs out and
 /// panics; no test comes close.
 pub fn allocate_port_range(width: usize) -> crate::config::loader::PortRange {
-  use rand::TryRngCore;
+  use rand::TryRng;
   let width = width.max(1) as u32;
   let pool = PORT_POOL.end as u32 - PORT_POOL.start as u32;
   assert!(width <= pool, "width {width} exceeds the port pool");
   let starts = pool - width + 1;
   for _ in 0..PORT_POOL_ATTEMPTS {
-    let offset = rand::rngs::OsRng
+    let offset = rand::rngs::SysRng
       .try_next_u32()
-      .expect("OsRng must be available for test port allocation")
+      .expect("SysRng must be available for test port allocation")
       % starts;
     let start = (PORT_POOL.start as u32 + offset) as u16;
     let end = start + width as u16 - 1;
