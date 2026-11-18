@@ -3,6 +3,10 @@
 ### Security
 
 - A web page can no longer drive or read the proxy through its port: a foreign `Host` gets `403 forbidden_host` (the DNS-rebinding guard on a keyless loopback bind) and a foreign `Origin` gets `403 forbidden_origin` in every mode; extension and app scheme origins still pass.
+- zip 9.0.4 → 9.4.1, clearing [RUSTSEC-2026-0548](https://rustsec.org/advisories/RUSTSEC-2026-0548): `ZipStreamReader` can extract an entry under a name that differs from the central directory. Windows-only here, and engine archives open through `ZipArchive`, not `ZipStreamReader`.
+- rustix 1.1.4 → 1.1.6, clearing [RUSTSEC-2026-0486](https://rustsec.org/advisories/RUSTSEC-2026-0486): xattr calls with a zero-length buffer mark unwritten bytes as initialized. Transitive via crossterm, tempfile and xattr.
+- quinn-udp 0.5.14 → 0.5.16, clearing [RUSTSEC-2026-0538](https://rustsec.org/advisories/RUSTSEC-2026-0538): a receive loop can spin after a truncated datagram. It is in `Cargo.lock` only, and no build target compiles it.
+- quick-xml 0.39.4 → 0.41.0, through `wayland-scanner` 0.31.10 → 0.31.11, clearing [RUSTSEC-2026-0194](https://rustsec.org/advisories/RUSTSEC-2026-0194) and [RUSTSEC-2026-0195](https://rustsec.org/advisories/RUSTSEC-2026-0195): checking a start tag for duplicate attributes takes quadratic time, and `NsReader` allocates without a bound on a hostile namespace declaration. Build-time codegen through arboard → wl-clipboard-rs → wayland-client, which never parses untrusted XML. `cargo audit --deny warnings` is clean with these four.
 
 ### Fixed
 
