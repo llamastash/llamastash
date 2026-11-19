@@ -28,9 +28,14 @@ pub fn render(
   // Tone the border/title off the action's severity: red for prompts
   // that lose work (stop/kill/delete/cancel), the warning hue for
   // neutral/additive prompts so red stays meaningful.
+  // A notice takes no action, so its buttons must not say "confirm".
+  let (confirm_label, cancel_label) = match action {
+    ConfirmAction::DaemonBuildMismatch { .. } => ("ok", "close"),
+    _ => ("confirm", "cancel"),
+  };
   let (tone, primary) = match action.severity() {
-    ConfirmSeverity::Destructive => (palette.error, Button::destructive("confirm")),
-    ConfirmSeverity::Neutral => (palette.warning, Button::submit("confirm")),
+    ConfirmSeverity::Destructive => (palette.error, Button::destructive(confirm_label)),
+    ConfirmSeverity::Neutral => (palette.warning, Button::submit(confirm_label)),
   };
   let rect = popup::area(
     area,
@@ -67,7 +72,7 @@ pub fn render(
     frame,
     chunks[1],
     app,
-    &[primary.yes_no(), Button::cancel("cancel").yes_no()],
+    &[primary.yes_no(), Button::cancel(cancel_label).yes_no()],
     palette,
   );
 }
@@ -110,8 +115,8 @@ fn describe(app: &App, action: &ConfirmAction) -> (&'static str, String) {
         .bindings_for(Focus::List)
         .iter()
         .find(|b| b.action == Action::RestartDaemon)
-        .map(|b| format!("Press {} to restart it", b.label))
-        .unwrap_or_else(|| "Run `llamastash daemon restart`".to_string());
+        .map(|b| format!("Close this, then press {} to restart it", b.label))
+        .unwrap_or_else(|| "Run `llamastash daemon restart` to restart it".to_string());
       (
         "Daemon from another build",
         format!(
@@ -232,7 +237,10 @@ mod tests {
     };
     let (_, body) = describe(&App::new(AppOptions::default()), &notice);
     assert!(body.contains("0.0.1") && body.contains("0.0.2"), "{body}");
-    assert!(body.contains(crate::ctrl_label!("r")), "{body}");
+    assert!(
+      body.contains(&format!("then press {}", crate::ctrl_label!("r"))),
+      "{body}"
+    );
 
     let mut keymap = KeyMap::default();
     let overrides: BTreeMap<String, String> =
