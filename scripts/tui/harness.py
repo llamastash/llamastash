@@ -59,6 +59,7 @@ CAST_THEME = {
 KEYS = {
     "enter": "\r",
     "esc": "\x1b",
+    "backspace": "\x7f",
     "tab": "\t",
     "backtab": "\x1b[Z",
     "space": " ",
@@ -207,6 +208,17 @@ class Session:
             self.failures += 1
             print(f"  FAIL {'refute' if negate else 'expect'}: {substr!r}")
 
+    def wait_for(self, arg):
+        """`text` or `text|seconds`: pump output until `text` is on screen."""
+        substr, _, limit = arg.partition("|")
+        end = time.time() + float(limit or 90)
+        while substr not in self.render():
+            if time.time() > end:
+                self.failures += 1
+                print(f"  FAIL waitfor: {substr!r}")
+                return
+            self._pump(0.2)
+
     def run(self, program):
         for raw in program:
             line = raw.rstrip("\n")
@@ -232,6 +244,8 @@ class Session:
             elif op == "snap":
                 self._pump(0.3)
                 self.snap(arg.strip())
+            elif op == "waitfor":
+                self.wait_for(arg)
             elif op == "expect":
                 self.expect(arg)
             elif op == "refute":

@@ -7,12 +7,14 @@ generous. This rewrites the inter-event deltas so long pauses collapse to a
 readable beat while the typing/animation cadence is preserved.
 
   python3 scripts/tui/trim_cast.py in.cast out.cast \
-      [--max-gap 1.2] [--speed 1.0] [--hold T:DUR ...]
+      [--max-gap 1.2] [--speed 1.0] [--fast A:B:F ...] [--hold T:DUR ...]
 
 --max-gap S   clamp any gap between two output events to at most S seconds
               (default 1.2). This is what kills the dead air.
 --speed F     divide every (already-clamped) delta by F; >1 is faster
               (default 1.0, i.e. unchanged).
+--fast A:B:F  play the raw span (A, B] F times faster on top of --speed, e.g.
+              a run of repeated arrow keys. Repeatable.
 --hold T:DUR  freeze on the frame at (or just after) raw timestamp T for an
               extra DUR seconds — let a payoff frame breathe (e.g. the init
               summary) without slowing the rest. Repeatable.
@@ -62,6 +64,7 @@ def main():
         (float(t), float(d))
         for t, d in (h.split(":") for h in take_all("--hold"))
     )
+    fasts = [tuple(float(x) for x in f.split(":")) for f in take_all("--fast")]
     src, dst = args[0], args[1]
 
     lines = open(src).read().splitlines()
@@ -77,6 +80,9 @@ def main():
         if t > end:
             break
         delta = min(t - prev_raw, max_gap) / speed
+        for a, b, f in fasts:
+            if a < t <= b:
+                delta /= f
         prev_raw = t
         # Even out the cadence: keep tiny repaint bursts, clamp real pauses.
         if delta >= BURST:

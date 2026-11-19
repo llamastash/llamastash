@@ -605,7 +605,7 @@ _Shared context: `test_support::allocate_port_range`, `tests/supervisor_ipc_test
 
 _Shared context: `assets/tui.gif`, `assets/presets.gif`, `assets/init.gif`, `assets/tui_*.png`, `assets/demo.cast`, the image links in `README.md`._
 
-- [ ] update GIFs and screenshots in the documentation to reflect the latest TUI and CLI changes (Show requests tab, halogen flash server running, etc)
+- [x] ~~update GIFs and screenshots in the documentation to reflect the latest TUI and CLI changes (Show requests tab, halogen flash server running, etc)~~ — **done 2026-11-19**: re-recorded on the Z13 (`scripts/tui/demo.prog`), site cast and hero still updated too.
 
 ## General Roadmap
 
