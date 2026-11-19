@@ -76,9 +76,7 @@ fn seeded_dashboard_app() -> App {
   app.daemon_info = DaemonInfo {
     pid: Some(4242),
     uptime_seconds: Some(3 * 3600 + 12 * 60 + 45),
-    // Equal to this build: a different string would flag a mismatch on
-    // the Daemon row and tie the golden to a version.
-    build: Some(env!("CARGO_PKG_VERSION").into()),
+    build: Some("0.1.0".into()),
     server_path: Some("/usr/local/bin/llama-server".into()),
     ipc_url: Some("http://127.0.0.1:48134".into()),
     proxy: None,

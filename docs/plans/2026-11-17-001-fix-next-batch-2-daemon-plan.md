@@ -51,9 +51,9 @@ All units run in one lane, in order. They share `CHANGELOG.md` and `TODO.md`.
 
 ### U3. Build mismatch notice in the TUI
 
-- Files: `src/tui/app.rs`, `src/tui/confirm_overlay.rs`, `src/tui/events.rs`, `tests/tui_e2e_render_test.rs`.
+- Files: `src/tui/app.rs`, `src/tui/confirm_overlay.rs`, `src/tui/events.rs`.
 - Per D4. Tests: an older build opens the notice once; a matching build opens nothing; an open popup delays it to a later tick; the notice text follows a remapped restart key.
-- The golden fixture pins `build` to `CARGO_PKG_VERSION`, so goldens show no popup.
+- Goldens need no change: their fixture sets `daemon_info` directly, so the notice never opens there.
 - Depends on: nothing.
 
 ### U4. Docs
