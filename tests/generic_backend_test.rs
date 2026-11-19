@@ -778,6 +778,53 @@ servers:
     shutdown(client, daemon).await;
   }
 
+  /// A running media launch lists under the mode its entry declares, the way
+  /// `status` already prints it. The launch's own mode is `chat` (a media mode
+  /// changes no argv), which is what only the named row used to print.
+  #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+  async fn a_running_media_launch_lists_under_its_declared_mode() {
+    let proxy_port = std::net::TcpListener::bind("127.0.0.1:0")
+      .unwrap()
+      .local_addr()
+      .unwrap()
+      .port();
+    let (mut client, daemon) = boot(opts(unique_temp("models-mode"), Some(proxy_port))).await;
+    wait_listed(&mut client, "gen-stt").await;
+    let unnamed = start(&mut client, json!({ "model_path": "generic://gen-stt" })).await;
+    wait_state(&mut client, &unnamed, "ready").await;
+    let named = start(
+      &mut client,
+      json!({ "model_path": "generic://gen-stt", "name": "transcribe" }),
+    )
+    .await;
+    wait_state(&mut client, &named, "ready").await;
+
+    let models: Value = reqwest::Client::new()
+      .get(format!("http://127.0.0.1:{proxy_port}/v1/models"))
+      .timeout(Duration::from_secs(30))
+      .send()
+      .await
+      .expect("models")
+      .json()
+      .await
+      .unwrap();
+    let mode_of = |id: &str| {
+      models["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == id)
+        .map(|m| m["mode"].clone())
+    };
+    assert_eq!(mode_of("gen-stt"), Some(json!("stt")), "{models}");
+    assert_eq!(
+      mode_of("gen-stt@transcribe"),
+      Some(json!("stt")),
+      "the named launch row prints the declared mode: {models}"
+    );
+    shutdown(client, daemon).await;
+  }
+
   /// `/v1/systemone` takes no mode, so a chat entry answers it by name.
   #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
   async fn systemone_forwards_to_the_named_entry() {

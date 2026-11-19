@@ -1,4 +1,7 @@
 /target
+# Linked git worktrees live here. `git add` records one as a gitlink, because a
+# linked worktree carries a `.git` file instead of a directory.
+.worktrees/
 **/*.rs.bk
 *.log
 .DS_Store

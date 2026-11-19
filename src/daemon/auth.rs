@@ -1,7 +1,7 @@
 //! Bearer-token authentication for the control-plane HTTP listener.
 //!
 //! The token is generated fresh on every daemon start (32 bytes from
-//! `OsRng`, base64url-encoded without padding) and written to
+//! `SysRng`, base64url-encoded without padding) and written to
 //! `runtime.json` alongside the resolved listener URL. Clients read
 //! the file (or honor `LLAMASTASH_IPC_TOKEN`) and present the token in
 //! an `Authorization: Bearer <token>` header on every request except
@@ -13,7 +13,7 @@
 //! `SO_PEERCRED` design carries over via the file's permission mode.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use rand::TryRngCore;
+use rand::TryRng;
 
 use crate::util::http_auth::constant_time_eq;
 
@@ -29,15 +29,15 @@ pub const TOKEN_BYTES: usize = 32;
 pub struct IpcToken(String);
 
 impl IpcToken {
-  /// Generate a fresh token from `OsRng`. Panics only if the OS
+  /// Generate a fresh token from `SysRng`. Panics only if the OS
   /// randomness source is unavailable, which on Linux/macOS means
   /// `getrandom(2)` returned an error — a non-recoverable system
   /// state where a panic is the honest response.
   pub fn generate() -> Self {
     let mut bytes = [0u8; TOKEN_BYTES];
-    rand::rngs::OsRng
+    rand::rngs::SysRng
       .try_fill_bytes(&mut bytes)
-      .expect("OsRng must succeed for daemon startup");
+      .expect("SysRng must succeed for daemon startup");
     Self(URL_SAFE_NO_PAD.encode(bytes))
   }
 

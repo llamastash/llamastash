@@ -239,10 +239,9 @@ mod tests {
 
   #[test]
   fn a_retry_replaying_the_current_file_does_not_inflate_the_total() {
-    // hf-hub re-`init`s the adapter on a retry and jumps it to the
-    // committed offset, so the second pass reports byte counts the
-    // first attempt already reported. Only the bytes that survived
-    // may be counted.
+    // A retry replays the file from an earlier offset, so the second
+    // pass reports byte counts the first attempt already reported.
+    // Only the bytes that survived may be counted.
     let p = line();
     p.on_files_resolved(&[("a.gguf".into(), 100), ("b.gguf".into(), 100)]);
     p.on_file_started("a.gguf", 100, 0, 2);

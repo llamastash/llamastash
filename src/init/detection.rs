@@ -223,25 +223,18 @@ pub fn detect_hardware() -> HardwareSnapshot {
     GpuInfo::AppleMetal { .. } => 1,
     GpuInfo::Multi { devices } => devices.len() as u32,
   };
-  let mut sys = System::new();
-  sys.refresh_memory();
-  sys.refresh_cpu_all();
-  let ram_total_bytes = sys.total_memory();
-  let cpu_brand = sys
-    .cpus()
+  let mut sys = System::new().ok();
+  if let Some(sys) = sys.as_mut() {
+    sys.refresh_memory();
+    sys.refresh_cpu_all();
+  }
+  let cpus = sys.as_ref().map(System::cpus).unwrap_or_default();
+  let ram_total_bytes = sys.as_ref().map_or(0, System::total_memory);
+  let cpu_brand = cpus
     .first()
     .map(|c| c.brand().trim().to_string())
     .unwrap_or_default();
-  let cpu_cores = System::physical_core_count()
-    .or_else(|| {
-      let n = sys.cpus().len();
-      if n == 0 {
-        None
-      } else {
-        Some(n)
-      }
-    })
-    .unwrap_or(0) as u32;
+  let cpu_cores = System::physical_core_count().unwrap_or(cpus.len()) as u32;
   let cpu_features = detect_cpu_features();
   let disk_free_bytes = detect_home_disk_free_bytes();
   HardwareSnapshot {
@@ -370,9 +363,11 @@ fn detect_cpu_features() -> Vec<String> {
 fn detect_home_disk_free_bytes() -> u64 {
   let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
   let home_path = PathBuf::from(&home);
-  let disks = Disks::new_with_refreshed_list();
+  let Ok(disks) = Disks::new_with_refreshed_list() else {
+    return 0;
+  };
   let mut best: Option<(usize, u64)> = None;
-  for disk in disks.list() {
+  for disk in disks.iter() {
     let mount = disk.mount_point();
     if !home_path.starts_with(mount) {
       continue;

@@ -185,14 +185,16 @@ impl GpuFlavor {
 /// Suitable for tests; the daemon should prefer [`spawn`] for
 /// continuous readings.
 pub async fn sample_priming(prime_delay: Duration) -> HostMetricsSnapshot {
-  let mut sys = System::new_with_specifics(host_refresh_kind());
+  let Ok(mut sys) = System::new_with_specifics(host_refresh_kind()) else {
+    return HostMetricsSnapshot::default();
+  };
   // Prime the CPU delta.
-  sys.refresh_cpu_specifics(CpuRefreshKind::nothing().with_cpu_usage());
+  sys.refresh_cpu_specifics(CpuRefreshKind::nothing().with_usage());
   tokio::time::sleep(prime_delay).await;
-  sys.refresh_cpu_specifics(CpuRefreshKind::nothing().with_cpu_usage());
+  sys.refresh_cpu_specifics(CpuRefreshKind::nothing().with_usage());
   sys.refresh_memory();
-  let components = Components::new_with_refreshed_list();
-  build_snapshot(&sys, &components, probe_gpu_full().await)
+  let components = Components::new_with_refreshed_list().ok();
+  build_snapshot(&sys, components.as_ref(), probe_gpu_full().await)
 }
 
 /// Spawn the long-running sampler. Returns an `Arc<RwLock<…>>` whose
@@ -264,9 +266,15 @@ pub fn spawn(
   // the daemon log instead of silently freezing the snapshot for the
   // lifetime of the daemon.
   super::supervisor::spawn_supervised("host_metrics_sampler", async move {
-    let mut sys = System::new_with_specifics(host_refresh_kind());
+    let mut sys = match System::new_with_specifics(host_refresh_kind()) {
+      Ok(sys) => sys,
+      Err(e) => {
+        log::warn!("host metrics sampler disabled: {e}");
+        return;
+      }
+    };
     // Prime sysinfo's CPU delta on first refresh.
-    sys.refresh_cpu_specifics(CpuRefreshKind::nothing().with_cpu_usage());
+    sys.refresh_cpu_specifics(CpuRefreshKind::nothing().with_usage());
     // Hoist `Components` out of the per-tick path. The previous shape
     // allocated a fresh `Components::new_with_refreshed_list()` every
     // second *and* then called `components.refresh(true)` — the
@@ -274,7 +282,7 @@ pub fn spawn(
     // second call was a redundant double-refresh. Keeping one
     // long-lived instance and refreshing in place each tick avoids
     // the allocation churn and the duplicate /sys/class/hwmon walk.
-    let mut components = Components::new_with_refreshed_list();
+    let mut components = Components::new_with_refreshed_list().ok();
     // Cache the detected GPU backend so we only spawn the matching
     // vendor tool each tick instead of running the full
     // nvidia→amd→metal→vulkan chain every second. Hotplug / late
@@ -292,11 +300,13 @@ pub fn spawn(
         _ = shutdown.wait_until_triggered() => return,
         _ = tokio::time::sleep(interval) => {}
       }
-      sys.refresh_cpu_specifics(CpuRefreshKind::nothing().with_cpu_usage());
+      sys.refresh_cpu_specifics(CpuRefreshKind::nothing().with_usage());
       sys.refresh_memory();
       // `refresh(true)` updates values and prunes sensors that
       // vanished since the last tick (hot-removed cards / drivers).
-      components.refresh(true);
+      if let Some(components) = components.as_mut() {
+        components.refresh(true);
+      }
       // Periodic full re-probe: catches hotplug, a late driver load,
       // and CpuOnly → detected once the vendor tool appears. Users who
       // don't want the spawns set `gpu.reprobe_interval_secs: 0`; there
@@ -315,7 +325,7 @@ pub fn spawn(
         // Unknown/Vulkan).
         info = refreshed;
       }
-      let next = build_snapshot(&sys, &components, info.clone());
+      let next = build_snapshot(&sys, components.as_ref(), info.clone());
       *snapshot_for_task.write().await = next;
       // Mirror the live GpuInfo so `status.gpu` follows hotplug /
       // late driver loads. Without this, `ctx.gpu` would stay
@@ -333,7 +343,7 @@ pub fn spawn(
 
 fn host_refresh_kind() -> RefreshKind {
   RefreshKind::nothing()
-    .with_cpu(CpuRefreshKind::nothing().with_cpu_usage())
+    .with_cpu(CpuRefreshKind::nothing().with_usage())
     .with_memory(MemoryRefreshKind::everything())
 }
 
@@ -358,12 +368,16 @@ async fn refresh_active_gpu(prev: GpuInfo) -> Option<GpuInfo> {
     .flatten()
 }
 
-fn build_snapshot(sys: &System, components: &Components, info: GpuInfo) -> HostMetricsSnapshot {
+fn build_snapshot(
+  sys: &System,
+  components: Option<&Components>,
+  info: GpuInfo,
+) -> HostMetricsSnapshot {
   // Debug-build-only multi-GPU simulator; compiled out of release.
   #[cfg(debug_assertions)]
   let info = debug_fake_multi_gpu(info);
   let cpu_pct = host_cpu_pct(sys);
-  let cpu_temp_c = host_cpu_temp_c(components);
+  let cpu_temp_c = components.and_then(host_cpu_temp_c);
   let agg = aggregate_gpu(&info);
   let gpu_devices = build_device_rows(&info);
   HostMetricsSnapshot {
@@ -466,7 +480,7 @@ fn host_cpu_pct(sys: &System) -> f32 {
   if cpus.is_empty() {
     return 0.0;
   }
-  let sum: f32 = cpus.iter().map(|c| c.cpu_usage()).sum();
+  let sum: f32 = cpus.iter().map(|c| c.usage()).sum();
   sum / cpus.len() as f32
 }
 
