@@ -420,12 +420,9 @@ counts as activity precisely so that doesn't happen mid-session.
 Every client-side path that has to know the daemon is gone waits on one
 function, `daemon::restart::shutdown_and_wait`: call the `shutdown` RPC, then
 poll the lockfile until the old process is gone. Four callers — `daemon stop`,
-`daemon restart`, the TUI's `Ctrl+R`, and the reconcile in
-`cli::client::connect_or_spawn`, which re-spawns the running daemon when it
-runs a different `llama-server` than this invocation asked for, or comes from
-an older build than this client (`daemon.build` in the `status` reply against
-the client's own version). Neither rule re-spawns a daemon that has managed
-launches; it keeps running and the client reports the mismatch instead. Waiting on the lockfile is the whole point. The RPC
+`daemon restart`, the TUI's `Ctrl+R`, and the `--llama-server` reconcile in
+`cli::client::connect_or_spawn`, which re-spawns the running daemon on a
+different `llama-server`. Waiting on the lockfile is the whole point. The RPC
 only *requests* teardown — the daemon still has to drain connections, stop
 every managed launch, and drop its `flock` — so a caller that returns on the
 answer races the replacement launch into "already running". The reconcile's
@@ -589,7 +586,7 @@ Beyond the `models` / `external` / `gpu` shapes, the `status` response carries t
 - **`servers`** — `{id, backend_id, binary, name, devices, label?}` per configured server. Every launch-device surface reads this (it replaced the old flat `device_catalog`). `label` is the display name: the configured `name:`, else the probed compute backends (`rocm+vulkan`), else the build folder on a collision or a failed probe (`probe_devices` returns `None`), else the backend's `deviceless_accelerator` when its probe answered with no devices (llama.cpp: `cpu`); repeats get `-2`; omitted when none applies.
 - **`backends`** — one row per registered backend: `{id, installed, accelerators, server_labels, enabled?, binary?}`. `server_labels` is one label per `servers` entry of that backend, in catalog order, then the backend's `status_server_labels` (generic: entries without `model:`, which never reach the catalog); a server without a `label` reads as the backend's `accelerators` joined with `|`, else its binary's file name.
 - **`daemon.memory`** — `{unified_memory_reserve_percent, default_reserve_percent, available_bytes, admissible_bytes}`. The setting is `"auto"` or an integer 0–99. The optional default is 25 on Apple Silicon, 0 on other detected UMA hosts, and null when UMA policy is unavailable (a non-UMA host, or no sample yet). Available bytes are the host-wide constrained pool before additional headroom; admissible bytes apply the configured headroom before in-flight reservations. Byte figures are null without a usable UMA memory sample. `MemoryBudget::preview` uses the same pure percentage calculation as admission. Host memory gauges continue to show raw totals.
-- **`daemon.build`** — semver from `CARGO_PKG_VERSION`; matches `--version`.
+- **`daemon.build`** — semver from `CARGO_PKG_VERSION`; matches `--version`. The TUI compares it with its own version and, when they differ, opens a notice popup once per session. Nothing restarts the daemon on its own.
 - **`daemon.server_path`** — absolute path to the `llama-server` binary resolved at startup, `null` when unset.
 - **`daemon.preload`** — `{entries, presets}`: the `daemon.preload:` list as configured and the number of preset entries pinning `preload: true`. Always present, empty when nothing is configured, so "preload not asked for" is distinguishable from "not read". Whether a given entry actually came up is visible in `models[]`, because a preloaded launch is an ordinary running row (`origin: manual`) that a refusal skips with one log line.
 - **`proxy`** — `{enabled: bool, listen: Option<String>, status: "disabled" | "listening" | "port_in_use" | "unbound", bind_error: Option<String>, ui_url: Option<String>}`. `listen` is the attempted address (`"127.0.0.1:<port>"`) in every state except `disabled`, where it is `null`. `bind_error` is non-null only on `unbound` (an unexpected bind failure beyond port-in-use). `ui_url` is the port-stable web-UI origin (`"http://<listen>/ui/"`), non-null **only** when `status: "listening"` — the one state that serves `/ui`. The CLI renders it as a `web ui` row.

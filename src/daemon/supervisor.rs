@@ -18,9 +18,9 @@
 //!    `setsid` in `pre_exec` so the child survives daemon exit.
 //! 2. Spawn one tokio task per stream that tees lines to the log
 //!    file (rotating at 10 MiB, max 5 files per launch) and to a
-//!    bounded ring buffer of the last 4096 lines. A line is capped at
-//!    8 KiB and decoded lossily, so engine output
-//!    that is not valid UTF-8 cannot stop the capture.
+//!    bounded ring buffer of the last 4096 lines. A line longer than
+//!    8 KiB is split into 8 KiB lines, and bytes are decoded lossily,
+//!    so engine output that is not valid UTF-8 cannot stop the capture.
 //! 3. Hand the (pid, port) to `probe::poll_until_ready` with the
 //!    backend's readiness endpoint; on the ready status, transition
 //!    Loading → Ready. Timeout → Error.
@@ -42,10 +42,8 @@ use tokio::sync::{Mutex, RwLock};
 const LOG_ROTATE_BYTES: u64 = 10 * 1024 * 1024;
 /// Keep this many rotated segments (`<base>.1` … `<base>.N`).
 const LOG_KEEP_SEGMENTS: usize = 5;
-/// Most bytes kept from a single engine log line; the rest is dropped.
+/// Longest engine log line kept as one line; a longer one is split.
 const MAX_LOG_LINE_BYTES: usize = 8 * 1024;
-/// Appended to a line the cap cut short.
-const TRUNCATED_SUFFIX: &str = " …[truncated]";
 
 use crate::backend::{Backend, Backends, ProcessLaunchSpec, Readiness};
 use crate::daemon::probe::{self, ProbeOutcome};
@@ -879,16 +877,13 @@ async fn pump_stream<R>(
   let mut disk_writes_disabled = false;
   loop {
     match read_capped_line(&mut reader, &mut line, MAX_LOG_LINE_BYTES).await {
-      Ok(None) => return,
-      Ok(Some(truncated)) => {
+      Ok(false) => return,
+      Ok(true) => {
         let text = String::from_utf8_lossy(&line);
         let trimmed = text.trim_end_matches(['\n', '\r']);
         scratch.clear();
         scratch.push_str(&prefix);
         scratch.push_str(trimmed);
-        if truncated {
-          scratch.push_str(TRUNCATED_SUFFIX);
-        }
         // Ring buffer stores fully-prefixed lines so logs_tail can
         // emit them verbatim. One owned clone here is the cost; the
         // alternative (sharing through Arc<str>) costs more allocs
@@ -912,55 +907,35 @@ async fn pump_stream<R>(
   }
 }
 
-/// Read one line into `buf`, keeping at most `cap` bytes and dropping
-/// the remainder of an over-long line up to its `\n`. Returns `None`
-/// at EOF with nothing read, else `Some(truncated)`.
-async fn read_capped_line<R>(
-  reader: &mut R,
-  buf: &mut Vec<u8>,
-  cap: usize,
-) -> std::io::Result<Option<bool>>
+/// Read one line into `buf`, at most `cap` bytes plus its `\n`. A longer
+/// line comes back in `cap`-byte pieces over the next calls, so memory stays
+/// bounded and no byte is lost. Returns `false` at EOF with nothing read.
+async fn read_capped_line<R>(reader: &mut R, buf: &mut Vec<u8>, cap: usize) -> std::io::Result<bool>
 where
   R: AsyncBufRead + Unpin,
 {
   buf.clear();
-  let mut truncated = false;
   loop {
     let filled = reader.fill_buf().await?;
     if filled.is_empty() {
-      return Ok(if buf.is_empty() {
-        None
-      } else {
-        Some(truncated)
-      });
+      return Ok(!buf.is_empty());
     }
-    let have = filled.len();
-    if truncated {
-      match filled.iter().position(|&b| b == b'\n') {
-        Some(i) => {
-          reader.consume(i + 1);
-          return Ok(Some(true));
-        }
-        None => reader.consume(have),
-      }
-      continue;
+    let n = (cap - buf.len()).min(filled.len());
+    if let Some(i) = filled[..n].iter().position(|&b| b == b'\n') {
+      buf.extend_from_slice(&filled[..=i]);
+      reader.consume(i + 1);
+      return Ok(true);
     }
-    let n = (cap - buf.len()).min(have);
-    match filled[..n].iter().position(|&b| b == b'\n') {
-      Some(i) => {
-        buf.extend_from_slice(&filled[..=i]);
-        reader.consume(i + 1);
-        return Ok(Some(false));
+    buf.extend_from_slice(&filled[..n]);
+    reader.consume(n);
+    if buf.len() == cap {
+      // A line of exactly `cap` bytes keeps its `\n`, so it does not come
+      // back as a full piece plus an empty line.
+      if reader.fill_buf().await?.first() == Some(&b'\n') {
+        buf.push(b'\n');
+        reader.consume(1);
       }
-      None => {
-        buf.extend_from_slice(&filled[..n]);
-        reader.consume(n);
-        // Bytes still buffered past the cap mean the line is longer
-        // than `cap`; the next pass drains the rest without storing.
-        if n < have {
-          truncated = true;
-        }
-      }
+      return Ok(true);
     }
   }
 }
@@ -1220,57 +1195,49 @@ mod tests {
     assert_eq!(r.tail(10), vec!["b", "c", "d"]);
   }
 
+  /// Every line `read_capped_line` returns from `input` with `cap`, read
+  /// through a buffer of `chunk` bytes so a line can span several fills.
+  async fn capped_lines(input: &[u8], cap: usize, chunk: usize) -> Vec<Vec<u8>> {
+    let mut reader = BufReader::with_capacity(chunk, input);
+    let mut buf = Vec::new();
+    let mut lines = Vec::new();
+    while read_capped_line(&mut reader, &mut buf, cap).await.unwrap() {
+      lines.push(buf.clone());
+    }
+    lines
+  }
+
   #[tokio::test]
   async fn read_capped_line_survives_invalid_utf8() {
-    // Two invalid bytes are just bytes; the pump decodes them lossy
-    // and keeps reading the lines after them.
-    let mut reader = BufReader::new(&b"ok\xff\xfe\nnext\n"[..]);
-    let mut buf = Vec::new();
+    let lines = capped_lines(b"ok\xff\xfe\nnext\n", 256, 256).await;
+    assert_eq!(lines.len(), 2);
+    assert_eq!(String::from_utf8_lossy(&lines[0]), "ok\u{FFFD}\u{FFFD}\n");
+    assert_eq!(lines[1], b"next\n");
+  }
+
+  #[tokio::test]
+  async fn read_capped_line_splits_a_long_line_without_losing_bytes() {
+    let input = b"0123456789abcdefXYZ\nnext\n";
+    let want: Vec<&[u8]> = vec![b"01234567", b"89abcdef", b"XYZ\n", b"next\n"];
+    assert_eq!(capped_lines(input, 8, 64).await, want);
     assert_eq!(
-      read_capped_line(&mut reader, &mut buf, 256).await.unwrap(),
-      Some(false)
-    );
-    assert_eq!(String::from_utf8_lossy(&buf), "ok\u{FFFD}\u{FFFD}\n");
-    assert_eq!(
-      read_capped_line(&mut reader, &mut buf, 256).await.unwrap(),
-      Some(false)
-    );
-    assert_eq!(buf, b"next\n");
-    assert_eq!(
-      read_capped_line(&mut reader, &mut buf, 256).await.unwrap(),
-      None
+      capped_lines(input, 8, 4).await,
+      want,
+      "line spans several fills"
     );
   }
 
   #[tokio::test]
-  async fn read_capped_line_caps_a_long_line_and_resyncs() {
-    let mut reader = BufReader::new(&b"0123456789abcdef\nnext\n"[..]);
-    let mut buf = Vec::new();
-    assert_eq!(
-      read_capped_line(&mut reader, &mut buf, 8).await.unwrap(),
-      Some(true)
-    );
-    assert_eq!(buf, b"01234567");
-    assert_eq!(
-      read_capped_line(&mut reader, &mut buf, 8).await.unwrap(),
-      Some(false)
-    );
-    assert_eq!(buf, b"next\n");
+  async fn read_capped_line_keeps_the_newline_of_an_exact_cap_line() {
+    let want: Vec<&[u8]> = vec![b"01234567\n", b"next\n"];
+    assert_eq!(capped_lines(b"01234567\nnext\n", 8, 64).await, want);
+    assert_eq!(capped_lines(b"01234567\nnext\n", 8, 4).await, want);
   }
 
   #[tokio::test]
   async fn read_capped_line_returns_a_final_line_without_newline() {
-    let mut reader = BufReader::new(&b"partial"[..]);
-    let mut buf = Vec::new();
-    assert_eq!(
-      read_capped_line(&mut reader, &mut buf, 256).await.unwrap(),
-      Some(false)
-    );
-    assert_eq!(buf, b"partial");
-    assert_eq!(
-      read_capped_line(&mut reader, &mut buf, 256).await.unwrap(),
-      None
-    );
+    let want: Vec<&[u8]> = vec![b"partial"];
+    assert_eq!(capped_lines(b"partial", 256, 256).await, want);
   }
 
   #[test]

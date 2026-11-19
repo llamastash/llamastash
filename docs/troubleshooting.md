@@ -110,11 +110,11 @@ The toast prints the URL inline when every backend fails, so you can still paste
 
 **Fix:** the daemon was shut down or crashed. Restart it with `llamastash daemon start`. Running children survive daemon exit; you can re-attach to the same launch id once the daemon is back (orphan re-adoption verifies PID + port + `/v1/models` match).
 
-## CLI warns `daemon: running build X, this client is Y`
+## TUI shows "Daemon from another build"
 
-**Symptom:** a command prints `daemon: running build X, this client is Y; stop the running models and run `llamastash daemon restart` to update it`. A channel update (`brew upgrade`, the install script, `cargo install`) replaced the binary but left the detached daemon from the old build running, because restarting it would kill a running model.
+**Symptom:** the TUI opens a popup that says the daemon runs build X and the TUI is build Y. A channel update (`brew upgrade`, the install script, `cargo install`) replaced the binary, but the daemon from the old build is still running. It can lack methods or fields the new TUI and CLI use.
 
-**Fix:** with no model loaded the next command restarts the daemon by itself. With models running it keeps them: stop them (`llamastash stop --all --yes`), then `llamastash daemon restart`. The TUI shows the same disagreement on its Daemon row as `build X vs Y`.
+**Fix:** restart the daemon with `llamastash daemon restart`, or with the TUI's restart-daemon key that the popup names. The restart stops running models, so first finish the work you need from them. A daemon under a systemd unit or a launchd agent restarts through that service manager instead.
 
 ## Daemon shuts down on its own when idle
 

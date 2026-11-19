@@ -11,6 +11,7 @@ use ratatui::Frame;
 
 use crate::theme::Palette;
 use crate::tui::app::{App, ConfirmAction, ConfirmSeverity};
+use crate::tui::keybindings::{Action, Focus};
 use crate::tui::popup::{self, Button, Size, Spec};
 
 /// Render the confirmation popup. Caller should only invoke this
@@ -22,7 +23,7 @@ pub fn render(
   action: &ConfirmAction,
   palette: &Palette,
 ) {
-  let (title, body) = describe(action);
+  let (title, body) = describe(app, action);
 
   // Tone the border/title off the action's severity: red for prompts
   // that lose work (stop/kill/delete/cancel), the warning hue for
@@ -74,7 +75,7 @@ pub fn render(
 /// Title + body text for a confirm action. Kept here so the action
 /// definition stays a pure data carrier — the renderer owns its
 /// copy of the human strings.
-fn describe(action: &ConfirmAction) -> (&'static str, String) {
+fn describe(app: &App, action: &ConfirmAction) -> (&'static str, String) {
   match action {
     ConfirmAction::StopModel { name, .. } => (
       "Stop model",
@@ -101,6 +102,24 @@ fn describe(action: &ConfirmAction) -> (&'static str, String) {
         plural = if *active_instances == 1 { "" } else { "s" }
       ),
     ),
+    ConfirmAction::DaemonBuildMismatch {
+      daemon_build,
+      client_build,
+    } => {
+      let restart = app
+        .bindings_for(Focus::List)
+        .iter()
+        .find(|b| b.action == Action::RestartDaemon)
+        .map(|b| format!("Press {} to restart it", b.label))
+        .unwrap_or_else(|| "Run `llamastash daemon restart`".to_string());
+      (
+        "Daemon from another build",
+        format!(
+          "The daemon runs build {daemon_build}, this TUI is {client_build}. \
+           {restart}; running models stop."
+        ),
+      )
+    }
     ConfirmAction::DeleteModel { plan, display_name } => {
       ("Delete model", plan.describe(display_name))
     }
@@ -203,5 +222,29 @@ mod tests {
       popup::key_label(&app, crate::tui::keybindings::Action::Submit),
       "F12"
     );
+  }
+
+  #[test]
+  fn build_notice_names_the_restart_key_from_the_keymap() {
+    let notice = ConfirmAction::DaemonBuildMismatch {
+      daemon_build: "0.0.1".into(),
+      client_build: "0.0.2".into(),
+    };
+    let (_, body) = describe(&App::new(AppOptions::default()), &notice);
+    assert!(body.contains("0.0.1") && body.contains("0.0.2"), "{body}");
+    assert!(body.contains(crate::ctrl_label!("r")), "{body}");
+
+    let mut keymap = KeyMap::default();
+    let overrides: BTreeMap<String, String> =
+      [(String::from("restart_daemon"), String::from("f9"))]
+        .into_iter()
+        .collect();
+    assert!(keymap.apply_overrides(&overrides).is_empty());
+    let app = App::new(AppOptions {
+      keymap,
+      ..AppOptions::default()
+    });
+    let (_, remapped) = describe(&app, &notice);
+    assert!(remapped.contains("F9"), "{remapped}");
   }
 }

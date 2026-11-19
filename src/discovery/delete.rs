@@ -575,11 +575,14 @@ pub fn hf_hub_root_for(path: &Path) -> Option<PathBuf> {
   hub_root_holding(path, &roots)
 }
 
-/// The first root in `roots` that resolves `path` to a repo dir inside it.
+/// The root in `roots` that resolves `path` to a repo dir inside it. When
+/// one root nests inside another, the deepest one wins: the shared-store
+/// sweep needs the root the repo really sits in.
 fn hub_root_holding(path: &Path, roots: &[PathBuf]) -> Option<PathBuf> {
   roots
     .iter()
-    .find(|root| hf_repo_dir_in_cache(path, Some(root)).is_some())
+    .filter(|root| hf_repo_dir_in_cache(path, Some(root)).is_some())
+    .max_by_key(|root| root.components().count())
     .cloned()
 }
 
@@ -799,6 +802,21 @@ mod tests {
     assert!(!blobs.join("sha").exists(), "the blob must be freed");
     let _ = fs::remove_dir_all(&root_a);
     let _ = fs::remove_dir_all(&root_b);
+  }
+
+  #[test]
+  fn hub_root_holding_picks_the_deepest_of_nested_roots() {
+    let outer = tempdir("hub-outer");
+    let inner = outer.join("hub");
+    let snap = inner.join("models--o--r").join("snapshots").join("rev");
+    fs::create_dir_all(&snap).unwrap();
+    let file = snap.join("m.gguf");
+    fs::write(&file, b"gguf").unwrap();
+    assert_eq!(
+      hub_root_holding(&file, &[outer.clone(), inner.clone()]),
+      Some(inner)
+    );
+    let _ = fs::remove_dir_all(&outer);
   }
 
   #[test]

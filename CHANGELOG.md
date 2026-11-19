@@ -2,9 +2,9 @@
 
 ### Fixed
 
-- An engine's log capture survives invalid UTF-8 in its output, and one log line is capped at 8 KiB, so a single bad byte or a runaway line no longer silences the Logs tab for the rest of the launch.
+- An engine's log capture survives invalid UTF-8 in its output, and a log line longer than 8 KiB is split into 8 KiB lines, so a bad byte or a runaway line no longer silences the Logs tab for the rest of the launch.
 - `llamastash delete` and the TUI's `Ctrl+D` free the disk for a model stored in a second Hugging Face hub root (`HF_HUB_CACHE` and friends), not only the first one.
-- A CLI or TUI from a newer build now notices a daemon from an older one: an idle daemon restarts with the new build, and a daemon with running models says so on stderr and in the TUI's Daemon row instead of answering with fields the client does not expect.
+- The TUI shows a popup when the daemon runs a different build than the TUI, for example an old daemon left running after an upgrade.
 
 ## [0.11.0] — 2026-11-03
 

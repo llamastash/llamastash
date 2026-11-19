@@ -532,7 +532,7 @@ llamastash stop --all [-y]   # confirms unless -y is set
 
 ### `llamastash delete <model-ref>`
 
-Remove one model's files from disk. The daemon plans the removal and runs it, so what goes is what `Ctrl+D` would show in the TUI (see [§ Deleting a model](#deleting-a-model)): split shards, an unpaired `mmproj-*.gguf` projector, a separate `mtp-*.gguf` draft head, the HuggingFace blobs behind the snapshot symlinks, and the whole `models--<owner>--<repo>` directory when the row is the last model in it. `<model-ref>` resolves the way `start` resolves one; a reference that matches zero or several models exits `66`.
+Remove one model's files from disk. The daemon plans the removal and runs it, so what goes is what `Ctrl+D` would show in the TUI (see [§ Deleting a model](#deleting-a-model)): split shards, an unpaired `mmproj-*.gguf` projector, a separate `mtp-*.gguf` draft head, the HuggingFace blobs behind the snapshot symlinks, and the whole `models--<owner>--<repo>` directory when the row is the last model in it. The plan uses the hub root that holds the model, out of every root discovery scans (`HF_HUB_CACHE`, `HUGGINGFACE_HUB_CACHE`, `$HF_HOME/hub`, `$XDG_CACHE_HOME/huggingface/hub`, `~/.cache/huggingface/hub`), so the blobs go from a second root too. `<model-ref>` resolves the way `start` resolves one; a reference that matches zero or several models exits `66`.
 
 ```
 llamastash delete qwen          # shows the plan, asks [y/N]
