@@ -17,7 +17,7 @@ use base64::{
   Engine,
 };
 use hyper::header::{HeaderMap, AUTHORIZATION};
-use rand::TryRngCore;
+use rand::TryRng;
 
 use crate::util::http_auth::{constant_time_eq, extract_bearer};
 
@@ -40,9 +40,9 @@ impl ProxyApiKey {
   /// non-recoverable state `IpcToken::generate` treats as fatal.
   pub fn generate() -> Self {
     let mut bytes = [0u8; KEY_BYTES];
-    rand::rngs::OsRng
+    rand::rngs::SysRng
       .try_fill_bytes(&mut bytes)
-      .expect("OsRng must succeed for proxy key generation");
+      .expect("SysRng must succeed for proxy key generation");
     Self(format!("{KEY_PREFIX}{}", URL_SAFE_NO_PAD.encode(bytes)))
   }
 
@@ -142,6 +142,51 @@ impl ProxyAuth {
   }
 }
 
+/// Whether a `Host` header value (with an optional `:port`) names loopback:
+/// `localhost`, any `*.localhost` name, or an IP literal inside
+/// `127.0.0.0/8` / `::1`. `*.localhost` counts because RFC 6761 makes
+/// browsers resolve the whole suffix to loopback, so a DNS-rebinding page
+/// cannot own such a name. Case-insensitive; everything else is refused.
+pub(crate) fn host_is_loopback(host: &str) -> bool {
+  let host = host.trim();
+  // An IPv6 literal keeps its brackets (`[::1]:11435`); a bare host may
+  // carry a `:port` made of digits (a bracket-less IPv6 is invalid in a
+  // Host header, so dropping only a numeric port cannot mangle a real one).
+  let bare = match host.split_once(']') {
+    Some((inner, _)) => inner.strip_prefix('[').unwrap_or(inner),
+    None => match host.rsplit_once(':') {
+      Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
+      _ => host,
+    },
+  };
+  let name = bare.to_ascii_lowercase();
+  if name == "localhost" || name.ends_with(".localhost") {
+    return true;
+  }
+  bare
+    .parse::<std::net::IpAddr>()
+    .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// Whether an `Origin` header value may drive the proxy: the page's own host
+/// over `http` or `https` (`https` is a TLS reverse proxy in front of it), or
+/// an extension / app scheme, which a web page cannot send. `null` is refused
+/// because a sandboxed iframe or a `file://` page sends it.
+pub(crate) fn origin_is_allowed(origin: &str, host: Option<&str>) -> bool {
+  let origin = origin.trim();
+  if origin.eq_ignore_ascii_case("null") {
+    return false;
+  }
+  let Some(scheme_end) = origin.find("://") else {
+    return false;
+  };
+  let scheme = &origin[..scheme_end];
+  if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+    return true;
+  }
+  host.is_some_and(|h| origin[scheme_end + 3..].eq_ignore_ascii_case(h))
+}
+
 /// Pull the password out of a `Basic base64(user:pass)` header value.
 /// The username half is discarded — browsers send the proxy key as the
 /// password. Returns `None` when the scheme isn't `Basic`, the base64
@@ -188,6 +233,59 @@ mod tests {
     assert!(k.verify(k.as_str()));
     assert!(!k.verify("sk-llamastash-wrong"));
     assert!(!k.verify(""));
+  }
+
+  #[test]
+  fn host_is_loopback_accepts_loopback_names_and_literals() {
+    for ok in [
+      "127.0.0.1:11435",
+      "localhost",
+      "LOCALHOST:1",
+      "foo.localhost:11435",
+      "[::1]:11435",
+      "127.1.2.3",
+    ] {
+      assert!(host_is_loopback(ok), "{ok} must pass");
+    }
+    for bad in [
+      "evil.example",
+      "localhost.evil.example",
+      "192.168.1.5:11435",
+      "[::ffff:8.8.8.8]",
+      "localhost.",
+      "127.0.0.1:",
+      "",
+    ] {
+      assert!(!host_is_loopback(bad), "{bad} must be refused");
+    }
+  }
+
+  #[test]
+  fn origin_is_allowed_pins_same_origin_and_extension_schemes() {
+    assert!(origin_is_allowed(
+      "http://127.0.0.1:11435",
+      Some("127.0.0.1:11435")
+    ));
+    assert!(origin_is_allowed("chrome-extension://abc", None));
+    assert!(!origin_is_allowed("null", Some("127.0.0.1:11435")));
+    assert!(!origin_is_allowed(
+      "http://evil.example",
+      Some("127.0.0.1:11435")
+    ));
+    // A TLS reverse proxy in front keeps the host and changes the scheme.
+    assert!(origin_is_allowed(
+      "https://llm.example.com",
+      Some("llm.example.com")
+    ));
+    assert!(!origin_is_allowed(
+      "https://evil.example",
+      Some("llm.example.com")
+    ));
+    // A different spelling of the same machine is a different origin here.
+    assert!(!origin_is_allowed(
+      "http://localhost:11435",
+      Some("127.0.0.1:11435")
+    ));
   }
 
   #[test]

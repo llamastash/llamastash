@@ -494,6 +494,8 @@ pub struct App {
   /// and kill-daemon so a fat-finger doesn't drop a running model
   /// or the whole supervisor.
   pub confirm_dialog: Option<ConfirmAction>,
+  /// The build-mismatch notice opened once already this session.
+  pub build_mismatch_shown: bool,
   /// HuggingFace pull dialog. `Some(_)` whenever the modal
   /// is open; the input pump routes through `Focus::HfDialog` to the
   /// per-stage key handler.
@@ -663,6 +665,12 @@ pub enum ConfirmAction {
     /// `WriterCmd::StartModel`.
     args: Box<StartModelArgs>,
   },
+  /// The daemon answered from another build than this TUI, so it can lack
+  /// methods or fields the TUI reads. A notice only: both buttons close it.
+  DaemonBuildMismatch {
+    daemon_build: String,
+    client_build: String,
+  },
 }
 
 impl ConfirmAction {
@@ -677,7 +685,9 @@ impl ConfirmAction {
       | ConfirmAction::RestartDaemon
       | ConfirmAction::DeleteModel { .. }
       | ConfirmAction::CancelDownload { .. } => ConfirmSeverity::Destructive,
-      ConfirmAction::LaunchDuplicate { .. } => ConfirmSeverity::Neutral,
+      ConfirmAction::LaunchDuplicate { .. } | ConfirmAction::DaemonBuildMismatch { .. } => {
+        ConfirmSeverity::Neutral
+      }
     }
   }
 }
@@ -719,6 +729,7 @@ impl App {
       help_scroll: 0,
       pending_g_prefix: false,
       confirm_dialog: None,
+      build_mismatch_shown: false,
       hf_dialog: None,
       save_preset_dialog: None,
       memory_dialog: None,
@@ -982,6 +993,26 @@ impl App {
       .iter()
       .find(|b| b.action == action)?;
     Some(format!("{}:{}", b.label, description))
+  }
+
+  /// Open the build-mismatch notice when the daemon's build differs from
+  /// `client_build`, once per session. Waits for a later status tick while
+  /// another popup is open, so it never replaces one the user is answering.
+  fn notice_build_mismatch(&mut self, client_build: &str) {
+    if self.build_mismatch_shown || self.modal_open() {
+      return;
+    }
+    let Some(daemon_build) = self.daemon_info.build.as_deref() else {
+      return;
+    };
+    if daemon_build == client_build {
+      return;
+    }
+    self.build_mismatch_shown = true;
+    self.confirm_dialog = Some(ConfirmAction::DaemonBuildMismatch {
+      daemon_build: daemon_build.to_string(),
+      client_build: client_build.to_string(),
+    });
   }
 
   /// Whether a popup owns the screen, so background panes take no mouse input.
@@ -1300,6 +1331,7 @@ impl App {
         proxy,
         backend_servers,
       };
+      self.notice_build_mismatch(env!("CARGO_PKG_VERSION"));
       // First-observation toast on `port_in_use`. Only fires when the
       // last *observed* status was something other than `port_in_use`
       // (the daemon emits the same status on every tick, so reading
@@ -3244,6 +3276,53 @@ mod tests {
     with_preset["models"][0]["preset"] = json!("fast");
     app.ingest_status(&with_preset);
     assert_eq!(app.managed[0].preset.as_deref(), Some("fast"));
+  }
+
+  fn status_with_build(build: &str) -> Value {
+    json!({ "daemon": { "pid": 1, "build": build } })
+  }
+
+  #[test]
+  fn a_daemon_from_another_build_opens_the_notice_once() {
+    let mut app = App::new(AppOptions::default());
+    app.ingest_status(&status_with_build("0.0.1"));
+    match app.confirm_dialog.as_ref() {
+      Some(ConfirmAction::DaemonBuildMismatch {
+        daemon_build,
+        client_build,
+      }) => {
+        assert_eq!(daemon_build, "0.0.1");
+        assert_eq!(client_build, env!("CARGO_PKG_VERSION"));
+      }
+      other => panic!("expected the build notice, got {other:?}"),
+    }
+    app.confirm_dialog = None;
+    app.ingest_status(&status_with_build("0.0.1"));
+    assert!(
+      app.confirm_dialog.is_none(),
+      "the notice opens once a session"
+    );
+  }
+
+  #[test]
+  fn a_daemon_from_this_build_opens_no_notice() {
+    let mut app = App::new(AppOptions::default());
+    app.ingest_status(&status_with_build(env!("CARGO_PKG_VERSION")));
+    assert!(app.confirm_dialog.is_none());
+  }
+
+  #[test]
+  fn the_build_notice_waits_for_an_open_popup_to_close() {
+    let mut app = App::new(AppOptions::default());
+    app.show_help = true;
+    app.ingest_status(&status_with_build("0.0.1"));
+    assert!(app.confirm_dialog.is_none());
+    app.show_help = false;
+    app.ingest_status(&status_with_build("0.0.1"));
+    assert!(matches!(
+      app.confirm_dialog,
+      Some(ConfirmAction::DaemonBuildMismatch { .. })
+    ));
   }
 
   #[test]

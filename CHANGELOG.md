@@ -1,5 +1,27 @@
 ## [Unreleased]
 
+### Security
+
+- A web page can no longer drive or read the proxy through its port: a foreign `Host` gets `403 forbidden_host` (the DNS-rebinding guard on a keyless loopback bind) and a foreign `Origin` gets `403 forbidden_origin` in every mode; extension and app scheme origins still pass.
+- zip 9.0.4 → 9.4.1, clearing [RUSTSEC-2026-0548](https://rustsec.org/advisories/RUSTSEC-2026-0548): `ZipStreamReader` can extract an entry under a name that differs from the central directory. Windows-only here, and engine archives open through `ZipArchive`, not `ZipStreamReader`.
+- rustix 1.1.4 → 1.1.6, clearing [RUSTSEC-2026-0486](https://rustsec.org/advisories/RUSTSEC-2026-0486): xattr calls with a zero-length buffer mark unwritten bytes as initialized. Transitive via crossterm, tempfile and xattr.
+- quinn-udp 0.5.14 → 0.5.16, clearing [RUSTSEC-2026-0538](https://rustsec.org/advisories/RUSTSEC-2026-0538): a receive loop can spin after a truncated datagram. It is in `Cargo.lock` only, and no build target compiles it.
+- quick-xml 0.39.4 → 0.41.0, through `wayland-scanner` 0.31.10 → 0.31.11, clearing [RUSTSEC-2026-0194](https://rustsec.org/advisories/RUSTSEC-2026-0194) and [RUSTSEC-2026-0195](https://rustsec.org/advisories/RUSTSEC-2026-0195): checking a start tag for duplicate attributes takes quadratic time, and `NsReader` allocates without a bound on a hostile namespace declaration. Build-time codegen through arboard → wl-clipboard-rs → wayland-client, which never parses untrusted XML. `cargo audit --deny warnings` is clean with these four.
+
+### Fixed
+
+- The family-MRU fallback only answers from a running model that serves the request's mode, and embeddings and rerank requests never fall back to another model at all.
+- A running `stt` / `image` / `tts` launch lists on `/v1/models` under its declared mode instead of `chat`, matching the `status` MODE column.
+- An engine's log capture survives invalid UTF-8 in its output, and a log line longer than 8 KiB is split into 8 KiB lines, so a bad byte or a runaway line no longer silences the Logs tab for the rest of the launch.
+- `llamastash delete` and the TUI's `Ctrl+D` free the disk for a model stored in a second Hugging Face hub root (`HF_HUB_CACHE` and friends), not only the first one.
+- The TUI shows a popup when the daemon runs a different build than the TUI, for example an old daemon left running after an upgrade.
+
+### Changed
+
+- Building from source (`cargo install`) now needs Rust 1.97 or newer, up from 1.95, for yamlpath / yamlpatch 1.32.
+- Dependencies moved to their latest releases, including reqwest 0.13, sysinfo 0.40, rand 0.10, base64 0.23, sha2 0.11, windows 0.62 and yamlpath / yamlpatch 1.32.
+- `pull` and the TUI pull dialog run on hf-hub 1.0, which downloads Hugging Face's Xet-backed files (every GGUF repo checked) through Xet. The progress bar now moves in steps of up to a few hundred MB instead of smoothly, and the download can buffer up to 1/16 of RAM.
+
 ## [0.11.0] — 2026-11-03
 
 This release adds two CLI verbs so an agent can manage models without the TUI. `llamastash delete` removes a model's files through the daemon with the same plan the TUI's `Ctrl+D` shows, and refuses without `--yes` outside a TTY. `llamastash bench` starts a model once per preset and reports load time, prompt and generation speed and time to first token, in a table or `--json`. Unified-memory hosts get a configurable admission reserve (`daemon.unified_memory_reserve_percent`), the HuggingFace pull dialog opens on the models ranked for your hardware, and media launches now show `stt` / `image` instead of `chat` in `status`.

@@ -140,7 +140,7 @@ jobs:
     # Ensures the declared MSRV (Cargo.toml rust-version) stays honest.
     # Uses `cargo check --locked` so a dep bump past the declared MSRV
     # is caught here.
-    name: msrv (1.95)
+    name: msrv (1.97)
     runs-on: ubuntu-latest
     needs: prepare
     steps:
@@ -150,7 +150,7 @@ jobs:
       # release and 404s. Pin the toolchain explicitly; the ref floats.
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.95"
+          toolchain: "1.97"
       - uses: Swatinem/rust-cache@v2
       - name: cargo check --locked
         run: cargo check --locked

@@ -41,7 +41,7 @@ pub struct ResourceReading {
 /// process has already exited.
 pub fn sample(pid: u32) -> Option<ResourceReading> {
   let refresh = ProcessRefreshKind::nothing().with_cpu().with_memory();
-  let mut sys = System::new();
+  let mut sys = System::new().ok()?;
   sys.refresh_processes_specifics(
     sysinfo::ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
     true,
@@ -67,7 +67,9 @@ pub fn sample_loop(pid: u32, interval: Duration) -> tokio::sync::mpsc::Receiver<
   let (tx, rx) = tokio::sync::mpsc::channel(8);
   tokio::spawn(async move {
     let refresh = ProcessRefreshKind::nothing().with_cpu().with_memory();
-    let mut sys = System::new();
+    let Ok(mut sys) = System::new() else {
+      return;
+    };
     // Prime the CPU delta calculation.
     sys.refresh_processes_specifics(
       sysinfo::ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),

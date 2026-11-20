@@ -21,15 +21,22 @@ use crate::daemon::host_metrics::HostMetricsSnapshot;
 /// its argv, so the launch records `chat` and `status` needs the entry's own
 /// declaration to say what the row answers. Every other hint is what the row's
 /// `mode` already carries, so this returns `None` and `mode` stands.
-fn declared_media_mode(
+pub(crate) fn declared_media_mode(
   models: &[crate::discovery::DiscoveredModel],
   path: &std::path::Path,
 ) -> Option<&'static str> {
-  use crate::launch::mode::LaunchMode;
   models
     .iter()
     .find(|m| m.path == path)
-    .and_then(|m| m.metadata.as_ref())
+    .and_then(row_media_mode)
+}
+
+/// [`declared_media_mode`] for a catalog row already in hand.
+pub(crate) fn row_media_mode(row: &crate::discovery::DiscoveredModel) -> Option<&'static str> {
+  use crate::launch::mode::LaunchMode;
+  row
+    .metadata
+    .as_ref()
     .and_then(|md| LaunchMode::from_label(md.mode_hint.as_label()?))
     .filter(|m| m.is_declared_only())
     .map(|m| m.label())

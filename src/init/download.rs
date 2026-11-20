@@ -25,10 +25,9 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use hf_hub::{
-  api::tokio::{Api, ApiBuilder},
-  Repo, RepoType,
-};
+use hf_hub::progress::{DownloadEvent, ProgressEvent, ProgressHandler};
+use hf_hub::repository::ModelInfo;
+use hf_hub::{HFClient, HFError, HFRepository, RepoTypeModel};
 
 use crate::cli::cli_args::{Cli, PullArgs};
 use crate::cli::exit_codes::{CliExit, CliResult, INIT_DOWNLOAD_FAILED, PULL_FAILED};
@@ -42,14 +41,13 @@ pub const DISK_HEADROOM_BYTES: u64 = 1024 * 1024 * 1024;
 /// Max bytes per per-file download. 512 GiB accommodates the largest
 /// single-file GGUFs the tool pulls — the DeepSeek-V4 Flash/PRO files run
 /// 81 GB to ~465 GB as *single* files (the old 64 GiB cap refused every one
-/// of them). Enforced via hf-hub's `Api::metadata` HEAD before each download;
+/// of them). Enforced from hf-hub's paths-info sizes before any download;
 /// the cap is a safety net against runaway metadata, not a model-size policy.
 pub const PER_FILE_MAX_BYTES: u64 = 512 * 1024 * 1024 * 1024;
 
-/// Maximum download attempts per file. On each transient failure
-/// (connection error, timeout, or mid-transfer body-read stall) the
-/// hf-hub temp file keeps its already-committed bytes, so subsequent
-/// attempts resume rather than restart from zero.
+/// Maximum download attempts per file, on top of hf-hub's own per-request
+/// retries. Each attempt follows a transient failure (connection error,
+/// timeout, mid-transfer body-read stall, or a Xet transfer error).
 pub const MAX_DOWNLOAD_ATTEMPTS: u32 = 5;
 
 /// Default HF endpoint root. Overridable via `HF_ENDPOINT` env to
@@ -92,7 +90,7 @@ pub enum DownloadError {
   #[error("HF file `{file}` exceeds per-file cap of {cap} bytes (size {size})")]
   FileTooLarge { file: String, size: u64, cap: u64 },
   #[error("hf-hub: {0}")]
-  Hub(#[from] hf_hub::api::tokio::ApiError),
+  Hub(#[from] HFError),
   #[error("fetch contract: {0}")]
   Fetch(#[from] FetchError),
   #[error("I/O: {0}")]
@@ -215,7 +213,7 @@ pub struct DownloadOptions {
   /// Pin the HuggingFace revision (commit SHA, branch, or tag) used
   /// when resolving files. `None` resolves the default branch (`main`),
   /// preserving the pre-`--revision` behavior byte-for-byte. Threaded
-  /// through to `hf_hub::Repo::with_revision` so the downloaded file
+  /// through to hf-hub's `revision` parameter so the downloaded file
   /// set matches the supplied identifier exactly.
   pub revision: Option<String>,
   /// Trusted-converter repos to try in order if the primary spec's
@@ -473,46 +471,38 @@ impl PullTotals {
   }
 }
 
-/// Bridge between hf-hub's chunk-level `Progress` trait and our
-/// [`DownloadProgress::on_bytes_progress`] callback. Holds a running
-/// byte counter (Arc'd so hf-hub's parallel chunk workers all add to
-/// the same total) and forwards every `update` into the caller's
-/// progress hook.
-#[derive(Clone)]
+/// Bridge between hf-hub's download events and our
+/// [`DownloadProgress::on_bytes_progress`] callback. hf-hub reports
+/// cumulative bytes: per file for plain HTTP downloads, and for the
+/// whole batch on a Xet transfer, which here is always one file.
 struct HfHubProgressAdapter {
   filename: String,
-  bytes_in_file: std::sync::Arc<std::sync::atomic::AtomicU64>,
   inner: Option<std::sync::Arc<dyn DownloadProgress>>,
 }
 
 impl HfHubProgressAdapter {
   fn new(filename: String, inner: Option<std::sync::Arc<dyn DownloadProgress>>) -> Self {
-    Self {
-      filename,
-      bytes_in_file: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
-      inner,
-    }
+    Self { filename, inner }
   }
 }
 
-impl hf_hub::api::tokio::Progress for HfHubProgressAdapter {
-  async fn init(&mut self, _size: usize, _filename: &str) {
-    self
-      .bytes_in_file
-      .store(0, std::sync::atomic::Ordering::Relaxed);
-  }
-
-  async fn update(&mut self, size: usize) {
-    let prev = self
-      .bytes_in_file
-      .fetch_add(size as u64, std::sync::atomic::Ordering::Relaxed);
-    let cumulative = prev.saturating_add(size as u64);
-    if let Some(inner) = &self.inner {
-      inner.on_bytes_progress(&self.filename, cumulative);
+impl ProgressHandler for HfHubProgressAdapter {
+  fn on_progress(&self, event: &ProgressEvent) {
+    let Some(inner) = &self.inner else { return };
+    let bytes = match event {
+      ProgressEvent::Download(DownloadEvent::Progress { files }) => files
+        .iter()
+        .find(|f| f.filename == self.filename)
+        .map(|f| f.bytes_completed),
+      ProgressEvent::Download(DownloadEvent::AggregateProgress {
+        bytes_completed, ..
+      }) => Some(*bytes_completed),
+      _ => None,
+    };
+    if let Some(bytes) = bytes {
+      inner.on_bytes_progress(&self.filename, bytes);
     }
   }
-
-  async fn finish(&mut self) {}
 }
 
 /// Disk-space precheck. Refuses when free < needed + headroom.
@@ -577,7 +567,7 @@ fn available_bytes(_path: &Path) -> Option<u64> {
 /// [`crate::util::model_caches::huggingface_primary_hub_dir`] so this
 /// stays symmetric with the scan paths that
 /// `discovery::known_caches::default_set` walks. We pass the resolved
-/// path explicitly to `ApiBuilder::with_cache_dir` so the dependency
+/// path explicitly to `HFClientBuilder::cache_dir` so the dependency
 /// on hf-hub's defaults is explicit, not implicit. See the
 /// [`crate::util::model_caches`] module docs for the full precedence
 /// chain (`HF_HUB_CACHE` → `HUGGINGFACE_HUB_CACHE` → `$HF_HOME/hub` →
@@ -590,7 +580,7 @@ pub fn hf_cache_dir() -> Result<PathBuf, DownloadError> {
 
 /// Resolve the HF endpoint, refusing any `HF_ENDPOINT` override that
 /// is not HTTPS on an allowlisted host. Returning `Err` here aborts
-/// `build_api` before the bearer token is handed to hf-hub's
+/// `build_client` before the bearer token is handed to hf-hub's
 /// uncontrolled `reqwest::Client`.
 pub fn endpoint() -> Result<String, DownloadError> {
   let Ok(raw) = std::env::var("HF_ENDPOINT") else {
@@ -624,22 +614,16 @@ pub fn file_url(endpoint: &str, repo_id: &str, path: &str) -> String {
   format!("{endpoint}/{repo_id}/resolve/main/{path}")
 }
 
-fn build_api(cache_dir: PathBuf) -> Result<Api, DownloadError> {
+fn build_client(cache_dir: PathBuf) -> Result<HFClient, DownloadError> {
   let token = resolve_hf_token()?;
-  let endpoint = endpoint()?;
-  ApiBuilder::new()
-    .with_endpoint(endpoint)
-    .with_cache_dir(cache_dir)
-    .with_token(token)
-    .with_user_agent("llamastash", env!("CARGO_PKG_VERSION"))
-    .with_progress(false)
-    // hf-hub chunks each file but gates the chunks on `max_files`, which its
-    // builder defaults to 1 -- measured 6.4 MiB/s against 18.7 for a parallel
-    // downloader on the same link. Bounded rather than its `.high()`
-    // (= num_cpus), which its own docs warn saturates CPUs.
-    .with_max_files(8)
-    .build()
-    .map_err(DownloadError::from)
+  let mut builder = HFClient::builder()
+    .endpoint(endpoint()?)
+    .cache_dir(cache_dir)
+    .user_agent(concat!("llamastash/", env!("CARGO_PKG_VERSION")));
+  if let Some(token) = token {
+    builder = builder.token(token);
+  }
+  builder.build().map_err(DownloadError::from)
 }
 
 /// Pick which repo files to download given the pinned filename and the
@@ -858,24 +842,26 @@ fn expand_shard_siblings(target: &str, all_files: &[String]) -> Vec<String> {
   }
 }
 
-/// Build an `hf-hub` repo handle for `repo_id` at the given revision
-/// (or the default branch when `revision` is `None`). Empty revision
+fn build_repo_handle(client: &HFClient, repo_id: &str) -> HFRepository<RepoTypeModel> {
+  let (owner, name) = hf_hub::split_id(repo_id);
+  client.model(owner, name)
+}
+
+/// The revision to pass to hf-hub, `None` for the default branch. Empty
 /// strings collapse to the default branch — the CLI parser already
 /// rejects empty `--revision`, this is defense in depth for direct
 /// library callers.
-fn build_repo_handle(
-  api: &hf_hub::api::tokio::Api,
-  repo_id: &str,
-  revision: Option<&str>,
-) -> hf_hub::api::tokio::ApiRepo {
-  match revision {
-    Some(sha) if !sha.is_empty() => api.repo(Repo::with_revision(
-      repo_id.to_string(),
-      RepoType::Model,
-      sha.to_string(),
-    )),
-    _ => api.model(repo_id.to_string()),
-  }
+fn revision_arg(revision: Option<&str>) -> Option<String> {
+  revision.filter(|r| !r.is_empty()).map(str::to_string)
+}
+
+fn sibling_names(info: &ModelInfo) -> Vec<String> {
+  info
+    .siblings
+    .iter()
+    .flatten()
+    .map(|s| s.rfilename.clone())
+    .collect()
 }
 
 /// Outcome of repo resolution: the spec to actually download (primary
@@ -883,7 +869,7 @@ fn build_repo_handle(
 /// fallbacks since their revisions are unrelated to the user-supplied
 /// one), the `RepoInfo` from the listing call (so `download_repo` can
 /// reuse `info.sha`), and the filtered file list.
-type ResolvedRepo = (RepoSpec, Option<String>, hf_hub::api::RepoInfo, Vec<String>);
+type ResolvedRepo = (RepoSpec, Option<String>, ModelInfo, Vec<String>);
 
 /// Probe the primary spec; on `NoMatchingFiles` and a non-empty
 /// `fallback_repos`, try each fallback in order with a quant-substring
@@ -892,12 +878,13 @@ type ResolvedRepo = (RepoSpec, Option<String>, hf_hub::api::RepoInfo, Vec<String
 /// `NoMatchingFiles` error so callers see the primary repo's name.
 async fn resolve_repo(
   spec: &RepoSpec,
-  api: &hf_hub::api::tokio::Api,
+  client: &HFClient,
   options: &DownloadOptions,
 ) -> Result<ResolvedRepo, DownloadError> {
-  let primary_handle = build_repo_handle(api, &spec.repo_id, options.revision.as_deref());
+  let primary_handle = build_repo_handle(client, &spec.repo_id);
   match probe_repo(
     &primary_handle,
+    options.revision.as_deref(),
     spec.pinned_filename.as_deref(),
     options.extension_filter.as_deref(),
     None,
@@ -921,9 +908,10 @@ async fn resolve_repo(
       for fallback_id in &options.fallback_repos {
         // Fallbacks always use the default branch — the user's
         // `--revision` is meaningful for the primary spec only.
-        let handle = build_repo_handle(api, fallback_id, None);
+        let handle = build_repo_handle(client, fallback_id);
         match probe_repo(
           &handle,
+          None,
           None,
           options.extension_filter.as_deref(),
           options.quant_hint.as_deref(),
@@ -962,13 +950,18 @@ async fn resolve_repo(
 /// the quant tag. Returns `NoMatchingFiles` when no file survives,
 /// propagates hf-hub errors for any other failure.
 async fn probe_repo(
-  repo: &hf_hub::api::tokio::ApiRepo,
+  repo: &HFRepository<RepoTypeModel>,
+  revision: Option<&str>,
   pinned: Option<&str>,
   extension: Option<&str>,
   quant_hint: Option<&str>,
-) -> Result<(hf_hub::api::RepoInfo, Vec<String>), DownloadError> {
-  let info = repo.info().await?;
-  let all_files: Vec<String> = info.siblings.iter().map(|s| s.rfilename.clone()).collect();
+) -> Result<(ModelInfo, Vec<String>), DownloadError> {
+  let info = repo
+    .info()
+    .maybe_revision(revision_arg(revision))
+    .send()
+    .await?;
+  let all_files = sibling_names(&info);
   let mut filtered = select_files(&all_files, pinned, extension);
   if let Some(quant) = quant_hint {
     // pick_quant_match returns one file. When that file is a shard,
@@ -981,7 +974,7 @@ async fn probe_repo(
   }
   if filtered.is_empty() {
     return Err(DownloadError::NoMatchingFiles {
-      repo: repo.url("").trim_end_matches("/resolve//").to_string(),
+      repo: repo.repo_path(),
     });
   }
   Ok((info, filtered))
@@ -1076,11 +1069,16 @@ fn is_transient_reqwest_error(re: &reqwest::Error) -> bool {
   false
 }
 
-fn is_transient_hf_error(e: &hf_hub::api::tokio::ApiError) -> bool {
-  use hf_hub::api::tokio::ApiError;
+fn is_transient_hf_error(e: &HFError) -> bool {
   match e {
-    ApiError::RequestError(re) => is_transient_reqwest_error(re),
-    ApiError::TooManyRetries(inner) => is_transient_hf_error(inner),
+    HFError::Request { source, .. } => is_transient_reqwest_error(source),
+    HFError::RateLimited { .. } => true,
+    HFError::Http { context } => {
+      context.status.is_server_error() || context.status == reqwest::StatusCode::REQUEST_TIMEOUT
+    }
+    // hf-hub type-erases Xet's transport errors, so a stalled or reset Xet
+    // transfer is only recognizable by the variant.
+    HFError::Xet { .. } => true,
     _ => false,
   }
 }
@@ -1104,7 +1102,7 @@ pub async fn download_repo(
     return Err(DownloadError::Offline);
   }
   let cache_root = hf_cache_dir()?;
-  let api = build_api(cache_root.clone())?;
+  let client = build_client(cache_root.clone())?;
 
   // Resolve the actual repo + file set. Tries the primary spec first;
   // on `NoMatchingFiles` (typical for synthetic snapshot rows pointing
@@ -1112,13 +1110,13 @@ pub async fn download_repo(
   // quant-matching `.gguf` and uses the first that resolves. The
   // resolved spec replaces `spec` for the rest of the function.
   let (resolved_spec, resolved_revision, info, mut filtered) =
-    resolve_repo(spec, &api, options).await?;
+    resolve_repo(spec, &client, options).await?;
   // Companion siblings (mmproj projector, MTP draft head) for the selected base
   // file(s) — same-repo name-pattern only (trust boundary), one per kind by
   // default (KD5). Closes the standing gap where `pull` fetched a multimodal /
   // separate-head model without its companion. Extended onto the download set so
   // the size/precheck/download loop below covers them uniformly.
-  let all_repo_files: Vec<String> = info.siblings.iter().map(|s| s.rfilename.clone()).collect();
+  let all_repo_files = sibling_names(&info);
   let companions = select_companions(&all_repo_files, &filtered, options.companions);
   if !companions.is_empty() {
     log::info!(
@@ -1127,18 +1125,35 @@ pub async fn download_repo(
     );
     filtered.extend(companions);
   }
-  let repo = build_repo_handle(&api, &resolved_spec.repo_id, resolved_revision.as_deref());
+  let repo = build_repo_handle(&client, &resolved_spec.repo_id);
+  let revision = revision_arg(resolved_revision.as_deref());
 
-  // hf-hub's RepoInfo doesn't expose per-file size, so we HEAD each
-  // file's resolve URL to (a) enforce PER_FILE_MAX_BYTES and (b) feed
-  // the R64 disk precheck with a real total. One HEAD per file is
-  // cheap relative to the actual GGUF download that follows.
+  // The repo info listing carries no per-file size, so one paths-info
+  // call fetches them to (a) enforce PER_FILE_MAX_BYTES and (b) feed the
+  // R64 disk precheck with a real total. Not `get_file_metadata`: in
+  // hf-hub 1.0.0 its HEAD follows the 302 to the Xet CDN, whose answer
+  // has no `X-Repo-Commit`, so it fails on every Xet-backed file.
+  let entries = repo
+    .get_paths_info()
+    .paths(filtered.clone())
+    .maybe_revision(revision.clone())
+    .send()
+    .await?;
+  let remote_sizes: std::collections::HashMap<&str, u64> = entries
+    .iter()
+    .filter_map(|e| match e {
+      hf_hub::repository::RepoTreeEntry::File { path, size, .. } => Some((path.as_str(), *size)),
+      _ => None,
+    })
+    .collect();
   let mut sizes: Vec<(String, u64)> = Vec::with_capacity(filtered.len());
   let mut total_size: u64 = 0;
   for filename in &filtered {
-    let url = repo.url(filename);
-    let md = api.metadata(&url).await?;
-    let size = md.size() as u64;
+    let Some(&size) = remote_sizes.get(filename.as_str()) else {
+      return Err(DownloadError::NoMatchingFiles {
+        repo: format!("{}:{filename}", repo.repo_path()),
+      });
+    };
     if size > PER_FILE_MAX_BYTES {
       return Err(DownloadError::FileTooLarge {
         file: filename.clone(),
@@ -1158,32 +1173,28 @@ pub async fn download_repo(
 
   let total_files = sizes.len();
   let mut paths = Vec::with_capacity(total_files);
-  let cache_handle = hf_hub::Cache::new(cache_root.clone());
   for (idx, (filename, size)) in sizes.iter().enumerate() {
     if let Some(p) = &options.progress {
       p.on_file_started(filename, *size, idx, total_files);
     }
     // Cache short-circuit: if the file already lives in the HF
     // snapshot, return the cached path without hitting the network.
-    // Otherwise route through `download_with_progress` so the
-    // chunk-level callback drives byte-accurate progress.
-    let cache_repo = cache_handle.repo(hf_hub::Repo::with_revision(
-      resolved_spec.repo_id.clone(),
-      hf_hub::RepoType::Model,
-      resolved_revision
-        .clone()
-        .unwrap_or_else(|| "main".to_string()),
-    ));
-    let cached = if resolved_revision.is_some() {
-      cache_repo.get(filename)
-    } else {
-      // For the default branch hf-hub stores the resolved ref under
-      // `refs/main`; the with-revision lookup misses that. Probe the
-      // model handle's default cache repo too.
-      cache_handle
-        .model(resolved_spec.repo_id.clone())
-        .get(filename)
-        .or_else(|| cache_repo.get(filename))
+    // Otherwise download with the progress adapter so hf-hub's events
+    // drive byte-accurate progress.
+    let cached = match repo
+      .download_file()
+      .filename(filename)
+      .maybe_revision(revision.clone())
+      .local_files_only(true)
+      .send()
+      .await
+    {
+      Ok(p) => Some(p),
+      Err(HFError::LocalEntryNotFound { .. }) => None,
+      Err(e) => {
+        log::debug!("init download: cache lookup for `{filename}` failed: {e}");
+        None
+      }
     };
     let path = if let Some(p) = cached {
       // No `on_bytes_progress` here: nothing crossed the network, and
@@ -1192,7 +1203,7 @@ pub async fn download_repo(
       // and had a re-pull of a cached repo reporting tens of GB/s.
       p
     } else {
-      let mut last_err: Option<hf_hub::api::tokio::ApiError> = None;
+      let mut last_err: Option<HFError> = None;
       let mut download_path: Option<PathBuf> = None;
       for attempt in 0..MAX_DOWNLOAD_ATTEMPTS {
         if attempt > 0 {
@@ -1202,7 +1213,14 @@ pub async fn download_repo(
           }
         }
         let adapter = HfHubProgressAdapter::new(filename.clone(), options.progress.clone());
-        match repo.download_with_progress(filename, adapter).await {
+        match repo
+          .download_file()
+          .filename(filename)
+          .maybe_revision(revision.clone())
+          .progress(adapter)
+          .send()
+          .await
+        {
           Ok(p) => {
             download_path = Some(p);
             break;
@@ -1229,7 +1247,7 @@ pub async fn download_repo(
   Ok(DownloadResult {
     paths,
     total_bytes: total_size,
-    revision: info.sha,
+    revision: info.sha.unwrap_or_default(),
     resolved_repo_id: resolved_spec.repo_id.clone(),
   })
 }
@@ -1419,26 +1437,44 @@ mod tests {
     assert!(clock.tick(t0, false), "a reset clock paints again");
   }
 
-  #[tokio::test]
-  async fn hf_hub_progress_adapter_accumulates_bytes_per_chunk() {
-    // Adapter must convert hf-hub's delta-style `update(size)`
-    // callbacks into a cumulative byte count and forward each one
-    // into `on_bytes_progress`. Without this the dialog's strip
-    // sits at 0% for the duration of the download.
-    use hf_hub::api::tokio::Progress;
+  #[test]
+  fn hf_hub_progress_adapter_forwards_cumulative_bytes() {
+    // Without this the dialog's strip sits at 0% for the duration of
+    // the download.
+    use hf_hub::progress::{FileProgress, FileStatus};
     let capture = std::sync::Arc::new(CaptureProgress::default());
     let inner: std::sync::Arc<dyn DownloadProgress> = capture.clone();
-    let mut adapter = HfHubProgressAdapter::new("model.gguf".into(), Some(inner));
-    adapter.init(0, "model.gguf").await;
-    adapter.update(100).await;
-    adapter.update(50).await;
-    adapter.update(25).await;
-    adapter.finish().await;
+    let adapter = HfHubProgressAdapter::new("model.gguf".into(), Some(inner));
+    let file = |name: &str, bytes| FileProgress {
+      filename: name.into(),
+      bytes_completed: bytes,
+      total_bytes: 175,
+      status: FileStatus::InProgress,
+    };
+    let progress = |files| ProgressEvent::Download(DownloadEvent::Progress { files });
+    adapter.on_progress(&ProgressEvent::Download(DownloadEvent::Start {
+      total_files: 1,
+      total_bytes: 175,
+    }));
+    adapter.on_progress(&progress(vec![file("model.gguf", 100)]));
+    adapter.on_progress(&progress(vec![file("other.gguf", 120)]));
+    adapter.on_progress(&progress(vec![file("model.gguf", 150)]));
+    adapter.on_progress(&ProgressEvent::Download(DownloadEvent::AggregateProgress {
+      bytes_completed: 175,
+      total_bytes: 175,
+      bytes_per_sec: None,
+    }));
+    adapter.on_progress(&ProgressEvent::Download(DownloadEvent::Complete));
     let events = capture.bytes_progress.lock().unwrap().clone();
-    assert_eq!(events.len(), 3, "one event per chunk: {events:?}");
-    assert_eq!(events[0], ("model.gguf".to_string(), 100));
-    assert_eq!(events[1], ("model.gguf".to_string(), 150));
-    assert_eq!(events[2], ("model.gguf".to_string(), 175));
+    assert_eq!(
+      events,
+      vec![
+        ("model.gguf".to_string(), 100),
+        ("model.gguf".to_string(), 150),
+        ("model.gguf".to_string(), 175),
+      ],
+      "only this file's byte counts, start and complete add nothing"
+    );
   }
 
   /// Stand up a one-shot loopback TCP listener that answers the first
