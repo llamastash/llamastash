@@ -610,8 +610,8 @@ _Shared context: `assets/tui.gif`, `assets/presets.gif`, `assets/init.gif`, `ass
 
 _Shared context: `available` / `installed` on the backend trait in `src/backend/mod.rs` and in `src/backend/llama_cpp/mod.rs`, `query_gh_release` and the install choice in `src/init/wizard.rs`, `GhBuild` in `src/init/install/mod.rs`._
 
-- [ ] Check if LlamaStash can start without `llama-server` when another server is defined in `config.yaml`.
-- [ ] LlamaStash 0.11.0 ignores `:vulkan` on AMD and always picks the ROCm build (`llamastash init server --install gh-releases:vulkan --recommended`).
+- [x] ~~Check if LlamaStash can start without `llama-server` when another server is defined in `config.yaml`.~~ — **checked 2026-11-20**, no change needed: the daemon starts with no `llama-server` when a generic entry's `binary` exists, or a `vllm` / `sglang` launcher resolves (config or `PATH`) and is not `enabled: false`. Checked live with stub binaries.
+- [x] ~~LlamaStash 0.11.0 ignores `:vulkan` on AMD and always picks the ROCm build (`llamastash init server --install gh-releases:vulkan --recommended`).~~ — **done 2026-11-20**: `select_asset_suffix` swaps `ubuntu-rocm-*` for `ubuntu-vulkan-<arch>` under `GhBuild::Vulkan`.
 
 ## General Roadmap
 

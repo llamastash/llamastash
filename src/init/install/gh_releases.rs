@@ -225,7 +225,7 @@ pub fn cuda_label(suffix: &str) -> Option<String> {
 /// best build and the host can run one, else [`pick_asset_suffix`].
 /// `Vulkan` swaps the Windows CUDA zip for the Vulkan one too: that zip
 /// carries no CUDA runtime DLLs, so it is the build a failed CUDA check
-/// falls back from.
+/// falls back from. On Linux AMD it swaps the ROCm build for Vulkan.
 pub fn select_asset_suffix(
   hw: &HardwareSnapshot,
   build: GhBuild,
@@ -233,9 +233,14 @@ pub fn select_asset_suffix(
 ) -> Option<String> {
   match build {
     GhBuild::Best => cuda_asset_suffix(hw, gpu).or_else(|| pick_asset_suffix(hw)),
-    GhBuild::Vulkan => pick_asset_suffix(hw).map(|s| match s.strip_prefix("win-cuda-*-") {
-      Some(arch) => format!("win-vulkan-{arch}"),
-      None => s,
+    GhBuild::Vulkan => pick_asset_suffix(hw).map(|s| {
+      if let Some(arch) = s.strip_prefix("win-cuda-*-") {
+        format!("win-vulkan-{arch}")
+      } else if let Some(arch) = s.strip_prefix("ubuntu-rocm-*-") {
+        format!("ubuntu-vulkan-{arch}")
+      } else {
+        s
+      }
     }),
   }
 }
@@ -1014,15 +1019,15 @@ mod tests {
       .as_deref(),
       Some("win-vulkan-x64.zip")
     );
-    // Hosts whose pick is not CUDA keep it.
+    // Linux AMD picks ROCm by default and Vulkan when asked.
+    let linux_amd = hw(amd(), OsFamily::Linux, CpuArch::X86_64);
     assert_eq!(
-      select_asset_suffix(
-        &hw(amd(), OsFamily::Linux, CpuArch::X86_64),
-        GhBuild::Vulkan,
-        None
-      )
-      .as_deref(),
+      select_asset_suffix(&linux_amd, GhBuild::Best, None).as_deref(),
       Some("ubuntu-rocm-*-x64.tar.gz")
+    );
+    assert_eq!(
+      select_asset_suffix(&linux_amd, GhBuild::Vulkan, None).as_deref(),
+      Some("ubuntu-vulkan-x64.tar.gz")
     );
   }
 

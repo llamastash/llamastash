@@ -1767,7 +1767,7 @@ Examples: `llamastash init server --install gh-releases`, `llamastash init model
 | `--offline`              | Refuse outbound network. Useful for `--only config` / `--only server` reruns where the model and snapshot are already cached. `LLAMASTASH_OFFLINE=1` is equivalent.     |
 | `--only <STEPS>`         | Comma-separated list of `server,models,config,integrations` (other names rejected). Only the listed steps run. Or run one step as a subcommand: `init server`.            |
 | `--skip <STEPS>`         | Inverse of `--only`. Mutually exclusive with it (clap refuses both).                                                                                                    |
-| `--install <CHOICE>`     | Pre-answer the install-method prompt. Values: `brew`, `gh-releases`, `gh-releases:vulkan`, `existing`, `custom:<PATH>`. Override beats `--recommended`. See [Linux + NVIDIA](#linux--nvidia-cuda-or-vulkan) for `gh-releases:vulkan`. |
+| `--install <CHOICE>`     | Pre-answer the install-method prompt. Values: `brew`, `gh-releases`, `gh-releases:vulkan`, `existing`, `custom:<PATH>`. Override beats `--recommended`. `gh-releases:vulkan` takes the Vulkan build where the default is CUDA (see [Linux + NVIDIA](#linux--nvidia-cuda-or-vulkan)) or ROCm (Linux AMD). |
 | `--model <CHOICE>`       | Pre-answer the model-pick prompt. Values: `recommended`, `none`, `<owner>/<repo>[:<filename>.gguf]`.                                                                    |
 | `--config-step <CHOICE>` | Pre-answer the config-write confirm. Values: `write`, `skip`. (Named `--config-step` rather than `--config` because the top-level `--config <PATH>` is already global.) |
 

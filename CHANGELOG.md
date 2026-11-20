@@ -15,6 +15,7 @@
 - An engine's log capture survives invalid UTF-8 in its output, and a log line longer than 8 KiB is split into 8 KiB lines, so a bad byte or a runaway line no longer silences the Logs tab for the rest of the launch.
 - `llamastash delete` and the TUI's `Ctrl+D` free the disk for a model stored in a second Hugging Face hub root (`HF_HUB_CACHE` and friends), not only the first one.
 - The TUI shows a popup when the daemon runs a different build than the TUI, for example an old daemon left running after an upgrade.
+- `init server --install gh-releases:vulkan` installs the Vulkan build on Linux AMD instead of the ROCm build.
 
 ### Changed
 
