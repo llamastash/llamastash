@@ -1,27 +1,35 @@
 ## [Unreleased]
 
-### Security
+## [0.12.0] — 2026-11-20
 
-- A web page can no longer drive or read the proxy through its port: a foreign `Host` gets `403 forbidden_host` (the DNS-rebinding guard on a keyless loopback bind) and a foreign `Origin` gets `403 forbidden_origin` in every mode; extension and app scheme origins still pass.
-- zip 9.0.4 → 9.4.1, clearing [RUSTSEC-2026-0548](https://rustsec.org/advisories/RUSTSEC-2026-0548): `ZipStreamReader` can extract an entry under a name that differs from the central directory. Windows-only here, and engine archives open through `ZipArchive`, not `ZipStreamReader`.
-- rustix 1.1.4 → 1.1.6, clearing [RUSTSEC-2026-0486](https://rustsec.org/advisories/RUSTSEC-2026-0486): xattr calls with a zero-length buffer mark unwritten bytes as initialized. Transitive via crossterm, tempfile and xattr.
-- quinn-udp 0.5.14 → 0.5.16, clearing [RUSTSEC-2026-0538](https://rustsec.org/advisories/RUSTSEC-2026-0538): a receive loop can spin after a truncated datagram. It is in `Cargo.lock` only, and no build target compiles it.
-- quick-xml 0.39.4 → 0.41.0, through `wayland-scanner` 0.31.10 → 0.31.11, clearing [RUSTSEC-2026-0194](https://rustsec.org/advisories/RUSTSEC-2026-0194) and [RUSTSEC-2026-0195](https://rustsec.org/advisories/RUSTSEC-2026-0195): checking a start tag for duplicate attributes takes quadratic time, and `NsReader` allocates without a bound on a hostile namespace declaration. Build-time codegen through arboard → wl-clipboard-rs → wayland-client, which never parses untrusted XML. `cargo audit --deny warnings` is clean with these four.
-
-### Fixed
-
-- The family-MRU fallback only answers from a running model that serves the request's mode, and embeddings and rerank requests never fall back to another model at all.
-- A running `stt` / `image` / `tts` launch lists on `/v1/models` under its declared mode instead of `chat`, matching the `status` MODE column.
-- An engine's log capture survives invalid UTF-8 in its output, and a log line longer than 8 KiB is split into 8 KiB lines, so a bad byte or a runaway line no longer silences the Logs tab for the rest of the launch.
-- `llamastash delete` and the TUI's `Ctrl+D` free the disk for a model stored in a second Hugging Face hub root (`HF_HUB_CACHE` and friends), not only the first one.
-- The TUI shows a popup when the daemon runs a different build than the TUI, for example an old daemon left running after an upgrade.
-- `init server --install gh-releases:vulkan` installs the Vulkan build on Linux AMD instead of the ROCm build.
+This release closes a proxy exposure and clears five RustSec advisories. A web page can no longer drive the loopback proxy on `127.0.0.1:11435`: a foreign `Host` gets `403 forbidden_host` on a keyless loopback bind, and a foreign `Origin` gets `403 forbidden_origin` in every mode. A fallback now answers only from a running model that serves the request's mode, and embeddings and rerank requests never fall back. Six fixes cover engine log capture after invalid UTF-8, `delete` on a second Hugging Face hub root, a version-mismatch popup between the TUI and the daemon, and the Vulkan engine build on Linux AMD. Dependencies move to their latest releases, and building from source now needs Rust 1.97.
 
 ### Changed
 
 - Building from source (`cargo install`) now needs Rust 1.97 or newer, up from 1.95, for yamlpath / yamlpatch 1.32.
 - Dependencies moved to their latest releases, including reqwest 0.13, sysinfo 0.40, rand 0.10, base64 0.23, sha2 0.11, windows 0.62 and yamlpath / yamlpatch 1.32.
 - `pull` and the TUI pull dialog run on hf-hub 1.0, which downloads Hugging Face's Xet-backed files (every GGUF repo checked) through Xet. The progress bar now moves in steps of up to a few hundred MB instead of smoothly, and the download can buffer up to 1/16 of RAM.
+
+### Fixed
+
+- The family-MRU fallback only answers from a running model that serves the request's mode, and embeddings and rerank requests never fall back to another model at all. ([#133](https://github.com/llamastash/llamastash/pull/133))
+- A running `stt` / `image` / `tts` launch lists on `/v1/models` under its declared mode instead of `chat`, matching the `status` MODE column. ([#133](https://github.com/llamastash/llamastash/pull/133))
+- An engine's log capture survives invalid UTF-8 in its output, and a log line longer than 8 KiB is split into 8 KiB lines, so a bad byte or a runaway line no longer silences the Logs tab for the rest of the launch. ([#137](https://github.com/llamastash/llamastash/pull/137))
+- `llamastash delete` and the TUI's `Ctrl+D` free the disk for a model stored in a second Hugging Face hub root (`HF_HUB_CACHE` and friends), not only the first one. ([#137](https://github.com/llamastash/llamastash/pull/137))
+- The TUI shows a popup when the daemon runs a different build than the TUI, for example an old daemon left running after an upgrade. ([#137](https://github.com/llamastash/llamastash/pull/137))
+- `init server --install gh-releases:vulkan` installs the Vulkan build on Linux AMD instead of the ROCm build.
+
+### Security
+
+- A web page can no longer drive or read the proxy through its port: a foreign `Host` gets `403 forbidden_host` (the DNS-rebinding guard on a keyless loopback bind) and a foreign `Origin` gets `403 forbidden_origin` in every mode; extension and app scheme origins still pass. ([#133](https://github.com/llamastash/llamastash/pull/133))
+- zip 9.0.4 → 9.7.0, clearing [RUSTSEC-2026-0548](https://rustsec.org/advisories/RUSTSEC-2026-0548): `ZipStreamReader` can extract an entry under a name that differs from the central directory. Windows-only here, and engine archives open through `ZipArchive`, not `ZipStreamReader`. ([#136](https://github.com/llamastash/llamastash/pull/136))
+- rustix 1.1.4 → 1.1.6, clearing [RUSTSEC-2026-0486](https://rustsec.org/advisories/RUSTSEC-2026-0486): xattr calls with a zero-length buffer mark unwritten bytes as initialized. Transitive via crossterm, tempfile and xattr. ([#136](https://github.com/llamastash/llamastash/pull/136))
+- quinn-udp 0.5.14 → 0.5.16, clearing [RUSTSEC-2026-0538](https://rustsec.org/advisories/RUSTSEC-2026-0538): a receive loop can spin after a truncated datagram. It is in `Cargo.lock` only, and no build target compiles it. ([#136](https://github.com/llamastash/llamastash/pull/136))
+- quick-xml 0.39.4 → 0.41.0, through `wayland-scanner` 0.31.10 → 0.31.11, clearing [RUSTSEC-2026-0194](https://rustsec.org/advisories/RUSTSEC-2026-0194) and [RUSTSEC-2026-0195](https://rustsec.org/advisories/RUSTSEC-2026-0195): checking a start tag for duplicate attributes takes quadratic time, and `NsReader` allocates without a bound on a hostile namespace declaration. Build-time codegen through arboard → wl-clipboard-rs → wayland-client, which never parses untrusted XML. `cargo audit --deny warnings` is clean with these four. ([#136](https://github.com/llamastash/llamastash/pull/136))
+
+### Contributors
+
+- [@deepu105](https://github.com/deepu105): everything
 
 ## [0.11.0] — 2026-11-03
 
