@@ -938,12 +938,7 @@ mod tests {
   /// `aliases` key — and each has to read as "no aliases", not as a broken list.
   #[tokio::test]
   async fn alias_rows_degrade_to_empty_when_the_daemon_cannot_answer() {
-    let closed = {
-      let l = std::net::TcpListener::bind("127.0.0.1:0").expect("free port");
-      let port = l.local_addr().expect("addr").port();
-      drop(l);
-      port
-    };
+    let closed = crate::test_support::allocate_port_range(1).start;
     let mut unreachable =
       Client::with_url_and_token(&format!("http://127.0.0.1:{closed}"), "test").expect("client");
     assert!(

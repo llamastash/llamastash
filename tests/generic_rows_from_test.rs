@@ -139,11 +139,7 @@ where
 }
 
 fn free_port() -> u16 {
-  std::net::TcpListener::bind("127.0.0.1:0")
-    .unwrap()
-    .local_addr()
-    .unwrap()
-    .port()
+  llamastash::test_support::allocate_port_range(1).start
 }
 
 /// The rows `entry` minted, as `list_models` publishes them.

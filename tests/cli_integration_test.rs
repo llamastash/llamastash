@@ -92,20 +92,7 @@ fn allocate_port_range() -> PortRange {
 
 /// A wider range so a duplicate-launch test can grab two ports.
 fn allocate_port_range_pair() -> PortRange {
-  // Bind two ephemerals to claim consecutive-ish free slots, then
-  // hand the daemon a 32-wide window starting at the lower of them
-  // so a second `start_model` doesn't collide.
-  let l1 = std::net::TcpListener::bind("127.0.0.1:0").expect("bind 1");
-  let l2 = std::net::TcpListener::bind("127.0.0.1:0").expect("bind 2");
-  let p1 = l1.local_addr().unwrap().port();
-  let p2 = l2.local_addr().unwrap().port();
-  drop(l1);
-  drop(l2);
-  let lo = p1.min(p2);
-  PortRange {
-    start: lo,
-    end: lo.saturating_add(31),
-  }
+  llamastash::test_support::allocate_port_range(32)
 }
 
 struct DaemonHandle {
@@ -1619,10 +1606,7 @@ fn daemon_argv<'a>(verb: &'static str, server: &'a str, flags: &[&'a str]) -> Ve
 /// Claim an unused TCP port for the test daemon's proxy listener so the run
 /// never touches the default 11435 the user's real daemon may hold.
 fn free_port() -> u16 {
-  let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
-  let port = l.local_addr().unwrap().port();
-  drop(l);
-  port
+  llamastash::test_support::allocate_port_range(1).start
 }
 
 /// Poll `daemon status --json` until it reports a pid other than `previous`.

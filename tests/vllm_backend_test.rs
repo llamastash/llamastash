@@ -421,11 +421,7 @@ mod lifecycle {
     let state = unique_temp("rewrite");
     let cache = unique_temp("rewrite-cache");
     seed_repo(&cache, "Qwen/Qwen2.5-0.5B-Instruct");
-    let proxy_port = std::net::TcpListener::bind("127.0.0.1:0")
-      .expect("free port")
-      .local_addr()
-      .expect("addr")
-      .port();
+    let proxy_port = llamastash::test_support::allocate_port_range(1).start;
 
     let mut opts = opts_with_vllm(state.clone());
     opts.backend.vllm.rewrite_model = true;

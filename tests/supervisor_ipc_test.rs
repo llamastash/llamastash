@@ -31,10 +31,7 @@ fn unique_temp(label: &str) -> PathBuf {
 }
 
 fn allocate_port() -> u16 {
-  let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-  let port = listener.local_addr().unwrap().port();
-  drop(listener);
-  port
+  llamastash::test_support::allocate_port_range(1).start
 }
 
 async fn wait_for_socket(path: &Path) {

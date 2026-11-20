@@ -8,7 +8,6 @@
 
 #![cfg(all(feature = "test-fixtures", unix))]
 
-use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -26,10 +25,7 @@ fn temp(label: &str) -> PathBuf {
 
 /// A port nothing is holding, so the developer's own daemon is never in play.
 fn free_port() -> u16 {
-  let l = TcpListener::bind("127.0.0.1:0").expect("free port");
-  let port = l.local_addr().expect("addr").port();
-  drop(l);
-  port
+  llamastash::test_support::allocate_port_range(1).start
 }
 
 /// A daemon over a model dir holding one chat model and one that is running.

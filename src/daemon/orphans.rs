@@ -676,16 +676,10 @@ mod tests {
       .build()
   }
 
-  /// A loopback port that nothing is listening on: bind ephemeral, read
-  /// it, drop. Only for the "connection refused" probe case below — the
-  /// listening cases use `spawn_one_shot`, which keeps its port so there's
-  /// no reuse window. A rare post-drop reuse here is absorbed by nextest
-  /// `retries` on CI.
+  /// A loopback port that nothing is listening on, for the "connection
+  /// refused" probe case below. The listening cases use `spawn_one_shot`.
   fn allocate_port() -> u16 {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
-    let p = l.local_addr().unwrap().port();
-    drop(l);
-    p
+    crate::test_support::allocate_port_range(1).start
   }
 
   /// Spin up a tiny single-shot HTTP responder on an OS-assigned loopback

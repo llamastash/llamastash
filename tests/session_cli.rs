@@ -9,7 +9,6 @@
 
 #![cfg(all(feature = "test-fixtures", unix))]
 
-use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -33,10 +32,7 @@ fn temp(label: &str) -> PathBuf {
 /// A port nothing is holding. The proxy prefers 11435, which the developer's own
 /// daemon already has, so every test binds its proxy on a port of its own.
 fn free_port() -> u16 {
-  let l = TcpListener::bind("127.0.0.1:0").expect("free port");
-  let port = l.local_addr().expect("addr").port();
-  drop(l);
-  port
+  llamastash::test_support::allocate_port_range(1).start
 }
 
 /// A daemon with one chat model in its catalog and the fake engine behind it.
