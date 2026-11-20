@@ -292,6 +292,21 @@ async fn main() {
 
   let args = parse_args();
 
+  // A model path containing `die-after-<ms>`: bind nothing and exit 1 after that
+  // long. A proxy-driven launch cannot be handed a flag (the auto-start builds
+  // its own `StartParams`), so a test that needs an engine the admission gate
+  // admits and that then dies mid-load marks the model file instead.
+  if let Some((_, tail)) = args.model_path.split_once("die-after-") {
+    let ms: u64 = tail
+      .split('-')
+      .next()
+      .expect("die-after- wants a millisecond count")
+      .parse()
+      .expect("die-after- wants a millisecond count");
+    tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+    std::process::exit(1);
+  }
+
   if args.trap_sigterm {
     // Re-register the SIGTERM handler as a no-op so the supervisor's
     // SIGKILL-after-5s grace path is exercised. SIGINT still exits
