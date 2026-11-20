@@ -124,14 +124,19 @@ fn endpoint_mode(path: &str) -> Option<LaunchMode> {
   }
 }
 
-/// Entry point invoked by the `service_fn` closure. Returns a fully
-/// constructed `Response`; the caller hands it back to hyper.
-pub async fn route(state: Arc<ProxyState>, req: Request<Incoming>) -> ProxyResponse {
-  let method = req.method().clone();
-  let path = req.uri().path().to_string();
+/// The most of a refused request's body the proxy reads before it answers. A
+/// larger body still gets the 403, and the client may then see a reset.
+const REFUSED_BODY_CAP: usize = 64 * 1024;
 
-  // Ahead of the route table, so a refused request reaches no engine and no log
-  // row. A header that is not text reads as "", which both checks refuse.
+/// The 403 for a request whose Host or Origin the proxy refuses. It runs ahead
+/// of the route table, so a refused request reaches no engine and no log row.
+/// A header that is not text reads as "", which both checks refuse.
+fn refuse_host_or_origin(
+  state: &ProxyState,
+  req: &Request<Incoming>,
+  method: &Method,
+  path: &str,
+) -> Option<ProxyResponse> {
   let header = |name| req.headers().get(name).map(|v| v.to_str().unwrap_or(""));
   let host = header(hyper::header::HOST);
   // DNS rebinding: the Host header is the one thing a rebound page cannot
@@ -139,14 +144,14 @@ pub async fn route(state: Arc<ProxyState>, req: Request<Incoming>) -> ProxyRespo
   if let Some(h) = host.filter(|_| state.loopback_bind && !state.auth.enforced()) {
     if !auth::host_is_loopback(h) {
       log::debug!("proxy: refused Host `{h}` on {method} {path}");
-      return error_response(
+      return Some(error_response(
         StatusCode::FORBIDDEN,
         "forbidden_host",
         &format!(
           "this proxy listens on loopback and answers only Host localhost, \
            a *.localhost name or a loopback IP; got `{h}`"
         ),
-      );
+      ));
     }
   }
   // Every mode, key included: a browser attaches cached `/ui` Basic
@@ -154,12 +159,27 @@ pub async fn route(state: Arc<ProxyState>, req: Request<Incoming>) -> ProxyRespo
   if let Some(origin) = header(hyper::header::ORIGIN) {
     if !auth::origin_is_allowed(origin, host) {
       log::debug!("proxy: refused Origin `{origin}` on {method} {path}");
-      return error_response(
+      return Some(error_response(
         StatusCode::FORBIDDEN,
         "forbidden_origin",
         &format!("origin `{origin}` is not allowed on this proxy"),
-      );
+      ));
     }
+  }
+  None
+}
+
+/// Entry point invoked by the `service_fn` closure. Returns a fully
+/// constructed `Response`; the caller hands it back to hyper.
+pub async fn route(state: Arc<ProxyState>, req: Request<Incoming>) -> ProxyResponse {
+  let method = req.method().clone();
+  let path = req.uri().path().to_string();
+
+  if let Some(refused) = refuse_host_or_origin(&state, &req, &method, &path) {
+    // Read the body first: hyper closes a connection with an unread body, and a
+    // macOS client then reads a reset instead of the 403.
+    let _ = super::route::buffer_body(req.into_body(), REFUSED_BODY_CAP).await;
+    return refused;
   }
 
   // Bearer auth on the data plane. The liveness / identity probes
