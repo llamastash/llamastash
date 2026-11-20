@@ -1593,6 +1593,7 @@ fn apply_confirmed(app: &mut App, action: ConfirmAction, writer: Option<&mpsc::S
     ConfirmAction::LaunchDuplicate { name, args, .. } => {
       dispatch_launch(app, writer, WriterCmd::StartModel(args), name);
     }
+    ConfirmAction::DaemonBuildMismatch { .. } => {}
   }
 }
 

@@ -12,6 +12,9 @@
 
 - The family-MRU fallback only answers from a running model that serves the request's mode, and embeddings and rerank requests never fall back to another model at all.
 - A running `stt` / `image` / `tts` launch lists on `/v1/models` under its declared mode instead of `chat`, matching the `status` MODE column.
+- An engine's log capture survives invalid UTF-8 in its output, and a log line longer than 8 KiB is split into 8 KiB lines, so a bad byte or a runaway line no longer silences the Logs tab for the rest of the launch.
+- `llamastash delete` and the TUI's `Ctrl+D` free the disk for a model stored in a second Hugging Face hub root (`HF_HUB_CACHE` and friends), not only the first one.
+- The TUI shows a popup when the daemon runs a different build than the TUI, for example an old daemon left running after an upgrade.
 
 ### Changed
 

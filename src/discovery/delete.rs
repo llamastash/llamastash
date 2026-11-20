@@ -256,16 +256,12 @@ fn download_in_flight(repo_dir: &Path) -> bool {
   })
 }
 
-/// [`plan`] against the live HF cache root, resolving `path` to its catalog
-/// row. `None` when the catalog has no row for it (the catalog refreshed
-/// underneath the cursor): only catalog rows are ever deleted.
+/// [`plan`] against the hub root that actually holds `path`, resolving
+/// `path` to its catalog row. `None` when the catalog has no row for it (the
+/// catalog refreshed underneath the cursor): only catalog rows are ever deleted.
 pub fn plan_for_path(path: &Path, catalog: &[DiscoveredModel]) -> Option<DeletePlan> {
   let target = catalog.iter().find(|m| m.path == path)?;
-  Some(plan(
-    target,
-    catalog,
-    crate::init::download::hf_cache_dir().ok().as_deref(),
-  ))
+  Some(plan(target, catalog, hf_hub_root_for(path).as_deref()))
 }
 
 /// Carry out `plan`, returning a human-readable summary for the toast.
@@ -568,6 +564,28 @@ fn hf_repo_dir_in_cache(path: &Path, cache_root: Option<&Path>) -> Option<PathBu
     .then_some(candidate)
 }
 
+/// The hub root that holds `path`, among every hub root this machine names
+/// (`HF_HUB_CACHE`, `HUGGINGFACE_HUB_CACHE`, `HF_HOME`, XDG cache, `~`). The
+/// primary root alone is not enough: a model pulled into a second root frees
+/// no disk when the delete is planned against the first one. `None` when no
+/// root holds the path.
+pub fn hf_hub_root_for(path: &Path) -> Option<PathBuf> {
+  let home = crate::util::paths::home_dir();
+  let roots = crate::util::model_caches::huggingface_hub_dirs(home.as_deref());
+  hub_root_holding(path, &roots)
+}
+
+/// The root in `roots` that resolves `path` to a repo dir inside it. When
+/// one root nests inside another, the deepest one wins: the shared-store
+/// sweep needs the root the repo really sits in.
+fn hub_root_holding(path: &Path, roots: &[PathBuf]) -> Option<PathBuf> {
+  roots
+    .iter()
+    .filter(|root| hf_repo_dir_in_cache(path, Some(root)).is_some())
+    .max_by_key(|root| root.components().count())
+    .cloned()
+}
+
 /// `["a"] -> "a"`, `["a", "b"] -> "a and b"`, `["a", "b", "c"] -> "a, b and c"`.
 fn join_human(parts: &[String]) -> String {
   match parts {
@@ -755,6 +773,50 @@ mod tests {
     );
     assert!(b.exists());
     let _ = fs::remove_dir_all(&dir);
+  }
+
+  #[test]
+  fn hub_root_holding_picks_the_root_that_has_the_path() {
+    // A second `HF_HUB_CACHE`-style root: planning against the first root
+    // alone resolves nothing, so the blob under `blobs/` is never freed.
+    let root_a = tempdir("hub-a");
+    let root_b = tempdir("hub-b");
+    let repo_dir = root_b.join("models--o--r");
+    let blobs = repo_dir.join("blobs");
+    let snap = repo_dir.join("snapshots").join("rev");
+    fs::create_dir_all(&blobs).unwrap();
+    fs::create_dir_all(&snap).unwrap();
+    fs::write(blobs.join("sha"), b"blob").unwrap();
+    let file = snap.join("m.gguf");
+    symlink_or_copy(&blobs.join("sha"), &file);
+
+    assert_eq!(
+      hub_root_holding(&file, &[root_a.clone(), root_b.clone()]),
+      Some(root_b.clone()),
+      "the root that holds the snapshot must win"
+    );
+
+    let target = model(&file);
+    let plan = plan(&target, std::slice::from_ref(&target), Some(&root_b));
+    execute(&plan).expect("delete must succeed");
+    assert!(!blobs.join("sha").exists(), "the blob must be freed");
+    let _ = fs::remove_dir_all(&root_a);
+    let _ = fs::remove_dir_all(&root_b);
+  }
+
+  #[test]
+  fn hub_root_holding_picks_the_deepest_of_nested_roots() {
+    let outer = tempdir("hub-outer");
+    let inner = outer.join("hub");
+    let snap = inner.join("models--o--r").join("snapshots").join("rev");
+    fs::create_dir_all(&snap).unwrap();
+    let file = snap.join("m.gguf");
+    fs::write(&file, b"gguf").unwrap();
+    assert_eq!(
+      hub_root_holding(&file, &[outer.clone(), inner.clone()]),
+      Some(inner)
+    );
+    let _ = fs::remove_dir_all(&outer);
   }
 
   #[test]
