@@ -174,6 +174,7 @@ mod tests {
       ManagedState::Stopped,
       ManagedState::Error {
         cause: "child exited".into(),
+        kind: crate::daemon::supervisor::ErrorKind::Exited,
       },
     ] {
       let (supervisors, connections) = idle_inputs();

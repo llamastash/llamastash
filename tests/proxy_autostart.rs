@@ -920,9 +920,9 @@ async fn an_admitted_launch_that_dies_makes_room_and_retries() {
   let log_dir = dir.join("logs");
   std::fs::create_dir_all(&log_dir).expect("mkdir logs");
   let first = write_gguf(&dir, "first-Q4_K_M.gguf", "qwen2");
-  // `die-after-6000` is past the floor that separates a launch starved of memory
-  // from a launch that is simply broken.
-  let dying = write_gguf(&dir, "die-after-6000-second-Q4_K_M.gguf", "qwen2");
+  // `die-once-after-6000` is past the floor that separates a launch starved of
+  // memory from a launch that is simply broken, and it loads on the retry.
+  let dying = write_gguf(&dir, "die-once-after-6000-second-Q4_K_M.gguf", "qwen2");
   let (state, ctx) = build_state(
     vec![
       discovered(&first, None, "qwen2"),
@@ -949,7 +949,7 @@ async fn an_admitted_launch_that_dies_makes_room_and_retries() {
   let (status, _, resp) = http_post(
     addr,
     "/v1/chat/completions",
-    &body("die-after-6000-second-Q4_K_M.gguf"),
+    &body("die-once-after-6000-second-Q4_K_M.gguf"),
   )
   .await;
   let elapsed = attempted.elapsed();
@@ -965,11 +965,14 @@ async fn an_admitted_launch_that_dies_makes_room_and_retries() {
     !resident.contains(&first),
     "the death left the idle launch holding memory: {resident:?}"
   );
-  // Two 6 s deaths, so a request that came back in one attempt's time never
-  // asked for room and never retried.
-  assert!(
-    elapsed > Duration::from_secs(11),
-    "the launch was not retried after the eviction ({elapsed:?})"
+  // The retry is what the request comes back with: served by the model that was
+  // asked for, with no fallback. Two deaths would have left a fallback row or a
+  // 503 here instead.
+  assert_eq!(
+    status,
+    200,
+    "the retry after the eviction did not serve the requested model ({elapsed:?}): {}",
+    String::from_utf8_lossy(&resp)
   );
 
   let row = finished_request(&ctx.requests).await;

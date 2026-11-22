@@ -306,9 +306,10 @@ pub async fn make_room(
 /// context estimate, and free memory comes from `MemAvailable`, which counts an
 /// mmap-backed engine's weights as reclaimable page cache — so both sides of a
 /// shortfall are a reading of memory that a resident engine does not show up in.
-/// Asking for the dead launch's whole demand is the honest request. The guard that
-/// stays is the all-or-nothing one: nothing is unloaded unless one idle launch's
-/// credit on its own covers that demand.
+/// Asking for the dead launch's whole demand is the honest request. The guard
+/// that stays is the all-or-nothing one: nothing unloads unless the idle
+/// launches together cover the demand. Because this asks for the whole demand
+/// rather than a shortfall, covering it can take several launches, not one.
 ///
 /// `demand_bytes` is what the gate priced the dead launch at, so credit and
 /// demand stay in the one unit.
@@ -380,7 +381,7 @@ async fn unload_room(
   }
   if freed_now < short {
     log::info!(
-    "proxy make-room ({reason}): {} needed but only {} still freeable after re-check — nothing unloaded",
+      "proxy make-room ({reason}): {} needed but only {} still freeable after re-check — nothing unloaded",
       crate::launch::admission::human_gib(short),
       crate::launch::admission::human_gib(freed_now),
     );
@@ -557,7 +558,10 @@ mod tests {
       ManagedState::Loading,
       ManagedState::Stopping,
       ManagedState::Stopped,
-      ManagedState::Error { cause: "x".into() },
+      ManagedState::Error {
+        cause: "x".into(),
+        kind: crate::daemon::supervisor::ErrorKind::Exited,
+      },
     ] {
       let d = decide(
         LaunchOrigin::AutoStart,

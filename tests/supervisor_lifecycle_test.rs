@@ -143,7 +143,7 @@ async fn strict_fit_withholds_ready_when_ctx_clamped_to_floor() {
   )
   .await;
   match s {
-    ManagedState::Error { cause } => assert!(cause.contains("strict-fit"), "cause: {cause}"),
+    ManagedState::Error { cause, .. } => assert!(cause.contains("strict-fit"), "cause: {cause}"),
     other => panic!("expected Error, got {other:?}"),
   }
   // Ready was never declared.
@@ -367,7 +367,7 @@ async fn probe_timeout_triggers_error_state_and_releases_child() {
   )
   .await;
   match s {
-    ManagedState::Error { cause } => assert!(
+    ManagedState::Error { cause, .. } => assert!(
       cause.contains("health probe timeout"),
       "cause should mention timeout, got `{cause}`"
     ),
@@ -468,7 +468,7 @@ async fn a_ready_child_killed_from_outside_is_an_error_with_its_signal() {
   )
   .await;
   match s {
-    ManagedState::Error { cause } => assert!(
+    ManagedState::Error { cause, .. } => assert!(
       cause.contains("exited unexpectedly") && cause.contains("killed by signal 9"),
       "{cause}"
     ),

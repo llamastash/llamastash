@@ -292,19 +292,33 @@ async fn main() {
 
   let args = parse_args();
 
-  // A model path containing `die-after-<ms>`: bind nothing and exit 1 after that
-  // long. A proxy-driven launch cannot be handed a flag (the auto-start builds
-  // its own `StartParams`), so a test that needs an engine the admission gate
-  // admits and that then dies mid-load marks the model file instead.
-  if let Some((_, tail)) = args.model_path.split_once("die-after-") {
-    let ms: u64 = tail
-      .split('-')
-      .next()
-      .expect("die-after- wants a millisecond count")
-      .parse()
-      .expect("die-after- wants a millisecond count");
-    tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
-    std::process::exit(1);
+  // A model path containing `die-after-<ms>` exits 1 that long after start,
+  // binding nothing; `die-once-after-<ms>` does it only the first time, so a
+  // retry of the same model loads. A proxy-driven launch cannot be handed a flag
+  // (the auto-start builds its own `StartParams`), so a test that needs an engine
+  // the admission gate admits and that then dies mid-load marks the file instead.
+  let die_once = args.model_path.contains("die-once-after-");
+  let marker = if die_once {
+    "die-once-after-"
+  } else {
+    "die-after-"
+  };
+  let died_before = format!("{}.died", args.model_path);
+  if let Some((_, tail)) = args.model_path.split_once(marker) {
+    let die = !die_once || !std::path::Path::new(&died_before).exists();
+    if die {
+      let ms: u64 = tail
+        .split('-')
+        .next()
+        .expect("die marker wants a millisecond count")
+        .parse()
+        .expect("die marker wants a millisecond count");
+      if die_once {
+        std::fs::write(&died_before, b"1").expect("mark the die-once model");
+      }
+      tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+      std::process::exit(1);
+    }
   }
 
   if args.trap_sigterm {

@@ -42,7 +42,7 @@ use crate::daemon::context::MethodContext;
 use crate::daemon::launch_service::{
   compose_and_spawn, LaunchModeWire, StartParams, StartedLaunch,
 };
-use crate::daemon::supervisor::{ManagedModel, ManagedState};
+use crate::daemon::supervisor::{ErrorKind, ManagedModel, ManagedState};
 use crate::gguf::identity::ModelId;
 use crate::launch::mode::LaunchMode;
 use crate::launch::resolve::CatalogRow;
@@ -306,6 +306,23 @@ async fn drive_launch_as_leader(
 /// loss, so the launch just fails.
 const MIN_RETRYABLE_LOAD_ATTEMPT: Duration = Duration::from_secs(5);
 
+/// Whether a launch that failed this far into its first attempt says something
+/// about memory: the child exited on its own or the strict-fit clamp refused it,
+/// and it lived long enough to have actually tried. A probe timeout is an engine
+/// that never answered — evicting for it unloads idle models and then pays the
+/// whole readiness timeout again — a stop is a decision, and a death inside the
+/// floor failed before it could have been starved.
+fn death_may_be_memory(state: &ManagedState, elapsed: Duration) -> bool {
+  elapsed >= MIN_RETRYABLE_LOAD_ATTEMPT
+    && matches!(
+      state,
+      ManagedState::Error {
+        kind: ErrorKind::Exited | ErrorKind::FitClamped,
+        ..
+      }
+    )
+}
+
 /// Wait for the spawn to reach `Ready`; if the gate admitted it and it died
 /// anyway, unload what it takes and try once more.
 ///
@@ -329,25 +346,20 @@ async fn await_ready_or_make_room(
     LaunchOutcome::Failed { cause } => cause,
     ready => return ready,
   };
-  // Nothing left to buy with an eviction, or no demand figure to price one
-  // against: the launch had no admission projection to be wrong about.
+  // One eviction per request: a request that already bought room on an
+  // admission refusal has spent its allowance on this launch.
   if already_evicted {
     return LaunchOutcome::Failed { cause };
   }
-  // A stop is a decision, not a failure. States are sticky and the terminal one
-  // is what `await_ready` returned, so this reads the state that produced the
-  // cause: only a child that exited by itself (`Error`) says anything about
-  // memory. Relaunching what the operator just stopped, and evicting something
-  // to fit it, is not what a `stop` means.
-  if !matches!(started.model.state().await, ManagedState::Error { .. }) {
+  // Only a death says anything about memory, and only some deaths.
+  if !death_may_be_memory(&started.model.state().await, attempt_started.elapsed()) {
     return LaunchOutcome::Failed { cause };
   }
+  // No demand figure means no admission projection was ever wrong about this
+  // launch, so there is nothing for an eviction to correct.
   let Some(demand) = started.admitted_demand_bytes else {
     return LaunchOutcome::Failed { cause };
   };
-  if attempt_started.elapsed() < MIN_RETRYABLE_LOAD_ATTEMPT {
-    return LaunchOutcome::Failed { cause };
-  }
   let made_room = super::eviction::make_room_after_launch_death(state, demand, |unloading| {
     record.set_evicted(unloading.iter().map(|id| id.as_str().to_string()).collect());
     record.publish();
@@ -451,7 +463,7 @@ async fn await_ready(state: &Arc<ProxyState>, model: &ManagedModel) -> LaunchOut
           model_id,
         };
       }
-      ManagedState::Error { cause } => {
+      ManagedState::Error { cause, .. } => {
         return LaunchOutcome::Failed { cause };
       }
       ManagedState::Stopped => {
@@ -788,5 +800,26 @@ mod tests {
     assert_eq!(id.path, snapshot);
     // And the row-shaped entry point agrees when the backend is available.
     let _ = r;
+  }
+
+  #[test]
+  fn only_a_death_that_actually_tried_is_memory() {
+    let tried = Duration::from_secs(6);
+    let instant = Duration::from_secs(4);
+    let died = |kind: ErrorKind| ManagedState::Error {
+      cause: "x".into(),
+      kind,
+    };
+    assert!(death_may_be_memory(&died(ErrorKind::Exited), tried));
+    assert!(death_may_be_memory(&died(ErrorKind::FitClamped), tried));
+    // A probe timeout is an engine that never answered. Evicting for one unloads
+    // idle models and then waits out the whole readiness timeout again.
+    assert!(!death_may_be_memory(&died(ErrorKind::ProbeTimeout), tried));
+    // Inside the floor the launch was broken, not starved.
+    assert!(!death_may_be_memory(&died(ErrorKind::Exited), instant));
+    // A stop is a decision, and nothing else is a death at all.
+    assert!(!death_may_be_memory(&ManagedState::Stopping, tried));
+    assert!(!death_may_be_memory(&ManagedState::Stopped, tried));
+    assert!(!death_may_be_memory(&ManagedState::Loading, tried));
   }
 }

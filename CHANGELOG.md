@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Fixed
+
+- A proxy auto-start the memory gate admitted and that then died while loading unloads idle auto-started models and retries once, instead of a different resident model quietly answering the request. ([#134](https://github.com/llamastash/llamastash/pull/134))
+
 ## [0.11.0] — 2026-11-03
 
 This release adds two CLI verbs so an agent can manage models without the TUI. `llamastash delete` removes a model's files through the daemon with the same plan the TUI's `Ctrl+D` shows, and refuses without `--yes` outside a TTY. `llamastash bench` starts a model once per preset and reports load time, prompt and generation speed and time to first token, in a table or `--json`. Unified-memory hosts get a configurable admission reserve (`daemon.unified_memory_reserve_percent`), the HuggingFace pull dialog opens on the models ranked for your hardware, and media launches now show `stt` / `image` instead of `chat` in `status`.

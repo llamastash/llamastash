@@ -1421,7 +1421,7 @@ mod tests {
   #[tokio::test]
   async fn delete_model_refuses_a_launch_that_is_not_stopped() {
     use crate::daemon::registry::LaunchId;
-    use crate::daemon::supervisor::{test_support::parked, ManagedState};
+    use crate::daemon::supervisor::{test_support::parked, ErrorKind, ManagedState};
     for (state, blocks) in [
       (ManagedState::Ready, true),
       (ManagedState::Launching, true),
@@ -1430,6 +1430,7 @@ mod tests {
       (
         ManagedState::Error {
           cause: "probe timeout".into(),
+          kind: ErrorKind::ProbeTimeout,
         },
         true,
       ),
