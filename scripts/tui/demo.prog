@@ -1,41 +1,43 @@
-comment: LlamaStash README/site demo — the init wizard driven interactively,
-comment: then a TUI tour, with an NPU engine declared as a generic server so the
-comment: dashboard shows both engines.
-comment: Flow: `llamastash init` answered by hand (existing llama-server, a small
-comment: model pasted by HF id), then "Launch the TUI now?" hands straight into the
-comment: TUI: launch gemma-4-E2B on llama.cpp, start a model on the NPU
-comment: engine (running 3, dual backend), HuggingFace pull, theme cycle, chat gemma.
+comment: LlamaStash README/site demo: the init wizard driven by hand, then a TUI
+comment: tour on a live daemon that already serves a generic engine.
+comment: Flow: `llamastash init` (existing llama-server, a small model pasted by HF
+comment: id), then "Launch the TUI now?" hands into the TUI: launch gemma-4-E2B on
+comment: llama.cpp, chat with it, refilter to the running flash-next-halogen row and
+comment: show its Requests tab, HuggingFace search, theme cycle.
 comment:
-comment: Prereq: a daemon whose `config.yaml` declares the NPU engine as a
-comment: `backend.generic` server (docs/usage.md has the recipe), e.g.
-comment:   target/release/llamastash daemon start
+comment: Prereqs: a daemon with a running generic entry named flash-next-halogen
+comment: and some proxy requests already sent to it (by name and by alias), so the
+comment: Requests tab has rows; gemma-4-E2B-it-Q4_K_M in the HF cache and not running.
+comment: The wizard writes config.yaml: save `git diff` of it and `git apply -R` after.
 comment:
-comment: Capture (release binary symlinked as `llamastash` on PATH, 131x34 to match
-comment: assets/tui.gif, against the real daemon for a rich dashboard):
-comment:   ln -sf "$PWD/target/release/llamastash" /tmp/ls-demo-bin/llamastash
-comment:   PATH=/tmp/ls-demo-bin:$PATH /tmp/ls-tui-venv/bin/python \
-comment:     scripts/tui/harness.py scripts/tui/demo.prog /tmp/ls-demo-out \
-comment:     /usr/bin/zsh -i --cast /tmp/ls-demo-out/demo.raw.cast --cols 131 --rows 34
-comment: Then trim idle gaps and render:
-comment:   scripts/tui/trim_cast.py demo.raw.cast assets/demo.cast --end <T>
+comment: Capture (131x34 to match assets/tui.gif). The shell is a plain bash with a
+comment: one-glyph prompt, run through a wrapper that exports the PATH llama-server
+comment: resolves on, e.g. `exec env PS1='❯ ' bash --noprofile --norc`:
+comment:   python3 scripts/tui/harness.py scripts/tui/demo.prog <out> <shell-wrapper> \
+comment:     --cast <out>/demo.raw.cast --cols 131 --rows 34
+comment: `waitfor` steps absorb load and download time. Trim to ~36 s, no gap over
+comment: 0.45 s, holding the chat answer, the Requests table and each theme (raw times):
+comment:   scripts/tui/trim_cast.py assets/demo.raw.cast assets/demo.cast \
+comment:     --band 0.1:0.45 --speed 2.6 --fast 10.0:18.5:4 --hold 45.8:1.0 --hold 59.9:2.0 --hold 79.4:0.6 \
+comment:     --hold 80.7:0.6 --hold 82.0:0.6 --hold 83.3:0.6 --hold 84.5:0.8 --end 86
 comment:   agg --font-size 16 assets/demo.cast assets/tui.gif
-comment: Stills + init.gif come from the same cast (see cast_frames.py).
-comment: The 7 README/site stills, with their cast timestamps:
-comment:   cast_frames.py frame assets/demo.cast 7.98  assets/tui_1.png
-comment:   cast_frames.py frame assets/demo.cast 15.6  assets/tui_2.png
-comment:   cast_frames.py frame assets/demo.cast 35.63 assets/tui_3.png
-comment:   cast_frames.py frame assets/demo.cast 19.24 assets/tui_4.png
-comment:   cast_frames.py frame assets/demo.cast 23.75 assets/tui_5.png
-comment:   cast_frames.py frame assets/demo.cast 25.37 assets/tui_6.png
-comment:   cast_frames.py frame assets/demo.cast 28.77 assets/tui_7.png
-comment:   cast_frames.py clip assets/demo.cast /tmp/init.cast --end 7.8
+comment: The 7 README/site stills (tui_3 is also the site's hero-static.png) and init.gif:
+comment:   cast_frames.py frame assets/demo.cast 5.61 assets/tui_1.png   # init summary
+comment:   cast_frames.py frame assets/demo.cast 15.11 assets/tui_2.png   # chat
+comment:   cast_frames.py frame assets/demo.cast 21.61 assets/tui_3.png   # Requests tab
+comment:   cast_frames.py frame assets/demo.cast 27.11 assets/tui_4.png   # HF search
+comment:   cast_frames.py frame assets/demo.cast 29.81 assets/tui_5.png   # themes
+comment:   cast_frames.py frame assets/demo.cast 30.91 assets/tui_6.png
+comment:   cast_frames.py frame assets/demo.cast 32.01 assets/tui_7.png
+comment:   cast_frames.py clip assets/demo.cast /tmp/init.cast --end 5.66
 comment:   agg --font-size 16 /tmp/init.cast assets/init.gif
 
 # ── let the shell paint its prompt, then start the wizard ──
-wait:2.5
+wait:1.5
 type:llamastash init
 key:enter
-wait:3
+waitfor:Install method
+wait:1.5
 
 # ── Install method: pick "Use existing binary" (3rd option) ──
 key:down
@@ -43,7 +45,8 @@ wait:0.5
 key:down
 wait:0.7
 key:enter
-wait:2.5
+waitfor:Pick a model
+wait:1.5
 
 # ── Pick a model: walk down to "Paste an HF repo id…" (below the 10 picks) ──
 key:down
@@ -73,31 +76,34 @@ wait:1.5
 type:lmstudio-community/gemma-4-E2B-it-GGUF:gemma-4-E2B-it-Q4_K_M.gguf
 wait:0.8
 key:enter
-wait:4
+waitfor:Write config?|180
+wait:1.5
 
 # ── Write config? → Yes ──
 key:enter
+waitfor:Patch AI tool configs
 wait:1.5
 
 # ── Patch AI tool configs? → leave all unchecked, just confirm ──
 key:enter
-wait:7
+waitfor:Launch the TUI now?|60
+wait:1.5
 
 # ── Launch the TUI now? → Yes (hands straight into the TUI) ──
 key:enter
-wait:5
+waitfor:Models [
+wait:3
 
-# ── launch gemma-4-E2B on llama.cpp (Home→the generic engine row, ↓↓→gemma in Favorites; no filter) ──
-key:home
+# ── launch gemma-4-E2B on llama.cpp: filter to it, Enter drills in, Enter launches ──
+type:/
 wait:0.4
-key:down
-wait:0.4
-key:down
-wait:0.7
+type:gemma-4-E2B
+wait:1
 key:enter
+wait:1.2
+key:enter
+waitfor:ready · 128k ctx|120
 wait:1.5
-key:enter
-wait:11
 
 # ── chat gemma right after launching it (it is auto-selected; r collapses reasoning) ──
 type:C
@@ -108,19 +114,62 @@ type:e
 type:Hello
 wait:1.2
 key:enter
-wait:14
+waitfor:finished:|60
+wait:2
+snap:13-chat
 
-# ── leave the chat, pull from HuggingFace: search by name, show results ──
+# ── leave the chat (Esc: clear prompt, stop edit, back to the pane, to the list), refilter to flash-next, show its requests ──
 key:esc
-wait:0.5
+wait:0.6
 key:esc
-wait:0.5
+wait:0.6
 key:esc
+wait:0.6
+key:esc
+wait:0.6
+type:M
+wait:0.8
+type:/
+wait:0.4
+key:backspace
+key:backspace
+key:backspace
+key:backspace
+key:backspace
+key:backspace
+key:backspace
+key:backspace
+key:backspace
+key:backspace
+key:backspace
+type:flash-next
 wait:1
+key:enter
+wait:0.7
+type:Q
+waitfor:Avg tok/s
+wait:4
+snap:15-requests
+
+# ── clear the filter ──
+key:esc
+wait:0.5
+type:/
+wait:0.4
+key:esc
+wait:0.3
+key:esc
+wait:0.3
+key:esc
+wait:1.5
+
+# ── pull from HuggingFace: search by name, show results ──
 type:P
 wait:2
 type:Qwen3
-wait:3.5
+waitfor:Qwen/Qwen3-0.6B
+wait:2.5
+snap:16-pull
 key:esc
 wait:0.5
 key:esc
@@ -139,13 +188,5 @@ type:t
 wait:1.2
 type:t
 wait:1.5
-
-# ── finally, jump to the bottom and start the NPU engine's model (dual backend) ──
-key:end
+snap:17-end
 wait:1
-key:enter
-wait:1.5
-key:enter
-wait:9
-# end on the NPU model coming up (cast trimmed here; harness tears the TUI down)
-wait:2

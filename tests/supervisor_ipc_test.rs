@@ -31,10 +31,7 @@ fn unique_temp(label: &str) -> PathBuf {
 }
 
 fn allocate_port() -> u16 {
-  let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-  let port = listener.local_addr().unwrap().port();
-  drop(listener);
-  port
+  llamastash::test_support::allocate_port_range(1).start
 }
 
 async fn wait_for_socket(path: &Path) {
@@ -116,7 +113,7 @@ async fn status_lists_active_supervised_model() {
   // below would only verify the wire shape, not that the sampler
   // actually runs.
   let body = {
-    let deadline = std::time::Instant::now() + Duration::from_secs(4);
+    let deadline = std::time::Instant::now() + DAEMON_STARTUP_TIMEOUT;
     loop {
       let body = client.call("status", None).await.expect("status");
       let ram_total = body["host"]["ram_total_bytes"].as_u64().unwrap_or(0);

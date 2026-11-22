@@ -169,7 +169,7 @@ impl<'a> SweepInputs<'a> {
 /// The synchronous half of a scan: one `sysinfo` refresh of the whole process
 /// table. Separate from [`sweep`] so a resweep tick can run it on a blocking
 /// thread instead of an async worker.
-fn scan_processes() -> System {
+fn scan_processes() -> Option<System> {
   // `with_environ` makes `proc.environ()` populate the process
   // environment block, which the marker check below reads to spot
   // orphan llamastash children carrying `LLAMASTASH_LAUNCHED=1`.
@@ -203,9 +203,9 @@ fn scan_processes() -> System {
   // `refresh_processes` would also walk every thread (`with_tasks`), ~4x the
   // /proc reads, and `with_processes` on the constructor would scan once more
   // before this refresh does.
-  let mut sys = System::new();
+  let mut sys = System::new().ok()?;
   sys.refresh_processes_specifics(sysinfo::ProcessesToUpdate::All, true, process_refresh);
-  sys
+  Some(sys)
 }
 
 /// Run a sweep. Pure-ish modulo a `sysinfo` scan of process tables
@@ -241,7 +241,8 @@ pub async fn sweep(inputs: SweepInputs<'_>) -> SweepReport {
     // plus an argv `-m` cross-check). PID reuse is still caught: a mismatched
     // live process fails that check regardless of tag.
     let argv: Vec<String> = sys
-      .process(sysinfo::Pid::from_u32(snap.pid as u32))
+      .as_ref()
+      .and_then(|sys| sys.process(sysinfo::Pid::from_u32(snap.pid as u32)))
       .map(|p| p.cmd().iter().map(|s| s.to_string_lossy().into()).collect())
       .unwrap_or_default();
     let matched = backend
@@ -255,7 +256,10 @@ pub async fn sweep(inputs: SweepInputs<'_>) -> SweepReport {
   }
   let adopted_pids: BTreeSet<u32> = adopted.iter().map(|s| s.pid as u32).collect();
 
-  let external = external_rows(&sys, &inputs.external_markers, &adopted_pids);
+  let external = sys
+    .as_ref()
+    .map(|sys| external_rows(sys, &inputs.external_markers, &adopted_pids))
+    .unwrap_or_default();
 
   SweepReport {
     adopted,
@@ -423,7 +427,7 @@ fn start_times_agree(recorded: u64, other: u64) -> bool {
 /// The process's start time in seconds, or `None` when no process has that pid.
 fn process_start_time(pid: u32) -> Option<u64> {
   use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
-  let mut sys = System::new();
+  let mut sys = System::new().ok()?;
   sys.refresh_processes_specifics(
     ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
     true,
@@ -442,7 +446,10 @@ async fn resweep_tick(external: &Arc<RwLock<Vec<ExternalProcess>>>) {
   let scanned = previous.clone();
   let merged = tokio::task::spawn_blocking(move || {
     let markers = crate::backend::external_process_markers();
-    let fresh = external_rows(&scan_processes(), &markers, &BTreeSet::new());
+    let Some(sys) = scan_processes() else {
+      return scanned;
+    };
+    let fresh = external_rows(&sys, &markers, &BTreeSet::new());
     merge_external(&scanned, fresh)
   })
   .await;
@@ -669,16 +676,10 @@ mod tests {
       .build()
   }
 
-  /// A loopback port that nothing is listening on: bind ephemeral, read
-  /// it, drop. Only for the "connection refused" probe case below — the
-  /// listening cases use `spawn_one_shot`, which keeps its port so there's
-  /// no reuse window. A rare post-drop reuse here is absorbed by nextest
-  /// `retries` on CI.
+  /// A loopback port that nothing is listening on, for the "connection
+  /// refused" probe case below. The listening cases use `spawn_one_shot`.
   fn allocate_port() -> u16 {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
-    let p = l.local_addr().unwrap().port();
-    drop(l);
-    p
+    crate::test_support::allocate_port_range(1).start
   }
 
   /// Spin up a tiny single-shot HTTP responder on an OS-assigned loopback

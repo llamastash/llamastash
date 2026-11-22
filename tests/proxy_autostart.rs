@@ -63,24 +63,8 @@ fn allocate_port_range() -> PortRange {
 /// must prove the proxy did *not* start a second process need the
 /// slack: a range sized to exactly one launch blocks the duplicate on
 /// port exhaustion and passes for the wrong reason.
-///
-/// The window has to be genuinely wide, not `start + 1`. macOS hands
-/// out ephemeral ports sequentially, so the port right above the one we
-/// just probed goes to whichever parallel test binds next, leaving the
-/// pool a port short and the second launch failing allocation. Same
-/// shape as `allocate_port_range_pair` in `cli_integration_test.rs`.
 fn allocate_wide_port_range() -> PortRange {
-  let l1 = std::net::TcpListener::bind("127.0.0.1:0").expect("bind 1");
-  let l2 = std::net::TcpListener::bind("127.0.0.1:0").expect("bind 2");
-  let p1 = l1.local_addr().unwrap().port();
-  let p2 = l2.local_addr().unwrap().port();
-  drop(l1);
-  drop(l2);
-  let lo = p1.min(p2);
-  PortRange {
-    start: lo,
-    end: lo.saturating_add(31),
-  }
+  llamastash::test_support::allocate_port_range(32)
 }
 
 fn discovered(path: &Path, display_label: Option<&str>, arch: &str) -> DiscoveredModel {
@@ -174,7 +158,8 @@ async fn build_state_with_aliases(
     aliases.iter().map(|(k, v)| (k.to_string(), v.to_string())),
   );
   let ctx = ctx.with_aliases(&aliases);
-  let state = ProxyState::from_context_with_auth(&ctx, false, true, None, DEFAULT_BODY_LIMIT_BYTES);
+  let state =
+    ProxyState::from_context_with_auth(&ctx, false, true, None, DEFAULT_BODY_LIMIT_BYTES, true);
   (state, ctx)
 }
 

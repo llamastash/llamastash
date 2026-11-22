@@ -14,4 +14,10 @@ ignore = [
   # once that chain updates.
   "RUSTSEC-2026-0194",
   "RUSTSEC-2026-0195",
+  # chrono (RUSTSEC-2026-0543) and humantime (RUSTSEC-2026-0542) are marked
+  # unmaintained, not vulnerable, and have no fixed release. Pulled ONLY by
+  # hf-hub 1.0's xet-* crates (xet-client, xet-data, xet-runtime). Drop these
+  # once hf-xet moves off them.
+  "RUSTSEC-2026-0543",
+  "RUSTSEC-2026-0542",
 ]

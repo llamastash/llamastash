@@ -100,7 +100,9 @@ fn parse_memory_string(raw: &str) -> Option<u64> {
 #[cfg(any(target_os = "macos", test))]
 fn system_total_memory() -> u64 {
   use sysinfo::System;
-  let mut sys = System::new();
+  let Ok(mut sys) = System::new() else {
+    return 0;
+  };
   sys.refresh_memory();
   sys.total_memory()
 }

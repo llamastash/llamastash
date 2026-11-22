@@ -83,7 +83,7 @@ skip load and quit:
 
 `scripts/tui/demo.prog` is the ready-made tour behind `assets/demo.cast` /
 `assets/tui.gif`: it drives a real shell through `llamastash init`, then the TUI
-(launch → chat → HuggingFace pull → theme cycle). See its header comments for
+(launch → chat → Requests tab → HuggingFace pull → theme cycle). See its header comments for
 the capture command.
 
 `scripts/tui/presets.prog` gates the config-presets TUI surface: the always-shown
@@ -115,10 +115,10 @@ Two helpers consume a recorded cast (both handle v2 and v3):
   python3 scripts/tui/cast_frames.py timeline assets/demo.cast --step 1.0
 
   # extract that frame to a PNG, exactly as painted at that time
-  python3 scripts/tui/cast_frames.py frame assets/demo.cast 15.6 assets/tui_2.png
+  python3 scripts/tui/cast_frames.py frame assets/demo.cast 15.11 assets/tui_2.png
 
   # carve a shorter sub-cast (e.g. just the init wizard) and render it
-  python3 scripts/tui/cast_frames.py clip assets/demo.cast /tmp/init.cast --end 7.8
+  python3 scripts/tui/cast_frames.py clip assets/demo.cast /tmp/init.cast --end 5.66
   agg --font-size 16 /tmp/init.cast assets/init.gif
   ```
 
@@ -155,6 +155,7 @@ One step per line; blank lines and `#` comments are ignored.
 | `wait:<seconds>` | Sleep while pumping PTY output into the screen |
 | `settle` | Wait the default settle interval |
 | `snap:<label>` | Save the current screen to `<outdir>/<label>.txt` |
+| `waitfor:<substr>[\|<s>]` | Wait until the screen contains `substr` (default 90 s), FAIL on timeout |
 | `expect:<substr>` | Assert the screen contains `substr` (PASS/FAIL) |
 | `refute:<substr>` | Assert the screen does not contain `substr` |
 | `iexpect:<substr>` | Case-insensitive `expect` |
@@ -164,7 +165,7 @@ One step per line; blank lines and `#` comments are ignored.
 
 ### Key names
 
-`enter esc tab backtab space up down left right home end pageup pagedown`
+`enter esc backspace tab backtab space up down left right home end pageup pagedown`
 `ctrl-c ctrl-d ctrl-h ctrl-r`
 
 Plain characters (letters, digits, `?`, `/`, `-`) are sent with `type:`.

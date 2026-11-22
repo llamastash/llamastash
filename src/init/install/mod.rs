@@ -40,7 +40,7 @@ pub enum GhBuild {
   /// can run one, else what [`gh_releases::pick_asset_suffix`] routes to.
   #[default]
   Best,
-  /// Vulkan even where a CUDA build would fit.
+  /// Vulkan even where a CUDA or ROCm build would fit.
   Vulkan,
 }
 

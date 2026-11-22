@@ -413,9 +413,9 @@ async fn prefer_port_falls_back_to_range_allocator_when_busy() {
 /// confirmed during planning. We force the collision by reusing
 /// the first launch's port as the second launch's preference.
 ///
-/// The preferred port is only ours between the probe releasing it and the
-/// daemon binding it, so a loaded CI runner can take it in between and push
-/// the first launch onto the fallback path. That is the box losing a port,
+/// The preferred port is free when the pool hands it out, but another process
+/// can still take it before the daemon binds it and push the first launch
+/// onto the fallback path. That is the box losing a port,
 /// not a regression, so return `false` and let the caller retry. `strict`
 /// (the final attempt) asserts instead of retrying.
 async fn prefer_port_fallback_once(strict: bool) -> bool {
@@ -425,15 +425,9 @@ async fn prefer_port_fallback_once(strict: bool) -> bool {
   std::fs::write(&model_path, build_minimal_gguf("llama")).unwrap();
   let model_path_canon = llamastash::util::paths::canonicalize(&model_path).unwrap();
 
-  // Two-port range so the fallback has somewhere to land. Both probes stay
-  // bound until the daemon is accepting, so the steal window is only the
-  // gap between the drop below and the daemon's own bind.
-  let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
-  let p0 = probe.local_addr().unwrap().port();
-  let probe2 = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
-  let p1 = probe2.local_addr().unwrap().port();
-  let (lo, hi) = if p0 < p1 { (p0, p1) } else { (p1, p0) };
-  let range = PortRange { start: lo, end: hi };
+  // Two-port range so the fallback has somewhere to land.
+  let range = llamastash::test_support::allocate_port_range(2);
+  let PortRange { start: lo, end: hi } = range;
 
   let opts = DaemonOptions {
     binary: Some(fake_binary()),
@@ -444,9 +438,6 @@ async fn prefer_port_fallback_once(strict: bool) -> bool {
   let daemon = tokio::spawn(async move { run_foreground(opts).await });
   wait_for_socket(&socket).await;
   let mut client = Client::connect(&socket).await.expect("connect");
-
-  drop(probe);
-  drop(probe2);
 
   // First launch — prefer the low port; daemon should bind it.
   let first = client
@@ -650,13 +641,7 @@ async fn last_params_persists_only_user_supplied_knob_deltas() {
 
   // Two-port range so the second start has somewhere to land after
   // the first call's socket releases.
-  let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
-  let p0 = probe.local_addr().unwrap().port();
-  drop(probe);
-  let probe2 = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
-  let p1 = probe2.local_addr().unwrap().port();
-  drop(probe2);
-  let (lo, hi) = if p0 < p1 { (p0, p1) } else { (p1, p0) };
+  let PortRange { start: lo, end: hi } = llamastash::test_support::allocate_port_range(2);
 
   let opts = DaemonOptions {
     binary: Some(fake_binary()),
@@ -805,13 +790,7 @@ async fn no_selection_start_inherits_last_params_extras() {
   let model_path_canon = llamastash::util::paths::canonicalize(&model_path).unwrap();
 
   // Two-port range so call 2 has somewhere to land after call 1 stops.
-  let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
-  let p0 = probe.local_addr().unwrap().port();
-  drop(probe);
-  let probe2 = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
-  let p1 = probe2.local_addr().unwrap().port();
-  drop(probe2);
-  let (lo, hi) = if p0 < p1 { (p0, p1) } else { (p1, p0) };
+  let PortRange { start: lo, end: hi } = llamastash::test_support::allocate_port_range(2);
 
   let opts = DaemonOptions {
     binary: Some(fake_binary()),
@@ -1105,13 +1084,7 @@ async fn auto_selection_start_inherits_nothing() {
   std::fs::write(&model_path, build_minimal_gguf("llama")).unwrap();
   let model_path_canon = llamastash::util::paths::canonicalize(&model_path).unwrap();
 
-  let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
-  let p0 = probe.local_addr().unwrap().port();
-  drop(probe);
-  let probe2 = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
-  let p1 = probe2.local_addr().unwrap().port();
-  drop(probe2);
-  let (lo, hi) = if p0 < p1 { (p0, p1) } else { (p1, p0) };
+  let PortRange { start: lo, end: hi } = llamastash::test_support::allocate_port_range(2);
 
   let opts = DaemonOptions {
     binary: Some(fake_binary()),
@@ -1222,13 +1195,7 @@ async fn named_preset_launch_does_not_inherit_stale_last_params() {
   std::fs::write(&model_path, build_minimal_gguf("llama")).unwrap();
   let model_path_canon = llamastash::util::paths::canonicalize(&model_path).unwrap();
 
-  let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
-  let p0 = probe.local_addr().unwrap().port();
-  drop(probe);
-  let probe2 = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
-  let p1 = probe2.local_addr().unwrap().port();
-  drop(probe2);
-  let (lo, hi) = if p0 < p1 { (p0, p1) } else { (p1, p0) };
+  let PortRange { start: lo, end: hi } = llamastash::test_support::allocate_port_range(2);
 
   let opts = DaemonOptions {
     binary: Some(fake_binary()),
@@ -1389,13 +1356,7 @@ async fn status_surfaces_resolved_ctx_actuals_from_props() {
   std::fs::write(&model_path, build_minimal_gguf("llama")).unwrap();
   let model_path_canon = llamastash::util::paths::canonicalize(&model_path).unwrap();
 
-  let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
-  let base = probe.local_addr().unwrap().port();
-  drop(probe);
-  let range = PortRange {
-    start: base,
-    end: base.saturating_add(8),
-  };
+  let range = llamastash::test_support::allocate_port_range(9);
 
   // `DaemonOptions::rooted_at` defaults `fit_ctx_floor` to 16384.
   let opts = DaemonOptions {

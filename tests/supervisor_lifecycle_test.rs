@@ -40,10 +40,7 @@ fn fast_probe() -> ProbeOptions {
 }
 
 fn allocate_port() -> u16 {
-  let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
-  let port = listener.local_addr().unwrap().port();
-  drop(listener);
-  port
+  llamastash::test_support::allocate_port_range(1).start
 }
 
 async fn wait_for_state<P: Fn(&ManagedState) -> bool>(

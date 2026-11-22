@@ -110,6 +110,12 @@ The toast prints the URL inline when every backend fails, so you can still paste
 
 **Fix:** the daemon was shut down or crashed. Restart it with `llamastash daemon start`. Running children survive daemon exit; you can re-attach to the same launch id once the daemon is back (orphan re-adoption verifies PID + port + `/v1/models` match).
 
+## TUI shows "Daemon from another build"
+
+**Symptom:** the TUI opens a popup that says the daemon runs build X and the TUI is build Y. A channel update (`brew upgrade`, the install script, `cargo install`) replaced the binary, but the daemon from the old build is still running. It can lack methods or fields the new TUI and CLI use.
+
+**Fix:** restart the daemon with `llamastash daemon restart`, or with the TUI's restart-daemon key that the popup names. The restart stops running models, so first finish the work you need from them. A daemon under a systemd unit or a launchd agent restarts through that service manager instead.
+
 ## Daemon shuts down on its own when idle
 
 **Symptom:** the daemon exits after you stop every model and close the TUI/CLI.
@@ -213,7 +219,7 @@ The `NOTE` column says what happened beyond the status code: the proxy's own err
 
 **Symptom:** an agent gets a plausible response but the answer style doesn't match the requested model; response headers carry `x-llamastash-served-by: <other-model>` and `x-llamastash-fallback-reason: launch_failed` or `family_mismatch`.
 
-**This is the family-MRU fallback.** When the requested model's auto-start fails and another model is already `Ready`, the proxy substitutes it and stamps both headers so the substitution is auditable. `launch_failed` means an in-family pick (closest match was the same architecture); `family_mismatch` means cross-arch (no in-family Ready model existed).
+**This is the family-MRU fallback.** When the requested model's auto-start fails and another model is already `Ready`, the proxy substitutes it and stamps both headers so the substitution is auditable. `launch_failed` means an in-family pick (closest match was the same architecture); `family_mismatch` means cross-arch or an unknown arch on one side (no in-family Ready model existed). Only Ready models that serve the request's mode are candidates, and an embeddings or rerank request never falls back to another model — its failed launch is a `503 launch_failed`.
 
 **Fix:** look at the daemon log around the request timestamp for the underlying launch failure — usually a missing GGUF, `llama-server` ENOENT, port-range exhaustion, or a probe timeout. Start the intended model manually first to surface the real error:
 
@@ -224,6 +230,14 @@ llamastash logs <launch-id> -f
 ```
 
 Once the underlying launch issue is fixed, the fallback path stops firing. To turn the fallback off entirely is tracked as a deferred decision in `TODO.md §R1` (`proxy.fallback: false`).
+
+## A browser page or extension gets `403 forbidden_origin` or `403 forbidden_host`
+
+**Symptom:** a web app or browser extension talking to the proxy gets `403` with `forbidden_origin` or `forbidden_host` where `curl` and the SDKs work.
+
+**Cause:** the proxy answers a browser only from origins it trusts. `forbidden_origin` means the page's `Origin` is neither the proxy's own origin (`http://<host>` or `https://<host>`) nor an extension/app scheme (`chrome-extension://`, `moz-extension://`, `safari-web-extension://`, `vscode-webview://`, `tauri://`). `forbidden_host` means the request reached the loopback proxy under a non-loopback `Host` — the DNS-rebinding guard.
+
+**Fix:** open the page from the proxy's own address (`http://127.0.0.1:11435/ui` or the same spelling your code calls), or use the built-in Web UI. A web app served from another origin (say `http://localhost:3000`) cannot call the proxy straight from the browser — there is no CORS opt-in; route the call through that app's own server. Extensions with an extension scheme pass as-is.
 
 ## Config rejected: unknown field ds4
 

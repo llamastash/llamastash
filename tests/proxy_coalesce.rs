@@ -48,34 +48,10 @@ fn fast_probe() -> ProbeOptions {
   }
 }
 
-/// A range big enough to host two simultaneous launches. Picks two
-/// distinct ephemeral ports and uses their min..=max as the range.
+/// A range for `slots` simultaneous launches, plus headroom: the allocator
+/// probes for a free port, and no assertion here needs the range tight.
 fn allocate_port_range(slots: usize) -> PortRange {
-  let mut ports = Vec::with_capacity(slots);
-  let mut listeners = Vec::with_capacity(slots);
-  for _ in 0..slots {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
-    ports.push(l.local_addr().unwrap().port());
-    listeners.push(l);
-  }
-  // Drop the listeners so the ports become available, then expand
-  // the range to cover them, filling any gap between the chosen
-  // ports so the allocator can pick freely.
-  drop(listeners);
-  let lo = *ports.iter().min().unwrap();
-  let hi = *ports.iter().max().unwrap();
-  // Headroom on both sides. macOS hands out contiguous ephemeral
-  // ports, so `lo..=hi` can be exactly `slots` wide (one port when
-  // slots is 1) and any port the box takes between the drop above
-  // and the daemon's bind leaves the allocator with nothing, which
-  // surfaces as a 502/503 from the proxy rather than a real defect.
-  // The allocator probes for a free port, so extra width is only
-  // opportunity; no assertion here depends on the range being tight.
-  const HEADROOM: u16 = 16;
-  PortRange {
-    start: lo.saturating_sub(HEADROOM).max(1024),
-    end: hi.saturating_add(HEADROOM),
-  }
+  llamastash::test_support::allocate_port_range(slots + 16)
 }
 
 fn discovered(path: &Path, display_label: Option<&str>, arch: &str) -> DiscoveredModel {

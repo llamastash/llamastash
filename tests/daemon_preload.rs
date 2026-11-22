@@ -15,7 +15,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use llamastash::config::loader::PortRange;
 use llamastash::config::{ConfigPresetBlock, PresetBody};
 use llamastash::daemon::context::{LaunchEnv, MethodContext, PersistedState};
 use llamastash::daemon::preload;
@@ -121,15 +120,9 @@ async fn build_ctx(
   let dir = unique_temp("ctx");
   let log_dir = dir.join("logs");
   std::fs::create_dir_all(&log_dir).unwrap();
-  let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-  let lo = listener.local_addr().unwrap().port();
-  drop(listener);
   let env = LaunchEnv {
     binary: Some(fake_binary()),
-    port_range: PortRange {
-      start: lo,
-      end: lo + 31,
-    },
+    port_range: llamastash::test_support::allocate_port_range(32),
     log_dir,
     probe: fast_probe(),
     arch_defaults: BTreeMap::new(),
