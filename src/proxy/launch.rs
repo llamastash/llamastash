@@ -38,6 +38,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::backend::Backend;
 use crate::daemon::context::MethodContext;
 use crate::daemon::launch_service::{
   compose_and_spawn, LaunchModeWire, StartParams, StartedLaunch,
@@ -385,7 +386,21 @@ async fn await_ready_or_make_room(
       for w in &retry.warnings {
         log::warn!("proxy auto-start: {w}");
       }
-      await_ready(state, &retry.model).await
+      let retried = await_ready(state, &retry.model).await;
+      if matches!(retried, LaunchOutcome::Ready { .. }) {
+        // Named routing reuses a model's only launch, so a dead row left here
+        // makes the next `<model>@<name>` load a second copy.
+        let backend =
+          crate::daemon::launch_service::backend_for_launch(&state.ctx, &started.launch_id).await;
+        if let Err(err) = backend.stop(&state.ctx, &started.launch_id, 0).await {
+          log::warn!(
+            "proxy auto-start: could not remove dead launch {}: {}",
+            started.launch_id.as_str(),
+            err.message
+          );
+        }
+      }
+      retried
     }
     Err(err) => LaunchOutcome::Failed {
       cause: format!("compose_and_spawn: {}", err.message),

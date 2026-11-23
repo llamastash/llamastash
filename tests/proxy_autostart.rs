@@ -975,6 +975,29 @@ async fn an_admitted_launch_that_dies_makes_room_and_retries() {
     row.fallback,
     String::from_utf8_lossy(&resp),
   );
+  assert_eq!(
+    resident,
+    vec![dying.clone()],
+    "the dead launch must leave the registry once its retry is ready"
+  );
+  // A dead row beside the live one made this name load a second copy of the weights.
+  let (status, _, resp) = http_post(
+    addr,
+    "/v1/chat/completions",
+    &body("die-once-after-6000-second-Q4_K_M.gguf@coder"),
+  )
+  .await;
+  assert_eq!(
+    status,
+    200,
+    "named request: {}",
+    String::from_utf8_lossy(&resp)
+  );
+  assert_eq!(
+    ctx.supervisors.snapshot().await.len(),
+    1,
+    "a named request must reuse the retried launch"
+  );
 
   stop_all(&ctx).await;
   shutdown_listener(token, handle).await;

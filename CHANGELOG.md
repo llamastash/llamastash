@@ -2,7 +2,7 @@
 
 ### Fixed
 
-- A proxy auto-start the memory gate admitted and that then died while loading unloads idle auto-started models and retries once, instead of a different resident model quietly answering the request. ([#134](https://github.com/llamastash/llamastash/pull/134))
+- A proxy auto-start the memory gate admitted and that then died while loading unloads idle auto-started models and retries once, instead of a different resident model quietly answering the request. If the retry also fails and no model is ready to fall back to, the request gets a 503 `launch_failed`. ([#134](https://github.com/llamastash/llamastash/pull/134))
 
 ## [0.12.0] — 2026-11-20
 
