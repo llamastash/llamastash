@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Fixed
+
+- A proxy auto-start the memory gate admitted and that then died while loading unloads idle auto-started models and retries once, instead of a different resident model quietly answering the request. ([#134](https://github.com/llamastash/llamastash/pull/134))
+
 ## [0.12.0] — 2026-11-20
 
 This release closes a proxy exposure and clears five RustSec advisories. A web page can no longer drive the loopback proxy on `127.0.0.1:11435`: a foreign `Host` gets `403 forbidden_host` on a keyless loopback bind, and a foreign `Origin` gets `403 forbidden_origin` in every mode. A fallback now answers only from a running model that serves the request's mode, and embeddings and rerank requests never fall back. Six fixes cover engine log capture after invalid UTF-8, `delete` on a second Hugging Face hub root, a version-mismatch popup between the TUI and the daemon, and the Vulkan engine build on Linux AMD. Dependencies move to their latest releases, and building from source now needs Rust 1.97.

@@ -27,6 +27,11 @@
 //!      `Error{cause}` (fallback). No client-facing timeout — per
 //!      the locked Key Decision "Hard supervisor Error only; wait
 //!      indefinitely on Loading."
+//!   5. A launch the admission gate *admitted* that dies before
+//!      `Ready` gets one make-room-and-retry pass
+//!      ([`await_ready_or_make_room`]) before the caller's fallback,
+//!      because an admission that turned out wrong is not a reason to
+//!      let another model answer.
 //!
 //! Plan: docs/plans/2026-05-21-001-feat-proxy-router-plan.md.
 
@@ -34,8 +39,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::daemon::context::MethodContext;
-use crate::daemon::launch_service::{compose_and_spawn, LaunchModeWire, StartParams};
-use crate::daemon::supervisor::{ManagedModel, ManagedState};
+use crate::daemon::launch_service::{
+  compose_and_spawn, LaunchModeWire, StartParams, StartedLaunch,
+};
+use crate::daemon::supervisor::{ErrorKind, ManagedModel, ManagedState};
 use crate::gguf::identity::ModelId;
 use crate::launch::mode::LaunchMode;
 use crate::launch::resolve::CatalogRow;
@@ -233,6 +240,10 @@ async fn drive_launch_as_leader(
     mode,
     ..StartParams::default()
   };
+  // One eviction per request: the refusal branch below may already have paid
+  // for one, and unloading a second round of models for a launch that is still
+  // not up would be two losses rather than one.
+  let mut evicted_once = false;
   let started = match compose_and_spawn(
     &state.ctx,
     start_params(),
@@ -263,6 +274,7 @@ async fn drive_launch_as_leader(
       if !made_room {
         return failed(e);
       }
+      evicted_once = true;
       match compose_and_spawn(
         &state.ctx,
         start_params(),
@@ -285,7 +297,100 @@ async fn drive_launch_as_leader(
     log::warn!("proxy auto-start: {w}");
   }
 
-  await_ready(state, &started.model).await
+  await_ready_or_make_room(state, &started, evicted_once, start_params, record).await
+}
+
+/// How long a launch has to stay up before its death counts as running out of
+/// memory. One that exits inside this failed before it could have: a bad file, a
+/// bad argv, a missing binary. Unloading a resident model to retry that is a pure
+/// loss, so the launch just fails.
+const MIN_RETRYABLE_LOAD_ATTEMPT: Duration = Duration::from_secs(5);
+
+/// Whether a launch that failed this far into its first attempt says something
+/// about memory: the child exited on its own or the strict-fit clamp refused it,
+/// and it lived long enough to have actually tried. A probe timeout is an engine
+/// that never answered — evicting for it unloads idle models and then pays the
+/// whole readiness timeout again — a stop is a decision, and a death inside the
+/// floor failed before it could have been starved.
+fn death_may_be_memory(state: &ManagedState, elapsed: Duration) -> bool {
+  elapsed >= MIN_RETRYABLE_LOAD_ATTEMPT
+    && matches!(
+      state,
+      ManagedState::Error {
+        kind: ErrorKind::Exited | ErrorKind::FitClamped,
+        ..
+      }
+    )
+}
+
+/// Wait for the spawn to reach `Ready`; if the gate admitted it and it died
+/// anyway, unload what it takes and try once more.
+///
+/// A gate admission is a projection, and a launch that dies after one is evidence
+/// the projection was too low — free memory comes from `MemAvailable`, which
+/// counts a resident mmap-backed engine's weights as reclaimable page cache (see
+/// [`super::eviction::make_room_after_launch_death`]). Nothing in the launch path
+/// notices otherwise: the request falls through to the family-MRU fallback and a
+/// *different* model answers it at 200, which is how an agent harness silently
+/// stops running the model it asked for.
+async fn await_ready_or_make_room(
+  state: &Arc<ProxyState>,
+  started: &StartedLaunch,
+  already_evicted: bool,
+  start_params: impl Fn() -> StartParams,
+  record: &mut RequestRecord,
+) -> LaunchOutcome {
+  let attempt_started = std::time::Instant::now();
+  let outcome = await_ready(state, &started.model).await;
+  let cause = match outcome {
+    LaunchOutcome::Failed { cause } => cause,
+    ready => return ready,
+  };
+  // One eviction per request: a request that already bought room on an
+  // admission refusal has spent its allowance on this launch.
+  if already_evicted {
+    return LaunchOutcome::Failed { cause };
+  }
+  // Only a death says anything about memory, and only some deaths.
+  if !death_may_be_memory(&started.model.state().await, attempt_started.elapsed()) {
+    return LaunchOutcome::Failed { cause };
+  }
+  // No demand figure means no admission projection was ever wrong about this
+  // launch, so there is nothing for an eviction to correct.
+  let Some(demand) = started.admitted_demand_bytes else {
+    return LaunchOutcome::Failed { cause };
+  };
+  let made_room = super::eviction::make_room_after_launch_death(state, demand, |unloading| {
+    record.set_evicted(unloading.iter().map(|id| id.as_str().to_string()).collect());
+    record.publish();
+  })
+  .await;
+  if !made_room {
+    return LaunchOutcome::Failed { cause };
+  }
+  log::warn!(
+    "proxy auto-start: {} ({} priced) died after {:?} — {cause} — retried once with room made for it",
+    started.model_id.path.display(),
+    crate::launch::admission::human_gib(demand),
+    attempt_started.elapsed(),
+  );
+  match compose_and_spawn(
+    &state.ctx,
+    start_params(),
+    crate::daemon::supervisor::LaunchOrigin::AutoStart,
+  )
+  .await
+  {
+    Ok(retry) => {
+      for w in &retry.warnings {
+        log::warn!("proxy auto-start: {w}");
+      }
+      await_ready(state, &retry.model).await
+    }
+    Err(err) => LaunchOutcome::Failed {
+      cause: format!("compose_and_spawn: {}", err.message),
+    },
+  }
 }
 
 /// A supervisor already serving `model_id`'s file that this request can
@@ -358,7 +463,7 @@ async fn await_ready(state: &Arc<ProxyState>, model: &ManagedModel) -> LaunchOut
           model_id,
         };
       }
-      ManagedState::Error { cause } => {
+      ManagedState::Error { cause, .. } => {
         return LaunchOutcome::Failed { cause };
       }
       ManagedState::Stopped => {
@@ -695,5 +800,26 @@ mod tests {
     assert_eq!(id.path, snapshot);
     // And the row-shaped entry point agrees when the backend is available.
     let _ = r;
+  }
+
+  #[test]
+  fn only_a_death_that_actually_tried_is_memory() {
+    let tried = Duration::from_secs(6);
+    let instant = Duration::from_secs(4);
+    let died = |kind: ErrorKind| ManagedState::Error {
+      cause: "x".into(),
+      kind,
+    };
+    assert!(death_may_be_memory(&died(ErrorKind::Exited), tried));
+    assert!(death_may_be_memory(&died(ErrorKind::FitClamped), tried));
+    // A probe timeout is an engine that never answered. Evicting for one unloads
+    // idle models and then waits out the whole readiness timeout again.
+    assert!(!death_may_be_memory(&died(ErrorKind::ProbeTimeout), tried));
+    // Inside the floor the launch was broken, not starved.
+    assert!(!death_may_be_memory(&died(ErrorKind::Exited), instant));
+    // A stop is a decision, and nothing else is a death at all.
+    assert!(!death_may_be_memory(&ManagedState::Stopping, tried));
+    assert!(!death_may_be_memory(&ManagedState::Stopped, tried));
+    assert!(!death_may_be_memory(&ManagedState::Loading, tried));
   }
 }

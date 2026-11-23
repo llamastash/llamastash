@@ -294,6 +294,47 @@ pub async fn make_room(
   if short == 0 {
     return false;
   }
+  unload_room(state, short, refusal.demand_bytes, "refusal", unloading).await
+}
+
+/// Unload idle launches for a launch the admission gate *admitted* and that then
+/// died before reaching `Ready`. Returns `true` when something was freed, so the
+/// caller should retry the launch.
+///
+/// Deliberately does not re-run the gate's arithmetic. That arithmetic is what
+/// just got the launch killed: demand is a floor projected from the weights and a
+/// context estimate, and free memory comes from `MemAvailable`, which counts an
+/// mmap-backed engine's weights as reclaimable page cache — so both sides of a
+/// shortfall are a reading of memory that a resident engine does not show up in.
+/// Asking for the dead launch's whole demand is the honest request. The guard
+/// that stays is the all-or-nothing one: nothing unloads unless the idle
+/// launches together cover the demand. Because this asks for the whole demand
+/// rather than a shortfall, covering it can take several launches, not one.
+///
+/// `demand_bytes` is what the gate priced the dead launch at, so credit and
+/// demand stay in the one unit.
+pub async fn make_room_after_launch_death(
+  state: &Arc<ProxyState>,
+  demand_bytes: u64,
+  unloading: impl FnOnce(&[LaunchId]),
+) -> bool {
+  if demand_bytes == 0 {
+    return false;
+  }
+  unload_room(state, demand_bytes, demand_bytes, "launch died", unloading).await
+}
+
+/// Pick idle launches least-recently-used until `short` bytes are covered,
+/// re-check every pick, then stop them together and wait for the memory to land
+/// against `demand_bytes`. All-or-nothing at both stages: `false` means nothing
+/// was unloaded.
+async fn unload_room(
+  state: &Arc<ProxyState>,
+  short: u64,
+  demand_bytes: u64,
+  reason: &str,
+  unloading: impl FnOnce(&[LaunchId]),
+) -> bool {
   let ttls = launch_ttls(state).await;
   let candidates = room_candidates(state, &ttls).await;
   let mut picked: Vec<RoomCandidate> = Vec::new();
@@ -307,7 +348,7 @@ pub async fn make_room(
   }
   if freed < short {
     log::info!(
-      "proxy make-room: {} more needed, only {} freeable from {} idle launch(es) — refusing",
+      "proxy make-room ({reason}): {} more needed, only {} freeable from {} idle launch(es) — refusing",
       crate::launch::admission::human_gib(short),
       crate::launch::admission::human_gib(freed),
       picked.len(),
@@ -315,10 +356,10 @@ pub async fn make_room(
     return false;
   }
   log::info!(
-    "proxy make-room: unloading {} idle launch(es) ({} freeable) to fit a {} launch",
+    "proxy make-room ({reason}): unloading {} idle launch(es) ({} freeable) to fit a {} launch",
     picked.len(),
     crate::launch::admission::human_gib(freed),
-    crate::launch::admission::human_gib(refusal.demand_bytes),
+    crate::launch::admission::human_gib(demand_bytes),
   );
   // Every pick is re-checked before any stop starts, and all-or-nothing is
   // decided again on what survives: giving up the whole plan is better than
@@ -330,7 +371,7 @@ pub async fn make_room(
       || candidate.guard.inflight() > 0
     {
       log::info!(
-        "proxy make-room: {} is busy again — left it running",
+        "proxy make-room ({reason}): {} is busy again — left it running",
         candidate.target.as_str(),
       );
       continue;
@@ -340,7 +381,7 @@ pub async fn make_room(
   }
   if freed_now < short {
     log::info!(
-      "proxy make-room: {} needed but only {} still freeable after re-check — nothing unloaded",
+      "proxy make-room ({reason}): {} needed but only {} still freeable after re-check — nothing unloaded",
       crate::launch::admission::human_gib(short),
       crate::launch::admission::human_gib(freed_now),
     );
@@ -359,11 +400,11 @@ pub async fn make_room(
   )
   .await;
   log::info!(
-    "proxy make-room: unloaded {} launch(es) ({}), waiting for the memory to land",
+    "proxy make-room ({reason}): unloaded {} launch(es) ({}), waiting for the memory to land",
     unloaded,
     crate::launch::admission::human_gib(freed_now),
   );
-  wait_for_room(state, refusal.demand_bytes).await;
+  wait_for_room(state, demand_bytes).await;
   true
 }
 
@@ -517,7 +558,10 @@ mod tests {
       ManagedState::Loading,
       ManagedState::Stopping,
       ManagedState::Stopped,
-      ManagedState::Error { cause: "x".into() },
+      ManagedState::Error {
+        cause: "x".into(),
+        kind: crate::daemon::supervisor::ErrorKind::Exited,
+      },
     ] {
       let d = decide(
         LaunchOrigin::AutoStart,

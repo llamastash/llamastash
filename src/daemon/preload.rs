@@ -345,7 +345,7 @@ async fn await_settled(model: &ManagedModel) -> Result<(), String> {
   loop {
     match model.state().await {
       ManagedState::Ready => return Ok(()),
-      ManagedState::Error { cause } => return Err(cause),
+      ManagedState::Error { cause, .. } => return Err(cause),
       ManagedState::Stopped => return Err("supervisor exited before Ready".into()),
       ManagedState::Stopping => return Err("supervisor stopped while launching".into()),
       ManagedState::Launching | ManagedState::Loading => {

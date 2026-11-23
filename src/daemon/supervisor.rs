@@ -63,13 +63,29 @@ pub enum ManagedState {
   /// `probe` saw 200 OK.
   Ready,
   /// Either spawn failed, the probe timed out, or the child exited
-  /// before reaching Ready.
-  Error { cause: String },
+  /// before reaching Ready. `kind` names which, so a caller can tell a
+  /// child that died from one that simply never answered.
+  Error { cause: String, kind: ErrorKind },
   /// `stop()` issued SIGTERM; SIGKILL still pending or process
   /// exit not yet observed.
   Stopping,
   /// Process has fully exited.
   Stopped,
+}
+
+/// Why a launch reached `ManagedState::Error`. The proxy's make-room acts only on
+/// the kinds that mean the launch could not get the memory it asked for: a probe
+/// timeout says nothing about memory, and retrying one pays the full readiness
+/// timeout again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorKind {
+  /// The child exited on its own: crash, OOM killer, bad file, bad argv.
+  Exited,
+  /// The readiness probe timed out with the child still not answering.
+  ProbeTimeout,
+  /// The strict-fit clamp refused the launch and killed the child.
+  FitClamped,
 }
 
 impl ManagedState {
@@ -89,7 +105,7 @@ impl ManagedState {
   /// Error cause string, if any. `Some` only for `Error{cause}`.
   pub fn cause(&self) -> Option<&str> {
     match self {
-      ManagedState::Error { cause } => Some(cause.as_str()),
+      ManagedState::Error { cause, .. } => Some(cause.as_str()),
       _ => None,
     }
   }
@@ -334,7 +350,7 @@ impl ManagedModel {
     loop {
       match self.state().await {
         ManagedState::Ready => return Ok(()),
-        ManagedState::Error { cause } => return Err(cause),
+        ManagedState::Error { cause, .. } => return Err(cause),
         ManagedState::Stopping | ManagedState::Stopped => {
           return Err("stopped before becoming ready".to_string());
         }
@@ -663,7 +679,12 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
                  lower fit_ctx_floor to launch.",
                 gate.floor, gate.native
               );
-              probe_model.transition(ManagedState::Error { cause }).await;
+              probe_model
+                .transition(ManagedState::Error {
+                  cause,
+                  kind: ErrorKind::FitClamped,
+                })
+                .await;
               signal_child_with_guard(&probe_model, SignalFlavour::Kill).await;
               return;
             }
@@ -699,7 +720,12 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
         // The transition is guarded — if the user already initiated
         // stop, this is a no-op and the SIGKILL below is the only
         // useful side-effect.
-        probe_model.transition(ManagedState::Error { cause }).await;
+        probe_model
+          .transition(ManagedState::Error {
+            cause,
+            kind: ErrorKind::ProbeTimeout,
+          })
+          .await;
         // Best-effort SIGKILL so we don't leave the unresponsive
         // child draining resources. Guarded against PID reuse by
         // taking the child mutex and re-verifying the handle is
@@ -748,11 +774,13 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
             ManagedState::Ready => {
               *state = ManagedState::Error {
                 cause: exit_cause("process exited unexpectedly", status, &tail),
+                kind: ErrorKind::Exited,
               };
             }
             ManagedState::Launching | ManagedState::Loading => {
               *state = ManagedState::Error {
                 cause: exit_cause("process exited before becoming ready", status, &tail),
+                kind: ErrorKind::Exited,
               };
             }
           }
@@ -1170,6 +1198,7 @@ mod tests {
     assert_eq!(
       ManagedState::Error {
         cause: "boom".into(),
+        kind: ErrorKind::Exited,
       }
       .label(),
       "error"
@@ -1179,6 +1208,7 @@ mod tests {
     assert_eq!(
       ManagedState::Error {
         cause: "boom".into(),
+        kind: ErrorKind::Exited,
       }
       .cause(),
       Some("boom")
@@ -1269,6 +1299,7 @@ mod tests {
   fn managed_state_json_round_trip() {
     let v = ManagedState::Error {
       cause: "timeout".into(),
+      kind: ErrorKind::ProbeTimeout,
     };
     let s_err = serde_json::to_string(&v).unwrap();
     let back: ManagedState = serde_json::from_str(&s_err).unwrap();
@@ -1317,13 +1348,14 @@ mod tests {
   async fn transition_rejects_moves_out_of_error() {
     let m = test_model(ManagedState::Error {
       cause: "probe timeout".into(),
+      kind: ErrorKind::ProbeTimeout,
     });
     assert!(!m.transition(ManagedState::Ready).await);
     assert!(!m.transition(ManagedState::Stopped).await);
     assert!(!m.transition(ManagedState::Stopping).await);
     // Original cause preserved.
     match m.state().await {
-      ManagedState::Error { cause } => assert_eq!(cause, "probe timeout"),
+      ManagedState::Error { cause, .. } => assert_eq!(cause, "probe timeout"),
       other => panic!("expected Error, got {other:?}"),
     }
   }
@@ -1333,8 +1365,11 @@ mod tests {
     let m = test_model(ManagedState::Stopped);
     assert!(!m.transition(ManagedState::Ready).await);
     assert!(
-      !m.transition(ManagedState::Error { cause: "x".into() })
-        .await
+      !m.transition(ManagedState::Error {
+        cause: "x".into(),
+        kind: ErrorKind::Exited,
+      })
+      .await
     );
     assert!(matches!(m.state().await, ManagedState::Stopped));
   }
@@ -1347,7 +1382,8 @@ mod tests {
     // A late probe-timeout firing after user-stop must not pre-empt.
     assert!(
       !m.transition(ManagedState::Error {
-        cause: "probe timeout".into()
+        cause: "probe timeout".into(),
+        kind: ErrorKind::ProbeTimeout,
       })
       .await
     );
@@ -1376,6 +1412,7 @@ mod tests {
   async fn wait_until_ready_propagates_error_cause() {
     let m = test_model(ManagedState::Error {
       cause: "probe timeout".into(),
+      kind: ErrorKind::ProbeTimeout,
     });
     let err = m
       .wait_until_ready(Duration::from_secs(1))
@@ -1419,19 +1456,21 @@ mod tests {
     let m = test_model(ManagedState::Loading);
     assert!(
       m.transition(ManagedState::Error {
-        cause: "probe timeout (last status 503)".into()
+        cause: "probe timeout (last status 503)".into(),
+        kind: ErrorKind::ProbeTimeout,
       })
       .await
     );
     // A follow-up Error from the exit-watcher must not overwrite.
     assert!(
       !m.transition(ManagedState::Error {
-        cause: "process exited before becoming ready".into()
+        cause: "process exited before becoming ready".into(),
+        kind: ErrorKind::Exited,
       })
       .await
     );
     match m.state().await {
-      ManagedState::Error { cause } => {
+      ManagedState::Error { cause, .. } => {
         assert!(cause.contains("probe timeout"));
       }
       other => panic!("expected Error, got {other:?}"),
