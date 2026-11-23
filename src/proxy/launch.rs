@@ -38,11 +38,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::backend::Backend;
 use crate::daemon::context::MethodContext;
 use crate::daemon::launch_service::{
   compose_and_spawn, LaunchModeWire, StartParams, StartedLaunch,
 };
+use crate::daemon::registry::LaunchId;
 use crate::daemon::supervisor::{ErrorKind, ManagedModel, ManagedState};
 use crate::gguf::identity::ModelId;
 use crate::launch::mode::LaunchMode;
@@ -245,13 +245,7 @@ async fn drive_launch_as_leader(
   // for one, and unloading a second round of models for a launch that is still
   // not up would be two losses rather than one.
   let mut evicted_once = false;
-  let started = match compose_and_spawn(
-    &state.ctx,
-    start_params(),
-    crate::daemon::supervisor::LaunchOrigin::AutoStart,
-  )
-  .await
-  {
+  let started = match spawn_auto_start(state, start_params()).await {
     Ok(s) => s,
     Err(e) => {
       // The memory admission gate refused it. Before answering 503, try to make
@@ -268,21 +262,14 @@ async fn drive_launch_as_leader(
         return failed(e);
       };
       let made_room = super::eviction::make_room(state, &refusal, |unloading| {
-        record.set_evicted(unloading.iter().map(|id| id.as_str().to_string()).collect());
-        record.publish();
+        record_evicted(record, unloading);
       })
       .await;
       if !made_room {
         return failed(e);
       }
       evicted_once = true;
-      match compose_and_spawn(
-        &state.ctx,
-        start_params(),
-        crate::daemon::supervisor::LaunchOrigin::AutoStart,
-      )
-      .await
-      {
+      match spawn_auto_start(state, start_params()).await {
         Ok(s) => s,
         Err(retry) => return failed(retry),
       }
@@ -299,6 +286,23 @@ async fn drive_launch_as_leader(
   }
 
   await_ready_or_make_room(state, &started, evicted_once, start_params, record).await
+}
+
+async fn spawn_auto_start(
+  state: &Arc<ProxyState>,
+  params: StartParams,
+) -> Result<StartedLaunch, crate::ipc::protocol::ErrorObject> {
+  compose_and_spawn(
+    &state.ctx,
+    params,
+    crate::daemon::supervisor::LaunchOrigin::AutoStart,
+  )
+  .await
+}
+
+fn record_evicted(record: &mut RequestRecord, unloading: &[LaunchId]) {
+  record.set_evicted(unloading.iter().map(|id| id.as_str().to_string()).collect());
+  record.publish();
 }
 
 /// How long a launch has to stay up before its death counts as running out of
@@ -362,8 +366,7 @@ async fn await_ready_or_make_room(
     return LaunchOutcome::Failed { cause };
   };
   let made_room = super::eviction::make_room_after_launch_death(state, demand, |unloading| {
-    record.set_evicted(unloading.iter().map(|id| id.as_str().to_string()).collect());
-    record.publish();
+    record_evicted(record, unloading);
   })
   .await;
   if !made_room {
@@ -375,13 +378,7 @@ async fn await_ready_or_make_room(
     crate::launch::admission::human_gib(demand),
     attempt_started.elapsed(),
   );
-  match compose_and_spawn(
-    &state.ctx,
-    start_params(),
-    crate::daemon::supervisor::LaunchOrigin::AutoStart,
-  )
-  .await
-  {
+  match spawn_auto_start(state, start_params()).await {
     Ok(retry) => {
       for w in &retry.warnings {
         log::warn!("proxy auto-start: {w}");
@@ -390,15 +387,7 @@ async fn await_ready_or_make_room(
       if matches!(retried, LaunchOutcome::Ready { .. }) {
         // Named routing reuses a model's only launch, so a dead row left here
         // makes the next `<model>@<name>` load a second copy.
-        let backend =
-          crate::daemon::launch_service::backend_for_launch(&state.ctx, &started.launch_id).await;
-        if let Err(err) = backend.stop(&state.ctx, &started.launch_id, 0).await {
-          log::warn!(
-            "proxy auto-start: could not remove dead launch {}: {}",
-            started.launch_id.as_str(),
-            err.message
-          );
-        }
+        super::eviction::stop_launch(&state.ctx, &started.launch_id).await;
       }
       retried
     }

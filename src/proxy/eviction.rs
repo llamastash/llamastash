@@ -197,7 +197,7 @@ pub async fn sweep_once(state: &Arc<ProxyState>, default_ttl: Duration) {
 /// Stop one launch through its own backend — the path `stop_model` uses, so the
 /// supervisor and its `state.running` row go with it and a backend that
 /// overrides `stop` is dispatched rather than defaulted.
-async fn stop_launch(ctx: &crate::daemon::context::MethodContext, launch_id: &LaunchId) {
+pub(super) async fn stop_launch(ctx: &crate::daemon::context::MethodContext, launch_id: &LaunchId) {
   use crate::backend::Backend;
   let backend = crate::daemon::launch_service::backend_for_launch(ctx, launch_id).await;
   let _ = backend
