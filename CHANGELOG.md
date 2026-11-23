@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+## [0.12.1] — 2026-11-23
+
+A patch release with one proxy fix and one security update. If a proxy auto-start passes the memory check and then dies while it loads, LlamaStash now unloads idle auto-started models and retries the launch once, so a different model no longer answers the request. A readiness timeout, a stop, or a launch that dies within 5 seconds unloads nothing. The `url` crate moves to 2.5.9 to clear RUSTSEC-2026-0592.
+
 ### Fixed
 
 - A proxy auto-start the memory gate admitted and that then died while loading unloads idle auto-started models and retries once, instead of a different resident model quietly answering the request. If the retry also fails and no model is ready to fall back to, the request gets a 503 `launch_failed`. ([#134](https://github.com/llamastash/llamastash/pull/134))
@@ -7,6 +11,13 @@
 ### Security
 
 - url 2.5.8 → 2.5.9, clearing [RUSTSEC-2026-0592](https://rustsec.org/advisories/RUSTSEC-2026-0592): `Url::origin()` can overflow the stack on nested `blob:` URLs. Transitive via reqwest and hf-hub.
+
+### Contributors
+
+Thanks to everyone who shipped code in this release:
+
+- [@Silvani-In-The-Net](https://github.com/Silvani-In-The-Net): the proxy makes room and retries when an admitted auto-start dies while loading ([#134](https://github.com/llamastash/llamastash/pull/134))
+- [@deepu105](https://github.com/deepu105): everything else
 
 ## [0.12.0] — 2026-11-20
 
