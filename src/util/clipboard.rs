@@ -1,7 +1,7 @@
 //! Cross-platform clipboard write helper used by the TUI's yank
 //! commands.
 //!
-//! Strategy, per the plan:
+//! Strategy:
 //! 1. Native first — `arboard` ships X11/XWayland by default and a
 //!    Wayland-data-control backend behind a feature flag. It
 //!    handles clipboard ownership, MIME negotiation, and macOS /
@@ -56,9 +56,6 @@ pub fn write(text: &str) -> Result<&'static str, ClipboardError> {
     }
   }
 
-  // 2. Shell-out fallback. This is the path that catches
-  // headless / exotic-compositor setups where arboard can't
-  // attach. Try in priority order; first success wins.
   for backend in shell_fallback_backends() {
     if which_on_path(backend).is_none() {
       tried.push((*backend).to_string());
@@ -130,8 +127,7 @@ fn write_via(backend: &str, text: &str) -> std::io::Result<()> {
 }
 
 /// `which`-style check that doesn't pull in the `which` crate's
-/// canonicalisation overhead. Splits `$PATH` and probes for the
-/// first executable hit.
+/// canonicalisation overhead.
 fn which_on_path(bin: &str) -> Option<std::path::PathBuf> {
   let path = std::env::var_os("PATH")?;
   for dir in std::env::split_paths(&path) {
@@ -214,8 +210,7 @@ mod tests {
   #[test]
   fn which_on_path_finds_cat_but_not_a_made_up_name() {
     // Pick a binary every CI/dev box guarantees on PATH for the host
-    // OS. Unix has `cat`; Windows has `cmd.exe` (resolved via the
-    // PATHEXT-aware `which` crate without the .exe suffix).
+    // OS. Unix has `cat`; Windows has `cmd.exe`.
     // `which_on_path` checks `dir.join(bin).is_file()` verbatim — it
     // doesn't append `.exe` or walk PATHEXT — so the Windows probe
     // must name the file as it lives on disk.

@@ -1,8 +1,6 @@
 //! AMD GPU probe via `rocm-smi`.
 //!
-//! v1 baseline: shell out to `rocm-smi` with three flags combined —
-//! `--showmeminfo vram --showuse --showtemp --json` — and walk the
-//! response. The JSON shape varies between ROCm releases; rather than
+//! The JSON shape varies between ROCm releases; rather than
 //! pin to one schema, we look for any object with `VRAM Total Memory
 //! (B)` / `VRAM Used Memory (B)` keys (plus their lower-case
 //! variants), and accept `GPU use (%)` / `Temperature (Sensor edge)
@@ -462,7 +460,7 @@ mod tests {
   #[test]
   fn missing_gtt_falls_back_to_vram_only() {
     // Older rocm-smi without `gtt` support, or the fallback arg chain
-    // succeeding without GTT — must behave like before this change.
+    // succeeding without GTT.
     let stdout = r#"{
       "card0": {
         "VRAM Total Memory (B)": 17163091968,

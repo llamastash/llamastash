@@ -1,10 +1,5 @@
 //! Tiny hex encoder kept in-crate so we don't take on a dedicated
 //! `hex` dependency just to render digests and content hashes.
-//!
-//! Two consumers landed in v2 (`snapshot::ManagedKey` value digests,
-//! and the install path's SHA-256 file/byte hashing), each of which
-//! had its own copy of the same nibble loop. This module is the
-//! single source.
 
 /// Lower-case hex encode of `bytes`. Output length is `2 * bytes.len()`.
 pub fn encode(bytes: &[u8]) -> String {

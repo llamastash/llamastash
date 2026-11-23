@@ -2,21 +2,7 @@
 //! threads so a verbose subcommand can't deadlock against its own
 //! stdout.
 //!
-//! Replaces three near-identical implementations that grew across
-//! the v2 surface:
-//! - `crate::gpu::run_with_timeout` (vendor probes)
-//! - [`crate::init::smoke::version_probe`] (`llama-server --version`)
-//! - `run_brew_with_timeout` (brew install / brew --prefix)
-//!
-//! All three needed: capture both stdout and stderr, enforce a
-//! wall-clock deadline, kill the child on expiry, never leak the
-//! reader threads. Doing it in one place ensures the
-//! reader-thread pattern (a.k.a. "do not call `wait_with_output`
-//! after `try_wait` has reaped the child") is honoured everywhere
-//! the first time.
-//!
-//! Callers map the returned `io::Result<Output>` into whatever typed
-//! error the caller surfaces.
+//! Never call `wait_with_output` after `try_wait` has reaped the child.
 
 use std::io;
 use std::io::Read;
@@ -27,8 +13,7 @@ use std::time::{Duration, Instant};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
-/// Error kinds [`run_with_drain_and_timeout`] surfaces. Each caller
-/// maps these into its own domain error.
+/// Each caller maps these into its own domain error.
 #[derive(Debug)]
 pub enum RunError {
   /// `Command::spawn` failed before any child existed.
@@ -53,11 +38,9 @@ impl std::fmt::Display for RunError {
 
 impl std::error::Error for RunError {}
 
-/// Spawn `cmd` with piped stdio, drain stdout/stderr on background
-/// threads, poll `try_wait` until either the child exits or
-/// `timeout` elapses, then return the captured `Output`. On timeout
-/// the child is killed + waited (so the OS doesn't leak the zombie)
-/// and the reader threads are joined before this function returns.
+/// On timeout the child is killed + waited (so the OS doesn't leak
+/// the zombie) and the reader threads are joined before this
+/// function returns.
 ///
 /// Always pipes stdin (`Stdio::null`) and stdout/stderr; the caller's
 /// `cmd` stdio settings are overwritten so the drainer can attach
@@ -155,8 +138,7 @@ pub(crate) fn linux_lxc_container_at(root: &std::path::Path) -> bool {
   is_lxc_container_signatures(container.as_deref(), environ.as_deref(), cgroup.as_deref())
 }
 
-/// Whether this process runs inside an LXC container. Read once: the TUI
-/// calls it every frame and admission on every launch.
+/// Read once: the TUI calls it every frame and admission on every launch.
 pub fn linux_lxc_container() -> bool {
   static IN_LXC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
   *IN_LXC

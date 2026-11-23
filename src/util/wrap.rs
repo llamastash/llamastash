@@ -10,11 +10,6 @@ use unicode_width::UnicodeWidthStr as _;
 ///
 /// `w` counts display cells, not characters, so a CJK glyph or an emoji
 /// takes two: the same measure the tables pad their columns with.
-///
-/// Used by `llamastash requests`, which caps the note column instead of
-/// letting one long cause push the figures out of view. The TUI tab cuts
-/// its note on a word boundary with an ellipsis instead, so one row is one
-/// line.
 pub fn wrap_cells(text: &str, w: usize) -> Vec<String> {
   if w == 0 || text.width() <= w {
     return vec![text.to_string()];

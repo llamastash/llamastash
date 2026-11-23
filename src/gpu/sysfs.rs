@@ -1,23 +1,15 @@
-//! Linux amdgpu probing via `/sys/class/drm` (R4 substrate, R18).
+//! Linux amdgpu probing via `/sys/class/drm`.
 //!
 //! Preferred over shelling out to `rocm-smi`: the sysfs nodes are a
 //! stable kernel interface, present whenever the `amdgpu` driver is
-//! bound, and don't break when a ROCm release renames a JSON key (the
-//! `docs/testing/2026-05-17-render-issues.md` I5 failure mode). The
+//! bound, and don't break when a ROCm release renames a JSON key. The
 //! `amd` probe falls back to `rocm-smi` only when sysfs yields nothing.
 //!
-//! Per amdgpu card (`/sys/class/drm/cardN/device/`):
-//! - `mem_info_vram_total` / `mem_info_vram_used` — the BIOS-dedicated
-//!   VRAM heap (the carve-out on APUs, the full board RAM on discrete).
-//! - `mem_info_gtt_total` / `mem_info_gtt_used` — the system-RAM-backed
-//!   GTT pool (where an APU holds the real model weights).
-//! - `gpu_busy_percent` — utilization (optional).
-//! - `hwmon/hwmon*/temp1_input` — edge temperature in millidegrees C
-//!   (optional).
-//! - `uevent` `PCI_SLOT_NAME` — PCI address for cross-backend dedup.
-//!
-//! Classification: no driver-level "integrated" flag exists, so a
-//! card is unified by the carve-out signature — see
+//! `mem_info_vram_total` is the BIOS-dedicated VRAM heap (the carve-out
+//! on APUs, the full board RAM on discrete). `mem_info_gtt_total` is
+//! the system-RAM-backed GTT pool where an APU holds the real model
+//! weights. No driver-level "integrated" flag exists, so a card is
+//! unified by the carve-out signature, see
 //! [`super::is_carve_signature`].
 
 use std::fs;
@@ -25,10 +17,9 @@ use std::path::{Path, PathBuf};
 
 use super::{classify_amd_memory, normalize_pci, GpuDevice};
 
-/// Probe every `amdgpu`-bound card via sysfs. Returns `None` when no
-/// amdgpu card is present (so the caller falls through to `rocm-smi`),
-/// `Some(devices)` otherwise — even a single card with unreadable
-/// memory is reported as a failure signal rather than dropped silently.
+/// Returns `None` when no amdgpu card is present, so the caller falls
+/// through to `rocm-smi`. Even a single card with unreadable memory is
+/// reported as a failure signal rather than dropped silently.
 pub fn probe_devices() -> Option<Vec<GpuDevice>> {
   let cards = amdgpu_card_dirs();
   if cards.is_empty() {
@@ -47,9 +38,8 @@ pub fn probe_devices() -> Option<Vec<GpuDevice>> {
   }
 }
 
-/// Enumerate `/sys/class/drm/cardN/device` directories bound to the
-/// `amdgpu` driver, skipping connector symlinks (`cardN-DP-1`, …) and
-/// non-AMD cards. Sorted by the numeric card index for stable ordering.
+/// `/sys/class/drm/cardN/device` directories bound to the `amdgpu`
+/// driver, sorted by card index for stable ordering.
 fn amdgpu_card_dirs() -> Vec<PathBuf> {
   let mut cards: Vec<(u32, PathBuf)> = Vec::new();
   let Ok(entries) = fs::read_dir("/sys/class/drm") else {
@@ -75,7 +65,6 @@ fn amdgpu_card_dirs() -> Vec<PathBuf> {
   cards.into_iter().map(|(_, dir)| dir).collect()
 }
 
-/// Basename of the `device/driver` symlink target (e.g. `amdgpu`).
 fn driver_name(device: &Path) -> Option<String> {
   fs::read_link(device.join("driver"))
     .ok()?
@@ -84,10 +73,9 @@ fn driver_name(device: &Path) -> Option<String> {
     .map(|s| s.to_string())
 }
 
-/// Read one amdgpu card into a [`GpuDevice`]. `None` when the mandatory
-/// VRAM total node is unreadable (a card that can't report its memory
-/// is no use as a budget source; the caller's `out.is_empty()` check
-/// then routes to the rocm-smi fallback).
+/// `None` when the mandatory VRAM total node is unreadable: a card
+/// that can't report its memory is no use as a budget source; the
+/// caller's `out.is_empty()` check then routes to the rocm-smi fallback.
 fn read_card(device: &Path, idx: usize) -> Option<GpuDevice> {
   let vram_total = read_u64(&device.join("mem_info_vram_total"))?;
   let vram_used = read_u64(&device.join("mem_info_vram_used")).unwrap_or(0);
@@ -136,13 +124,12 @@ fn is_integrated_pci_class(device: &Path) -> bool {
     .unwrap_or(false)
 }
 
-/// Read a `u64` from a sysfs node, trimming the trailing newline.
 fn read_u64(path: &Path) -> Option<u64> {
   fs::read_to_string(path).ok()?.trim().parse::<u64>().ok()
 }
 
-/// Highest `temp*_input` (millidegrees C → C) under the card's hwmon
-/// directory. amdgpu exposes edge/junction/memory sensors; the edge
+/// `temp1_input` from the first hwmon dir that has it (millidegrees
+/// C → C). amdgpu exposes edge/junction/memory sensors; the edge
 /// sensor is `temp1` and is what `rocm-smi` reports, so taking the
 /// first readable input matches the existing display.
 fn read_hwmon_temp_c(device: &Path) -> Option<f32> {

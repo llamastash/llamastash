@@ -2,15 +2,6 @@
 //! persists JSON / YAML state under `$XDG_STATE_HOME` or
 //! `$XDG_CONFIG_HOME`.
 //!
-//! The recipe — write to a unique tempfile in the *same* directory,
-//! `fsync` it, optionally chmod, atomic `rename` over the final
-//! path — is shared across [`crate::daemon::state_store::save`],
-//! [`crate::init::snapshot::save`], and
-//! [`crate::config::writer::merge_and_write`]. Keeping the
-//! mechanics in one place ensures hardening additions
-//! (`O_NOFOLLOW`, fsync of the parent dir, etc.) land for every
-//! consumer instead of in one.
-//!
 //! `tempfile::Builder` already creates files mode `0o600` on Unix;
 //! the explicit `chmod` here is belt-and-braces for the case where
 //! the rename target dir has a permissive umask whose mode bits a

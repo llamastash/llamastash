@@ -72,7 +72,6 @@ fn parse_pci_ids(stdout: &str) -> Vec<String> {
 
 /// Parse the `--format=csv,noheader,nounits` output. Exposed so unit
 /// tests can pin the format without spawning a subprocess.
-/// Each device is tagged with the "nvidia" backend.
 pub(crate) fn parse(stdout: &str) -> Vec<GpuDevice> {
   let mut out = Vec::new();
   for line in stdout.lines() {
@@ -165,9 +164,8 @@ fn parse_optional_f32(raw: &str) -> Option<f32> {
   if trimmed.is_empty() || trimmed.starts_with('[') {
     return None;
   }
-  // Find the first non-numeric character (allowing one '.' and a
-  // leading '-') and parse up to it. This tolerates "84 %", "84%",
-  // "68.0 C", "68°C", etc., while still rejecting pure garbage.
+  // This tolerates "84 %", "84%", "68.0 C", "68°C", etc., while still
+  // rejecting pure garbage.
   let mut seen_dot = false;
   let end = trimmed
     .char_indices()
