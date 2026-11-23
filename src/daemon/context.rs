@@ -1,13 +1,11 @@
 //! Daemon-side request context shared with every IPC handler and the
 //! proxy listener.
 //!
-//! [`MethodContext`] bundles the daemon's live handles (catalog,
-//! supervisor registry, GPU/host samplers, persisted state, launch
-//! env) behind cheap `Arc`/`Clone` so both the IPC dispatcher and the
-//! proxy can read daemon state without round-tripping through JSON-RPC.
-//! It lives in the `daemon` layer (not `ipc`) so every dependency edge
-//! points downward: `ipc` and `proxy` depend on `daemon`, never the
-//! reverse.
+//! [`MethodContext`] bundles the daemon's live handles behind cheap
+//! `Arc`/`Clone` so both the IPC dispatcher and the proxy can read
+//! daemon state without round-tripping through JSON-RPC. It lives in
+//! the `daemon` layer (not `ipc`) so every dependency edge points
+//! downward: `ipc` and `proxy` depend on `daemon`, never the reverse.
 
 use std::{
   path::PathBuf,
@@ -27,8 +25,7 @@ use crate::daemon::state_store::{self, DaemonState};
 use crate::discovery::ModelCatalog;
 use crate::gpu::GpuInfo;
 
-/// Shared state that the daemon hands to each request handler. Cheap to
-/// clone (`Arc` inside).
+/// Shared state the daemon hands to each request handler.
 #[derive(Clone)]
 pub struct MethodContext {
   /// Wall-clock instant the daemon began listening. `version` reports
@@ -36,21 +33,18 @@ pub struct MethodContext {
   pub started_at: Instant,
   /// Triggered by the `shutdown` method or by SIGINT/SIGTERM.
   pub shutdown: ShutdownToken,
-  /// Live connection count. Maintained by the accept loop; surfaced via
-  /// `version` so `daemon status` can show it without a separate method.
+  /// Live connection count, maintained by the accept loop and
+  /// surfaced via `version`.
   pub active_connections: Arc<AtomicUsize>,
   /// Last time anything reached the daemon, over any surface. Stamped
   /// by the control-plane and proxy accept loops; read only by the
   /// opt-in idle-shutdown poller.
   pub activity: crate::daemon::idle::Activity,
-  /// Catalog of currently-discovered models. Populated by the daemon's
-  /// discovery task; read by the `list_models` handler. Cheap to clone
-  /// (`Arc<RwLock<…>>`).
+  /// Catalog of discovered models. Populated by the discovery task,
+  /// read by the `list_models` handler.
   pub catalog: ModelCatalog,
   /// Active supervisor instances keyed by `LaunchId`. Populated by
-  /// `start_model` and consumed by `status`, `stop_model`,
-  /// `logs_tail`. Empty in tests that only exercise the discovery
-  /// surface.
+  /// `start_model`, read by `status`, `stop_model` and `logs_tail`.
   pub supervisors: SupervisorRegistry,
   /// Boot-time snapshot of `gpu::probe()`. Used by `status.gpu` only
   /// when the live sampler hasn't been attached (catalog-only tests);
@@ -66,59 +60,46 @@ pub struct MethodContext {
   /// Live host-level metrics (CPU%, RAM, GPU util/temp/VRAM
   /// aggregates). Refreshed by the
   /// [`crate::daemon::host_metrics::spawn`] sampler at 1 Hz; `status`
-  /// surfaces the most recent reading under the `host` field. A
-  /// `None` value means no sampler was attached (catalog-only tests
-  /// stay lightweight by leaving it off).
+  /// surfaces the latest reading under the `host` field. `None` means
+  /// no sampler was attached.
   pub host_metrics: Option<Arc<RwLock<HostMetricsSnapshot>>>,
   /// How often `host_metrics` is refreshed.
   pub host_metrics_interval: std::time::Duration,
-  /// Persisted favorites / last_params / running snapshots.
-  /// `start_model` and `favorite_*` mutate it and flush to `state.json`
-  /// after each change.
+  /// Persisted daemon state. `start_model` and `favorite_*` mutate it
+  /// and flush to `state.json` after each change.
   pub state: PersistedState,
-  /// Live config-preset store (loaded from `Config.presets` at start,
-  /// write-through to `config.yaml`). The single read/write surface the
-  /// `presets_*` handlers and the `status` preset hint use. Empty +
-  /// write-disabled in catalog-only tests.
+  /// Live config-preset store, write-through to `config.yaml`. Read
+  /// and written by the `presets_*` handlers and the `status` preset
+  /// hint.
   pub presets: crate::daemon::preset_store::ConfigPresetStore,
-  /// Inputs the supervisor needs at launch time — binary path, port
-  /// range, log directory, probe tuning. Optional because catalog-only
-  /// IPC tests don't need to launch anything.
+  /// Inputs the supervisor needs at launch time. `None` in
+  /// catalog-only tests that never launch anything.
   pub launch: Option<LaunchEnv>,
-  /// Snapshot of `llama-server` processes the daemon does *not*
-  /// own. Populated by the orphan sweep at startup so `status`
-  /// surfaces them read-only. Wrapped in `RwLock` so a periodic
-  /// re-sweep can refresh the slot without rebuilding the context.
+  /// Snapshot of engine processes the daemon does *not* own, from the
+  /// startup orphan sweep, so `status` surfaces them read-only. A
+  /// `RwLock` lets a periodic re-sweep refresh the slot.
   pub external: Arc<RwLock<Vec<ExternalProcess>>>,
-  /// Read handle to the proxy listener's status cell. The proxy
-  /// task is the sole writer (every bind / disable transition lands
-  /// here); the IPC `status` handler clones this and reads it to
-  /// project the `proxy` block. `None` only in catalog-only tests
-  /// that never bring the proxy up — the response then omits the
-  /// `proxy` field entirely so existing test fixtures keep their
-  /// shape. Production wiring always sets this; if `proxy.enabled:
-  /// false` the cell holds the disabled proxy status variant.
+  /// Read handle to the proxy listener's status cell. The proxy task
+  /// is the sole writer. `None` only in catalog-only tests, which then
+  /// omit the `proxy` field. With `proxy.enabled: false` the cell holds
+  /// the disabled status variant.
   pub proxy_status: Option<crate::proxy::StatusCell>,
   /// The proxy's request log. The proxy writes it; `requests_tail` and
   /// `status` read it. Empty when the proxy never comes up.
   pub requests: crate::proxy::request_log::RequestLog,
   /// HTTP control-plane URL the daemon bound, e.g.
-  /// `http://127.0.0.1:48134`. Surfaced under `status.daemon.ipc_url`
-  /// so the TUI / CLI can render where IPC is listening (helpful when
-  /// debugging port-collision scans). `None` in catalog-only tests
-  /// that don't bring up the control plane.
+  /// `http://127.0.0.1:48134`. Surfaced under `status.daemon.ipc_url`.
+  /// `None` in catalog-only tests.
   pub ipc_url: Option<String>,
-  /// All backend configuration, grouped under `backend:` in `config.yaml`.
-  /// Each backend reads its own typed sub-config (`backend.llamacpp` /
-  /// `backend.<id>` and the other engines) through its `available`/`installed`/
-  /// launch hooks; the generic context names no backend. Defaults to the
-  /// factory config, so catalog-only tests never touch an external binary.
+  /// All backend configuration, grouped under `backend:` in
+  /// `config.yaml`. Each backend reads its own typed sub-config
+  /// through its `available`/`installed`/launch hooks, so this context
+  /// names no backend. Defaults to the factory config.
   pub backend: crate::backend::BackendConfig,
-  /// Per-backend force-enable flags keyed by backend id (the `daemon
-  /// start` engine flags and their env vars). A backend folds its own
-  /// entry into its `available` predicate alongside the config `enabled`
-  /// tri-state; an absent key means "not forced". Keyed by id so the type names
-  /// no backend.
+  /// Per-backend force-enable flags keyed by backend id (the
+  /// `daemon start` engine flags and their env vars). A backend folds
+  /// its own entry into its `available` predicate alongside the config
+  /// `enabled` tri-state; an absent key means "not forced".
   pub backend_force: std::collections::BTreeMap<String, bool>,
   /// Pre-spawn memory admission ledger. Shared across every launch
   /// entry point so check-and-reserve is atomic against concurrent
@@ -126,15 +107,14 @@ pub struct MethodContext {
   /// / Stopped. In-memory by design.
   pub admission: Arc<crate::launch::admission::Ledger>,
   pub memory_policy: crate::daemon::memory_policy::MemoryPolicy,
-  /// The `daemon.preload:` list as configured, empty when nothing was set.
-  /// Reported on `status.daemon.preload` so a caller can tell "preload
-  /// configured" from "preload has nothing to start"; the entries themselves are
-  /// what [`crate::daemon::preload`] resolved against the catalog at boot.
+  /// The `daemon.preload:` list as configured. Reported on
+  /// `status.daemon.preload` so a caller can tell "preload configured"
+  /// from "preload has nothing to start".
   pub preload: Arc<Vec<String>>,
-  /// `proxy.aliases`: client names that stand in for a local model. Built once
-  /// from `config.yaml` and shared with the proxy (see
-  /// [`crate::proxy::alias`]), so a problem with a name is reported once for the
-  /// whole daemon — by the startup pass or by the first request, never by both.
+  /// `proxy.aliases`: client names that stand in for a local model.
+  /// Built once from `config.yaml` and shared with the proxy (see
+  /// [`crate::proxy::alias`]), so a problem with a name is reported
+  /// once for the whole daemon.
   pub(crate) aliases: std::sync::Arc<crate::proxy::alias::AliasTable>,
 }
 
@@ -162,7 +142,6 @@ impl PersistedState {
     Self::new(DaemonState::default(), None)
   }
 
-  /// Snapshot — cheap clone of the inner state.
   pub async fn snapshot(&self) -> DaemonState {
     self.state.lock().await.clone()
   }
@@ -203,12 +182,12 @@ pub struct LaunchEnv {
   /// on the `LayerLabel::ArchDefault` layer of the resolver, between
   /// `LastUsed` and `BuiltIn`. Empty map = no escape-hatch layer.
   pub arch_defaults: std::collections::BTreeMap<String, crate::launch::knobs::KnobSet>,
-  /// Neutral **server** catalog: every backend's configured servers (build /
-  /// binary variants), each probed for its `--device` devices, with a derived
-  /// stable id (see [`crate::backend::build_server_catalog`]). `start_model`
-  /// looks the chosen `knobs.str(crate::launch::knobs::kid("device"))` selector up here to decide *which* server
-  /// binary to spawn; `status` projects it so the TUI picker offers exactly the
-  /// selectors `--device` will accept.
+  /// Neutral **server** catalog: every backend's configured servers,
+  /// each probed for its `--device` devices, with a derived stable id
+  /// (see [`crate::backend::build_server_catalog`]). `start_model`
+  /// looks the chosen `device` knob value up here to decide which
+  /// server binary to spawn; `status` projects it so the TUI picker
+  /// offers exactly the selectors `--device` will accept.
   pub servers: ServerCatalog,
   /// Seed mode for knobs no layer filled. Sourced from
   /// `Config.default_launch_mode` (+ `LLAMASTASH_DEFAULT_LAUNCH_MODE`).
@@ -331,7 +310,7 @@ impl MethodContext {
     self
   }
 
-  /// Builder helper: seed the external (unmanaged `llama-server`)
+  /// Builder helper: seed the external (unmanaged engine)
   /// process snapshot. Production wiring populates it from the
   /// startup orphan sweep.
   pub fn with_external(self, external: Vec<ExternalProcess>) -> Self {

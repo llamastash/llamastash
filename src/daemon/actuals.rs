@@ -29,12 +29,12 @@ pub struct Actuals {
   ///   default): `n_ctx` is the full shared window, and a request can
   ///   use all of it.
   ///
-  /// An earlier version multiplied by `total_slots` to recover the `-c`
-  /// aggregate, but that double-counted under the default kv-unified
-  /// mode (e.g. `-c 8192` auto → `/props n_ctx=8192, total_slots=4`,
-  /// which is `8192`, not `32768`) and could report a window larger
-  /// than the model's trained context. The per-request value is both
-  /// correct and what users mean by "context window".
+  /// Multiplying by `total_slots` to recover the `-c` aggregate
+  /// double-counts under the default kv-unified mode (`-c 8192` auto
+  /// gives `n_ctx=8192, total_slots=4`, which is `8192`, not `32768`)
+  /// and can report a window larger than the model's trained context.
+  /// The per-request value is both correct and what users mean by
+  /// "context window".
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub resolved_ctx: Option<u32>,
 

@@ -1,16 +1,15 @@
 //! In-memory config-preset store with write-through to `config.yaml`.
 //!
-//! Loaded once at daemon start from `Config.presets`, held in memory, and
-//! the single read/write surface the IPC `presets_*` handlers call. A
-//! save/delete mutates memory **and** atomically patches the one node in
-//! `config.yaml` (via the comment-safe [`crate::config::presets_writer`]),
-//! so app-driven changes are live without a restart; hand-edits to
-//! `config.yaml` are only picked up on the next daemon start.
+//! The store is loaded once at daemon start from `Config.presets`, and the IPC
+//! `presets_*` handlers are its only read/write surface. A save or delete
+//! mutates memory and atomically patches the one node in `config.yaml` through
+//! [`crate::config::presets_writer`], so app-driven changes are live without a
+//! restart. Hand-edits to `config.yaml` only take effect on the next daemon
+//! start.
 //!
-//! Writes target **per-model keys only** (the model's basename); arch-level
-//! presets are hand-authored and read-only here. Classification and the
-//! per-model ∪ arch merge live in [`crate::launch::presets`], called by the
-//! handlers with this store's snapshot plus the live catalog.
+//! Writes target per-model keys only (the model's basename). Arch-level presets
+//! are hand-authored and read-only here. Classification and the per-model and
+//! arch merge live in [`crate::launch::presets`].
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -21,19 +20,19 @@ use tokio::sync::Mutex;
 use crate::config::writer::WriteError;
 use crate::config::{presets_writer, ConfigPresetBlock, PresetBody};
 
-/// Cheap-to-clone handle (`Arc` inside) to the daemon's live config-preset
-/// map plus the path used for write-through.
+/// Cheap-to-clone handle (`Arc` inside) to the daemon's live preset map, plus
+/// the path used for write-through.
 #[derive(Clone)]
 pub struct ConfigPresetStore {
   inner: Arc<Mutex<BTreeMap<String, ConfigPresetBlock>>>,
-  /// `None` disables write-through (mutations stay in-memory) — used by
-  /// catalog-only / ephemeral tests that don't own a config file.
+  /// `None` disables write-through, so mutations stay in memory. Used by
+  /// catalog-only or ephemeral tests that do not own a config file.
   config_path: Option<PathBuf>,
 }
 
 impl ConfigPresetStore {
   /// Seed the store from the loaded config blocks. `config_path` is where
-  /// write-through patches land; `None` keeps mutations in-memory only.
+  /// write-through patches land, and `None` keeps mutations in memory only.
   pub fn new(presets: BTreeMap<String, ConfigPresetBlock>, config_path: Option<PathBuf>) -> Self {
     Self {
       inner: Arc::new(Mutex::new(presets)),
@@ -46,15 +45,15 @@ impl ConfigPresetStore {
     Self::new(BTreeMap::new(), None)
   }
 
-  /// Clone of the current config-preset map. The handlers pair this with
-  /// the live catalog to compute a model's effective preset set.
+  /// Clone of the current preset map. Handlers pair it with the live catalog to
+  /// compute a model's effective preset set.
   pub async fn snapshot(&self) -> BTreeMap<String, ConfigPresetBlock> {
     self.inner.lock().await.clone()
   }
 
-  /// Upsert `name` under the per-model `model_key`. Writes through to
-  /// `config.yaml` first so a write failure leaves memory untouched, then
-  /// commits to memory. Returns the previous body when this replaced one.
+  /// Upsert `name` under `model_key`. Writes through to `config.yaml` first, so
+  /// a write failure leaves memory untouched, then commits to memory. Returns
+  /// the previous body when this replaced one.
   pub async fn save(
     &self,
     model_key: &str,
@@ -74,11 +73,10 @@ impl ConfigPresetStore {
     )
   }
 
-  /// Remove `name` under `model_key`. No-op (returns `None`) when the
-  /// daemon's view holds no such entry. Otherwise writes through, then
-  /// prunes the entry from memory — dropping the model key entirely when
-  /// it becomes empty and carries no hand-authored `default`. Returns the
-  /// removed body.
+  /// Remove `name` under `model_key` and return the removed body. A missing
+  /// entry is a no-op returning `None`. Otherwise this writes through, then
+  /// prunes the entry from memory, dropping the model key when it becomes empty
+  /// and carries no hand-authored `default`.
   pub async fn delete(
     &self,
     model_key: &str,
@@ -135,7 +133,6 @@ mod tests {
     let store = ConfigPresetStore::new(BTreeMap::new(), Some(path.clone()));
     let prev = store.save("coder.gguf", "long", body(65536)).await.unwrap();
     assert!(prev.is_none(), "first save has no previous body");
-    // In-memory.
     let snap = store.snapshot().await;
     assert_eq!(
       snap["coder.gguf"].entries["long"]
@@ -143,7 +140,7 @@ mod tests {
         .u32(crate::launch::knobs::kid("ctx-size")),
       Some(65536)
     );
-    // On disk — a fresh daemon would load this.
+    // A fresh daemon would load this from disk.
     let cfg = crate::config::load_config_from_path(&path).config;
     assert_eq!(
       cfg.presets["coder.gguf"].entries["long"]

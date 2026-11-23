@@ -12,8 +12,7 @@
 //!
 //! The IPC layer's `list_models` handler reads from the same
 //! catalog, so changes on disk reflect in the `list_models` response
-//! within ~1 second of the file landing (per the plan's integration
-//! verification).
+//! within ~1 second of the file landing.
 
 use tokio::sync::mpsc;
 
@@ -35,13 +34,11 @@ pub struct DiscoveryOptions {
   /// Backend config + force map, consulted on **every** rescan to decide which
   /// backends project rows from the shared safetensors / HF-repo enumerator.
   ///
-  /// Re-read each pass rather than resolved once at boot: `status` evaluates
-  /// availability live, so a backend installed after the daemon started used
-  /// to report itself enabled while the walk stayed permanently skipped — a
-  /// dead state the shipped diagnostic confirmed as healthy. None projecting
-  /// skips the walk entirely, so an install with no safetensors-capable
-  /// backend pays nothing and its catalog stays byte-identical. This module
-  /// names no backend.
+  /// Re-read each pass, not resolved once at boot: `status` evaluates
+  /// availability live, so a backend installed after the daemon started must
+  /// join the next walk. None projecting skips the walk
+  /// entirely, so an install with no safetensors-capable backend pays nothing.
+  /// This module names no backend.
   pub backend: crate::backend::BackendConfig,
   pub backend_force: std::collections::BTreeMap<String, bool>,
 }
@@ -63,11 +60,10 @@ impl DiscoveryOptions {
   }
 
   pub fn new(roots: Vec<ScanRoot>) -> Self {
-    // Production builds default to the standard-capacity metadata
-    // cache so successive watcher-driven rescans don't re-parse
-    // headers for unchanged files. Tests that want a no-cache or
-    // small-cache configuration can replace this on the returned
-    // value.
+    // Standard-capacity metadata cache so watcher-driven rescans
+    // don't re-parse headers for unchanged files. Tests that want a
+    // no-cache or small-cache configuration replace this on the
+    // returned value.
     let scan = ScanOptions {
       metadata_cache: Some(MetadataCache::default_capacity()),
       ..ScanOptions::default()
@@ -93,7 +89,6 @@ pub fn spawn(catalog: ModelCatalog, opts: DiscoveryOptions) -> tokio::task::Join
 }
 
 async fn run(catalog: ModelCatalog, opts: DiscoveryOptions) {
-  // Initial scan: drain every scanner row into the catalog.
   full_rescan(&catalog, &opts).await;
   // The catalog now holds what the disk does, so a client that connected
   // mid-walk and waited on this can resolve a model reference.
@@ -121,8 +116,7 @@ async fn run(catalog: ModelCatalog, opts: DiscoveryOptions) {
         "discovery: filesystem watcher failed to start: {e}; running in static-catalog mode"
       );
       // Without the watcher, the initial scan is all the catalog
-      // ever sees — but list_models still works. This matches the
-      // plan's "scan continues with other roots" resilience posture.
+      // ever sees — but list_models still works.
       return;
     }
   };
@@ -169,9 +163,8 @@ async fn run(catalog: ModelCatalog, opts: DiscoveryOptions) {
 async fn full_rescan(catalog: &ModelCatalog, opts: &DiscoveryOptions) {
   let scanner_rx = scan(opts.scan_roots.clone(), opts.scan.clone());
 
-  // The Ollama enumerator runs alongside the regular scanner because
   // Ollama's content-addressed blob layout doesn't surface through
-  // `.gguf` extension filtering. We launch one per Ollama root.
+  // `.gguf` extension filtering, so its enumerator runs alongside.
   let ollama_rxs: Vec<mpsc::Receiver<DiscoveredModel>> = opts
     .scan_roots
     .iter()
@@ -263,10 +256,9 @@ async fn full_rescan(catalog: &ModelCatalog, opts: &DiscoveryOptions) {
 /// Fold rows that several backends projected for the **same path** into one
 /// row carrying every backend, in the order the rows arrived.
 ///
-/// The catalog is keyed by path, so without this the last projector's row
+/// The catalog is keyed by path: without this the last projector's row
 /// silently replaced the others and a snapshot two engines could serve
-/// listed only one of them — the delete and launch surfaces then saw a
-/// different engine depending on registration order. Projectors are walked
+/// listed only the one that registered last. Projectors are walked
 /// highest [`crate::backend::Backend::launch_priority`] first, so the first
 /// entry is the auto-route default, the same contract
 /// [`crate::backend::supported_backends_for`] gives a GGUF row and the same
@@ -399,7 +391,6 @@ mod tests {
     };
     let _task = spawn(catalog.clone(), opts);
 
-    // Initial scan is sync within the task; poll briefly.
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
     while catalog.len().await < 2 {
       if std::time::Instant::now() > deadline {
@@ -485,7 +476,6 @@ mod tests {
     };
     let _task = spawn(catalog.clone(), opts);
 
-    // Wait for the initial scan.
     let initial_deadline = std::time::Instant::now() + Duration::from_secs(3);
     while catalog.len().await < 1 {
       if std::time::Instant::now() > initial_deadline {
@@ -494,7 +484,6 @@ mod tests {
       tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
-    // Drop a new file and verify the catalog grows.
     fs::write(dir.join("added.gguf"), build_minimal_gguf("phi3")).unwrap();
     let watch_deadline = std::time::Instant::now() + Duration::from_secs(5);
     while catalog.len().await < 2 {

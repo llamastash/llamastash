@@ -1,17 +1,12 @@
-//! Daemon-restart bookkeeping for `llama-server` children.
+//! Daemon-restart bookkeeping for engine children: re-adopt live
+//! `state.json::running` entries, and surface server processes the daemon does not
+//! own as read-only `external` rows that only `stop` accepts.
 //!
-//! Two responsibilities:
-//! 1. **Re-adopt** entries from `state.json::running` whose PID is
-//!    still alive, whose recorded port answers, and whose
-//!    `/v1/models` reports the same model file the supervisor
-//!    launched. Three-factor confirmation guards against
-//!    PID-reuse: the kernel may have handed our recorded PID to an
-//!    unrelated process by the time we restart.
-//! 2. **Surface external** `llama-server` processes (started
-//!    outside the daemon — say, by the user typing
-//!    `llama-server -m ...` directly) so the TUI's `external` row
-//!    isn't blind to them. External entries are read-only: only
-//!    `stop` is permitted; no edit/restart path exists.
+//! Re-adoption needs three factors: the PID is alive, the recorded port answers,
+//! and `/v1/models` reports the same model. The kernel can hand a recorded PID to
+//! an unrelated process before the daemon restarts.
+//!
+//! See `docs/architecture.md` § Model lifecycle.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -34,78 +29,62 @@ pub struct SweepReport {
   /// `/v1/models` model path matches) all passed. The supervisor
   /// rebuilds a `ManagedModel` for each.
   pub adopted: Vec<RunningSnapshot>,
-  /// Snapshots whose owner has died, whose port no longer answers,
-  /// or whose `/v1/models` reports a different model. The
-  /// supervisor drops these from `state.json::running` on next save.
+  /// Snapshots whose owner has died, whose port no longer answers, or whose
+  /// `/v1/models` reports a different model. The supervisor drops these from
+  /// `state.json::running` on the next save.
   pub stale: Vec<RunningSnapshot>,
-  /// `llama-server` processes the daemon doesn't own. Surfaced as
-  /// `external` in the IPC `status` response.
+  /// Server processes the daemon does not own, surfaced as `external` in the
+  /// IPC `status` response.
   pub external: Vec<ExternalProcess>,
 }
 
-/// One unmanaged `llama-server` process.
+/// One unmanaged server process.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExternalProcess {
   pub pid: u32,
   pub cmdline: String,
   /// Detected `-m <path>` from the process's command line, if any.
-  /// Helps the user identify which model is running outside
-  /// llamastash's control.
   pub model_path: Option<PathBuf>,
-  /// Boot-time snapshot of the process's start_time (seconds since
-  /// kernel boot or epoch, depending on platform). Used by
-  /// `stop_external` to defend against PID-recycling: if the
-  /// process's current start_time has changed between the sweep
-  /// snapshot and the stop request, the original process has exited
-  /// and the kernel has handed the pid to someone else — refuse to
-  /// signal.
+  /// Boot-time snapshot of the process `start_time`, in seconds since kernel boot
+  /// or epoch depending on platform. `stop_external` compares it against the live
+  /// value to catch PID recycling, so a changed value means the pid now belongs to
+  /// a different process and signalling it would hit a stranger.
   #[serde(default)]
   pub start_time_secs: u64,
-  /// Listening port parsed from the process's argv (`--port N`).
-  /// `None` when the cmdline doesn't carry one — `llama-server`
-  /// defaults to 8080 but llamastash's supervisor always passes the
-  /// flag explicitly, so this should be `Some` for any process we
-  /// launched. The IPC layer feeds this into `collect_in_use_ports`
-  /// for `launched_by_llamastash` rows so the allocator skips ports
-  /// already held by orphan llamastash children.
+  /// Listening port parsed from the process's argv (`--port N`), or `None` when
+  /// the cmdline carries no port flag. Callers must not guess the engine's
+  /// default. For `launched_by_llamastash` rows, `collect_in_use_ports` reads
+  /// this so the port allocator skips ports an orphan child holds.
   #[serde(default)]
   pub port: Option<u16>,
-  /// True when the process's environment carries
-  /// `LLAMASTASH_LAUNCHED=1`. Set by the supervisor's spawn path
-  /// (`src/daemon/supervisor.rs`); a fresh `llama-server` started
-  /// by hand or by another tool never has this marker. Drives the
-  /// port-skip behaviour above and reads in `daemon status` as a
-  /// hint that the orphan came from a sibling/previous llamastash.
+  /// True when the process's environment carries `LLAMASTASH_LAUNCHED=1`, which
+  /// the supervisor's spawn path sets (`src/daemon/supervisor.rs`). A server
+  /// started by hand never has it. Shows in `daemon status` as a hint the orphan
+  /// came from a previous llamastash.
   #[serde(default)]
   pub launched_by_llamastash: bool,
-  /// The launch name this process was started under, for a row that
-  /// came from `state.json::running` (see
-  /// [`ExternalProcess::from_adopted`]). `None` for a process the
-  /// scan found, which never had one. It is the only piece of the
-  /// launch's identity that survives the daemon it was started by,
-  /// so `status` can still call the row `<model>@<name>` and `stop`
-  /// can still take that name.
+  /// The launch name, set only for a row projected from `state.json::running`
+  /// (see [`ExternalProcess::from_adopted`]), and `None` for a process the scan
+  /// found. The name is the one part of a launch's identity that outlives its
+  /// daemon, so `status` can still call the row `<model>@<name>` and `stop` can
+  /// take that name.
   #[serde(default)]
   pub name: Option<String>,
 }
 
 impl ExternalProcess {
-  /// Project a re-adopted `state.json` row into the read-only external
-  /// row the daemon surfaces for it.
-  ///
-  /// `cmdline` and `start_time_secs` come from the live process table
-  /// when the OS still has them; the reconstructed cmdline is a label
-  /// of last resort once the real argv is gone.
+  /// Project a re-adopted `state.json` row into the read-only external row the
+  /// daemon surfaces for it. `cmdline` and `start_time_secs` come from the live
+  /// process table when the OS still has them, otherwise the cmdline is a
+  /// reconstructed label.
   pub fn from_adopted(
     adopted: &RunningSnapshot,
     cmdline: Option<String>,
     start_time_secs: u64,
   ) -> Self {
-    // The launch's model path, whatever shape its identity is. Reading it off
-    // `id.as_gguf()` yielded `None` for every non-GGUF identity, so a re-adopted
-    // row of that kind reported `model_path: null` and a cmdline ending in a
-    // dangling `-m ` — the user could see a surviving process but not which
-    // model it was serving, which is the one thing the row exists to say.
+    // The model path, whatever shape the identity is: a non-GGUF identity has
+    // no path in `id`, and naming the model is the one thing this row exists
+    // to say.
     let model_path = adopted
       .id
       .as_gguf()
@@ -113,11 +92,8 @@ impl ExternalProcess {
       .unwrap_or_else(|| adopted.params.model_path.clone());
     Self {
       pid: adopted.pid as u32,
-      // The process's own argv when the OS still has it, so the row reads as
-      // what actually launched (`llama serve …` and `llama-server …` are the
-      // same backend under different binaries). Otherwise reconstruct one from
-      // the recorded backend's primary marker: registry-driven, names no
-      // backend, and only a label once the real argv is gone.
+      // The process's own argv when the OS still has it, otherwise a
+      // reconstructed label from the recorded backend's primary marker.
       cmdline: cmdline.unwrap_or_else(|| {
         format!(
           "{} --port {} -m {}",
@@ -129,30 +105,27 @@ impl ExternalProcess {
       model_path: Some(model_path),
       start_time_secs,
       port: Some(adopted.port),
-      // Adopted entries went through our state.json before the
-      // restart — by construction they were launched by *this*
-      // daemon's previous instance and therefore carry the same
-      // env marker. Marking them keeps `collect_in_use_ports`
-      // consistent across the adopted-vs-external split.
+      // Adopted rows came from our own state.json, so this daemon's previous
+      // instance launched them and they carry the env marker. Marking them keeps
+      // `collect_in_use_ports` consistent.
       launched_by_llamastash: true,
       name: adopted.name.clone(),
     }
   }
 }
 
-/// Inputs to a sweep — the daemon hands them in.
+/// Inputs to a sweep, which the daemon hands in.
 #[derive(Debug, Clone)]
 pub struct SweepInputs<'a> {
   pub recorded_running: &'a [RunningSnapshot],
-  /// Process basenames matched to detect backend-child invocations the daemon
-  /// doesn't own. In production this is [`crate::backend::external_process_markers`]
-  /// (every backend's `process_markers`), so the sweep learns a new backend's
-  /// server from its registration alone; tests inject a unique substring so they
-  /// don't trip on the real binaries.
+  /// Process basenames matched to detect backend child processes the daemon does
+  /// not own. Production uses
+  /// [`crate::backend::external_process_markers`], the `process_markers` of every
+  /// backend, so a new backend's server is found from its registration alone. Tests
+  /// inject a unique substring to avoid the real binaries.
   pub external_markers: Vec<&'static str>,
-  /// Per-probe network timeout. Each adoption candidate gets one
-  /// `/v1/models` call capped at this budget. Production defaults
-  /// to 1s; tests can shorten.
+  /// Budget for the one `/v1/models` call per adoption candidate. Production
+  /// defaults to 1s, tests shorten it.
   pub probe_timeout: Duration,
 }
 
@@ -170,24 +143,16 @@ impl<'a> SweepInputs<'a> {
 /// table. Separate from [`sweep`] so a resweep tick can run it on a blocking
 /// thread instead of an async worker.
 fn scan_processes() -> Option<System> {
-  // `with_environ` makes `proc.environ()` populate the process
-  // environment block, which the marker check below reads to spot
-  // orphan llamastash children carrying `LLAMASTASH_LAUNCHED=1`.
+  // `with_environ` populates the environment block the marker check below reads
+  // to spot orphan children carrying `LLAMASTASH_LAUNCHED=1`.
   //
-  // Unix-only: on Linux/macOS the backend reads `/proc/<pid>/environ`
-  // (and the equivalent on macOS) as one same-UID file per process,
-  // measured in single-digit milliseconds. On Windows the backend
-  // walks every process's PEB via `NtQueryInformationProcess` +
-  // `PROCESS_VM_READ`, which is slow and access-restricted enough
-  // that enabling it on the CI runner pushed the daemon's startup
-  // sweep past the test harness's 3-second socket-bind deadline
-  // and broke every `wait_for_socket` integration test. The
-  // marker-driven port-skip is a proactive nice-to-have; the
-  // bind-probe in `ports::try_bind_probe` (called from
-  // `reserve_port`) is the correctness gate and runs on every
-  // platform. Skipping environ on Windows means
-  // `launched_by_llamastash` stays `false` there but launches
-  // still avoid externally-held ports via the probe.
+  // Unix-only: there it is one same-UID file read per process, measured in
+  // single-digit milliseconds. On Windows the backend reads every process's PEB
+  // with `NtQueryInformationProcess` + `PROCESS_VM_READ`, slow and access
+  // restricted enough that in CI it pushed the startup sweep past the test
+  // harness's 3-second socket-bind deadline. `ports::try_bind_probe` is the
+  // correctness gate on every platform, so `launched_by_llamastash` stays false on
+  // Windows.
   let process_refresh = {
     #[cfg(unix)]
     {
@@ -208,8 +173,8 @@ fn scan_processes() -> Option<System> {
   Some(sys)
 }
 
-/// Run a sweep. Pure-ish modulo a `sysinfo` scan of process tables
-/// and one short HTTP probe per adoption candidate.
+/// Run a sweep. Pure apart from the `sysinfo` process scan and one short HTTP
+/// probe per adoption candidate.
 pub async fn sweep(inputs: SweepInputs<'_>) -> SweepReport {
   let sys = scan_processes();
   let mut adopted: Vec<RunningSnapshot> = Vec::new();
@@ -222,24 +187,21 @@ pub async fn sweep(inputs: SweepInputs<'_>) -> SweepReport {
     let backend = crate::backend::Backends::from_id(&snap.resolved_backend)
       .unwrap_or_else(crate::backend::default_backend);
     // Orphan re-adoption is process-based, so it needs a path to confirm
-    // against. Every backend spawns a real child with a real path, even when
-    // its identity is not a GGUF. Dropping those unprobed left the server alive,
+    // against. Every backend spawns a real child with a real path, even when its
+    // identity is not a GGUF. Dropping those unprobed left the server alive,
     // holding its port and its GPU allocation, in neither `running` nor
     // `external` and reachable by no stop command.
     let path = match snap.id.as_gguf() {
       Some(g) => g.path.clone(),
       None => snap.params.model_path.clone(),
     };
-    // Three-factor confirmation: PID alive (above), port listening, and the
-    // identity match — but the id contract is backend-specific (D-adopt), so
-    // dispatch on the *recorded* backend tag, not the live process's basename.
-    // A renamed / wrapped backend server still stamped its tag at launch, so
-    // keying on the tag adopts it where a basename match would drop the live
-    // child as stale (invisible to `status`, un-stoppable). The tag resolves to
-    // a backend whose `adoption_matches` owns the id rule: the default
-    // path/basename `/v1/models` match, or a backend's own (e.g. an alias body
-    // plus an argv `-m` cross-check). PID reuse is still caught: a mismatched
-    // live process fails that check regardless of tag.
+    // Three-factor confirmation: PID alive (above), port listening, identity
+    // match. The id contract is backend-specific, so this dispatches on the
+    // *recorded* backend tag, not the live basename. A renamed or wrapped server
+    // still stamped its tag at launch, so the tag adopts it where a basename match
+    // would drop the live child as stale. Its `adoption_matches` owns the id rule,
+    // the default path/basename `/v1/models` match or the backend's own. PID reuse
+    // is still caught: a mismatched live process fails that check.
     let argv: Vec<String> = sys
       .as_ref()
       .and_then(|sys| sys.process(sysinfo::Pid::from_u32(snap.pid as u32)))
@@ -268,9 +230,9 @@ pub async fn sweep(inputs: SweepInputs<'_>) -> SweepReport {
   }
 }
 
-/// The external rows in a scanned process table: every process whose
-/// basename matches a backend marker, minus `adopted_pids` (those are
-/// re-adopted launches, not strangers) and this process's own children.
+/// The external rows in a scanned process table: every process whose basename
+/// matches a backend marker, minus `adopted_pids` (re-adopted launches) and this
+/// process's own children.
 fn external_rows(
   sys: &System,
   external_markers: &[&'static str],
@@ -286,16 +248,15 @@ fn external_rows(
         return None;
       }
       // Our own children are managed, never external. Supervised children run
-      // under `setsid` so they outlive a crash, but while this daemon is up
-      // their parent is still this process — including one mid-spawn that no
+      // under `setsid` so they outlive a crash, but while this daemon is up their
+      // parent is still this process. That includes one mid-spawn that no
       // supervisor has registered yet, which a registry lookup would miss.
       if proc.parent().is_some_and(|p| p.as_u32() == daemon_pid) {
         return None;
       }
       // Skip threads. The refresh above leaves `with_tasks` off, so sysinfo
-      // lists none today; if that changes, a multi-threaded `llama-server`
-      // would surface once per thread (e.g. 36 identical rows for one
-      // process). Real processes have `thread_kind() == None`.
+      // lists none today. If that changes, a multi-threaded server would surface
+      // once per thread. Real processes have `thread_kind() == None`.
       if proc.thread_kind().is_some() {
         return None;
       }
@@ -304,33 +265,27 @@ fn external_rows(
         .iter()
         .map(|s| s.to_string_lossy().into())
         .collect();
-      // Match the marker against the executable basename only, not
-      // arbitrary argv elements. Earlier versions scanned every argv
-      // string for "llama-server", which caused llamastash to flag
-      // itself: its argv carries `--llama-server <path>` whose value
-      // contains the substring. `proc.name()` is the kernel-reported
-      // basename — for `/usr/bin/llama-server` it is `llama-server`,
-      // for `target/debug/llamastash` it is `llamastash`.
+      // Match the marker against the executable basename only, not arbitrary argv
+      // elements: llamastash's own argv carries `--llama-server <path>`, whose
+      // value contains a marker substring, so an argv scan flags itself.
+      // `proc.name()` is the kernel-reported basename.
       let basename = proc.name().to_string_lossy();
       let matched = external_markers
         .iter()
         .find(|m| crate::backend::basename_matches_marker(&basename, m))?;
       // A basename is not always the whole answer: a backend whose server is
       // one mode of a multi-command binary gets to read the argv and disown the
-      // other modes. Asked through the registry, so the sweep still names no
-      // backend and no subcommand.
+      // other modes. Asked through the registry, so the sweep names no backend.
       if !crate::backend::external_argv_is_server(matched, &cmd) {
         return None;
       }
       let model_path = extract_model_path(&cmd);
       let port = extract_port(&cmd);
       let start_time_secs = proc.start_time();
-      // Inheritance marker — see `supervisor::spawn` for the stamp
-      // side and the docstring on `ExternalProcess::launched_by_llamastash`
-      // for the semantics. `proc.environ()` reads the live OS view,
-      // so this stays accurate even when our own state.json is
-      // empty (e.g. a UAT daemon that wrote to /tmp shut down,
-      // children still alive).
+      // Inheritance marker. See `supervisor::spawn` for the stamp side and the
+      // doc comment on `ExternalProcess::launched_by_llamastash` for the
+      // semantics. `proc.environ()` reads the live OS view, so this stays
+      // accurate even when our own state.json is empty.
       let launched_by_llamastash = proc
         .environ()
         .iter()
@@ -342,8 +297,6 @@ fn external_rows(
         start_time_secs,
         port,
         launched_by_llamastash,
-        // Found by scanning the process table, so there is no launch
-        // record to take a name from.
         name: None,
       })
     })
@@ -359,19 +312,17 @@ pub const RESWEEP_INTERVAL: Duration = Duration::from_secs(30);
 /// Fold a fresh scan into the previous external list.
 ///
 /// A row survives on liveness, not on being re-found. The scan matches on a
-/// process-table basename plus argv, so it can miss a server the previous list
-/// knows about: a re-adopted one whose binary was renamed or wrapped, or one
-/// whose port rides a flag the scanner does not know. Such a process is alive,
-/// holds a port and GPU memory, and is addressable through `stop --external`,
-/// so its row is kept while the same process lives. The pid only counts as the
-/// same process when a recorded start time still matches, otherwise the pid was
-/// recycled onto something else and the row would describe a stranger.
+/// process basename plus argv, so it can miss a live server the previous list
+/// knows about: a renamed or wrapped binary, or a port on a flag the scanner does
+/// not know. Such a process holds a port and GPU memory and is addressable
+/// through `stop --external`, so its row stays while the same process lives. A
+/// recorded start time must still match, otherwise the pid was recycled and the
+/// row describes a stranger.
 ///
-/// A previous row carrying a `name` also wins over a fresh row for the same
-/// pid, but only when the two rows describe the same process. The name is the
-/// boot re-adoption's only record of that launch's address and a scan can never
-/// produce it, so taking the scan row would erase the `<model>@<name>` form
-/// `stop` takes; taking a named row for a recycled pid would name a stranger.
+/// A previous row with a `name` wins over a fresh row for the same pid, but only
+/// when both describe the same process. Only `state.json` carries the name, so
+/// the scan row would erase the `<model>@<name>` form `stop` takes, and a named
+/// row for a recycled pid would name a stranger.
 pub fn merge_external(
   previous: &[ExternalProcess],
   fresh: Vec<ExternalProcess>,
@@ -407,8 +358,8 @@ pub fn merge_external(
 /// Whether a previous row still describes the live process it was taken from.
 ///
 /// `start_time_secs: 0` means the row never recorded one, which leaves liveness
-/// as the only evidence; that is what a boot re-adoption of a process the
-/// platform would not report a start time for looks like.
+/// as the only evidence. That is what a boot re-adoption looks like for a process
+/// the platform would not report a start time for.
 fn row_still_current(row: &ExternalProcess) -> bool {
   let live_start = match process_start_time(row.pid) {
     Some(start) => start,
@@ -418,7 +369,7 @@ fn row_still_current(row: &ExternalProcess) -> bool {
 }
 
 /// Whether two start times describe one process. A zero means "no start time was
-/// recorded", which leaves nothing to compare; a matching non-zero one is
+/// recorded", which leaves nothing to compare. A matching non-zero one is
 /// positive proof the pid was not recycled.
 fn start_times_agree(recorded: u64, other: u64) -> bool {
   recorded == 0 || other == 0 || recorded == other
@@ -498,17 +449,14 @@ fn pid_alive(pid: i32) -> bool {
   if pid <= 0 {
     return false;
   }
-  // Defer to the cross-platform liveness check so the Windows
-  // backend lights up here without a second migration.
+  // Cross-platform liveness check, so the Windows backend works here too.
   crate::util::process_control::platform_default().is_alive(pid as u32)
 }
 
-/// Probe `/v1/models` on the recorded port and check that the
-/// reported model id matches the supervisor's recorded path. Any
-/// network error, non-200 response, malformed body, or mismatched
-/// id evaluates to `false` — the sweep treats those as stale. This is the
-/// default (llama.cpp) adoption id rule; the `Backend::adoption_matches`
-/// default delegates here.
+/// Probe `/v1/models` on the recorded port and check the reported model id
+/// against the recorded path. A network error, non-200 response, malformed body
+/// or mismatched id all give `false`, and the sweep treats those as stale. This
+/// is the default rule of `Backend::adoption_matches`.
 pub(crate) async fn models_endpoint_matches(port: u16, expected: &Path, timeout: Duration) -> bool {
   match fetch_models_body(port, timeout).await {
     Ok((200, body)) => body_mentions_path(&body, expected),
@@ -516,12 +464,11 @@ pub(crate) async fn models_endpoint_matches(port: u16, expected: &Path, timeout:
   }
 }
 
-/// Adoption confirmation for a backend that advertises a **served name**
-/// rather than the model path in `/v1/models`.
-///
-/// Exact match against the parsed `data[].id` values, never a scan of the raw
-/// body — same reasoning as the readiness probe: a substring hit could come
-/// from another entry's `root` path rather than from an id this server owns.
+/// Adoption confirmation for a backend that advertises a **served name** in
+/// `/v1/models` instead of the model path. Exact match against the parsed
+/// `data[].id` values, never a scan of the raw body, for the same reason as the
+/// readiness probe: a substring hit could come from another entry's `root` path
+/// rather than an id this server owns.
 pub(crate) async fn models_endpoint_serves_id(
   port: u16,
   expected: &str,
@@ -534,11 +481,9 @@ pub(crate) async fn models_endpoint_serves_id(
     .is_some_and(|ids| ids.iter().any(|id| id == expected))
 }
 
-/// GET `/v1/models` via `reqwest` — the same client the right-pane
-/// chat tab uses, so the orphan probe doesn't carry its own HTTP/1.1
-/// framing. Capped at 32 KiB so a misbehaving peer can't balloon our
-/// memory. Returns `(status, body)` or an io error. Shared by a backend's
-/// `adoption_matches` (the `/v1/models` endpoint both backends serve).
+/// GET `/v1/models` with `reqwest`, the same client the right-pane chat tab uses.
+/// Returns `(status, body)` capped at 32 KiB, or an io error. Shared by a
+/// backend's `adoption_matches`.
 pub(crate) async fn fetch_models_body(
   port: u16,
   timeout: Duration,
@@ -554,9 +499,9 @@ pub(crate) async fn fetch_models_body(
     .await
     .map_err(|e| std::io::Error::other(e.to_string()))?;
   let status = resp.status().as_u16();
-  // Cap the response body the matcher inspects. `/v1/models` is
-  // small in practice; the cap defends against an unrelated peer
-  // streaming an unbounded body on the recorded port.
+  // Cap the response body the matcher inspects. `/v1/models` is small in
+  // practice. The cap defends against an unrelated peer streaming an unbounded
+  // body on the recorded port.
   const MAX_BODY: usize = 32 * 1024;
   let mut body = resp
     .bytes()
@@ -567,13 +512,12 @@ pub(crate) async fn fetch_models_body(
   Ok((status, body))
 }
 
-/// Strict-ish match: parse the `/v1/models` body as JSON and accept
-/// adoption only when a documented `data[].id` field identifies the
-/// expected model. We tolerate the two `llama-server` behaviours we
-/// have observed in the wild (see `id_matches`), but never fall back
-/// to a substring-anywhere scan — that would falsely adopt any local
-/// process whose response body happened to contain the filename
-/// (think `python -m http.server` serving a directory listing).
+/// Strict match: parse the `/v1/models` body as JSON and accept adoption only
+/// when a documented `data[].id` field identifies the expected model. Both
+/// `llama-server` id formats seen in the wild are tolerated (see `id_matches`).
+/// Never fall back to a substring scan, which would adopt any local process whose
+/// body happened to contain the filename, such as a static file server's directory
+/// listing.
 fn body_mentions_path(body: &[u8], expected: &Path) -> bool {
   let expected_str = expected.to_string_lossy();
   let Some(base) = expected.file_name().and_then(|s| s.to_str()) else {
@@ -582,8 +526,8 @@ fn body_mentions_path(body: &[u8], expected: &Path) -> bool {
   if base.is_empty() {
     return false;
   }
-  // Only the documented OpenAI shape counts; extra fields are fine
-  // (forward-compatible), a substring hit outside `data[].id` is not.
+  // Only the documented OpenAI shape counts. Extra fields stay acceptable, and a
+  // substring hit outside `data[].id` does not.
   crate::daemon::probe::served_model_ids(body).is_some_and(|ids| {
     ids
       .iter()
@@ -591,19 +535,16 @@ fn body_mentions_path(body: &[u8], expected: &Path) -> bool {
   })
 }
 
-/// Match a `/v1/models` `id` against the recorded model path, tolerant
-/// of the two `llama-server` identity formats we've observed:
+/// Match a `/v1/models` `id` against the recorded model path. `llama-server`
+/// reports two identity formats in the wild:
 ///
-/// - **older builds** echo the literal `-m <path>` they were launched
-///   with (an absolute path). We match it exactly, which still rejects
-///   a same-basename-but-different-directory model — the PID-reuse
-///   guard the three-factor sweep relies on.
-/// - **b9245+** report only the file basename (e.g.
-///   `gemma-4-E2B-it-Q4_K_M.gguf`). When the advertised id is itself a
-///   bare basename (no path separator), we match the recorded path's
-///   basename. The relaxation is gated on the id being bare, so a full
-///   path that *differs* is still rejected, and the (pid, port) pair —
-///   already confirmed alive and listening — pins the process.
+/// - Older builds echo the literal `-m <path>` they were launched with, an
+///   absolute path, matched exactly. That rejects a same-basename model in a
+///   different directory, which is the PID-reuse guard the sweep relies on.
+/// - b9245+ report only the file basename, e.g. `gemma-4-E2B-it-Q4_K_M.gguf`. If
+///   the advertised id is a bare basename with no path separator, the recorded
+///   path's basename may match it. A differing full path is still rejected, and the
+///   (pid, port) pair, already confirmed alive and listening, pins the process.
 fn id_matches(id: &str, expected_full: &str, expected_base: &str) -> bool {
   if id == expected_full {
     return true;
@@ -612,9 +553,8 @@ fn id_matches(id: &str, expected_full: &str, expected_base: &str) -> bool {
   id_is_bare && id == expected_base
 }
 
-/// Lift `-m <path>` out of a llama-server cmdline. Returns the
-/// path the user passed (relative or absolute) without
-/// canonicalising — the orphan caller does that step itself.
+/// Lift `-m <path>` out of a server cmdline. Returns the path as the user passed
+/// it, relative or absolute. The caller canonicalises it.
 pub fn extract_model_path(cmd: &[String]) -> Option<PathBuf> {
   let mut iter = cmd.iter();
   while let Some(arg) = iter.next() {
@@ -629,12 +569,9 @@ pub fn extract_model_path(cmd: &[String]) -> Option<PathBuf> {
   None
 }
 
-/// Extract `--port N` / `--port=N` / `-p N` from a `llama-server`
-/// argv. The llama.cpp composer (`backend::llama_cpp::compose`) always
-/// emits `--port <N>` for managed children, so this is the canonical
-/// answer for any process that came from us. `None` means the cmdline
-/// didn't carry the flag — the caller treats that as "port unknown"
-/// rather than guessing the llama-server default.
+/// Extract `--port N` / `--port=N` / `-p N` from a server argv. `None` means the
+/// cmdline carried no port flag, which the caller treats as "port unknown" rather
+/// than a guess at the engine's default.
 pub fn extract_port(cmd: &[String]) -> Option<u16> {
   let mut iter = cmd.iter();
   while let Some(arg) = iter.next() {
@@ -676,18 +613,17 @@ mod tests {
       .build()
   }
 
-  /// A loopback port that nothing is listening on, for the "connection
-  /// refused" probe case below. The listening cases use `spawn_one_shot`.
+  /// A loopback port that nothing listens on, for the connection-refused probe
+  /// case below. The listening cases use `spawn_one_shot`.
   fn allocate_port() -> u16 {
     crate::test_support::allocate_port_range(1).start
   }
 
-  /// Spin up a tiny single-shot HTTP responder on an OS-assigned loopback
-  /// port, returning `(task, port)`. Binding the port here and holding it —
-  /// rather than taking a pre-picked number — closes the bind-drop-rebind
-  /// race that panicked CI with `AddrInUse` (the port could be reused
-  /// between a separate allocate and this bind). Used by the orphan probe
-  /// tests so we don't need the full `fake_llama_server` binary.
+  /// Spin up a tiny single-shot HTTP responder on an OS-assigned loopback port and
+  /// return `(task, port)`. Binding and holding the port here, rather than taking a
+  /// pre-picked number, closes the bind-drop-rebind race that panicked CI with
+  /// `AddrInUse`. The orphan probe tests use this instead of the full
+  /// `fake_llama_server` binary.
   async fn spawn_one_shot(status: u16, body: String) -> (tokio::task::JoinHandle<()>, u16) {
     let listener = TcpListener::bind(("127.0.0.1", 0))
       .await
@@ -749,8 +685,6 @@ mod tests {
 
   #[test]
   fn extract_port_handles_long_short_and_inline_forms() {
-    // Canonical llamastash-composed shape — long flag, space-separated
-    // value. This is what `backend::llama_cpp::compose` always emits.
     let canon: Vec<String> = vec![
       "llama-server".into(),
       "--port".into(),
@@ -760,20 +694,17 @@ mod tests {
     ];
     assert_eq!(extract_port(&canon), Some(41102));
 
-    // Short flag.
     let short: Vec<String> = vec!["llama-server".into(), "-p".into(), "41200".into()];
     assert_eq!(extract_port(&short), Some(41200));
 
-    // Inline `--port=N` (some users / wrappers prefer it).
     let inline: Vec<String> = vec!["llama-server".into(), "--port=41201".into()];
     assert_eq!(extract_port(&inline), Some(41201));
 
-    // No port flag → None (caller decides whether to fall back).
     let bare: Vec<String> = vec!["llama-server".into(), "-m".into(), "/m/a.gguf".into()];
     assert_eq!(extract_port(&bare), None);
 
-    // Garbage after the flag → None. The supervisor never emits this,
-    // but a user could; we refuse to guess.
+    // The supervisor never emits a non-numeric port, but a user could. Refuse to
+    // guess.
     let bad: Vec<String> = vec![
       "llama-server".into(),
       "--port".into(),
@@ -786,9 +717,8 @@ mod tests {
   fn body_mentions_path_requires_strict_id_match() {
     let body = br#"{"data":[{"id":"/m/a.gguf","object":"model"}]}"#;
     assert!(body_mentions_path(body, Path::new("/m/a.gguf")));
-    // b9245+ llama-server reports only the basename as `id`. A bare
-    // basename equal to the recorded file must adopt (the (pid, port)
-    // pair already pins the process).
+    // b9245+ llama-server reports only the basename as `id`, so a bare basename
+    // equal to the recorded file must adopt.
     let body_basename = br#"{"data":[{"id":"a.gguf","object":"model"}]}"#;
     assert!(body_mentions_path(body_basename, Path::new("/m/a.gguf")));
     // A bare basename that differs must NOT adopt.
@@ -797,15 +727,14 @@ mod tests {
       body_basename_other,
       Path::new("/m/a.gguf")
     ));
-    // Same basename in a different directory, advertised as a *full
-    // path*, must NOT adopt. The id is a path that differs → reject
-    // (the PID-reuse / friendly-fire guard for the old id format).
+    // Same basename in a different directory, advertised as a *full path*,
+    // must NOT adopt (the PID-reuse guard for the old id format).
     let body_renamed = br#"{"data":[{"id":"/different/dir/a.gguf"}]}"#;
     assert!(!body_mentions_path(body_renamed, Path::new("/m/a.gguf")));
     let body_other = br#"{"data":[{"id":"/m/other.gguf"}]}"#;
     assert!(!body_mentions_path(body_other, Path::new("/m/a.gguf")));
-    // Non-OpenAI shape that merely contains the path text must be
-    // rejected — the legacy substring matcher would have accepted.
+    // A non-OpenAI shape that merely contains the path text must be rejected. A
+    // substring scan would accept it.
     let body_html = b"<html><body>I serve /m/a.gguf here, but not as a llama-server</body></html>";
     assert!(!body_mentions_path(body_html, Path::new("/m/a.gguf")));
     // Decoy field with the right value but not at `data[].id`.
@@ -830,8 +759,8 @@ mod tests {
 
   #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
   async fn live_pid_with_port_silent_lands_in_stale() {
-    // PID is alive (us), but no one is listening on the recorded
-    // port. The three-factor probe must reject the adoption.
+    // The PID is alive (this process) but nothing listens on the recorded port,
+    // so the three-factor probe must reject the adoption.
     let live = std::process::id() as i32;
     let port = allocate_port(); // released immediately, nothing listens
     let recorded = vec![fake_snapshot(live, port, "/m/a.gguf", 1)];
@@ -868,15 +797,12 @@ mod tests {
 
   #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
   async fn an_adopted_row_keeps_its_launch_name() {
-    // D1's whole reason for putting the name on the snapshot rather than only
-    // on the supervisor: a daemon restart re-adopts the live process from
-    // `state.json`, and the launch has to still answer to `<model>@<name>`
-    // afterwards. The supervisor is gone by then; the row is the only record.
+    // A daemon restart re-adopts the live process from `state.json`, and the
+    // launch has to keep answering to `<model>@<name>` afterwards. The
+    // supervisor is gone by then and the row is the only record.
     //
-    // This asserts the sweep only. The caller then projects the adopted row
-    // into an `external` row and used to drop the name doing it — so this test
-    // passed while the address was dead. `from_adopted_carries_the_launch_name`
-    // pins that half.
+    // This asserts the sweep half. `from_adopted_carries_the_launch_name` checks
+    // the projection into an `external` row.
     let live = std::process::id() as i32;
     let body = serde_json::json!({
       "object": "list",
@@ -903,10 +829,9 @@ mod tests {
 
   #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
   async fn live_pid_with_basename_only_id_adopts() {
-    // Regression for the llama.cpp drift: b9245+ reports only the file
-    // basename as `/v1/models` `id` (not the full `-m` path the older
-    // builds echoed). The recorded path is absolute; the sweep must
-    // still adopt when the basenames line up.
+    // Regression for llama.cpp drift: b9245+ reports only the file basename as
+    // `/v1/models` `id`, not the full `-m` path older builds echoed. The
+    // recorded path is absolute, so the sweep must adopt on a basename match.
     let live = std::process::id() as i32;
     let body = serde_json::json!({
       "object": "list",
@@ -932,10 +857,9 @@ mod tests {
 
   #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
   async fn live_pid_with_mismatched_model_path_is_stale_pid_reuse_guard() {
-    // Same PID + listening port, but the responder advertises a
-    // different model — the canonical PID-reuse case. Adopt would
-    // bind a stale `state.json::running` entry to an unrelated
-    // process. Three-factor confirmation rejects it.
+    // Same PID and listening port, but the responder advertises a different
+    // model: the canonical PID-reuse case. Adopting would bind a stale
+    // `state.json::running` entry to an unrelated process.
     let live = std::process::id() as i32;
     let body = serde_json::json!({
       "object": "list",
@@ -958,20 +882,16 @@ mod tests {
     assert_eq!(report.stale.len(), 1);
   }
 
-  // Unix-only: spawns a real `sleep` binary and relies on POSIX
-  // process-naming semantics. The sweep's matching *logic* is covered
-  // cross-platform by the non-spawn unit tests above (`id_matches`,
-  // basename adoption, stale classification). Windows has no portable
-  // long-lived binary that also tolerates an arbitrary marker-bearing
-  // argv (test 2), and Windows orphan re-adoption is N/A anyway — the
-  // daemon's children share a kill-on-close job object.
+  // Unix-only: spawns a real `sleep` binary and relies on POSIX process naming.
+  // The sweep's matching logic is covered cross-platform by the unit tests
+  // above. Windows has no long-lived binary that tolerates a marker-bearing argv,
+  // and Windows orphan re-adoption is N/A anyway. The daemon's children share a
+  // kill-on-close job object.
   #[cfg(unix)]
   #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
   async fn sweep_finds_unmanaged_processes_via_cmdline_marker() {
-    // Spawn a long-lived dummy process whose program name matches
-    // the marker, sweep, then kill it. It has to be detached: the sweep
-    // skips the daemon's own children, and a child of the test process is
-    // exactly that.
+    // The process has to be detached: the sweep skips the daemon's own
+    // children, and a child of the test process is exactly that.
     use std::time::Duration as StdDuration;
 
     let pid = spawn_detached("sleep 30");
@@ -994,10 +914,10 @@ mod tests {
   /// Spawn `cmd` so it outlives its shell parent, and return its pid.
   ///
   /// The shell backgrounds the command and exits, so the kernel re-parents it
-  /// away from the test process. That is what makes the row a real external
-  /// candidate: a direct child of the test process is a child of the daemon for
-  /// the sweep, and gets skipped. The redirect matters: backgrounded, the child
-  /// would hold the pipe `output()` reads and block the helper until it exits.
+  /// away from the test process. That makes the row a real external candidate: a
+  /// direct child of the test process is a child of the daemon for the sweep and
+  /// gets skipped. The redirect matters: backgrounded, the child would hold the
+  /// pipe `output()` reads and block the helper until it exits.
   #[cfg(unix)]
   fn spawn_detached(cmd: &str) -> u32 {
     let out = std::process::Command::new("sh")
@@ -1023,8 +943,8 @@ mod tests {
   async fn sweep_skips_the_daemons_own_children() {
     // The row a supervised launch would produce must never reach the external
     // list: it is a managed launch, stoppable by name, and `status` already
-    // shows it. A direct child here stands in for a supervised child — same
-    // parent pid, and no supervisor entry yet mid-spawn.
+    // shows it. A direct child here stands in for a supervised child, same parent
+    // pid and no supervisor entry yet mid-spawn.
     use std::process::{Command, Stdio};
     use std::time::Duration as StdDuration;
 
@@ -1054,12 +974,10 @@ mod tests {
   #[cfg(unix)]
   #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
   async fn marker_match_ignores_argv_values() {
-    // Regression: the matcher must consider the executable basename
-    // only, not arbitrary argv values. Spawn `sleep` with the
-    // marker substring embedded in an arg — the process must NOT
-    // be classified as external because its basename is `sleep`,
-    // not `llama-server`. (Equivalent to llamastash carrying
-    // `--llama-server <path>` in its own argv.)
+    // Regression: the matcher considers the executable basename only, not
+    // arbitrary argv values. The marker here is `llama-server` and the process's
+    // basename is `sleep`, so it must not classify as external. (Equivalent to
+    // llamastash carrying `--llama-server <path>` in its own argv.)
     use std::time::Duration as StdDuration;
 
     let pid = spawn_detached("sleep 30 --decoy=llama-server-path");
@@ -1082,10 +1000,9 @@ mod tests {
     );
   }
 
-  /// A crashed daemon leaves the launch running; its name is the only piece
-  /// of the address that can survive, and this projection is where it either
-  /// rides across or is lost. Testing `sweep` alone missed the drop once —
-  /// `sweep` cloned the name faithfully and the caller discarded it.
+  /// A crashed daemon leaves the launch running, and its name is the only part
+  /// of the address that can survive. This projection is where it either rides
+  /// across or is lost.
   #[test]
   fn from_adopted_carries_the_launch_name() {
     let snap = crate::test_support::running_row("/models/qwen.gguf")
@@ -1122,8 +1039,8 @@ mod tests {
     );
   }
 
-  /// A process the scan found never went through `state.json`, so there is no
-  /// name to claim — the `name` field must stay `None` for it.
+  /// A process the scan found never went through `state.json`, so it has no name
+  /// to claim.
   #[tokio::test]
   async fn scanned_external_rows_carry_no_name() {
     let recorded: Vec<RunningSnapshot> = Vec::new();
@@ -1160,7 +1077,7 @@ mod tests {
 
   #[test]
   fn merge_lets_the_fresh_scan_replace_the_previous_scan_rows() {
-    // A previous row the rescan doesn't find is a process that exited. Left in
+    // A previous row the rescan does not find is a process that exited. Left in
     // place, `status` would keep showing a dead server until the daemon
     // restarted.
     let previous = vec![scan_row(2_147_483_646, Some(41100))];
@@ -1172,7 +1089,7 @@ mod tests {
   #[test]
   fn merge_keeps_a_live_named_row_the_scan_does_not_find() {
     // The re-adopted row is the only record of this launch's address, and the
-    // scan can't reproduce it: it has no `state.json` to read a name from.
+    // scan cannot reproduce it. It has no `state.json` to read a name from.
     let live = std::process::id();
     let previous = vec![named_row(live, 41102, "coder")];
     let merged = merge_external(&previous, Vec::new());
@@ -1183,17 +1100,16 @@ mod tests {
 
   #[test]
   fn merge_drops_a_named_row_whose_process_has_exited() {
-    // Liveness is the only thing that distinguishes "the scan missed it" from
-    // "it died": a stopped server must drop off within one resweep.
+    // Liveness is the only thing that tells "the scan missed it" from "it died".
+    // A stopped server must drop off within one resweep.
     let previous = vec![named_row(2_147_483_646, 41103, "coder")];
     assert!(merge_external(&previous, Vec::new()).is_empty());
   }
 
   #[test]
   fn merge_keeps_the_name_when_the_scan_finds_the_same_pid_again() {
-    // A daemon crash plus restart re-adopts the row, and the very next scan
-    // finds the same live process without a name. Keeping the scan row here is
-    // what made `<model>@<name>` stop working while the server was still up.
+    // A daemon crash plus restart re-adopts the row, and the next scan finds
+    // the same live process without a name. The named row must win.
     let live = std::process::id();
     let previous = vec![named_row(live, 41104, "coder")];
     let merged = merge_external(&previous, vec![scan_row(live, Some(9999))]);
@@ -1205,7 +1121,7 @@ mod tests {
   #[test]
   fn merge_keeps_a_live_row_the_scan_cannot_match_even_without_a_name() {
     // A renamed or wrapped server, or one whose port rides a flag the scanner
-    // doesn't know, is alive and holds a port but never comes back from a scan.
+    // does not know, is alive and holds a port but never comes back from a scan.
     // Carrying only named rows dropped it 30 s after boot.
     let live = std::process::id();
     // The recorded start time is the real one, so this goes through the identity
@@ -1230,7 +1146,7 @@ mod tests {
     let live = std::process::id();
     let live_start = process_start_time(live).unwrap_or(0);
     if live_start == 0 {
-      // No start time available on this platform, so identity can't be checked.
+      // No start time available on this platform, so identity cannot be checked.
       return;
     }
     let previous = vec![ExternalProcess {
@@ -1242,7 +1158,7 @@ mod tests {
 
   #[test]
   fn merge_drops_a_carried_unnamed_row_whose_pid_was_recycled() {
-    // Same rule without a name: nothing about the row makes a recycled pid safe
+    // Same rule without a name. Nothing about the row makes a recycled pid safe
     // to carry.
     let live = std::process::id();
     let live_start = process_start_time(live).unwrap_or(0);
@@ -1276,7 +1192,7 @@ mod tests {
 
   #[test]
   fn merge_takes_the_fresh_row_when_a_named_pid_was_recycled() {
-    // Same pid, different process: the name belongs to whatever used the pid
+    // Same pid, different process. The name belongs to whatever used the pid
     // first, so the scan row is the honest one.
     let previous = vec![ExternalProcess {
       start_time_secs: 111,

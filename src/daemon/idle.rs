@@ -1,8 +1,6 @@
-//! Opt-in idle auto-shutdown (`daemon.idle_timeout_secs`).
-//!
-//! A background poller fires the shutdown token once the daemon has had
-//! nothing to do for the configured span, so a forgotten `daemon stop`
-//! doesn't keep a laptop awake. Disabled by default.
+//! Opt-in idle auto-shutdown (`daemon.idle_timeout_secs`). A background
+//! poller fires the shutdown token once the daemon has had nothing to
+//! do for the configured span. Disabled by default.
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -16,22 +14,17 @@ use super::supervisor::ManagedState;
 
 /// Ceiling on how often idleness is sampled. Coarse on purpose: this
 /// decides when to *stop* doing nothing, so polling harder costs more
-/// than the precision is worth. A timeout below this polls at the
-/// timeout instead.
+/// than the precision is worth.
 const MAX_POLL: Duration = Duration::from_secs(5);
 
 /// Last-touched clock shared by every surface a user reaches the daemon
 /// through.
 ///
-/// Polling a connection *gauge* only sees clients attached at the
-/// sampling instant, which misses the common shapes entirely: one-shot
-/// CLI calls open and close between two polls, and proxy requests never
-/// touch the control plane at all. Each surface stamps this instead, so
-/// "idle" means *nothing has happened since* rather than *nothing is
-/// happening right now*.
-///
-/// Cheap to clone (one `Arc`); stores millis from a per-process base so
-/// a read is a relaxed atomic load.
+/// A connection *gauge* only sees clients attached at the sampling
+/// instant: one-shot CLI calls open and close between two polls, and
+/// proxy requests never touch the control plane. Each surface stamps
+/// this instead, so "idle" means *nothing has happened since* rather
+/// than *nothing is happening right now*.
 #[derive(Clone, Debug)]
 pub struct Activity {
   base: Instant,
@@ -46,9 +39,9 @@ impl Activity {
     }
   }
 
-  /// Record that something reached the daemon. Called on every
-  /// control-plane and proxy connection, at open and at close, so both
-  /// long-lived and one-shot clients register.
+  /// Record that something reached the daemon. Called at connection
+  /// open and close on the control plane and the proxy, so one-shot
+  /// clients register too.
   pub fn mark(&self) {
     let now = self.base.elapsed().as_millis() as u64;
     self.last_millis.fetch_max(now, Ordering::Relaxed);
@@ -72,10 +65,10 @@ impl Default for Activity {
 
 /// Is the daemon holding work a user would miss right now?
 ///
-/// A launch counts only while it is *live*. A child that crashed or was
-/// stopped leaves a terminal-state entry in the registry, and treating
-/// that as work would pin the daemon awake forever — the opposite of
-/// what a walk-away timeout is for.
+/// A launch counts only while it is *live*. A crashed or stopped child
+/// leaves a terminal-state registry row, and counting that as work
+/// would pin the daemon awake forever, the opposite of a walk-away
+/// timeout.
 async fn is_busy(supervisors: &SupervisorRegistry, connections: &AtomicUsize) -> bool {
   if connections.load(Ordering::Relaxed) > 0 {
     return true;
@@ -92,10 +85,8 @@ async fn is_busy(supervisors: &SupervisorRegistry, connections: &AtomicUsize) ->
 }
 
 /// Poll for idleness and trigger `token` once nothing has touched the
-/// daemon for `timeout`.
-///
-/// The returned handle is not awaited by the daemon: the task exits on
-/// its own after triggering, and is dropped with the runtime otherwise.
+/// daemon for `timeout`. The daemon does not await the returned handle
+/// because the task exits on its own after triggering.
 pub(super) fn spawn(
   supervisors: SupervisorRegistry,
   connections: Arc<AtomicUsize>,
@@ -111,8 +102,8 @@ pub(super) fn spawn(
         _ = tokio::time::sleep(poll) => {}
       }
       // Ongoing work keeps the clock stamped, so the countdown always
-      // runs from the last moment the daemon had something to do —
-      // never from the poll that first noticed.
+      // runs from the last moment the daemon had something to do, not
+      // from the poll that first noticed.
       if is_busy(&supervisors, &connections).await {
         activity.mark();
         continue;
@@ -166,7 +157,7 @@ mod tests {
 
   /// Regression: a child that crashed or was stopped leaves a
   /// terminal-state row in the registry. Counting it as work pinned the
-  /// daemon awake forever — exactly the walk-away case the timeout is
+  /// daemon awake forever, exactly the walk-away case the timeout is
   /// for.
   #[tokio::test]
   async fn a_terminal_state_launch_is_not_busy() {
@@ -264,7 +255,6 @@ mod tests {
     handle.abort();
   }
 
-  /// A live model keeps the daemon alive even with nothing attached.
   #[tokio::test]
   async fn a_running_model_keeps_the_daemon_alive() {
     let (supervisors, connections) = idle_inputs();
@@ -302,7 +292,7 @@ mod tests {
       token.clone(),
       TICK * 3,
     );
-    // Never attached at a poll instant — only stamped in between.
+    // Never attached at a poll instant, only stamped in between.
     for _ in 0..12 {
       tokio::time::sleep(TICK).await;
       activity.mark();
@@ -311,7 +301,6 @@ mod tests {
     handle.abort();
   }
 
-  /// The poller must not outlive a shutdown it didn't cause.
   #[tokio::test]
   async fn exits_when_the_daemon_shuts_down_for_another_reason() {
     let (supervisors, connections) = idle_inputs();

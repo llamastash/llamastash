@@ -1,27 +1,10 @@
-//! Boot-time preload: start the models the operator asked to keep warm.
+//! Boot-time preload: start the models the operator asked to keep warm,
+//! from `daemon.preload:` and presets that pin `preload: true`.
 //!
-//! Two sources, both read once at daemon start:
-//!
-//! - `daemon.preload:` in `config.yaml` — a model reference (`list` name,
-//!   path, published id), a `<model>@<preset>` address, or the path to a
-//!   launch file (`.yaml` / `.yml`).
-//! - Any preset that pins `preload: true` on itself.
-//!
-//! Each entry goes through the same launch pipeline as any other launch
-//! (`compose_and_spawn`) with [`LaunchOrigin::Manual`], so the admission gate
-//! stays in charge and the idle sweep never unloads what preload started — a
-//! preloaded model is durable user intent, exactly like `llamastash start`.
-//!
-//! Launches run **sequentially, in list order**, each awaited until it settles.
-//! Two concurrent launches read the same free-memory sample and can both be
-//! admitted against memory only one of them fits in, which is what the gate
-//! exists to prevent; ordering also makes the list a priority order, first entry
-//! wins the memory.
-//!
-//! Nothing here can fail the boot: an unknown model, an unreadable launch file
-//! or an admission refusal logs one line and moves on. A preload that does not
-//! fit is the operator's problem to read about in the log, not a reason to leave
-//! the daemon down.
+//! Entries launch as [`LaunchOrigin::Manual`], so the idle sweep never unloads
+//! them. Launches run sequentially in list order: two concurrent launches read
+//! the same free-memory sample and can both be admitted against memory that
+//! fits only one. A failed entry logs one line and never fails the boot.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

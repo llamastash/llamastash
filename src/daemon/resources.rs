@@ -1,12 +1,12 @@
 //! Per-PID resource sampler. Backed by `sysinfo` so we don't depend
 //! on `/proc` directly and stay portable across macOS / Linux.
 //!
-//! v1 captures RSS (resident set size in bytes) and CPU% averaged
-//! over the previous sample window. VRAM per-PID isn't included
-//! yet — that needs NVML (NVIDIA-only) and AMD doesn't expose it
-//! cleanly. The IPC `status` handler reports a *system-level* VRAM
-//! number (from `gpu::probe`) alongside the per-PID RSS/CPU; the
-//! UI renders both rows.
+//! Captures RSS (resident set size in bytes) and CPU% averaged over
+//! the previous sample window. Per-PID VRAM is not included — that
+//! needs NVML (NVIDIA-only) and AMD doesn't expose it cleanly. The
+//! IPC `status` handler reports a *system-level* VRAM number (from
+//! `gpu::probe`) alongside the per-PID RSS/CPU; the UI renders both
+//! rows.
 
 use std::time::Duration;
 
@@ -27,11 +27,8 @@ pub struct ResourceReading {
   pub pid: u32,
   /// Resident-set size in bytes.
   pub rss_bytes: u64,
-  /// CPU utilisation averaged across all cores, in percent
-  /// (i.e. a fully-saturated 8-core machine reports ~800 %).
-  /// `sysinfo` returns it pre-normalised to the per-core scale —
-  /// we sum the children-of-this-pid view but `llama-server` is
-  /// single-process so this is effectively one reading.
+  /// CPU use of this one PID in percent, where 100 is one full core, so
+  /// 8 saturated cores read ~800. Child processes are not included.
   pub cpu_percent: f32,
   /// Number of threads the process has.
   pub threads: u32,
@@ -102,7 +99,7 @@ pub fn sample_loop(pid: u32, interval: Duration) -> tokio::sync::mpsc::Receiver<
       match tx.try_send(reading) {
         Ok(()) => {}
         Err(TrySendError::Full(_)) => {
-          // Consumer is slow; skip this reading.
+          // Consumer is slow. Skip this reading.
         }
         Err(TrySendError::Closed(_)) => return,
       }

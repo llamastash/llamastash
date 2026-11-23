@@ -68,10 +68,9 @@ pub struct DaemonOptions {
   /// under here so the supervisor's stdout/stderr tee + the
   /// `logs_tail` IPC method have a durable backing store.
   pub log_dir: PathBuf,
-  /// `llama-server` binary path. `None` defers resolution to
-  /// `start_model` time (current behaviour for tests that never
-  /// launch); production startup pre-resolves so the daemon fails
-  /// fast if the binary is missing.
+  /// Default engine binary path. `None` defers resolution to
+  /// `start_model` time; production startup pre-resolves so the
+  /// daemon fails fast if the binary is missing.
   pub binary: Option<PathBuf>,
   /// Listening-port range the launch allocator probes. Defaults to
   /// `41100..=41300`.
@@ -120,8 +119,8 @@ pub struct DaemonOptions {
   /// config so the detached re-exec can re-append the flags (env/flag don't
   /// survive detach; config does). An absent key means "not forced".
   pub backend_force: std::collections::BTreeMap<String, bool>,
-  /// Control-plane HTTP listener port. Phase A of the Windows+HTTP-IPC
-  /// plan: the bearer-token-authed JSON-RPC server binds here. `0`
+  /// Control-plane HTTP listener port. The bearer-token-authed
+  /// JSON-RPC server binds here. `0`
   /// means "let the kernel pick" (used by tests for collision
   /// isolation); production wiring uses
   /// [`control_plane::DEFAULT_CONTROL_PORT`] with a small scan window
@@ -130,7 +129,7 @@ pub struct DaemonOptions {
   /// discover them.
   pub control_plane_port: u16,
   /// `daemon start --force`: came up despite an *indicated* backend failing
-  /// its precheck (a missing `llama-server` with nothing else to launch).
+  /// its precheck (its binary is missing and nothing else can launch).
   /// The CLI gate (`precheck_indicated_backends`) is what enforces fail-fast;
   /// this only needs to ride through the detached re-exec so the foreground
   /// child skips the same gate the parent already waived.
@@ -214,10 +213,9 @@ impl DaemonOptions {
       log_dir,
       binary: None,
       port_range: PortRange::default(),
-      // Production-default discovery: no scan roots until a later
-      // commit threads config + CLI flags through `handle_start`.
-      // Empty roots still produce a working daemon — `list_models`
-      // returns `{"models": []}`.
+      // `cli::daemon` sets the scan roots from config and flags. Empty roots
+      // still produce a working daemon, and `list_models` returns
+      // `{"models": []}`.
       discovery: DiscoveryOptions::new(Vec::new()),
       probe_timeout_secs: None,
       arch_defaults: std::collections::BTreeMap::new(),
@@ -304,9 +302,7 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   let _signal_task = install_signal_handlers(token.clone());
 
   // 4. Discovery. The catalog is shared between the discovery task
-  // (writer) and the IPC dispatcher (reader). An empty scan_roots
-  // produces a working daemon with an empty catalog — `list_models`
-  // returns `{"models": []}`.
+  // (writer) and the IPC dispatcher (reader).
   let catalog = ModelCatalog::new();
   // Backends decide per rescan whether they contribute rows.
   let mut discovery_opts = opts.discovery.clone();
@@ -321,8 +317,7 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   // 5. Persisted state — favorites, last_params, running.
   // A parse failure does NOT block daemon start: the file is moved
   // to `state.json.broken-<ts>` and the daemon comes up with
-  // defaults. Same posture as the plan's
-  // `state.json corruption could brick the daemon` mitigation.
+  // defaults, so a corrupt file cannot brick the daemon.
   let persisted_state = match load_state(&opts.state_dir) {
     Ok(s) => s,
     Err(e) => {
@@ -408,10 +403,11 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   // the `Disabled` variant so a daemon with
   // `proxy.enabled: false` reads as disabled even before §8c runs.
   let proxy_status_cell = proxy::server::new_status_cell();
-  // Aggregate backend config + per-backend force-enable map, both already
-  // post-env-override (`build_options` applied `LLAMASTASH_FIT_CTX_FLOOR` /
-  // `STRICT_FIT` and folded the per-backend force flags). Each backend
-  // reads its own sub-config through its hooks; the daemon names no backend.
+  // Aggregate backend config + per-backend force-enable map, both
+  // already post-env-override (`build_options` applied the engine env
+  // overrides and folded the per-backend force flags). Each backend
+  // reads its own sub-config through its hooks; the daemon names no
+  // backend.
   let mut ctx = MethodContext::with_catalog(token.clone(), catalog)
     .with_supervisors(supervisors)
     .with_gpu(initial_gpu)
@@ -497,7 +493,7 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   // 8c. OpenAI-compat proxy listener. Spawned between the
   // host-metrics sampler (which the proxy doesn't depend on but
   // which is the canonical "background sampler" anchor) and the
-  // unix-socket accept loop so the IPC ctx is fully populated
+  // control-plane accept loop so the IPC ctx is fully populated
   // before the proxy reads from it. Bind failure is intentionally
   // non-fatal — the proxy is a convenience surface; the daemon's
   // primary contract (IPC + supervisor) survives a port collision.
@@ -508,10 +504,8 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
     let host = opts.proxy.effective_host();
     let addr = proxy::server::listen_addr(host, opts.proxy.effective_port());
     // A blank/whitespace key disables auth in `ProxyAuth`, so treat it as
-    // absent for the backstop too — otherwise a whitespace-only key would
-    // pass the guard yet leave the listener keyless on the LAN. (Production
-    // paths already fold `effective_api_key()` into `api_key`, so this is
-    // defense-in-depth against a caller that reaches here unfolded.)
+    // absent here too. Otherwise a whitespace-only key would pass the guard
+    // and leave the listener keyless on the LAN.
     let has_api_key = proxy_key_present(opts.proxy.api_key.as_deref());
     // Fail-closed backstop: never expose a non-loopback proxy with no
     // bearer key unless the operator explicitly opted out. The CLI
@@ -699,9 +693,9 @@ pub async fn run_foreground(opts: DaemonOptions) -> Result<StartOutcome> {
   // token so SIGINT/SIGTERM/IPC `shutdown` all unblock the same way.
   token.wait_until_triggered().await;
 
-  // 9b. SIGTERM-then-SIGKILL every supervised `llama-server` before
+  // 9b. SIGTERM-then-SIGKILL every supervised engine child before
   // exiting. The supervisor's `pre_exec(setsid)` makes each child a
-  // session leader so it survives a daemon crash (R42's orphan
+  // session leader so it survives a daemon crash (orphan
   // adoption rescues those on the next start). For *deliberate*
   // exits — `daemon stop`, SIGINT, SIGTERM, IPC `shutdown` — we
   // don't want children to leak. The 5 s grace mirrors
@@ -779,10 +773,8 @@ fn lookup_live_process(pid: u32) -> LiveProcess {
 /// overrides a config `enabled: false`; the default-on path needs nothing,
 /// since the child re-reads config. Registry-driven off the force map, whose
 /// keys are backend ids and whose CLI spelling is `--<id>` by construction
-/// (`cli::daemon` builds the map from exactly those flags). A new forceable
-/// backend therefore needs no edit here — this used to be one copy-pasted
-/// eight-line block per backend, duplicated across both re-exec sites, which
-/// is how the newest one came to be missing from them.
+/// (`cli::daemon` builds the map from exactly those flags), so a new
+/// forceable backend needs no edit here.
 pub fn backend_force_flags(opts: &DaemonOptions) -> Vec<String> {
   opts
     .backend_force
@@ -822,9 +814,10 @@ fn quarantine_broken_state(state_dir: &Path) {
 /// case this lengthens is a daemon that is hung.
 const DETACHED_BIND_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Re-exec the current binary as a detached daemon child and wait for it
-/// to bind its socket. The parent returns to the user's shell once the
-/// socket is connectable; the child is the long-lived daemon.
+/// Re-exec the current binary as a detached daemon child and wait for
+/// it to bring up its control plane. The parent returns to the user's
+/// shell once the control plane is reachable; the child is the
+/// long-lived daemon.
 ///
 /// We deliberately do **not** call `fork()` ourselves: this function may
 /// be invoked from inside a multithreaded tokio runtime, and `fork()` in
@@ -838,7 +831,8 @@ const DETACHED_BIND_TIMEOUT: Duration = Duration::from_secs(20);
 ///    `stdout`/`stderr` redirected to `/dev/null` and `setsid` applied
 ///    between `fork` and `exec`.
 /// 2. Poll for `runtime.json` (the HTTP control plane's handshake
-///    file) for up to ~3s. Success → daemon is ready; return.
+///    file) for up to `DETACHED_BIND_TIMEOUT`. Success → daemon is
+///    ready; return.
 /// 3. If the child has already exited (e.g. AlreadyRunning), reap it
 ///    and surface its exit status.
 #[cfg(unix)]

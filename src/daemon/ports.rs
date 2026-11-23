@@ -1,7 +1,7 @@
-//! Listening-port allocator for spawned `llama-server` instances.
+//! Listening-port allocator for spawned engine children.
 //!
-//! The plan fixed `41100..=41300` as the default range — high,
-//! unprivileged, and not commonly claimed by dev servers. The
+//! `41100..=41300` is the default range — high, unprivileged, and
+//! not commonly claimed by dev servers. The
 //! allocator linearly probes the range, asking the OS to bind each
 //! candidate via `TcpListener::bind` (then immediately drops the
 //! socket); the first successful bind wins and is recorded into the
