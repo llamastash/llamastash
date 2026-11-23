@@ -2,7 +2,7 @@
 
 ## [0.12.1] — 2026-11-23
 
-A patch release with one proxy fix and one security update. If a proxy auto-start passes the memory check and then dies while it loads, LlamaStash now unloads idle auto-started models and retries the launch once, so a different model no longer answers the request. A readiness timeout, a stop, or a launch that dies within 5 seconds unloads nothing. The `url` crate moves to 2.5.9 to clear RUSTSEC-2026-0592.
+A patch release with one proxy fix and one security update. If a proxy auto-start passes the memory check and then dies while it loads, LlamaStash now tries to unload idle auto-started models and retry the launch once before it falls back to a different model. A readiness timeout, a stop, or a launch that dies within 5 seconds unloads nothing. The `url` crate moves to 2.5.9 to clear RUSTSEC-2026-0592.
 
 ### Fixed
 
