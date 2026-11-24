@@ -11,8 +11,8 @@ use super::palette::{Palette, ThemeName};
 // rendered close to invisible on dark terminals where the dark-gray
 // ANSI slot maps to a dim shade. Bump both to `Color::Gray` so
 // labels and dividers stay legible. The "muted vs primary text"
-// distinction in mono is now carried by bold/regular modifiers at
-// the render site rather than by hue.
+// distinction in mono is carried by bold/regular modifiers at the
+// render site rather than by hue.
 pub(crate) const PALETTE: Palette = Palette {
   name: ThemeName::Mono,
   is_dark: true,

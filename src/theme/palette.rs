@@ -4,7 +4,7 @@ use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumIter, EnumString};
 
-/// Named themes shipped with llamastash v1.
+/// Named themes shipped with llamastash.
 ///
 /// String forms accept both the short name and the conventional long name
 /// where one exists (e.g. `macchiato` and `catppuccin-macchiato`).
@@ -200,12 +200,10 @@ impl Palette {
     ratatui::style::Style::default().fg(self.error)
   }
 
-  /// `palette.warning` foreground.
   pub fn warning_style(&self) -> ratatui::style::Style {
     ratatui::style::Style::default().fg(self.warning)
   }
 
-  /// `palette.success` foreground.
   pub fn success_style(&self) -> ratatui::style::Style {
     ratatui::style::Style::default().fg(self.success)
   }
@@ -301,14 +299,13 @@ pub struct PanelBlock {
 }
 
 impl PanelBlock {
-  /// Top-border title. Pass a `Line` or an `Option<Line>`.
+  /// Top-border title.
   pub fn title(mut self, title: impl Into<Option<ratatui::text::Line<'static>>>) -> Self {
     self.title = title.into();
     self
   }
 
-  /// Bottom-border strip (hint chips / status legend). Pass a `Line`
-  /// or an `Option<Line>` for a conditionally-present footer.
+  /// Bottom-border strip (hint chips / status legend).
   pub fn footer(mut self, footer: impl Into<Option<ratatui::text::Line<'static>>>) -> Self {
     self.footer = footer.into();
     self
@@ -327,7 +324,6 @@ impl PanelBlock {
     self
   }
 
-  /// Materialise the configured frame into a ratatui `Block`.
   pub fn build(self) -> ratatui::widgets::Block<'static> {
     let mut block = ratatui::widgets::Block::default()
       .borders(ratatui::widgets::Borders::ALL)
