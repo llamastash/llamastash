@@ -2,23 +2,6 @@
 //!
 //! SHA-256 lives in the API JSON `digest` field (`sha256:<hex>`). No
 //! discrete sidecar files; no body-text parsing.
-//!
-//! Variant table:
-//!
-//! | Host | Asset name suffix |
-//! |---|---|
-//! | linux x86_64 cpu | `ubuntu-x64.tar.gz` |
-//! | linux nvidia, driver >= 580 | `ubuntu-cuda-13.*-<arch>.tar.gz` + `cudart-` bundle |
-//! | linux x86_64 nvidia, driver >= 525 | `ubuntu-cuda-12.*-x64.tar.gz` + `cudart-` bundle |
-//! | linux x86_64 vulkan / older nvidia | `ubuntu-vulkan-x64.tar.gz` |
-//! | linux x86_64 amd | `ubuntu-rocm-<ver>-x64.tar.gz` |
-//! | linux arm64 cpu | `ubuntu-arm64.tar.gz` |
-//! | linux arm64 vulkan | `ubuntu-vulkan-arm64.tar.gz` |
-//! | macos arm64 (metal default) | `macos-arm64.tar.gz` |
-//! | macos x86_64 | `macos-x64.tar.gz` |
-//!
-//! Window assets exist but are out of v2 scope per the plan's Scope
-//! Boundaries.
 
 use std::path::{Path, PathBuf};
 
@@ -94,7 +77,7 @@ struct AssetRow {
 }
 
 /// Pick the (platform, variant, arch) suffix the host wants. Returns
-/// `None` for hardware combinations v2 doesn't route to GH Releases
+/// `None` for hardware combinations that don't route to GH Releases
 /// (e.g. macOS arm64 — that route goes through brew by default).
 pub fn pick_asset_suffix(hw: &HardwareSnapshot) -> Option<String> {
   let arch_suffix = match hw.cpu_arch {
@@ -335,7 +318,6 @@ pub fn asset_matches(asset_name: &str, suffix: &str) -> bool {
 #[derive(Debug, Clone)]
 pub struct AssetPick {
   pub tag: String,
-  /// The build archive.
   pub archive: Download,
   /// Shared libraries the build needs beside it: the `cudart-` bundle
   /// (`libcudart`, `libcublas`, `libcublasLt`) for a Linux CUDA build.
@@ -427,7 +409,7 @@ fn sha256_of(asset: &AssetRow) -> Result<String, InstallError> {
 /// — GitHub's unauthenticated quota resets in 60-minute windows but
 /// queue depth + retry-after headers tend to clear within a minute
 /// of the first 429/403. A second failure surfaces immediately as
-/// `InstallError::RateLimited` per R71 ("retry once, then fall back").
+/// `InstallError::RateLimited`.
 const RATE_LIMIT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(60);
 
 pub async fn fetch_latest_asset(

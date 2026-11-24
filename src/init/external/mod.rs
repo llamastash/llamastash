@@ -1,15 +1,9 @@
 //! Init wizard's external-tool config patchers.
 //!
 //! Each module under `tools/` implements [`ToolPatcher`] for one
-//! supported AI dev tool (OpenCode, Aider, Continue, Zed, pi.dev,
-//! plus the `env.sh` shell-env writer). The wizard's
+//! supported AI dev tool. The wizard's
 //! `run_integrations_step` presents a cliclack multiselect, then
 //! calls [`dry_run`] / [`apply`] per chosen patcher.
-//!
-//! Shared with the llamastash-own config writer:
-//! - redaction allowlist + diff rendering from
-//!   [`crate::util::config_patch`]
-//! - atomic write primitive from [`crate::util::atomic_write`]
 //!
 //! Per-tool modules only declare: path, format, and the additions
 //! `serde_json::Value` to merge in. The merge / read-current /
@@ -466,8 +460,7 @@ pub fn all_patchers() -> Vec<Box<dyn ToolPatcher>> {
 mod tests {
   use super::*;
 
-  /// Trivial test patcher used by the skeleton's own tests. Not
-  /// registered with [`all_patchers`].
+  /// Not registered with [`all_patchers`].
   struct StubJson;
 
   impl ToolPatcher for StubJson {
@@ -694,7 +687,6 @@ mod tests {
     let first = apply(&StubJson, &ctx(), Some(path.clone())).expect("first apply");
     assert!(first.written_bytes > 0);
     let second = apply(&StubJson, &ctx(), Some(path.clone())).expect("second apply");
-    // No changes the second time around.
     assert!(second.diff_json.is_empty(), "idempotent");
     std::fs::remove_dir_all(&dir).ok();
   }
@@ -710,9 +702,8 @@ mod tests {
     ));
   }
 
-  /// Patcher that exposes a default + one alt path. The alt is
-  /// checked for existence first; the default is the fresh-install
-  /// fallback.
+  /// The alt is checked for existence first; the default is the
+  /// fresh-install fallback.
   struct WithAlt {
     default: PathBuf,
     alt: PathBuf,

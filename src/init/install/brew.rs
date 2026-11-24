@@ -1,10 +1,8 @@
 //! `brew install --quiet llama.cpp` path. macOS arm64's default route.
 //!
-//! On a non-zero exit from `brew install` we abort with
-//! `INIT_ABORTED = 72` and surface the captured stderr verbatim — no
-//! silent downgrade to GH Releases. Reasoning lives in the plan's
-//! "Key Technical Decisions" section: users who picked brew did so
-//! deliberately, and a silent rewrite would surprise them.
+//! On a non-zero exit from `brew install` we surface the captured stderr
+//! verbatim — no silent downgrade to GH Releases, because users who picked
+//! brew did so deliberately and a silent rewrite would surprise them.
 //!
 //! Doctor's binary-digest-drift finding carves out brew
 //! installs: routine `brew upgrade` legitimately changes the digest.
@@ -30,9 +28,7 @@ const BREW_INSTALL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// without giving a wedged brew daemon room to hang the wizard.
 const BREW_QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Run `brew install --quiet llama.cpp`, then resolve the installed
-/// `llama-server` path via `brew --prefix llama.cpp` and record its
-/// digest. Caller decides whether `brew` is on PATH (we surface a
+/// Caller decides whether `brew` is on PATH (we surface a
 /// usable error if not).
 pub fn install_via_brew() -> Result<BinaryInstall, InstallError> {
   let install = run_brew_with_timeout(&["install", "--quiet", "llama.cpp"], BREW_INSTALL_TIMEOUT)?;

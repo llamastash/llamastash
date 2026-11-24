@@ -6,22 +6,15 @@
 //! Continue.dev) via the trivial JSON↔YAML round-trip at the
 //! reader/writer boundaries.
 //!
-//! Merge rules:
-//! - Object keys present in both → recurse.
-//! - Arrays and scalars in `additions` *replace* their counterpart
-//!   in `current` (no array concat). Same rule the YAML writer
-//!   uses; consistent UX.
-//! - User-authored keys outside the additions tree are left alone.
-//!
-//! Diff rules: one row per leaf that was added or modified. Path is
-//! dotted (`providers.llamastash.baseURL`); value is JSON inline.
+//! Arrays and scalars in `additions` *replace* their counterpart in
+//! `current` (no array concat). Same rule the YAML writer uses;
+//! consistent UX. User-authored keys outside the additions tree are
+//! left alone.
 
 use serde_json::Value;
 
 use crate::util::config_patch::{DiffEntry, DiffKind};
 
-/// Recursive merge of `additions` into `current`. Pure — no I/O.
-///
 /// Existing keys stay where they are and new keys go at the end, so a
 /// user's file keeps its order. A remove-then-insert would not: `remove`
 /// swaps the last key into the gap.
@@ -42,8 +35,8 @@ pub fn merge(current: Value, additions: Value) -> Value {
   }
 }
 
-/// Structural diff between `before` and `after`. One entry per leaf
-/// added or modified; unchanged leaves emit nothing. The `path`
+/// One entry per leaf added or modified; unchanged leaves emit nothing.
+/// The `path`
 /// fields are dotted; `value_yaml` is JSON-inline (the field is
 /// named `value_yaml` historically — treat it as "value's
 /// serialised representation in the target format").
@@ -129,7 +122,6 @@ mod tests {
     assert_eq!(by_path["providers"].kind, DiffKind::Added);
   }
 
-  /// A merge into the user's file keeps their key order and appends new keys.
   #[test]
   fn merge_keeps_existing_key_order() {
     let cur = json(r#"{"zeta": 1, "alpha": {"b": 1, "a": 2}, "mid": 3}"#);

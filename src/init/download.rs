@@ -1,26 +1,21 @@
-//! HuggingFace pull.
+//! HuggingFace pull via the `hf-hub` crate. Backs `llamastash pull
+//! <repo>` and the init wizard's model step. hf-hub resolves the same
+//! `reqwest 0.12` we pin elsewhere, so adopting it does not introduce a
+//! duplicate reqwest in the dep tree.
 //!
-//! Backs `llamastash pull <repo>` standalone and the init wizard's
-//! model step. v2 uses the `hf-hub` crate (0.5 line) for the HF
-//! listing + download path. hf-hub resolves the same `reqwest 0.12`
-//! we pin elsewhere, so adopting it does not introduce a duplicate
-//! reqwest in the dep tree.
+//! Trust boundary: hf-hub builds its own `reqwest::Client`, so HF
+//! traffic bypasses [`FetchClient`]'s redirect-cap / body-cap /
+//! host-allowlist gates. Accepted because hf-hub talks only to
+//! `huggingface.co` (and its LFS CDN via the resolve-endpoint
+//! redirect chain). GH Releases install and benchmark snapshot
+//! fetches continue to go through `FetchClient`.
 //!
-//! Fetch-contract carve-out: hf-hub builds its own `reqwest::Client`,
-//! which means HF traffic does not flow through [`FetchClient`]'s
-//! redirect-cap / body-cap / host-allowlist gates. We accept that —
-//! hf-hub talks only to `huggingface.co` (and its LFS CDN via the
-//! resolve-endpoint redirect chain), so the host scope is already
-//! constrained. GH Releases install and benchmark snapshot fetches
-//! continue to go through `FetchClient`.
-//!
-//! Cache layout matches `huggingface_hub` (Python) and what
+//! Writes the `huggingface_hub` (Python) cache layout that
 //! `discovery::known_caches` scans:
 //! `~/.cache/huggingface/hub/models--<owner>--<repo>/snapshots/<rev>/<file>`,
 //! with blobs stored under `blobs/<etag>` and snapshot paths as
-//! symlinks. hf-hub writes exactly that layout, so subsequent
-//! `llamastash list` rescans dedupe via the existing discovery path
-//! .
+//! symlinks, so `llamastash list` rescans dedupe via the existing
+//! discovery path.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -35,14 +30,14 @@ use crate::config::Config;
 use crate::init::fetch::{FetchClient, FetchError};
 
 /// Disk-space headroom required *on top of* the estimated download
-/// size. 1 GiB matches the brainstorm spec.
+/// size.
 pub const DISK_HEADROOM_BYTES: u64 = 1024 * 1024 * 1024;
 
 /// Max bytes per per-file download. 512 GiB accommodates the largest
 /// single-file GGUFs the tool pulls — the DeepSeek-V4 Flash/PRO files run
-/// 81 GB to ~465 GB as *single* files (the old 64 GiB cap refused every one
-/// of them). Enforced from hf-hub's paths-info sizes before any download;
-/// the cap is a safety net against runaway metadata, not a model-size policy.
+/// 81 GB to ~465 GB as *single* files. Enforced from hf-hub's paths-info
+/// sizes before any download; the cap is a safety net against runaway
+/// metadata, not a model-size policy.
 pub const PER_FILE_MAX_BYTES: u64 = 512 * 1024 * 1024 * 1024;
 
 /// Maximum download attempts per file, on top of hf-hub's own per-request
@@ -50,9 +45,8 @@ pub const PER_FILE_MAX_BYTES: u64 = 512 * 1024 * 1024 * 1024;
 /// timeout, mid-transfer body-read stall, or a Xet transfer error).
 pub const MAX_DOWNLOAD_ATTEMPTS: u32 = 5;
 
-/// Default HF endpoint root. Overridable via `HF_ENDPOINT` env to
-/// match `huggingface_hub`'s convention, but only to hosts on
-/// [`HF_HOST_ALLOWLIST`] — the bearer-token-carrying client must not
+/// Default HF endpoint root. Overridable via `HF_ENDPOINT` env, but only
+/// to hosts on [`HF_HOST_ALLOWLIST`] — the bearer-token-carrying client must not
 /// be tricked into talking to attacker-controlled origins.
 pub const DEFAULT_HF_ENDPOINT: &str = "https://huggingface.co";
 
@@ -136,7 +130,6 @@ impl RepoSpec {
       return Err(DownloadError::BadRepoSpec(raw.to_string()));
     }
     if let Some(f) = filename_part.as_deref() {
-      // Reject empty, absolute, backslash-containing, or traversal paths.
       // Sub-directory paths (e.g. `quant/model-00001-of-00002.gguf`)
       // are valid HF repo paths and must be allowed — bartowski and
       // similar converter repos group each quant in its own subdir.
@@ -201,27 +194,21 @@ pub fn resolve_hf_token() -> Result<Option<String>, DownloadError> {
 pub struct DownloadOptions {
   /// `.gguf` by default; the wizard's "skip non-weights" rule.
   pub extension_filter: Option<String>,
-  /// Estimated size for the R64 precheck. `None` skips precheck.
+  /// Estimated size for the precheck. `None` skips precheck.
   pub estimated_bytes: Option<u64>,
   /// Optional callback fired after the repo listing + HEAD probes
   /// resolve, and again at the start/end of each per-file download.
-  /// `None` is the default — `download_repo` runs silently. The
-  /// wizard wires this to its `StepProgress` so users see "Downloading
-  /// foo.gguf (425 MiB) → Downloaded foo.gguf" instead of one long
-  /// silent await.
+  /// `None` is the default — `download_repo` runs silently.
   pub progress: Option<std::sync::Arc<dyn DownloadProgress>>,
   /// Pin the HuggingFace revision (commit SHA, branch, or tag) used
-  /// when resolving files. `None` resolves the default branch (`main`),
-  /// preserving the pre-`--revision` behavior byte-for-byte. Threaded
-  /// through to hf-hub's `revision` parameter so the downloaded file
-  /// set matches the supplied identifier exactly.
+  /// when resolving files. `None` resolves the default branch (`main`).
   pub revision: Option<String>,
   /// Trusted-converter repos to try in order if the primary spec's
   /// repo has no GGUF (typical for "synthetic" snapshot rows that
   /// point at an official org repo shipping only safetensors). Each
   /// fallback is probed with `quant_hint` to pick the matching file
   /// from a multi-quant repo. Empty list (the default) disables the
-  /// fallback path — `download_repo` errors as it did before.
+  /// fallback path.
   pub fallback_repos: Vec<String>,
   /// Quant tag (e.g. `"Q4_K_M"`) used to select a file from a fallback
   /// repo's listing when the primary `pinned_filename` doesn't match
@@ -231,13 +218,13 @@ pub struct DownloadOptions {
   pub quant_hint: Option<String>,
   /// Whether to also fetch companion siblings (mmproj projector, MTP draft
   /// head) alongside the selected base file(s). Default [`CompanionPolicy::OnePerKind`]
-  /// so a pulled multimodal / MTP model arrives complete (closes the standing
-  /// mmproj gap — M7). `--no-companions` sets `None`; `--all-companions` sets `All`.
+  /// so a pulled multimodal / MTP model arrives complete. `--no-companions`
+  /// sets `None`; `--all-companions` sets `All`.
   pub companions: CompanionPolicy,
 }
 
 /// How many companion siblings (mmproj projector / MTP draft head) `pull`
-/// fetches alongside the base model (KD5).
+/// fetches alongside the base model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CompanionPolicy {
   /// Fetch no companions (`--no-companions`) — base file(s) only.
@@ -266,11 +253,9 @@ impl std::fmt::Debug for DownloadOptions {
   }
 }
 
-/// Per-file progress hook the wizard can plug into a download so the
-/// user sees what's happening file-by-file. All methods take `&self`
-/// so the implementation can hold a cliclack spinner internally
-/// (cliclack's `ProgressBar` is `Send + Sync` and updates via
-/// interior mutability).
+/// All methods take `&self` so the implementation can hold a cliclack
+/// spinner internally (cliclack's `ProgressBar` is `Send + Sync` and
+/// updates via interior mutability).
 pub trait DownloadProgress: Send + Sync {
   /// Fired once after the repo listing + HEAD probes resolve, before
   /// any byte is downloaded. `files` is `(filename, size_bytes)`.
@@ -570,8 +555,7 @@ fn available_bytes(_path: &Path) -> Option<u64> {
 /// path explicitly to `HFClientBuilder::cache_dir` so the dependency
 /// on hf-hub's defaults is explicit, not implicit. See the
 /// [`crate::util::model_caches`] module docs for the full precedence
-/// chain (`HF_HUB_CACHE` → `HUGGINGFACE_HUB_CACHE` → `$HF_HOME/hub` →
-/// `$XDG_CACHE_HOME/huggingface/hub` → `~/.cache/huggingface/hub`).
+/// chain.
 pub fn hf_cache_dir() -> Result<PathBuf, DownloadError> {
   let home = crate::util::paths::home_dir();
   crate::util::model_caches::huggingface_primary_hub_dir(home.as_deref())
@@ -632,7 +616,7 @@ fn build_client(cache_dir: PathBuf) -> Result<HFClient, DownloadError> {
 /// (e.g. `Qwen/Qwen2.5-7B-Instruct-GGUF` only hosts
 /// `qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf`, never the
 /// unsharded basename that the benchmark snapshot records).
-/// llama.cpp loads sharded GGUFs natively from the first shard, so the
+/// The engine loads sharded GGUFs natively from the first shard, so the
 /// smoke step and config-write step keep working unchanged.
 pub(crate) fn select_files(
   all_files: &[String],
@@ -728,7 +712,7 @@ fn is_pytorch_full_weight(path: &str) -> bool {
 /// header check discovery applies on disk ([`crate::discovery::scanner::is_mtp_head_file`]) has nothing to
 /// read here. A head named like a quant (`…-MTP-Q4K-Q8_0-F32.gguf`) is missed
 /// and has to be pulled by filename; discovery still classifies it correctly
-/// once it lands. One per kind by default (KD5); `All` keeps every variant;
+/// once it lands. One per kind by default; `All` keeps every variant;
 /// `None` fetches none.
 /// Files already in `base_files` (e.g. an extension-only pull that swept them
 /// in) are excluded so nothing downloads twice.
@@ -1112,10 +1096,9 @@ pub async fn download_repo(
   let (resolved_spec, resolved_revision, info, mut filtered) =
     resolve_repo(spec, &client, options).await?;
   // Companion siblings (mmproj projector, MTP draft head) for the selected base
-  // file(s) — same-repo name-pattern only (trust boundary), one per kind by
-  // default (KD5). Closes the standing gap where `pull` fetched a multimodal /
-  // separate-head model without its companion. Extended onto the download set so
-  // the size/precheck/download loop below covers them uniformly.
+  // file(s) — same-repo name-pattern only (trust boundary). Extended onto the
+  // download set so the size/precheck/download loop below covers them
+  // uniformly.
   let all_repo_files = sibling_names(&info);
   let companions = select_companions(&all_repo_files, &filtered, options.companions);
   if !companions.is_empty() {
@@ -1130,7 +1113,7 @@ pub async fn download_repo(
 
   // The repo info listing carries no per-file size, so one paths-info
   // call fetches them to (a) enforce PER_FILE_MAX_BYTES and (b) feed the
-  // R64 disk precheck with a real total. Not `get_file_metadata`: in
+  // disk precheck with a real total. Not `get_file_metadata`: in
   // hf-hub 1.0.0 its HEAD follows the 302 to the Xet CDN, whose answer
   // has no `X-Repo-Commit`, so it fails on every Xet-backed file.
   let entries = repo
@@ -1323,7 +1306,7 @@ pub async fn run_for_init(
 mod tests {
   use super::*;
 
-  /// Capture-only progress sink used by the trait-default tests.
+  /// Capture-only progress sink used by the progress tests.
   #[derive(Default)]
   struct CaptureProgress {
     bytes_progress: std::sync::Mutex<Vec<(String, u64)>>,
@@ -1924,7 +1907,7 @@ mod tests {
   #[test]
   fn select_files_expands_shard_when_exact_pinned_is_shard_file() {
     // bartowski layout: files in a quant subdirectory. Pinning shard 1
-    // must produce both shards so llama-server can load the full model.
+    // must produce both shards so the engine can load the full model.
     let files = vec![
       "Q5_K_M/Qwen-80B-Q5_K_M-00001-of-00002.gguf".to_string(),
       "Q5_K_M/Qwen-80B-Q5_K_M-00002-of-00002.gguf".to_string(),
@@ -2004,10 +1987,9 @@ mod tests {
 
   #[test]
   fn download_options_default_carries_no_revision() {
-    // Pre-`--revision` callers (the standalone `llamastash pull`
-    // handler, every existing wizard integration test) must keep
-    // resolving the default branch — verified by `Default` returning
-    // `revision: None`.
+    // Callers like the standalone `llamastash pull` handler and the
+    // wizard integration tests must keep resolving the default branch —
+    // verified by `Default` returning `revision: None`.
     let opts = DownloadOptions::default();
     assert!(opts.revision.is_none());
   }

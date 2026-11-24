@@ -1,21 +1,13 @@
 //! Init wizard's config.yaml write half.
 //!
 //! Thin user-facing wrapper around the
-//! [`crate::config::writer::merge_and_write`] primitive that adds:
-//! - human-friendly + JSON diff rendering,
-//! - secret-key redaction (path matches `token` / `secret` /
-//!   `password` substring → value rendered as `<redacted>`),
-//! - non-interactive / interactive confirm hook,
-//! - managed_keys list build that the wizard then stamps into
-//!   `_init_snapshot.json`.
+//! [`crate::config::writer::merge_and_write`] primitive that adds diff
+//! rendering, secret-key redaction, and the managed_keys list the wizard
+//! stamps into `_init_snapshot.json`.
 //!
 //! The actual atomic rename + 0600 mode + symlink/parent-mode refusal
 //! all live in that primitive — this module never touches the
 //! filesystem itself.
-//!
-//! Redaction allowlist, diff rendering, and the [`RedactedDiffEntry`]
-//! type live in [`crate::util::config_patch`] so the external-tool
-//! patchers (`init::external::*`) inherit the same policy.
 
 use std::path::{Path, PathBuf};
 
@@ -59,10 +51,8 @@ pub struct WriteOptions {
   pub verbose: bool,
 }
 
-/// Stamp a managed key's path into the on-disk
-/// `_init_snapshot.json.managed_keys` list. Filtered for the dotted
-/// paths the wizard *actually* wrote (per the diff outcome) so a
-/// user-edited key never falsely appears as wizard-owned.
+/// The dotted paths the wizard *actually* wrote (per the diff outcome),
+/// so a user-edited key never falsely appears as wizard-owned.
 pub fn managed_keys_from_diff(diff: &[DiffEntry]) -> Vec<String> {
   diff
     .iter()

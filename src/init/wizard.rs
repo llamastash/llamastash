@@ -1,12 +1,7 @@
 //! `llamastash init` orchestration.
-//!
-//! Six-step flow:
-//!   1. detect (hardware + binary) — always runs.
-//!   2. install — `--only` / `--skip` gated.
-//!   3. model recommend + download — `--only` / `--skip` gated.
-//!   4. config write — `--only` / `--skip` gated.
-//!   5. smoke launch — `--only` / `--skip` gated.
-//!   6. handoff — always runs.
+//! Flow: detect, install, model recommend + download, config write,
+//! integrations, smoke launch, handoff. `--only` / `--skip` gate the
+//! middle steps; detect and handoff always run.
 //!
 //! `--recommended` (or the hidden `--yes` alias) short-circuits every
 //! prompt to its hardware-aware default. Three per-step value flags
@@ -37,9 +32,9 @@ use crate::init::prompts::{self, ModelChoice};
 use crate::init::recommender::{recommend, OnDiskModel, RecommendOptions, Recommendation};
 use crate::init::snapshot::{self, InstallMethod, ManagedKey};
 
-/// Effective per-step run plan after `--only`/`--skip` resolve. Step 1
-/// (detect) and step 6 (handoff) always run, so they're not in the
-/// matrix — only the three middle steps gate.
+/// Effective per-step run plan after `--only`/`--skip` resolve.
+/// Detect and handoff always run, so they're not in the matrix —
+/// only the middle steps gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StepPlan {
   pub server: bool,
@@ -49,8 +44,7 @@ pub struct StepPlan {
 }
 
 impl StepPlan {
-  /// Resolve the plan from `--only` / `--skip` per the matrix in the
-  /// plan's "init/doctor mode/flag decision matrix".
+  /// Resolve the run plan from `--only` / `--skip`.
   pub fn resolve(only: &[InitStep], skip: &[InitStep]) -> Self {
     if !only.is_empty() {
       let on = |s: InitStep| only.contains(&s);
@@ -87,12 +81,11 @@ pub const INIT_JSON_SCHEMA_VERSION: u32 = 1;
 /// `init`'s end-of-run summary the wizard prints (and the `--json`
 /// shape downstream agents parse).
 ///
-/// **safe_to_log policy (plan Key Decision §init --json output
-/// redaction allowlist):** several fields contain host-specific
+/// **safe_to_log policy:** several fields contain host-specific
 /// paths or content digests that are *not* safe to paste into a
 /// public bug report:
 ///
-/// - `install.path` (filesystem path to llama-server)
+/// - `install.path` (filesystem path to the engine binary)
 /// - `install.digest` (binary content hash)
 /// - `model.files[]` (filesystem paths to GGUFs in the HF cache)
 /// - `hardware.os` / `hardware.arch` are fine; `hardware.vram_bytes`
@@ -105,8 +98,7 @@ pub const INIT_JSON_SCHEMA_VERSION: u32 = 1;
 /// contract.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct InitSummary {
-  /// Schema version. Currently `1`. Agents should compare
-  /// against `INIT_JSON_SCHEMA_VERSION` they were built against.
+  /// Agents compare against the `INIT_JSON_SCHEMA_VERSION` they were built against.
   pub schema_version: u32,
   /// Document-level safe-to-log classification. See struct doc.
   pub safe_to_log: bool,
@@ -191,10 +183,9 @@ pub struct ConfigSummary {
   pub managed_keys: Vec<String>,
   /// Per-path digest records (value bytes + wrote_at). Skipped in
   /// `init --json` because per-key digests are *not* in the
-  /// safe_to_log allowlist (plan Key Decision §init --json output
-  /// redaction allowlist); they are consumed only by
+  /// safe_to_log allowlist; they are consumed only by
   /// `persist_init_snapshot` to populate `_init_snapshot.json.
-  /// managed_keys` per R72.
+  /// managed_keys`.
   #[serde(skip)]
   pub managed_records: Vec<ManagedKey>,
 }
@@ -256,8 +247,7 @@ pub struct FailedTool {
 pub struct HardwareSummary {
   pub gpu_backend: String,
   // Serialize with the same key names `status --json .host` uses so the
-  // two hardware surfaces share one contract (values are already
-  // identical — both come from `init::detect_hardware`).
+  // two hardware surfaces share one contract.
   #[serde(rename = "gpu_mem_total_bytes")]
   pub vram_bytes: Option<u64>,
   #[serde(rename = "ram_total_bytes")]
@@ -306,7 +296,7 @@ pub async fn run(args: InitArgs, cli: &Cli, config: &Config) -> CliResult {
   }
   // Per-step value flags pointed at a skipped step: emit a single
   // stderr warning and proceed. Keeps `--only`/`--skip` and the
-  // override flags' axes independent (W4).
+  // override flags' axes independent.
   //
   // Gated on `!args.json` so the human-readable warning text doesn't
   // mix into the structured stderr stream agents capture alongside
@@ -337,8 +327,8 @@ pub async fn run(args: InitArgs, cli: &Cli, config: &Config) -> CliResult {
     }
   }
 
-  // Thread the same flag/env/config the daemon does (see
-  // `cli/daemon.rs::resolved_inputs`) so `--llama-server <path>` and
+  // Thread the same flag/env/config the daemon does so
+  // `--llama-server <path>` and
   // `LLAMASTASH_LLAMA_SERVER` hint the wizard's existing-install probe.
   // Without this the wizard probes only PATH + common locations and
   // silently misses a binary the user explicitly pointed at.
@@ -378,8 +368,7 @@ pub async fn run(args: InitArgs, cli: &Cli, config: &Config) -> CliResult {
     None
   };
 
-  // Step 3 + 5: model pick + download. Combined here per the plan's
-  // "steps 3 + 5 (models)" matrix.
+  // Step 3 + 5: model pick + download, combined in one step.
   let model_summary: Option<ModelSummary> = if plan.models {
     summary.steps_ran.push("models");
     let outcome = run_models_step(&args, &fetch, &hardware).await?;
@@ -452,9 +441,7 @@ pub async fn run(args: InitArgs, cli: &Cli, config: &Config) -> CliResult {
     log::warn!("init: failed to persist init_snapshot.json: {e}");
   }
 
-  // Step 6: smoke launch. The dry-run + --version probe runs
-  // whenever both an install and a downloaded model are present;
-  // otherwise we emit an honest "skipped" note.
+  // Step 6: smoke launch; honest "skipped" note when no install or no model.
   let smoke = run_smoke_step(
     install.as_ref(),
     summary.model.as_ref(),
@@ -466,7 +453,7 @@ pub async fn run(args: InitArgs, cli: &Cli, config: &Config) -> CliResult {
   summary.smoke = Some(smoke);
   summary.steps_ran.push("smoke");
 
-  // Step 6: handoff. Always render the summary first so agent
+  // Handoff. Always render the summary first so agent
   // consumers (and humans) see what landed even when smoke failed —
   // the binary + model + config writes are durable and worth
   // reporting before we exit non-zero.
@@ -485,7 +472,7 @@ pub async fn run(args: InitArgs, cli: &Cli, config: &Config) -> CliResult {
     ));
   }
 
-  // Step 7: TUI handoff. Defaults to launching when stdout is a TTY
+  // TUI handoff. Defaults to launching when stdout is a TTY
   // and the caller is not in `--json` / `--no-tui` mode. The TUI
   // runs in this process; on exit we return cleanly.
   if prompts::confirm_tui_handoff(&args).await? {
@@ -601,7 +588,7 @@ fn render_hardware(hw: &HardwareSnapshot) -> HardwareSummary {
 /// Emit a single stderr line per per-step flag pointed at a step the
 /// `--only`/`--skip` plan excludes. The flag is still parsed and
 /// recorded; we just tell the user it's a no-op for this run rather
-/// than silently dropping it (W4).
+/// than silently dropping it.
 fn warn_on_ignored_step_overrides(args: &InitArgs, plan: &StepPlan) {
   if args.install.is_some() && !plan.server {
     eprintln!(
@@ -643,7 +630,7 @@ async fn run_install_step(
   //
   // `args.install.is_none()` guards the shortcut so an explicit
   // `--install <choice>` always wins over recommended-mode adoption
-  // (W3: per-step flags beat `--recommended`).
+  // (per-step flags beat `--recommended`).
   if prompts::is_recommended(args) && args.install.is_none() {
     if let Some(path) = binary.resolved_path.clone() {
       if crate::init::install::custom_path::is_safe_to_adopt(&path) {
@@ -929,8 +916,8 @@ async fn run_models_step(
   let bundled = load_bundled();
   // Try the verified remote tier; on any failure, fall back silently
   // to the bundled snapshot but record the failure so doctor can
-  // surface a sustained outage (R74 finding-6). Offline mode never
-  // counts as a failure — the user opted out of network.
+  // surface a sustained outage. Offline mode never counts as a
+  // failure — the user opted out of network.
   let (snapshot, remote_snapshot_attempt) = if fetch.is_offline() {
     (bundled, None)
   } else {
@@ -962,9 +949,8 @@ async fn run_models_step(
       }
     }
   };
-  // The date of the snapshot actually in effect (fresh remote or bundled)
-  // — recorded so doctor judges staleness against what the recommender
-  // used, not the binary's bundled date.
+  // The date of the snapshot actually in effect, recorded so doctor
+  // judges staleness against what the recommender used.
   let effective_snapshot_date =
     (!snapshot.bundle_date.is_empty()).then(|| snapshot.bundle_date.clone());
   let on_disk: Vec<OnDiskModel> = Vec::new();
@@ -1226,7 +1212,7 @@ async fn run_config_step(
   // than hand-rolling `yaml_serde::Value::String("...".into())` for
   // every key. The serialised top-level mapping becomes our
   // composition list (used below to digest each managed value's
-  // canonical YAML bytes for R72).
+  // canonical YAML bytes).
   let mut bootstrap = InitConfigAdditions::default();
   if let Some(install) = install {
     bootstrap.backend = Some(InitBackendAdditions {
@@ -1237,16 +1223,14 @@ async fn run_config_step(
       }),
     });
   }
-  // Round-9: the wizard no longer seeds `arch_defaults` — the
-  // built-in `(arch, gpu_backend) → crate::launch::knobs::KnobSet` table supersedes
-  // it. The YAML `arch_defaults` block remains an unmanaged escape
-  // hatch users can hand-edit to override the built-in row. The
-  // `_hardware` arg stays on the signature so re-introducing
+  // The YAML `arch_defaults` block is an unmanaged escape hatch users
+  // can hand-edit to override the built-in (arch, gpu_backend) knob
+  // table. The `_hardware` arg stays on the signature so re-introducing
   // hardware-aware additions doesn't need a caller-side change.
   let additions_value =
     yaml_serde::to_value(&bootstrap).expect("InitConfigAdditions serialises cleanly");
   // `composed` records `(dotted-path, value)` for every top-level
-  // managed entry. R72's user-edit detection compares the digest of
+  // managed entry. User-edit detection compares the digest of
   // canonical YAML *value* bytes — never the key-name string.
   let composed: Vec<(String, yaml_serde::Value)> = match &additions_value {
     yaml_serde::Value::Mapping(m) => m
@@ -1302,8 +1286,8 @@ async fn run_config_step(
   // Include any diff-derived paths the composition list didn't
   // already cover (e.g. recursive-merge inserts inside an existing
   // user block). These get an empty-bytes digest because we don't
-  // have the composed value handy; mark them with a sentinel digest
-  // by hashing the actual diff value_yaml string.
+  // have the composed value handy; mark them with a digest by hashing
+  // the actual diff value_yaml string.
   let composed_paths: std::collections::HashSet<&String> =
     composed.iter().map(|(p, _)| p).collect();
   for entry in &result.diff_json {
@@ -1334,7 +1318,7 @@ fn canonical_value_bytes(v: &yaml_serde::Value) -> Vec<u8> {
   s.trim_end().as_bytes().to_vec()
 }
 
-/// Step 5 — external AI tool config patchers.
+/// External AI tool config patchers.
 ///
 /// Resolution priority for which patchers run:
 /// 1. `--integrations <ids>` (comma-separated) — applies exactly the
@@ -1560,9 +1544,8 @@ struct InitServerAdditions {
 /// `llamastash init` runs can't clobber each other's persisted state.
 /// Failure to acquire (unsupported FS, EACCES / ERROR_LOCK_VIOLATION
 /// on the lock file) is non-fatal — the lock is best-effort and the
-/// caller proceeds unsynchronised, which is no worse than v2's
-/// pre-fix behaviour. Uses `flock` on Unix and `LockFileEx` on
-/// Windows; both release on handle close.
+/// caller proceeds unsynchronised. Uses `flock` on Unix and
+/// `LockFileEx` on Windows; both release on handle close.
 struct SnapshotWriteLock {
   // Held to keep the underlying handle alive — both flock and
   // LockFileEx release on close. The field is never read directly:
@@ -1596,7 +1579,7 @@ impl SnapshotWriteLock {
 }
 
 /// Non-blocking exclusive lock. True iff the lock was acquired and is
-/// now held by `file`. Best-effort: any error is treated as "could
+/// held by `file`. Best-effort: any error is treated as "could
 /// not lock" so the caller can proceed unsynchronised.
 #[cfg(unix)]
 fn try_lock_exclusive_nonblocking(file: &std::fs::File) -> bool {
@@ -1653,11 +1636,8 @@ fn persist_init_snapshot(
   let now = SystemTime::now();
   // Best-effort advisory lock so two concurrent `llamastash init`
   // processes don't race on the load-modify-save cycle of
-  // `init_snapshot.json`. The lock file is per-state-dir, opened
-  // with `OpenOptions::create(true).truncate(false)`, and the file
-  // descriptor is dropped (releasing the flock) on function exit.
-  // Failure to acquire is non-fatal — we proceed unsynchronised,
-  // matching the broader "best-effort" stance for snapshot writes.
+  // `init_snapshot.json`. Failure to acquire is non-fatal — we proceed
+  // unsynchronised.
   let _lock = SnapshotWriteLock::acquire(&state_dir);
   let mut snap = snapshot::load(&state_dir)
     .map_err(|e| CliExit::prefix(UNKNOWN, "load init_snapshot", e))?
@@ -1698,7 +1678,7 @@ fn persist_init_snapshot(
     let mut merged: Vec<ManagedKey> = cfg.managed_records.clone();
     // Preserve any pre-existing managed keys not in this run — a
     // `--only X` partial re-run must not silently drop keys recorded by
-    // a previous step's run. R72 contract.
+    // a previous step's run.
     for prior in snap.managed_keys.iter() {
       if !merged.iter().any(|m| m.path == prior.path) {
         merged.push(prior.clone());
@@ -1759,7 +1739,7 @@ mod tests {
   #[test]
   fn step_plan_only_wins_over_skip_when_both_supplied() {
     // The CLI rejects both flags together; if a programmatic caller
-    // supplies both, --only takes precedence (matches the matrix).
+    // supplies both, --only takes precedence.
     let plan = StepPlan::resolve(&[InitStep::Config], &[InitStep::Server]);
     assert!(!plan.server);
     assert!(!plan.models);
@@ -1830,7 +1810,7 @@ mod tests {
 
   #[test]
   fn canonical_value_bytes_are_value_not_path() {
-    // R72 contract: the digest must be over the value, not the key
+    // The digest must be over the value, not the key
     // name — otherwise every key on every run shares the path-bytes
     // digest and user-edit detection is non-functional.
     let path_a = "llama_server_path";

@@ -5,7 +5,7 @@
 //!   into a [`HardwareSnapshot`] the wizard renders in its persistent
 //!   header and stamps into `_init_snapshot`.
 //! - [`detect_binary`] wraps `launch::binary::locate` with the
-//!   common-location probes from R54: prior llamastash-managed install
+//!   common-location probes: prior llamastash-managed install
 //!   dir, `/opt/homebrew/bin`, `/usr/local/bin`, the linuxbrew prefix
 //!   (`/home/linuxbrew/.linuxbrew/bin`), `~/.local/bin`, plus the
 //!   `LLAMASTASH_LLAMA_SERVER` env hint.
@@ -25,8 +25,7 @@ use crate::launch::binary::{locate, LocateInputs};
 /// Canonical gibibyte formatter — bytes ÷ 1024³, one decimal, `GiB`.
 /// One implementation so every hardware surface (`init` banner,
 /// `doctor`, the recommender, `status`, the TUI) prints memory with the
-/// same unit and precision. (Earlier copies disagreed: some printed
-/// `GB`, some `GiB`, with different decimal rules.)
+/// same unit and precision.
 pub fn fmt_gib(bytes: u64) -> String {
   format!("{:.1} GiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
 }
@@ -92,13 +91,13 @@ pub fn gpu_summary_line(
   }
 }
 
-/// VRAM aggregation rule pinned in Key Decisions:
+/// VRAM aggregation rule:
 /// - Nvidia / AMD / Multi: `min(device.total_memory_bytes)` over the
 ///   devices that report a non-zero size, because the recommender's
 ///   single-GPU placement is the limiting case.
-/// - AppleMetal: the **raw** unified total. The historical `× 0.75`
-///   OS/app headroom moved to [`crate::launch::headroom`] — the
-///   one place the budget authority and refusal messages consult, so
+/// - AppleMetal: the **raw** unified total. The `× 0.75` OS/app
+///   headroom lives in [`crate::launch::headroom`], the one place the
+///   budget authority and refusal messages consult, so
 ///   every display + sizing surface sees raw totals and headroom is
 ///   applied once, by admission. The recommender keeps its own
 ///   `SAFETY_MARGIN` on top of the raw value.
@@ -117,8 +116,6 @@ pub fn aggregate_vram_bytes(info: &GpuInfo) -> Option<u64> {
     GpuInfo::CpuOnly | GpuInfo::Unknown { .. } => return None,
     GpuInfo::Nvidia { devices } | GpuInfo::Amd { devices } => devices,
     GpuInfo::AppleMetal { total_memory_bytes } => {
-      // Raw unified total — the 0.75 OS/app headroom now lives in
-      // `launch::headroom` and is applied by admission.
       return Some(*total_memory_bytes);
     }
     GpuInfo::Multi { devices } => devices,
@@ -210,8 +207,7 @@ impl CpuArch {
 }
 
 /// Run the full hardware detection chain. Calls `gpu::probe` once
-/// (takes up to `PROBE_TIMEOUT` total for the chained vendor probes),
-/// reads RAM from `sysinfo`, and reads OS / arch from `std::env::consts`.
+/// (takes up to `PROBE_TIMEOUT` total for the chained vendor probes).
 pub fn detect_hardware() -> HardwareSnapshot {
   let gpu = gpu::probe();
   let vram_bytes = aggregate_vram_bytes(&gpu);
@@ -422,10 +418,7 @@ impl BinaryPresence {
   }
 }
 
-/// Inputs to [`detect_binary`]. Mirrors `LocateInputs` plus a probe
-/// extension that scans the common-location list. Production callers
-/// thread the same `--llama-server` / env / config values they pass
-/// to `launch::binary::locate`.
+/// Inputs to [`detect_binary`]. Mirrors `LocateInputs`.
 #[derive(Debug, Clone, Default)]
 pub struct DetectBinaryInputs {
   pub cli_flag: Option<PathBuf>,
@@ -433,10 +426,7 @@ pub struct DetectBinaryInputs {
   pub config_path: Option<PathBuf>,
 }
 
-/// Common locations probed in order. The list is platform-aware:
-/// linuxbrew on Linux, `/opt/homebrew/bin` on macOS arm64,
-/// `/usr/local/bin` on both, plus the user-scoped `~/.local/bin` and
-/// the prior llamastash-managed install dir under `$XDG_DATA_HOME`.
+/// Common locations probed in order.
 ///
 /// Every directory is probed for each server basename the default backend
 /// declares (the standalone server, then the unified app — the name the
@@ -447,8 +437,7 @@ fn common_locations() -> Vec<PathBuf> {
   if let Some(home) = crate::util::paths::home_dir() {
     dirs.push(home.join(".local/bin"));
   }
-  // llamastash-managed install dir — Vec keeps order stable
-  // for tests.
+  // Vec keeps order stable for tests.
   if let Some(data) = directories::BaseDirs::new().and_then(|b| {
     let p = b.data_dir().join("llamastash/llama-cpp");
     crate::util::paths::canonicalize(&p).ok().or(Some(p))
@@ -502,14 +491,12 @@ fn is_executable_file(path: &Path) -> bool {
   }
 }
 
-/// Detect whether `llama-server` is already on the system. Resolution
+/// Detect whether the engine binary is already on the system. Resolution
 /// order: configured (flag / env / config) → `$PATH` (`which`) →
 /// common locations (brew / linuxbrew / `~/.local/bin` / prior
 /// install). `None` when nothing matched.
 pub fn detect_binary(inputs: DetectBinaryInputs) -> BinaryPresence {
-  // First: the same priority `launch::binary::locate` uses. A hit
-  // here carries either `Configured` (caller-supplied) or `Path`
-  // (PATH fallback) provenance.
+  // First: the same priority `launch::binary::locate` uses.
   let configured_supplied =
     inputs.cli_flag.is_some() || inputs.env_var.is_some() || inputs.config_path.is_some();
   let inputs_for_locate = LocateInputs {
@@ -528,7 +515,7 @@ pub fn detect_binary(inputs: DetectBinaryInputs) -> BinaryPresence {
       source,
     };
   }
-  // Second: the R54 common-location list.
+  // Second: the common-location list.
   if let Some(path) = first_existing(&common_locations()) {
     return BinaryPresence {
       resolved_path: Some(path),
@@ -645,9 +632,6 @@ mod tests {
 
   #[test]
   fn aggregate_vram_for_apple_metal_returns_raw_total() {
-    // The 0.75 OS/app headroom moved to `launch::headroom`; the
-    // aggregate now reports the raw unified total like every other
-    // display + sizing surface.
     let total = 64 * 1_024 * 1_024 * 1_024;
     let info = GpuInfo::AppleMetal {
       total_memory_bytes: total,
@@ -711,8 +695,8 @@ mod tests {
   #[test]
   fn detect_binary_returns_none_when_nothing_resolves() {
     // Use a deliberately bad cli flag so `locate` errors out, no env
-    // override, no config path. `$PATH` may legitimately have a
-    // `llama-server` on a dev machine, so we don't assert
+    // override, no config path. `$PATH` may legitimately have the
+    // engine binary on a dev machine, so we don't assert
     // `resolved_path.is_none()` unconditionally — we assert the
     // provenance instead: an unsupplied input must never report as
     // `Configured`.
@@ -787,8 +771,8 @@ mod tests {
 
   #[test]
   fn detect_hardware_returns_non_panicking_snapshot_on_this_machine() {
-    // Smoke check: detection must not panic on the CI runner. The
-    // exact gpu / vram values vary; just assert structural invariants.
+    // The exact gpu / vram values vary; just assert structural
+    // invariants.
     let snap = detect_hardware();
     assert!(snap.ram_total_bytes > 0, "RAM must be discoverable");
     match snap.gpu {

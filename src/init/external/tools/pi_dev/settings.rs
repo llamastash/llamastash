@@ -23,8 +23,6 @@ use crate::init::external::{Format, PatchContext, ToolPatcher};
 
 pub struct PiSettings;
 
-/// Covers every model under our provider id, whatever they are called.
-///
 /// `**`, not `*`: pi matches with minimatch, where `*` stops at a path
 /// separator, and a safetensors repo's id *is* `owner/repo`. Verified
 /// against pi 0.84.2's bundled minimatch — `llamastash/*` misses
