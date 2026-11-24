@@ -291,7 +291,7 @@ mod tests {
       !text.contains("Shift+"),
       "Shift+ text must not appear: {text}"
     );
-    // Pre-round-7 surfaces must be gone.
+    // The fields chip must not appear.
     assert!(
       !text.contains(":fields"),
       "fields chip removed in round-7 (↑/↓ cycle fields now): {text}"

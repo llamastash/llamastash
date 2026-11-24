@@ -332,8 +332,8 @@ mod tests {
     }
   }
 
-  /// Two engines projecting one snapshot used to yield two rows for one
-  /// path, and the catalog kept only the last: a safetensors repo showed
+  /// Without the merge, two engines projecting one snapshot give two rows for
+  /// one path, and the catalog keeps only the last: a safetensors repo shows
   /// whichever backend registered last, never both.
   #[test]
   fn rows_two_backends_project_for_one_path_merge_into_one() {

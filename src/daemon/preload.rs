@@ -4,7 +4,8 @@
 //! Entries launch as [`LaunchOrigin::Manual`], so the idle sweep never unloads
 //! them. Launches run sequentially in list order: two concurrent launches read
 //! the same free-memory sample and can both be admitted against memory that
-//! fits only one. A failed entry logs one line and never fails the boot.
+//! fits only one. List order is also priority order: the first entry wins the
+//! memory. A failed entry logs one line and never fails the boot.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

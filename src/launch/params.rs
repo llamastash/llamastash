@@ -803,8 +803,8 @@ mod tests {
 
   /// Regression: a `mtp` knob set through the knob channel — `-- --mtp off`
   /// passthrough, or a raw `knobs` map on the start request — must drive the
-  /// directive. The resolver used to read only a typed `mtp` sibling, which
-  /// those paths never touched.
+  /// directive. Those paths never set a typed `mtp` sibling, so the resolver
+  /// must read the knob map.
   #[test]
   fn a_knob_set_mtp_drives_the_directive() {
     let mut warn = Vec::new();

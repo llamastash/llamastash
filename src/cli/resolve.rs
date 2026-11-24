@@ -560,7 +560,7 @@ fn parse_external_row(v: &Value) -> Option<ExternalRow> {
 /// 1. numeric → port match;
 /// 2. exact (case-insensitive) launch-id (`L<n>`);
 /// 3. case-insensitive substring of the model file name or its parent dir —
-///    dir — the same reference shape `start` / `show` / `presets` /
+///    the same reference shape `start` / `show` / `presets` /
 ///    `favorites` accept against the catalog, here matched against the
 ///    running launches (usage.md §Concepts "Model references").
 ///

@@ -10,8 +10,8 @@
 //!   ([`attach_target`]). The coalesce map covers only proxy-driven launches,
 //!   so a CLI/TUI launch still in `Loading` would otherwise get a duplicate
 //!   engine process on the same model.
-//! - There is no client-facing timeout. Only a supervisor `Error` ends the wait
-//!   on `Loading`.
+//! - There is no client-facing timeout. Only a supervisor `Error` or a stop
+//!   ends the wait on `Loading`.
 //! - A launch the admission gate admitted that dies before `Ready` gets one
 //!   make-room-and-retry pass ([`await_ready_or_make_room`]) before the caller's
 //!   fallback, because a wrong admission is no reason to let another model

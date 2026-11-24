@@ -491,7 +491,7 @@ Two extension seams exist so a safetensors/HF-format engine plugs in as a small 
 
 ## GPU detection
 
-The daemon runs a vendor probe chain at startup and again on a slow timer (`gpu.reprobe_interval_secs`, default 60 s; `0` disables it) for hotplug and late driver loads. Whichever backend wins gets stamped onto `status.gpu` and drives the host-pane render plus the recommender's VRAM-fit math. Probes run in order; the first one to return non-empty wins. Step 5 is skipped entirely when `gpu.enable_vulkan_probe` is `false`.
+The daemon runs a vendor probe chain at startup and again on a slow timer (`gpu.reprobe_interval_secs`, default 60 s; `0` disables it) for hotplug and late driver loads. Every probe runs, in order, and the daemon keeps the devices from all of them: one backend with devices gives that backend's snapshot, and two or more give a `Multi` snapshot. The result is stamped onto `status.gpu` and drives the host-pane render plus the recommender's VRAM-fit math. Step 5 is skipped entirely when `gpu.enable_vulkan_probe` is `false`.
 
 | Order | Backend | Source | Platforms | What you get |
 |---|---|---|---|---|

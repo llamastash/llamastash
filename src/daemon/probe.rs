@@ -465,7 +465,7 @@ mod tests {
   #[tokio::test]
   async fn poll_until_ready_honors_custom_path_and_ready_status() {
     // Backend-declared readiness of /custom/ready + 204 must be used
-    // verbatim — proving the probe is no longer hardwired to /health/200.
+    // verbatim, not /health/200.
     let (port, mut rx) = spawn_status_responder(204).await;
     let opts = ProbeOptions {
       interval: Duration::from_millis(20),

@@ -491,10 +491,8 @@ const FORCE_FLAG_ENV: &[(&str, &str)] = &[
 
 /// The `daemon start` overrides [`build_options`] folds over config and env.
 ///
-/// A struct rather than positional arguments: ten fields, four of them
-/// booleans that end up as entries in one map, threaded through three call
-/// layers. Adding a fifth backend means counting `false`s at twenty call
-/// sites and getting the order right. `cli` / `config` are borrows, which rules out
+/// A struct rather than positional arguments: nine fields threaded through
+/// three call layers. `cli` / `config` are borrows, which rules out
 /// `#[derive(Default)]`, so [`BuildOptionsArgs::new`] is the base to
 /// spread over: `BuildOptionsArgs { proxy_port: Some(1), ..new(&cli, &config) }`.
 pub(crate) struct BuildOptionsArgs<'a> {

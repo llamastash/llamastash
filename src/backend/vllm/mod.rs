@@ -436,7 +436,7 @@ impl Backend for VllmBackend {
     let user_cap = user_set(params, "kv_cache_memory_bytes");
     // Fail **safe**, not open. Do not bail when the host sampler has no
     // reading yet. That is exactly the state right after a daemon restart,
-    // and the launch then takes vLLM's pool-sized default: observed at
+    // and a bail there leaves the launch on vLLM's pool-sized default: observed at
     // 112 GiB of a 124 GiB box, with the engine OOM-killed. An unknown host
     // is treated as unified, because that is the assumption whose failure
     // mode is survivable: the cost of capping a discrete GPU is a smaller

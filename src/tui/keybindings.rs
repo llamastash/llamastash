@@ -339,9 +339,8 @@ pub enum Category {
   /// Settings tab affordances.
   Settings,
   /// Combined Chat / Embed / Rerank input-tab affordances. All three
-  /// tabs accept the same shape of input (Enter submits, `r` toggles
-  /// reasoning blocks) so we render them under one heading instead of
-  /// three near-empty sections.
+  /// tabs accept the same shape of input, so we render them under one heading
+  /// instead of three near-empty sections.
   InputTabs,
   /// HuggingFace pull dialog modal.
   HfDialog,

@@ -308,8 +308,8 @@ fn running_row(m: &DiscoveredModel, launch: &RunningLaunchRow) -> ListRow {
     launch.backend.clone().unwrap_or_default(),
     launch.launch_name.clone(),
   );
-  // A favorite glyph on a Running row would put two stars on the same
-  // model, because the folder group below already shows it.
+  // Running rows drop the favorite glyph so two launches of the same
+  // favorited model don't both wear a star.
   if let ListRow::Model { ref mut path, .. } = row {
     // `model_row` cloned the catalog path; preserve as-is.
     let _ = path;

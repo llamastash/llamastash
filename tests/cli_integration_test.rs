@@ -993,8 +993,8 @@ async fn logs_follow_returns_daemon_unreachable_when_daemon_dies() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pull_subcommand_exits_pull_failed_until_unit_9_lands() {
-  // The hf-hub download body is not implemented yet. The stub returns
-  // PULL_FAILED with an explanatory message.
+  // The fake repo `owner/repo` cannot be downloaded, so pull exits
+  // PULL_FAILED.
   let model_dir = unique_temp("pull-models");
   let code = run_dispatch_at(
     None,

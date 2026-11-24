@@ -1,6 +1,6 @@
 //! HuggingFace pull via the `hf-hub` crate. Backs `llamastash pull
 //! <repo>` and the init wizard's model step. hf-hub resolves the same
-//! `reqwest 0.12` we pin elsewhere, so adopting it does not introduce a
+//! `reqwest 0.13` we pin elsewhere, so adopting it does not introduce a
 //! duplicate reqwest in the dep tree.
 //!
 //! Trust boundary: hf-hub builds its own `reqwest::Client`, so HF

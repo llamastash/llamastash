@@ -249,7 +249,7 @@ pub(crate) fn display_size(row: &CatalogRow) -> String {
 /// in `{"models": [...]}` so every CLI `--json` surface lives behind
 /// the same "always object at the root" rule.
 ///
-/// The `proxy.aliases` table comes as the catalog answers it (`[]` when none
+/// The `proxy.aliases` table is passed through as the daemon answers it (`[]` when none
 /// is configured, like every other `--json` key).
 ///
 /// `aliases` rows are the daemon's `proxy_aliases` objects, passed through
