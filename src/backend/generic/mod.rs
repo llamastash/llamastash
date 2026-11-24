@@ -1,10 +1,7 @@
 //! Generic backend: run any OpenAI-compatible server declared in `config.yaml`.
 //!
-//! Knows nothing about the engine. Each `backend.generic.servers[]` entry names
-//! a binary, its args and env with placeholders, its own string knobs, and the
-//! readiness path; llamastash supplies the port, the readiness poll, proxy
-//! routing and the stop. Everything engine-specific lives in the entry or in a
-//! wrapper script the user writes.
+//! Knows nothing about the engine: everything engine-specific lives in the
+//! entry or in a wrapper script the user writes.
 //!
 //! Entries are read once per process at config load
 //! ([`install`](GenericBackend::install_config)), like every other hand-edit

@@ -191,8 +191,6 @@ mod tests {
   #[test]
   fn only_the_anthropic_endpoints_are_rewritten() {
     let body = r#"{"output_config":{"effort":"low"}}"#;
-    // count_tokens rides the same body, so it has to be mapped too or its
-    // count disagrees with the request the client then sends.
     for endpoint in MESSAGES_ENDPOINTS {
       assert!(
         rewrite_request_body(endpoint, body.as_bytes()).is_some(),

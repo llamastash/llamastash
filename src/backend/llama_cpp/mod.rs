@@ -1,15 +1,10 @@
-//! llama.cpp reference implementation of the [`Backend`] contract.
+//! llama.cpp implementation of the [`Backend`] contract.
 //!
-//! Currently the sole backend. Every method **delegates** to the existing
-//! launch surface rather than reimplementing it, so the wire behavior is
-//! provably unchanged:
-//!
-//! - argv ← `compose::compose` (llama.cpp's own emitter, the `compose` submodule)
-//! - identity ← [`crate::gguf::identity::compute`]
-//! - the env strip ← [`LLAMA_ENV_STRIP`] (moved here from the supervisor)
-//!
-//! The golden parity tests below pin `prepare_launch`'s argv to
-//! `compose`'s output so a future reimplementation can't silently drift.
+//! Every method **delegates** to the existing launch surface rather than
+//! reimplementing it: argv via `compose`, identity via
+//! [`crate::gguf::identity::compute`], env strip via [`LLAMA_ENV_STRIP`].
+//! The golden parity tests pin `prepare_launch`'s argv to `compose`'s output
+//! so a future reimplementation can't silently drift.
 
 mod actuals;
 pub mod caps;
@@ -33,7 +28,6 @@ use crate::daemon::probe::ProbeOptions;
 use crate::launch::params::LaunchParams;
 
 /// Config-derived launch-knob keys llama.cpp carries in
-/// [`LaunchParams::launch_config`](crate::launch::params::LaunchParams), the
 /// [`LaunchParams::launch_config`](crate::launch::params::LaunchParams) — the
 /// config-projection channel, deliberately not knobs. Seeded fresh each launch
 /// by [`LlamaCppBackend::seed_launch_knobs`] from daemon config rather than
@@ -65,10 +59,8 @@ fn fit_ctx_floor_knob(params: &LaunchParams) -> Option<u32> {
 /// own pull credentials, which `llama-server` has no reason to see —
 /// stripping them keeps the credential blast radius small.
 ///
-/// This is the canonical home for the list (moved out of
-/// [`crate::daemon::supervisor::spawn`]); it rides on the
-/// [`ProcessLaunchSpec::env_remove`] field so the supervisor stays
-/// backend-agnostic.
+/// It rides on the [`ProcessLaunchSpec::env_remove`] field so the supervisor
+/// stays backend-agnostic.
 pub const LLAMA_ENV_STRIP: &[&str] = &[
   "LLAMA_ARG_HOST",
   "LLAMA_ARG_PORT",
@@ -116,17 +108,15 @@ pub fn serve_prefix(binary: &Path) -> &'static [&'static str] {
   }
 }
 
-/// llama.cpp backend configuration — the always-on default backend, so it has
-/// no `enabled` field. `servers` are the `llama-server` build/binary variants
-/// (the first is the *default* binary for auto / no-device launches, and the
-/// back-compat target of the `--llama-server` flag / `LLAMASTASH_LLAMA_SERVER`
-/// env); `jinja` / `strict_fit` / `fit_ctx_floor` are launch-behaviour knobs
-/// surfaced under `backend.llamacpp` in `config.yaml`.
+/// llama.cpp backend configuration (`backend.llamacpp` in `config.yaml`) —
+/// the always-on default backend, so it has no `enabled` field. The first
+/// `servers` entry is the back-compat target of the `--llama-server` flag /
+/// `LLAMASTASH_LLAMA_SERVER` env.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
 pub struct LlamaCppConfig {
   /// The `llama-server` build/binary variants. The first entry is the default
-  /// binary (auto / no-device launches); each is probed with `--list-devices`
+  /// binary for auto / no-device launches; each is probed with `--list-devices`
   /// at daemon start to build the launch server/device catalog. One install can
   /// offer CUDA / ROCm / Vulkan launches by listing the matching single-backend
   /// builds — every entry is its own selectable server (no dedup across
@@ -199,8 +189,6 @@ impl LlamaCppConfig {
   }
 }
 
-/// llama.cpp backend: direct, zero-overhead, fully-tuned. The product's
-/// reason to exist; never routed through a wrapper.
 #[derive(Debug, Clone)]
 pub struct LlamaCppBackend {}
 
@@ -218,8 +206,6 @@ impl Default for LlamaCppBackend {
 }
 
 impl LlamaCppBackend {
-  /// Build the process-per-model launch spec directly.
-  ///
   /// [`Backend::prepare_launch`] is this method; it exists so call sites that
   /// already committed to a process spawn (and tests) can reach the spec
   /// without going through the seam.
@@ -279,8 +265,7 @@ impl Backend for LlamaCppBackend {
   }
 
   fn identify(&self, path: &Path, header_bytes: &[u8]) -> ModelIdentity {
-    // Delegate — do not reimplement the `(path, BLAKE3)` identity. Wrap it
-    // in the generalized seam type; the GGUF `ModelId` is unchanged.
+    // Delegate — do not reimplement the `(path, BLAKE3)` identity.
     ModelIdentity::Gguf(crate::gguf::identity::compute(path, header_bytes))
   }
 
@@ -295,8 +280,8 @@ impl Backend for LlamaCppBackend {
   }
 
   fn available(&self, ctx: &MethodContext) -> bool {
-    // Installed = the resolved `llama-server` binary exists. GPU capability is
-    // surfaced separately (the live device catalog); this is just presence.
+    // GPU capability is surfaced separately (the live device catalog); this
+    // is just presence.
     ctx
       .launch
       .as_ref()
@@ -557,11 +542,6 @@ impl Backend for LlamaCppBackend {
   }
 }
 
-// The cross-backend dispatch enum (`Backends`) lives in the parent module
-// (`crate::backend`) now that there is more than one backend — see
-// `resolve_backend` / `backend_for_identity` and `impl Backend for Backends`
-// there.
-
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -596,7 +576,7 @@ mod tests {
 
   #[test]
   fn speculation_set_in_extras_defers_to_a_hand_passed_spec_type() {
-    // KD3: llama-server appends spec types rather than replacing, so a user
+    // llama-server appends spec types rather than replacing, so a user
     // driving `--spec-type` themselves must stop llamastash adding a second.
     let b = LlamaCppBackend::new();
     let space = vec![
@@ -939,12 +919,6 @@ mod tests {
     let bytes = b"GGUF\x03\x00\x00\x00 header";
     let via_backend = b.identify(Path::new("/m/model.gguf"), bytes);
     let direct = crate::gguf::identity::compute(Path::new("/m/model.gguf"), bytes);
-    // llama.cpp identity is the GGUF identity, wrapped in the seam type.
     assert_eq!(via_backend.as_gguf(), Some(&direct));
   }
-
-  // Cross-backend `Backends` enum-dispatch forwarding is tested in the
-  // parent module (`crate::backend`), where the enum now lives.
-
-  // ---- config-derived launch knobs (jinja / strict_fit / fit_ctx_floor) ----
 }

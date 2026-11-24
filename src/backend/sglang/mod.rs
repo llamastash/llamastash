@@ -1,11 +1,10 @@
 //! SGLang — direct, process-per-model serving of safetensors HF repos.
 //!
-//! The same shape as the other Python safetensors engine: SGLang takes a model
-//! *directory* (a resolved HF snapshot), exposes its own OpenAI-compatible
-//! HTTP server, and rides the generic supervisor and the format-agnostic proxy
-//! forward with no lifecycle plumbing of its own. What differs is memory: it
-//! has no byte-level KV cap, so the unified-memory guard lives in [`guard`]
-//! and writes a token cap instead.
+//! SGLang takes a model *directory* (a resolved HF snapshot), exposes its own
+//! OpenAI-compatible HTTP server, and rides the generic supervisor and the
+//! format-agnostic proxy forward with no lifecycle plumbing of its own. What
+//! differs is memory: it has no byte-level KV cap, so the unified-memory guard
+//! lives in [`guard`] and writes a token cap instead.
 //!
 //! Flag surface verified against SGLang 0.5.18 (`sglang serve --help` and a
 //! live server's `/get_server_info`).
@@ -26,7 +25,7 @@ use crate::daemon::probe::ProbeOptions;
 use crate::launch::admission::{human_gib, MIN_KV_CACHE_BYTES, UNIFIED_HOST_RESERVE_BYTES};
 use crate::launch::params::LaunchParams;
 
-/// Stable backend id. The only place this string is authored.
+/// The only place this string is authored.
 pub const SGLANG_BACKEND_ID: &str = "sglang";
 
 /// SGLang config. **Default-on, gated by binary detection**, same tri-state as
@@ -120,7 +119,6 @@ pub fn resolve_sglang_binary(configured: Option<&Path>) -> Option<PathBuf> {
   super::resolve_launcher_by_existence(configured, SGLANG_BIN)
 }
 
-/// The SGLang backend.
 #[derive(Debug, Clone, Default)]
 pub struct SglangBackend {}
 
@@ -467,7 +465,6 @@ impl Backend for SglangBackend {
   }
 }
 
-/// This backend's knob accessors, bound to its own vocabulary.
 fn knob_u64(params: &LaunchParams, id: &str) -> Option<u64> {
   crate::launch::params::knob_u64(params, SGLANG_BACKEND_ID, id)
 }
@@ -542,7 +539,6 @@ pub fn readiness(served_name: &str) -> Readiness {
   }
 }
 
-/// Build the `sglang serve` argv.
 fn sglang_argv(params: &LaunchParams, port: u16) -> Vec<std::ffi::OsString> {
   let mut argv: Vec<std::ffi::OsString> = vec![
     "serve".into(),

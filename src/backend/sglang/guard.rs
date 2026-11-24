@@ -240,8 +240,6 @@ mod tests {
     let _ = std::fs::remove_dir_all(&dir);
   }
 
-  /// The token cap is the shared byte budget divided by the per-token cost,
-  /// and refuses exactly when the budget does.
   #[test]
   fn token_cap_divides_the_shared_budget_and_refuses_with_it() {
     let per_token = 2 * 2 * 64 * 2 * 24;
@@ -288,9 +286,6 @@ mod tests {
     );
   }
 
-  /// A zero per-token cost is unreadable geometry. Dividing by one instead
-  /// would return the whole budget as tokens, which the launcher takes as an
-  /// unbounded pool on the very host the guard protects.
   #[test]
   fn a_zero_per_token_cost_refuses_rather_than_uncapping() {
     assert_eq!(
@@ -300,7 +295,6 @@ mod tests {
     assert_eq!(tokens_for_budget(DEFAULT_KV_CACHE_BYTES, 0), None);
   }
 
-  /// The unsampled path spends the default budget through the same floor.
   #[test]
   fn the_default_budget_spent_in_tokens_keeps_the_floor() {
     let too_costly = DEFAULT_KV_CACHE_BYTES / (MIN_POOL_TOKENS - 1);

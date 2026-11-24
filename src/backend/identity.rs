@@ -13,11 +13,6 @@
 //! struct into an enum would break every one of them. So the generalization
 //! lives here, at the [`crate::backend::Backend::identify`] boundary, leaving
 //! the GGUF `ModelId` — and therefore `state.json` — byte-for-byte unchanged.
-//!
-//! The `#[serde(untagged)]` representation round-trips a legacy
-//! `{ "path", "header_blake3" }` row straight into [`ModelIdentity::Gguf`],
-//! so backend-registry identities persist through the same stores with no
-//! schema break and no migration.
 
 use serde::{Deserialize, Serialize};
 
@@ -108,7 +103,6 @@ mod tests {
       from_enum, from_struct,
       "untagged Gguf must serialize exactly like a bare ModelId"
     );
-    // And it carries the canonical field shape.
     assert!(from_enum.get("path").is_some());
     assert!(from_enum.get("header_blake3").is_some());
   }

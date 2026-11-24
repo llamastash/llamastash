@@ -263,18 +263,11 @@ pub const KNOBS: &[KnobDef] = &[
   },
 ];
 
-/// Inline tests for the SGLang knob table.
-///
-/// These assertions must FAIL if the table is wrong (e.g. a knob id is
-/// duplicated, a concept is missing, a bound is wrong, or a flag spelling
-/// leaked into an id). They are intentionally strict — a passing test means
-/// the table satisfies every invariant listed in the spec.
 #[cfg(test)]
 mod tests {
   use super::*;
   use crate::launch::knobs::Concept;
 
-  /// The context-length knob must exist and carry Concept::ContextLength.
   #[test]
   fn context_length_knob_has_concept() {
     let knob = KNOBS
@@ -288,7 +281,6 @@ mod tests {
     );
   }
 
-  /// The mem-fraction-static knob must be F32 bounded min 0.0 / max 1.0.
   #[test]
   fn mem_fraction_static_is_f32_bounded() {
     let knob = KNOBS
@@ -331,7 +323,6 @@ mod tests {
     assert!(matches!(knob.emit, Emit::BareFlagWhenTrue));
   }
 
-  /// No knob id must start with "--" — ids are the flag name without dashes.
   #[test]
   fn no_knob_id_starts_with_dashes() {
     for def in KNOBS {
