@@ -41,12 +41,11 @@ pub const GGUF_MAGIC: &[u8; 4] = b"GGUF";
 /// Modern tokenizers (Gemma 3+, Qwen 2.5+, Llama 3.x) embed the full
 /// `tokens.list` array — 128k–256k strings — directly in the metadata
 /// KV section, which routinely pushes the structural header to 2–8
-/// MiB on real models. The original 1 MiB default clipped these
-/// headers mid-string and produced misleading `BadStringLen` errors
-/// on every modern chat / embed model; 16 MiB covers everything
-/// observed in the wild today with headroom for the next vocab-size
-/// jump. Tests that need a smaller window can pass an explicit
-/// `HeaderReadOptions { cap_bytes: … }`.
+/// MiB on real models. A 1 MiB cap clipped these headers mid-string and
+/// produced misleading `BadStringLen` errors on every modern chat / embed
+/// model. 16 MiB covers everything observed in the wild
+/// today with headroom for the next vocab-size jump. Tests that need
+/// a smaller window can pass an explicit `HeaderReadOptions { cap_bytes: … }`.
 pub const DEFAULT_HEADER_CAP_BYTES: u64 = 16 << 20;
 /// Hard cap, used if a caller asks for a larger window (64 MiB).
 /// Sized so a hostile file with an enormous metadata payload still
@@ -122,7 +121,7 @@ impl GgufValue {
     }
   }
 
-  /// Convenience: coerce any unsigned/signed integer value to u64.
+  /// Convenience: coerce a non-negative integer value to u64.
   pub fn as_u64(&self) -> Option<u64> {
     Some(match self {
       GgufValue::U8(v) => *v as u64,
@@ -137,7 +136,6 @@ impl GgufValue {
     })
   }
 
-  /// Convenience: coerce a boolean.
   pub fn as_bool(&self) -> Option<bool> {
     match self {
       GgufValue::Bool(b) => Some(*b),
@@ -146,9 +144,8 @@ impl GgufValue {
   }
 }
 
-/// Per-tensor info entry (name + dimensions + ggml type tag). The byte
-/// offset into the tensor-data segment is parsed but intentionally not
-/// retained — only the structural shape is needed for memory estimation.
+/// The byte offset into the tensor-data segment is parsed but intentionally
+/// not retained — only the structural shape is needed for memory estimation.
 #[derive(Debug, Clone)]
 pub struct TensorInfo {
   pub name: String,
@@ -173,11 +170,9 @@ impl TensorInfo {
 pub struct ReadHeader {
   /// Exact bytes consumed by parsing — suitable for BLAKE3.
   pub raw: Vec<u8>,
-  /// Parsed structural view of those bytes.
   pub header: GgufHeader,
 }
 
-/// Parsed GGUF header.
 #[derive(Debug, Clone)]
 pub struct GgufHeader {
   pub version: u32,
@@ -213,7 +208,6 @@ impl GgufHeader {
   }
 }
 
-/// Read and parse the header of a GGUF file located at `path`.
 pub fn read_path<P: AsRef<Path>>(path: P, opts: HeaderReadOptions) -> GgufResult<ReadHeader> {
   let path_ref = path.as_ref();
   let file = File::open(path_ref).map_err(|e| GgufError::IoAt {
@@ -736,7 +730,6 @@ mod tests {
       HeaderReadOptions::default(),
     )
     .expect("at-cap nesting must parse");
-    // The KV exists and is a nested Array.
     assert_eq!(read.header.metadata.len(), 1);
     assert!(matches!(
       read.header.metadata.get("nest"),

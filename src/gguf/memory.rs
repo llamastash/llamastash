@@ -1,23 +1,16 @@
-//! Memory estimator for a launched model.
-//!
-//! Splits cost into **weights** (the GGUF tensors themselves) and **KV
-//! cache** (which scales with context length and cache dtype). Each split
-//! is further attributed to RAM vs VRAM based on `n_gpu_layers` (the
-//! `-ngl` flag in `llama-server`).
-//!
-//! Estimates are intentionally approximate. The plan calls out ~10% as
-//! acceptable; the dominant errors are (a) per-block padding inside ggml
-//! (small), (b) inference-time scratch buffers we don't model, and (c)
-//! advanced KV quantisation modes where the byte-per-element factor
-//! changes. Consumers should display these as "estimate" not "exact".
+//! Memory estimator for a launched model: GGUF weights and KV cache, each
+//! attributed to RAM vs VRAM by `n_gpu_layers`. Estimates are intentionally
+//! approximate, ~10% is acceptable. The dominant errors are (a) per-block
+//! padding inside ggml (small), (b) inference-time scratch buffers we don't
+//! model, and (c) advanced KV quantisation modes where the byte-per-element
+//! factor changes. Consumers should display these as "estimate" not "exact".
 
 use crate::gguf::header::{GgufHeader, GgufValue};
 use crate::gguf::metadata::Quant;
 
-/// Generate the [`CacheType`] enum, its name parser, its byte-cost
-/// table, and the [`KV_CACHE_TYPES`] name list from one row-per-type
-/// table so the launch-time validation surface and the KV memory
-/// estimator can never disagree on which types are standard.
+/// Generates [`CacheType`], its parser, its byte-cost table and the
+/// [`KV_CACHE_TYPES`] list from one table, so launch-time validation and
+/// the KV estimator can never disagree on which types are standard.
 macro_rules! cache_types {
   ( default = $default:ident, $( $variant:ident => $name:literal : $bytes:expr ),+ $(,)? ) => {
     /// What KV cache dtype `llama-server` is launched with. Default f16.
@@ -73,22 +66,20 @@ cache_types! {
   Q5_1   => "q5_1"   : 24.0 / 32.0, // 0.75
 }
 
-/// Parse a `--cache-type-{k,v}` tag (`q8_0`, `f16`, …) into a
-/// [`CacheType`], defaulting to `f16` when absent or unrecognised.
-/// Shared by the admission KV projection so it uses the same dtype
-/// mapping the launch argv will.
+/// Parse a `--cache-type-{k,v}` tag, defaulting to `f16` when absent or
+/// unrecognised. Shared by the admission KV projection so it uses the same
+/// dtype mapping the launch argv will.
 pub fn parse_cache_type(raw: Option<&str>) -> CacheType {
   raw.and_then(CacheType::parse).unwrap_or_default()
 }
 
-/// Inputs to the estimator other than the parsed header itself.
 #[derive(Debug, Clone, Copy)]
 pub struct EstimateOptions {
   pub ctx_len: u64,
   pub cache_type_k: CacheType,
   pub cache_type_v: CacheType,
   /// Number of transformer blocks offloaded to GPU (`-ngl`). `None` means
-  /// CPU only; `Some(usize::MAX)` means "all on GPU".
+  /// CPU only; `Some(u32::MAX)` means "all on GPU".
   pub n_gpu_layers: Option<u32>,
   /// MTP speculative decoding is on. A hybrid's MTP layers hold KV only in
   /// the draft context, which llama.cpp creates only then. Only hybrids get
@@ -127,7 +118,6 @@ impl Default for EstimateOptions {
   }
 }
 
-/// Output of the estimator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MemoryEstimate {
   pub weights_ram: u64,
@@ -146,8 +136,6 @@ impl MemoryEstimate {
   }
 }
 
-/// Estimate the launch-time memory footprint for the supplied GGUF header
-/// and launch parameters.
 pub fn estimate(header: &GgufHeader, opts: EstimateOptions) -> MemoryEstimate {
   let arch = header.string(&["general.architecture"]).map(str::to_string);
   let arch_key = arch.as_deref();
@@ -394,7 +382,6 @@ fn mla_kv_elements(header: &GgufHeader, arch: &str) -> Option<u128> {
   Some((n_layers as u128).saturating_mul((kv_lora_rank + rope_dim) as u128))
 }
 
-/// Per-layer attention geometry for the KV estimate.
 struct AttnGeometry {
   n_layers: u64,
   /// Full-attention head dim (`key_length`, else `embedding_length /
