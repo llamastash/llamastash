@@ -1,24 +1,19 @@
-//! Secure-write helper for `config.yaml`.
-//!
-//! Owns the `tempfile`-based atomic rename, mode 0600 on Unix, and the
-//! parent-dir-mode pre-flight check that mirror the `state.json` hardening
-//! from [`crate::daemon::state_store::save`]. Unlike `state.json`, a
+//! Secure-write helper for `config.yaml`: the `tempfile`-based atomic
+//! rename, mode 0600 on Unix, the parent-dir-mode pre-flight check, and the
+//! comment-safe merge, mirroring the `state.json` hardening in
+//! [`crate::daemon::state_store::save`]. Unlike `state.json`, a
 //! **symlinked** `config.yaml` is followed to its target (the link is
 //! user-authored, e.g. a dotfiles repo) rather than refused — see
-//! [`preflight`]. The init wizard's diff preview + redaction layer on top.
+//! [`preflight`]. The init wizard's diff preview and redaction layer sits
+//! on top.
 //!
-//! Merge semantics:
-//!   - YAML-aware recursive merge: leaf-level user edits inside a
-//!     managed block (e.g. `arch_defaults.qwen2`) are preserved when
-//!     the wizard regenerates the block.
-//!   - User-authored keys that the wizard never wrote are left
-//!     untouched. The wizard never edits keys outside its
-//!     `managed_keys` allowlist.
-//!   - Managed keys whose on-disk value still matches the recorded
-//!     `ManagedKey::value_digest` are treated as wizard-owned →
-//!     regenerable. A digest mismatch means the user hand-edited the
-//!     value → preserve as-is.
-//!
+//! Recursive merge keeps leaf-level user edits inside a managed block.
+//! User-authored keys that the wizard never wrote are left untouched. The
+//! wizard never edits keys outside its `managed_keys` allowlist. Managed
+//! keys whose on-disk value still matches the recorded
+//! `ManagedKey::value_digest` are treated as wizard-owned →
+//! regenerable. A digest mismatch means the user hand-edited the
+//! value → preserve as-is.
 //! The digest comparison lives in the wizard's wrapper; this primitive
 //! takes a finalised `Value` for the merged config and writes it.
 
@@ -34,7 +29,7 @@ pub use crate::util::config_patch::{DiffEntry, DiffKind};
 
 /// Outcome of a successful merge-and-write. `diff` is the set of keys
 /// whose serialised value changed (added or modified); `written_bytes`
-/// is the size of the new file. The wizard renders `diff` to the user.
+/// is the size of the new file.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WriteOutcome {
   pub diff: Vec<DiffEntry>,
@@ -57,8 +52,7 @@ pub enum WriteError {
 
 /// Recursive merge of `additions` into `current`. Mapping keys present
 /// in both are recursed; sequences and scalars in `additions` replace
-/// their counterparts in `current`. Pure function — exposed for unit
-/// tests; the wizard calls it indirectly via `merge_and_write`.
+/// their counterparts in `current`.
 pub fn merge(current: Value, additions: Value) -> Value {
   match (current, additions) {
     (Value::Mapping(mut cur), Value::Mapping(add)) => {
@@ -79,19 +73,16 @@ pub fn merge(current: Value, additions: Value) -> Value {
 }
 
 /// Compute a structural diff between `before` and `after`. Returns one
-/// entry per leaf that was added or modified. Pure; used by the wizard
-/// to render the diff preview.
+/// entry per leaf that was added or modified.
 pub fn diff(before: &Value, after: &Value) -> Vec<DiffEntry> {
   let mut out = Vec::new();
   walk_diff("", before, after, &mut out);
   out
 }
 
-// Sibling of [`walk_writes`]: both recurse the same `(before, after)` pair,
-// but this one produces human-facing `DiffEntry` rows (add/change classified,
-// values rendered to strings) for the wizard's preview/redaction, while
-// `walk_writes` produces the changed leaves to splice. Kept separate because
-// their outputs differ; keep their traversal shape in sync if either changes.
+// Recurses the same `(before, after)` pair as `walk_writes`. Kept separate
+// because their outputs differ; keep their traversal shape in sync if
+// either changes.
 fn walk_diff(prefix: &str, before: &Value, after: &Value, out: &mut Vec<DiffEntry>) {
   match (before, after) {
     (Value::Mapping(b), Value::Mapping(a)) => {
@@ -123,8 +114,6 @@ fn walk_diff(prefix: &str, before: &Value, after: &Value, out: &mut Vec<DiffEntr
 }
 
 fn serialise_inline(v: &Value) -> String {
-  // `yaml_serde`'s flow style produces a one-liner suitable for inline
-  // diff rendering. Falls back to the default block style on error.
   yaml_serde::to_string(v)
     .unwrap_or_default()
     .trim()
@@ -166,7 +155,7 @@ pub fn preflight(path: &Path) -> Result<PathBuf, WriteError> {
 /// even one that doesn't exist yet — and the target's parent is canonicalized
 /// (collapsing `..` / directory symlinks) while the filename is kept, so the
 /// caller writes the real file and the link is preserved. Following stays in
-/// the config write path only; `state.json` keeps its non-following behavior.
+/// the config write path only. `state.json` keeps its non-following behavior.
 fn resolve_write_target(path: &Path) -> PathBuf {
   let is_symlink = std::fs::symlink_metadata(path)
     .map(|m| m.file_type().is_symlink())
@@ -208,16 +197,13 @@ fn resolve_write_target(path: &Path) -> PathBuf {
 ///
 /// The write is **comment-safe**: each changed leaf is spliced into the
 /// original file text via the shared [`yaml_edit`] primitive, so the user's
-/// hand-written comments and formatting survive (the old whole-file
-/// re-serialise stripped them on every run).
+/// hand-written comments and formatting survive.
 pub fn merge_and_write(path: &Path, additions: Value) -> Result<WriteOutcome, WriteError> {
   let _mutation = CONFIG_MUTATION
     .lock()
     .unwrap_or_else(std::sync::PoisonError::into_inner);
-  // Resolve a symlinked config to its real target (the link is preserved).
   let target = preflight(path)?;
-  // Read the source text once — comments live here and must survive. The
-  // parsed `current` drives merge/diff; the original text is what we splice.
+  // Read the source text once — comments live here and must survive.
   let source = yaml_edit::read_source(path)?;
   let current = if source.trim().is_empty() {
     Value::Mapping(yaml_serde::Mapping::new())
@@ -250,10 +236,7 @@ pub fn merge_and_write(path: &Path, additions: Value) -> Result<WriteOutcome, Wr
 /// block is written leaf-by-leaf in block style (not one inline-flow blob
 /// that a later write couldn't append to); a sequence — or the `{auto: true}`
 /// knob sentinel, which round-trips identically as a one-key block — is a
-/// leaf value. Drives the comment-safe splice in [`merge_and_write`].
-///
-/// Sibling of [`walk_diff`], which walks the same `(before, after)` pair for
-/// the human-facing preview; this one yields the leaves to write. If you change
+/// leaf value. [`walk_diff`] walks the same pair for the preview. If you change
 /// one walker's traversal, mirror it in the other.
 fn collect_leaf_writes(before: &Value, after: &Value) -> Vec<(Vec<String>, Value)> {
   let mut out = Vec::new();
@@ -289,7 +272,6 @@ fn walk_writes(
 /// the same `(current, merged)` pair `merge_and_write` does without
 /// committing to disk.
 pub fn read_or_default(path: &Path) -> Result<Value, WriteError> {
-  // Share the file-read (missing → empty, I/O errors bubble) with the writers.
   let source = yaml_edit::read_source(path)?;
   if source.trim().is_empty() {
     Ok(Value::Mapping(yaml_serde::Mapping::new()))
@@ -424,7 +406,6 @@ arch_defaults:
 
     merge_and_write(&link, yaml("llama_server_path: /opt/ls\n")).expect("write");
 
-    // The link is still a symlink (not replaced by a regular file).
     assert!(
       fs::symlink_metadata(&link)
         .unwrap()
@@ -432,14 +413,12 @@ arch_defaults:
         .is_symlink(),
       "symlink preserved"
     );
-    // The real target got the update and kept its comment.
     let real_body = fs::read_to_string(&real).unwrap();
     assert!(real_body.contains("# mine"), "target comment survives");
     assert!(
       real_body.contains("llama_server_path: /opt/ls"),
       "write landed on target"
     );
-    // Reading through the link sees the same content.
     assert_eq!(fs::read_to_string(&link).unwrap(), real_body);
     fs::remove_dir_all(&dir).ok();
   }
@@ -554,8 +533,7 @@ arch_defaults:
 
   #[test]
   fn merge_and_write_preserves_comments() {
-    // The whole point of the yaml_edit rewrite: a wizard / cli write must
-    // not strip the user's hand-written comments.
+    // A wizard / cli write must not strip the user's hand-written comments.
     let dir = temp_dir("comments");
     let target = dir.join("config.yaml");
     fs::write(

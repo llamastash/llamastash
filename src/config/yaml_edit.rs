@@ -120,7 +120,7 @@ fn upsert_leaf(source: &str, path: &[&str], leaf: &Leaf<'_>) -> Result<String, W
 
   if i > 0 {
     // The deepest existing node `path[0..i]` is where the missing suffix
-    // attaches. Decide by its shape.
+    // attaches.
     let node_i = resolve(&root, &path[..i]).expect("prefix resolves");
     if node_i.as_mapping().is_some_and(|m| !m.is_empty()) {
       // Non-empty mapping: a block append only works on block style; a
@@ -216,7 +216,6 @@ fn update_leaf(
 fn trim_trailing_trivia(source: &str, span: (usize, usize)) -> (usize, usize) {
   let (start, mut end) = span;
   let region = &source[start..end];
-  // Walk back over whole lines that are blank or comment-only.
   let lines: Vec<&str> = region.split_inclusive('\n').collect();
   let mut cut = region.len();
   for line in lines.iter().rev() {
@@ -747,9 +746,7 @@ mod tests {
 
   #[test]
   fn upsert_into_null_intermediate_builds_deep_chain() {
-    // `presets:` is a bare (null) key; writing three levels under it used to
-    // refuse with a misleading "flow / non-block" error. It now re-emits the
-    // whole missing suffix as a nested block.
+    // `presets:` is a bare (null) key; the write builds three levels under it.
     let src = "presets:\ntheme: latte\n";
     let out = upsert(src, &["presets", "m", "entries", "p"], "{\"ctx\":8192}").unwrap();
     assert!(out.contains("theme: latte"), "sibling survives");
@@ -888,7 +885,6 @@ mod tests {
 
   #[test]
   fn upsert_block_update_last_entry_keeps_trailing_newline() {
-    // Updating the file's last entry must not strip the EOF newline.
     let src = "presets:\n  m:\n    entries:\n      a:\n        ctx: 1\n";
     let body = parse_ok("ctx: 2\n");
     let out = upsert_block(src, &["presets", "m", "entries", "a"], &body).unwrap();
@@ -969,10 +965,8 @@ mod tests {
     );
     assert_eq!(render_value(&parse_ok("42")).unwrap(), "42");
     assert_eq!(render_value(&parse_ok("true")).unwrap(), "true");
-    // A numeric-looking string must round-trip back to a string, not an int.
     let tok = render_value(&YamlValue::String("10000".into())).unwrap();
     assert_eq!(parse_ok(&tok).as_str(), Some("10000"), "stays a string");
-    // A sequence renders as one-line flow that re-parses to the same list.
     let seq = render_value(&parse_ok("[/a, /b]")).unwrap();
     assert!(!seq.contains('\n'), "sequence stays single-line: {seq}");
     assert_eq!(parse_ok(&seq).as_sequence().map(|s| s.len()), Some(2));

@@ -23,7 +23,7 @@ const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 /// Hard ceiling on any context-window value (`-c`, `knobs.u32(crate::launch::knobs::kid("ctx-size"))`, the
 /// `fit_ctx_floor` config). 2^20 tokens — far above any real model's
 /// trained window, low enough that a fat-fingered value is caught
-/// before it reaches `llama-server`. Centralised here so the CLI,
+/// before it reaches the engine. Centralised here so the CLI,
 /// daemon admission, and config validation share one bound.
 pub const MAX_CTX_TOKENS: u32 = 1_048_576;
 
@@ -54,14 +54,10 @@ pub struct Config {
   pub model_paths: Vec<PathBuf>,
   pub disable_default_cache_paths: CachePathsConfig,
   pub keybindings: BTreeMap<String, String>,
-  /// GPU probe configuration, grouped under `gpu:`. Controls which
-  /// vendor tools the daemon spawns during initial and periodic
-  /// hardware detection.
+  /// Controls which vendor tools the daemon spawns during initial and
+  /// periodic hardware detection.
   #[serde(default)]
   pub gpu: GpuConfig,
-  /// Daemon lifecycle configuration, grouped under `daemon:` — launch
-  /// port range, health-probe timeout, idle shutdown, and the
-  /// host-metrics sampler cadence.
   #[serde(default)]
   pub daemon: DaemonConfig,
   pub disable_scan: bool,
@@ -83,31 +79,28 @@ pub struct Config {
   /// GGUF `general.architecture` strings (`llama`, `qwen2`, `mistral`,
   /// `gemma`, `phi`, `qwen3`, …). At launch time the daemon merges
   /// these layers in precedence order — preset > last_params >
-  /// `arch_defaults` (this map) > built-in table > llama-server. The
-  /// wizard no longer writes this field; it remains as a hand-edited
-  /// escape hatch for users overriding a built-in row.
+  /// `arch_defaults` (this map) > built-in table > engine defaults.
+  /// Hand-edited escape hatch for users overriding a built-in row.
   pub arch_defaults: BTreeMap<String, crate::launch::knobs::KnobSet>,
   /// OpenAI-compat proxy router. Enabled by default so agent clients
   /// (OpenCode, Pi) can attach to one stable URL and route by
   /// `body.model`. In normal mode the listener prefers
   /// `127.0.0.1:11435`; in Ollama-compat mode it prefers
-  /// `127.0.0.1:11434`. See
-  /// docs/plans/2026-05-21-001-feat-proxy-router-plan.md for the
-  /// rationale. Unknown keys inside `[proxy]` are rejected loudly so
+  /// `127.0.0.1:11434`. Unknown keys inside `proxy:` are rejected loudly so
   /// a typo never silently falls back to defaults — separate posture
   /// from the top-level config which tolerates unknown keys for
   /// forward-compat.
   pub proxy: ProxyConfig,
   /// All backend configuration, grouped under `backend:`. Holds the always-on
-  /// llama.cpp settings (`binary`, `additional_binaries`, `jinja`,
-  /// `strict_fit`, `fit_ctx_floor`) plus the optional engines
+  /// llama.cpp settings (`servers`, `jinja`, `strict_fit`, `fit_ctx_floor`)
+  /// plus the optional engines
   /// (each default-on when its binary resolves). Each backend owns its own
   /// typed struct in its own module; see [`crate::backend::BackendConfig`].
   #[serde(default)]
   pub backend: crate::backend::BackendConfig,
   /// How a knob no layer supplied a value for is seeded at launch
   /// `auto` (factory) delegates layer-less knobs to `--fit`;
-  /// `inherited` leaves them unset (pre-Auto behavior). Env override:
+  /// `inherited` leaves them unset. Env override:
   /// `LLAMASTASH_DEFAULT_LAUNCH_MODE=auto|inherited`.
   #[serde(default)]
   pub default_launch_mode: DefaultLaunchMode,
@@ -254,7 +247,7 @@ pub const MAX_LEFT_PANE_RATIO_SLOTS: usize = 5;
 /// same OpenAI compat + Ollama-discovery surfaces. The listener binds
 /// loopback (`127.0.0.1`) by default; `host` opts the *proxy data
 /// plane* into LAN exposure, gated behind the `api_key` bearer token
-/// (the control plane and `llama-server` children always stay
+/// (the control plane and engine children always stay
 /// loopback). TLS is not yet implemented — LAN mode is plaintext.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
@@ -330,7 +323,7 @@ pub struct ProxyConfig {
   /// loopback binding requires `api_key` unless `insecure_no_auth` is
   /// set; otherwise the daemon refuses to bind the proxy (the daemon
   /// itself still runs). Only the proxy moves — the control plane and
-  /// `llama-server` children stay loopback regardless.
+  /// engine children stay loopback regardless.
   ///
   /// CLI override: `--proxy-host <IP>`. Env override:
   /// `LLAMASTASH_PROXY_HOST`. Precedence: CLI > env > config.
@@ -445,7 +438,6 @@ impl ProxyAliases {
     self.0.iter()
   }
 
-  /// Entries in file order as `(name, target)`.
   pub fn pairs(&self) -> impl Iterator<Item = (&str, &str)> {
     self.0.iter().map(|a| (a.name.as_str(), a.target.as_str()))
   }
@@ -533,7 +525,7 @@ impl ProxyConfig {
   }
 
   /// Address the listener binds. Falls back to loopback
-  /// (`127.0.0.1`) when `host` is unset — the historical default.
+  /// (`127.0.0.1`) when `host` is unset.
   pub fn effective_host(&self) -> IpAddr {
     self.host.unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST))
   }
@@ -606,15 +598,14 @@ impl Default for ProxyConfig {
 }
 
 /// A single typed-knob slot's *state*. A knob is either pinned to an
-/// explicit value (`Set`) or delegated to llama-server's `--fit`
+/// explicit value (`Set`) or delegated to the engine's `--fit`
 /// placement (`Auto`). The third state — *Inherited* — is the
 /// absence of a `KnobValue`: `None` on the `Option<KnobValue<T>>`
 /// field, which the layered resolver fills from the next layer down,
-/// or which falls through to llama-server's own default.
+/// or which falls through to the engine's own default.
 ///
-/// **Serde shape:** `Set(v)` serialises as the bare scalar `v` exactly
-/// as the pre-tri-state `Option<T>` field did, so existing bare values
-/// load unchanged. `Auto` serialises as the bare token `auto` (e.g.
+/// **Serde shape:** `Set(v)` serialises as the bare scalar `v`.
+/// `Auto` serialises as the bare token `auto` (e.g.
 /// `ctx: auto`) — readable and idiomatic in both `config.yaml` and the
 /// JSON wire.
 ///
@@ -647,12 +638,10 @@ fn serialises_as_auto_token<T: Serialize>(v: &T) -> bool {
 }
 
 impl<T> KnobValue<T> {
-  /// True when this knob is delegated to `--fit`.
   pub fn is_auto(&self) -> bool {
     matches!(self, KnobValue::Auto)
   }
 
-  /// Borrow the concrete value when `Set`; `None` when `Auto`.
   pub fn as_set(&self) -> Option<&T> {
     match self {
       KnobValue::Set(v) => Some(v),
@@ -660,7 +649,6 @@ impl<T> KnobValue<T> {
     }
   }
 
-  /// Take the concrete value when `Set`; `None` when `Auto`.
   pub fn into_set(self) -> Option<T> {
     match self {
       KnobValue::Set(v) => Some(v),
@@ -734,9 +722,8 @@ impl<'de> Deserialize<'de> for AutoToken {
   }
 }
 
-/// Ergonomic accessors over an `Option<KnobValue<T>>` knob slot, so the
-/// many sites that read the old two-state `Option<T>` value keep their
-/// shape. `None` (Inherited) and `Auto` both collapse to "no concrete
+/// Ergonomic accessors over an `Option<KnobValue<T>>` knob slot. `None`
+/// (Inherited) and `Auto` both collapse to "no concrete
 /// value" — the correct view for argv emission and value display, where
 /// Auto emits/shows nothing just like an unset field.
 pub trait KnobValueOpt<T> {
@@ -790,16 +777,14 @@ pub fn preset_entries(
 /// `knobs.u32(crate::launch::knobs::kid("ctx-size")) = Set(65536)`); materialisation pulls them into the
 /// [`crate::launch::params::LaunchParams`] sibling fields so the IPC/CLI
 /// wire shape is unchanged. `mode` (launch mode) and `extras` (the
-/// free-form llama-server argv tail) are the only non-knob settings an
+/// free-form engine argv tail) are the only non-knob settings an
 /// entry carries. Every field is optional — an entry only stores what it
 /// pins.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PresetBody {
   /// Every knob this preset pins, keyed by the declaring backend's id.
   ///
-  /// One map replaces what used to be four places: the flattened typed knobs,
-  /// the `backend_knobs:` sub-map, and the `mode:` / `mtp:` / `mtp_draft_n:`
-  /// siblings. A pre-registry config is rewritten into this shape once, on
+  /// A config in the old shape is rewritten into this shape once, on
   /// daemon start (`crate::config::knob_migration`).
   #[serde(
     default,
@@ -828,18 +813,18 @@ pub struct PresetBody {
 }
 
 /// How a knob *no layer supplied a value for* is seeded at launch
-/// composition (R1 seeding rule). Selects only the seed for layer-less
+/// composition. Selects only the seed for layer-less
 /// knobs — knobs any layer set (user / last-used / arch / preset) keep
 /// that value ("remembered values win").
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DefaultLaunchMode {
   /// Layer-less knobs seed to [`KnobValue::Auto`] — delegate placement
-  /// to llama-server's `--fit`. Factory default.
+  /// to the engine's `--fit`. Factory default.
   #[default]
   Auto,
   /// Layer-less knobs stay Inherited (`None`) and fall through to
-  /// llama-server's own default — the pre-Auto behavior.
+  /// the engine's own default.
   Inherited,
 }
 
@@ -918,8 +903,7 @@ pub struct PortRange {
 
 impl Default for PortRange {
   fn default() -> Self {
-    // High, unprivileged, rarely claimed by common dev servers. Resolved
-    // during planning (see plan Open Questions).
+    // High, unprivileged, rarely claimed by common dev servers.
     Self {
       start: 41100,
       end: 41300,
@@ -941,8 +925,7 @@ pub struct LoadedConfig {
 }
 
 /// Resolve which config file to load, given an optional CLI override, an
-/// optional env override, and the directory `directories` would pick. Pure
-/// function for testability — mirrors `kdash::config::config_path_from`.
+/// optional env override, and the default config file.
 ///
 /// Precedence: `--config` flag > `LLAMASTASH_CONFIG` env > XDG default. The
 /// CLI is highest because users explicitly typed it; env beats the default
@@ -1957,8 +1940,7 @@ proxy:
     assert!(!loaded.config.proxy.enabled);
     assert_eq!(loaded.config.proxy.port, Some(13579));
     assert_eq!(loaded.config.proxy.effective_port(), 13579);
-    // An explicit cap (the issue #65 10 MiB example) parses; omitted
-    // keys keep the default (covered in proxy_config_defaults_match_plan).
+    // An explicit cap parses; omitted keys keep the default.
     assert_eq!(loaded.config.proxy.max_body_size, 10485760);
     fs::remove_dir_all(dir).expect("temp test dir should be removed");
   }
@@ -2018,8 +2000,8 @@ proxy:
 
   #[test]
   fn proxy_host_and_auth_default_to_loopback_no_key() {
-    // Absent host/api_key keep the historical loopback, keyless
-    // posture — an old config (no new keys) is unchanged.
+    // Absent host/api_key keep the loopback, keyless posture — an old
+    // config (no new keys) is unchanged.
     let p = ProxyConfig::default();
     assert_eq!(p.host, None);
     assert_eq!(p.effective_host(), IpAddr::V4(Ipv4Addr::LOCALHOST));
