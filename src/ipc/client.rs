@@ -26,7 +26,7 @@ use crate::daemon::runtime_file;
 pub const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Budget for methods whose handler spawns or reaps an engine process.
-/// These are bounded by how fast the box starts `llama-server`, not by
+/// These are bounded by how fast the box starts the engine, not by
 /// daemon round-trip: a cold macOS runner has taken well past 5 s just
 /// to spawn and bind. Timing the client out mid-launch is worse than
 /// waiting, because the handler is cancelled while the process it
@@ -64,8 +64,7 @@ pub enum ClientError {
   #[error("daemon rejected the bearer token (401)")]
   Unauthorized,
   /// HTTP non-200/401 status. Carries the status code and the
-  /// best-effort body string (truncated). Maps to
-  /// `DAEMON_UNREACHABLE` at the exit-code layer today.
+  /// best-effort body string (truncated).
   #[error("daemon returned HTTP {status}: {body}")]
   BadStatus { status: u16, body: String },
   /// Response body wasn't valid JSON-RPC.
@@ -125,13 +124,9 @@ impl Client {
   /// 2. `state_dir/runtime.json`, if present.
   /// 3. Otherwise `ClientError::Connect`.
   ///
-  /// `path` is interpreted as the daemon's state directory. As a
-  /// transitional accommodation, if the caller passes a file path (or
-  /// a non-existent path) whose **parent** is a directory holding
-  /// `runtime.json`, the parent is used as the state directory. This
-  /// lets existing callers that hand in a socket path (e.g.,
-  /// `…/daemon.sock`) keep working while the migration to explicit
-  /// `state_dir` arguments lands.
+  /// `path` is the daemon's state directory. A file or missing path
+  /// falls back to its parent, so existing callers that hand in a
+  /// socket path (e.g. `…/daemon.sock`) keep working.
   pub async fn connect(path: &Path) -> Result<Self, ClientError> {
     let state_dir = effective_state_dir(path);
     let (ipc_url, ipc_token) = resolve_attach(&state_dir)?;
@@ -139,9 +134,8 @@ impl Client {
   }
 
   /// Lower-level entrypoint that skips the runtime.json + env lookup.
-  /// Used by callers that already have the URL+token in hand (the
-  /// reconcile path, certain tests). Does not validate that the URL
-  /// is reachable — the first `call` surfaces transport failures.
+  /// Does not validate that the URL is reachable — the first `call`
+  /// surfaces transport failures.
   pub fn with_url_and_token(ipc_url: &str, ipc_token: &str) -> Result<Self, ClientError> {
     use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
     let mut headers = HeaderMap::new();
@@ -175,7 +169,7 @@ impl Client {
       .await
   }
 
-  /// Same as `call` but with a caller-supplied timeout.
+  /// Same as `call` with a caller-supplied timeout.
   pub async fn call_with_timeout(
     &mut self,
     method: &str,
@@ -227,17 +221,14 @@ impl Client {
     Ok(resp.result.unwrap_or(Value::Null))
   }
 
-  /// Borrow the resolved IPC URL — handy for the daemon-status
-  /// renderer that surfaces "Daemon at: http://…" alongside the PID.
+  /// The resolved control-plane URL.
   pub fn ipc_url(&self) -> &str {
     &self.ipc_url
   }
 }
 
-/// Interpret `path` as a state directory. When `path` is a file (or
-/// missing), fall back to its parent — the accommodation that
-/// lets `Client::connect(&socket_path)` keep working while the bulk
-/// rename to explicit `state_dir` arguments lands.
+/// Interpret `path` as a state directory; a file or missing path falls
+/// back to its parent.
 fn effective_state_dir(path: &Path) -> PathBuf {
   if path.is_dir() {
     return path.to_owned();
@@ -248,8 +239,8 @@ fn effective_state_dir(path: &Path) -> PathBuf {
     .unwrap_or_else(|| path.to_owned())
 }
 
-/// Returns `(ipc_url, ipc_token)` per the documented attach order, or
-/// a `Connect` error explaining why neither path resolved.
+/// Returns `(ipc_url, ipc_token)` per the attach order, or
+/// a `Connect` error explaining why neither source resolved.
 fn resolve_attach(state_dir: &Path) -> Result<(String, String), ClientError> {
   match (env_var(ENV_IPC_URL), env_var(ENV_IPC_TOKEN)) {
     (Some(url), Some(token)) => Ok((url, token)),
@@ -319,9 +310,7 @@ mod tests {
   fn resolve_attach_errors_on_partial_env_override() {
     // We can't reliably manipulate process-global env in unit
     // tests without serialising every test in this file behind a
-    // mutex — env var resolution is covered end-to-end in
-    // `tests/control_plane_client_test.rs`. Here
-    // we only check the error message phrasing.
+    // mutex, so this only checks the error message phrasing.
     use std::sync::Mutex;
     use std::sync::OnceLock;
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();

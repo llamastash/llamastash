@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Marker for the `"jsonrpc"` field. Always the string `"2.0"`.
+/// Value of the `"jsonrpc"` field.
 pub const JSONRPC_VERSION: &str = "2.0";
 
 /// A single JSON-RPC request as it arrives on the wire.
@@ -29,8 +29,7 @@ pub struct Request {
 }
 
 impl Request {
-  /// Build a well-formed JSON-RPC 2.0 request with the conventional
-  /// integer id. Useful for the client and tests.
+  /// Builds a request with the conventional integer id.
   pub fn new(id: i64, method: impl Into<String>, params: Option<Value>) -> Self {
     Self {
       jsonrpc: JSONRPC_VERSION.into(),
@@ -46,8 +45,7 @@ impl Request {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Response {
   pub jsonrpc: String,
-  /// Echoed from the request. Always present in our responses (we don't
-  /// generate spontaneous server-pushed messages).
+  /// Echoed from the request; we never send server-pushed messages.
   pub id: Value,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub result: Option<Value>,
@@ -93,10 +91,9 @@ impl ErrorObject {
     }
   }
 
-  /// Attach structured `data` — used to carry a machine-readable
-  /// `cause` (e.g. `launch_refused`) so the proxy can map the error to
-  /// the right HTTP status and backoff policy without string-matching
-  /// the human message.
+  /// The `data` payload carries a machine-readable `cause` (e.g.
+  /// `launch_refused`) so the proxy can map the error to the right HTTP
+  /// status and backoff policy without string-matching the human message.
   pub fn with_data(code: ErrorCode, message: impl Into<String>, data: Value) -> Self {
     Self {
       code: code.as_i32(),
@@ -107,8 +104,7 @@ impl ErrorObject {
 }
 
 /// JSON-RPC error codes. The first five (`ParseError`..`InternalError`)
-/// are the reserved spec codes; `UnauthorizedPeer` is llamastash's
-/// application-specific code returned when peercred verification fails.
+/// are the reserved spec codes; the rest are llamastash application codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorCode {
   ParseError,
