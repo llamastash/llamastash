@@ -433,7 +433,7 @@ mod tests {
 
   #[test]
   fn discrete_card_with_large_gtt_stays_discrete() {
-    // R18 regression: a discrete 16 GiB card on a 128 GiB-RAM host
+    // Regression: a discrete 16 GiB card on a 128 GiB-RAM host
     // gets a kernel-sized GTT aperture (~64 GiB) that exceeds VRAM.
     // The old `gtt > vram` heuristic mis-summed this to 80 GiB and
     // marked it unified; the carve signature (VRAM >= 1 GiB) keeps it
