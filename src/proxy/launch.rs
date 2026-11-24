@@ -1,37 +1,21 @@
 //! Proxy-side launch helper.
 //!
-//! When a `/v1/...` request lands for a model that exists in the
-//! catalog but has no Ready supervisor, [`auto_start`] drives the
-//! launch in-process by calling
+//! When a request lands for a catalog model with no Ready supervisor,
+//! [`auto_start`] drives the launch in-process through
 //! [`crate::daemon::launch_service::compose_and_spawn`] — the same
 //! composition pipeline the IPC `start_model` handler uses, so the two
 //! paths can't drift apart.
 //!
-//! The flow:
-//!   1. Acquire single-flight rights via
-//!      [`crate::proxy::coalesce::Coalesce::acquire`]. Leaders run
-//!      the launch; followers `.wait()` and receive the leader's
-//!      outcome directly from the slot (no re-snapshot).
-//!   2. Leaders first look for a supervisor already serving this file
-//!      ([`attach_target`]) and attach to it instead of spawning —
-//!      the coalesce map only covers proxy-driven launches, so a
-//!      CLI/TUI launch still in `Loading` would otherwise get a
-//!      duplicate `llama-server` on the same GGUF.
-//!   3. Otherwise build [`StartParams`] from the resolved catalog row
-//!      (path + resolved launch mode, no port preference, no caller
-//!      knobs — `compose_and_spawn` then replays the same
-//!      `last_params → arch_defaults → built-in` cascade the IPC
-//!      handler does) and spawn.
-//!   4. Poll [`crate::daemon::supervisor::ManagedModel::state`] at
-//!      100 ms cadence until it reaches `Ready` (forward) or
-//!      `Error{cause}` (fallback). No client-facing timeout — per
-//!      the locked Key Decision "Hard supervisor Error only; wait
-//!      indefinitely on Loading."
-//!   5. A launch the admission gate *admitted* that dies before
-//!      `Ready` gets one make-room-and-retry pass
-//!      ([`await_ready_or_make_room`]) before the caller's fallback,
-//!      because an admission that turned out wrong is not a reason to
-//!      let another model answer.
+//! - Leaders first attach to a supervisor already serving the file
+//!   ([`attach_target`]). The coalesce map covers only proxy-driven launches,
+//!   so a CLI/TUI launch still in `Loading` would otherwise get a duplicate
+//!   engine process on the same model.
+//! - There is no client-facing timeout. Only a supervisor `Error` ends the wait
+//!   on `Loading`.
+//! - A launch the admission gate admitted that dies before `Ready` gets one
+//!   make-room-and-retry pass ([`await_ready_or_make_room`]) before the caller's
+//!   fallback, because a wrong admission is no reason to let another model
+//!   answer.
 //!
 //! Plan: docs/plans/2026-05-21-001-feat-proxy-router-plan.md.
 
@@ -110,7 +94,7 @@ pub(crate) async fn auto_start(
   name: Option<String>,
   record: &mut RequestRecord,
 ) -> LaunchOutcome {
-  // Compute the canonical ModelId from the resolved row. Resolved here rather
+  // Resolved here rather
   // than from any in-process cache so the single-flight key matches what
   // `compose_and_spawn` will observe at spawn time — which is why both go
   // through the same resolver.
@@ -220,7 +204,7 @@ async fn drive_launch_as_leader(
   // A launch for this file may already be underway from another
   // surface — CLI `start`, the TUI, a boot-time restore — and the
   // coalesce map only covers proxy-driven launches. Attach to it
-  // instead of spawning a second `llama-server` on the same GGUF,
+  // instead of spawning a second engine on the same file,
   // which would hold its own weights in VRAM until the idle sweep.
   // Ready is included so a supervisor that came up between `decide`
   // and here is reused too.
@@ -461,7 +445,7 @@ async fn attach_target(
 /// Poll the supervisor state machine at 100 ms cadence until it
 /// reaches `Ready` or a terminal state. No client-facing timeout —
 /// only `Error{cause}` and `Stopping` trigger fallback (Loading waits
-/// indefinitely), per the locked Key Decision.
+/// indefinitely).
 async fn await_ready(state: &Arc<ProxyState>, model: &ManagedModel) -> LaunchOutcome {
   loop {
     match model.state().await {
@@ -557,8 +541,7 @@ fn resolve_auto_start_mode(
 /// Map a catalog row's GGUF-derived `mode_hint` string onto the launch
 /// wire mode so `compose_and_spawn` emits `--embeddings` / `--rerank`
 /// when the model needs it. `None` (unknown/absent hint) leaves the
-/// chat default in place — this is the seam that regressed embedding
-/// auto-start to a 501 before the mode hint was threaded through.
+/// chat default in place.
 fn launch_mode_from_hint(hint: Option<&str>) -> Option<LaunchModeWire> {
   match hint? {
     "chat" => Some(LaunchModeWire::Chat),
@@ -574,9 +557,8 @@ fn launch_mode_from_hint(hint: Option<&str>) -> Option<LaunchModeWire> {
 ///
 /// Delegates to the shared resolver, so a directory-shaped row (a safetensors
 /// snapshot) gets its backend's synthetic id instead of being handed to the
-/// GGUF header reader. Reading the header unconditionally here meant auto-start
-/// answered `Is a directory (os error 21)` for every model of that shape — the
-/// launch path had already learned this, and the proxy had not.
+/// GGUF header reader. Reading the header unconditionally answers
+/// `Is a directory (os error 21)` for every model of that shape.
 fn canonical_id_for_row(row: &CatalogRow, ctx: &MethodContext) -> Result<ModelId, String> {
   let path = std::path::Path::new(&row.path);
   crate::backend::resolve_identity_for_path(path, Some(ctx))
@@ -632,8 +614,6 @@ mod tests {
 
   #[test]
   fn launch_mode_from_hint_is_none_for_unknown_or_absent() {
-    // Absent hint and unrecognised label both leave the chat default to
-    // `compose_and_spawn` (None) rather than guessing a mode.
     assert!(launch_mode_from_hint(None).is_none());
     assert!(launch_mode_from_hint(Some("")).is_none());
     assert!(launch_mode_from_hint(Some("unknown")).is_none());
@@ -641,8 +621,8 @@ mod tests {
 
   #[test]
   fn endpoint_mode_beats_an_embedding_hint_for_a_reranker() {
-    // The reported #56 shape: a BERT reranker hints `embedding`, so the
-    // hint alone launched a supervisor that 501s on `/v1/rerank`.
+    // A BERT reranker hints `embedding`, so the
+    // hint alone launches a supervisor that 501s on `/v1/rerank`.
     assert!(matches!(
       resolve_auto_start_mode(Some("embedding"), Some(LaunchMode::Rerank), None),
       Some(LaunchModeWire::Rerank)
@@ -672,9 +652,9 @@ mod tests {
 
   #[test]
   fn a_chat_model_is_never_forced_into_a_non_chat_mode() {
-    // `--embeddings` makes llama-server refuse chat for the rest of the
-    // supervisor's life, so an embeddings request must not lock a chat
-    // model out of chat. Nothing is sent, and the daemon lands on the same
+    // An embeddings launch makes the engine refuse chat for the rest of the
+    // supervisor's life, so an embeddings request must not lock a chat model
+    // out of chat. Nothing is sent, and the daemon lands on the same
     // hint (via a `default:` preset's pin, if the user wrote one).
     assert!(resolve_auto_start_mode(Some("chat"), Some(LaunchMode::Embedding), None).is_none());
     assert!(resolve_auto_start_mode(Some("chat"), None, Some(LaunchMode::Rerank)).is_none());
@@ -773,8 +753,6 @@ mod tests {
 
   #[test]
   fn canonical_id_for_row_errors_on_missing_file() {
-    // A row pointing at a non-existent GGUF returns the wrapped header
-    // read error under the "could not read GGUF header" prefix.
     let r = row("/nonexistent/secret-model.gguf", None);
     let err = canonical_id_for_row(&r, &ctx()).expect_err("missing file must error");
     assert!(err.starts_with("could not read GGUF header"), "got: {err}");
@@ -793,9 +771,9 @@ mod tests {
     assert_ne!(id.header_blake3, [0u8; 32]);
   }
 
-  /// Auto-start's identity step used to read a GGUF header unconditionally, so
-  /// every directory-shaped row (a safetensors snapshot) failed with
-  /// `Is a directory (os error 21)` and the proxy answered 503 — the one
+  /// A directory-shaped row (a safetensors snapshot) must resolve without a
+  /// header read, or it fails with
+  /// `Is a directory (os error 21)` and the proxy answers 503 — the one
   /// surface a directory-shaped model is most likely to be reached through.
   #[test]
   fn canonical_id_for_row_resolves_a_directory_row_without_reading_a_header() {
@@ -827,12 +805,9 @@ mod tests {
     };
     assert!(death_may_be_memory(&died(ErrorKind::Exited), tried));
     assert!(death_may_be_memory(&died(ErrorKind::FitClamped), tried));
-    // A probe timeout is an engine that never answered. Evicting for one unloads
-    // idle models and then waits out the whole readiness timeout again.
     assert!(!death_may_be_memory(&died(ErrorKind::ProbeTimeout), tried));
     // Inside the floor the launch was broken, not starved.
     assert!(!death_may_be_memory(&died(ErrorKind::Exited), instant));
-    // A stop is a decision, and nothing else is a death at all.
     assert!(!death_may_be_memory(&ManagedState::Stopping, tried));
     assert!(!death_may_be_memory(&ManagedState::Stopped, tried));
     assert!(!death_may_be_memory(&ManagedState::Loading, tried));

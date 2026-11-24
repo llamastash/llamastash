@@ -1,16 +1,10 @@
 //! Bearer-token auth for the LAN-exposed proxy data plane.
 //!
-//! Mirrors the control-plane's `IpcToken` story (`src/daemon/auth.rs`):
-//! a high-entropy key, constant-time comparison, and a redacted
-//! `Debug` so the secret never lands in a log line. The two differ in
-//! lifetime — the control-plane token is regenerated every daemon
-//! start and lives in `runtime.json`, whereas the proxy key is durable
-//! (clients hard-code it) and lives in `config.yaml`.
-//!
-//! Auth is enforced only when a key is configured. The default
-//! loopback, keyless posture skips the check before touching the
-//! request headers ([`ProxyAuth::enforced`] is a single bool), so the
-//! benchmarked hot path is unchanged.
+//! Unlike the control-plane's `IpcToken` (regenerated every daemon start,
+//! stored in `runtime.json`), the proxy key is durable — clients hard-code
+//! it — and lives in `config.yaml`. Like that token, it uses a high-entropy
+//! key, constant-time comparison, and a redacted `Debug` so the secret never
+//! lands in a log line. Auth is enforced only when a key is configured.
 
 use base64::{
   engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
@@ -64,7 +58,6 @@ impl ProxyApiKey {
 }
 
 impl std::fmt::Debug for ProxyApiKey {
-  // Suppress the secret in any Debug output.
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("ProxyApiKey")
       .field("len", &self.0.len())
@@ -114,7 +107,7 @@ impl ProxyAuth {
   ///   prompts, the user pastes the proxy key as the **password**, and
   ///   the browser resends it per-origin. The username is ignored. This
   ///   is what makes the `/ui` surface reachable over LAN with the same
-  ///   auto-provisioned key (plan §"LAN /ui + browser auth").
+  ///   auto-provisioned key.
   ///
   /// `false` on a missing / malformed / wrong credential.
   pub fn check(&self, headers: &HeaderMap) -> bool {
@@ -311,9 +304,7 @@ mod tests {
   fn enabled_auth_requires_matching_bearer() {
     let auth = ProxyAuth::new(Some("sk-llamastash-k3y".into()));
     assert!(auth.enforced());
-    // Correct token passes.
     assert!(auth.check(&headers_with("Bearer sk-llamastash-k3y")));
-    // Wrong token and missing header reject.
     assert!(!auth.check(&headers_with("Bearer nope")));
     assert!(!auth.check(&HeaderMap::new()));
     // A non-base64 `Basic` value is malformed → reject (no panic).
@@ -335,7 +326,6 @@ mod tests {
       HeaderValue::from_static("  sk-llamastash-k3y  "),
     );
     assert!(auth.check(&padded));
-    // Wrong key rejects.
     let mut bad = HeaderMap::new();
     bad.insert("x-api-key", HeaderValue::from_static("nope"));
     assert!(!auth.check(&bad));
@@ -360,10 +350,8 @@ mod tests {
     // An empty username is fine too (RFC 7617 allows it).
     let ok_empty_user = format!("Basic {}", STANDARD.encode(":sk-llamastash-k3y"));
     assert!(auth.check(&headers_with(&ok_empty_user)));
-    // Wrong password rejects.
     let bad = format!("Basic {}", STANDARD.encode("x:wrong"));
     assert!(!auth.check(&headers_with(&bad)));
-    // No colon separator → malformed → reject.
     let no_colon = format!("Basic {}", STANDARD.encode("sk-llamastash-k3y"));
     assert!(!auth.check(&headers_with(&no_colon)));
   }

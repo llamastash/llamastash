@@ -13,8 +13,6 @@
 //! the fan-out is one endpoint: the naive `for port in …; do curl` breaks a
 //! Prometheus scrape on the first such model, and with several models loaded a
 //! single cold one would make every scrape red.
-//!
-//! Plan: docs/plans/2026-10-11-001-feat-proxy-metrics-plan.md.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
