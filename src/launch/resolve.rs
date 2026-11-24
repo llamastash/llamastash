@@ -4,15 +4,9 @@
 //! IPC fetch + `CliExit` mapping on top) and the HTTP proxy depend *down*
 //! on one matcher instead of the proxy importing "up" into `cli`.
 //!
-//! Model references accept an absolute path (matched verbatim against the
-//! canonical path), an exact file name, or a case-insensitive substring
-//! of the file name or parent directory.
-//!
 //! `CatalogRow` is also the **single source of truth for the `list_models`
-//! wire shape**: its hand-written `Serialize`/`Deserialize` (the private
-//! `to_wire_value` / `from_wire_value` pair) is the one place that nested JSON
-//! shape is defined. The daemon builds a row from its `DiscoveredModel` and
-//! serialises it; the CLI and TUI deserialise it. No second serializer.
+//! wire shape**: the hand-written `Serialize`/`Deserialize` is the one place
+//! that nested JSON shape is defined. No second serializer.
 
 use serde::de::{Deserialize, Deserializer};
 use serde::ser::{Serialize, Serializer};
@@ -77,7 +71,7 @@ pub struct CatalogRow {
   /// `parameter_label` (`"7B"` is derived from `7e9`).
   pub total_parameters: Option<u64>,
   /// Backend that serves this row, as the daemon resolved it (`list_models`
-  /// `backend` field): a backend id. The honest R14
+  /// `backend` field): a backend id. The honest
   /// badge — a non-default id only when that backend claims the file *and* is
   /// available. `None` on rows the daemon didn't tag (falls back to a
   /// source-derived badge in `list_json`).
@@ -397,7 +391,7 @@ pub fn published_ids_for(catalog: &[CatalogRow], subset: &[CatalogRow]) -> Vec<S
 /// Each caller matches the model half its own way (a catalog resolve in the
 /// proxy, a substring walk in the CLI); only the split is common.
 ///
-/// Splits on the **last** `@` (plan D2), so a GGUF named `foo@bar.gguf` addressed
+/// Splits on the **last** `@`, so a GGUF named `foo@bar.gguf` addressed
 /// as `foo@bar.gguf@coder` keeps its filename in the model half. Returns `None`
 /// when there is no `@`, when the model half is empty (`@coder` — an empty half
 /// substring-matches every row, so treating it as a reference widens the match
@@ -642,7 +636,6 @@ pub fn resolve_model_with_candidates(
 
 #[cfg(test)]
 mod tests {
-
   use super::*;
 
   #[test]
@@ -910,9 +903,6 @@ mod tests {
 
   #[test]
   fn wire_round_trips_nested_shape_and_capability_blocks() {
-    // The single source of truth for the `list_models` wire shape: serialize →
-    // nested `metadata` + root-level capability blocks; deserialize is the exact
-    // mirror (the same parser the daemon, CLI, and TUI all go through).
     let mut r = row("/m/qwen35.gguf", "/m");
     r.mtp = Some(MtpCapability {
       embedded_layers: Some(1),
@@ -1006,8 +996,8 @@ mod tests {
         "`{address}` must not read back as a named reference"
       );
     }
-    // D2's fail-safe gets stronger for free: a filename's extension is not a
-    // launch name, so a GGUF that really is called `foo@bar.gguf` stays whole.
+    // A filename's extension is not a launch name, so a GGUF that really is
+    // called `foo@bar.gguf` stays whole.
     assert_eq!(parse_named_reference("foo@bar.gguf"), None);
     // The last-`@` rule still holds for two valid halves.
     assert_eq!(

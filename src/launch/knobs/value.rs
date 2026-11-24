@@ -1,7 +1,4 @@
 //! Knob *values* — the tri-state a slot holds, and the map a launch carries.
-//!
-//! Replaces the split between the statically-typed llama.cpp knob IR and the
-//! stringly-typed per-backend map: one map, real types, one layering engine.
 
 use std::collections::BTreeMap;
 
@@ -50,8 +47,8 @@ impl Scalar {
   /// The value as the engine would receive it on a command line.
   ///
   /// Whole floats keep one decimal place (`1.0`, not `1`) because that is what
-  /// engines echo back and what the pre-registry emitter produced; changing it
-  /// would silently alter every composed argv carrying a float knob.
+  /// engines echo back; changing it would silently alter every composed argv
+  /// carrying a float knob.
   pub fn to_arg(&self) -> String {
     match self {
       Scalar::U32(v) => v.to_string(),
@@ -311,8 +308,7 @@ impl KnobSet {
   /// The backend-neutral accessor: callers that need "the context window" or
   /// "the serving mode" without caring which engine is running ask by concept,
   /// and the registry maps it to that backend's own spelling. Naming a knob id
-  /// directly in shared code would hard-code one backend's vocabulary, which
-  /// is the mistake this whole registry exists to undo.
+  /// directly in shared code would hard-code one backend's vocabulary.
   pub fn by_concept(&self, backend_id: &str, concept: super::def::Concept) -> Option<&KnobValue> {
     // This backend's own spelling first.
     if let Some(def) = super::registry::def_for_backend_concept(backend_id, concept) {
@@ -375,7 +371,6 @@ impl KnobSet {
   }
 
   /// Write every slot from `other`, replacing what is already here.
-  /// The "these overrides win" direction.
   pub fn overlay(&mut self, other: &KnobSet) {
     for (id, value) in other.iter() {
       self.values.insert(id, value.clone());
@@ -383,8 +378,8 @@ impl KnobSet {
   }
 
   /// Keep only the slots `keep` accepts. Used to drop knobs the resolved
-  /// backend does not declare, which R6 requires be dropped and surfaced
-  /// rather than silently emitted or hard-failed.
+  /// backend does not declare; those get surfaced rather than silently
+  /// emitted or hard-failed.
   pub fn retain_ids(&mut self, keep: impl Fn(KnobId) -> bool) -> Vec<KnobId> {
     let dropped: Vec<KnobId> = self.ids().filter(|id| !keep(*id)).collect();
     for id in &dropped {
@@ -465,7 +460,7 @@ impl std::fmt::Display for ParseError {
 impl std::error::Error for ParseError {}
 
 /// Accepted spellings for a boolean knob value. Matches what the CLI tail
-/// parser has always taken, so `--flash-attn off` keeps working.
+/// parser takes, so `--flash-attn off` keeps working.
 pub(crate) fn parse_bool(s: &str) -> Option<bool> {
   match s.to_ascii_lowercase().as_str() {
     "true" | "on" | "yes" | "1" => Some(true),
@@ -715,7 +710,7 @@ mod tests {
       None,
     );
     // An unlisted but identifier-shaped value (e.g. a custom quant type a
-    // modified llama-server build might define) clears the gate.
+    // modified engine build might define) clears the gate.
     for ok in ["z", "fp4", "turbo_quant", "q4_0", "iq4_nl", "FP8"] {
       assert_eq!(
         parse_value(&open, ok).unwrap(),

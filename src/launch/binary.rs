@@ -1,24 +1,16 @@
-//! Locate the llama.cpp server binary.
+//! Locate the default backend's server binary.
 //!
-//! Priority order, per the plan:
-//! 1. CLI flag `--llama-server <path>`
-//! 2. `LLAMASTASH_LLAMA_SERVER` environment variable
-//! 3. `$PATH` lookup via the `which` crate
-//!
-//! The `$PATH` step tries each name the default backend declares in
-//! `process_markers`, in order — the standalone server first, then the
-//! unified app that ships under a different basename. When `$PATH` has
-//! multiple candidates for one name (e.g. `llama-server-cuda`,
-//! `llama-server`), we take the first and log the full list so the user
-//! knows which one was picked and how to pin a different one.
+//! Priority order: the `--llama-server <path>` CLI flag, the
+//! `LLAMASTASH_LLAMA_SERVER` env var, the configured path, then a
+//! `$PATH` lookup via the `which` crate.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use crate::backend::Backend;
 
-/// Inputs to [`locate`]. Each source is optional; the function
-/// applies the priority order described in the module docs.
+/// Inputs to [`locate`]. The function applies the priority order
+/// described in the module docs.
 #[derive(Debug, Clone, Default)]
 pub struct LocateInputs {
   pub cli_flag: Option<PathBuf>,
@@ -26,7 +18,7 @@ pub struct LocateInputs {
   pub config_path: Option<PathBuf>,
 }
 
-/// What went wrong when [`locate`] couldn't find `llama-server`.
+/// What went wrong when [`locate`] couldn't find the launch executable.
 #[derive(Debug, thiserror::Error)]
 pub enum LocateError {
   /// None of the supplied sources pointed at a real, executable file
@@ -46,8 +38,7 @@ pub enum LocateError {
   ExplicitPathNotExecutable(PathBuf),
 }
 
-/// The binary names the `$PATH` step searched, rendered for the not-found
-/// message. Read back from the same marker list the search itself walks, so a
+/// Read back from the same marker list the search itself walks, so a
 /// backend that adds or renames a distribution updates the error with it.
 fn searched_names() -> String {
   crate::backend::default_backend()
@@ -58,7 +49,7 @@ fn searched_names() -> String {
     .join(" or ")
 }
 
-/// Resolve `llama-server`'s on-disk path. Returns the canonicalised
+/// Resolve the launch executable's on-disk path. Returns the canonicalised
 /// path on success.
 pub fn locate(inputs: LocateInputs) -> Result<PathBuf, LocateError> {
   if let Some(p) = inputs.cli_flag {
@@ -144,8 +135,8 @@ mod tests {
     crate::util::test_temp::unique_temp_dir(&format!("binary-locate-{label}"))
   }
 
-  /// Create an empty file at `path` with mode `0755` so [`locate`]
-  /// treats it as a real binary. Used by the happy-path tests.
+  /// Create a file at `path` with mode `0755` so [`locate`]
+  /// treats it as a real binary.
   fn touch_exec(path: &Path) {
     fs::write(path, b"#!/bin/sh\n").expect("write fake binary");
     #[cfg(unix)]

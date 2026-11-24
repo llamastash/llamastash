@@ -139,7 +139,7 @@ pub fn distinct_ids() -> Vec<KnobId> {
 ///
 /// Underscores and dashes are interchangeable, so a config written as
 /// `flash_attn` and one written as `flash-attn` both resolve. This is key
-/// normalisation, not a compatibility shim: the two spellings are the same
+/// normalisation, not a compatibility shim. The two spellings are the same
 /// name, and users type whichever their editor's neighbours use.
 fn normalise(key: &str) -> String {
   key
@@ -182,8 +182,9 @@ pub fn resolve_static_id(key: &str) -> Option<KnobId> {
   }
   // Neutral concept spellings resolve to whichever knob carries that concept.
   // Ambiguous across backends by design — `--ctx` means "this backend's
-  // context knob" — so the launch-time re-resolution in `for_backend_concept`
-  // is what actually picks. Here we only need to know the key is legitimate.
+  // context knob" — so the launch-time re-resolution in
+  // `def_for_backend_concept` is what actually picks. Here we only need to
+  // know the key is legitimate.
   for (_, def) in iter() {
     if def
       .concept
@@ -289,7 +290,7 @@ pub fn grouped_for_backend(backend_id: &str) -> Vec<(Group, Vec<&'static KnobDef
 }
 
 /// The ids one backend marks volatile — user-set values that must not be
-/// replayed from `last_params`. See [`KnobDef::volatile`].
+/// replayed from `last_params`.
 pub fn volatile_ids(backend_id: &str) -> Vec<&'static str> {
   for_backend(backend_id)
     .iter()

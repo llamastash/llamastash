@@ -1,7 +1,6 @@
 //! Centralized memory-headroom policy.
 //!
-//! UMA defaults preserve Apple's historical 25% reserve and add no percentage
-//! on other shared pools. Explicit overrides affect only UMA, after pool caps.
+//! Explicit overrides affect only UMA, after pool caps.
 //! Engine overhead and in-flight reservations remain separate from headroom.
 //!
 //! The **fixed overhead band** per GPU backend covers what a successful load
@@ -134,12 +133,11 @@ impl PoolKind {
 }
 
 /// Overhead band for a CUDA / ROCm / Metal backend. Compute buffers and
-/// driver allocations beyond weights + KV cache. 512 MiB per the spike.
+/// driver allocations beyond weights + KV cache.
 pub const OVERHEAD_BAND_NATIVE_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Overhead band for a Vulkan / unknown backend. Wider because the
-/// Vulkan path's allocation behavior is less characterized. 1024 MiB
-/// per the spike.
+/// Vulkan path's allocation behavior is less characterized.
 pub const OVERHEAD_BAND_VULKAN_BYTES: u64 = 1024 * 1024 * 1024;
 
 /// Apply additional headroom to available UMA memory, leaving other pools alone.
@@ -150,9 +148,7 @@ pub fn admissible_bytes(available: u64, pool: PoolKind, reserve: MemoryReserve) 
 }
 
 /// Fixed overhead band for a GPU backend string (the `backend` tag on
-/// [`crate::gpu::GpuDevice`] / the `gpu_backend` wire value). Native
-/// vendor backends use the narrow band; Vulkan/unknown uses the wide
-/// one; CPU-only has no GPU compute buffer so the band is zero.
+/// [`crate::gpu::GpuDevice`] / the `gpu_backend` wire value).
 pub fn overhead_band_bytes(backend: &str) -> u64 {
   match backend {
     HostMetricsSnapshot::BACKEND_NVIDIA

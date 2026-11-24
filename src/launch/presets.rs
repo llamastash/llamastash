@@ -1,4 +1,4 @@
-//! Named launch presets per model (`R21`).
+//! Named launch presets per model.
 //!
 //! The `config.yaml` `presets:` blocks materialize into [`NamedPreset`] values.
 //! A preset's `params` is a full [`LaunchParams`] snapshot so applying one is
@@ -30,8 +30,8 @@ pub struct NamedPreset {
   pub preload: bool,
 }
 
-/// Per-model preset list. Wrapper around `Vec<NamedPreset>` so the
-/// state_store API stays clear about insertion / removal semantics.
+/// Per-model preset list. The wrapper keeps the state_store API clear about
+/// insertion / removal semantics.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Presets {
@@ -623,7 +623,7 @@ mod tests {
 
   #[test]
   fn mtp_round_trips_through_a_preset_body() {
-    // KD2 scopes MTP to "launch / TUI / preset", and the knob map is its one
+    // MTP is scoped to "launch / TUI / preset" and the knob map is its one
     // storage: a preset body written with `mtp: off` must survive a
     // materialise round-trip without being projected out onto typed siblings.
     let mut lp = LaunchParams::new(PathBuf::from("/m/a.gguf"), LaunchMode::Chat);

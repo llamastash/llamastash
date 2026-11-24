@@ -3,13 +3,10 @@
 //! A knob set is a flat map of `id: value`, where the value is the bare scalar
 //! the engine would take. The reserved token `auto` denotes
 //! [`KnobValue::Auto`]; a knob whose literal value really is the string
-//! `"auto"` uses the `{ value: auto }` escape, exactly as before.
+//! `"auto"` uses the `{ value: auto }` escape.
 //!
 //! **Keys are resolved through the registry**, which is what turns a typo into
-//! a warning naming the key. That is a strict improvement on the shape this
-//! replaces: `PresetBody.knobs` was `#[serde(flatten)]`, and flatten cannot
-//! carry `deny_unknown_fields`, so a misspelled knob was dropped with no error
-//! at all.
+//! a warning naming the key.
 //!
 //! Keys normalise `_` to `-`, so a config written either way loads.
 
@@ -168,15 +165,15 @@ impl<'de> Deserialize<'de> for KnobSet {
   }
 }
 
-/// Fold a pre-registry preset entry into a knob map (plan D10).
+/// Fold a pre-registry preset entry into a knob map.
 ///
 /// The old shape kept typed knobs flattened at the entry level, native knobs
 /// in a `backend_knobs:` sub-map, and `mode` / `mtp` / `mtp_draft_n` as
 /// siblings. All four are knobs now, so they belong in one map.
 ///
 /// `reserved` names the keys that are *not* knobs and must be left alone.
-/// Deleted in stage 7 once configs have moved; it never writes, so comments in
-/// a hand-authored file are safe by construction.
+/// It never writes, so comments in a hand-authored file are safe by
+/// construction.
 pub fn fold_legacy_entry(
   entry: &BTreeMap<String, yaml_serde::Value>,
   reserved: &[&str],

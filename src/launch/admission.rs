@@ -1,6 +1,6 @@
 //! Pre-spawn memory admission control + in-memory reservation ledger.
 //!
-//! llamastash delegates *placement* to llama-server's `--fit` but keeps
+//! llamastash delegates *placement* to the engine's `--fit` but keeps
 //! *budget authority*: before spawning a child it projects the launch's
 //! demand floor against the sampled, post-headroom free memory minus the
 //! bytes already reserved by in-flight launches. If the demand does not
@@ -10,22 +10,16 @@
 //! UMA, where its own free reading conflates the GTT pool with system
 //! RAM.
 //!
-//! Design (kept deliberately simple — see plan scope amendment):
-//! - **One combined budget.** UMA / Apple hosts budget the single
-//!   physical pool (≈ system RAM); discrete hosts sum VRAM + system RAM.
-//!   We compare combined demand against combined free rather than
-//!   modelling a per-pool GPU/RAM split — conservative and adequate as a
-//!   safety net.
-//! - **Reservation = full demand**, held from admit until the child
-//!   settles (Ready / Error / Stopped). While a child is Loading the
-//!   sampler also sees its growing allocation, so the budget is counted
-//!   slightly conservatively during that window — it errs toward
-//!   refusing a second concurrent launch, never toward OOM.
-//! - **Best-effort.** When there is no host-metrics sample yet
-//!   (`unsampled`, or no sampler wired as in many tests) admission is
-//!   skipped and the launch proceeds — we never block on missing data.
-//! - **Never refuse on missing geometry.** A model whose GGUF lacks the
-//!   attention fields contributes only its known weight bytes to demand.
+//! Design (kept deliberately simple): UMA / Apple hosts budget the single
+//! physical pool (≈ system RAM) and discrete hosts sum VRAM + system RAM, so
+//! combined demand is compared against combined free rather than modelled per
+//! pool. A reservation is the full demand, held from admit until the child
+//! settles (Ready / Error / Stopped); while the child Loads the sampler also
+//! sees its growing allocation, so that window double-counts and errs toward
+//! refusing a second launch, never toward OOM. Admission is best-effort: with
+//! no sample yet (`unsampled`, or no sampler wired) the launch proceeds, and a
+//! GGUF that lacks the attention fields contributes only its known weight
+//! bytes rather than refusing.
 
 use std::sync::Mutex;
 
@@ -129,7 +123,6 @@ impl Ledger {
       .retain(|r| r.launch_id != launch_id);
   }
 
-  /// Total reserved bytes — for diagnostics and tests.
   pub fn reserved_bytes(&self) -> u64 {
     self
       .inner
@@ -141,7 +134,6 @@ impl Ledger {
   }
 }
 
-/// Headroom kind for the host's budget pool.
 pub(crate) fn pool_kind(snap: &HostMetricsSnapshot) -> PoolKind {
   if snap.gpu_backend == HostMetricsSnapshot::BACKEND_APPLE_METAL {
     PoolKind::AppleUnified
@@ -195,13 +187,12 @@ const UNIFIED_RESERVE_FRACTION: f64 = 0.15;
 /// Reserve left free after weights + cache on a unified host, given the
 /// engine's own measured overhead beyond weights and the pool.
 ///
-/// The flat [`UNIFIED_HOST_RESERVE_BYTES`] was "the OS and everything else",
-/// calibrated on a box where the reserve never actually bound. Measured where
-/// it does bind, the engine spent 5.4-6.7 GiB of it before the OS saw
-/// anything, leaving about 1.3 GiB at ready — under an OOM killer's line on a
-/// 121 GiB machine. So the reserve is the OS floor plus the engine's own
-/// overhead plus the compute band the admission gate already prices, with a
-/// share of the pool as the floor under all of that.
+/// The reserve is the OS floor plus the engine's own overhead plus the compute
+/// band the admission gate already prices, with a share of the pool as the
+/// floor under all of that. Measured where a flat reserve binds, an engine
+/// spent 5.4-6.7 GiB of an 8 GiB flat reserve before the OS saw anything,
+/// leaving about 1.3 GiB at ready — under an OOM killer's line on a 121 GiB
+/// machine.
 pub fn unified_host_reserve_bytes(
   ram_total_bytes: u64,
   gpu_backend: &str,
@@ -216,13 +207,12 @@ pub fn unified_host_reserve_bytes(
 
 /// The KV cache byte budget for a unified-memory host. **Always a value.**
 ///
-/// `None` means **refuse the launch**, not "no opinion". An earlier version
-/// floored the cap instead of refusing, on the theory that the admission gate
-/// would catch the tight case. It cannot: the gate's demand is weights + *this*
-/// figure, so shrinking the figure shrinks the very term the gate evaluates,
-/// and a launch that should have been refused was admitted with the host
-/// reserve silently abandoned. Whoever decides there is not enough memory has
-/// to be whoever holds the number, which is here.
+/// `None` means **refuse the launch**, not "no opinion". Flooring the cap
+/// instead cannot work: the gate's demand is weights + *this* figure, so
+/// shrinking the figure shrinks the very term the gate evaluates, and a launch
+/// that should have been refused is admitted with the host reserve silently
+/// abandoned. Whoever decides there is not enough memory has to be whoever
+/// holds the number, which is here.
 pub fn unified_kv_cache_budget(
   free_bytes: u64,
   weights_bytes: u64,
@@ -345,23 +335,23 @@ pub struct DemandInputs {
 /// An engine pool fraction priced for the admission gate: the bytes it will
 /// hold **beyond the weights** the gate already counts.
 ///
-/// Two corrections live here, and they pull opposite ways, which is why the
-/// old `free * fraction` was not simply conservative:
+/// Two corrections live here, and they pull opposite ways:
 ///
 /// - The fraction is of the pool, not of what is free. **On a unified host**
 ///   free is the smaller number, so multiplying by it *understated* the
 ///   allocation — with 52 GiB free of a 121 GiB pool, `0.9` projected 47 GiB
 ///   against a real 109 GiB, and the gate admitted the launch that freezes
-///   the host. That is the case this fixes.
+///   the host.
 /// - The fraction also covers the weights, so the part beyond them is what the
 ///   gate wants; adding the whole figure counted the weights twice.
 ///
 /// On a **discrete** host the inequality flips: [`effective_free_bytes`] sums
 /// post-headroom VRAM free *and* system-RAM free, so free can exceed the VRAM
 /// pool a fraction is priced against (a 24 GiB card beside 60 GiB of idle RAM
-/// reads ~84 GiB free against a 24 GiB pool). The old code over-refused there;
-/// this one under-tightens, and `0.9 x 24 GiB` is admitted by the gate for the
-/// engine's own startup check to refuse instead. Same safety, worse message.
+/// reads ~84 GiB free against a 24 GiB pool). Pricing against free
+/// over-refuses there; this one under-tightens, and `0.9 x 24 GiB` is admitted
+/// by the gate for the engine's own startup check to refuse instead. Same
+/// safety, worse message.
 ///
 /// With no pool total (an unsampled or VRAM-less host) the free reading is the
 /// only number available, so it stands in — understating, but the gate is
@@ -383,7 +373,7 @@ pub fn pool_fraction_beyond_weights(host: &DemandInputs, fraction: f64) -> u64 {
 /// UMA hosts budget the **GPU pool**, not all of system RAM. On an
 /// AMD/Intel integrated APU the GPU can only allocate within the amdgpu
 /// GTT cap (carve-out + GTT), which on a default-config box is roughly
-/// half of system RAM. llama.cpp's own free reading conflates the two
+/// half of system RAM. The engine's own free reading conflates the two
 /// and hard-OOMs (it sees system-RAM free, allocates past the GTT cap,
 /// and `hipMalloc` fails); sysfs GTT is the budget authority. So when
 /// the snapshot carries the GTT pool (`uma_shared_*`, from the sysfs
@@ -526,12 +516,11 @@ pub fn project_demand(
 /// Calibrated from a measured idle delta of ~11% of weights (MTP on vs off on
 /// Qwen3.5-4B-MTP: +320 MiB on 2.7 GiB weights), rounded up to ~16.7%
 /// (`weights / 6`). The draft context's KV and a hybrid's rollback snapshots
-/// are priced in [`kv_bytes`], so the margin above the measured delta is now
+/// are priced in [`kv_bytes`], so the margin above the measured delta is
 /// spare headroom for the draft compute buffers rather than its cache.
 /// A fraction of the **resident** weights, not the on-disk total: the draft
 /// head is an ordinary resident tensor, so it scales with what the engine
 /// holds rather than with what the file weighs. Zero when MTP is off.
-/// Saturating.
 fn mtp_band_bytes(resident_weight_bytes: u64, mtp_active: bool) -> u64 {
   if mtp_active {
     resident_weight_bytes / 6
@@ -558,9 +547,9 @@ mod tests {
       unified_kv_cache_budget(20 * GB, 8 * GB, reserve),
       Some(4 * GB)
     );
-    // Too tight to serve a useful context: refuse. Flooring instead used to
-    // shrink the demand the admission gate evaluates, so the gate could not
-    // fire and the launch went ahead with the host reserve abandoned.
+    // Too tight to serve a useful context: refuse. A floored cap would shrink
+    // the demand the admission gate evaluates, so the gate could not fire and
+    // the launch would go ahead with the host reserve abandoned.
     assert_eq!(unified_kv_cache_budget(10 * GB, 8 * GB, reserve), None);
     assert_eq!(unified_kv_cache_budget(4 * GB, 8 * GB, reserve), None);
     assert_eq!(unified_kv_cache_budget(0, 0, reserve), None);
@@ -592,8 +581,8 @@ mod tests {
       pool_fraction_beyond_weights(&host, 0.9),
       ((121 * GB) as f64 * 0.9) as u64 - GB
     );
-    // The old arithmetic against free would have fit inside the free reading;
-    // the real figure does not, which is the whole point.
+    // Arithmetic against free would have fit inside the free reading, while
+    // the real figure does not.
     assert!(pool_fraction_beyond_weights(&host, 0.9) + GB > host.free_bytes);
     assert!((host.free_bytes as f64 * 0.9) as u64 + GB < host.free_bytes + GB);
 
@@ -918,12 +907,11 @@ mod tests {
   #[test]
   fn demand_uses_shard_aware_weight_total_not_header_tensors() {
     use crate::gguf::header::GgufHeader;
-    // Empty header (no tensors): the per-shard `weights_bytes(header)`
-    // this used to call would be 0. A split GGUF launches off its
-    // primary shard, whose header omits every trailing shard's tensors,
-    // so the old path under-projected demand by those shards. With the
-    // shard-aware total threaded in, demand must reflect the passed
-    // weight total regardless of what the header carries.
+    // Empty header (no tensors), so a header-based weight total would be 0.
+    // A split GGUF launches off its primary shard, whose header omits every
+    // trailing shard's tensors, so a header-based total under-projects demand
+    // by those shards. Demand must reflect the passed shard-aware weight total
+    // regardless of what the header carries.
     let header = GgufHeader {
       version: 3,
       tensor_count: 0,
