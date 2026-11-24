@@ -44,9 +44,8 @@ impl FailureTracker {
     Self::default()
   }
 
-  /// Record a launch failure for `id` at `now`. Old entries inside
-  /// `id`'s bucket are pruned on the same pass so the bucket can't
-  /// grow unbounded under a sustained outage.
+  /// Old entries inside `id`'s bucket are pruned on the same pass so
+  /// the bucket can't grow unbounded under a sustained outage.
   pub fn note_failure(&self, id: &ModelId, now: Instant) {
     let cutoff = now - Duration::from_secs(WINDOW_SECS);
     let mut guard = match self.inner.lock() {
@@ -82,9 +81,8 @@ impl FailureTracker {
     }
   }
 
-  /// Clear the failure log for `id`. Called on a successful launch
-  /// so a model that recovers mid-window doesn't carry stale failures
-  /// into the next outage.
+  /// Called on a successful launch so a model that recovers
+  /// mid-window doesn't carry stale failures into the next outage.
   pub fn clear(&self, id: &ModelId) {
     let mut guard = match self.inner.lock() {
       Ok(g) => g,

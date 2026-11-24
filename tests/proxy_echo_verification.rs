@@ -1,20 +1,14 @@
 //! Echo-verification of `llama-server`'s OpenAI-compat behavior.
 //!
-//! Unit 3's pass-through forwarding (no body rewriting on fallback)
-//! depends on the upstream echoing `request.body.model` into the
-//! response. This test exercises the same property against the
+//! Pass-through forwarding (no body rewriting on fallback) depends on
+//! the upstream echoing `request.body.model` into the response. This
+//! test exercises the same property against the
 //! `tests/fixtures/fake_llama_server.rs` test binary — which mirrors
 //! real llama-server behavior — so the contract is locked in CI.
 //!
-//! Result observed at Unit 1 implementation (date: 2026-05-21):
-//!
-//!     response.model == "sentinel-x42"   (PASS)
-//!
 //! If a future bump to a real llama-server reveals the response does
-//! NOT echo `request.body.model`, the proxy plan's Risks row
-//! "rewrites body.model" applies — Unit 3 would have to JSON-parse /
-//! per-chunk SSE rewrite on fallback instead of byte-piping. See
-//! docs/plans/2026-05-21-001-feat-proxy-router-plan.md.
+//! NOT echo `request.body.model`, fallback would have to JSON-parse /
+//! per-chunk SSE rewrite instead of byte-piping.
 
 #![cfg(feature = "test-fixtures")]
 
@@ -65,9 +59,8 @@ async fn fake_llama_server_echoes_request_body_model() {
   let _ = child.kill().await;
 
   let response_str = String::from_utf8_lossy(&response).to_string();
-  // Locate at least one SSE frame and confirm its `model` field
-  // matches the request's `model`. The fixture emits two `data:`
-  // frames per request — message + done — both carrying the echo.
+  // The fixture emits two `data:` frames per request — message +
+  // done — both carrying the echo.
   let mut saw_echo = false;
   for line in response_str.lines() {
     let Some(payload) = line.strip_prefix("data: ") else {

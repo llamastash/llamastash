@@ -1,17 +1,6 @@
-//! Right-pane tab dispatcher.
-//!
-//! The right pane is a single bordered Block. The block's title
-//! carries the tab strip (the set from `App::available_right_tabs`)
-//! so the active surface is visible without a separate strip row.
-//! Inside the block:
-//!  1. A model-name line — bold, full width so long filenames have
-//!     somewhere to breathe.
-//!  2. A stats line — `:port  state  RAM  CPU`.
-//!  3. A muted separator rule.
-//!  4. The active tab's content rendered directly into the area
-//!     beneath. Tab renderers no longer wrap themselves in a
-//!     second Block — borders here are owned by this dispatcher,
-//!     keeping the panel a single unnested rectangle.
+//! Right-pane tab dispatcher: one bordered Block whose title carries the tab
+//! strip (`App::available_right_tabs`). Tab renderers must not add their own
+//! Block; borders here are owned by this dispatcher.
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -25,8 +14,7 @@ use crate::tui::fmt::format_bytes;
 use crate::tui::status_icons::{glyph_for, label_for};
 use crate::tui::tabs::{chat, embed, logs, requests, rerank, settings, RightTab};
 
-/// Render the right-pane area as a single unnested Block. `focused`
-/// flips the border to the theme's focus tone (`palette.highlight`
+/// `focused` flips the border to the theme's focus tone (`palette.highlight`
 /// with `accent` fallback) so the user can see which side of the
 /// dashboard owns the keyboard chain at a glance.
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette, focused: bool) {
@@ -49,7 +37,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette, f
   );
   let border_color = palette.focus_border(focused);
 
-  // All right-pane key hints live on the bottom border now —
+  // All right-pane key hints live on the bottom border,
   // contextual to the active tab and the current focus. Keeps the
   // top reserved for the tab strip alone (cleaner mnemonic
   // underlines) and gives the user one stable place to scan for
@@ -110,9 +98,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette, f
   }
 }
 
-/// Paint a horizontal line below the model header. Uses the box-
-/// drawing horizontal char so the strip mirrors the block's outer
-/// border but tinted with `muted` to keep it secondary.
+/// Uses the box-drawing horizontal char so the strip mirrors the block's
+/// outer border but tinted with `muted` to keep it secondary.
 fn render_separator(frame: &mut Frame<'_>, area: Rect, palette: &Palette) {
   let line: String = crate::tui::glyphs::active()
     .hline()
@@ -143,8 +130,8 @@ pub(crate) fn bottom_hint_chips(app: &App) -> Vec<crate::tui::hint_picker::Ranke
     }
   };
   // The always-on top-bar `↑↓:scroll` chip (`help_bar`) covers the
-  // scroll affordance, so the per-pane bottom strips no longer repeat
-  // it — they carry only the pane-specific verbs.
+  // scroll affordance, so the per-pane bottom strips carry only the
+  // pane-specific verbs.
   /// Surface the `InputField` modal-contract chips for one of the
   /// tab inputs (chat / embed / rerank / candidate). Mirrors the
   /// rule documented in `src/tui/input_field.rs`. The modal-
@@ -271,8 +258,7 @@ pub(crate) fn bottom_hint_chips(app: &App) -> Vec<crate::tui::hint_picker::Ranke
           app.hint_with(Focus::RightPane, Action::ToggleAutoScroll, "stop"),
         );
         // Save the live knobs as a preset — ranked above the yank trio so
-        // it survives width pressure longer (the user asked for `Ctrl+P` to
-        // outrank `↑↓` / `p`).
+        // it survives width pressure longer.
         push(
           &mut chips,
           35,
@@ -304,8 +290,8 @@ pub(crate) fn bottom_hint_chips(app: &App) -> Vec<crate::tui::hint_picker::Ranke
         // (edit-for-next-launch mode), surface `Esc:discard` so the
         // user can step back to the read-only running view without
         // committing the edits. The keycap comes from the live
-        // FocusList binding (default `Esc`) — that's the action
-        // `apply_focus_list` intercepts to close the picker when a
+        // FocusList binding (default `Esc`) — the `FocusList` handler in
+        // `src/tui/events.rs` intercepts it to close the picker when a
         // managed launch is present, rather than dropping focus to
         // the Models list.
         if app.launch_picker.is_some() && app.focused_managed().is_some() {
@@ -417,8 +403,7 @@ fn bidirectional_chip(reverse: &str, forward: &str, description: &str) -> String
   }
 }
 
-/// Render the bottom-border hint strip as a styled line. Chips are
-/// muted and separated by ` · `, matching the in-block status row
+/// Chips are muted and separated by ` · `, matching the in-block status row
 /// chips so the visual cadence carries across panes.
 fn bottom_hint_line(chips: &[String], palette: &Palette) -> Line<'static> {
   let mut spans: Vec<Span<'static>> = Vec::with_capacity(chips.len() * 2 + 2);
@@ -437,9 +422,7 @@ fn bottom_hint_line(chips: &[String], palette: &Palette) -> Line<'static> {
 }
 
 /// Compose the block title as a styled line: ` Requests │ Logs │
-/// Settings │ Chat `. The active tab is highlighted; all key hints
-/// live on the *bottom* border now (see [`bottom_hint_chips`]) so the
-/// top stays a clean tab strip.
+/// Settings │ Chat `. The active tab is highlighted.
 ///
 /// Also returns the per-tab on-screen rectangles, computed in
 /// lockstep with the span sequence so the mouse-focus click handler
@@ -498,10 +481,10 @@ fn block_title_with_rects(
   (Line::from(spans), rects)
 }
 
-/// Split a tab label into spans that underline the character at
-/// `mnemonic` when it should serve as a quick-jump mnemonic. The
-/// selected tab drops the underline (its panel_title style already
-/// calls focus to it; doubling up with an underline reads as noise).
+/// Underlines the character at `mnemonic` when it should serve as a
+/// quick-jump mnemonic. The selected tab drops the underline (its
+/// panel_title style already calls focus to it; doubling up with an
+/// underline reads as noise).
 fn mnemonic_spans(
   label: &str,
   mnemonic: usize,
@@ -605,7 +588,7 @@ fn render_header_path(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Pa
 }
 
 /// Render a resolved [`BackendBadge`] in the header row that sits directly
-/// under the path (the former blank gap slot): an accent-filled chip naming the
+/// under the path: an accent-filled chip naming the
 /// backend the focused model runs on. Backend-agnostic — see
 /// [`focused_backend_badge`].
 fn render_header_badge(frame: &mut Frame<'_>, area: Rect, badge: &BackendBadge, palette: &Palette) {
@@ -615,7 +598,7 @@ fn render_header_badge(frame: &mut Frame<'_>, area: Rect, badge: &BackendBadge, 
     .add_modifier(Modifier::BOLD);
   // Each backend id is its own accent-filled chip, separated by a plain
   // (no-background) space so two backends read as two distinct badges
-  // (` enginex ` ` llamacpp `) rather than one merged strip.
+  // (` enginex ` ` enginey `) rather than one merged strip.
   let mut spans: Vec<Span<'static>> = Vec::with_capacity(badge.ids.len() * 2);
   for id in &badge.ids {
     if !spans.is_empty() {
@@ -650,7 +633,7 @@ fn focused_is_fileless_row(app: &App) -> bool {
 /// Backend-agnostic so a future backend adds a chip without touching the layout.
 struct BackendBadge {
   /// One or more backend ids, priority-ordered. Each renders as its own
-  /// accent-filled chip (` enginex `, ` llamacpp `) with a plain gap between, so a
+  /// accent-filled chip (` enginex `, ` enginey `) with a plain gap between, so a
   /// multi-backend model reads as separate badges. Owned so it names any
   /// backend generically.
   ids: Vec<String>,
@@ -664,13 +647,13 @@ struct BackendBadge {
 /// A **running** row keys on the launch's real backend (a single id — honest
 /// even for a compatible file force-run on the default). A **selected** row
 /// shows every backend that can serve the model — its `supported_backends`
-/// (priority order, so llama.cpp is **not hidden** when a second engine also
-/// serves the model, e.g. ` enginex  llamacpp `), falling back to the
-/// `list_models` routing prediction, then the discovery-source backend.
+/// (priority order, so the default backend is **not hidden** when a second
+/// engine also serves the model, e.g. ` enginex  enginey `), falling back to
+/// the `list_models` routing prediction, then the discovery-source backend.
 ///
-/// Every model with a resolved backend carries a chip, including plain
-/// llama.cpp-only rows. Plain id chips throughout — no per-backend
-/// special-casing, so a new backend surfaces without touching this.
+/// Every model with a resolved backend carries a chip. Plain id chips
+/// throughout — no per-backend special-casing, so a new backend surfaces
+/// without touching this.
 fn focused_backend_badge(app: &App) -> Option<BackendBadge> {
   let path = focused_path(app)?;
   let running = app.right_pane_focus();
@@ -826,10 +809,7 @@ fn render_header_stats(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &P
   frame.render_widget(Paragraph::new(stats_line), area);
 }
 
-/// Format the trailing `4.2G RAM · 312% CPU` portion of the model
-/// header. The runtime renderer now builds these as separate styled
-/// spans so `RAM` / `CPU` can carry the blue label colour; this
-/// joined form is kept for the `right_pane_title` test helper and
+/// This joined form is kept for the `right_pane_title` test helper and
 /// regression tests that grep the flattened text.
 #[cfg(test)]
 fn format_per_model_stats(m: &crate::tui::app::ManagedRow) -> String {
@@ -837,8 +817,7 @@ fn format_per_model_stats(m: &crate::tui::app::ManagedRow) -> String {
   format!("{rss} RAM · {cpu} CPU")
 }
 
-/// Split the per-model stats into `(rss, cpu)` strings — needed by
-/// the styled-header path so `RAM` / `CPU` labels can carry the
+/// Needed by the styled-header path so `RAM` / `CPU` labels can carry the
 /// `palette.label` colour separately from the digit values.
 fn stats_pair(m: &crate::tui::app::ManagedRow) -> (String, String) {
   let rss = match m.rss_bytes {
@@ -852,8 +831,8 @@ fn stats_pair(m: &crate::tui::app::ManagedRow) -> (String, String) {
   (rss, cpu)
 }
 
-/// Title-text view of [`block_title_with_rects`] for tests that just
-/// want to grep the flattened text.
+/// Text view of the header row (name, port, state, stats) for tests that
+/// just want to grep the flattened text.
 #[cfg(test)]
 fn right_pane_title(app: &App) -> String {
   use crate::util::paths::model_display_name;
@@ -1107,9 +1086,8 @@ mod tests {
     app
   }
 
-  /// Thin adapter so the in-module tests can keep asserting against
-  /// `Vec<String>` literals after the function moved to
-  /// `Vec<RankedChip>`. Returns the chip texts in source order.
+  /// Thin adapter so tests can keep asserting against `Vec<String>`
+  /// literals. Returns the chip texts in source order.
   fn chip_texts(app: &App) -> Vec<String> {
     bottom_hint_chips(app).into_iter().map(|c| c.text).collect()
   }
@@ -1118,7 +1096,7 @@ mod tests {
   fn bottom_hint_chips_match_each_focus_tab_combo() {
     use crate::tui::keybindings::{Focus, ENTER_LABEL};
     // Navigation focuses surface the entry-point keystroke per tab.
-    // The `↑↓:scroll` affordance lives in the always-on top bar now,
+    // The `↑↓:scroll` affordance lives in the always-on top bar,
     // so the bottom strips carry only pane-specific verbs.
     assert_eq!(
       chip_texts(&app_with_focus(Focus::RightPane, RightTab::Logs)),
@@ -1244,8 +1222,7 @@ mod tests {
     app.focus = Focus::RightPane;
     app.right_tab = RightTab::Settings;
     // Read-only view: no picker open, managed launch present.
-    // `e:edit for launch` leads — it's the new explicit gate that
-    // replaces the old auto-stage-on-arrow behaviour. `Ctrl+P:save preset`
+    // `e:edit for launch` leads — the explicit stage gate. `Ctrl+P:save preset`
     // sits above the yank trio (ranked to survive width pressure longer).
     assert_eq!(
       chip_texts(&app),
@@ -1469,7 +1446,6 @@ mod tests {
 
   #[test]
   fn block_title_strip_carries_only_tab_labels() {
-    // Round-9: hints moved off the top title to the bottom border.
     // The top stays a clean tab strip so the mnemonic underlines
     // read clearly.
     use crate::tui::keybindings::Focus;
@@ -1765,8 +1741,7 @@ mod tests {
   #[test]
   fn header_splits_name_and_stats_across_two_lines() {
     // The model name belongs on its own row (so long filenames stop
-    // crowding `:port  state  RAM  CPU`); the stats sit on the row
-    // immediately below.
+    // crowding `:port  state  RAM  CPU`).
     use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
     use ratatui::Terminal;
@@ -1810,7 +1785,7 @@ mod tests {
       stats_row > name_row,
       "stats row {stats_row} should sit below name row {name_row}"
     );
-    // The header now spans name → muted path → blank gap → stats.
+    // The header spans name → muted path → blank gap → stats.
     assert_eq!(
       stats_row,
       name_row + 3,
@@ -1841,7 +1816,7 @@ mod tests {
     // The model heading shares the `panel_title` hue with the
     // Host/Daemon/Models block titles so the right pane reads as a
     // peer panel. Asserting the styled cell colour pins both the
-    // colour swap and the BOLD modifier introduced in round-8.
+    // colour swap and the BOLD modifier.
     use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
     use ratatui::style::Modifier;

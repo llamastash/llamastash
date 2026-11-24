@@ -9,11 +9,10 @@
 //!
 //! Metric names are `llamastash:*`, one prefix of our own beside whatever the
 //! engines behind us export; theirs come through the backend route untouched.
-//! There are no `gen_ai.*` aliases, no histograms, and one label set per metric name. `model` and
-//! `route` are the only labels a default scrape carries; the per-launch series
-//! are opt-in with `?launch=1` because launch ids are never reused.
-//!
-//! Plan: docs/plans/2026-10-11-001-feat-proxy-metrics-plan.md.
+//! There are no `gen_ai.*` aliases, no histograms, and one label set per metric
+//! name. `model` and `route` are the only labels a default scrape carries; the
+//! per-launch series are opt-in with `?launch=1` because launch ids are never
+//! reused. See docs/usage.md § Metrics.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -37,7 +36,6 @@ use crate::util::datetime;
 /// The media type a Prometheus scrape expects for text format 0.0.4.
 pub(crate) const TEXT_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
-/// Which body a metrics route answers with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Format {
   Text,
@@ -114,11 +112,9 @@ impl Reject {
 /// Query parameters both metrics routes read.
 #[derive(Debug, Default)]
 pub(crate) struct Query {
-  /// `?format=json` / `?format=prometheus`.
   pub(crate) format: Option<String>,
   /// `?limit=` for the JSON row list.
   pub(crate) limit: Option<usize>,
-  /// `?model=<ref>`.
   pub(crate) model: Option<String>,
   /// `?launch=<ref>`, or `?launch=1` for the per-launch series.
   pub(crate) launch: Option<String>,
@@ -341,7 +337,6 @@ impl Default for Scope {
 }
 
 impl Scope {
-  /// Whether a per-model entry is in the view.
   pub(crate) fn keeps_model(&self, path: &str) -> bool {
     self.path.as_deref().is_none_or(|want| want == path)
   }
@@ -373,9 +368,8 @@ pub(crate) struct LiveLaunch {
   /// Full identity of the model it serves, for callers that need more than the
   /// path (`/ui` keys its in-flight guard on it).
   pub(crate) model_id: ModelId,
-  /// `model_id.path` again as a plain string. Duplication on purpose: batch 2
-  /// rewrites the `l.path == …` comparisons, and until it merges every caller
-  /// keeps working off the string. Dropped once that lands.
+  /// `model_id.path` again as a plain string. Duplication on purpose: callers
+  /// keep working off the string.
   pub(crate) path: String,
   pub(crate) port: u16,
   pub(crate) ready: bool,
@@ -432,10 +426,10 @@ pub(crate) fn launch_order(id: &str) -> (u8, u64, &str) {
   }
 }
 
-/// Resolve `?model=` / `?launch=` into a [`Scope`], in the order the plan sets:
-/// launch id, port, exact catalog path, then a case-insensitive display-name
-/// match through the proxy's own reference resolver. `live` is the caller's
-/// [`live_launches`] snapshot, so one request asks the registry once.
+/// Resolve `?model=` / `?launch=` into a [`Scope`]: launch id, port, exact
+/// catalog path, then a case-insensitive display-name match through the proxy's
+/// own reference resolver. `live` is the caller's [`live_launches`] snapshot, so
+/// one request asks the registry once.
 pub(crate) async fn resolve_scope(
   state: &ProxyState,
   q: &Query,
@@ -578,14 +572,13 @@ pub(crate) async fn resolve_model(
   }
 }
 
-/// What both routes parse out of a request before they differ.
+/// What both routes parse out of a request.
 pub(crate) struct Parsed {
   pub(crate) format: Format,
   pub(crate) scope: Scope,
   pub(crate) limit: usize,
 }
 
-/// Negotiate the format and resolve the scope of a metrics request.
 pub(crate) async fn parse_request(
   state: &ProxyState,
   req: &Request<Incoming>,
@@ -859,10 +852,9 @@ fn render(
 /// The `model` label value for a request that never reached one.
 const NO_MODEL: &str = "none";
 
-/// The four series that carry nothing but a `model` label: the two counters
-/// and the two in-flight gauges. One declaration because `Document` keeps the
-/// first HELP and TYPE written for a name, so a second copy of those strings
-/// could disagree with the one that rendered and stay invisible.
+/// One declaration because `Document` keeps the first HELP and TYPE written for
+/// a name, so a second copy of those strings could disagree with the one that
+/// rendered and stay invisible.
 fn core_series(doc: &mut Document, model: &str, requests: u64, errors: u64, live: &Clients) {
   let labels = [("model", model)];
   doc.sample(
@@ -1380,8 +1372,7 @@ struct Block {
 }
 
 impl Block {
-  /// A block with no HELP yet and no declared type: `untyped` is what a scraper
-  /// reads when nothing said otherwise.
+  /// `untyped` is what a scraper reads when nothing said otherwise.
   fn new() -> Self {
     Block {
       help: String::new(),
@@ -1391,7 +1382,6 @@ impl Block {
   }
 }
 
-/// One sample line of a block.
 struct Sample {
   /// What this sample appends to the block's name when it prints, normally
   /// nothing. An engine that declares one family and prints its samples under

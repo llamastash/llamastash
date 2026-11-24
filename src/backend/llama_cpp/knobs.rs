@@ -1,10 +1,5 @@
 //! llama.cpp's declared knobs.
 //!
-//! Transcribed from the pre-registry `SPECS` table (`launch/flag_aliases.rs`)
-//! and `crate::launch::knobs::KnobSet`, so the flag spellings, aliases, help text and emission
-//! order are unchanged — the composed argv must stay byte-identical through the
-//! registry migration.
-//!
 //! Order is the canonical emission order: argv diffs stay readable across
 //! releases, and the editor renders rows in this order within each group.
 
@@ -25,9 +20,9 @@ const KV_CACHE_TYPES: &[&str] = crate::gguf::memory::KV_CACHE_TYPES;
 /// `--split-mode` choices. Closed: llama-server rejects anything else.
 const SPLIT_MODES: &[&str] = &["none", "layer", "row", "tensor"];
 
-/// `--load-mode` values, spelled as llama.cpp parses them (`llama.cpp:69-74`).
+/// `--load-mode` values, spelled as llama.cpp parses them.
 /// `none` is "no special loading mode" — the old `--no-mmap`; `mlock` does not
-/// mmap either (`llama-model-loader.cpp:559`).
+/// mmap either.
 const LOAD_MODES: &[&str] = &["auto", "none", "mmap", "mlock", "mmap+mlock", "dio"];
 
 /// Serving modes. `Emit::Custom` — llama-server spells these as presence flags
@@ -357,9 +352,7 @@ pub const KNOBS: &[KnobDef] = &[
   },
   // Speculation. The enable is a three-state knob whose `auto` means "on when
   // the model carries a draft head" — a per-model runtime property, not a
-  // config layer. That is `AutoKind::Capability`, and it is why this knob can
-  // live on the generated path at all: the old `KnobValue::Auto` meant only
-  // "delegate to --fit", which forced speculation off the path entirely.
+  // config layer. That is `AutoKind::Capability`.
   MTP_ENABLE,
   KnobDef {
     id: "mtp-draft-n",
@@ -374,7 +367,7 @@ pub const KNOBS: &[KnobDef] = &[
     fallback: LayerLabel::ServerDefault,
     // `Custom`, like `mtp` beside it: the speculation flags are composed as one
     // block from the server-resolved directive, before the ctx block so `--fit`
-    // reserves the draft context (KD6). Self-emitting here put the flag in argv
+    // reserves the draft context. Self-emitting here put the flag in argv
     // twice -- once from the block, once from the generic emitter -- which
     // llama-server accepts with a deprecation warning and last-wins, so two
     // layers disagreeing would have silently picked the wrong one.

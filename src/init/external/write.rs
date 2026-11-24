@@ -218,7 +218,6 @@ fn strip_json_comments(input: &str) -> String {
           }
         }
         Some('*') => {
-          // Block comment — drop until `*/`.
           chars.next();
           let mut prev = '\0';
           for nc in chars.by_ref() {

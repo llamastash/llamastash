@@ -6,26 +6,20 @@
 //! orchestrator retries with the fallback; both failing trips an
 //! exit-1 with `failure_summary.message` listing both attempts.
 //!
-//! Constraint envelope (from origin §Reference model contract):
+//! Constraint envelope:
 //!
 //! * ≤ 1 GB on disk (post-Q4 quantization).
 //! * Loads in ≤ 3 GB of usable GPU memory at `--ctx 2048`, including
 //!   unified-memory and iGPU configurations.
 //! * Supports OpenAI-compatible chat completion meaningfully.
-//!
-//! The current pins were resolved from the first successful warm-mode
-//! dry run on the maintainer's AMD box. The placeholder sentinel
-//! remains as the explicit "not locked yet" marker for any future
-//! reference-model rotation.
 
-/// Sentinel value stored in `commit_sha` until the maintainer's first
-/// warm-mode dry-run locks in real SHAs. `is_unlocked()` is the
-/// single match site so a future rename doesn't drift across the
-/// declaration and the detection logic.
+/// Sentinel for a `commit_sha` that is pinned to no real commit.
+/// `is_unlocked()` is the single match site so a future rename doesn't drift
+/// across the declaration and the detection logic.
 pub const PLACEHOLDER_SHA: &str = "<TBD-locked-on-first-dry-run>";
 
-/// Identity of a pinned reference model. Reused for both primary and
-/// fallback so the orchestrator can iterate over a fixed pair.
+/// Reused for both primary and fallback so the orchestrator can iterate over a
+/// fixed pair.
 #[derive(Debug, Clone)]
 pub struct ReferenceModel {
   /// `owner/repo` HF id passed to `llamastash init --model`.
@@ -34,10 +28,9 @@ pub struct ReferenceModel {
   /// from the snapshot at `commit_sha`.
   pub filename: &'static str,
   /// HuggingFace commit SHA (or branch / tag) passed to
-  /// `llamastash init --revision`. [`PLACEHOLDER_SHA`] until the
-  /// maintainer's first real warm-mode dry-run locks the SHA in.
-  /// While placeholder, the UAT falls back to the repo's default
-  /// branch — fine for development, not for release verification.
+  /// `llamastash init --revision`. While placeholder, the UAT falls
+  /// back to the repo's default branch — fine for development, not for
+  /// release verification.
   pub commit_sha: &'static str,
   /// Expected on-disk size in bytes after Q4 quantization. Advisory
   /// only — used in the report's `host.warnings` if the actual
@@ -46,10 +39,9 @@ pub struct ReferenceModel {
   pub expected_size_bytes: u64,
 }
 
-/// Primary reference model. Qwen2.5-0.5B-Instruct-GGUF Q4_K_M sits at
-/// ~469 MiB on disk; loads comfortably in ≤ 3 GB on Metal / iGPU /
-/// discrete GPU; Apache 2.0 license keeps redistribution clear of
-/// audit work the plan explicitly de-scoped.
+/// Qwen2.5-0.5B-Instruct-GGUF Q4_K_M sits at ~469 MiB on disk; loads
+/// comfortably in ≤ 3 GB on Metal / iGPU / discrete GPU; Apache 2.0 license
+/// keeps redistribution clear of audit work.
 pub const PRIMARY: ReferenceModel = ReferenceModel {
   repo: "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
   filename: "qwen2.5-0.5b-instruct-q4_k_m.gguf",
@@ -70,8 +62,8 @@ pub const FALLBACK: ReferenceModel = ReferenceModel {
 
 /// True iff the `commit_sha` field is still the documented sentinel.
 /// The orchestrator records this as a warning in the report's
-/// `host.warnings` so the maintainer's first dry run produces an
-/// obvious "lock the SHA" todo.
+/// `host.warnings` so a dry run on the placeholder produces an obvious
+/// "lock the SHA" marker.
 pub fn is_unlocked(model: &ReferenceModel) -> bool {
   model.commit_sha == PLACEHOLDER_SHA
 }
@@ -111,7 +103,6 @@ mod tests {
 
   #[test]
   fn expected_size_bytes_satisfies_one_gb_disk_envelope() {
-    // Origin §Reference model contract — ≤ 1 GB on disk after Q4.
     let one_gb = 1024 * 1024 * 1024;
     assert!(PRIMARY.expected_size_bytes <= one_gb);
     assert!(FALLBACK.expected_size_bytes <= one_gb);

@@ -3,8 +3,9 @@
 //! Why a header hash instead of a whole-file hash:
 //! - Whole-file hashing of a 7B GGUF is ~5 GB of disk I/O. The launcher
 //!   touches identity on every scan, which would brick discovery.
-//! - The header is small (<1 MiB typical) and is the part of the file that
-//!   uniquely identifies the model (arch, tensors layout, quant tags).
+//! - The header is small (a few MiB typical, 16 MiB read cap) and is the
+//!   part of the file that uniquely identifies the model (arch, tensors
+//!   layout, quant tags).
 //! - Identity must survive a `mv` of the file. Path-only identity does not;
 //!   header-hash + canonical-path lets us detect a renamed file and fold
 //!   its last-params onto the new path.
@@ -20,7 +21,8 @@ use serde::{Deserialize, Serialize};
 /// the diff against a renamed model is human-readable.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ModelId {
-  /// Canonical absolute path (`std::fs::canonicalize`).
+  /// Canonical absolute path, or the supplied path in the HF-cache
+  /// case (`compute`).
   pub path: PathBuf,
   /// BLAKE3 hash of the structural header bytes (the `raw` field returned
   /// by [`crate::gguf::header::read_path`]).

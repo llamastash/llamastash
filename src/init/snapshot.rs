@@ -8,17 +8,6 @@
 //! `tempfile`-based atomic write, mode 0600 on Unix, parse-fail
 //! quarantine to `init_snapshot.json.broken-<ts>` so a re-run can
 //! rebuild without surprising the user.
-//!
-//! Schema rationale lives in the v2 plan's "Key Technical Decisions"
-//! section. Three points anchor every field choice:
-//! - `managed_keys` records the dotted path *and* a `blake3` digest
-//!   of the value the wizard wrote. On re-run a digest mismatch tells
-//!   us the user edited the value by hand → preserve it.
-//! - `llama_server_digest` is the binary's sha256, recorded so
-//!   `doctor` can flag drift on GH-Releases-installed binaries (brew
-//!   installs are carved out by design).
-//! - `remote_fetch_failures` is the silent-fallback counter the
-//!   `RemoteSnapshotUnreachable` doctor finding consumes.
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -105,8 +94,8 @@ pub struct InitSnapshot {
   /// `HardwareDrift` finding.
   #[serde(default)]
   pub gpu_vendor: Option<String>,
-  /// Aggregated VRAM in GiB at last detection. Aggregation rule from
-  /// Key Decisions: `min(device.total)` for Nvidia/AMD,
+  /// Aggregated VRAM in GiB at last detection. Aggregation rule:
+  /// `min(device.total)` for Nvidia/AMD,
   /// `0.75 × total` for Metal, `None` for CpuOnly/Unknown.
   #[serde(default)]
   pub vram_gb: Option<f32>,
@@ -125,7 +114,6 @@ pub struct InitSnapshot {
   /// commit short hash like `b9219`).
   #[serde(default)]
   pub llama_server_version: Option<String>,
-  /// How the binary was installed (GH Releases / brew / custom path).
   #[serde(default)]
   pub install_method: Option<InstallMethod>,
   /// ISO-8601 wall-clock timestamp of the most recent successful
@@ -152,8 +140,6 @@ pub struct InitSnapshot {
   /// `RemoteSnapshotUnreachable` finding consumes this.
   #[serde(default)]
   pub remote_fetch_failures: u32,
-  /// Dotted paths the wizard wrote into `config.yaml`, each with the
-  /// digest of the value at write time. See [`ManagedKey`].
   #[serde(default)]
   pub managed_keys: Vec<ManagedKey>,
   /// Schema version; rejected on read if it exceeds the build's

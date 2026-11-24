@@ -57,8 +57,8 @@ pub struct QueuedPull {
 }
 
 /// The currently-active pull. `bytes_done` and `bytes_total` drive
-/// the percent + bandwidth display; `throughput_bps` is smoothed
-/// across the last few progress events (EMA).
+/// the percent + bandwidth display; `rate` smooths throughput (EMA)
+/// across the last few progress events.
 #[derive(Debug, Clone)]
 pub struct ActivePull {
   pub repo_id: String,

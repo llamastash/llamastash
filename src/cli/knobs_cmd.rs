@@ -1,11 +1,5 @@
 //! `llamastash knobs` — what every backend declares it can be tuned with.
 //!
-//! `start --help` lists the flags, but forty-odd of them across four backends
-//! is a lot to read, and it says nothing about value ranges, closed choice
-//! sets, or which knobs have an `auto` state. This is the discovery surface:
-//! human-readable by default, `--json` for an agent that wants to enumerate
-//! the tuning space before choosing.
-//!
 //! Reads only the compiled-in registry, so it needs no daemon and answers the
 //! same on any host.
 
@@ -129,8 +123,8 @@ fn render_human(backend_filter: Option<&str>) -> String {
     if !out.is_empty() {
       out.push('\n');
     }
-    // Backend name as a section title. Bold when the terminal takes it, the
-    // bare id when piped, so `awk -F\t` pipelines still key on the tables.
+    // Bold when the terminal takes it, the bare id when piped, so `awk -F\t`
+    // pipelines still key on the tables.
     let title = match model {
       Some(m) => format!("{id} {m}"),
       None => id.to_string(),

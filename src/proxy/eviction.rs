@@ -1,39 +1,19 @@
 //! Idle-TTL eviction sweeper + make-room unloading for
 //! proxy-auto-started supervisors.
 //!
-//! Two policies over the same set of "which launches may be given back".
+//! The sweep stops a `Ready` supervisor only when all of these hold:
 //!
-//! **The sweep.** A background task alongside the proxy listener. Every tick
-//! (~30 s, clamped against the configured TTL so very short TTLs sweep more
-//! often) walks the supervisor snapshot and stops a `Ready` supervisor when all
-//! of these hold:
+//! - `origin == LaunchOrigin::AutoStart`: manually started models are durable
+//!   user intent.
+//! - `inflight == 0`: a model with active requests stays resident even if its
+//!   last `touch` is stale, so a long generation is never SIGTERM'd mid-stream.
+//! - `now - last_request_at >= ttl`: `ttl` is the launch's preset override when
+//!   it pins one, else `proxy.idle_ttl_secs`.
 //!
-//! - `origin == LaunchOrigin::AutoStart` — manually-started models are durable
-//!   user intent, mirroring LM Studio's exemption.
-//! - `inflight == 0` — the refcount gate. A model with active in-flight requests
-//!   stays resident even if its last `touch` is stale, so a long generation is
-//!   never SIGTERM'd mid-stream.
-//! - `now - last_request_at >= ttl` — the last-touch deadline, where `ttl` is the
-//!   launch's own preset override when it pins one and `proxy.idle_ttl_secs`
-//!   otherwise.
-//!
-//! The stop goes through the backend's own `stop` (5 s grace), the same path
-//! `stop_model` uses, so the supervisor and its `state.running` row are dropped
-//! with it.
-//!
-//! **Make-room.** When admission refuses a proxy auto-start, idle auto-started
-//! launches are unloaded least-recently-used first until the refused demand fits,
-//! instead of answering 503. See [`make_room`].
-//!
-//! Each launch's TTL comes from `launch_ttls`: its preset's `idle_ttl_secs`
-//! when that preset pins one, else the global `proxy.idle_ttl_secs`. The preset
-//! side is read off the live store on every pass, so a `presets save
-//! --idle-ttl` moves a running launch's deadline without a relaunch (a hand
-//! edit to `config.yaml` still needs a daemon restart, like every other hand
-//! edit). `0` on either side means never unload that launch.
-//!
-//! A global `proxy.idle_ttl_secs = 0` disables the sweep unless some
-//! preset pins its own TTL; per-launch `0` always means "never unload".
+//! `0` on either side means never unload that launch. A global
+//! `proxy.idle_ttl_secs = 0` disables the sweep unless some preset pins its own
+//! TTL. When admission refuses a proxy auto-start, [`make_room`] unloads idle
+//! auto-started launches, least recently used first, instead of answering 503.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -44,8 +24,8 @@ use crate::daemon::shutdown::ShutdownToken;
 use crate::daemon::supervisor::{LaunchOrigin, ManagedModel, ManagedState};
 use crate::proxy::ProxyState;
 
-/// SIGTERM grace given to evicted supervisors. Llama-server is well-
-/// behaved on SIGTERM (flushes the HTTP server then exits) so 5 s
+/// SIGTERM grace given to evicted supervisors. The engine is
+/// well-behaved on SIGTERM (flushes the HTTP server then exits) so 5 s
 /// is plenty; if it ignores SIGTERM the supervisor escalates to
 /// SIGKILL itself.
 const EVICT_STOP_GRACE: Duration = Duration::from_secs(5);
@@ -206,12 +186,9 @@ pub(super) async fn stop_launch(ctx: &crate::daemon::context::MethodContext, lau
 }
 
 /// The idle-TTL each running launch is held to, keyed by launch id — its
-/// preset's `idle_ttl_secs` when that preset pins one.
-///
-/// Resolved from the live preset store on every call rather than frozen at
-/// launch, so `presets save --idle-ttl` moves a running launch's deadline without
-/// a relaunch. A launch with no preset, or a preset that pins no TTL, is absent
-/// from the table and keeps `proxy.idle_ttl_secs`.
+/// preset's `idle_ttl_secs` when that preset pins one. A launch with no preset,
+/// or a preset that pins no TTL, is absent from the table and keeps
+/// `proxy.idle_ttl_secs`.
 pub(crate) async fn launch_ttls(state: &Arc<ProxyState>) -> HashMap<LaunchId, Duration> {
   let mut out = HashMap::new();
   let store = state.ctx.presets.snapshot().await;

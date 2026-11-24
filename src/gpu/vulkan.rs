@@ -1,10 +1,8 @@
-//! Vulkan fallback probe — last-resort "is there *any* GPU?" check.
-//!
-//! Calls `vulkaninfo --summary` (much faster than the full
-//! `vulkaninfo`) and looks for GPU lines. We parse `deviceName`,
-//! `vendorID`, and `deviceID` so we can tag each device with a
-//! stable hardware ID (for cross-backend deduplication) even though
-//! the summary format is unstable.
+//! Vulkan fallback probe: `vulkaninfo --summary` (much faster than the
+//! full `vulkaninfo`) as a last-resort "is there *any* GPU?" check.
+//! We parse `deviceName`, `vendorID` and `deviceID` into a stable
+//! hardware ID for cross-backend dedup, even though the summary format
+//! is unstable.
 
 use std::process::Command;
 
@@ -24,7 +22,6 @@ pub fn probe_devices() -> Option<Vec<GpuDevice>> {
     return Some(json_devices);
   }
 
-  // Fallback: parse --summary for device names and vendorID:deviceID.
   let mut cmd = Command::new("vulkaninfo");
   cmd.arg("--summary");
   cmd.current_dir(std::env::temp_dir());
@@ -66,8 +63,6 @@ pub(crate) fn is_software_rasterizer(name: &str) -> bool {
     .any(|sw| n.contains(sw))
 }
 
-/// Parse `vulkaninfo -j` JSON for physical devices. Each device
-/// carries `pciBusLocation` for cross-backend dedup.
 fn probe_json() -> Option<Vec<GpuDevice>> {
   let mut cmd = Command::new("vulkaninfo");
   cmd.arg("-j");

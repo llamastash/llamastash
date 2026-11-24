@@ -1,7 +1,7 @@
 //! Launch surface: everything the supervisor needs to spawn
-//! and parameterise a `llama-server` child.
+//! and parameterise an engine child.
 //!
-//! - [`binary`] — locate the `llama-server` executable on disk.
+//! - [`binary`] — locate the engine's executable on disk.
 //! - [`params`] — the neutral launch IR (`LaunchParams`, typed knobs, the
 //!   layered resolver). Per-backend argv emission lives with each backend.
 //! - [`knobs`] — the unified knob registry: every backend declares its own

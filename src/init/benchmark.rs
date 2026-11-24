@@ -1,24 +1,10 @@
-//! Benchmark snapshot — the curated model corpus + per-arch recommender
-//! weights the init wizard's recommender ranks against.
-//!
 //! Two tiers travel together:
 //! - **Bundled**: `data/benchmark-snapshot.json` is `include_str!`-ed
 //!   into the binary so a fresh `cargo install` works offline.
-//! - **Remote**: a daily-CI-built JSON file lives at the
-//!   rolling release tag `snapshot-latest`. `load_remote` fetches it
-//!   through the `FetchClient`, verifies the integrity contract
-//!   (monotonic `bundle_date` + `min_version` ≤ build), and prefers
-//!   it over the bundled tier on success.
-//!
-//! Verification rules (Key Decisions):
-//! - `min_version > CARGO_PKG_VERSION` → reject (rollback-DoS gate).
-//! - `bundle_date < bundled.bundle_date` → reject (rollback gate).
-//!   Equal dates are accepted so a same-day source build doesn't
-//!   loop on the freshly-published cron output forever.
-//! - Any fetch / parse / verification failure → silent fallback to
-//!   bundled. `doctor` finding `RemoteSnapshotUnreachable` surfaces
-//!   prolonged outages via the `remote_fetch_failures` counter in
-//!   `InitSnapshot`.
+//! - **Remote**: a daily-CI-built JSON fetched through the `FetchClient`,
+//!   preferred over the bundled tier only when the gates in
+//!   `verify_remote` pass. Any fetch / parse / verification failure
+//!   falls back silently to bundled.
 
 use std::collections::BTreeMap;
 
@@ -27,12 +13,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::init::fetch::{FetchClient, FetchError};
 
-/// Source the bundled snapshot is read from. Kept as a top-level
-/// const so build-time tooling can assert against a known path.
+/// Kept as a top-level const so build-time tooling can assert against a known path.
 pub const BUNDLED_PATH: &str = "../../data/benchmark-snapshot.json";
 
 /// Bundled snapshot bytes — fixed at build time by `include_str!`.
-/// 2 MiB build-time cap is enforced by the const-assert below. The
+/// The 2 MiB build-time cap is enforced by the const-assert below. The
 /// ceiling allows the ~100-row live-discovery catalog (Qwen3.6 /
 /// Gemma 4 / DeepSeek V3.2 / GLM-5 / Llama 4 / Phi-4 / MoE flagships)
 /// without trimming task tiers.
@@ -46,7 +31,7 @@ const BUNDLED_RAW: &str = include_str!("../../data/benchmark-snapshot.json");
 const BUNDLED_SIZE_BUDGET_BYTES: usize = 2 * 1024 * 1024;
 
 // Anonymous const so the budget overrun fails the build instead of
-// surfacing as a runtime panic from `load_bundled_or_panic`.
+// surfacing as a runtime panic from `load_bundled`.
 const _: () = {
   if BUNDLED_RAW.len() > BUNDLED_SIZE_BUDGET_BYTES {
     panic!(
@@ -134,8 +119,7 @@ pub struct ModelEntry {
   pub recency: f32,
   /// Base HuggingFace id (e.g. `Qwen/Qwen3-Coder-30B-A3B-Instruct`)
   /// the GGUF in `repo` is a quantisation of. The benchmark-adapter
-  /// score map keys off this — the join replaces the legacy
-  /// `BUNDLED_ID_TO_SOURCE_HF_ID` table in the regen script.
+  /// score map keys off this.
   #[serde(default)]
   pub source_hf_id: String,
   /// Active parameters per token, for MoE models (e.g. 3_000_000_000
@@ -192,8 +176,7 @@ pub const REMOTE_MAX_BYTES: u64 = (BUNDLED_SIZE_BUDGET_BYTES as u64) + 64 * 1024
 pub const SUPPORTED_SCHEMA_VERSION: u32 = 1;
 
 /// Parse the bundled JSON. Infallible if the data file shipped with
-/// the binary is valid (which the build asserts via the size budget
-/// and the inline test below).
+/// the binary is valid.
 pub fn load_bundled() -> BenchmarkSnapshot {
   serde_json::from_str(BUNDLED_RAW)
     .expect("bundled benchmark-snapshot.json is part of the binary; CI must catch shape drift")
@@ -297,8 +280,8 @@ mod tests {
 
   #[test]
   fn old_schema_snapshot_defaults_new_fields() {
-    // A pre-Unit-1 snapshot (no source_hf_id / params_active / is_moe
-    // / gguf_publisher) must still deserialise via the serde defaults.
+    // A snapshot without source_hf_id / params_active / is_moe
+    // / gguf_publisher must still deserialise via the serde defaults.
     // This keeps older snapshot assets loadable on newer binaries,
     // even after the bundled JSON
     // gets regenerated with the new fields populated.
@@ -369,7 +352,6 @@ mod tests {
     assert_eq!(m.params_active, Some(3_000_000_000));
     assert!(m.is_moe);
     assert_eq!(m.gguf_publisher, "Qwen");
-    // Round-trip back through JSON: shape stable.
     let s = serde_json::to_string(&snap).expect("serialize");
     let again: BenchmarkSnapshot = serde_json::from_str(&s).expect("reparse");
     assert!(again.models[0].is_moe);

@@ -6,15 +6,7 @@
 //!   2. The Models pane title strip (`list_pane::build_block_title`).
 //!   3. The right pane's bottom border (`right_pane::bottom_hint_chips`).
 //!
-//! Pre-refactor each surface had its own fit strategy — the Models
-//! title popped from the tail until the width budget cleared, the
-//! right pane just emitted everything (sometimes overflowing), and
-//! the global strip hid every chip or none. Adding a new chip meant
-//! editing it into the *right slot* of the source list so the
-//! tail-pop dropped it first under pressure.
-//!
-//! This module centralises that logic behind a single contract:
-//! every chip declares a numeric `rank` (lower = stickier under
+//! Every chip declares a numeric `rank` (lower = stickier under
 //! width pressure) and the renderer asks [`pick`] which chips fit
 //! into the available cells. **Source order = display order**;
 //! rank only decides which chips survive when the budget can't hold
@@ -65,8 +57,8 @@ impl From<String> for RankedChip {
 /// familiar left-to-right positions as the terminal resizes.
 ///
 /// `budget` is the total width available for chips + their
-/// separators. The picker tracks `total_width = sum(chip_widths) +
-/// (n - 1) * sep_width`, which is the exact width the renderer will
+/// separators. The picker charges sum(chip_widths) +
+/// (n - 1) * sep_width, which is the exact width the renderer will
 /// emit when it joins the surviving chips.
 pub fn pick(chips: Vec<RankedChip>, budget: usize, sep: &str) -> Vec<String> {
   let sep_w = sep.chars().count();

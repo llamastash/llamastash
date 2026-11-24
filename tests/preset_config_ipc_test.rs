@@ -1,6 +1,6 @@
 //! End-to-end coverage that the config-backed preset CRUD round-trips
 //! through a real daemon and survives a restart (config.yaml is the
-//! source of truth), via Unit 4's `presets_*` IPC surface.
+//! source of truth), via the `presets_*` IPC surface.
 
 #![cfg(feature = "test-fixtures")]
 
@@ -137,7 +137,6 @@ async fn preset_crud_round_trips_through_config_and_survives_restart() {
   assert_eq!(saved["saved"]["params"]["ctx"], json!(65536));
   assert_eq!(saved["replaced"], Value::Null, "fresh save has no previous");
 
-  // It is visible in the list with config provenance.
   let listed = call(&socket, "presets_list", json!({"model_path": model_path})).await;
   let names: Vec<&str> = listed["presets"]
     .as_array()
@@ -148,7 +147,6 @@ async fn preset_crud_round_trips_through_config_and_survives_restart() {
   assert_eq!(names, vec!["long-ctx"]);
   assert_eq!(listed["presets"][0]["source"], json!("config"));
 
-  // And it landed in config.yaml under the model basename.
   let cfg = llamastash::config::load_config_from_path(&config_path).config;
   assert!(cfg.presets.contains_key("coder.gguf"));
 
@@ -169,7 +167,6 @@ async fn preset_crud_round_trips_through_config_and_survives_restart() {
     "preset survived restart"
   );
 
-  // Delete removes it from config.yaml.
   let deleted = call(
     &socket,
     "presets_delete",
@@ -214,7 +211,7 @@ async fn preset_save_carries_a_backends_own_knobs() {
     json!({
       "model_path": model_path,
       "name": "streamy",
-      // A backend's own tunables ride the one knob map now, like any other.
+      // A backend's own tunables ride the one knob map, like any other.
       "knobs": { "enforce-eager": true, "max-num-seqs": 60 },
     }),
   )
@@ -226,7 +223,6 @@ async fn preset_save_carries_a_backends_own_knobs() {
   );
   assert_eq!(saved["saved"]["params"]["knobs"]["max-num-seqs"], json!(60));
 
-  // It round-trips through `presets_show` and lands in config.yaml.
   let shown = call(
     &socket,
     "presets_show",

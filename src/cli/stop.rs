@@ -4,10 +4,9 @@
 //! managed launch after a y/n prompt (skipped with `--yes`).
 //!
 //! When stdin isn't a TTY and `--yes` isn't passed, `--all` refuses
-//! up front. An interactive prompt blocked on EOF was the previous
-//! shape and silently no-op'd in piped contexts; that drift between
-//! caller intent and observed outcome is the trap this TTY guard
-//! closes.
+//! up front. An interactive prompt blocked on EOF silently no-op'd in
+//! piped contexts; that drift between caller intent and observed
+//! outcome is the trap this TTY guard closes.
 
 use std::io::{self, IsTerminal, Read};
 
@@ -28,10 +27,9 @@ pub(crate) fn stop_deadline(grace: Option<u64>, floor: u64) -> std::time::Durati
 pub async fn handle(args: StopArgs, cli: &Cli, config: &Config) -> CliResult {
   let mut client = connect_or_spawn(cli, config).await?;
   let grace = args.grace_secs;
-  // No-arg dispatch: when neither `--all` nor `<target>` is supplied,
-  // fall through to the cliclack picker over running launches. The
-  // picker refuses non-TTY / `--json` contexts so a piped caller gets
-  // an actionable error instead of a hung prompt.
+  // The picker refuses non-TTY / `--json`
+  // contexts so a piped caller gets an actionable error instead of a
+  // hung prompt.
   let mut args = args;
   if !args.all && args.target.is_none() {
     let snap = fetch_status(&mut client).await?;
@@ -95,7 +93,7 @@ pub async fn handle(args: StopArgs, cli: &Cli, config: &Config) -> CliResult {
       .unwrap_or_default();
     // Normalise per-item state into the flat string form `stop --json`
     // (single target) already emits, so agents parse one shape across
-    // both code paths (`F3`).
+    // both code paths.
     let stopped_items: Vec<serde_json::Value> = stopped_items
       .into_iter()
       .map(|mut item| {
@@ -122,8 +120,6 @@ pub async fn handle(args: StopArgs, cli: &Cli, config: &Config) -> CliResult {
       });
       println!("{}", pretty_json(&body));
     } else if !cli.quiet {
-      // Count gets bold so the operator can scan "how many" at a
-      // glance; the rest of the line stays in success-green.
       use crate::cli::colors;
       let bold_count = console::style(stopped_count.to_string()).bold().to_string();
       println!(
@@ -187,7 +183,6 @@ pub async fn handle(args: StopArgs, cli: &Cli, config: &Config) -> CliResult {
   Ok(())
 }
 
-/// SIGTERM one external row through `stop_external` and render the outcome.
 async fn stop_external_row(
   client: &mut crate::ipc::Client,
   ext: &ExternalRow,
@@ -323,7 +318,7 @@ pub(crate) fn confirm_from<R: Read>(input: &mut R, models: &[RunningRow]) -> Res
     .map_err(|e| CliExit::new(STOP_FAILED, format!("confirm: {e}")))
 }
 
-/// The question `stop --all` asks. Its own function so the test can pin the
+/// Its own function so the test can pin the
 /// wording the shared reader prints.
 fn stop_prompt(models: &[RunningRow]) -> String {
   format!("stop {} managed launch(es)? [y/N] ", models.len())

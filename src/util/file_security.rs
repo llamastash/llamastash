@@ -1,33 +1,11 @@
-//! Cross-platform secret-file hardening.
-//!
-//! `runtime.json` and `state.json` carry per-daemon secrets (the bearer
-//! token, model paths, last-launch params) and must not be readable by
-//! other accounts on the machine. On Unix this is the explicit
-//! `chmod 0o600` applied during atomic-write. On Windows there's no
-//! mode-bit equivalent; we apply a Protected DACL that grants
-//! Generic-All to the file owner and no inheritance from the parent.
-//!
-//! Unix mode-bit application lives in [`crate::util::atomic_write`].
-//! This module only contains the Windows surface; on Unix the
-//! `set_owner_only_dacl` function is a no-op compile-time stub.
-//!
-//! The SDDL string `D:P(A;;GA;;;OW)` expands as:
-//! - `D:` — DACL section
-//! - `P` — Protected (no inheritance from the parent)
-//! - `(A;;GA;;;OW)` — Allow ACE granting Generic All to the OWner
-//!
-//! Best-effort by design: a failure to apply the DACL is logged and
-//! swallowed. The state directory is already under `%LOCALAPPDATA%`,
-//! which inherits a per-user ACL, so the file is non-readable to
-//! other users even without explicit hardening. The DACL apply here
-//! is belt-and-suspenders against misconfigured parent ACLs.
-//!
-//! On Unix the module also hosts the shared directory swap-surface
-//! check ([`dir_swap_surface`]) used by the init binary-adoption,
-//! config-write, and doctor preflights. A directory is a "swap
-//! surface" when a user other than its owner could rename/replace a
-//! file inside it, which would let an attacker substitute the adopted
-//! `llama-server` or a `0600` config.
+//! Cross-platform hardening of secret files (`runtime.json`, `state.json`)
+//! against other accounts. Unix hardening is the `chmod 0o600` in
+//! [`crate::util::atomic_write`]. On Windows there is no mode-bit equivalent,
+//! so we apply a Protected DACL that grants Generic-All to the file owner and
+//! no inheritance from the parent. This module also holds, on Unix, the shared
+//! directory swap-surface check
+//! ([`dir_swap_surface`]) used by the init binary-adoption, config-write,
+//! and doctor preflights.
 
 use std::path::Path;
 
@@ -44,7 +22,10 @@ pub fn set_owner_only_dacl(path: &Path) {
   use windows_sys::Win32::Security::{SetFileSecurityW, DACL_SECURITY_INFORMATION};
 
   // Owner = Generic All, Protected DACL (no inheritance from parent).
-  // OW = owner of the object (current user creating the file).
+  // `D:` is the DACL section, `P` is Protected, and `(A;;GA;;;OW)` is the
+  // Allow ACE granting Generic All to the OWner. Swallowing a failure is
+  // safe: the state dir sits under `%LOCALAPPDATA%`, which already inherits
+  // a per-user ACL, so this only guards a misconfigured parent ACL.
   let sddl: Vec<u16> = "D:P(A;;GA;;;OW)\0".encode_utf16().collect();
   let mut sd_ptr: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR = std::ptr::null_mut();
   // SAFETY: SDDL is a NUL-terminated UTF-16 string; sd_ptr receives a
@@ -94,7 +75,9 @@ pub fn set_owner_only_dacl(_path: &Path) {
 }
 
 /// Why `path` is a swap surface, or nothing when it is safe to hold
-/// trusted files (an adopted binary, a `0600` config).
+/// trusted files. A swap surface lets a user other than the directory's
+/// owner rename or replace a file inside it. An attacker could use that
+/// to substitute the adopted `llama-server` or a `0600` config.
 ///
 /// The rule is **owner-aware**: what matters is whether a user *other
 /// than the directory's owner* can write into it, not the raw mode bits.
@@ -109,9 +92,8 @@ pub fn set_owner_only_dacl(_path: &Path) {
 ///   controlled by that account regardless of mode bits (the owner can
 ///   always `chmod`/rename inside it), so it is a swap surface too.
 ///
-/// Missing/metadata-failing paths report `None`, matching the historical
-/// skip-not-fail behavior: a path that can't be statted isn't a
-/// directory we can adopt into anyway.
+/// Missing/metadata-failing paths report `None`: a path that can't be
+/// statted isn't a directory we can adopt into anyway.
 #[cfg(unix)]
 pub fn dir_swap_surface(path: &Path, our_uid: u32) -> Option<SwapSurface> {
   use std::os::unix::fs::{MetadataExt, PermissionsExt};

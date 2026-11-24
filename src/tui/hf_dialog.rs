@@ -1,12 +1,7 @@
-//! HuggingFace pull dialog.
-//!
-//! Three-state modal overlay: Search → File picker → Confirm. State
-//! transitions are pure functions so the unit tests can exercise them
-//! without a tokio runtime; the async dispatch shim that fires
-//! `init::hf_api::search` / `list_repo_files` lives in `events.rs` and
-//! ships results back as `Event::HfDialog(HfDialogEvent)` on the
-//! unified TUI event channel — `events.rs` then dispatches into
-//! `apply_hf_dialog_event` / `state.apply_*`.
+//! HuggingFace pull dialog: three-state modal overlay (Search → File
+//! picker → Confirm). State transitions are pure functions so unit tests
+//! run without a tokio runtime; the async dispatch shim lives in
+//! `events.rs` and ships results back as `Event::HfDialog(HfDialogEvent)`.
 //!
 //! Search is debounced (300 ms after the last keystroke). Each
 //! dispatch is tagged with the dialog's monotonic `query_seq`; the
@@ -36,7 +31,6 @@ use crate::tui::input_field::{InputField, InputOutcome};
 use crate::tui::keybindings::{Action as KeyAction, Focus};
 use crate::tui::popup::{self, Button, Size, Spec};
 
-/// Three-state modal contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HfStage {
   Search,
@@ -86,8 +80,8 @@ pub enum HfDialogEvent {
   Snapshot(Box<BenchmarkSnapshot>),
 }
 
-/// One row in the File picker. Either a standalone GGUF file or a
-/// collapsed split-shard set. Splits surface their sum of
+/// One row in the File picker: a standalone GGUF file, a collapsed
+/// split-shard set, or a whole repo. Splits surface their sum of
 /// sizes and the launch filename (shard 1) for the eventual pull
 /// dispatch (the pull worker walks `shard_filenames` to enqueue every
 /// sibling).
@@ -133,7 +127,6 @@ pub enum PickerRow {
 }
 
 impl PickerRow {
-  /// Display filename in the picker row.
   pub fn label(&self) -> &str {
     match self {
       PickerRow::Single { filename, .. } => filename,
@@ -155,8 +148,8 @@ impl PickerRow {
     }
   }
 
-  /// Filename to download. Shard 1 for collapsed split sets so the
-  /// existing `download_repo` shard-expansion path takes over.
+  /// Shard 1 for collapsed split sets so the existing `download_repo`
+  /// shard-expansion path takes over.
   pub fn download_filename(&self) -> &str {
     match self {
       PickerRow::Single { filename, .. } => filename,
@@ -182,8 +175,6 @@ impl PickerRow {
     }
   }
 
-  /// `true` when the row can be selected. Incomplete shard sets
-  /// return `false` so the picker can grey them out.
   /// Whether the pull takes the entire repo rather than a chosen file.
   pub fn is_whole_repo(&self) -> bool {
     matches!(self, PickerRow::WholeRepo { .. })
@@ -198,15 +189,11 @@ impl PickerRow {
   }
 }
 
-/// Whether a repo file is a safetensors weight shard.
 fn is_safetensors_weight(f: &HfRepoFile) -> bool {
   f.filename.to_ascii_lowercase().ends_with(".safetensors")
 }
 
-/// Collapse a flat sibling list into picker rows. Shards sharing a
-/// `(base, total)` tuple group into one [`PickerRow::Split`]; everything
-/// else flows through as [`PickerRow::Single`]. Mirrors
-/// `discovery::split_gguf::group` but operates on filenames (the HF
+/// Mirrors `discovery::split_gguf::group` but operates on filenames (the HF
 /// listing doesn't carry a parent path) and an `Option<u64>` size
 /// instead of a filesystem stat.
 pub fn collapse_picker_rows(files: Vec<HfRepoFile>) -> Vec<PickerRow> {
@@ -356,8 +343,8 @@ pub struct HfDialogState {
 }
 
 /// Debounce window — once this elapses after the last keystroke, the
-/// dialog dispatches the buffered query as a search (R107 / live
-/// search). Matches the HuggingFace web UI cadence.
+/// dialog dispatches the buffered query as a search. Matches the
+/// HuggingFace web UI cadence.
 pub const DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(300);
 
 /// Header over the recommendation list, because the empty field is also the
@@ -446,7 +433,6 @@ impl HardwareFitContext {
 }
 
 impl HfDialogState {
-  /// Construct a fresh dialog in the Search stage.
   pub fn open(offline: bool, hardware_fit_ctx: HardwareFitContext) -> Self {
     let mut input = InputField::new();
     input.enter_edit();
@@ -479,8 +465,7 @@ impl HfDialogState {
 
   // ----- Search state transitions -----
 
-  /// Route a key event through the search input. Bumps the
-  /// dispatch seq (and resets the debounce timer) when the key
+  /// Bumps the dispatch seq (and resets the debounce timer) when the key
   /// actually mutated the buffer so a stale response can be
   /// discarded.
   pub fn handle_search_key(&mut self, key: crossterm::event::KeyEvent) -> InputOutcome {
@@ -510,13 +495,12 @@ impl HfDialogState {
     outcome
   }
 
-  /// Read-only view onto the current query buffer. Trimmed downstream
-  /// when used as a search argument.
+  /// Trimmed downstream when used as a search argument.
   pub fn query(&self) -> &str {
     self.input.buffer()
   }
 
-  /// Cycle to the next sort key. Resets pagination to page 1
+  /// Resets pagination to page 1
   /// and bumps the seq so a stale search-by-old-sort response can't
   /// land.
   pub fn cycle_sort(&mut self) {
@@ -549,7 +533,7 @@ impl HfDialogState {
     self.search_in_flight = true;
   }
 
-  /// Apply a SearchResults event. Drops stale responses (seq below
+  /// Drops stale responses (seq below
   /// the dialog's current `last_dispatched_seq`) so the user's most
   /// recent dispatch always wins.
   pub fn apply_search_results(&mut self, seq: u64, page: HfSearchPage) {
@@ -585,7 +569,7 @@ impl HfDialogState {
       .sort_by_key(|r| std::cmp::Reverse(size_key(r).unwrap_or(0)));
   }
 
-  /// Apply a SearchFailed event. Same stale-drop rule as
+  /// Same stale-drop rule as
   /// [`Self::apply_search_results`].
   pub fn apply_search_failed(&mut self, seq: u64, error: FetchError) {
     if seq < self.last_dispatched_seq {
@@ -677,14 +661,12 @@ impl HfDialogState {
     }
   }
 
-  /// Whether a next-page action is sensible (the current response
-  /// carried a `Link: rel="next"` cursor).
+  /// The current response carried a `Link: rel="next"` cursor.
   pub fn can_next_page(&self) -> bool {
     self.stage == HfStage::Search && self.next_cursor.is_some()
   }
 
-  /// Whether the prev-page action is sensible (we have stored
-  /// history of cursors used by previous pages).
+  /// True when we have stored history of cursors used by previous pages.
   pub fn can_prev_page(&self) -> bool {
     self.stage == HfStage::Search && !self.prev_cursors.is_empty()
   }
@@ -800,7 +782,6 @@ impl HfDialogState {
     self.picker_idx = picker_idx;
   }
 
-  /// Apply a `list_repo_files` failure.
   pub fn apply_repo_files_failed(&mut self, repo_id: &str, err: &ListRepoFilesError) {
     if self.picker_repo_id.as_deref() != Some(repo_id) {
       return;
@@ -809,7 +790,7 @@ impl HfDialogState {
   }
 
   /// Move from FilePicker → Confirm. Returns `true` when a row is
-  /// selectable (incomplete shard sets refuse selection per R112).
+  /// selectable (incomplete shard sets refuse selection).
   pub fn submit_picker(&mut self) -> bool {
     let Some(row) = self.picker_rows.get(self.picker_idx).cloned() else {
       return false;
@@ -834,7 +815,6 @@ impl HfDialogState {
     self.recommended_quant = None;
   }
 
-  /// Step from Confirm back to FilePicker.
   pub fn back_to_picker(&mut self) {
     self.stage = HfStage::FilePicker;
     self.confirm_row = None;
@@ -863,9 +843,7 @@ fn format_fetch_error(error: &FetchError) -> String {
 // Render
 // ============================================================
 
-/// Paint the dialog centred over `area` (matches the
-/// `advanced_panel::render` overlay pattern). Takes `app` so the
-/// footer can resolve the live label for every bound key
+/// Takes `app` so the footer can resolve the live label for every bound key
 /// (`Submit`, `Cancel`, `MoveUp`, `MoveDown`) — a config-side
 /// `keybindings:` rebind flows through to the chip strip.
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
@@ -905,9 +883,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
 }
 
 /// Thin shim over [`App::resolve_label`] specialised to
-/// [`Focus::HfDialog`] so the call sites below stay compact. The
-/// generic helper lives on `App` so other dialogs that need the
-/// same label-resolution shape don't re-invent it.
+/// [`Focus::HfDialog`] so the call sites below stay compact.
 fn dialog_label(app: &App, action: KeyAction, fallback: &str) -> String {
   app.resolve_label(Focus::HfDialog, action, fallback)
 }
@@ -967,9 +943,9 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, state: &HfDialogState, palet
 }
 
 /// Stage-aware key-hint strip that rides in the dialog's title bar
-/// after the `HuggingFace — <stage>` label, the same shape the help
-/// overlay uses. Bound chords resolve live from the keymap so a
-/// config-side `keybindings:` rebind flows through; the dialog-internal
+/// after the `HuggingFace — <stage>` label. Bound chords resolve live
+/// from the keymap so a config-side `keybindings:` rebind flows
+/// through. The dialog-internal
 /// chords (`o`, `n`, `p`, `e`) aren't actions, so they stay literal.
 fn stage_hints(app: &App, state: &HfDialogState) -> String {
   let submit = dialog_label(app, KeyAction::Submit, crate::tui::keybindings::ENTER_LABEL);
@@ -1550,7 +1526,6 @@ fn short_count(n: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-
   /// A safetensors repo used to render "no files" and could not be
   /// pulled at all, which left the backend that serves such repos with no
   /// first-party way to acquire a model.
@@ -1699,7 +1674,6 @@ mod tests {
     let seq_after_first = s.query_seq;
     type_query(&mut s, "w");
     assert!(s.query_seq > seq_after_first);
-    // Mark the most recent typed seq dispatched.
     s.mark_dispatched();
     // A stale response (seq from before the second keystroke)
     // must be ignored.
@@ -2057,7 +2031,7 @@ mod tests {
   #[test]
   fn collapse_picker_rows_marks_incomplete_shard_set() {
     // Missing shard 3 of 3 — Split entry must be marked incomplete
-    // and refused on submit per R112.
+    // and refused on submit.
     let rows = collapse_picker_rows(vec![
       file("partial-00001-of-00003.gguf", Some(1024)),
       file("partial-00002-of-00003.gguf", Some(1024)),

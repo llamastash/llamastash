@@ -1,13 +1,9 @@
 //! vLLM's declared knobs.
 //!
-//! Transcribed from the pre-registry `VLLM_NATIVE_KNOBS` descriptors and
-//! `VLLM_KNOB_FLAGS`, plus the context slot vLLM honoured through the old
-//! `capabilities()` gate. Every flag was checked against a live vLLM install
-//! (0.27.1); the long tail stays on `extras`.
+//! Every flag was checked against a live vLLM install (0.27.1); the long tail
+//! stays on `extras`.
 //!
-//! Three of these now carry a [`Concept`], which the old two-channel model had
-//! no way to express — they were modelled twice, once as a llama.cpp IR slot
-//! and once as an unrelated native knob:
+//! Three of these carry a [`Concept`], mapped to the llama.cpp equivalent:
 //!
 //! - `max-model-len` ↔ llama.cpp `--ctx-size`
 //! - `max-num-seqs` ↔ llama.cpp `--parallel`

@@ -1,14 +1,9 @@
 //! The daemon-side launch pipeline.
 //!
 //! `compose_and_spawn` is the one code path that turns a parsed
-//! `StartParams` into a running supervised model: input validation →
-//! identity / arch resolution → race-safe port reservation → layered
-//! knob merge → memory admission → supervisor spawn → registry insert →
-//! last-params recorder. The IPC `start_model` handler and the proxy's
-//! auto-start path both call it, so the two surfaces can never drift in
-//! how a launch is composed. It ends by handing a [`LaunchExec`] to the
-//! resolved backend's [`crate::backend::Backend::start`], whose default runs
-//! the supervised spawn (`spawn_supervised`).
+//! `StartParams` into a running supervised model. The IPC `start_model`
+//! handler and the proxy's auto-start path both call it, so the two
+//! surfaces can never drift in how a launch is composed.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -39,15 +34,12 @@ use crate::launch::params::LaunchParams;
 /// directly without going through JSON.
 #[derive(Deserialize, Default, Clone)]
 pub(crate) struct StartParams {
-  /// Absolute path to the GGUF the user wants to launch. We compute
-  /// the canonical `ModelId` by reading its header on the daemon
-  /// side rather than trusting the caller — keeps the surface
-  /// minimal for CLI/TUI clients.
+  /// Absolute path. The daemon computes the canonical `ModelId` by reading
+  /// the file's header rather than trusting the caller.
   pub(crate) model_path: PathBuf,
-  /// User-chosen name for this launch. When set, the launch is
-  /// addressable by `<model-id>@<name>` in `stop`, `logs`, and the
-  /// proxy's `body.model`. A second launch of the same model with the
-  /// same name is refused (the name is unique per model).
+  /// When set, the launch is addressable by `<model-id>@<name>` in
+  /// `stop`, `logs`, and the proxy's `body.model`. The name is unique
+  /// per model.
   #[serde(default)]
   pub(crate) name: Option<String>,
   /// The preset this launch used, when the caller flattened one client-side
@@ -66,9 +58,7 @@ pub(crate) struct StartParams {
   /// Soft port preference — if the supplied port is free at
   /// reservation time, use it; otherwise allocate from the
   /// configured range. Distinct from `port` which is strict and
-  /// errors on conflict. The TUI sets this so a returning user
-  /// lands on their previously-bound port without scripted clients
-  /// silently losing strict semantics.
+  /// errors on conflict.
   #[serde(default)]
   pub(crate) prefer_port: Option<u16>,
   #[serde(default)]
@@ -78,15 +68,13 @@ pub(crate) struct StartParams {
   /// last_used / arch_default / built-in.
   #[serde(default)]
   pub(crate) knobs: crate::launch::knobs::KnobSet,
-  /// Free-form argv tail for `llama-server` flags the typed editor
-  /// doesn't model. Appended after the resolved knobs.
+  /// Free-form argv tail for engine flags the typed editor doesn't
+  /// model. Appended after the resolved knobs.
   #[serde(default)]
   pub(crate) extras: Vec<String>,
-  /// Optional path to a multimodal projector (mmproj) file. When
-  /// `None`, the daemon auto-detects by scanning the parent
-  /// directory of the model for a `mmproj-<stem>.gguf` companion.
-  /// Set to `Some(path)` to override the auto-detection, or leave
-  /// as `None` to let the daemon find it automatically.
+  /// Path to a multimodal projector (mmproj) file. When `None`, the
+  /// daemon auto-detects by scanning the parent directory of the
+  /// model for a `mmproj-<stem>.gguf` companion.
   #[serde(default)]
   pub(crate) mmproj_path: Option<PathBuf>,
   /// Per-model backend override. `None` / `auto` runs the identity
@@ -114,13 +102,13 @@ pub(crate) struct StartParams {
   pub(crate) force: bool,
 }
 
-/// How a launch chose its parameters. See the resolver rule in
-/// `compose_and_spawn`: `Default` applies the effective default
-/// (`PresetDefault` → `LastUsed`); `Explicit` means the caller already
-/// flattened a named preset / inline flags into `knobs`/`extras` (skip the
-/// default layer *and* `last_params` — a preset is self-contained, so a stale
-/// `last_params` must not leak in; extras verbatim);
-/// `Auto` is pure fit (skip the default layer and `last_params`, no extras).
+/// How a launch chose its parameters. `Default` applies the effective
+/// default (`PresetDefault` → `LastUsed`); `Explicit` means the caller
+/// already flattened a named preset / inline flags into `knobs`/`extras`
+/// (skip the default layer *and* `last_params` — a preset is
+/// self-contained, so a stale `last_params` must not leak in; extras
+/// verbatim); `Auto` is pure fit (skip the default layer and
+/// `last_params`, no extras).
 #[derive(Deserialize, Serialize, Clone, Copy, Default, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum LaunchSelection {
@@ -160,9 +148,8 @@ pub struct StartedLaunch {
   pub(crate) model: ManagedModel,
   pub(crate) log_path: PathBuf,
   /// The accepted launch name, as stamped on the running row. Echoed by the
-  /// IPC handler so clients report what the daemon actually accepted rather
-  /// than what they asked for — against a daemon without name support the
-  /// launch correctly reports unnamed. `None` for unnamed launches.
+  /// IPC handler so clients report what the daemon actually accepted.
+  /// `None` for unnamed launches.
   pub(crate) name: Option<String>,
   /// The bytes the admission gate priced this launch at, when the gate engaged
   /// and admitted it. `None` when the gate was skipped (no host sample yet) or
@@ -181,10 +168,9 @@ pub struct StartedLaunch {
 }
 
 /// Everything a backend's [`crate::backend::Backend::start`] needs to execute a
-/// launch, once `compose_and_spawn` has done the backend-agnostic prep
-/// (validation, identity, port reservation, layered knob resolution). The
-/// backend decides *how* to start it; the default is the supervised child
-/// spawn. Consumed by value.
+/// launch, once `compose_and_spawn` has done the backend-agnostic prep.
+/// The backend decides *how* to start it; the default is the supervised
+/// child spawn. Consumed by value.
 pub struct LaunchExec {
   /// The fully-resolved launch params (knobs argv-ified from these).
   pub(crate) params: LaunchParams,
@@ -194,7 +180,6 @@ pub struct LaunchExec {
   /// own server overrides via [`crate::backend::Backend::resolve_launch_binary`].
   /// `None` when the host has no default server binary.
   pub(crate) default_binary: Option<PathBuf>,
-  /// Size-scaled probe budget.
   pub(crate) probe: crate::daemon::probe::ProbeOptions,
   pub(crate) id: ModelId,
   pub(crate) identity: ModelIdentity,
@@ -218,9 +203,8 @@ pub struct LaunchExec {
   /// The user-supplied knob deltas to persist in `last_params` (not the full
   /// resolved set — keeps source chips meaningful).
   pub(crate) user_knobs: crate::launch::knobs::KnobSet,
-  /// The layer each resolved knob value came from (provenance). Surfaced on the
-  /// `start_model` IPC response and the CLI `--json` output; empty when no knob
-  /// resolved from a real layer.
+  /// Provenance: the layer each resolved knob value came from. Empty when no
+  /// knob resolved from a real layer.
   pub(crate) layer_sources:
     std::collections::BTreeMap<crate::launch::knobs::KnobId, crate::launch::params::LayerLabel>,
   /// Native-knob keys the backend auto-resolved this launch — stripped from the
@@ -252,25 +236,23 @@ pub struct LaunchExec {
 }
 
 /// Whether a launch resolves as "pure fit" — skipping the default-preset and
-/// `LastUsed` (last_params) layers. `Auto` (explicit `--preset auto`) and
-/// `Explicit` (named preset / TUI form, which already flattened a resolved
-/// preset into the `User` layer) are pure-fit by construction; a no-selection
-/// launch is pure-fit only when its configured default is `auto`.
+/// `LastUsed` (last_params) layers.
 fn is_pure_fit(selection: LaunchSelection, default_is_auto: bool) -> bool {
   matches!(selection, LaunchSelection::Auto | LaunchSelection::Explicit) || default_is_auto
 }
+
+/// The device selector that asks for no offload at all.
+const NO_DEVICE_SELECTOR: &str = "none";
+
 /// Pick the launch binary and stamp the device-derived identity.
 ///
 /// Precedence: an explicit **server** pick (a chosen build/binary) wins
 /// outright; else the binary that owns the chosen `--device` selector (the
 /// selector came from a specific binary's `--list-devices`, so we must spawn
 /// *that* binary or it is invalid); else the default binary. When the device
-/// selector resolves to a server, stamp its id (and, when the backend is still
-/// `Auto`, its owning backend) so status and Ctrl+P capture report it instead
-/// of falling back to the default.
-/// The device selector that asks for no offload at all.
-const NO_DEVICE_SELECTOR: &str = "none";
-
+/// selector resolves to a server, stamp its id (and, when the backend is
+/// still `Auto`, its owning backend) so status and Ctrl+P capture report it
+/// instead of falling back to the default.
 fn pick_launch_binary(
   launch_params: &mut LaunchParams,
   picked_server: Option<&crate::backend::Server>,
@@ -293,10 +275,6 @@ fn pick_launch_binary(
       .find(|s| s.devices.iter().any(|d| d.selector == sel))
     {
       Some(srv) => {
-        // The device selector came from this server's `--list-devices`, so the
-        // launch is really on this build — stamp the id (and, when the backend
-        // is still `Auto`, its owning backend) so status and Ctrl+P capture
-        // report it instead of falling back to the default.
         launch_params.server = Some(srv.id.clone());
         if launch_params.backend == crate::launch::params::BackendChoice::Auto {
           launch_params.backend = crate::launch::params::BackendChoice::from_id(&srv.backend_id);
@@ -411,17 +389,18 @@ pub(crate) async fn compose_and_spawn(
   let state_snap = ctx.state.snapshot().await;
 
   // A name is unique per model: a second launch of the same model with the same
-  // name is refused so `<model-id>@<name>` stays a stable address (D3). The
-  // refusal names the launch holding it, so the user knows what to stop without
+  // name is refused so `<model-id>@<name>` stays a stable address. The refusal
+  // names the launch holding it, so the user knows what to stop without
   // running `status` first.
   //
-  // Two details make this more than a snapshot scan. A launch that errored or
-  // exited keeps its row until it is stopped but is not an addressable target,
-  // so it must not lock the name forever. And the row is not pushed until
-  // `spawn_supervised`, long after this check, so the claim is taken here and
-  // held by the guard for the rest of the spawn: without it two concurrent
-  // `start --name coder` both pass, and because the port allocator *is*
-  // serialized the only symptom would be two launches sharing one address.
+  // A launch that errored or exited keeps its row until it is stopped, but it
+  // is not an addressable target, so it must not lock the name.
+  //
+  // The row is not pushed until `spawn_supervised`, long after this check, so
+  // the claim is taken here and held by the guard for the rest of the spawn:
+  // without it two concurrent `start --name coder` both pass, and because the
+  // port allocator *is* serialized the only symptom would be two launches
+  // sharing one address.
   let _name_claim = match parsed.name.as_deref() {
     Some(name) => {
       let mut dead: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -482,8 +461,7 @@ pub(crate) async fn compose_and_spawn(
   } = crate::backend::resolve_identity_for_path(&parsed.model_path, Some(ctx)).map_err(
     |e| match &e {
       // Tagged so the CLI maps it to an environment exit code without
-      // string-matching the message. Without the tag it was indistinguishable
-      // from a bad flag and came back as a usage error.
+      // string-matching the message.
       crate::backend::IdentityError::BackendUnavailable { .. } => ErrorObject::with_data(
         ErrorCode::InvalidParams,
         format!("`{}` {e}", parsed.model_path.display()),
@@ -495,11 +473,11 @@ pub(crate) async fn compose_and_spawn(
     },
   )?;
 
-  // Pre-spawn refusal (D-guard): on an auto-routed launch, ask every backend
+  // Pre-spawn refusal: on an auto-routed launch, ask every backend
   // whether it declines this model (e.g. a distributed/split GGUF half a
   // backend recognizes by arch but cannot load alone, wasting a 100 GB+ load).
   // An explicit `--backend` override passes through so the engine can surface
-  // its own error. Registry-driven — names no backend.
+  // its own error.
   if parsed.backend.clone().unwrap_or_default() == crate::launch::params::BackendChoice::Auto {
     if let Some(msg) = crate::backend::refusal_for_auto_launch(arch.as_deref(), &parsed.model_path)
     {
@@ -510,8 +488,7 @@ pub(crate) async fn compose_and_spawn(
   // The model's configured `default:` preset (config-only), resolved
   // server-side so it applies uniformly on CLI plain `start`, the TUI, and
   // proxy auto-start. Only a no-selection launch consults it, so explicit /
-  // auto launches skip the preset-store snapshot + catalog projection. Read
-  // via the same `effective_presets` the IPC handlers use.
+  // auto launches skip the preset-store snapshot + catalog projection.
   let is_default_sel = matches!(parsed.selection, LaunchSelection::Default);
   let effective_default = if is_default_sel {
     Some(model_presets(ctx, &parsed.model_path, arch.as_deref()).await)
@@ -546,9 +523,8 @@ pub(crate) async fn compose_and_spawn(
   // Collapse the launch into one resolution shape. `Auto` (explicit
   // `--preset auto`) and a no-selection launch whose config default is
   // `auto` both mean "pure fit": skip the default-preset and last_params
-  // layers entirely. A no-selection launch otherwise applies the effective
-  // default (the `PresetDefault` layer when `default:` names a preset, then
-  // last_params). An explicit launch carries its own flattened knobs/extras.
+  // layers. A no-selection launch otherwise applies the effective default (the
+  // `PresetDefault` layer when `default:` names a preset, then last_params).
   let default_is_auto = effective_default
     .as_ref()
     .is_some_and(|e| e.default_is_auto());
@@ -589,10 +565,9 @@ pub(crate) async fn compose_and_spawn(
     .or_else(|| LaunchMode::resolve(None, mode_hint))
     .unwrap_or(LaunchMode::Chat);
 
-  // Reject pinned port values that would corrupt our internal state
-  // or require root: any value below 1024 (which also covers 0, the
-  // "OS picks for me" sentinel llama-server would pick a port we
-  // never track) needs root and is almost certainly a typo / hostile.
+  // A pinned port below 1024 needs root and is almost certainly a typo
+  // or hostile. 0 is also the "OS picks for me" sentinel: the engine
+  // picks a port we never track.
   for p in parsed.port.iter().chain(parsed.prefer_port.iter()) {
     if *p < 1024 {
       return Err(ErrorObject::new(
@@ -601,7 +576,6 @@ pub(crate) async fn compose_and_spawn(
       ));
     }
   }
-  // Validate ctx token-window bound.
   if let Some(c) = parsed.ctx {
     if c > MAX_CTX_TOKENS {
       return Err(ErrorObject::new(
@@ -675,20 +649,17 @@ pub(crate) async fn compose_and_spawn(
   // Compose LaunchParams with the layered resolver. Precedence
   // (highest first): caller-supplied `knobs` → daemon's persisted
   // `last_params` for this model → YAML `arch_defaults[architecture]`
-  // → built-in `(arch, backend)` table → llama-server's own default.
+  // → built-in `(arch, backend)` table → the engine's own default.
   let mut launch_params = LaunchParams::new(parsed.model_path.clone(), mode);
   launch_params.port = Some(port);
 
   // Launch *identity* — which backend, and which of its builds — inherited on
   // a no-selection launch the same way extras and knobs are, so a plain
   // `start` reproduces the run rather than silently dropping back to the
-  // priority-default build.
-  //
-  // This has to settle before backend resolution, because a server pick
-  // decides which backend runs. That rules out the backend-matched
-  // `last_params` gate the knob layers use (it needs the resolved backend,
-  // which needs this) — but the recorded server id names its own backend, so
-  // there is nothing to contaminate.
+  // priority-default build. This has to settle before backend
+  // resolution, because a server pick decides which backend runs. So it
+  // cannot use the backend-matched `last_params` gate, but the recorded
+  // server id names its own backend, so nothing can contaminate it.
   let identity_default = if matches!(parsed.selection, LaunchSelection::Default) {
     inherited_launch_identity(&state_snap, &identity, launch_preset)
   } else {
@@ -729,7 +700,7 @@ pub(crate) async fn compose_and_spawn(
       } else if found.is_none() {
         // A typed `--server` was already rejected up front. Reaching here
         // means the id came from a preset or a remembered launch and the
-        // build is gone (rebuilt llama.cpp, moved machine) — warn and take
+        // build is gone (rebuilt engine binary, moved machine) — warn and take
         // the default rather than failing a launch the user did not pin.
         log::warn!("server {server_id:?} not in catalog; using the default binary");
         launch_params.server = None;
@@ -763,12 +734,11 @@ pub(crate) async fn compose_and_spawn(
     }
   }
 
-  // Resolve the backend up front (D-route) so both the launch plan *and* the
+  // Resolve the backend up front so both the launch plan *and* the
   // cross-backend contamination gate below see the same decision. Selection
   // honors the per-model override, then the header-level routing signal (the
   // backend that auto-claimed the header wins when it is available and serves
-  // the mode), then the identity rule as fallback. Registry-driven — this site
-  // names no backend.
+  // the mode), then the identity rule as fallback.
   let inference_backend = crate::backend::resolve_backend_for_launch(
     &identity,
     &parsed.model_path,
@@ -792,11 +762,11 @@ pub(crate) async fn compose_and_spawn(
   let last_params_entry = state_snap
     .last_params_for(&identity)
     .map(|e| (e.params.clone(), e.resolved_backend.clone()));
-  // D-contamination: the implicit LastUsed layer + extras inheritance apply
-  // only when the stored launch resolved to the *same* backend, so llama.cpp
-  // extras (`--rope-freq-base …`) can't poison a spawn of the same model on
-  // another backend (and vice versa). Explicit config (presets, inline extras) is
-  // untouched. A legacy row with no tag reads as `llamacpp`.
+  // Cross-backend contamination: the implicit LastUsed layer + extras
+  // inheritance apply only when the stored launch resolved to the *same*
+  // backend, so one backend's extras can't poison a spawn of the same model
+  // on another backend (and vice versa). Explicit config (presets, inline
+  // extras) is untouched.
   let last_params_backend_ok = last_params_entry
     .as_ref()
     .map(|(_, tag)| tag == &resolved_backend_id)
@@ -810,10 +780,9 @@ pub(crate) async fn compose_and_spawn(
   // are always honored verbatim. Otherwise a no-selection launch inherits the
   // effective default's extras (the default preset's when `default:` names one
   // with extras, else last_params'); everything else (pure fit, or an
-  // explicit preset that carried no extras) gets none. This supersedes the
-  // PR #49 origin gate — inheritance is driven by "did the caller make a
-  // selection", not Manual-vs-AutoStart, and `auto` is the clean "no inherit"
-  // gesture.
+  // explicit preset that carried no extras) gets none. Inheritance is driven
+  // by "did the caller make a selection", and `auto` is the clean "no
+  // inherit" gesture.
   launch_params.extras = if !parsed.extras.is_empty() {
     parsed.extras.iter().cloned().map(OsString::from).collect()
   } else if no_selection {
@@ -828,9 +797,8 @@ pub(crate) async fn compose_and_spawn(
   // Native knobs (not layered by the typed-knob resolver): explicit inline
   // values win verbatim; else a no-selection relaunch inherits the last-used
   // native knobs — but only through the backend-matched `last_params` gate
-  // above (D-contamination), so a relaunch re-applies its backend's own knobs
-  // while a cross-backend run inherits nothing. Empty for
-  // whichever engine it resolved to.
+  // above, so a relaunch re-applies its backend's own knobs while a
+  // cross-backend run inherits nothing.
   // Seed the resolved backend's config-derived launch knobs into
   // `backend_knobs`, fresh each launch (config projection, not user intent) —
   // llama.cpp projects `jinja` / `strict_fit` / `fit_ctx_floor` here, so the
@@ -850,15 +818,10 @@ pub(crate) async fn compose_and_spawn(
       crate::discovery::scanner::find_mmproj(&parsed.model_path)
     }
   });
-  // MTP intent needs no typed pass here: `mtp` / `mtp-draft-n` are knobs, so
-  // the resolver chain below (User > PresetDefault > LastUsed > ArchDefault)
-  // inherits them exactly like every other knob, and the effective
-  // *directive* is resolved further down, once real capability is known.
-
   // Merge the caller's top-level `ctx` and `reasoning` into the
   // User-layer typed knobs so they participate in the resolver chain
   // alongside the other typed fields. The wire payload keeps the
-  // top-level fields for backward compat with scripted clients —
+  // top-level fields for compat with scripted clients —
   // they're projected onto the typed knob slots here, with explicit
   // `knobs.{ctx,reasoning}` overrides winning if the caller set both.
   let mut user_knobs = parsed.knobs.clone();
@@ -877,8 +840,6 @@ pub(crate) async fn compose_and_spawn(
     }
   }
 
-  // Last-used knobs from the snapshot taken above, so a returning user
-  // inherits the knobs they last shipped.
   let last_params_knobs = last_params
     .as_ref()
     .map(|p| p.knobs.clone())
@@ -933,9 +894,7 @@ pub(crate) async fn compose_and_spawn(
   // `StartedLaunch` (CLI human output / TUI toast).
   let mut warnings: Vec<String> = Vec::new();
   // A knob some layer supplied that this backend cannot honour is dropped and
-  // surfaced rather than silently emitted (R6). The whole-map contamination
-  // gate the old shape needed is gone: the resolver carries values across a
-  // backend switch by concept instead of throwing the lot away.
+  // surfaced rather than silently emitted.
   //
   // The warning is against the **user** layer, not the resolved set: the
   // resolved set carries the resolver's own answers (a model-default
@@ -976,10 +935,9 @@ pub(crate) async fn compose_and_spawn(
   // computed before `resolved.knobs` moves out below.
   let layer_sources = resolved.real_sources(knob_scope);
   launch_params.knobs = resolved.knobs;
-  // Close the `knobs.u32(crate::launch::knobs::kid("ctx-size"))` bypass of `MAX_CTX_TOKENS` (the early check
-  // only saw the top-level `parsed.ctx`): validate the *resolved* ctx,
-  // which folds in both `parsed.ctx` and a typed `knobs.u32(crate::launch::knobs::kid("ctx-size"))` set via the
-  // editor or last-params.
+  // The early check only saw the top-level `parsed.ctx`. Validate the
+  // *resolved* ctx, which also folds in a typed `ctx-size` knob set via
+  // the editor or last-params.
   if let Some(c) = launch_params.ctx {
     if c > MAX_CTX_TOKENS {
       return Err(ErrorObject::new(
@@ -1012,7 +970,6 @@ pub(crate) async fn compose_and_spawn(
     ));
   }
 
-  // Per-launch log file under cache_dir/logs/<stem>-<short-id>-<L#>-<ts>.log.
   let launch_id = ctx.supervisors.next_id();
   let log_path = build_log_path(&env.log_dir, &id, &launch_id);
 
@@ -1055,9 +1012,6 @@ pub(crate) async fn compose_and_spawn(
   }
   drop(servers_snapshot);
 
-  // `inference_backend` was resolved up front (before the last_params gate).
-  // The orchestrator owns the branch on plan shape below.
-
   // Backend-specific extras denylist, checked once the backend is known, on
   // top of the base loopback/auth heads already refused above. Release the port before returning so a retry can reuse it.
   let extra_heads = crate::backend::Backend::forbidden_extra_heads(&inference_backend);
@@ -1077,12 +1031,12 @@ pub(crate) async fn compose_and_spawn(
     }
   }
 
-  // Resolve the effective MTP directive (KD1 hard gate): fold the user's intent
+  // Resolve the effective MTP directive: fold the user's intent
   // with real capability — the embedded nextn head from the GGUF header, or a
   // separate `mtp-*.gguf` drafter on disk. A force-on non-capable model warns +
   // skips. Only in chat mode: MTP is a token-generation feature, so an
   // embedding / rerank launch never speculates. And the backend defers entirely
-  // when the user is already hand-driving speculation through extras (KD3) —
+  // when the user is already hand-driving speculation through extras —
   // asked, not matched here, so the resolution names no backend or flag.
   // Intent comes off the resolved knob map (one channel): an unset or `Auto`
   // mtp means "capability decides". The resolved *truth* lives on
@@ -1105,7 +1059,6 @@ pub(crate) async fn compose_and_spawn(
   // knobs from live host context (e.g. enabling disk streaming when residency
   // won't fit), mutating `backend_knobs` in place — the uniform knob
   // auto-behavior, not a special case. A user on/off is left untouched.
-  // Registry-driven, so this path names no backend or knob.
   let native_resolution = inference_backend
     .resolve_knobs(ctx, &mut launch_params, resident_weight_bytes)
     .await;
@@ -1158,9 +1111,7 @@ pub(crate) async fn compose_and_spawn(
 /// the supervised spawn, the persisted running snapshot, and the background
 /// last-params + admission-settle recorders. This is the backend-agnostic body
 /// of a backend's [`crate::backend::Backend::start`] (the default). `spec` is
-/// the argv the
-/// backend composed. Consumes `exec` (destructured back into the original local
-/// names, so this body is a verbatim lift of the old inline spawn path).
+/// the argv the backend composed. Consumes `exec`.
 pub(crate) async fn spawn_supervised(
   ctx: &MethodContext,
   exec: LaunchExec,
@@ -1440,7 +1391,6 @@ pub(crate) async fn spawn_supervised(
     ctx.shutdown.clone(),
   );
 
-  // Settle the admission reservation when the child leaves Loading.
   if admitted {
     spawn_admission_settle(
       ctx.admission.clone(),
@@ -1493,12 +1443,7 @@ pub(crate) async fn stop_supervised(
 /// Drop the persisted running snapshots for launches that have just stopped.
 ///
 /// Keyed on the **launch id** — unique per launch, and the same key whatever
-/// shape the model's identity is. This used to compare a `ModelIdentity` built
-/// from the supervisor's `ModelId`, which is always the `Gguf` variant, so a
-/// row persisted under a `Backend` identity never matched and its snapshot
-/// outlived the process. `status` then matched that orphan by port and reported
-/// its backend and its resolved ctx for whatever launched next on the reused
-/// port — every later launch in the session, of any backend.
+/// shape the model's identity is.
 ///
 /// The `port` fallback covers a row adopted before launch ids were stamped.
 /// Keyed per launch, so a second launch of the same model on another port keeps
@@ -1568,9 +1513,6 @@ fn knobs_for_persist(
   auto_set: &std::collections::BTreeSet<String>,
   volatile: &[&str],
 ) -> crate::launch::knobs::KnobSet {
-  // Generic — both key sets come from the backend. A value llamastash
-  // resolved on the user's behalf must not come back as if they had asked
-  // for it, so it is stripped before the launch is remembered.
   let mut out = resolved;
   out.retain_ids(|id| !auto_set.contains(id.as_str()) && !volatile.contains(&id.as_str()));
   out
@@ -1765,7 +1707,7 @@ async fn collect_in_use_ports(ctx: &MethodContext) -> Vec<u16> {
     .into_iter()
     .map(|(_, m)| m.port())
     .collect();
-  // Also avoid colliding with `llama-server` processes that this
+  // Also avoid colliding with processes that this
   // daemon didn't spawn directly but were launched by *some*
   // llamastash instance — typically a previous run of this daemon
   // or a sibling UAT/test daemon whose state.json the orphan sweep
@@ -1823,8 +1765,7 @@ fn extras_manage_mmproj(extras: &[OsString]) -> bool {
 /// per-tensor reads take `use_mmap || lazy.has(cur)`, and lazy tensors are
 /// excluded from `mlock`. So `--no-mmap` / `--load-mode none` / `--direct-io`
 /// leave streaming on, and treating them as disabling it refused launches that
-/// fit. (Engines before `257813839` did require mmap here, but the lazy path
-/// did not work on those builds anyway.)
+/// fit.
 fn extras_lazy_mode(extras: &[OsString]) -> Option<String> {
   let is_head = |h: &str| h == "--lazy-mode" || h == "-lzm";
   let mut found = None;
@@ -1856,11 +1797,9 @@ fn extras_lazy_mode(extras: &[OsString]) -> Option<String> {
 /// bare path for direct launches that bypass scan, and finally measures the
 /// directory. `stat` on a directory reports its inode size, not its contents,
 /// so a directory-shaped model launched by absolute path from outside the scan
-/// roots measured 0 — and 0 is the figure that disarms the memory guards. The
-/// admission gate used to patch that up privately, which left the backend's
-/// cache cap still working from 0: one launch, two different weights. `0` when
-/// nothing can size it at all; the probe scaler treats that as "no signal, keep
-/// the default".
+/// roots measured 0 — and 0 is the figure that disarms the memory guards. `0`
+/// when nothing can size it at all; the probe scaler treats that as "no
+/// signal, keep the default".
 ///
 /// The streamed subtraction comes from the catalog row's
 /// [`ModelMetadata::lazy_tensor_bytes`](crate::gguf::metadata::ModelMetadata),
@@ -1927,9 +1866,8 @@ pub(crate) async fn launch_resident_bytes(
 }
 
 /// Live GPU-backend flavor — keys the built-in defaults table.
-/// Reads the host-metrics sampler when available; falls back to
-/// `Unsampled` (treated identically to `Unknown` by the table) when
-/// the daemon has no sampler attached (catalog-only tests).
+/// Falls back to `Unsampled` (treated identically to `Unknown` by the
+/// table) when the daemon has no sampler attached (catalog-only tests).
 async fn current_backend_flavor(ctx: &MethodContext) -> crate::daemon::host_metrics::GpuFlavor {
   if let Some(slot) = &ctx.host_metrics {
     let snap = slot.read().await;
@@ -2095,9 +2033,8 @@ mod tests {
   }
 
   /// A volatile id has to be one `retain_ids` will actually see, which is the
-  /// knob's registry id. The guard used to read a hand-kept list that still
-  /// carried pre-registry spellings, so it matched nothing and silently stopped
-  /// guarding — one `--preset` run then disabled an automatic memory cap for
+  /// knob's registry id. A mismatch matches nothing and silently stops
+  /// guarding: one `--preset` run then disabled an automatic memory cap for
   /// every launch after it.
   #[test]
   fn volatile_ids_are_registry_ids_that_persistence_can_match() {
@@ -2485,8 +2422,7 @@ mod tests {
 
   /// The warning is the whole user-facing contract of `--force`: it is the
   /// only signal that a launch went through a refusal, and nothing asserted
-  /// it reached the caller. Needs a binary that actually spawns, so the
-  /// launch gets far enough to return its advisories.
+  /// it reached the caller.
   #[cfg(unix)]
   #[tokio::test]
   async fn force_surfaces_the_projection_as_a_warning() {
@@ -2811,7 +2747,7 @@ mod tests {
       .build()
   }
 
-  /// D3: a second launch of the *same* model with the *same* name is refused
+  /// A second launch of the *same* model with the *same* name is refused
   /// so `<model-id>@<name>` stays a stable address. The gate fires before the
   /// launch-env lookup, so a bare context (no launch env) is enough.
   #[tokio::test]
@@ -2926,7 +2862,7 @@ mod tests {
     }
   }
 
-  /// RV6: an errored launch keeps its row until it is stopped but is not an
+  /// An errored launch keeps its row until it is stopped but is not an
   /// addressable target, so it must not hold the name. Otherwise a failed load
   /// locks the name permanently and the only escape is stopping by launch id.
   #[test]
@@ -2950,7 +2886,7 @@ mod tests {
     );
   }
 
-  /// D3 (the other half): the *same* name on a *different* model is not a
+  /// The *same* name on a *different* model is not a
   /// duplicate — the gate must not fire, so the call proceeds past it (and
   /// only then fails on the missing launch env, a different error).
   #[tokio::test]

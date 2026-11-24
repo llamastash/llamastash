@@ -3,26 +3,17 @@
 //! Authoritative opinion on launch flags for every (arch, backend)
 //! the recommender can pick. Lives in code so a fresh install on
 //! any supported backend gets sensible defaults without ever touching
-//! YAML; the wizard no longer seeds `arch_defaults`. The YAML escape
-//! hatch stays for hand-edited overrides.
-//!
-//! Maintenance note (lifted into `AGENTS.md`): when
-//! `data/benchmark-snapshot.json` adds a new recommender pick, audit
-//! the table coverage. Anything not explicitly listed falls through
-//! to the `*` row.
+//! YAML. The YAML escape hatch stays for hand-edited overrides.
 
 use crate::daemon::host_metrics::GpuFlavor;
 use crate::launch::knobs::KnobSet;
 
-/// Look up the built-in defaults row for `(arch, backend)`. The
-/// architecture string is lower-cased; unknown architectures fall
-/// back to the `*` row. The result already has `None` for fields the
-/// row doesn't opinionate — the layered resolver fills the rest from
-/// upstream layers (YAML, last_used, preset) or leaves them
-/// unset (llama-server default).
+/// Look up the built-in defaults row for `(arch, backend)`. The result
+/// already has `None` for fields the row doesn't opinionate — the
+/// layered resolver fills the rest from upstream layers (YAML,
+/// last_used, preset) or leaves them unset (the engine default).
 ///
-/// `backend` carries the typed `GpuFlavor` view of
-/// `HostMetricsSnapshot::gpu_backend`. `Unsampled` is treated
+/// `Unsampled` is treated
 /// identically to `Unknown` — the brief window after daemon start
 /// before the first sampler tick gets the conservative path, not the
 /// GPU path.
@@ -34,7 +25,7 @@ pub fn lookup(arch: &str, backend: GpuFlavor) -> KnobSet {
 }
 
 fn lookup_wildcard(_backend: GpuFlavor) -> KnobSet {
-  // The `*` row no longer pins `n_gpu_layers` — offload placement is
+  // The `*` row pins no `n_gpu_layers` — offload placement is
   // delegated to `--fit` (Auto). A layer-less `n_gpu_layers` is seeded
   // `Auto` by the resolver, which emits no `-ngl` and lets fit decide.
   // flash_attn opt-in stays per-arch (see `lookup_explicit`).
@@ -44,8 +35,6 @@ fn lookup_wildcard(_backend: GpuFlavor) -> KnobSet {
 /// Architecture-specific row. `None` means "no explicit row — caller
 /// falls through to the wildcard".
 fn lookup_explicit(arch: &str, backend: GpuFlavor) -> Option<KnobSet> {
-  // Architectures we explicitly cover. Anything else falls through to
-  // the `*` row.
   if !COVERED_ARCHS.contains(&arch) {
     return None;
   }
@@ -53,8 +42,7 @@ fn lookup_explicit(arch: &str, backend: GpuFlavor) -> Option<KnobSet> {
   // flash-attn: only the flash-attn-eligible architectures on
   // nvidia / apple_metal. AMD/HIP coverage is uneven — leave to user
   // override. Vulkan/unknown can't enumerate VRAM safely; CPU
-  // obviously doesn't apply. `n_gpu_layers` is *not* pinned anymore —
-  // fit owns offload placement (Auto).
+  // obviously doesn't apply.
   if FLASH_ATTN_ELIGIBLE.contains(&arch)
     && matches!(backend, GpuFlavor::Nvidia | GpuFlavor::AppleMetal)
   {
@@ -64,7 +52,6 @@ fn lookup_explicit(arch: &str, backend: GpuFlavor) -> Option<KnobSet> {
 }
 
 /// Layer `over` onto `under`, taking each `Some` from `over` first.
-/// Shares the one layering primitive with [`KnobSet::overlay`].
 fn merge(over: Option<KnobSet>, under: KnobSet) -> KnobSet {
   let Some(over) = over else { return under };
   let mut out = under;
@@ -72,9 +59,6 @@ fn merge(over: Option<KnobSet>, under: KnobSet) -> KnobSet {
   out
 }
 
-/// Architectures the table explicitly covers. Cross-referenced
-/// against `data/benchmark-snapshot.json` so every recommender pick
-/// hits an explicit row or the `*` fallback.
 const COVERED_ARCHS: &[&str] = &[
   "llama",
   "llama2",
@@ -122,8 +106,7 @@ mod tests {
 
   #[test]
   fn ngl_is_never_pinned_on_any_backend() {
-    // Offload placement is delegated to `--fit` (Auto); the table no
-    // longer pins n_gpu_layers on any (arch, backend).
+    // Offload placement is delegated to `--fit` (Auto).
     for backend in [
       GpuFlavor::Nvidia,
       GpuFlavor::Amd,

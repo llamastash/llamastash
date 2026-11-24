@@ -1,27 +1,7 @@
-//! Neutral **server** + **device** model shared across every backend.
-//!
-//! Terminology (see the server-abstraction plan):
-//!
-//! - a **backend** is an inference *engine* (`llamacpp`, an optional engine);
-//! - a **server** is one *build/binary* of a backend (llama.cpp's ROCm build,
-//!   its Vulkan build, an NPU engine). A backend has 1..N servers;
-//! - a **device** is a GPU a server can target, identified by the exact
-//!   `--device` selector that server's own probe reports. The compute backend
-//!   (`ROCm` / `Vulkan` / `CUDA` / `Metal`) is a *property of the device*,
-//!   surfaced in the server name — not an inference backend.
-//!
-//! [`build_server_catalog`] walks [`crate::backend::Backends::all`], asks each
-//! backend for its [`ServerSpec`]s ([`Backend::configured_servers`]), probes
-//! each spec's devices ([`Backend::probe_devices`]), and derives a stable
-//! `id` / display `name` per server. **No dedup across servers** — every
-//! configured binary is its own selectable server (devices *within* a server
-//! still dedup by selector, which is the probe's job).
-//!
-//! A device is a *launch option*, not a card: a build compiled with two compute
-//! APIs reports the same GPU once per API (`ROCm0` and `Vulkan0` for one
-//! Radeon). Both selectors are real choices and both survive the probe, so
-//! anything asking "how many GPUs?" must go through
-//! [`physical_device_count`] rather than counting selectors.
+//! Neutral server + device model shared across every backend: `Device`,
+//! `Server`, `ServerSpec`, `ServerConfig`, the catalog builders, and physical
+//! GPU counting. Terminology and the id/label rules live in
+//! `docs/architecture.md` § Servers (per-backend builds).
 
 use std::path::{Path, PathBuf};
 
@@ -88,8 +68,8 @@ pub struct ServerSpec {
 /// A resolved server: one build/binary of a backend, with its probed devices.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Server {
-  /// Stable selection / persistence key (`llamacpp-rocm`, an engine's id).
-  /// display label — derived once by [`build_server_catalog`].
+  /// Stable selection / persistence key (`llamacpp-rocm`, an engine's id),
+  /// derived once by [`build_server_catalog`].
   pub id: String,
   /// The backend that owns this server.
   pub backend_id: String,
@@ -172,14 +152,12 @@ fn physical_key(name: &str) -> String {
   out.trim().to_string()
 }
 
-/// How many physical GPUs a device list represents.
-///
-/// Within one compute family every index is its own card (two identical
-/// `Vulkan0` / `Vulkan1` 3080s are two GPUs). Across families, equal adapter
-/// names are the same card seen twice — one card cannot appear twice under the
-/// same API, so each selector claims the first slot with a matching name that
-/// has no device from its family yet. `CUDA0,CUDA1,Vulkan0,Vulkan1` on two
-/// identical cards therefore pairs up into two slots, not one or four.
+/// How many physical GPUs a device list represents. Within one compute family
+/// every index is its own card (two identical `Vulkan0` / `Vulkan1` 3080s are
+/// two GPUs). Across families, equal adapter names are the same card seen
+/// twice — one card cannot appear twice under the same API, so each selector
+/// claims the first slot with a matching name that has no device from its
+/// family yet.
 ///
 /// Memory size is deliberately not part of the identity: the same card reports
 /// 126976 MiB under ROCm and 128505 MiB under Vulkan, so requiring a match
@@ -211,13 +189,11 @@ pub fn physical_device_count(devices: &[Device]) -> usize {
 
 /// A per-backend `servers: [{binary, name?}]` config entry.
 ///
-/// Replaces llama.cpp's `binary` + `additional_binaries` and the
-/// single `binary`. Entries are objects (not bare strings) so future per-server
-/// keys — env, extra flags — extend the schema without breaking it.
+/// Entries are objects (not bare strings) so future per-server keys — env,
+/// extra flags — extend the schema without breaking it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
 pub struct ServerConfig {
-  /// Path to this server's binary.
   pub binary: PathBuf,
   /// Optional display-name override (`<backend>-<name>`); auto-derived when
   /// unset.
@@ -298,14 +274,8 @@ fn binary_dir_tag(binary: &Path) -> String {
     .unwrap_or_else(|| "server".to_string())
 }
 
-/// Derive a stable `id` / `name` for one backend's servers. The suffix after
-/// `<backend>-` comes from, in order: an explicit `name:` → the unique
-/// `<gpu_backend>` a device probe reveals (`rocm` / `vulkan` / `cuda` /
-/// `metal`) → the `<binary-dir>` basename when that gpu tag collides (two ROCm
-/// builds). A **device-less** server (a CPU-only build — no
-/// detectable compute type) gets the **bare backend id**,
-/// disambiguated `-N` only when several collide; an explicit `name:` (`rocm`,
-/// `cuda`) is the way to label those (`<id>-npu`). Input pairs are
+/// Derive a stable `id` / `name` for one backend's servers, following the rules
+/// in `docs/architecture.md` § Servers (per-backend builds). Input pairs are
 /// `(spec, probed devices)`.
 fn derive_servers(backend_id: &str, probed: Vec<(ServerSpec, Vec<Device>)>) -> Vec<Server> {
   // Provisional gpu tag per device-bearing, name-less server — used only to
@@ -364,7 +334,6 @@ fn derive_servers(backend_id: &str, probed: Vec<(ServerSpec, Vec<Device>)>) -> V
       Some(b) => format!("{backend_id}-{b}"),
       None => backend_id.to_string(),
     };
-    // Final collision guard: append `-N` until unique within this backend.
     let mut n = 2;
     while used.contains(&candidate) {
       candidate = match &base {
@@ -393,8 +362,7 @@ fn derive_servers(backend_id: &str, probed: Vec<(ServerSpec, Vec<Device>)>) -> V
 /// accelerator would mislabel a GPU build whose `--list-devices` broke. One
 /// whose probe answered with no devices gets `deviceless`, or its build
 /// folder when another server already reads that way (two CPU builds), the
-/// way two unnamed builds of one arch do. A repeat after that gets `-2`,
-/// `-3` like the ids do, so two servers never read the same.
+/// way two unnamed builds of one arch do.
 fn finish_labels(
   servers: &mut [Server],
   probe_ok: &[bool],
@@ -471,12 +439,10 @@ pub fn build_server_catalog(ctx: &MethodContext) -> Vec<Server> {
 }
 
 /// Config-only server catalog for read-only diagnostics (`doctor`), which runs
-/// without a daemon [`MethodContext`]. Enumerates each backend's configured
-/// `servers:` from [`crate::config::Config`] via [`Backend::config_servers`],
-/// skips any whose
-/// binary doesn't resolve to a file, probes the rest for devices, and derives
-/// ids exactly like [`build_server_catalog`]. Names no backend — the registry
-/// loop is the whole wiring.
+/// without a daemon [`MethodContext`]. Entries whose binary does not resolve to
+/// a file are skipped. Probes the rest for devices and derives ids exactly
+/// like [`build_server_catalog`]. Names no backend — the registry loop is the
+/// whole wiring.
 pub fn config_server_catalog(config: &crate::config::Config) -> Vec<Server> {
   let mut out = Vec::new();
   for backend in Backends::all() {
@@ -527,8 +493,7 @@ pub fn missing_configured_servers(config: &crate::config::Config) -> Vec<(String
   out
 }
 
-/// Debug-only multi-GPU simulator for the **launch device catalog**, compiled
-/// out of release builds (`#[cfg(debug_assertions)]`). When
+/// Debug-only multi-GPU simulator for the **launch device catalog**. When
 /// `LLAMASTASH_DEBUG_FAKE_GPUS=N` (N >= 2) is set on the **daemon** process of a
 /// debug build, each device-bearing server's probe is fanned out into N
 /// synthetic devices (stepped selector + name) so the picker's multi-device row,
@@ -920,7 +885,6 @@ mod tests {
 
   #[test]
   fn colliding_gpu_backend_falls_back_to_dir_basename() {
-    // Two ROCm builds both report ROCm0 → gpu tag collides → dir basename.
     let servers = derive_servers(
       "llamacpp",
       vec![

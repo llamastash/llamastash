@@ -1,12 +1,10 @@
 //! Comment-preserving writer for the `presets:` block of `config.yaml`.
 //!
-//! Presets are keyed by name under `presets: <model>: entries: <name>`. This
-//! module serialises a preset body to a `yaml_serde::Value`, prunes its null
-//! fields, and delegates the actual comment-safe splice to
-//! [`crate::config::yaml_edit`]'s `upsert_block` — which writes the entry in
-//! readable block style (multi-line, unquoted keys) and shares its mutation
-//! primitive with the init / cli config writer, so every other comment and bit
-//! of formatting (including a hand-authored arch preset) survives byte-for-byte.
+//! Presets are keyed by name under `presets: <model>: entries: <name>`. The
+//! comment-safe splice is delegated to [`crate::config::yaml_edit`]'s
+//! `upsert_block`, which shares its mutation primitive with the init / cli
+//! config writer, so every other comment and bit of formatting (including a
+//! hand-authored arch preset) survives byte-for-byte.
 
 use std::path::Path;
 
@@ -315,8 +313,8 @@ presets:
 
   #[test]
   fn delete_json_flow_entry_written_by_upsert() {
-    // A round-trip: upsert (writes compact JSON flow) then delete must
-    // find and remove that entry via the yamlpatch Remove path.
+    // A round-trip: delete must find and remove the block-style entry that
+    // upsert wrote, via the yamlpatch Remove path.
     let dir = temp_dir("delete-json");
     let path = dir.join("config.yaml");
     upsert_preset(&path, "m", "a", &body(&[("ctx", 1.into())])).unwrap();

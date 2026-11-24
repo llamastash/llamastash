@@ -21,9 +21,7 @@
 //!   sharing a PGID with the foreign pid.
 //!
 //! The trait is dyn-safe so the daemon can pass a single
-//! `Arc<dyn ProcessControl>` to every supervisor instance. Tests can
-//! still swap in a mock control by accepting a generic
-//! `impl ProcessControl` where dynamic dispatch isn't needed.
+//! `Arc<dyn ProcessControl>` to every supervisor instance.
 
 use std::sync::Arc;
 
@@ -52,14 +50,11 @@ impl SignalTarget {
   }
 }
 
-/// Handle wrapping a process the daemon spawned. Carries the
+/// Handle wrapping a process the daemon spawned, carrying the
 /// `tokio::process::Child` plus any platform-specific state the
-/// signaling path needs.
-///
-/// A future Windows backend will widen this struct with a
-/// `cfg(windows)` JobObject handle; today on Unix the struct is a
-/// transparent wrapper over `Child`. The indirection exists so adding
-/// Windows state doesn't churn every supervisor call site.
+/// signaling path needs. Today on Unix the struct is a transparent
+/// wrapper over `Child`. The indirection exists so a future Windows
+/// Job Object handle doesn't churn every supervisor call site.
 pub struct SpawnedChild {
   /// The child process. The supervisor takes `.child` by value to
   /// install it under its own `Mutex<Option<Child>>` — there's no
@@ -68,8 +63,7 @@ pub struct SpawnedChild {
 }
 
 impl SpawnedChild {
-  /// Pid of the child, if it hasn't been reaped. Convenience over
-  /// `self.child.id()`.
+  /// Pid of the child, if it hasn't been reaped.
   pub fn pid(&self) -> Option<u32> {
     self.child.id()
   }
@@ -97,10 +91,8 @@ pub trait ProcessControl: Send + Sync + 'static {
 
   /// Send the graceful-shutdown signal to `target`. On Unix this is
   /// `SIGTERM` (delivered to the PGID for `ProcessGroup`). On Windows
-  /// this delegates to [`Self::signal_kill`] because
-  /// `GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, …)` cannot reach a
-  /// `CREATE_NO_WINDOW` child (different consoles) and llama-server
-  /// has nothing to flush — see the Windows impl for full rationale.
+  /// this delegates to [`Self::signal_kill`]. See the Windows impl for
+  /// why a console control event cannot reach the child.
   ///
   /// Best-effort: silently swallows `ESRCH` (process already gone).
   fn signal_graceful(&self, target: SignalTarget);
@@ -404,15 +396,12 @@ impl ProcessControl for WindowsProcessControl {
     // to do "graceful then kill" just burns the full grace window
     // before the inevitable `TerminateJobObject`.
     //
-    // For our actual supervised workload (`llama-server.exe`, an
+    // Our supervised workload (`llama-server.exe`, an
     // OpenAI-compat HTTP inference server with no persistent state to
-    // flush) and the test-fixture `fake_llama_server.exe`, an immediate
-    // job termination is identical in effect to a graceful shutdown
-    // that the child would ignore anyway. So on Windows, "graceful"
-    // is just "kill" — instant, deterministic, no wasted grace.
-    //
-    // Unix keeps the SIGTERM → wait → SIGKILL sequence because there
-    // the SIGTERM actually reaches the child via the process group.
+    // flush) and the test-fixture `fake_llama_server.exe` have nothing
+    // to flush, so an immediate job termination is identical in effect
+    // to a graceful shutdown the child would ignore anyway. On Windows,
+    // "graceful" is just "kill".
     self.signal_kill(target);
   }
 
@@ -655,12 +644,9 @@ mod tests_windows {
 
   #[test]
   fn is_alive_returns_false_for_zero() {
-    // pid 0 is uniformly special-cased to "dead" across both backends
-    // for a consistent contract — `OpenProcess(_, _, 0)` returns NULL
-    // on Windows so the syscall would already say dead, but the
-    // explicit early-return keeps the surface identical to the Unix
-    // backend (where `kill(0, …)` would otherwise signal the caller's
-    // PGID).
+    // pid 0 is special-cased to "dead" on both backends for a
+    // consistent contract. On Unix `kill(0, …)` would otherwise signal
+    // the caller's PGID.
     let ctl = WindowsProcessControl::new();
     assert!(!ctl.is_alive(0), "pid 0 must report dead");
   }

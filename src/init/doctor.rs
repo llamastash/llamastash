@@ -10,11 +10,9 @@
 //! carries (its `fix` id) and `--dry-run` previews that list. Neither
 //! stops a daemon nor deletes a model.
 //!
-//! Output is always safe to paste into a public issue — see the
-//! Security Contract addendum's redaction rule in the v2 plan.
-//! `safe_to_log` is unconditionally `true` for v2 findings; a future
-//! finding that legitimately needs differentiated redaction lands
-//! the per-finding flag *then*, not preemptively.
+//! Output is always safe to paste into a public issue. `safe_to_log` is
+//! unconditionally `true`. A future finding that legitimately needs
+//! differentiated redaction lands the per-finding flag then, not preemptively.
 
 use std::path::{Path, PathBuf};
 
@@ -46,14 +44,9 @@ const GTT_HINT_RATIO_HI: f64 = 0.60;
 /// changes; current readers refuse a snapshot whose `schema_version`
 /// exceeds their max.
 ///
-/// v2: added the `hardware` section and the `memory_drift` / `gtt_hint`
-/// finding ids (R12-R14).
-///
 /// Finding and fix ids stay additive within a version — a reader that does not
-/// know an id still parses the report — so later additions did not bump it:
-/// `tool_config_stale_url` and its `tool_config_proxy_url` repair landed under
-/// v2, as did the backend-contributed advisories before them. Only a shape
-/// change (new section, renamed or retyped field) earns a bump.
+/// know an id still parses the report. Only a shape change (new section,
+/// renamed or retyped field) earns a bump.
 pub const DOCTOR_JSON_SCHEMA_VERSION: u32 = 2;
 
 /// `SnapshotStale` finding fires when the bundled snapshot is older
@@ -279,8 +272,8 @@ pub struct Baseline {
 }
 
 /// Live hardware section of the doctor report. Built from the
-/// same [`HardwareSnapshot`] the init banner renders, with the R15
-/// label conventions (`MEM`/`MEM*`, `VRAM (shared)`) from day one.
+/// same [`HardwareSnapshot`] the init banner renders, with the
+/// label conventions (`MEM`/`MEM*`, `VRAM (shared)`).
 #[derive(Debug, Clone, Serialize)]
 pub struct HardwareSection {
   pub cpu_brand: String,
@@ -534,7 +527,7 @@ fn check_hardware_drift(snapshot: &InitSnapshot, hardware: &HardwareSnapshot) ->
   ))
 }
 
-/// R13 memory-drift finding. Compares the freshly-detected GPU pool
+/// Memory-drift finding. Compares the freshly-detected GPU pool
 /// ceiling against the recorded baseline. `None` when there is no
 /// baseline yet (the stamp happens in [`run`]), when the host is
 /// CPU-only, or when the change is within the noise threshold. Growth
@@ -564,7 +557,7 @@ fn check_memory_drift(snapshot: &InitSnapshot, hardware: &HardwareSnapshot) -> O
   ))
 }
 
-/// R14 GTT-cap hint. Fires on Linux unified hosts whose GTT pool is
+/// GTT-cap hint. Fires on Linux unified hosts whose GTT pool is
 /// sized at the amdgpu kernel default (~half of system RAM), signalling
 /// the user has headroom to raise the ceiling. Never suggests
 /// `amd_iommu=off` (it breaks Thunderbolt docks).
@@ -1220,7 +1213,7 @@ fn is_readable(path: &Path) -> bool {
   std::fs::File::open(path).is_ok()
 }
 
-/// Render the live hardware section with the R15 label
+/// Render the live hardware section with the label
 /// conventions. `MEM`/`MEM*` mark discrete vs unified memory; the
 /// `VRAM (shared)` row is the UMA pool's system-RAM portion — a
 /// breakdown of `MEM*`, not a separate pool.
@@ -1304,7 +1297,7 @@ pub async fn run(args: DoctorArgs, _cli: &Cli, config: &Config) -> CliResult {
   let report_snapshot = freshen_snapshot_date(snapshot.clone()).await;
   let mut report = build_report(report_snapshot.as_ref(), &hardware);
 
-  // R13 baseline stamp/refresh — doctor's single documented write,
+  // Baseline stamp/refresh — doctor's single documented write,
   // amending the otherwise read-only contract. Persist the current GPU
   // pool ceiling when a snapshot exists and either has no baseline yet
   // (stamp silently, no finding) or the pool drifted (re-stamp so the
@@ -1330,7 +1323,7 @@ pub async fn run(args: DoctorArgs, _cli: &Cli, config: &Config) -> CliResult {
     }
   }
 
-  // Backend-contributed advisories (D-doctor): each backend adds its own
+  // Backend-contributed advisories: each backend adds its own
   // findings via the `doctor_findings` hook ("compatible model present but
   // engine unavailable", say). Collected generically over the registry so this
   // path names no backend; every id stays additive (schema stays 2).

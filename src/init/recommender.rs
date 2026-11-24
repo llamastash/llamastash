@@ -1,18 +1,13 @@
 //! The starter-model recommender.
 //!
-//! Path-A dynamic ranker: pure Rust, candidate universe is the bundled
-//! (or remote-overridden) benchmark snapshot **intersected with the
-//! on-disk catalog**. Recommendations come ranked by a composite score
-//! with a one-line justification each; an `Escape("paste HF repo id")`
-//! row is always appended last per the brainstorm.
+//! Ranks the benchmark snapshot intersected with the on-disk catalog by
+//! a composite score, then appends the escape row last.
 //!
 //! The VRAM-fit hard filter is a coarse, intentionally-conservative
 //! estimator: we don't have the GGUF header for un-downloaded models,
 //! so we approximate peak memory from `weights_bytes` (recorded in the
 //! snapshot) plus a KV-cache band that scales with `ctx`. The 0.90
 //! safety margin and per-backend overhead band cover the gap.
-//! Re-tighten with real measurements post-launch via the snapshot regen
-//! flow.
 
 use serde::Serialize;
 
@@ -39,22 +34,17 @@ const KV_BYTES_PER_BPARAM_PER_KCTX: f64 = 3_500_000.0;
 /// state because it sees every expert's tokens regardless of routing.
 const MOE_ATTENTION_PARAM_MULTIPLIER: f64 = 4.0;
 
-/// CPU RAM-fit fraction (R55 fallback rule). When VRAM isn't
+/// CPU RAM-fit fraction. When VRAM isn't
 /// available, recommend models whose `weights_bytes` fits under
 /// 50% of free RAM.
 const CPU_RAM_FRACTION: f64 = 0.50;
 
-/// Number of recommendations to surface. R59's original budget was
-/// 3–5; we lifted it to 10 once `--only models --json` started being
-/// used as a comparison surface against `whichllm --json` (whose
-/// default top-N is also 10). Ten leaves enough variety to span
-/// quant / param / MoE tiers without burying the curated picks, and
-/// the interactive picker scrolls cleanly past a 10-entry list.
+/// Number of recommendations to surface. Ten leaves enough variety to
+/// span quant / param / MoE tiers without burying the curated picks,
+/// and the interactive picker scrolls cleanly past a 10-entry list.
 pub const DEFAULT_TOP_N: usize = 10;
 
-/// Default context window the recommender evaluates against. Models
-/// that don't fit at 16k can ride the no-fit-fallback ladder (ctx
-/// halve → quant down → skip).
+/// Default context window the recommender evaluates against.
 pub const DEFAULT_CTX: u32 = 16384;
 
 /// The standing invitation appended as the last row of every list, so a user
@@ -63,7 +53,7 @@ pub const ESCAPE_NOTE: &str = "Paste an HF repo id to download something not on 
 
 /// What one recommendation asserts about this host, as fields a table can lay
 /// out. [`RecommendationFacts::prose`] renders the same numbers as the
-/// one-line sentence `init` prints (R58), so a table view and the wizard's
+/// one-line sentence `init` prints, so a table view and the wizard's
 /// prose read one set of values and cannot drift.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct RecommendationFacts {
@@ -87,7 +77,7 @@ pub struct RecommendationFacts {
 }
 
 impl RecommendationFacts {
-  /// The prose form of these facts: `init`'s one-line justification (R58).
+  /// The prose form of these facts: `init`'s one-line justification.
   /// The only place that sentence is assembled.
   pub fn prose(&self) -> String {
     let subject = match &self.disk_file {
@@ -133,20 +123,18 @@ impl Recommendation {
   }
 }
 
-// `large_enum_variant`: ModelEntry is ~272 bytes after the
-// schema additions; OnDisk is 56, Escape is 0. Boxing the Curated
-// payload would force every Recommendation consumer to dereference
-// for no measurable win — top-N is 5-6 entries so the per-list
-// overhead is ~1.4 KB. Accept the size asymmetry instead.
+// `large_enum_variant`: ModelEntry is ~272 bytes; OnDisk is 56, Escape
+// is 0. Boxing the Curated payload would force every Recommendation
+// consumer to dereference for no measurable win. Accept the size
+// asymmetry instead.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RecommendationKind {
   /// A snapshot model that fits the host's hardware.
   Curated { entry: ModelEntry },
-  /// An on-disk GGUF the user already has. Surfaced alongside snapshot
-  /// picks per R60. The wizard prefers these on tie so the user can
-  /// skip the download.
+  /// An on-disk GGUF the user already has. The wizard prefers these on
+  /// tie so the user can skip the download.
   OnDisk {
     path: std::path::PathBuf,
     architecture: Option<String>,
@@ -176,9 +164,8 @@ impl Default for RecommendOptions {
   }
 }
 
-/// On-disk model the wizard already discovered. Used as the `on_disk`
-/// argument so the recommender can rank existing files alongside
-/// snapshot picks.
+/// Used as the `on_disk` argument so the recommender can rank existing
+/// files alongside snapshot picks.
 #[derive(Debug, Clone)]
 pub struct OnDiskModel {
   pub path: std::path::PathBuf,
@@ -293,23 +280,20 @@ pub fn recommend(
 }
 
 /// Tiny additive boost so an on-disk model with a tied score sorts
-/// above its remote twin — `R60` calls this out: "the 'skip download'
-/// path should be natural".
+/// above its remote twin.
 const ON_DISK_TIE_BREAK: f32 = 0.01;
 
 /// Task-profile filter mirroring whichllm's `_matches_profile`. When
 /// the caller asks for a specific task (`code`, `math`, ...) only
 /// entries tagged for that task are admitted. When no task is set
 /// (default general-purpose listing) any entry whose model id
-/// includes specialization markers (`coder`, `math`, `vision`, etc.)
+/// includes specialization markers (`coder`, `math`, ...)
 /// is dropped — keeps a coder-tuned 30B from appearing alongside a
 /// general-purpose 30B of the same family in the default top-10.
 fn profile_admits(entry: &ModelEntry, options: &RecommendOptions) -> bool {
   if let Some(task) = options.task.as_deref() {
     return entry.task_hints.iter().any(|h| h == task);
   }
-  // No task specified → general profile. Drop specialization-tagged
-  // entries the same way whichllm does for `task_profile="general"`.
   let id_lower = entry.source_hf_id.to_ascii_lowercase();
   let name = id_lower
     .rsplit_once('/')
@@ -341,9 +325,9 @@ fn profile_admits(entry: &ModelEntry, options: &RecommendOptions) -> bool {
 /// Per-backend framework overhead (CUDA ≈ 512 MB, Vulkan ≈ 1 GB,
 /// etc.) is subtracted from VRAM at the ceiling step, not added here
 /// — see `effective_vram_ceiling`. The legacy `w × 1.20` activation
-/// multiplier this replaces over-counted by 5-10× for MoE rows (it
-/// treated the *entire* weights file as activation) and pushed
-/// genuinely-runnable 120B MoE models off the recommender's list.
+/// multiplier over-counted by 5-10× for MoE rows (it treated the
+/// *entire* weights file as activation) and pushed genuinely-runnable
+/// 120B MoE models off the recommender's list.
 pub fn estimate_peak_bytes(weights_bytes: u64, ctx: u32) -> u64 {
   estimate_peak_bytes_inner(
     weights_bytes,
@@ -393,9 +377,7 @@ fn estimate_peak_bytes_inner(
   (w + kv + activation).max(0.0) as u64
 }
 
-/// KV cache bytes. `KV_BYTES_PER_BPARAM_PER_KCTX × params_b × ctx_k`,
-/// with the MoE attention multiplier applied only for MoE rows. 3.5
-/// MB / B / K is calibrated against published llama.cpp memory
+/// 3.5 MB / B / K is calibrated against published llama.cpp memory
 /// reports for Qwen2.5-7B, Qwen3-32B, and Llama-3.1-70B.
 fn kv_cache_bytes(params: u64, is_moe: bool, ctx: u32) -> f64 {
   let mut params_b = (params as f64) / 1.0e9;
@@ -529,8 +511,8 @@ fn offload_quality_factor(entry: &ModelEntry, ratio: f64) -> f32 {
 ///   load but with little room for OS / driver volatility).
 /// - **Over** — peak exceeds the ceiling (refused as a launch).
 /// - **Unknown** — Vulkan-only fallback (`backend = "unknown"`) or
-///   the inputs are too sparse to compute (R113 — omit the indicator
-///   rather than render fake confidence).
+///   the inputs are too sparse to compute (omit the indicator rather
+///   than render fake confidence).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileFit {
   Fit,
@@ -553,7 +535,7 @@ const FIT_TIGHT_THRESHOLD: f64 = 0.85;
 /// **Note**: these are *not* the wire-format `host_metrics.gpu_backend`
 /// values (`"nvidia"` / `"amd"` / `"apple_metal"` / `"cpu_only"` /
 /// `"unknown"`). The TUI normalises wire labels to recommender keys
-/// via `App::recommender_backend_key` before passing them here; CLI
+/// via `recommender_backend_key` before passing them here; CLI
 /// callers should do the same.
 ///
 /// `overhead_band_bytes` is the per-backend overhead the caller pulled
@@ -619,7 +601,7 @@ impl FileFit {
   }
 
   /// Single-char glyph the file picker renders next to each row.
-  /// `Unknown` returns an em-dash `—` (R113 — the picker keeps the
+  /// `Unknown` returns an em-dash `—` (the picker keeps the
   /// fit column width stable across rows; a blank slot would shift
   /// the rest of the line when the sampler is still warming up).
   pub fn glyph(self) -> &'static str {
@@ -632,7 +614,6 @@ impl FileFit {
   }
 }
 
-/// Composite weighted score.
 pub fn composite_score(
   entry: &ModelEntry,
   snapshot: &BenchmarkSnapshot,
@@ -716,8 +697,7 @@ fn on_disk_score(
 }
 
 /// The pool a pick is sized against: the GPU's memory when there is one,
-/// else system RAM. Read by [`RecommendationFacts::prose`] and by anything
-/// that wants the number without rebuilding a sentence out of it.
+/// else system RAM.
 fn host_total_label(hw: &HardwareSnapshot) -> String {
   match hw.vram_bytes {
     Some(v) => format!("{} VRAM", format_gib(v)),
@@ -882,8 +862,8 @@ mod tests {
       gpu: GpuInfo::AppleMetal {
         total_memory_bytes: bytes,
       },
-      // Raw unified total — matches `aggregate_vram_bytes` after the
-      // 0.75 OS/app headroom moved to `launch::headroom`.
+      // Raw unified total — matches `aggregate_vram_bytes` with the
+      // 0.75 OS/app headroom in `launch::headroom`.
       vram_bytes: Some(bytes),
       gpu_device_count: 1,
       ram_total_bytes: bytes,
@@ -1199,8 +1179,7 @@ mod tests {
   #[test]
   fn moe_estimator_qwen3_coder_30b_a3b_fits_consumer_vram_at_16k() {
     // Qwen3-Coder-30B-A3B Q4_K_M: 30B total, 3B active. Weights
-    // ~18 GB. Should fit a 24 GB Nvidia tier at 16k now that we
-    // no longer treat the whole weights file as activation overhead.
+    // ~18 GB. Should fit a 24 GB Nvidia tier at 16k.
     let entry = moe_entry(18_000_000_000, 30_000_000_000, 3_000_000_000);
 
     let peak_4k = estimate_peak_bytes_for_entry(&entry, 4096);
@@ -1218,10 +1197,10 @@ mod tests {
     // A snapshot row marked `is_moe: true` but missing `params_active`
     // is a regen-script bug — the estimator degrades to using
     // `entry.params` rather than panicking so recommendations still
-    // surface. With the new whichllm-aligned formula this means the
-    // KV + activation terms scale with total params instead of the
-    // (missing) active slice — overshooting peak somewhat, which is
-    // the right side of conservative for an unannotated MoE row.
+    // surface. The KV + activation terms then scale with total params
+    // instead of the (missing) active slice — overshooting peak
+    // somewhat, which is the right side of conservative for an
+    // unannotated MoE row.
     let mut entry = moe_entry(5_000_000_000, 10_000_000_000, 3_000_000_000);
     entry.params_active = None;
 
@@ -1243,9 +1222,7 @@ mod tests {
   fn dense_regression_qwen25_7b_at_4k_is_under_weights_plus_2gb() {
     // Pin the dense path: a 7B-class Q4_K_M file (~4.7 GB weights)
     // should peak under ~6.7 GB at 4k context (weights + small KV +
-    // activation). The old `× 1.20` formula produced ~5.6 GB +
-    // weights-fraction KV; the whichllm-aligned formula keeps total
-    // closer to the file size with a per-param activation slice.
+    // activation).
     let entry = dense_entry(4_683_960_320, 7_610_000_000);
     let peak = estimate_peak_bytes_for_entry(&entry, 4096);
     assert!(

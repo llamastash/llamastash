@@ -7,7 +7,7 @@
 //! the remaining roots by hand. A global `no_scan` flag (set by
 //! `--no-scan` or `LLAMASTASH_NO_SCAN=1`) skips everything except
 //! explicitly-passed `--model-path` roots, so agent invocations can
-//! pin their scan surface (origin: R4).
+//! pin their scan surface.
 //!
 //! Path resolution (env vars + platform defaults) lives in
 //! [`crate::util::model_caches`] so writes (`init::download`) and
@@ -40,7 +40,7 @@ pub struct RootResolution<'a> {
 /// Merge user-configured roots with default cache roots into the
 /// canonical ordered scan list. Duplicate paths are collapsed in
 /// insertion order so a `--model-path` that overlaps an HF cache is
-/// listed once (origin: R3 edge case).
+/// listed once.
 pub fn default_set(res: RootResolution<'_>) -> Vec<ScanRoot> {
   let mut out: Vec<ScanRoot> = Vec::new();
   let mut seen = std::collections::BTreeSet::new();
@@ -398,7 +398,7 @@ mod tests {
 
   #[test]
   fn lm_studio_settings_override_surfaces_as_lm_studio_root() {
-    // Plan: when a real LM Studio install advertises a non-default
+    // When a real LM Studio install advertises a non-default
     // `paths.models` in `~/.lmstudio/settings.json`, that directory
     // must show up among the LM Studio roots — not get silently
     // dropped in favour of the hard-coded `~/.lmstudio/models`.

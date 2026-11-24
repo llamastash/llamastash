@@ -53,14 +53,9 @@ pub enum GgufError {
   /// `Array(Array(...))` value-types nested past the configured cap.
   /// The parser short-circuits well before stack overflow rather than
   /// crashing the worker. Bounded because a malicious file inside the
-  /// 1 MiB header cap can still describe ~87 000 levels of nesting at
-  /// 12 bytes per level.
+  /// header cap can still describe very deep nesting at 12 bytes per level.
   #[error("gguf array nested {depth} levels, exceeds cap {cap}")]
   ArrayNestingTooDeep { depth: usize, cap: usize },
 }
 
-// Display + Error + From<io::Error> are derived above via `#[derive(Error)]`
-// + `#[from]` so the previous hand-rolled impls have moved into the derive.
-
-/// Convenience alias used across the `gguf` module.
 pub type GgufResult<T> = Result<T, GgufError>;

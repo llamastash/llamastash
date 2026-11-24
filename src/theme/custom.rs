@@ -1,24 +1,6 @@
-//! User-defined theme.
-//!
-//! Lets the user override the active palette via the YAML config. Only
-//! one custom theme exists at a time (selected via
-//! [`ThemeName::Custom`]); cycling with `t:theme` still walks the
-//! built-ins.
-//!
-//! Each slot is optional: missing fields fall through to a `base`
-//! palette (default macchiato), so a config can override just the
-//! colours that matter and inherit the rest. Bad colour values emit
-//! warnings during [`CustomThemeConfig::resolve`] and the slot keeps
-//! the base value rather than collapsing the whole palette to
-//! defaults.
-//!
-//! Accepted colour syntax (case-insensitive):
-//! - Named ANSI colours: `black`, `red`, `green`, `yellow`, `blue`,
-//!   `magenta`, `cyan`, `gray`/`grey`, `darkgray`, `lightred`,
-//!   `lightgreen`, `lightyellow`, `lightblue`, `lightmagenta`,
-//!   `lightcyan`, `white`.
-//! - `reset` / `default` — falls through to the terminal default.
-//! - 6-digit hex with leading `#`: `#1A1B26`, `#c0caf5`.
+//! User-defined theme, configured by the `custom_theme:` block in
+//! `config.yaml`. See `docs/usage.md` §Custom theme for the slot list,
+//! colour syntax, and inheritance rules.
 
 use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
@@ -55,10 +37,9 @@ pub struct CustomThemeConfig {
 }
 
 impl CustomThemeConfig {
-  /// Build a concrete [`Palette`] from this config. Accumulates
-  /// warnings for any colour value that failed to parse; the
-  /// returned palette substitutes the base value for those slots so
-  /// the UI still renders cleanly.
+  /// Accumulates warnings for any colour value that failed to parse;
+  /// the returned palette substitutes the base value for those slots
+  /// so the UI still renders cleanly.
   pub fn resolve(&self) -> (Palette, Vec<String>) {
     let mut warnings = Vec::new();
     let base_name = match self.base {
@@ -186,8 +167,8 @@ fn apply(raw: &Option<String>, key: &str, target: &mut Color, warnings: &mut Vec
   }
 }
 
-/// Parse a colour token. Accepts the same syntax as kdash so a user
-/// migrating between the two doesn't relearn the shape.
+/// Accepts the same syntax as kdash so a user migrating between the
+/// two doesn't relearn the shape.
 fn parse_color(value: &str) -> Result<Color, String> {
   let normalized = value.trim().to_lowercase();
   match normalized.as_str() {
@@ -238,7 +219,6 @@ mod tests {
     let base = palette_for(ThemeName::Macchiato);
     assert!(warnings.is_empty());
     assert_eq!(palette.name, ThemeName::Custom);
-    // Every slot inherits the base palette when the config is empty.
     assert_eq!(palette.bg, base.bg);
     assert_eq!(palette.accent, base.accent);
     assert_eq!(palette.panel_title, base.panel_title);
@@ -307,7 +287,6 @@ mod tests {
     assert_eq!(warnings.len(), 1);
     assert!(warnings[0].contains("accent"));
     assert!(warnings[0].contains("not-a-color"));
-    // Slot retains base macchiato accent.
     let base = palette_for(ThemeName::Macchiato);
     assert_eq!(palette.accent, base.accent);
   }

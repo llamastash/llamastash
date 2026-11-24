@@ -4,10 +4,9 @@
 //! "maintainer broke YAML during a refresh" failure mode before a
 //! daily-regen run picks up the change and fails opaquely.
 //!
-//! Unit 4 of docs/plans/2026-05-20-001-feat-live-hf-snapshot-discovery-plan.md.
-//! The plan called for a build.rs check; a `#[test]` parse is
-//! equivalent for the CI gate (cargo test runs in the same workflow)
-//! without adding build-deps for a file the binary doesn't bundle.
+//! A build.rs check was considered. A `#[test]` parse is equivalent for the
+//! CI gate (cargo test runs in the same workflow) without adding build-deps
+//! for a file the binary doesn't bundle.
 
 use std::collections::BTreeMap;
 
@@ -70,7 +69,6 @@ fn gguf_publisher_allowlist_yaml_parses() {
     !list.allowlist.is_empty(),
     "data/gguf-publisher-allowlist.yaml `allowlist` must list at least one trusted publisher"
   );
-  // Publishers are HF orgs — no slashes, no whitespace, non-empty.
   for org in &list.allowlist {
     assert!(!org.is_empty(), "empty publisher entry");
     assert!(

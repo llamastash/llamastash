@@ -1,6 +1,4 @@
-//! Daemon-level integration tests for the OpenAI-compat proxy
-//! listener landed in Unit 1
-//! (docs/plans/2026-05-21-001-feat-proxy-router-plan.md).
+//! Daemon-level integration tests for the OpenAI-compat proxy listener.
 //!
 //! Inline unit tests under `src/proxy/server.rs` cover the
 //! `/health` / 501 / keep-alive / port-in-use surface in isolation.
@@ -116,9 +114,7 @@ async fn daemon_starts_with_proxy_enabled_and_health_returns_ok() {
     "models_discovered shape"
   );
 
-  // Unit 3 wires `/v1/chat/completions` to the resolver; a body
-  // without `model` short-circuits at `RouteDecision::ModelRequired`.
-  // Pre-Unit-3 the same call returned 501 / `not_implemented`.
+  // A body without `model` short-circuits at `RouteDecision::ModelRequired`.
   let (s2, b2) = http_post(proxy_addr, "/v1/chat/completions", "{}").await;
   assert_eq!(s2, 400);
   let parsed2: serde_json::Value = serde_json::from_slice(&b2).expect("json2");

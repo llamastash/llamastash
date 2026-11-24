@@ -2,9 +2,7 @@
 //!
 //! Surfaces the daemon's `last_params_list` IPC method on the CLI so
 //! an agent can answer "what params did I last successfully start
-//! this model with?" without scraping the TUI. Closes the agent-
-//! native review finding that `last_params_list` was reachable from
-//! the TUI only.
+//! this model with?" without scraping the TUI.
 
 use serde_json::{json, Value};
 
@@ -235,8 +233,6 @@ mod tests {
 
   #[test]
   fn render_last_params_human_advanced_skips_ctx_reasoning_and_joins_with_commas() {
-    // ADVANCED column collapses every knob except `ctx` / `reasoning`
-    // (those have dedicated columns) into a comma-joined `k:v` list.
     // String values render bare (no JSON quoting); the column is sorted
     // by key for stable diffs.
     let _g = ColorGuard::set(false);

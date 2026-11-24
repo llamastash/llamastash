@@ -15,8 +15,6 @@
 //! JSON output paths must never wrap their bytes in these helpers —
 //! `--json` is a machine contract and stays byte-for-byte stable.
 //!
-//! Module is `pub(crate)`; nothing outside the binary consumes it.
-//!
 //! # Why this lives in one place
 //!
 //! The policy has to be initialised before any output happens, and a
@@ -73,13 +71,6 @@ pub(crate) fn dim(msg: &str) -> String {
   console::style(msg).dim().to_string()
 }
 
-// Bold / underline-bold helpers were removed once `cli::format` took
-// over header rendering for tables (`format::table` does its own bold
-// directly via `console::style`) and section titles
-// (`format::section_header`). If a future call site needs a one-off
-// bold span, prefer `console::style(s).bold().to_string()` inline; if
-// it shows up in two places, lift it back into this module.
-
 // ─────────────────────────────────────────────────────────────────────
 // Semantic value helpers
 //
@@ -89,8 +80,6 @@ pub(crate) fn dim(msg: &str) -> String {
 // teal, not green") land here without touching any call site.
 // ─────────────────────────────────────────────────────────────────────
 
-/// Color a model-launch / supervisor state cell.
-///
 /// Mapping mirrors the supervisor lifecycle (`Launching` → `Loading`
 /// → `Ready` → `Stopping` → `Stopped`, plus `Error`). Unknown states
 /// pass through plain so a new supervisor variant never crashes the
@@ -158,9 +147,7 @@ fn collapse_home(p: &str) -> String {
 }
 
 /// Dim "(N noun)" suffix used by the trailing footers on `list` /
-/// `presets list` / `favorites list` / `last-params` output. (Earlier
-/// drafts called this from `format::section_header`; `section_header`
-/// now builds its own dim suffix inline.)
+/// `presets list` / `favorites list` / `last-params` output.
 pub(crate) fn count(n: usize, noun: &str) -> String {
   console::style(format!("({n} {noun})")).dim().to_string()
 }
@@ -301,7 +288,7 @@ mod tests {
     assert_eq!(dim("note"), "note");
   }
 
-  /// T-03 (testing review): exercise the OR composition in `init()`,
+  /// Exercise the OR composition in `init()`,
   /// not just `no_color_env_disables` in isolation. With `NO_COLOR=1`
   /// set, `init(false)` must still disable colors.
   #[test]

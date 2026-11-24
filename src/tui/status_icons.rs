@@ -1,10 +1,10 @@
 //! Per-state status glyph + colour pair used in the model list and
 //! the right-pane header.
 //!
-//! Plan-mandated dual encoding: every state carries both a colour
-//! (from the active palette) AND a unique glyph, so colour-blind
-//! users (or terminals stripped of colour by the user's
-//! configuration) still distinguish states.
+//! Every state carries both a colour (from the active palette)
+//! AND a unique glyph, so colour-blind users (or terminals
+//! stripped of colour by the user's configuration) still
+//! distinguish states.
 
 use ratatui::style::Color;
 
@@ -33,8 +33,7 @@ impl SurfaceState {
   /// Map a daemon wire-form state label (`"ready"`, `"launching"`, …)
   /// onto a [`SurfaceState`]. Centralised so the TUI's row builder and
   /// the CLI's `list` STATUS column share one mapping. Unknown labels
-  /// fall back to [`SurfaceState::NotLaunched`] — same behaviour as
-  /// `app.rs`'s inline match did before this was lifted.
+  /// fall back to [`SurfaceState::NotLaunched`].
   pub fn from_wire_label(label: &str) -> Self {
     match label {
       "launching" => Self::Launching,

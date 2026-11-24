@@ -1,5 +1,4 @@
 //! Authoritative device discovery via `llama-server --list-devices`.
-//! Owned by the llama.cpp backend — this is the llama.cpp device probe.
 //!
 //! A single `llama-server` binary is compiled against exactly one GPU
 //! backend family (CUDA *or* HIP/ROCm, optionally plus Vulkan), so the
@@ -17,12 +16,6 @@
 //! verbatim — no index math, no backend guessing. The backend label
 //! (`Vulkan`, `CUDA`, `ROCm`, `Metal`) is the selector's alphabetic
 //! prefix, used only for display.
-//!
-//! [`probe_devices`] returns one binary's [`crate::backend::Device`] list; the
-//! neutral server catalog ([`crate::backend::build_server_catalog`]) carries the
-//! owning binary per [`crate::backend::Server`]. `CUDA0` and `Vulkan1` for the
-//! same physical card stay distinct — they are genuinely different launch
-//! options (different compute backend, different binary).
 
 use std::path::Path;
 use std::process::Command;
@@ -71,9 +64,6 @@ fn backend_of(selector: &str) -> String {
 /// `(`.
 fn split_memory(desc: &str) -> (String, Option<u64>, Option<u64>) {
   let trimmed = desc.trim();
-  // Find the last '(' that opens a group ending in ')' at the end of
-  // the string and parse it as memory. If parsing fails, treat the
-  // whole thing as the name.
   if trimmed.ends_with(')') {
     if let Some(open) = trimmed.rfind('(') {
       let inner = &trimmed[open + 1..trimmed.len() - 1];
@@ -219,8 +209,6 @@ mod tests {
     bin
   }
 
-  /// A non-zero exit is a failed probe even when stdout listed devices, so a
-  /// broken build is never reported as one that answered.
   #[cfg(unix)]
   #[test]
   fn a_non_zero_exit_is_a_failed_probe_even_with_devices_printed() {
@@ -326,7 +314,6 @@ random line: with a colon but not a selector
 
   #[test]
   fn name_with_trailing_non_memory_paren_is_preserved() {
-    // A trailing paren that isn't a memory group must not be eaten.
     let devs = parse_list_devices("  Vulkan0: Intel Arc (DG2)\n");
     assert_eq!(devs[0].name, "Intel Arc (DG2)");
     assert_eq!(devs[0].total_mib, None);

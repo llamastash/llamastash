@@ -19,8 +19,7 @@ pub async fn handle(args: ListArgs, cli: &Cli, config: &Config) -> CliResult {
   if let Some(pat) = &args.filter {
     rows = filter_rows(&rows, pat);
   }
-  // Augment with running-state info so STATUS / port land alongside
-  // the catalog row. Best-effort: a daemon that fails to answer
+  // Best-effort: a daemon that fails to answer
   // `status` is treated as "nothing running" rather than erroring out
   // the list itself.
   let (running, multi_dev) = match fetch_status(&mut client).await {

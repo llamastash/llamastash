@@ -1,32 +1,21 @@
 //! OpenAI-compatible response and error shapes used by the proxy.
 //!
-//! These types stay private to the proxy module. They mirror the
-//! documented OpenAI REST shapes for the surfaces llamastash speaks:
-//!
-//! - [`ModelList`] / [`ModelObject`] — the `/v1/models` listing
-//!   (`object: "list"` envelope, each row `object: "model"`).
-//! - [`ErrorResponse`] / [`ErrorObject`] — the OpenAI error envelope
-//!   the proxy uses for every non-2xx body so clients see a
-//!   recognisable payload.
-//!
-//! [`ErrorObject`] also carries `code` / `param` slots and a `matches`
-//! field for the `model_not_found` / `ambiguous_model` cases (clients
-//! use it to retry with a tighter reference).
+//! They mirror the documented OpenAI REST shapes for the surfaces
+//! llamastash speaks. Every non-2xx proxy body uses [`ErrorResponse`]
+//! so clients see a recognisable payload.
 
 use serde::{Deserialize, Serialize};
 
-/// One row of `/v1/models`. The four documented fields (`id`,
-/// `object`, `created`, `owned_by`) — agents pin against this shape — plus
-/// llamastash's `mode`.
+/// One row of `/v1/models`. Agents pin against this documented shape.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelObject {
   /// User-visible identifier the client passes in `body.model`. For
-  /// llamastash this is the `display_label` (e.g. Ollama's
-  /// `<name>:<tag>`) when present, otherwise `path.file_stem()`.
-  /// Matches the rule used by `crate::util::paths::model_display_name`
-  /// + the TUI display layer so the same name appears everywhere.
+  /// llamastash this is the `display_label` when present, otherwise
+  /// `path.file_stem()`. Matches the rule used by
+  /// `crate::util::paths::model_display_name` + the TUI display layer
+  /// so the same name appears everywhere.
   pub id: String,
-  /// Discriminator — always the literal `"model"` for this row type.
+  /// Always the literal `"model"` for this row type.
   pub object: &'static str,
   /// Seconds-since-Unix-epoch. v1 emits `0` for every row: the
   /// catalog doesn't currently surface a stable creation/discovery
@@ -36,8 +25,8 @@ pub struct ModelObject {
   /// value seen across other OpenAI-compat servers, so clients
   /// tolerate it.
   pub created: u64,
-  /// Owner label. Hard-coded to `"llamastash"` — there is no
-  /// per-model owner concept in v1.
+  /// Hard-coded to `"llamastash"` — there is no per-model owner
+  /// concept in v1.
   pub owned_by: &'static str,
   /// `chat`, `embedding` or `rerank`, so a client can list only the models
   /// that serve its endpoint. Absent when the model's header gave no signal.
@@ -46,15 +35,16 @@ pub struct ModelObject {
 }
 
 impl ModelObject {
-  /// Construct a `ModelObject` for a discovered model. `id` is the
-  /// caller's responsibility (derived from `display_label`
-  /// → `path.file_stem()`); this constructor just stamps the three
-  /// fixed fields so callers stay short.
+  /// Set `mode`; `None` keeps the field absent on the wire.
   pub fn with_mode(mut self, mode: Option<&str>) -> Self {
     self.mode = mode.map(str::to_string);
     self
   }
 
+  /// Construct a `ModelObject` for a discovered model. `id` is the
+  /// caller's responsibility (derived from `display_label`
+  /// → `path.file_stem()`); this constructor just stamps the three
+  /// fixed fields so callers stay short.
   pub fn new(id: String) -> Self {
     Self {
       id,
@@ -74,9 +64,8 @@ pub struct ModelList {
 }
 
 impl ModelList {
-  /// Wrap a vector of rows in the `{object:"list", data:[...]}`
-  /// envelope. Caller sorts `rows` before passing them in — the
-  /// envelope itself doesn't impose order.
+  /// Caller sorts `rows` before passing them in — the envelope itself
+  /// doesn't impose order.
   pub fn new(rows: Vec<ModelObject>) -> Self {
     Self {
       object: "list",
@@ -118,10 +107,9 @@ pub struct ErrorObject {
   #[serde(skip_serializing_if = "Option::is_none")]
   pub matches: Option<Vec<String>>,
   /// Currently-Ready model names reported alongside `launch_failed`
-  /// errors. R155 mandates "no running models" maps to a 503 with
-  /// `running: []`; the field is always present on the
-  /// `launch_failed` arm (even when empty) so clients can branch on
-  /// it without an `Option`-style absence check.
+  /// 503s. The field is always present on the `launch_failed` arm
+  /// (even when empty) so clients can branch on it without an
+  /// `Option`-style absence check.
   #[serde(skip_serializing_if = "Option::is_none")]
   pub running: Option<Vec<String>>,
 }
@@ -139,9 +127,8 @@ impl ErrorObject {
   }
 
   /// Builder helper: stamp the running-model list (presented to
-  /// clients on `launch_failed` 503s). Always wins on the wire,
-  /// even when empty — R155 requires the field be present so
-  /// clients can see "no running models" explicitly.
+  /// clients on `launch_failed` 503s). Always wins on the wire, even
+  /// when empty, so clients can see "no running models" explicitly.
   pub fn with_running<I, S>(mut self, names: I) -> Self
   where
     I: IntoIterator<Item = S>,
@@ -152,21 +139,18 @@ impl ErrorObject {
     self
   }
 
-  /// Builder helper: stamp `code` (e.g. `"model_required"`).
   pub fn with_code(mut self, code: impl Into<String>) -> Self {
     self.code = Some(code.into());
     self
   }
 
-  /// Builder helper: stamp `param` (e.g. `"model"`).
   pub fn with_param(mut self, param: impl Into<String>) -> Self {
     self.param = Some(param.into());
     self
   }
 
-  /// Builder helper: stamp the candidate-name list. Empty input
-  /// stays `None` so clients see the field omitted rather than a
-  /// `[]` they have to special-case.
+  /// Empty input stays `None` so clients see the field omitted rather
+  /// than a `[]` they have to special-case.
   pub fn with_matches<I, S>(mut self, matches: I) -> Self
   where
     I: IntoIterator<Item = S>,

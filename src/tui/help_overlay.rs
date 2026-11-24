@@ -1,13 +1,5 @@
 //! Modal `?` help overlay listing every keybinding grouped by
-//! category. Layout is fully derived from `DEFAULT_BINDINGS` —
-//! each binding row carries its own `categories` list, and the
-//! renderer walks every [`Category`] in order, collecting rows
-//! whose binding lands in that section.
-//!
-//! The overlay packs the keybinding sections across three balanced
-//! columns (one when narrow) and renders the static glyph/marker legend
-//! full width below them. The whole page is a single scroll surface,
-//! and the title carries an `↑↓:scroll` hint.
+//! category.
 //!
 //! Bindings come from `App::bindings_for` so config overrides flow
 //! through automatically.
@@ -84,7 +76,6 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   let max_scroll = content_height.saturating_sub(inner.height);
   let scroll_y = app.help_scroll.min(max_scroll);
 
-  // Keybinding columns fill the inner area, scrolled as one.
   let constraints: Vec<Constraint> = (0..n_cols)
     .map(|_| Constraint::Ratio(1, n_cols as u32))
     .collect();
@@ -172,8 +163,7 @@ fn build_sections(app: &App) -> Vec<Section> {
 
   for &category in Category::ALL {
     // Group bindings landing in this category by (action, effective
-    // description), preserving first-seen order. Same-action bindings
-    // with diverging descriptions land in separate rows.
+    // description), preserving first-seen order.
     let mut row_order: Vec<(Action, String)> = Vec::new();
     let mut by_row: BTreeMap<usize, Vec<&Binding>> = BTreeMap::new();
     for b in &flat {
@@ -214,13 +204,7 @@ fn build_sections(app: &App) -> Vec<Section> {
   sections
 }
 
-/// Static legend explaining glyphs used in panel labels: the `*`
-/// suffix on the Host panel's `MEM` row (unified memory — Apple Metal /
-/// AMD UMA APUs where the GPU draws from the same physical pool, so the
-/// `VRAM` row is the GPU's view of that same memory, not an additional
-/// pool), the `PP` shorthand the request tables and summaries use for
-/// prompt processing, and the `◉`/`♪` modality glyphs the right-pane
-/// title carries when a model has an auto-detected mmproj projector.
+/// Static legend explaining glyphs used in panel labels.
 fn legend_section() -> Section {
   let mut rows = vec![
     (
@@ -279,8 +263,8 @@ fn collect_flat(app: &App) -> Vec<&Binding> {
 }
 
 /// Greedy column-packing: distribute `sections` into `n` columns so
-/// the columns are roughly the same length (one line per row plus
-/// title + blank trailer). Picks the shortest column at each step.
+/// the columns are roughly the same length. Picks the shortest column
+/// at each step.
 fn balance_into_columns(sections: &[Section], n: usize) -> Vec<Vec<&Section>> {
   let mut columns: Vec<Vec<&Section>> = vec![Vec::new(); n];
   let mut lengths: Vec<usize> = vec![0; n];

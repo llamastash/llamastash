@@ -4,8 +4,6 @@
 //! single weight file, and exposes its own OpenAI-compatible HTTP server, so
 //! it rides the generic supervisor and the format-agnostic proxy forward with
 //! no lifecycle plumbing of its own.
-//!
-//! Plan: `docs/plans/2026-08-10-001-feat-vllm-backend-plan.md`.
 
 pub mod knobs;
 
@@ -25,7 +23,7 @@ use crate::launch::admission::{
 };
 use crate::launch::params::LaunchParams;
 
-/// Stable backend id. The only place this string is authored.
+/// The only place this string is authored.
 pub const VLLM_BACKEND_ID: &str = "vllm";
 
 /// vLLM config. **Default-on, gated by binary detection**, same tri-state as
@@ -161,7 +159,6 @@ pub fn resolve_vllm_binary(configured: Option<&Path>) -> Option<PathBuf> {
   super::resolve_launcher_by_existence(configured, VLLM_BIN)
 }
 
-/// The vLLM backend.
 #[derive(Debug, Clone)]
 pub struct VllmBackend {}
 
@@ -240,10 +237,8 @@ impl Backend for VllmBackend {
     // A safetensors snapshot has no GGUF header to hash, so the `Gguf`
     // identity does not apply. The repo id is the stable name: a re-pull
     // moves the snapshot revision directory but keeps the repo.
-    // Exactly the name the launcher will advertise. These derivations used to
-    // differ outside the cache layout, so the identity said `/models/x` while
-    // `--served-model-name` said `x`, and the chat path -- which sends the
-    // identity -- 404'd against a server that validates the field.
+    // Exactly the name the launcher will advertise. A server that validates
+    // the field 404s a chat request that sends a different spelling.
     ModelIdentity::Backend(BackendModelId {
       backend: VLLM_BACKEND_ID.to_string(),
       name: served_model_name(path),
@@ -431,23 +426,22 @@ impl Backend for VllmBackend {
   ) -> super::KnobResolution {
     let mut out = super::KnobResolution::default();
     // A user-set *fraction* is the whole decision: it governs the startup
-    // check and the pool both, so we insert nothing. It used to bail without
-    // leaving the admission gate a figure to project from either, so the one
-    // configuration that has frozen this hardware got neither guard;
-    // `projected_cache_bytes` turns it into a demand now.
+    // check and the pool both, so we insert nothing.
+    // `projected_cache_bytes` turns it into a demand for the admission gate.
     if user_set(params, "gpu_memory_utilization") {
       return out;
     }
     // An explicit byte cap keeps its own value, but it still needs a
     // companion utilization — see below.
     let user_cap = user_set(params, "kv_cache_memory_bytes");
-    // Fail **safe**, not open. This used to bail whenever the host sampler had
-    // no reading yet — which is exactly the state right after a daemon
-    // restart, and the launch then took vLLM's pool-sized default: observed at
-    // 112 GiB of a 124 GiB box, with the engine OOM-killed. An unknown host is
-    // treated as unified, because that is the assumption whose failure mode is
-    // survivable: the cost of capping a discrete GPU is a smaller cache the
-    // user can raise, while the cost of not capping a UMA host is the machine.
+    // Fail **safe**, not open. Do not bail when the host sampler has no
+    // reading yet. That is exactly the state right after a daemon restart,
+    // and a bail there leaves the launch on vLLM's pool-sized default: observed at
+    // 112 GiB of a 124 GiB box, with the engine OOM-killed. An unknown host
+    // is treated as unified, because that is the assumption whose failure
+    // mode is survivable: the cost of capping a discrete GPU is a smaller
+    // cache the user can raise, while the cost of not capping a UMA host is
+    // the machine.
     let snapshot = match ctx.host_metrics.as_ref() {
       Some(metrics) => Some(metrics.read().await.clone()),
       None => None,
@@ -559,7 +553,6 @@ fn set_startup_utilization(params: &mut LaunchParams, out: &mut super::KnobResol
   }
 }
 
-/// This backend's knob accessors, bound to its own vocabulary.
 fn knob_bytes(params: &LaunchParams, id: &str) -> Option<u64> {
   crate::launch::params::knob_bytes(params, VLLM_BACKEND_ID, id)
 }
@@ -691,7 +684,6 @@ pub fn readiness(served_name: &str) -> Readiness {
   }
 }
 
-/// Build the `vllm serve` argv.
 fn vllm_argv(params: &LaunchParams, port: u16) -> Vec<std::ffi::OsString> {
   let mut argv: Vec<std::ffi::OsString> = vec!["serve".into(), params.model_path.clone().into()];
   argv.push("--served-model-name".into());
@@ -777,7 +769,7 @@ mod tests {
     let _ = std::fs::remove_dir_all(&dir);
   }
 
-  /// Pins the D6 decision. vLLM's parser construction probes for a device, so
+  /// vLLM's parser construction probes for a device, so
   /// `vllm --version` fails outright on a GPU-less host; resolving must never
   /// execute the candidate. This binary would exit non-zero and print nothing
   /// if run — resolution still has to succeed on its existence alone.
@@ -1137,7 +1129,6 @@ mod tests {
       out.auto_set.contains("gpu-memory-utilization"),
       "auto-set, so it never persists into last_params"
     );
-    // Their cap is untouched.
     assert_eq!(
       knob_bytes(&p, "kv_cache_memory_bytes"),
       Some(8 * GIB),
@@ -1170,10 +1161,10 @@ mod tests {
     assert_eq!(knob_bytes(&p, "kv_cache_memory_bytes"), None);
   }
 
-  /// The two halves of #80 interact: the engine-aware reserve refuses the
-  /// host state that the pre-fix binding run launched on, so the utilization
-  /// branch sized against a too-tight host is unreachable in production. The
-  /// `startup_utilization` test covers that arithmetic as a pure function.
+  /// The engine-aware reserve refuses the host state that the measured binding
+  /// run launched on, so the utilization branch sized against a too-tight host
+  /// is unreachable in production. The `startup_utilization` test covers that
+  /// arithmetic as a pure function.
   #[test]
   fn a_host_the_reserve_refuses_never_reaches_the_utilization() {
     let spark_total: u64 = 130_657_042_432;
@@ -1182,7 +1173,7 @@ mod tests {
       crate::daemon::host_metrics::HostMetricsSnapshot::BACKEND_NVIDIA,
       VLLM_ENGINE_OVERHEAD_BYTES,
     );
-    // The measured pre-fix binding run: 32.4 GiB free, 20.1 GiB of weights.
+    // The measured binding run: 32.4 GiB free, 20.1 GiB of weights.
     assert_eq!(
       unified_kv_cache_budget(34_789_580_800, 21_583_783_921, reserve),
       None,
@@ -1191,9 +1182,7 @@ mod tests {
   }
 
   /// A user-set fraction is a real configuration, not a reason to
-  /// disengage the admission gate. It used to return early from knob
-  /// resolution *and* leave the gate with nothing to project, so the one
-  /// setting that has frozen this hardware got neither guard.
+  /// disengage the admission gate.
   #[test]
   fn a_user_fraction_still_yields_a_demand_projection() {
     const GB: u64 = 1024 * 1024 * 1024;

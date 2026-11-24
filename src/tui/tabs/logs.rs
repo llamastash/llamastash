@@ -122,7 +122,7 @@ fn lines_extend_tail<'a>(current: &[String], fresh: &'a [String]) -> Option<&'a 
   // `current` against fresh's contiguous window starting at the earliest
   // possible position that still leaves room for current entries to align.
   //
-  // Practically: try suffix lengths in 0..=fresh.len()-current.len(),
+  // Try suffix lengths in 0..=fresh.len()-current.len(),
   // smallest first. The smallest match is the "tightest fit" and gives
   // the smallest suffix to append. This is O(n) lines × O(m) compares
   // worst-case; on the steady-state path the suffix length is small

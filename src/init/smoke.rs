@@ -1,14 +1,6 @@
-//! Smoke launch + TUI handoff.
-//!
-//! Two layered checks:
-//! - **Pure-function dry-run**: estimate peak memory at the
-//!   chosen ctx (using `estimate_peak_bytes`) and compare
-//!   against the effective ceiling for the host. Surfaces a tight-fit
-//!   warning when peak is within 10% of the safety ceiling.
-//! - **`--version` probe**: spawn the installed binary with `env_clear()`
-//!   and a minimal env (PATH / HOME / USER / LANG) so `LLAMA_ARG_*`
-//!   and `HF_TOKEN` can't leak into the child. A non-zero exit fails
-//!   smoke with `INIT_SMOKE_FAILED = 74`.
+//! Smoke launch + TUI handoff: a phase-1 memory dry-run plus a `--version`
+//! probe. The probe spawns with `env_clear()` and a minimal env allow-list so
+//! `LLAMA_ARG_*` and `HF_TOKEN` can't leak into the child.
 //!
 //! A daemon-mediated `/health` + `/v1/chat/completions` probe
 //! is intentionally deferred: it requires daemon stop+restart
@@ -96,8 +88,8 @@ pub fn phase_one(
   Ok(Some(SmokeWarning::CpuOnly))
 }
 
-/// Run `llama-server --version` with `env_clear()` + a minimal allow-
-/// list. Returns the trimmed version string on success.
+/// Run the engine binary with `--version`, with `env_clear()` + a minimal
+/// allow-list. Returns the trimmed version string on success.
 ///
 /// Spawn-poll-drain mechanics are shared with the GPU probes and
 /// `brew install` via [`crate::util::process::run_with_drain_and_timeout`].
@@ -180,9 +172,7 @@ fn extract_version(output: &str) -> String {
 /// Matches the budget `install::brew` already uses for this probe.
 pub const DEFAULT_VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Compose phase-1 + `--version` probe into a single smoke pass.
-/// Returns a `SmokeReport` the wizard threads into its summary;
-/// failures map to `INIT_SMOKE_FAILED` at the CLI boundary.
+/// Failures map to `INIT_SMOKE_FAILED` at the CLI boundary.
 pub fn run_phase_one_and_version(
   binary: &Path,
   hardware: &HardwareSnapshot,
@@ -248,7 +238,6 @@ fn run_phase_one_and_version_with_timeout(
   })
 }
 
-/// Render the handoff line the wizard prints after a successful run.
 /// Interactive runs render this then ask "Launch TUI now? [Y/n]" (UX
 /// handled in the wizard's `print_handoff`); non-interactive runs just
 /// print it as the last line.
@@ -429,9 +418,8 @@ mod tests {
     // requires the reader-thread draining to be wired correctly.
     #[cfg(unix)]
     {
-      // Use `/bin/sh -c 'echo version b9999'` via a wrapper script
-      // path. We can't directly target /bin/sh because version_probe
-      // hard-codes the `--version` arg. Instead, write a tiny shell
+      // We can't directly target /bin/sh because version_probe
+      // hard-codes the `--version` arg. Write a tiny shell
       // script to a temp file and call that.
       use std::os::unix::fs::PermissionsExt;
       let nanos = std::time::SystemTime::now()
@@ -502,7 +490,7 @@ mod tests {
 
   #[test]
   fn version_probe_strips_hf_token_from_child_env() {
-    // R70 (env_clear allowlist) — HF_TOKEN must not appear in the
+    // HF_TOKEN must not appear in the
     // child's environment. Smoke test: spawn a script that echoes
     // its HF_TOKEN env var; assert the captured output shows the
     // var is unset.

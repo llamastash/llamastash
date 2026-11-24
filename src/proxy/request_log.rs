@@ -1,13 +1,12 @@
-//! In-memory log of the model requests the proxy handled.
+//! In-memory log of the model requests the proxy handled: one row per request
+//! on a forwarded `/v1/*` route, with token counts read from the end of the
+//! response (see [`super::usage_tap`]).
+//! No prompt or response text is stored.
 //!
-//! One row per request on a forwarded `/v1/*` route: clock fields, the
-//! routing outcome, and the token counts read from the end of the response
-//! (see [`super::usage_tap`]). No prompt or response text is stored.
-//!
-//! Rows live in a ring of [`CAPACITY`]. Totals per model and per launch are
-//! kept apart from the ring, so a summary still counts requests whose rows
-//! have been pushed out. The ring and the totals are lost when the daemon
-//! stops. [`RequestLog::write_to`] also appends each finished row to a file.
+//! Totals per model and per launch are kept apart from the ring of [`CAPACITY`]
+//! rows, so a summary still counts requests whose rows have been pushed out.
+//! Both are lost when the daemon stops. [`RequestLog::write_to`] also appends
+//! each finished row to a file.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
@@ -21,7 +20,7 @@ use tokio::sync::mpsc;
 
 use super::usage_tap::Usage;
 
-/// Rows kept. At roughly 400 bytes a row this is well under 1 MiB.
+/// At roughly 400 bytes a row, the ring is well under 1 MiB.
 pub const CAPACITY: usize = 1000;
 
 /// Rows one `requests_tail` call returns when it names no `limit`.
@@ -33,7 +32,7 @@ pub(crate) fn clamp_limit(raw: Option<usize>) -> usize {
   raw.unwrap_or(DEFAULT_TAIL).min(CAPACITY)
 }
 
-/// Name of the request log file inside the daemon's log directory.
+/// Inside the daemon's log directory.
 pub const FILE_NAME: &str = "requests.jsonl";
 
 /// Origin for the rows' monotonic starts. The wall clock in `started_at_ms`

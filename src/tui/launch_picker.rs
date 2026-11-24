@@ -1,16 +1,6 @@
-//! Launch picker form state — the knob editor.
-//!
-//! Every row below the two selector rows is **generated** from the active
-//! backend's declarations ([`crate::launch::knobs`]): the group headers come
-//! from [`Group::all`], the rows from what that backend declares in each group,
-//! and each row's label, value shape, cycle ring and edit affordance from its
-//! own [`KnobDef`]. Nothing here enumerates a knob, so a backend that declares
-//! one gets an editor row for it and cannot be missing one.
-//!
-//! The form is a vertical list: the preset cycle, the server cycle, the knob
-//! groups, and a free-text `extras` row last. Up/Down moves between rows;
-//! Left/Right cycles the focused row's value; `e` enters inline edit; Enter
-//! launches (or commits an open edit); Backspace resets the focused row.
+//! Launch picker form state, the knob editor. Every knob row is generated
+//! from the active backend's declarations ([`crate::launch::knobs`]), so no
+//! row is hand-listed.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -65,8 +55,7 @@ pub enum PresetStop {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PresetChoice {
   pub name: String,
-  /// Every knob the preset pins — the backend's own tunables included, since
-  /// there is no longer a separate native-knob channel to seed.
+  /// Every knob the preset pins, including the backend's own tunables.
   pub knobs: KnobSet,
   pub extras: Vec<std::ffi::OsString>,
   /// The preset's `server:` pin; `None` runs the row's default build.
@@ -99,8 +88,6 @@ pub struct InlineEdit {
 }
 
 impl InlineEdit {
-  /// Open the edit on `field`, seed the buffer with `initial`, and
-  /// enter edit mode so subsequent keystrokes append to the buffer.
   pub fn open(&mut self, field: PickerField, initial: String) {
     self.field = Some(field);
     self.input.set_text(initial);
@@ -108,8 +95,6 @@ impl InlineEdit {
     self.error = None;
   }
 
-  /// Close the edit — clear the field marker, drop the buffer, exit
-  /// edit mode, and clear any stale error.
   pub fn close(&mut self) {
     self.field = None;
     self.input.clear();
@@ -119,14 +104,12 @@ impl InlineEdit {
 
   /// True while the user is actively typing into the buffer (the
   /// edit is open *and* `crate::tui::input_field::InputField` reports
-  /// edit mode). Used by the event router to send keys to the input
-  /// instead of the outer keymap.
+  /// edit mode).
   pub fn is_open(&self) -> bool {
     self.field.is_some() && self.input.is_editing()
   }
 }
 
-/// State of the launch picker.
 #[derive(Debug, Clone)]
 pub struct LaunchPickerState {
   /// Display name of the focused model (rendered in the title).
@@ -148,11 +131,7 @@ pub struct LaunchPickerState {
   pub sources: BTreeMap<KnobId, LayerLabel>,
   /// Free-form argv tail forwarded to the engine.
   pub extras: Vec<std::ffi::OsString>,
-  /// Modal text-input for the extras row. Shares the `e:edit /
-  /// Esc:walk-back / Enter:Submit` contract with every other text input in
-  /// the TUI.
   pub extras_input: crate::tui::input_field::InputField,
-  /// Inline edit state for the knob rows.
   pub inline_edit: InlineEdit,
   pub field: PickerField,
   /// The focused model's *own* concrete backend (the one its catalog source
@@ -174,8 +153,8 @@ pub struct LaunchPickerState {
   /// position 0, so a list seeded in some other order would make the row name
   /// one build while the daemon launched another.
   pub servers: Vec<crate::backend::Server>,
-  /// The user's chosen server id (`llamacpp-vulkan`, `llamacpp-rocm`), or `None` for
-  /// the default build ([`Self::servers`]`[0]`). Sent verbatim as
+  /// The user's chosen server id, or `None` for the default build
+  /// ([`Self::servers`]`[0]`). Sent verbatim as
   /// [`crate::launch::params::LaunchParams::server`]; seeded from last_params.
   pub selected_server: Option<String>,
   /// User-chosen launch name (from the `Alt+⏎` "launch as…" dialog), or
@@ -327,7 +306,6 @@ impl LaunchPickerState {
     knobs::def_for_backend(self.knob_scope(), id)
   }
 
-  /// Whether a row is currently shown / navigable.
   pub fn field_visible(&self, field: PickerField) -> bool {
     match field {
       // Always shown — it offers `last used` ↔ `auto` even with no presets.
@@ -368,12 +346,10 @@ impl LaunchPickerState {
     }
   }
 
-  /// Move cursor to the next visible row.
   pub fn next_field(&mut self) {
     self.step_field(true);
   }
 
-  /// Move cursor to the previous visible row.
   pub fn prev_field(&mut self) {
     self.step_field(false);
   }
@@ -453,8 +429,8 @@ impl LaunchPickerState {
       PresetStop::Auto => self.apply_auto(),
       PresetStop::Named(i) => self.seed_from_preset(i),
     }
-    // A stop's knobs may be keyed for another backend (a preset saved on
-    // llama.cpp, used on a generic server); show them in the scope in play.
+    // A stop's knobs may be keyed for another backend. Show them in the
+    // scope in play.
     self.rescope_knobs_to_backend();
   }
 
@@ -675,7 +651,6 @@ impl LaunchPickerState {
     }
   }
 
-  /// The active backend's id.
   pub fn active_backend_id(&self) -> &'static str {
     use crate::backend::Backend;
     self.resolved_backend().id()
@@ -833,7 +808,6 @@ impl LaunchPickerState {
   /// Backspace on a focused row: clear the user override and re-inherit.
   pub fn reset_focused_row(&mut self) {
     match self.field {
-      // Reset on the Preset row snaps back to the `last used` baseline.
       PickerField::Preset => {
         self.preset_stop = PresetStop::LastUsed;
         self.apply_preset_stop();
@@ -1064,8 +1038,8 @@ impl LaunchPickerState {
           .map(str::trim)
           .filter(|s| !s.is_empty())
           .collect();
-        // Reorder against the catalog so `main-gpu` / `tensor-split` indices
-        // stay stable regardless of the persisted string's order.
+        // Reorder against the catalog so device-index values (main GPU,
+        // per-GPU split) stay stable regardless of the persisted string's order.
         devices
           .iter()
           .filter(|s| picked.contains(**s))
@@ -1162,7 +1136,6 @@ enum CycleState<T> {
   Inherited,
   /// Delegated (to the engine's fitter, or to a model capability).
   Auto,
-  /// Pinned to a concrete value.
   Set(T),
 }
 
@@ -1468,7 +1441,6 @@ mod tests {
       .filter(|t| titles.contains(t))
       .collect();
     assert_eq!(titles, canonical);
-    // Every row in a bucket really declares that group.
     for (g, defs) in &groups {
       assert!(defs.iter().all(|d| d.group == *g));
     }
@@ -1674,7 +1646,6 @@ mod tests {
     sources.insert(kid("n-gpu-layers"), LayerLabel::ArchDefault);
     s.set_resolved(crate::knobset! { n_gpu_layers: 99 }, sources);
     assert_eq!(s.source_for(kid("n-gpu-layers")), LayerLabel::ArchDefault);
-    // A user override flips the chip to User.
     s.user_knobs
       .set(kid("n-gpu-layers"), KnobValue::Set(Scalar::U32(32)));
     assert_eq!(s.source_for(kid("n-gpu-layers")), LayerLabel::User);
@@ -1708,7 +1679,6 @@ mod tests {
       Some(8),
       "a refused commit keeps the old value"
     );
-    // An empty buffer resets the row.
     assert!(s.commit_text(kid("threads"), "  ").is_ok());
     assert_eq!(u32_of(&s, "threads"), None);
     // A ratio typo surfaces under the row rather than inside the engine.
@@ -1887,7 +1857,6 @@ mod tests {
     let mut s = LaunchPickerState::for_model("test");
     s.servers = catalog_two_vendors();
     s.field = row("device");
-    // Move the cursor to ROCm0 (index 2) and toggle it off.
     s.cycle_focused_value_next();
     s.cycle_focused_value_next();
     s.toggle_focused_device();
@@ -2152,7 +2121,8 @@ mod tests {
       server(other, other, "/v/engine", vec![]),
       server("llamacpp-rocm", "llamacpp", "/rocm/llama-server", vec![]),
     ];
-    // Sit on a row only that backend has, then switch away through the Server row.
+    // After a Server-row switch, the cursor sits on a row only the
+    // previous backend declares.
     s.field = PickerField::Server;
     s.cycle_focused_value_next();
     assert_eq!(s.active_backend_id(), "llamacpp");

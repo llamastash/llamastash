@@ -68,8 +68,9 @@ fn value_name(def: &KnobDef) -> &'static str {
   }
 }
 
-/// `--help` heading for one backend's knobs — keeps each backend's flags
-/// visually together instead of one flat wall of forty-odd options.
+/// `--help` heading for one backend's knobs. Keeps each backend's
+/// flags visually together instead of one flat wall of forty-odd
+/// options.
 ///
 /// clap wants a `'static` heading, so each is interned once. The set is
 /// bounded by the number of compiled-in backends, and lives as long as the

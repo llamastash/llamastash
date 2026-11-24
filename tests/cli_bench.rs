@@ -492,7 +492,6 @@ fn an_embedding_model_is_refused() {
   assert_eq!(daemon.running(), 0);
 }
 
-/// A prompt from a file is the prompt the runs send.
 #[test]
 fn a_prompt_file_replaces_the_builtin_prompt() {
   let daemon = Daemon::plain("prompt-file");

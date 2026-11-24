@@ -1,19 +1,10 @@
-//! Control-plane HTTP listener — JSON-RPC over `POST /rpc`, bearer-token
+//! Control-plane HTTP listener: JSON-RPC over `POST /rpc`, bearer-token
 //! authed, on a loopback `TcpListener`.
 //!
-//! Mirrors [`crate::proxy::server`]'s shape: a `tokio::select!` accept
-//! loop guarded by the daemon's [`ShutdownToken`], per-connection hyper
-//! service, bounded drain on shutdown. Diverges in two ways:
-//!
-//! 1. **Auth.** Every route except `GET /health` requires a valid
-//!    bearer token; the token plus URL get written to `runtime.json`
-//!    at startup so clients can attach. See [`super::auth`] for the
-//!    token shape and [`super::runtime_file`] for the on-disk handoff.
-//! 2. **Routes.** Only two: `POST /rpc` (the JSON-RPC dispatcher) and
-//!    `GET /health` (unauthenticated liveness probe used by the
-//!    daemon-attach handshake). Log following goes through the
-//!    `logs_tail` RPC method, which `llamastash logs --follow` polls;
-//!    an SSE route is tracked in TODO §Low priority.
+//! Every route except `GET /health` needs a valid bearer token. The
+//! token and URL are written to `runtime.json` at startup so clients
+//! can attach. See [`super::auth`] for the token shape and
+//! [`super::runtime_file`] for the on-disk handoff.
 
 use std::{
   net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -41,13 +32,12 @@ use crate::ipc::protocol::{
 };
 use crate::util::http_auth::extract_bearer;
 
-/// Default control-plane port. Sits in the high-4xxxx range —
-/// above IANA's well-known + registered band (1–49151) but below the
-/// ephemeral range (49152+ on Linux), so it doesn't collide with
-/// dynamic allocations or any common service. We deliberately stay
-/// out of the `11434`–`11440` proxy family so a proxy scan never
-/// walks over the daemon's listener. Clients never have to memorise
-/// this port — they read the URL from `runtime.json`.
+/// Default control-plane port. Above IANA's registered band
+/// (1–49151) and below the ephemeral range (49152+ on Linux), so it
+/// does not collide with dynamic allocations or common services.
+/// Deliberately outside the `11434`–`11440` proxy family, so a proxy
+/// scan never walks over the daemon's listener. Clients read the URL
+/// from `runtime.json`, not this port.
 pub const DEFAULT_CONTROL_PORT: u16 = 48134;
 
 /// How many ports above [`DEFAULT_CONTROL_PORT`] the listener will
@@ -58,8 +48,8 @@ pub const DEFAULT_PORT_SCAN_MAX_OFFSET: u16 = 5;
 
 /// Maximum request body the control plane will accept on a single
 /// request. JSON-RPC envelopes for our methods land under ~10 KiB
-/// even with large `start_model` params; 256 KiB is roomy and bounds
-/// memory under a malicious client.
+/// even with large `start_model` params, so 256 KiB is roomy and
+/// bounds memory under a malicious client.
 const MAX_RPC_BODY_BYTES: usize = 256 * 1024;
 
 /// Maximum time to wait for in-flight connections after shutdown is
@@ -81,7 +71,7 @@ enum BindOutcome {
 }
 
 /// Walk `[port, port + max_offset]` looking for a free slot.
-/// `AddrInUse` advances; every other error is fatal.
+/// `AddrInUse` advances. Every other error is fatal.
 async fn bind_with_scan(base: SocketAddr, max_offset: u16) -> BindOutcome {
   let mut last_addr = base;
   for offset in 0..=max_offset {
@@ -105,10 +95,10 @@ async fn bind_with_scan(base: SocketAddr, max_offset: u16) -> BindOutcome {
 }
 
 /// Build the canonical loopback `SocketAddr` from a port. The host is
-/// fixed at `127.0.0.1` — the control plane never binds LAN. There is
+/// fixed at `127.0.0.1` because the control plane never binds LAN. There is
 /// deliberately no host knob here: `proxy.host` opts only the *proxy
-/// data plane* into LAN exposure (see `crate::proxy::server::listen_addr`);
-/// the control plane stays loopback + same-UID-trust regardless.
+/// data plane* into LAN exposure (see `crate::proxy::server::listen_addr`).
+/// The control plane stays loopback + same-UID-trust regardless.
 pub fn loopback_addr(port: u16) -> SocketAddr {
   SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
 }
@@ -130,9 +120,8 @@ pub enum BindResult {
 }
 
 /// Bind the control-plane listener with the default scan window
-/// applied. Returns the listener and the resolved `SocketAddr`
-/// (taking the kernel-promoted port into account when the caller
-/// passed port 0). Caller owns logging and lifecycle.
+/// applied. When the caller passed port 0, the bound address carries
+/// the kernel-assigned port. Caller owns logging and lifecycle.
 pub async fn bind(addr: SocketAddr) -> BindResult {
   match bind_with_scan(addr, DEFAULT_PORT_SCAN_MAX_OFFSET).await {
     BindOutcome::Bound(listener) => {
@@ -151,9 +140,6 @@ pub async fn bind(addr: SocketAddr) -> BindResult {
 }
 
 /// Run the control-plane accept loop until `shutdown` is triggered.
-/// `listener` should come from [`bind`]; `token` is the bearer secret
-/// every authed route checks; `ctx` is the JSON-RPC dispatcher
-/// context.
 pub async fn serve(
   listener: TcpListener,
   token: Arc<IpcToken>,
@@ -180,8 +166,7 @@ pub async fn serve(
             conn_tracker.active.fetch_add(1, Ordering::SeqCst);
             // Increment the dispatcher's live-connection gauge so the
             // `version` IPC method reflects active control-plane
-            // sessions just like it did for the old Unix-socket
-            // server.
+            // sessions.
             let counter = ctx.active_connections.clone();
             counter.fetch_add(1, Ordering::SeqCst);
             // Stamped at both ends so a one-shot CLI call that opens and
@@ -257,7 +242,6 @@ async fn serve_connection(stream: tokio::net::TcpStream, token: Arc<IpcToken>, c
   }
 }
 
-/// Dispatch one HTTP request to the appropriate handler.
 async fn route(
   req: Request<Incoming>,
   token: Arc<IpcToken>,
@@ -326,12 +310,10 @@ fn not_found() -> Response<Full<Bytes>> {
     .expect("static response is well-formed")
 }
 
-/// `POST /rpc` — read JSON body (bounded), parse as JSON-RPC 2.0
-/// Request, hand off to the existing `dispatch_request` table,
-/// return the JSON-RPC Response as the HTTP body. HTTP status is
-/// always `200` regardless of JSON-RPC-level errors — clients
-/// distinguish via the envelope's `error` field, same contract as
-/// the previous Unix-socket transport.
+/// `POST /rpc`: parse the bounded body as a JSON-RPC 2.0 request and
+/// hand off to `dispatch_request`. The HTTP status is always `200`,
+/// even for JSON-RPC-level errors. Clients look at the envelope's
+/// `error` field.
 async fn rpc_handler(req: Request<Incoming>, ctx: MethodContext) -> Response<Full<Bytes>> {
   let body = match collect_body(req, MAX_RPC_BODY_BYTES).await {
     Ok(b) => b,
@@ -353,8 +335,6 @@ async fn rpc_handler(req: Request<Incoming>, ctx: MethodContext) -> Response<Ful
   json_rpc_response(response)
 }
 
-/// Wrap a JSON-RPC `Response` envelope in an HTTP 200 with the right
-/// content-type.
 fn json_rpc_response(resp: RpcResponse) -> Response<Full<Bytes>> {
   let bytes = match serde_json::to_vec(&resp) {
     Ok(b) => b,
@@ -374,10 +354,9 @@ fn json_rpc_response(resp: RpcResponse) -> Response<Full<Bytes>> {
     .expect("dynamic response with checked headers")
 }
 
-/// Read the request body up to `max_bytes`. Anything larger turns
-/// into HTTP 413. The control plane only handles small JSON-RPC
-/// envelopes; this bound exists to refuse pathological / malicious
-/// payloads rather than to constrain real callers.
+/// Read the request body up to `max_bytes`, answering HTTP 413 above
+/// it. The bound refuses pathological or malicious payloads, not
+/// real callers.
 async fn collect_body(
   req: Request<Incoming>,
   max_bytes: usize,
@@ -444,12 +423,8 @@ mod tests {
 
   #[tokio::test]
   async fn bind_returns_all_ports_in_use_when_window_exhausted() {
-    // Hold a port to force the scan to fail (single-slot window via
-    // a synthetic base port). We can't reuse `bind_with_scan` here
-    // directly because the public `bind` always scans the
-    // default-offset window; emulate the contended behavior with a
-    // narrow synthetic by binding the kernel-assigned port and then
-    // trying to bind it again under a 0-offset window.
+    // Bind a kernel-assigned port, then bind it again under a
+    // 0-offset window so the single-slot scan must fail.
     let occupy = TcpListener::bind("127.0.0.1:0").await.expect("occupy");
     let busy = occupy.local_addr().unwrap();
     match bind_with_scan(busy, 0).await {

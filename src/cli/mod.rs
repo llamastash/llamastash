@@ -48,9 +48,8 @@ use crate::config::loader::LoadedConfig;
 pub use cli_args::{Cli, Command};
 pub use exit_codes::{CliExit, CliResult};
 
-/// Dispatch the parsed CLI to its handler. Returns the OS exit code
-/// the binary should propagate. `main.rs` calls
-/// `std::process::exit(code)` with the result.
+/// Returns the OS exit code the binary should propagate. `main.rs`
+/// calls `std::process::exit(code)` with the result.
 pub async fn dispatch(mut cli: Cli, config: LoadedConfig) -> Result<i32> {
   // Lock in the color policy before any handler prints. The three
   // OR-ed off-conditions (flag, NO_COLOR, non-TTY stdout) live in
@@ -103,10 +102,6 @@ pub async fn dispatch(mut cli: Cli, config: LoadedConfig) -> Result<i32> {
       ));
     }
   }
-  // Sticky `--llama-server`: when the user passes the flag explicitly,
-  // write the resolved path back into the YAML config so next launch
-  // picks it up without re-typing. Best-effort — a failed write logs
-  // a warning and the command proceeds normally.
   persist_llama_server_override(&cli, &config.config);
   let resolved_config = &config.config;
   let outcome: CliResult = match command {
@@ -239,8 +234,7 @@ fn persist_llama_server_override(cli: &Cli, config: &crate::config::Config) {
   }
 }
 
-/// Translate an anyhow-bearing handler result into the CliResult
-/// shape. The `daemon` subcommand still uses `anyhow::Result` for its
+/// The `daemon` subcommand still uses `anyhow::Result` for its
 /// internal start/stop/status flow; we treat any anyhow error as a
 /// `UNKNOWN` exit unless it's already a `CliExit`.
 fn map_anyhow(r: Result<()>) -> CliResult {
@@ -253,8 +247,8 @@ fn map_anyhow(r: Result<()>) -> CliResult {
   }
 }
 
-/// Print any error message and return the exit code. Under `--json` the
-/// message goes to stdout as `{"error": {"code", "message"}}`.
+/// Under `--json` the message goes to stdout as
+/// `{"error": {"code", "message"}}`.
 fn report(result: CliResult, json: bool) -> i32 {
   match result {
     Ok(()) => exit_codes::SUCCESS,
@@ -287,7 +281,7 @@ pub(crate) async fn handle_tui(cli: &Cli, config: &crate::config::Config) -> Cli
   // the config flag per the project's env-truthy convention. Covers
   // both the `--render` snapshot and the interactive loop below.
   crate::tui::glyphs::init(crate::tui::glyphs::ascii_env(), config.ascii_glyphs);
-  // Ensure the daemon is up. The TUI's writer task reconnects per
+  // The TUI's writer task reconnects per
   // command, so we don't hold the connection past startup priming.
   //
   // A failure here does NOT abort the TUI: the backend fail-fast
@@ -309,8 +303,7 @@ pub(crate) async fn handle_tui(cli: &Cli, config: &crate::config::Config) -> Cli
     return render_snapshot(cli, config, client, daemon_start_error).await;
   }
   drop(client);
-  // TUI attaches via the HTTP control plane which reads bearer token +
-  // URL out of `state_dir/runtime.json`. The parameter is still named
+  // The parameter is still named
   // `socket` in `tui::events` for minimum churn.
   let socket = crate::util::paths::state_dir().ok_or_else(|| {
     CliExit::new(
@@ -351,8 +344,7 @@ pub(crate) async fn handle_tui(cli: &Cli, config: &crate::config::Config) -> Cli
   }
 }
 
-/// Build the runtime keymap from defaults + `config.keybindings`
-/// overrides. Parse warnings (unknown action names, malformed key
+/// Parse warnings (unknown action names, malformed key
 /// specs) flow through `log::warn!` so a typo doesn't silently
 /// drop the user's rebind.
 fn resolve_keymap(config: &crate::config::Config) -> crate::tui::keybindings::KeyMap {
@@ -365,7 +357,7 @@ fn resolve_keymap(config: &crate::config::Config) -> crate::tui::keybindings::Ke
   keymap
 }
 
-/// Resolve `config.custom_theme` into a concrete palette. Parse
+/// Parse
 /// warnings are forwarded to the user via the normal `log::warn!`
 /// channel so a bad colour value surfaces without aborting startup.
 /// If the user picked `theme: custom` in the config but did not
@@ -383,11 +375,6 @@ fn resolve_custom_palette(config: &crate::config::Config) -> Option<crate::theme
 /// `--render`: draw a single TUI frame against `ratatui::TestBackend`
 /// and print it as plain text. Uses the same App + render path the
 /// interactive loop and the e2e golden test exercise.
-///
-/// The snapshot polls `status` for up to ~1.5s so the host-metrics
-/// sampler's first 1 Hz tick has landed; if the wait times out the
-/// Host pane shows the `unsampled` sentinel — which is honest output
-/// for a daemon that just started.
 async fn render_snapshot(
   cli: &Cli,
   config: &crate::config::Config,
@@ -406,7 +393,6 @@ async fn render_snapshot(
     None => (120, 40),
   };
 
-  // Prime the App with whatever the daemon knows right now.
   let mut app = App::new(AppOptions {
     theme: config.theme,
     custom_palette: resolve_custom_palette(config),
@@ -478,7 +464,7 @@ async fn render_snapshot(
 pub(crate) mod test_lock {
   use std::sync::{Mutex, MutexGuard, OnceLock};
 
-  /// Acquire the cross-module color/env mutex. Poisoned guards are
+  /// Poisoned guards are
   /// unwrapped so a panic in one test never silently disables the next.
   pub(crate) fn serialize() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();

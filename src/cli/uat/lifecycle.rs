@@ -1,33 +1,6 @@
-//! 6-step UAT orchestrator.
-//!
-//! Steps:
-//!
-//! 1. `doctor_preflight` — snapshot the GPU backend via `gpu::probe()`
-//!    and assert it matches the CLI's `--host-backend`. Fails fast on
-//!    mismatch so a runner-image regression (Metal not exposed, NVIDIA
-//!    driver gone) surfaces before any expensive step.
-//! 2. `init` — spawn `llamastash init --recommended --model <repo>/<file>
-//!    --revision <sha>` (warm) or without `--skip install` (cold) so
-//!    the full install + pull + smoke-probe path is exercised end-to-
-//!    end. Falls back to `FALLBACK` on primary failure and records the
-//!    substitution in `host.warnings`. The init smoke step is detection-
-//!    only (`llama-server --version`); registering a managed model is
-//!    the next step's job.
-//! 3. `start_model` — spawn `llamastash start <gguf-path> --json`
-//!    against the GGUF init just downloaded. Returns once the daemon
-//!    reports the supervisor `Ready`, leaving a running model for the
-//!    chat probe.
-//! 4. `smoke_chat` — HTTPs `/v1/chat/completions` against the model
-//!    the supervisor brought up. Asserts a 200 with at least one
-//!    completion token.
-//! 5. `stop` — spawn `llamastash stop --all --yes` to shut every
-//!    daemon-owned child down gracefully.
-//! 6. `doctor_postrun` — spawn `llamastash doctor --json` and parse
-//!    the resulting findings.
-//!
-//! Each step is timed; the step's verdict + observed-JSON lands in the
-//! corresponding `StepResult`. The first `Fail` short-circuits the
-//! remaining subject steps to `Skipped` and populates `failure_summary`.
+//! 6-step UAT orchestrator: pre-flight, init, start, chat probe, stop,
+//! doctor. The first `Fail` short-circuits the rest, and every step's
+//! verdict lands in the `UatReport`.
 //!
 //! Child processes inherit the `TempdirGuard`'s isolation env vars,
 //! so they never write to the maintainer's real state / cache / HF
@@ -59,8 +32,8 @@ pub struct LifecyclePlan {
   /// Absolute path to `llamastash` (this binary) — captured at the
   /// orchestrator entry so each step's `Command::new` is byte-stable.
   pub llamastash_path: std::path::PathBuf,
-  /// Per-step subprocess timeout. 5 minutes covers the warm budget
-  /// per origin §Performance budgets; cold mode is given 15 minutes.
+  /// Per-step subprocess timeout. 5 minutes covers the warm budget.
+  /// Cold mode is given 15 minutes.
   pub per_step_timeout: Duration,
   /// When set, skip the HF download and use this GGUF directly.
   pub local_gguf: Option<PathBuf>,
@@ -97,7 +70,6 @@ pub async fn run(plan: &LifecyclePlan, guard: &TempdirGuard, report: &mut UatRep
   let started = Instant::now();
   let mut failed_step: Option<StepName> = None;
 
-  // Step 1: doctor_preflight.
   match step_doctor_preflight(plan, report).await {
     Ok(()) => {}
     Err(e) => {
@@ -106,7 +78,6 @@ pub async fn run(plan: &LifecyclePlan, guard: &TempdirGuard, report: &mut UatRep
     }
   }
 
-  // Step 2: init. Only runs if pre-flight passed.
   let mut gguf_path: Option<PathBuf> = None;
   if failed_step.is_none() {
     match step_init(plan, guard, report).await {
@@ -118,8 +89,6 @@ pub async fn run(plan: &LifecyclePlan, guard: &TempdirGuard, report: &mut UatRep
     }
   }
 
-  // Step 3: start_model. Only runs if init succeeded; consumes the
-  // GGUF path init surfaced.
   if failed_step.is_none() {
     if let Some(path) = gguf_path.as_ref() {
       match step_start_model(plan, guard, report, path).await {
@@ -132,7 +101,6 @@ pub async fn run(plan: &LifecyclePlan, guard: &TempdirGuard, report: &mut UatRep
     }
   }
 
-  // Step 4: smoke_chat.
   if failed_step.is_none() {
     match step_smoke_chat(plan, guard, report).await {
       Ok(()) => {}
@@ -143,14 +111,12 @@ pub async fn run(plan: &LifecyclePlan, guard: &TempdirGuard, report: &mut UatRep
     }
   }
 
-  // Steps 5 & 6 are cleanup. They only make sense when a daemon /
-  // llama-server were actually brought up — i.e. step 2 (init)
-  // succeeded. A preflight or init failure leaves nothing to stop, so
-  // running `llamastash stop --all --yes` against no daemon and
-  // `llamastash doctor --json` against a half-initialized state wastes
-  // 30s+ and produces noisy verdicts. Cleanup runs when no failure
-  // happened, OR when start_model / smoke_chat failed (daemon is up
-  // and a child may be loaded).
+  // `step_stop` + `step_doctor_postrun` are cleanup. They only make
+  // sense when a daemon / engine child were actually brought up, so
+  // cleanup runs when no failure happened, OR when start_model /
+  // smoke_chat failed (the daemon is up and a child may be loaded). A
+  // preflight or init failure leaves nothing to stop, and cleanup would
+  // waste 30s+ producing noisy verdicts.
   let cleanup_needed = matches!(
     failed_step,
     None | Some(StepName::StartModel) | Some(StepName::SmokeChat)
@@ -417,12 +383,11 @@ fn finalize_uat_command(cmd: &mut tokio::process::Command) -> &mut tokio::proces
 }
 
 /// Step 3. Register the just-downloaded GGUF with the sandbox daemon
-/// so a real `llama-server` child is `Ready` before `smoke_chat`
-/// probes it. `llamastash start --json` returns as soon as the
-/// supervisor is *spawned* (see `src/ipc/methods.rs:1250-1322` —
-/// `compose_and_spawn` returns post-spawn, before the supervisor
-/// transitions Launching → Loading → Ready). We therefore poll
-/// `status --json` ourselves after start returns and only declare
+/// so a real engine child is `Ready` before `smoke_chat` probes it.
+/// `llamastash start --json` returns as soon as the supervisor is
+/// *spawned* (`compose_and_spawn` returns post-spawn, before the
+/// supervisor transitions Launching → Loading → Ready). We therefore
+/// poll `status --json` ourselves after start returns and only declare
 /// this step pass once `models[0].state == "ready"`.
 async fn step_start_model(
   plan: &LifecyclePlan,
@@ -462,11 +427,9 @@ async fn step_start_model(
       }
       e
     })?;
-  // The JSON shape is `{ "name", "launch_id", "port", "pid", "preset",
-  // "path" }` per `start --help`. We surface the readable subset into
-  // `observed`; a non-JSON or shape-shifted output is not a step fail
-  // — the daemon already accepted the start, and the shape's stability
-  // is enforced by start's own --json contract tests.
+  // The shape's stability is enforced by start's own --json contract
+  // tests, so a non-JSON or shape-shifted output is not a step fail —
+  // the daemon already accepted the start.
   let parsed: serde_json::Value =
     serde_json::from_slice(&stdout).unwrap_or(serde_json::Value::Null);
   // Best-effort PID into the guard so a mid-test SIGINT can reap the
@@ -481,9 +444,9 @@ async fn step_start_model(
   }
   // Wait for the supervisor to actually reach Ready before we hand
   // off to smoke_chat. `llamastash start` returns post-spawn, so the
-  // `llama-server` child may still be in Launching/Loading when start
-  // exits 0; without this poll, smoke_chat hits the port before
-  // anything's bound and fails with `connection refused`.
+  // engine child may still be in Launching/Loading when start exits 0;
+  // without this poll, smoke_chat hits the port before anything's bound
+  // and fails with `connection refused`.
   wait_for_ready(plan, guard, READY_POLL_BUDGET).await?;
   report.step_mut(StepName::StartModel).pass(
     started.elapsed(),
@@ -500,7 +463,7 @@ async fn step_start_model(
 /// or fail when the supervisor transitions to a terminal error
 /// state, or the budget expires. Used by `step_start_model` to bridge
 /// the gap between `compose_and_spawn` returning post-spawn and the
-/// `llama-server` child actually binding its port.
+/// engine child actually binding its port.
 async fn wait_for_ready(
   plan: &LifecyclePlan,
   guard: &TempdirGuard,
@@ -611,10 +574,10 @@ async fn step_smoke_chat(
       classification: FailureClass::SmokeParse,
       duration: started.elapsed(),
     })?;
-  // Track the daemon-managed `llama-server` PID into the guard so a
-  // mid-step SIGINT or panic exits through Drop with enough info to
-  // reap the child before tempdir teardown. step_stop, when it runs,
-  // remains the authoritative shutdown — this is the fallback path.
+  // Track the daemon-managed child PID into the guard so a mid-step
+  // SIGINT or panic exits through Drop with enough info to reap the
+  // child before tempdir teardown. step_stop, when it runs, remains
+  // the authoritative shutdown — this is the fallback path.
   if let Some(pid) = parse_first_running_pid(&status_json) {
     guard.child_pid_handle().store(pid, Ordering::SeqCst);
   }
@@ -748,8 +711,7 @@ async fn fetch_status_json(
 
 /// Best-effort extract of `models[0].pid` for guard-side cleanup. A
 /// missing / non-numeric pid returns `None`: the worst case is that
-/// step_stop remains the only cleanup path, which is the v1 behavior
-/// — never a hard failure.
+/// step_stop remains the only cleanup path — never a hard failure.
 fn parse_first_running_pid(status_json: &serde_json::Value) -> Option<i32> {
   status_json
     .get("models")?
@@ -771,11 +733,10 @@ fn parse_first_running_model(status_json: &serde_json::Value) -> Result<(String,
     .ok_or_else(|| "status JSON has empty `models[]`".to_string())?;
   // The daemon's `status --json` emits `models[].id` as a
   // `ModelId` object (`{"path": "...", "header_blake3": "..."}` — see
-  // `src/gguf/identity.rs:22-29` and `src/ipc/methods.rs:419-431`).
-  // We derive the model-name passed to llama-server from the file
-  // stem so it reads as a friendly identifier; llama-server's
-  // `/v1/chat/completions` accepts any string in the `model` body
-  // field, so this is purely cosmetic.
+  // `src/gguf/identity.rs`). We derive the model-name passed to the
+  // engine from the file stem so it reads as a friendly identifier; the
+  // engine's `/v1/chat/completions` accepts any string in the `model`
+  // body field, so this is purely cosmetic.
   let path = first
     .get("id")
     .and_then(|v| v.get("path"))
@@ -832,7 +793,7 @@ async fn step_stop(
 }
 
 /// Step 6. `doctor --json` enumerates findings (orphan PIDs, stale
-/// lockfiles, missing baseline). v1 doesn't gate the verdict on
+/// lockfiles, missing baseline). The run doesn't gate the verdict on
 /// findings: a finding is informational. The report does record the
 /// finding count so the maintainer can scan-down to investigate.
 async fn step_doctor_postrun(
@@ -1007,8 +968,7 @@ mod tests {
   fn parse_first_running_model_extracts_id_path_and_port() {
     // Mirrors the shape emitted by `src/ipc/methods.rs` for
     // status.models[] — `id` is a ModelId object (path + header
-    // BLAKE3), not a flat string. The friendly model name is
-    // derived from the file stem.
+    // BLAKE3), not a flat string.
     let v = serde_json::json!({
       "models": [{
         "id": {
@@ -1134,7 +1094,6 @@ mod tests {
 
   #[test]
   fn check_size_deviation_passes_within_band() {
-    // Within ±10% — silent on the happy path.
     let expected = 400 * 1024 * 1024_u64;
     assert!(check_size_deviation(expected, expected).is_none());
     assert!(check_size_deviation(expected, expected + expected / 20).is_none()); // +5%

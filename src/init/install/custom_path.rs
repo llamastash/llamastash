@@ -1,8 +1,8 @@
 //! User-supplied existing `llama-server` path. Runs the same integrity
-//! gates the GH Releases / brew paths emit — resolves a symlink to its
-//! real target, then requires that target to be a regular file owned by
-//! us or root, carry the +x bit, and sit in directories no other user
-//! can write. Records a SHA-256 digest of the resolved file.
+//! gates the GH Releases / brew paths emit: resolves a symlink to its real
+//! target, then requires that target to be a regular file owned by us or root,
+//! carry the +x bit, and sit in directories no other user can write. Records a
+//! SHA-256 digest of the resolved file.
 
 use std::path::{Path, PathBuf};
 
@@ -10,9 +10,8 @@ use super::{sha256_file, BinaryInstall, InstallError};
 use crate::backend::Backend as _;
 use crate::init::snapshot::InstallMethod;
 
-/// Accept `path` after the integrity gates pass. The caller is
-/// responsible for confirming the user actually picked this path
-/// (e.g. via a dialoguer prompt).
+/// The caller is responsible for confirming the user actually picked this
+/// path (e.g. via a dialoguer prompt).
 pub fn install_from_custom_path(path: &Path) -> Result<BinaryInstall, InstallError> {
   preflight_integrity(path)?;
   let canonical = crate::util::paths::canonicalize(path).map_err(|e| {
@@ -122,14 +121,10 @@ pub fn server_name_hint(path: &Path) -> Option<String> {
   ))
 }
 
-/// Accessor used by callers that just need to confirm a path is safe
-/// before pre-selecting it in the install picker.
 pub fn is_safe_to_adopt(path: &Path) -> bool {
   preflight_integrity(path).is_ok()
 }
 
-/// Take a user input and resolve it to an absolute path that
-/// `install_from_custom_path` can consume.
 pub fn resolve_input(raw: &str) -> PathBuf {
   let p = PathBuf::from(raw);
   if p.is_absolute() {

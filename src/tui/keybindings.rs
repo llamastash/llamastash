@@ -4,11 +4,6 @@
 //! only what's relevant in the current focus. Keys are stored as
 //! `(KeyCode, KeyModifiers)` so we can reflect Ctrl/Alt
 //! combinations literally; the user-facing label comes alongside.
-//!
-//! The plan calls for config-driven overrides (`config.yaml
-//! keybindings:`); v1 ships the static default and will surface a
-//! follow-up to overlay user overrides without breaking the help
-//! bar.
 
 use crossterm::event::{KeyCode, KeyModifiers};
 
@@ -212,8 +207,7 @@ pub enum Action {
   OpenMemoryReserve,
   /// Snap focus back to the Models list. Bound to `Esc` in the
   /// right pane (closes the pane) and in the AdvancedPanel
-  /// overlay. The LaunchPicker is no longer a modal — Settings
-  /// renders the form inline (round-6).
+  /// overlay.
   FocusList,
   /// Walk one step forward in the focus chain
   /// `[List, ...available_right_tabs()]`. Bound to `Tab`, `Right`,
@@ -228,7 +222,7 @@ pub enum Action {
   /// the kitty keyboard protocol.
   SendChat,
   /// Toggle the per-message `<think>...</think>` collapse in the
-  /// Chat tab (R32 reasoning-aware view).
+  /// Chat tab.
   ToggleThinkCollapse,
   /// Toggle auto-scroll on the Logs tab.
   ToggleAutoScroll,
@@ -345,9 +339,8 @@ pub enum Category {
   /// Settings tab affordances.
   Settings,
   /// Combined Chat / Embed / Rerank input-tab affordances. All three
-  /// tabs accept the same shape of input (Enter:submit, Ctrl+R toggles
-  /// reasoning blocks) so we render them under one heading instead of
-  /// three near-empty sections.
+  /// tabs accept the same shape of input, so we render them under one heading
+  /// instead of three near-empty sections.
   InputTabs,
   /// HuggingFace pull dialog modal.
   HfDialog,
@@ -380,8 +373,7 @@ impl Category {
 
 /// One binding in the flat keymap. `scopes` lists every focus the
 /// binding fires in (dispatcher); `categories` lists every help-
-/// overlay section it surfaces under. A single row replaces what
-/// used to be a copy per focus.
+/// overlay section it surfaces under.
 #[derive(Debug, Clone, Copy)]
 pub struct Binding {
   pub key: KeyCode,
@@ -406,7 +398,6 @@ pub struct Binding {
 }
 
 impl Binding {
-  /// Help-overlay description (falls back to `hint` when none set).
   pub fn description(&self) -> &'static str {
     self.description.unwrap_or(self.hint)
   }
@@ -485,9 +476,8 @@ const CAT_YANK_CURL: &[Category] = &[Category::Models, Category::Logs, Category:
 const CAT_STOP: &[Category] = &[Category::Models, Category::Settings];
 
 /// Default keymap — one row per (action, key) chord, scoped to the
-/// focuses where the binding fires. Replaces the v1 per-focus table
-/// of 91 entries; kdash-style flat list keeps `Tab/⇧Tab/Esc/Enter`
-/// from duplicating across every input focus.
+/// focuses where the binding fires. The flat list keeps
+/// `Tab/⇧Tab/Esc/Enter` from duplicating across every input focus.
 ///
 /// Adding a new binding: pick the smallest [`FocusSet`] that
 /// captures every focus the action should fire in. Repeat the
@@ -980,8 +970,7 @@ impl Default for KeyMap {
   }
 }
 
-/// Rebuild the per-focus cache from the flat list. Called on
-/// construction and after every override pass.
+/// Rebuilt on construction and after every override pass.
 fn build_per_focus(flat: &[Binding]) -> BTreeMap<Focus, Vec<Binding>> {
   let mut per_focus: BTreeMap<Focus, Vec<Binding>> = BTreeMap::new();
   for focus in [
@@ -1039,9 +1028,8 @@ impl KeyMap {
     self.per_focus.get(&focus).map(Vec::as_slice).unwrap_or(&[])
   }
 
-  /// Iterator over every `(focus, bindings)` pair. Replaces direct
-  /// access to `DEFAULT_BINDINGS` for callers (help overlay) that
-  /// walk the whole table.
+  /// Iterator over every `(focus, bindings)` pair, for callers
+  /// (help overlay) that walk the whole table.
   pub fn iter(&self) -> impl Iterator<Item = (Focus, &[Binding])> {
     self
       .per_focus
@@ -1108,8 +1096,8 @@ impl KeyMap {
         ));
         continue;
       }
-      // Leak the runtime label so the resulting Binding fits the
-      // `&'static str` slot. One-time at startup, never repeated.
+      // Leak so the label fits the `&'static str` slot, see the note
+      // above `use std::collections::BTreeMap`.
       let leaked_label: &'static str = Box::leak(spec.label.into_boxed_str());
       // Drop every existing binding for this action, plus any other
       // binding sitting on the new chord within the same scope set
@@ -1142,9 +1130,11 @@ impl KeyMap {
     warnings
   }
 
-  /// Resolve one pasteable key spec for every config-facing action. Overrides
-  /// replace the default primary chord; actions with multiple stock aliases
-  /// export their first binding because config accepts one spec per action.
+  /// Resolve one pasteable key spec for every config-facing action.
+  /// Overrides replace the default primary chord; actions with
+  /// multiple stock aliases export their first binding because
+  /// config accepts one spec per action.
+  /// See docs/usage.md § Custom keybindings.
   pub fn effective_config_bindings(
     overrides: &BTreeMap<String, String>,
   ) -> BTreeMap<&'static str, String> {
@@ -1238,14 +1228,14 @@ impl Action {
     Self::CONFIG_NAMES.iter().map(|(n, _)| *n).collect()
   }
 
-  /// Per-focus description override for actions whose meaning
-  /// varies across focuses. `Submit` is the main example —
+  /// Per-focus hint override for actions whose meaning varies
+  /// across focuses. `Submit` is the main example —
   /// "launch" in the filter, "send" in chat, "embed" in embed,
   /// "open / confirm" in the HF dialog, etc. Returns `None` when
-  /// the generic [`Binding::description`] is the right label.
+  /// the generic `Binding::hint` is the right label.
   ///
   /// Help-bar / overlay callers prefer this over the binding's
-  /// raw description so the chip text matches what the action
+  /// raw hint so the chip text matches what the action
   /// will actually do in the current pane.
   pub fn hint_for(self, focus: Focus) -> Option<&'static str> {
     match (self, focus) {
@@ -1367,8 +1357,6 @@ fn parse_key_token(tok: &str) -> Result<(KeyCode, bool), String> {
   Ok((code, false))
 }
 
-/// Unicode glyph rendered in place of the `Shift+` modifier text.
-/// `⇧` (U+21E7) is the standard "Shift" symbol used by macOS
 /// Unicode glyph rendered in place of the `Shift+` modifier text.
 /// `⇧` (U+21E7) is the standard "Shift" symbol used by macOS
 /// keyboard-shortcut docs and is present in every monospace font
@@ -1502,10 +1490,9 @@ fn format_key_label(key: &KeyCode, mods: KeyModifiers) -> String {
 mod tests {
   use super::*;
 
-  /// Helper: resolve `(focus, key, mods)` against the compile-time
-  /// defaults — what `KeyMap::default()` produces at startup. Used by
-  /// the binding-shape tests below; production reads through
-  /// `App::action_for` which routes via the active `KeyMap`.
+  /// Resolve `(focus, key, mods)` against the compile-time defaults
+  /// — what `KeyMap::default()` produces at startup. Production reads
+  /// through `App::action_for`, which routes via the active `KeyMap`.
   fn action_for(focus: Focus, key: KeyCode, mods: KeyModifiers) -> Option<Action> {
     DEFAULT_BINDINGS
       .iter()
@@ -1513,9 +1500,8 @@ mod tests {
       .map(|b| b.action)
   }
 
-  /// Helper: default bindings list for a focus, filtered from the
-  /// flat slice. Allocates because the flat list isn't pre-grouped
-  /// per focus — fine in tests.
+  /// Default bindings for a focus, filtered from the flat slice.
+  /// Allocates because the flat list isn't pre-grouped per focus.
   fn bindings_for(focus: Focus) -> Vec<Binding> {
     DEFAULT_BINDINGS
       .iter()
@@ -1775,7 +1761,7 @@ mod tests {
       action_for(Focus::ChatInput, KeyCode::Char('r'), KeyModifiers::NONE),
       Some(Action::ToggleThinkCollapse),
     );
-    // `Ctrl+R` no longer toggles reasoning; it is the global daemon restart.
+    // `Ctrl+R` is the global daemon restart, not the reasoning toggle.
     assert_eq!(
       action_for(Focus::ChatInput, KeyCode::Char('r'), KeyModifiers::CONTROL),
       Some(Action::RestartDaemon),
@@ -1810,11 +1796,10 @@ mod tests {
 
   #[test]
   fn rerank_input_plus_and_equals_no_longer_bound_to_stage() {
-    // Round-9 dropped the dedicated `+` / `=` stage chords. Enter
-    // in the candidate field now stages the buffer (dispatched by
-    // `apply_rerank_submit` based on focused field). The action is
-    // kept on the dispatch table so a user keymap override can
-    // restore an explicit stage chord if they want.
+    // Enter in the candidate field stages the buffer (dispatched by
+    // `apply_rerank_submit` based on the focused field). The action
+    // stays in the dispatch table so a user keymap override can
+    // restore an explicit stage chord.
     assert_eq!(
       action_for(Focus::RerankInput, KeyCode::Char('+'), KeyModifiers::SHIFT),
       None,
@@ -1827,8 +1812,7 @@ mod tests {
 
   #[test]
   fn rerank_input_tab_cycles_panes_not_stages_candidate() {
-    // The pre-round-7 Tab → StageRerankCandidate binding moved to
-    // `+` / `=`. Tab must now flow the universal pane-cycle path.
+    // Tab must flow the universal pane-cycle path here.
     assert_eq!(
       action_for(Focus::RerankInput, KeyCode::Tab, KeyModifiers::NONE),
       Some(Action::NextFocus),
@@ -1841,8 +1825,7 @@ mod tests {
 
   #[test]
   fn rerank_input_up_down_cycle_fields() {
-    // ↑/↓ replace Shift+Tab as the field-cycle surface inside the
-    // rerank input — symmetric with the Settings tab.
+    // Field cycle inside the rerank input, symmetric with the Settings tab.
     assert_eq!(
       action_for(Focus::RerankInput, KeyCode::Down, KeyModifiers::NONE),
       Some(Action::NextField),
@@ -1856,8 +1839,7 @@ mod tests {
   #[test]
   fn chat_embed_input_up_down_resolve_to_scroll() {
     // ↑/↓ in the chat/embed composer must resolve to
-    // MoveUp/MoveDown so the output viewport scrolls. They were
-    // unbound in these focuses before, so nothing happened.
+    // MoveUp/MoveDown so the output viewport scrolls.
     for focus in [Focus::ChatInput, Focus::EmbedInput] {
       assert_eq!(
         action_for(focus, KeyCode::Up, KeyModifiers::NONE),
@@ -1893,9 +1875,8 @@ mod tests {
 
   #[test]
   fn keymap_default_mirrors_static_bindings() {
-    // The runtime default must accept exactly the same keys the
-    // legacy free function accepts — that's the invariant that lets
-    // us flip events.rs / help_overlay over without behavioural drift.
+    // The runtime default must accept exactly the same keys as the
+    // static `DEFAULT_BINDINGS` table.
     let map = KeyMap::default();
     assert_eq!(
       map.action_for(Focus::List, KeyCode::Char('q'), KeyModifiers::NONE),
@@ -2055,8 +2036,7 @@ mod tests {
   // Every hint chip, help row, and title pulls its key text from
   // `format_key_label` (or the per-binding `label` literal that
   // mirrors it). Pin the rendered string for every match arm so a
-  // refactor of the formatter fails loudly instead of silently
-  // drifting through every surface.
+  // formatter refactor fails loudly.
 
   #[test]
   fn format_key_label_plain_char_renders_as_char() {

@@ -1,19 +1,12 @@
 //! Shared building blocks for "merge an additions object into a
 //! config file" workflows.
 //!
-//! Two surfaces use these types:
-//!
-//! - [`crate::config::writer`] — llamastash's own
-//!   `~/.llamastash/config.yaml` writer. YAML-native.
-//! - [`crate::init::external`] — the init wizard's external-tool
-//!   patchers (OpenCode, Aider, Continue, Zed, pi.dev). JSON- *and*
-//!   YAML-shaped targets.
-//!
-//! Both produce the same [`DiffEntry`] rows, run them through the
-//! same redaction allowlist ([`SECRET_PATH_TOKENS`]), and render
-//! through the same human formatter so a token can't leak through
-//! one surface that the other would have masked. A new patcher
-//! inherits the redaction policy by construction.
+//! The llamastash config writer and the init wizard's external-tool
+//! patchers produce the same [`DiffEntry`] rows, run them through
+//! the same redaction allowlist ([`SECRET_PATH_TOKENS`]), and
+//! render through the same human formatter so a token can't leak
+//! through one surface that the other would have masked. A new
+//! patcher inherits the redaction policy by construction.
 //!
 //! The field name `value_yaml` is historical (predates JSON
 //! patchers); treat it as "value's serialised textual form in the
@@ -43,15 +36,10 @@ pub enum DiffKind {
 /// Case-insensitive match — `HF_Token`, `user.Credential`,
 /// `api_secret_key` all redact. Kept narrow on purpose; a path
 /// like `model` won't false-positive.
-///
-/// Both the llamastash config diff preview and the external-tool
-/// patchers share this list so a token added under any surface
-/// renders as `<redacted>` everywhere.
 pub const SECRET_PATH_TOKENS: &[&str] = &["token", "secret", "password", "key", "credential"];
 
 /// Redacted view of a [`DiffEntry`] — what we print to stderr / emit
-/// to JSON consumers. The redaction pass runs once and feeds both
-/// channels so a secret can't leak through one but not the other.
+/// to JSON consumers.
 #[derive(Debug, Clone, Serialize)]
 pub struct RedactedDiffEntry {
   pub path: String,

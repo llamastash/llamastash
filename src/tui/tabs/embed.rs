@@ -23,8 +23,8 @@ pub struct EmbedTabState {
   pub norm: Option<f64>,
   pub last_error: Option<String>,
   pub busy: bool,
-  /// Top-of-viewport offset into the rendered output. Round-8: ↑/↓
-  /// walk this — same shape as Chat / Rerank. A cell so the renderer
+  /// Top-of-viewport offset into the rendered output. ↑/↓ walk
+  /// this — same shape as Chat / Rerank. A cell so the renderer
   /// can clamp it to the wrapped content height and write the clamp
   /// back (see `input_pane::InputPaneOpts::scroll_offset`).
   pub scroll_offset: Cell<u16>,
@@ -100,8 +100,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
     )));
   }
 
-  // Idle key-hint chips moved to the right pane's bottom border.
-  // Status row carries only the live busy / error state.
+  // The status row carries only the live busy / error state. Idle
+  // key-hint chips live on the right pane's bottom border.
   let status = match (state.busy, &state.last_error) {
     (true, _) => Line::from(Span::styled(
       "calling /v1/embeddings…",

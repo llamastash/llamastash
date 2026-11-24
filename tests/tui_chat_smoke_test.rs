@@ -1,10 +1,8 @@
-//! Right-pane Unit 7 smoke coverage.
-//!
-//! Verifies that the [`crate::tui::oai_client`] streaming chat path
-//! drains its SSE channel against the `fake_llama_server` fixture
-//! and that `embed` / `rerank` one-shots round-trip too. Skipped
-//! unless the `test-fixtures` feature is on so the fake binary ships
-//! only in test builds (matches the `start_model_ipc_test` posture).
+//! Smoke coverage for the right pane: the [`crate::tui::oai_client`]
+//! streaming chat path drains its SSE channel against the
+//! `fake_llama_server` fixture, and `embed` / `rerank` one-shots
+//! round-trip too. Skipped unless the `test-fixtures` feature is on
+//! so the fake binary ships only in test builds.
 
 #![cfg(feature = "test-fixtures")]
 
@@ -24,11 +22,8 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 /// Spawn the chat stream against a fresh `mpsc::Sender<Event>` and
-/// return the receiver side. The integration tests below pre-date the
-/// kdash-style unified event channel and used to get back a
-/// `Receiver<ChatStreamMsg>` directly; this helper bridges them onto
-/// the new `Event::ChatStream(...)` envelope without rewriting every
-/// assertion.
+/// return the receiver side, bridged onto the `Event::ChatStream(...)`
+/// envelope.
 fn spawn_chat_stream_for_test(port: u16, model: &str, prompt: &str) -> mpsc::Receiver<Event> {
   let (tx, rx) = mpsc::channel::<Event>(64);
   spawn_chat_stream(port, model.to_string(), prompt.to_string(), tx);
@@ -62,9 +57,7 @@ fn allocate_port_range() -> PortRange {
 
 /// Holds the daemon task + socket and, on drop, cleanly shuts the daemon down
 /// so its `setsid`-detached `fake_llama_server` child doesn't outlive the test
-/// as an init-owned orphan — the leak these smoke tests historically caused
-/// (see the `allocate_port_range` note). Uses the shared sync-shutdown helper,
-/// mirroring cli_integration_test's `DaemonHandle`.
+/// as an init-owned orphan.
 struct ChatDaemon {
   socket: PathBuf,
   join: Option<tokio::task::JoinHandle<()>>,
@@ -163,7 +156,6 @@ async fn drive_to_ready_port() -> (u16, ChatDaemon) {
   )
 }
 
-// All five tests in this file are `#[cfg_attr(windows, ignore)]`.
 // Each one drives a full daemon + supervisor + fake_llama_server +
 // reqwest HTTP client per test. cargo test runs them in parallel,
 // and on windows-latest the cumulative process/port/socket churn
@@ -173,11 +165,7 @@ async fn drive_to_ready_port() -> (u16, ChatDaemon) {
 //
 // They are TUI HTTP-client smoke tests — the supervisor surface they
 // exercise is otherwise well-covered by supervisor_ipc_test,
-// start_model_ipc_test, and supervisor_lifecycle_test (all of which
-// run green on Windows after the Phase B fix). See TODO.md R2 for the
-// follow-up to either serialize them via a process-wide mutex or
-// restructure the binary so the chat HTTP client can be exercised
-// without spinning up a full daemon stack per test.
+// start_model_ipc_test, and supervisor_lifecycle_test.
 #[cfg_attr(
   windows,
   ignore = "windows: parallel HTTP test resource contention — R2 follow-up"

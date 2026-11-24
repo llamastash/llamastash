@@ -1,6 +1,6 @@
 //! HuggingFace Hub API client.
 //!
-//! Two surfaces, both routed through [`FetchClient`] so the v2 fetch
+//! Two surfaces, both routed through [`FetchClient`] so the fetch
 //! contract (HTTPS-only, host allowlist, redirect cap, body cap,
 //! offline branch) gates every metadata request:
 //! - [`search`] hits `GET /api/models` with `search`, `sort`, `limit`, and
@@ -17,11 +17,11 @@
 //!   whose `Siblings` struct only carries the filename). Sizes feed the
 //!   picker's hardware-fit indicator directly.
 //!
-//! Search + listing are deliberately unauthenticated; the v2 fetch
+//! Search + listing are deliberately unauthenticated; the fetch
 //! contract forbids opportunistic `Authorization` headers, and both
 //! endpoints are public. Private repos may surface in search but fail
 //! to pull from the existing `download_repo` path; the dialog renders
-//! the error per R117 rather than gating browse behind auth.
+//! the error rather than gating browse behind auth.
 
 use serde::Deserialize;
 
@@ -40,7 +40,7 @@ pub const SEARCH_BODY_CAP: u64 = 1024 * 1024;
 /// 50 KiB.
 pub const REPO_LIST_BODY_CAP: u64 = 256 * 1024;
 
-/// Default page size; matches R108's target of 20 rows per page.
+/// Default page size: 20 rows per page.
 pub const SEARCH_LIMIT: u32 = 20;
 
 /// One row in a HuggingFace search response. Fields that the API may
@@ -70,9 +70,7 @@ pub struct HfSearchResult {
 
 /// Which weight formats a search should return.
 ///
-/// The search used to pin `filter=gguf` unconditionally, so a safetensors-only
-/// repo could not be found — and therefore could not be pulled — no matter
-/// which backends were installed. Verified against the live API: the two
+/// Verified against the live API: the two
 /// filters AND rather than OR (asking for both returns only repos publishing
 /// both), so widening means dropping the filter, not adding one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -188,8 +186,7 @@ impl HfSortKey {
   /// `Trending` maps to `trendingScore` — the HF Hub API renamed
   /// the parameter value in 2026 (the legacy `sort=trending` now
   /// returns `HTTP 400`). `trendingScore` accepts `search` and
-  /// `filter=gguf` natively, so unlike the legacy carve-out we
-  /// don't have to strip either param under trending.
+  /// `filter=gguf` natively.
   ///
   /// The client-side sorts have no server token, so they fetch the
   /// `downloads` page and reorder it locally.
@@ -288,10 +285,9 @@ pub async fn search(
   })
 }
 
-/// Pure URL builder for the `/api/models` search endpoint. Carved out
-/// of [`search`] so the encoding rules can be unit-tested without a
-/// runtime / FetchClient. Every sort key — including `Trending` (now
-/// `sort=trendingScore`) — accepts `search` and `filter=gguf`
+/// URL builder for the `/api/models` search endpoint. Carved out of
+/// [`search`] so the encoding rules can be unit-tested without a
+/// runtime / FetchClient. Every sort key accepts `search` and `filter=gguf`
 /// natively, so the URL shape is uniform across sorts.
 fn build_search_url(
   endpoint: &str,
@@ -734,10 +730,8 @@ mod tests {
     );
   }
 
-  /// The GGUF pin is what made a safetensors repo unfindable, so dropping it
-  /// under `Any` is the whole fix. Verified against the live API that the two
-  /// format filters AND rather than OR, so there is no both-formats filter to
-  /// ask for — omitting it is the only way to see both.
+  /// The two GGUF format filters AND rather than OR, so there is no both-formats
+  /// filter to ask for — omitting it is the only way to see both.
   #[test]
   fn the_format_filter_is_omitted_when_any_format_is_wanted() {
     let gguf = build_search_url(
@@ -818,9 +812,7 @@ mod tests {
   fn build_search_url_carries_search_and_filter_for_every_sort_including_trending() {
     // Regression: with `sort=trendingScore` (the renamed trending
     // token), the HF API accepts `search` and `filter=gguf` natively
-    // — the URL shape is uniform across every sort. The previous
-    // round of carve-outs (drop both params under trending) was
-    // chasing the 400 symptom rather than the rename root cause.
+    // — the URL shape is uniform across every sort.
     for sort in [
       HfSortKey::Downloads,
       HfSortKey::Likes,

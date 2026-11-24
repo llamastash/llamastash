@@ -1,10 +1,7 @@
 //! Command-line argument schema (clap derive).
 //!
 //! Top-level args are `global = true` so every subcommand inherits them, and
-//! a missing subcommand routes to the TUI. The shape of each subcommand
-//! mirrors the agent-facing surface defined in
-//! `docs/plans/2026-05-13-001-feat-llamatui-v1-launcher-plan.md` —
-//! handlers are stubbed until their respective implementation units land.
+//! a missing subcommand routes to the TUI.
 
 use std::{ffi::OsString, net::IpAddr, path::PathBuf};
 
@@ -2273,7 +2270,6 @@ mod tests {
       assert!(!bare.sglang);
       assert!(!bare.force);
 
-      // `--foreground` (and its `-f` alias) flips the bool back on.
       assert!(parsed_start_args(verb, &["--foreground"]).foreground);
       assert!(parsed_start_args(verb, &["-f"]).foreground);
 
@@ -2313,7 +2309,6 @@ mod tests {
       // fallback off.
       assert!(parsed_start_args(verb, &["--no-proxy-fallback"]).no_proxy_fallback);
 
-      // Each backend opt-in flag lands on its own bool.
       assert!(parsed_start_args(verb, &["--vllm"]).vllm);
       assert!(parsed_start_args(verb, &["--sglang"]).sglang);
 
@@ -2486,16 +2481,15 @@ mod tests {
   }
   #[test]
   fn stop_no_args_opens_picker_at_runtime() {
-    // After the picker landed, `llamastash stop` is allowed at the
-    // parse layer — the handler opens a cliclack picker over running
-    // launches when both `<target>` and `--all` are absent. The
-    // picker itself refuses non-TTY / `--json` contexts so a piped
-    // caller still gets an actionable error, but that's runtime
-    // policy, not a clap constraint.
+    // `llamastash stop` is allowed at the parse layer — the handler
+    // opens a cliclack picker over running launches when both
+    // `<target>` and `--all` are absent. The picker itself refuses
+    // non-TTY / `--json` contexts so a piped caller still gets an
+    // actionable error, but that's runtime policy, not a clap
+    // constraint.
     assert!(Cli::try_parse_from(["llamastash", "stop"]).is_ok());
     assert!(Cli::try_parse_from(["llamastash", "stop", "--yes"]).is_ok());
 
-    // The explicit forms still parse cleanly.
     assert!(Cli::try_parse_from(["llamastash", "stop", "42"]).is_ok());
     assert!(Cli::try_parse_from(["llamastash", "stop", "--all"]).is_ok());
   }
@@ -2710,8 +2704,7 @@ mod tests {
 
   #[test]
   fn presets_save_rejects_port() {
-    // Config presets carry no port (per-launch, auto-assigned), so the
-    // flag was removed — clap must reject it now.
+    // Config presets carry no port (per-launch, auto-assigned), so clap must reject it.
     let result = Cli::try_parse_from([
       "llamastash",
       "presets",
@@ -2813,8 +2806,6 @@ mod tests {
     let err = result.unwrap_err();
     assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
     let rendered = err.to_string();
-    // `pull` is now a first-class subcommand (R65 graduated in v2).
-    // `init` and `doctor` ship in v2 alongside it.
     for sub in [
       "daemon",
       "list",

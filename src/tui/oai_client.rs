@@ -1,9 +1,7 @@
 //! Thin OpenAI-compatible HTTP client used by the right-pane tabs.
 //!
-//! v1 calls land in `tabs::chat`, `tabs::embed`, and `tabs::rerank`;
-//! all three hit a `llama-server` over loopback on the daemon's
-//! recorded port. Isolated here so the v2 MCP layer can reuse the
-//! same primitives.
+//! `tabs::chat`, `tabs::embed`, and `tabs::rerank` all hit the engine
+//! over loopback on the daemon's recorded port.
 //!
 //! The chat path streams SSE chunks via a `mpsc` channel rather
 //! than holding the renderer's mutable App while the response is
@@ -62,7 +60,7 @@ pub enum ChatStreamMsg {
   /// One incremental delta the renderer should append.
   Delta(String),
   /// Stream finished cleanly. `finish_reason` may be `None` if the
-  /// server stopped reporting one (older llama.cpp builds).
+  /// server stopped reporting one.
   Finished { finish_reason: Option<String> },
   /// Transport or protocol error — the stream is dead.
   Error(String),
@@ -152,14 +150,13 @@ pub fn spawn_chat_stream(
     let mut stream = resp.bytes_stream();
     let mut buffer = String::new();
     let mut finish_reason: Option<String> = None;
-    // Tracks whether we have an open synthetic `<think>` block from
-    // a prior `reasoning_content` delta. Newer llama.cpp builds split
+    // Tracks an open synthetic `<think>` block from a prior
+    // `reasoning_content` delta. Newer llama.cpp builds split
     // chain-of-thought into its own delta field; we wrap those chunks
-    // in `<think>...</think>` so the chat tab's existing collapse
-    // toggle (`r:think`) works against them. The marker is only
-    // emitted at the *boundary* (first reasoning chunk → `<think>`,
-    // first content chunk after reasoning → `</think>`) so a stream
-    // that interleaves the two channels stays well-formed.
+    // in `<think>...</think>` so the chat tab's `r` collapse
+    // toggle works on them. Markers appear only at boundaries (first
+    // reasoning chunk, first content chunk after reasoning) so
+    // interleaved streams stay well-formed.
     let mut in_reasoning = false;
     use futures::StreamExt;
     while let Some(next_chunk) = stream.next().await {
@@ -270,10 +267,9 @@ struct ChatDelta {
   /// is set to a value other than `none` (default for DeepSeek-R1 /
   /// Qwen3 / GPT-OSS chat templates that surface a separate
   /// `<think>` channel). The wrapper task synthesises `<think>` /
-  /// `</think>` markers around these chunks so the chat tab's
-  /// renderer (which styles think content muted and inserts a
-  /// blank-line separator before the answer) handles both the
-  /// inline-tag and separate-field shapes through one code path.
+  /// `</think>` markers around these chunks so the chat tab
+  /// renderer handles the inline-tag and separate-field shapes
+  /// through one code path.
   #[serde(default)]
   reasoning_content: Option<String>,
 }

@@ -124,10 +124,9 @@ pub async fn dispatch_request(ctx: &MethodContext, req: Request) -> Response {
     }
     #[cfg(feature = "test-fixtures")]
     "_test_sleep" => {
-      // Test-only seam: holds the connection open for the requested
-      // number of milliseconds. Used by drain-timeout tests to model
-      // a slow in-flight request. Behind the `test-fixtures` feature
-      // so production builds never expose it.
+      // Used by drain-timeout tests to model a slow in-flight
+      // request. Behind the `test-fixtures` feature so production
+      // builds never expose it.
       let ms: u64 = req
         .params
         .as_ref()
@@ -184,9 +183,8 @@ pub async fn dispatch_request(ctx: &MethodContext, req: Request) -> Response {
   }
 }
 
-/// Lift a `Result<Value, ErrorObject>` into a `Response`. Collapses the
-/// 14 near-identical `match { Ok(v) => Response::ok(id, v), Err(e) =>
-/// Response::err(id, e) }` arms in the dispatcher.
+/// Collapses the 14 near-identical `match { Ok(v) => Response::ok(id, v),
+/// Err(e) => Response::err(id, e) }` arms in the dispatcher.
 fn respond(id: Value, result: Result<Value, ErrorObject>) -> Response {
   match result {
     Ok(v) => Response::ok(id, v),
@@ -255,12 +253,10 @@ struct StopExternalParams {
   grace_secs: u64,
 }
 
-/// Stop an unmanaged `llama-server` process the daemon previously
-/// surfaced via the `external` snapshot. Sends SIGTERM, waits up
-/// to `grace_secs`, then SIGKILL if the process is still alive.
-/// The external snapshot refreshes on the periodic resweep
-/// (`orphans::RESWEEP_INTERVAL`), so the row drops off within one interval of
-/// the process exiting.
+/// Stop an unmanaged engine process the daemon previously surfaced via
+/// the `external` snapshot. The external snapshot refreshes on the
+/// periodic resweep (`orphans::RESWEEP_INTERVAL`), so the row drops off
+/// within one interval of the process exiting.
 async fn stop_external_handler(
   ctx: &MethodContext,
   params: Option<Value>,
@@ -361,7 +357,7 @@ async fn stop_external_handler(
   }
   // SIGTERM first — give the process time to exit cleanly. Goes
   // through [`ProcessControl`] so the Windows single-pid path stays
-  // in one place rather than a second migration here.
+  // in one place.
   use crate::util::process_control::SignalTarget;
   let pc = crate::util::process_control::platform_default();
   pc.signal_graceful(SignalTarget::SinglePid(parsed.pid));
@@ -420,6 +416,9 @@ async fn stop_all_handler(
   Ok(json!({"stopped": stopped, "count": count}))
 }
 
+/// The grace daemon shutdown gives each child, before any backend floor.
+pub(crate) const SHUTDOWN_STOP_GRACE: Duration = Duration::from_secs(5);
+
 /// SIGTERM-then-SIGKILL every managed launch concurrently, drop them
 /// from the registry, and prune `state.running`. Returns the
 /// (launch_id, final_state) pairs for callers that need to surface
@@ -427,18 +426,15 @@ async fn stop_all_handler(
 ///
 /// Exposed so the daemon's shutdown path can kill its supervised
 /// children before `run_foreground` returns. The supervisor spawns
-/// `llama-server` with `setsid`, so without this hook a graceful
+/// the engine with `setsid`, so without this hook a graceful
 /// `daemon stop` / SIGINT / IPC `shutdown` leaves the children
-/// running as init-owned orphans. R42's orphan adoption only intends
-/// to rescue children from *crashes* (SIGKILL, segfault); it should
+/// running as init-owned orphans. Orphan adoption only intends to
+/// rescue children from *crashes* (SIGKILL, segfault); it should
 /// not turn deliberate shutdown into a leak.
 ///
 /// The `join_all` keeps wall-clock equal to the slowest stop rather
 /// than the sum — the original sequential loop blew the default IPC
 /// client timeout for 2+ stuck launches.
-/// The grace daemon shutdown gives each child, before any backend floor.
-pub(crate) const SHUTDOWN_STOP_GRACE: Duration = Duration::from_secs(5);
-
 pub(crate) async fn stop_all_managed(
   ctx: &MethodContext,
   grace: Duration,
@@ -561,10 +557,9 @@ fn requests_tail_handler(ctx: &MethodContext, params: Option<Value>) -> Result<V
   Ok(json!(ctx.requests.tail(scope, limit)))
 }
 
-/// Sorted list of every method `dispatch_request` knows. Used by
-/// the `capabilities` handler so clients can feature-detect. The
-/// names here mirror the wire spec in `docs/architecture.md`; a new
-/// method must be added in both places.
+/// Every method `dispatch_request` knows. The names here mirror the
+/// wire spec in `docs/architecture.md`; a new method must be added in
+/// both places.
 const PUBLIC_METHODS: &[&str] = &[
   "ping",
   "version",
@@ -1020,9 +1015,8 @@ fn preset_row(p: &NamedPreset, is_default: bool) -> Value {
   json!({
     "name": p.name,
     "params": p.params.to_wire(),
-    // Presets live in config.yaml now; the provenance is constant but
-    // surfaced so agents can distinguish a config preset from any future
-    // source without re-deriving it.
+    // Constant but surfaced so agents can distinguish a config preset from
+    // any future source without re-deriving it.
     "source": "config",
     "is_default": is_default,
     // Residency policy: this preset's idle-TTL override (`0` = never unload,
@@ -1042,9 +1036,9 @@ struct FavoriteParams {
 ///
 /// A path with no file to hash — a registry entry, a snapshot directory — gets
 /// the synthetic id its backend mints, path-identical to the catalog row so the
-/// TUI's `★` (which matches favorites by `id.path`) resolves. This used to
-/// special-case one backend by name, which both broke the no-leak rule and left
-/// every later file-less shape reading a GGUF header that isn't there.
+/// TUI's `★` (which matches favorites by `id.path`) resolves. Special-casing
+/// one backend by name breaks the no-leak rule and leaves every later file-less
+/// shape reading a GGUF header that isn't there.
 fn resolve_favorite_id(model_path: &std::path::Path) -> Result<ModelId, ErrorObject> {
   crate::backend::resolve_identity_for_path(model_path, None)
     .map(|r| r.id)
@@ -1197,9 +1191,8 @@ async fn delete_model_handler(
     .collect();
   let executed =
     tokio::task::spawn_blocking(move || crate::discovery::delete::execute(&plan)).await;
-  // On both outcomes, as the TUI's forget did before: `remove_dir_all` can fail
-  // partway with some files already gone, and it drops only the rows whose files
-  // are.
+  // On both outcomes: `remove_dir_all` can fail partway with some files
+  // already gone, and it drops only the rows whose files are.
   ctx.catalog.forget_missing(&forget).await;
   let message = match executed {
     Ok(Ok(message)) => message,
@@ -1229,10 +1222,8 @@ async fn favorite_list_handler(ctx: &MethodContext) -> Result<Value, ErrorObject
 
 /// Snapshot every persisted `last_params` entry. Used by the TUI to
 /// pre-populate the launch picker with the most recent successful
-/// launch params for the focused model (plan: "the picker is
-/// pre-populated with last-params and named-preset values"). Keyed
-/// by `model_path` so the TUI can look up without re-resolving
-/// `ModelId`.
+/// launch params for the focused model. Keyed by `model_path` so the
+/// TUI can look up without re-resolving `ModelId`.
 async fn last_params_list_handler(ctx: &MethodContext) -> Result<Value, ErrorObject> {
   let snapshot = ctx.state.snapshot().await;
   let rows: Vec<Value> = snapshot
@@ -1463,7 +1454,7 @@ mod tests {
     }
   }
 
-  /// An `llama-server` the daemon does not own can hold the file open too.
+  /// An engine process the daemon does not own can hold the file open too.
   #[tokio::test]
   async fn delete_model_refuses_an_external_process_on_that_path() {
     let dir = crate::test_support::unique_temp_dir("ls-ipc", "del-external");

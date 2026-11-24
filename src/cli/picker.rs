@@ -56,9 +56,10 @@ pub(crate) fn confirm_line<R: Read, W: Write>(
   Ok(matches!(buf.trim().to_lowercase().as_str(), "y" | "yes"))
 }
 
-/// Refuse the picker up front when the caller can't drive it. `session` words
-/// its own refusal because a missing model there is a model problem, not a
-/// usage one.
+/// Refuse the picker up front when the caller can't drive it. `command`
+/// appears in the refusal text so each caller names itself. `session`
+/// words its own refusal because a missing model there is a model
+/// problem, not a usage one.
 pub fn ensure_interactive(json: bool, command: &str) -> Result<(), CliExit> {
   if json {
     return Err(CliExit::new(

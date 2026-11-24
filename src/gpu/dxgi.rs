@@ -155,10 +155,9 @@ pub fn probe_devices() -> Option<Vec<GpuDevice>> {
       // VRAM or be mistaken for unified memory.
       (dedicated, None, ClassSource::Discrete)
     };
-    // Tag the device with the backend based on vendor. Windows DXGI
-    // can't distinguish GPU vendors reliably, so we use the VendorId
-    // to set the backend tag (matches how Linux backends label their
-    // devices for the multi-backend probe).
+    // DXGI gives no backend label, so the vendor id picks it. Intel and
+    // unrecognised vendors have no `GpuInfo` variant of their own, so
+    // they report as `unknown`.
     let backend = match vendor {
       Vendor::Nvidia => "nvidia",
       Vendor::Amd => "amd",
@@ -229,7 +228,7 @@ fn adapter_is_uma(adapter: &IDXGIAdapter1) -> bool {
 
 /// Return the raw device list. Every DXGI adapter becomes a device
 /// carrying the per-vendor backend tag that `probe_devices` set; the
-/// multi-backend probe in `gpu::mod` groups and labels them.
+/// multi-backend probe in `crate::gpu` groups and labels them.
 pub(crate) fn classify_devices(adapters: Vec<(Vendor, GpuDevice)>) -> Vec<GpuDevice> {
   adapters.into_iter().map(|(_, d)| d).collect()
 }

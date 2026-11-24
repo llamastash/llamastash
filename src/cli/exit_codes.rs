@@ -31,7 +31,7 @@ pub const STOP_FAILED: i32 = 68;
 /// so a wizard-internal download failure stays separable from a bare
 /// `pull`.
 pub const PULL_FAILED: i32 = 69;
-/// The engine a launch needs is unavailable: the `llama-server` binary
+/// The engine a launch needs is unavailable: the default engine binary
 /// not on `$PATH` with no `--llama-server` flag and
 /// `LLAMASTASH_LLAMA_SERVER` unset, or the model's backend disabled /
 /// its launcher missing (the daemon tags that refusal

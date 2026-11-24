@@ -1,7 +1,4 @@
-//! Distil a parsed [`GgufHeader`] into a domain-relevant
-//! [`ModelMetadata`] view: architecture, parameter count, dominant
-//! quantisation, native context length, chat-template, tokenizer hint,
-//! reasoning hint, and mode hint.
+//! Distil a parsed [`GgufHeader`] into a domain-relevant [`ModelMetadata`] view.
 //!
 //! Lookup is **best-effort**: GGUFs in the wild are inconsistent about
 //! whether keys are present, what arch prefix they use, and what the
@@ -20,30 +17,27 @@ pub struct ModelMetadata {
   /// Compact human label for the parameter count (e.g., "7B", "235B",
   /// "1.2T"). `None` when `total_parameters` is unset or below 100M.
   pub parameter_label: Option<String>,
-  /// Dominant tensor quantisation across the model's weight tensors.
+  /// Quant family: `general.file_type` when it names one, else the
+  /// dominant quantisation across the weight tensors.
   pub quant: Quant,
   /// Verbatim quant string for backends whose quantisation has no GGML
   /// tag (e.g. an affine "4-bit gs64" or an AWQ/GPTQ label). `quant`
   /// is GGML-only and `Copy`, and `Unknown(u32)` means "unknown *GGML*
   /// tag" — wrong to reuse for a non-GGML scheme. GGUF constructors leave
   /// this `None`; a safetensors backend overlays it in its projection.
-  /// Rendered verbatim where present (a future safetensors backend wires
-  /// the display); GGUF output is unchanged while it stays `None`.
   pub quant_label: Option<String>,
   pub native_ctx: Option<u64>,
   pub chat_template: Option<String>,
   pub tokenizer_kind: Option<String>,
   /// Set when the GGUF advertises a `<think>` special token (DeepSeek-R1,
   /// Qwen3, Marco-O1, …). Implies `--reasoning-format deepseek --jinja`.
-  /// Collapsed from a single-variant enum until a second reasoning style
-  /// is in scope.
   pub reasoning_hint: bool,
   pub mode_hint: ModeHint,
   /// Sum of per-tensor storage bytes (the GGUF weights footprint).
   /// `None` when the header has no usable tensor info — typical for
   /// metadata-only GGUFs. Surfaced in `list_models` so the TUI can
   /// render a weights-only est-mem badge without re-reading the
-  /// header on every refresh (origin: R8, est-mem render half).
+  /// header on every refresh.
   ///
   /// For split-GGUF entries the scanner replaces the shard-1-only
   /// value with the on-disk total across every shard (see
@@ -79,10 +73,10 @@ impl ModelMetadata {
   /// The quant label to render: the backend's verbatim overlay where one
   /// exists, else the GGML tag.
   ///
-  /// The single accessor on purpose. The fallback used to be written out at
-  /// each render site, and two of five had it — so an AWQ safetensors row read
-  /// `AWQ` in `list` and the TUI but `Unknown` through the Ollama-compat
-  /// surface. Call this; never reach for `quant` directly to display.
+  /// The single accessor on purpose. A fallback written out at each render
+  /// site made an AWQ safetensors row read `AWQ` in `list` and the TUI but
+  /// `Unknown` through the Ollama-compat surface. Call this; never reach
+  /// for `quant` directly to display.
   pub fn quant_display(&self) -> String {
     self
       .quant_label
@@ -345,7 +339,6 @@ impl ModeHint {
   }
 }
 
-/// Distil a parsed header into [`ModelMetadata`].
 pub fn summarise(header: &GgufHeader) -> ModelMetadata {
   let arch_raw = header.string(&["general.architecture"]).map(str::to_string);
   let arch_key = arch_raw.as_deref();
@@ -825,7 +818,6 @@ mod tests {
 
   #[test]
   fn mtp_reads_nextn_predict_layers_when_positive() {
-    // Embedded MTP head: `{arch}.nextn_predict_layers > 0` ⇒ Some(n).
     let bytes = FixtureBuilder::new()
       .with_arch("qwen35")
       .with_kv("qwen35.nextn_predict_layers", GgufValue::U64(1))
@@ -840,7 +832,6 @@ mod tests {
 
   #[test]
   fn mtp_none_when_key_absent_or_zero() {
-    // Absent key ⇒ None.
     let none = parse(FixtureBuilder::new().with_arch("llama").build());
     assert_eq!(none.mtp, None, "no nextn key ⇒ not embedded-MTP-capable");
     // Explicit zero ⇒ None (a non-MTP checkpoint that still writes the key).
@@ -892,12 +883,10 @@ mod tests {
 
   #[test]
   fn quant_from_label_round_trips_every_variant() {
-    // Tier-B sweep replaced an open-coded 15-arm `parse_quant`
-    // with the canonical `Quant::from_label`. The contract is
-    // strict round-tripping: every `label()` output must parse
-    // back to the same variant. `Unknown(_)` is the only special
-    // case — its label is the literal "Unknown" sentinel rather
-    // than a round-trippable tag.
+    // The contract is strict round-tripping: every `label()` output must
+    // parse back to the same variant. `Unknown(_)` is the only special
+    // case — its label is the literal "Unknown" sentinel rather than a
+    // round-trippable tag.
     use Quant::*;
     let canonical = [
       F32, F16, BF16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q8_1, Q2_K, Q3_K, Q4_K, Q5_K, Q6_K, Q8_K,
@@ -917,10 +906,6 @@ mod tests {
 
   #[test]
   fn reasoning_hint_absent_without_think_token() {
-    // Tier-A YAGNI sweep collapsed `Option<ReasoningHint>` to `bool`.
-    // The absence path used to be `None`; it's now `false`, but the
-    // observable behaviour (no `<think>` ⇒ no reasoning hint) must
-    // be unchanged.
     let bytes = FixtureBuilder::new().with_arch("llama").build();
     let m = parse(bytes);
     assert!(!m.reasoning_hint);
@@ -957,7 +942,6 @@ mod tests {
 
   #[test]
   fn parameter_count_falls_back_to_tensor_sum() {
-    // No general.parameter_count → sum of .weight tensors' element counts.
     let bytes = FixtureBuilder::new()
       .with_arch("llama")
       .with_tensor("output.weight", &[10, 10], 1)

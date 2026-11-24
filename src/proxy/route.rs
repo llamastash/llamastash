@@ -1,24 +1,10 @@
 //! Pre-flight: turn an inbound HTTP request into a forwarding plan.
 //!
 //! This module walks every incoming `/v1/...` request before reaching
-//! for the upstream `llama-server`. The output is a
+//! for the upstream engine. The output is a
 //! [`RouteDecision`] that captures everything [`super::forward`]
 //! needs to do the pass-through, plus enough context for the error
 //! arms to render an OpenAI-shaped body.
-//!
-//! Hot path:
-//!   1. Buffer the body under the size cap ([`http-body-util::Limited`]).
-//!   2. Extract `body.model` with a tolerant `JustModel` parse that
-//!      ignores every other field. Empty / missing → 400.
-//!   3. Build a `Vec<CatalogRow>` from the catalog snapshot and run
-//!      the existing fuzzy resolver ([`crate::cli::resolve::resolve_model`]).
-//!   4. Walk the supervisor snapshot for a Ready entry whose
-//!      [`ModelId`] path matches the resolved catalog row.
-//!
-//! The [`RouteDecision::NotRunning`] arm drives the launch +
-//! single-flight + fallback machinery; the variant carries the
-//! resolved row + arch so that path doesn't have to repeat the
-//! lookup.
 
 use std::sync::Arc;
 
@@ -339,7 +325,6 @@ pub(crate) async fn decide(state: &Arc<ProxyState>, body_model: Option<String>) 
     .collect();
   let mut ready = Vec::new();
   for (launch_id, model) in same_model.iter().cloned() {
-    // When a name is present, only a launch with that name is a match.
     if let (Some(n), Some(st)) = (&name, &state_snap) {
       if !st
         .running
@@ -404,9 +389,6 @@ pub(crate) async fn decide(state: &Arc<ProxyState>, body_model: Option<String>) 
     };
   }
 
-  // Catalog matched but no supervisor is in Ready state — dispatch
-  // into the auto-start + single-flight + family-MRU-fallback flow
-  // implemented by `route::handle_not_running`.
   RouteDecision::NotRunning {
     requested_model: requested,
     resolved_row: Box::new(resolved),
@@ -798,14 +780,14 @@ fn is_named(
 }
 
 /// The backend a **running** model (keyed by its [`ModelId`]) is actually
-/// served by, or `None` for the default (llama.cpp) backend. Prefers the
+/// served by, or `None` for the default backend. Prefers the
 /// `resolved_backend` tag stamped on `last_params` — the launch's real backend,
 /// honoring an explicit `--backend` override — and falls back to the model's
 /// catalog routing verdict (when that backend is available) for a model with no
 /// tag yet (an adopted row, or the brief window before the recorder stamps).
 /// Used by `/ui` ([`Backend::serves_web_ui`]) and the mode guard
 /// ([`Backend::serves_mode`]) so both act on the true backend, not a
-/// prediction. Names no backend.
+/// prediction.
 pub(crate) async fn running_model_backend(
   state: &Arc<ProxyState>,
   id: &ModelId,
@@ -837,7 +819,7 @@ pub(crate) async fn running_model_backend(
 /// by the not-running arm of the mode guard: a compatible model launched for a
 /// `/v1/embeddings` request would auto-start in chat mode on its routed backend,
 /// then that backend's own error surfaces after the load — the guard refuses
-/// first (see [`Backend::serves_mode`]). Names no backend.
+/// first (see [`Backend::serves_mode`]).
 pub(crate) async fn would_route_backend(
   state: &Arc<ProxyState>,
   row: &CatalogRow,
@@ -870,8 +852,7 @@ pub(crate) async fn would_route_backend(
   ))
 }
 
-/// Compare a `ModelId::path` (PathBuf) with a `CatalogRow::path`
-/// (String). The catalog row is built from the discovered path's
+/// The catalog row is built from the discovered path's
 /// `to_string_lossy()` view, and `ModelId::path` is canonical too —
 /// equality is exact in production.
 fn same_path(model_id_path: &std::path::Path, row_path: &str) -> bool {
@@ -915,18 +896,12 @@ pub(crate) struct NotRunningPlan {
 /// Auto-start entry point — invoked from `router.rs` when a request
 /// hits a catalog row whose model isn't currently Ready.
 ///
-/// Drives:
-///   1. Auto-start via [`launch::auto_start`] (single-flight
-///      coalesced; waits for Ready or terminal Error).
-///   2. On Ready → MRU touch + forward (no fallback headers).
-///   3. On Error → pick a family-MRU fallback and forward with
-///      `x-llamastash-served-by` + `x-llamastash-fallback-reason`.
-///      Reason is `launch_failed` when the pick shares the requested
-///      arch (graceful in-family substitution) and `family_mismatch`
-///      when the pick's arch differs or either side lacks arch metadata
-///      (clients that care should branch on the header). Embedding and
-///      rerank requests never fall back. If no Ready candidate exists
-///      → 503 `launch_failed` with the running list.
+/// On a launch error it forwards to a family-MRU fallback with
+/// `x-llamastash-served-by` + `x-llamastash-fallback-reason`. The reason is
+/// `launch_failed` when the pick shares the requested arch, and
+/// `family_mismatch` when its arch differs or either side lacks arch metadata.
+/// Embedding and rerank requests never fall back. With no Ready candidate the
+/// answer is 503 `launch_failed` with the running list.
 ///
 /// `endpoint_mode` carries the mode the requested endpoint implies so
 /// the auto-start composes an argv that can answer it (see
@@ -948,7 +923,6 @@ pub(crate) async fn handle_not_running(
   let outcome = launch::auto_start(state, &resolved_row, endpoint_mode, name, &mut record).await;
   match outcome {
     LaunchOutcome::Ready { port, model_id } => {
-      // Touch the MRU using the supervisor we just confirmed Ready.
       // The display name for the response header on the happy path
       // is the requested model name — no fallback, no surprise.
       state.mru.touch(&model_id).await;
@@ -1017,7 +991,7 @@ pub(crate) async fn handle_not_running(
         )
         .await;
       }
-      // No Ready model to fall back to. R155 mandates a 503 with
+      // No Ready model to fall back to. A 503 with
       // the `running: []` list inline (empty by construction here:
       // `pick_fallback` only returns None when zero Ready candidates
       // exist). Drop the requested model name into the message so
@@ -1063,7 +1037,7 @@ pub(crate) fn launch_failed_response(cause: &str, requested_model: &str) -> Prox
 /// wins when present; otherwise fall back to the file stem via
 /// [`crate::util::paths::model_display_name`] so the value of
 /// `x-llamastash-served-by` is byte-equal to the corresponding
-/// `/v1/models` `id` for the same model (closes R-11).
+/// `/v1/models` `id` for the same model.
 pub(crate) fn served_name_for_row(row: &CatalogRow) -> String {
   if let Some(label) = &row.display_label {
     return label.clone();
@@ -1084,9 +1058,7 @@ pub(crate) fn served_name_for_model(
     .unwrap_or_else(|| crate::util::paths::model_display_name(fallback))
 }
 
-/// Index a catalog snapshot by canonical path string for O(1) metadata
-/// lookup keyed off a supervisor's `ModelId::path`. The catalog is small
-/// (tens to hundreds of rows), so the build is cheap.
+/// The catalog is small (tens to hundreds of rows), so the build is cheap.
 pub(crate) fn index_catalog_by_path(
   catalog: &[DiscoveredModel],
 ) -> std::collections::HashMap<String, &DiscoveredModel> {
@@ -1097,10 +1069,6 @@ pub(crate) fn index_catalog_by_path(
   by_path
 }
 
-/// Build the candidate list the fallback selector picks from. Reads
-/// the supervisor snapshot (filtering to Ready), joins each row
-/// against the catalog snapshot to find the matching `arch`, and
-/// stamps the latest MRU timestamp.
 /// Only launches that serve `endpoint_mode` join. A media entry launches
 /// in chat mode, so a chat request also skips a row that declares a media mode.
 async fn collect_fallback_candidates(
@@ -1238,14 +1206,10 @@ mod tests {
     );
   }
 
-  // The four arms of `fallback_reason_for` decide whether the
-  // x-llamastash-fallback-reason header reads "launch_failed" (the
-  // picked model is in the same family as what the client asked for
-  // — output shape parity holds) or "family_mismatch" (cross-arch
-  // pick — output shape parity does not hold). Embedding/rerank
-  // clients branch on this header, so the four cases need explicit
-  // coverage rather than relying on the one integration test that
-  // happens to hit the `(None, Some)` branch.
+  // Embedding/rerank clients branch on the x-llamastash-fallback-reason
+  // header, so the four cases need explicit coverage rather than relying
+  // on the one integration test that happens to hit the `(None, Some)`
+  // branch.
 
   #[test]
   fn same_arch_on_both_sides_is_launch_failed() {

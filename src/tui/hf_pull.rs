@@ -1,17 +1,10 @@
-//! HuggingFace-pull / download behavior for the TUI.
-//!
-//! The state half of this subsystem lives in [`crate::tui::hf_dialog`]
-//! (the modal browse/search/file-pick state machine) and
-//! [`crate::tui::download_strip`] (the queue + active-pull progress
-//! strip). This module is their behavior half: it routes dialog
-//! keystrokes, spawns the background HF search / repo-listing /
-//! download tasks, bridges hf-hub progress callbacks back onto the
-//! unified TUI event channel, and applies the resulting
+//! HuggingFace-pull behavior for the TUI: routes dialog keystrokes, spawns the
+//! background search / listing / download tasks, and applies the resulting
 //! `HfDialogEvent` / `DownloadEvent` updates to `App`.
 //!
-//! The input/event-loop call sites that dispatch into these handlers
-//! stay in [`crate::tui::events`]; this module owns the handlers
-//! themselves.
+//! The state half lives in [`crate::tui::hf_dialog`] and
+//! [`crate::tui::download_strip`]; the input call sites stay in
+//! [`crate::tui::events`].
 
 use tokio::sync::mpsc;
 
@@ -20,7 +13,6 @@ use crossterm::event::{KeyCode, KeyEvent};
 use crate::tui::app::{App, ConfirmAction};
 use crate::tui::events::{Event, WriterCmd};
 
-/// Open the HuggingFace pull dialog (`d` in `Focus::List`).
 /// Offline state is resolved inside `App::open_hf_dialog` from
 /// `app.options.offline` ∨ `LLAMASTASH_OFFLINE`, so the call site
 /// stays a single line and the runtime offline value travels through
@@ -45,8 +37,7 @@ pub(crate) fn apply_cancel_download(app: &mut App) {
   });
 }
 
-/// Outcome of dispatching a key into the HF dialog. The router
-/// resolves the state-mutating action under a single `&mut
+/// The router resolves the state-mutating action under a single `&mut
 /// state` borrow, then surfaces any side effect (toast, close) for
 /// the caller to apply against `&mut App` once the borrow ends.
 enum HfDialogOutcome {
@@ -68,7 +59,7 @@ enum HfDialogOutcome {
 /// already empty), and the dialog's own keymap (`o`, `n`, `p`, …)
 /// fires through. Enter always means "submit the current query /
 /// row" regardless of edit mode. FilePicker and Confirm stages use
-/// Esc to walk back one stage; arrow keys move the cursor.
+/// Esc to walk back one stage.
 pub(crate) fn handle_hf_dialog_input(
   app: &mut App,
   key: KeyEvent,
@@ -77,8 +68,7 @@ pub(crate) fn handle_hf_dialog_input(
   use crate::tui::hf_dialog::HfStage;
   use crate::tui::input_field::InputOutcome;
   // Cloned out before the `&mut app.hf_dialog` borrow lands so the spawn
-  // helpers can keep their `Option<Sender>` signature without forcing
-  // every caller to thread the tx explicitly.
+  // helpers can keep their `Option<Sender>` signature.
   let events_tx = app.events_tx.clone();
   let popup_key = crate::tui::popup::key(app, key, true);
   let outcome = {
@@ -187,17 +177,14 @@ pub(crate) fn handle_hf_dialog_input(
   }
 }
 
-/// Push a pull onto the download-strip queue and — when no pull is
-/// currently active — promote it and spawn the background download
-/// task that ships progress back over the strip's mpsc.
 pub(crate) fn enqueue_hf_pull(app: &mut App, repo: String, row: crate::tui::hf_dialog::PickerRow) {
   use crate::tui::download_strip::{DownloadEvent, QueuedPull};
   let filename = row.download_filename().to_string();
   // Cache-hit short-circuit: probe the HF cache before queuing
   // anything. When every requested file already lives under a single
   // snapshot dir, emit AlreadyCached directly via the strip's mpsc
-  // and skip both the queue and the download spawn. Deterministic —
-  // a partial cache still falls through to a real download.
+  // and skip both the queue and the download spawn. A partial cache
+  // still falls through to a real download.
   if let Some(cached_path) = probe_cached_pull(&repo, &row.all_filenames()) {
     if let Some(tx) = &app.events_tx {
       let _ = tx.try_send(Event::Download(DownloadEvent::AlreadyCached {
@@ -227,11 +214,9 @@ pub(crate) fn enqueue_hf_pull(app: &mut App, repo: String, row: crate::tui::hf_d
   }
 }
 
-/// Probe the HF cache for every filename the pull would produce on
-/// disk and, when all are present under the same snapshot directory,
-/// return the path to the user-facing first file (the row's
-/// `download_filename`). Used by `enqueue_hf_pull` to short-circuit a
-/// redundant pull deterministically. Returns `None` when the
+/// When every filename the pull would produce on disk is present under
+/// the same snapshot directory, return the path to the user-facing
+/// first file (the row's `download_filename`). Returns `None` when the
 /// repo isn't cached, any shard is missing, or the cache root can't
 /// be resolved on this platform.
 pub(crate) fn probe_cached_pull(repo_id: &str, filenames: &[String]) -> Option<std::path::PathBuf> {
@@ -258,12 +243,10 @@ pub(crate) fn probe_cached_pull(repo_id: &str, filenames: &[String]) -> Option<s
   None
 }
 
-/// Spawn a tokio task that calls `init::download::download_repo`
-/// with a `DownloadProgress` shim relaying every callback to the
-/// strip's mpsc. Caller has already run `probe_cached_pull` against
-/// the requested files, so this path only fires for real downloads —
-/// the cache-hit short-circuit lives next to the queue
-/// enqueue, not inside the spawn.
+/// The caller has already run `probe_cached_pull` against the
+/// requested files, so this path only fires for real downloads — the
+/// cache-hit short-circuit lives next to the queue enqueue, not
+/// inside the spawn.
 ///
 /// Returns the spawned task's [`tokio::task::AbortHandle`] so the
 /// `Ctrl+X:cancel download` flow can interrupt an in-flight pull
@@ -353,12 +336,10 @@ pub(crate) fn spawn_download_task(
   handle.abort_handle()
 }
 
-/// DownloadProgress shim that forwards hf-hub callbacks into the
-/// download strip's mpsc. Tracks per-file sizes resolved at the
-/// listing pass so per-file finish callbacks aggregate cleanly
-/// across multi-shard pulls. Byte-level progress flows via
-/// `on_bytes_progress` — driven by `HfHubProgressAdapter` bridging
-/// hf-hub's `Progress::update(size)` chunk callbacks into our
+/// Tracks per-file sizes resolved at the listing pass so per-file finish
+/// callbacks aggregate cleanly across multi-shard pulls. Byte-level
+/// progress flows via `on_bytes_progress` — driven by `HfHubProgressAdapter`
+/// bridging hf-hub's `Progress::update(size)` chunk callbacks into our
 /// cumulative `(filename, bytes_in_file)` shape. The running totals
 /// live in [`crate::init::download::PullTotals`], shared with the CLI
 /// `pull` progress line.
@@ -425,12 +406,10 @@ impl crate::init::download::DownloadProgress for StripProgress {
   }
 }
 
-/// Spawn a background `init::hf_api::search` task whose result lands
-/// on the unified TUI event channel as
-/// `Event::HfDialog(HfDialogEvent::Search*)`. Tagged with the dialog's
-/// current `query_seq` so the apply step can discard stale responses.
-/// `events_tx` is `None` only in tests that drive the dialog without
-/// a tokio runtime — the dispatch is then a no-op.
+/// Tagged with the dialog's current `query_seq` so the apply step can
+/// discard stale responses. `events_tx` is `None` only in tests that
+/// drive the dialog without a tokio runtime — the dispatch is then a
+/// no-op.
 fn spawn_hf_search(
   state: &mut crate::tui::hf_dialog::HfDialogState,
   cursor: Option<String>,
@@ -467,9 +446,6 @@ fn spawn_hf_search(
   });
 }
 
-/// Spawn a background `list_repo_files` task whose result lands on
-/// the unified TUI event channel as
-/// `Event::HfDialog(HfDialogEvent::RepoFiles*)`.
 fn spawn_hf_list_repo_files(
   state: &mut crate::tui::hf_dialog::HfDialogState,
   repo_id: String,
@@ -496,12 +472,12 @@ fn spawn_hf_list_repo_files(
   });
 }
 
-/// Spawn the benchmark-snapshot refresh one TUI session does. The dialog ranks
-/// from the snapshot compiled into the binary, while `init` and
-/// `llamastash recommend` rank from the tier the release pipeline publishes
-/// daily, so the two lists disagree whenever the bundle lags behind.
-/// `load_remote` takes a candidate only if it is newer and built for this
-/// binary, so the bundled ranking survives any failure — silent, as in `init`.
+/// The dialog ranks from the snapshot compiled into the binary, while `init`
+/// and `llamastash recommend` rank from the tier the release pipeline
+/// publishes daily, so the two lists disagree whenever the bundle lags
+/// behind. `load_remote` takes a candidate only if it is newer and built for
+/// this binary, so the bundled ranking survives any failure — silent, as in
+/// `init`.
 pub fn spawn_hf_snapshot_refresh(
   offline: bool,
   events_tx: Option<mpsc::Sender<crate::tui::events::Event>>,
@@ -533,9 +509,8 @@ fn build_tui_fetch_client(offline: bool) -> crate::init::fetch::FetchClient {
     .unwrap_or_else(|_| FetchClient::offline())
 }
 
-/// Apply one [`crate::tui::download_strip::DownloadEvent`] to the strip. Promotes the next
-/// queued pull when the active one finishes / errors / hits the
-/// cache; surfaces a toast when a cache-hit short-circuit lands.
+/// Promotes the next queued pull when the active one finishes / errors / hits
+/// the cache; surfaces a toast when a cache-hit short-circuit lands.
 pub fn apply_download_event(app: &mut App, evt: crate::tui::download_strip::DownloadEvent) {
   // Only the two ending arms ring, so only they pay for a sink. `Progress`
   // arrives once per HTTP chunk and would otherwise take a `is_terminal` ioctl
@@ -610,8 +585,6 @@ pub fn apply_download_event_to(
         // user lands on it. Best-effort — `models` may not yet
         // reflect the just-cached file until the next refresh.
         if let Some(idx) = app.models.iter().position(|m| m.path == path) {
-          // Find the row index in rendered_rows that matches this
-          // model path so the cursor visibly snaps.
           let target = app.models[idx].path.clone();
           let rows = app.rendered_rows();
           if let Some(row_idx) = rows
@@ -634,9 +607,6 @@ pub fn apply_download_event_to(
   }
 }
 
-/// Apply one [`crate::tui::hf_dialog::HfDialogEvent`] to the dialog state. Replaces the
-/// prior `drain_hf_dialog` polling helper — the unified loop hands
-/// one event in at a time.
 pub fn apply_hf_dialog_event(app: &mut App, evt: crate::tui::hf_dialog::HfDialogEvent) {
   use crate::tui::hf_dialog::HfDialogEvent;
   if let HfDialogEvent::Snapshot(snapshot) = evt {
@@ -665,11 +635,9 @@ pub fn apply_hf_dialog_event(app: &mut App, evt: crate::tui::hf_dialog::HfDialog
   }
 }
 
-/// Service the HF dialog's debounced live-search dispatch. The
-/// unified loop calls this on every tick — once the debounce window
-/// elapses since the last keystroke, it fires a fresh search. The
-/// `query_seq` monotonicity inside the dialog state still drops
-/// stale responses if the user keeps typing.
+/// Called on every tick — once the debounce window elapses since the last
+/// keystroke, it fires a fresh search. The `query_seq` monotonicity inside
+/// the dialog state still drops stale responses if the user keeps typing.
 ///
 /// Returns `true` iff a new search was dispatched this tick — the
 /// caller uses that to decide whether the tick warrants a redraw.
@@ -798,8 +766,8 @@ mod tests {
 
   #[test]
   fn shift_p_opens_hf_dialog_from_right_pane() {
-    // Shift+P scope was widened from LIST to NAV so the chord fires
-    // from the right pane too — not just the models list.
+    // Shift+P fires from the right pane too, not just the models list
+    // (the chord's scope is NAV, not LIST).
     let mut app = App::new(Default::default());
     app.focus = Focus::RightPane;
     assert!(app.hf_dialog.is_none());

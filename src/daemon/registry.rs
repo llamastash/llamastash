@@ -1,8 +1,7 @@
 //! In-memory registry of every active `ManagedModel`.
 //!
 //! Lives on the `MethodContext` so IPC handlers can look up
-//! supervisors by `LaunchId` and the daemon can iterate the map for
-//! `status` / `stop_all`. The registry intentionally keys on a
+//! supervisors by `LaunchId`. The registry keys on a
 //! monotonically-increasing `LaunchId` rather than `ModelId` so the
 //! same GGUF can be launched twice (different ports, different
 //! purposes) without collisions.
@@ -38,8 +37,7 @@ impl LaunchId {
 }
 
 /// Shared, cheap-to-clone registry of supervisors. `Arc<RwLock<…>>`
-/// inside, mirroring `ModelCatalog`'s pattern so IPC handlers have a
-/// consistent shape.
+/// inside, mirroring `ModelCatalog`'s pattern.
 #[derive(Debug, Clone, Default)]
 pub struct SupervisorRegistry {
   inner: Arc<RwLock<BTreeMap<LaunchId, ManagedModel>>>,
@@ -49,7 +47,7 @@ pub struct SupervisorRegistry {
   /// "choose + reserve + spawn" sequence is serialised; without this
   /// two concurrent `start_model` calls would observe the same
   /// `collect_in_use_ports` snapshot, both bind-probe the same free
-  /// port, and the second spawn's `llama-server` would fail to bind.
+  /// port, and the second spawn's engine child would fail to bind.
   reserved_ports: Arc<TokioMutex<BTreeSet<u16>>>,
   /// `(model path, lowercased name)` pairs claimed by a spawn that cleared the
   /// duplicate-name gate but has not stamped its row yet.
@@ -68,8 +66,7 @@ impl SupervisorRegistry {
     Self::default()
   }
 
-  /// Generate the next launch id. Monotonic per daemon process, so
-  /// IDs are unique within one daemon lifetime.
+  /// Generate the next launch id, monotonic per daemon process.
   pub fn next_id(&self) -> LaunchId {
     let n = self.counter.fetch_add(1, Ordering::Relaxed) + 1;
     LaunchId::from_counter(n)
@@ -115,9 +112,9 @@ impl SupervisorRegistry {
   /// Atomically pick a port and add it to the in-flight reservation
   /// set, given the live-supervisor ports the caller already knows
   /// about. The returned port is held in the reservation set until
-  /// [`Self::release_reserved_port`] is called. Use this from
-  /// `start_model` to close the choose-and-reserve race against
-  /// concurrent IPC clients.
+  /// [`Self::release_reserved_port`] is called. `start_model` uses
+  /// this to close the choose-and-reserve race against concurrent
+  /// IPC clients.
   pub async fn reserve_port(
     &self,
     requested: Option<u16>,
@@ -132,17 +129,16 @@ impl SupervisorRegistry {
         if reserved.contains(&p) || live_in_use.contains(&p) {
           return Err(format!("port {p} is already in use by another launch"));
         }
-        // Probe-before-reserve: the supervisor's reservation set only
-        // tracks ports it has handed out. An externally-held port —
-        // e.g. a `llama-server` from a previous daemon instance, or
-        // any other process bound to a slot inside our configured
-        // range — passes the in-set check above but the subsequent
-        // child still fails to bind, surfacing as
-        // `couldn't bind HTTP server socket` in the launch log. The
-        // auto-allocator path (`ports::allocate`) already probes via
-        // `try_bind`; explicit / soft-preferred ports must do the
-        // same so a `prefer_port: <stale>` from the TUI's last-used
-        // memory doesn't lock the user into a broken launch.
+        // Probe before reserving: the reservation set only tracks
+        // ports this daemon handed out. A port held by another
+        // process, e.g. an engine child from a previous daemon
+        // instance, passes the in-set check but the child still
+        // fails to bind, surfacing as `couldn't bind HTTP server
+        // socket` in the launch log. The auto-allocator path
+        // (`ports::allocate`) already probes via `try_bind`, so
+        // explicit and soft-preferred ports must do the same.
+        // Otherwise a stale `prefer_port` from the TUI's last-used
+        // memory locks the user into a broken launch.
         if !crate::daemon::ports::try_bind_probe(p) {
           return Err(format!("port {p} is already in use (external bind)"));
         }
@@ -154,22 +150,22 @@ impl SupervisorRegistry {
     Ok(chosen)
   }
 
-  /// Drop a port from the in-flight reservation set, typically called
-  /// once the supervisor has been inserted into `inner` (so its port
-  /// is visible via the normal supervisor snapshot path) or when a
-  /// spawn fails and the reservation should be released for retry.
+  /// Drop a port from the in-flight reservation set, once the
+  /// supervisor is in `inner` (its port is then visible in the
+  /// snapshot) or when a spawn fails and the port can be retried.
   pub async fn release_reserved_port(&self, port: u16) {
     self.reserved_ports.lock().await.remove(&port);
   }
 
-  /// Claim `(model_path, name)` for the duration of one spawn, or return `None`
-  /// when the name is already claimed (nothing is claimed in that case).
+  /// Claim `(model_path, name)` for the duration of one spawn, or
+  /// return `None` when the name is already claimed.
   ///
-  /// The returned guard releases the claim when it drops, so every early return
-  /// between the gate and the spawn hands the name back without a release
-  /// threaded through each one. Names are stored lowercased because
-  /// [`crate::launch::resolve::name_matches`] compares them that way, so a
-  /// capitalization variant collides instead of starting a second copy.
+  /// The returned guard releases the claim when it drops, so every
+  /// early return between the gate and the spawn hands the name back.
+  /// Names are stored lowercased because
+  /// [`crate::launch::resolve::name_matches`] compares them that way,
+  /// so a capitalization variant collides instead of starting a
+  /// second copy.
   pub fn try_reserve_name(&self, model_path: &str, name: &str) -> Option<NameReservation> {
     let key = (model_path.to_string(), name.to_lowercase());
     let mut reserved = self.lock_names();
@@ -203,8 +199,8 @@ pub struct NameReservation {
 impl Drop for NameReservation {
   fn drop(&mut self) {
     // Poison-tolerant like `lock_names`: the set holds plain keys, so
-    // recovering the guard is safe — while skipping the remove (the `if let
-    // Ok` shape) would hold the name until the daemon restarts.
+    // recovering the guard is safe. Skipping the remove instead would
+    // hold the name until the daemon restarts.
     self
       .reserved
       .lock()
@@ -246,8 +242,7 @@ mod tests {
     // Simulate an external process holding a port inside our range:
     // bind it and hold the socket open for the duration of the test.
     // The supervisor doesn't know about this port (live_in_use +
-    // reserved are both empty), so the only thing that can catch it
-    // is the bind probe.
+    // reserved are both empty), so only the bind probe can catch it.
     let holder = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
       .expect("OS gives us a free loopback port");
     let busy = holder.local_addr().unwrap().port();
@@ -266,7 +261,7 @@ mod tests {
     );
   }
 
-  /// RV7: the name claim is exclusive while held and comes back when the guard
+  /// The name claim is exclusive while held and comes back when the guard
   /// drops. Without this, two concurrent `start --name coder` both clear the
   /// gate, and because the port allocator *is* serialized the only symptom is two
   /// launches sharing one address and no error.

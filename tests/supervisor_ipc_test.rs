@@ -1,8 +1,7 @@
 //! End-to-end coverage that the daemon's `status`, `stop_model`,
 //! and `logs_tail` IPC methods drive the supervisor surface. The
-//! test spawns a `ManagedModel` directly (the start_model IPC path
-//! lands in Unit 8 once the CLI handler is wired) and asserts every
-//! handler returns the documented shape.
+//! test spawns a `ManagedModel` directly and asserts every handler
+//! returns the documented shape.
 
 #![cfg(feature = "test-fixtures")]
 
@@ -221,9 +220,8 @@ async fn stop_model_returns_error_for_unknown_launch_id() {
 }
 
 /// Spin up the daemon with a caller-supplied supervisor registry.
-/// The production daemon would do this inside `run_foreground`, but
-/// for tests we want a registry we can pre-populate (Unit 8 wires
-/// `start_model` IPC).
+/// The production daemon builds its own registry inside
+/// `run_foreground`; tests need one they can pre-populate.
 async fn run_foreground_with_supervisors(
   mut opts: DaemonOptions,
   supervisors: SupervisorRegistry,
@@ -232,9 +230,8 @@ async fn run_foreground_with_supervisors(
   // we constructed up-top. We currently lack a public seam, so the
   // test exposes one via a small wrapper that mirrors the
   // run_foreground steps but injects the supervisors+gpu on
-  // `MethodContext`. The wrapper also lights up the HTTP control
-  // plane that Unit 1 of the Windows+HTTP-IPC plan added so the new
-  // `Client::connect(state_dir)` works against this fixture daemon.
+  // `MethodContext`. The helper also starts the HTTP control plane
+  // so `Client::connect(state_dir)` works against this fixture daemon.
   use llamastash::daemon::auth::IpcToken;
   use llamastash::daemon::context::MethodContext;
   use llamastash::daemon::control_plane;

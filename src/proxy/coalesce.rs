@@ -3,8 +3,8 @@
 //! Auto-start can fire from any number of concurrent inbound requests
 //! for the same dormant model. Without coalescing, each request would
 //! issue its own `compose_and_spawn` call, race the port allocator,
-//! and either fail with a port collision or burn a second
-//! `llama-server` process on top of the one already launching.
+//! and either fail with a port collision or burn a second engine
+//! process on top of the one already launching.
 //!
 //! Each slot in the map carries (a) a [`Notify`] for fast wakeups and
 //! (b) a `Mutex<SlotState>` so the leader's outcome is durable across
@@ -12,14 +12,12 @@
 //! [`Notify::notified`] registration. A pure-`Notify` slot would race:
 //! a follower that arrives between `acquire` and the leader's
 //! `notify_waiters` call can park *after* the wake fires and hang
-//! forever (cf. the ce-review correctness finding R-01).
+//! forever.
 //!
 //! Keyed on [`ModelId`] — the canonical `(path, header_blake3)` pair
 //! — rather than the raw `body.model` string, so two requests with
 //! different fuzzy spellings of the same model still share one
 //! launch.
-//!
-//! Plan: docs/plans/2026-05-21-001-feat-proxy-router-plan.md.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -70,10 +68,6 @@ type FlightMap = HashMap<FlightKey, Arc<SlotInner>>;
 
 /// Single-flight registry. Cheap to clone — every field lives behind
 /// an `Arc` so the per-request handle is a refcount bump.
-///
-/// Keyed on [`FlightKey`] — the canonical model id plus the optional
-/// launch name — so two named launches of the same model don't
-/// coalesce into one flight.
 #[derive(Clone, Default)]
 pub(crate) struct Coalesce {
   inner: Arc<Mutex<FlightMap>>,
@@ -196,8 +190,7 @@ impl Follower {
   /// Read the slot state once, returning `Some(outcome)` for
   /// `Complete`, `Some(None)` for `Cancelled` (translated to outer
   /// `Option::None` by the caller via the second `?`), and `None` for
-  /// still-pending. Centralised so the lock acquisition + match is
-  /// not duplicated across the two read sites in [`Self::wait`].
+  /// still-pending.
   fn read_slot(&self) -> Option<Option<SharedOutcome>> {
     let guard = self.slot.state.lock().unwrap_or_else(|e| e.into_inner());
     match &*guard {
@@ -327,11 +320,11 @@ mod tests {
 
   #[tokio::test]
   async fn follower_that_parks_after_finish_still_wakes_with_outcome() {
-    // The R-01 race: leader.finish() runs BEFORE the follower has
-    // reached its wait() call. With Notify-only slots the follower
-    // would park forever on the next notified().await. With the
-    // durable SlotState the follower's first read_slot() sees
-    // Complete and returns immediately.
+    // Leader.finish() runs BEFORE the follower has reached its wait()
+    // call. With Notify-only slots the follower would park forever on
+    // the next notified().await. With the durable SlotState the
+    // follower's first read_slot() sees Complete and returns
+    // immediately.
     let c = Coalesce::new();
     let leader = match c.acquire(key("/m/a.gguf")).await {
       AcquireOutcome::Leader(l) => l,
@@ -341,9 +334,8 @@ mod tests {
       AcquireOutcome::Follower(f) => f,
       _ => panic!("follower"),
     };
-    // Finish FIRST -- this is the race that previously hung.
+    // Finish before the follower waits at all.
     leader.finish(ready(18042)).await;
-    // ... then wait. Should return immediately.
     let out = follower.wait().await;
     assert!(matches!(
       out,

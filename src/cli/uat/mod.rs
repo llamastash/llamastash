@@ -23,9 +23,7 @@ use report::{
   UatReport, Verdict,
 };
 
-/// Entry point invoked by `cli::dispatch`. Drives the lifecycle,
-/// renders the JSON + TTY report, and chooses an exit code per the
-/// 0/1 contract.
+/// Entry point invoked by `cli::dispatch`. Exit code 0 on pass, non-zero on any other verdict.
 pub async fn handle(args: UatArgs, cli: &Cli, _config: &Config) -> CliResult {
   // Mutual exclusion: `--report-out -` writes JSON to stdout, so
   // global `--quiet` would suppress the only output the run produces.
@@ -77,13 +75,13 @@ pub async fn handle(args: UatArgs, cli: &Cli, _config: &Config) -> CliResult {
 
   // Race the lifecycle against SIGINT so a Ctrl-C produces a partial
   // report instead of silent termination. The lifecycle future is
-  // wrapped in `catch_unwind` (via futures::FutureExt) so an
-  // unexpected panic returns a structured `verdict=fail` instead of
-  // bypassing Drop and producing no report at all. `AssertUnwindSafe`
-  // is required because `&mut UatReport` is not `UnwindSafe` —
-  // safe here because, on panic, the caller treats the report as a
-  // best-effort snapshot of state up to the panic point, never
-  // re-uses it as input to another lifecycle.
+  // wrapped in `catch_unwind` so an unexpected panic returns a
+  // structured `verdict=fail` instead of bypassing Drop and producing
+  // no report at all. `AssertUnwindSafe` is required because
+  // `&mut UatReport` is not `UnwindSafe` — safe here because, on
+  // panic, the caller treats the report as a best-effort snapshot of
+  // state up to the panic point, never re-uses it as input to another
+  // lifecycle.
   use futures::FutureExt;
   use std::panic::AssertUnwindSafe;
   let lifecycle_outcome = tokio::select! {
@@ -160,9 +158,8 @@ enum Outcome {
 }
 
 /// First step still marked Skipped at the time SIGINT or a panic was
-/// observed — the most useful single-step attribution for the
-/// failure summary when the lifecycle never recorded its own failing
-/// step.
+/// observed. Used for the failure summary when the lifecycle never
+/// recorded its own failing step.
 fn in_flight_step(report: &UatReport) -> Option<StepName> {
   report
     .steps
@@ -172,7 +169,7 @@ fn in_flight_step(report: &UatReport) -> Option<StepName> {
 }
 
 /// Mark the first step still `Skipped` as `Interrupted` so the TTY
-/// summary visually attributes "where things stopped" to a real row.
+/// summary attributes where things stopped to a real row.
 fn mark_first_skipped_as_interrupted(report: &mut UatReport) {
   if let Some(s) = report
     .steps
@@ -184,9 +181,8 @@ fn mark_first_skipped_as_interrupted(report: &mut UatReport) {
 }
 
 /// Best-effort extract of a panic payload's `&str` / `String` for the
-/// failure-summary message. `Box<dyn Any>` is the shape catch_unwind
-/// returns; the two common payload types cover `panic!("…")` and
-/// `assert!(…)`.
+/// failure-summary message. The two types cover `panic!("…")` and
+/// `assert!(…)`, the common payload shapes.
 fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
   if let Some(s) = payload.downcast_ref::<&'static str>() {
     return (*s).to_string();
@@ -197,9 +193,9 @@ fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
   "<non-string panic payload>".to_string()
 }
 
-/// Refuse `--report-out` values that would silently produce confusing
-/// errors: an empty string (writes `.json.tmp` in CWD), a directory
-/// path (rename fails EACCES later), or whitespace-only.
+/// Refuse `--report-out` values that would produce confusing errors
+/// later: an empty string (a hidden tmp file lands in CWD), a directory
+/// path (the rename onto it fails later), or whitespace-only.
 fn validate_report_out_path(path: Option<&std::path::Path>) -> CliResult {
   let Some(p) = path else {
     return Ok(());
@@ -236,10 +232,9 @@ fn validate_report_out_path(path: Option<&std::path::Path>) -> CliResult {
 
 fn emit_report(report: &UatReport, args: &UatArgs, quiet: bool) -> CliResult {
   // JSON destination: file path, stdout via "-", or nowhere when
-  // omitted. The TTY summary lands on stdout when the JSON is in a
-  // file (or omitted) so humans see the scan-down. On the `-` arm
-  // the JSON owns stdout — the TTY summary moves to stderr so a
-  // `| jq` consumer gets pure JSON.
+  // omitted. When the JSON is in a file (or omitted) the TTY summary
+  // goes to stdout; on the `-` arm the JSON owns stdout, so the TTY
+  // summary moves to stderr and a `| jq` consumer gets pure JSON.
   match args.report_out.as_deref() {
     Some(p) if p == std::path::Path::new("-") => {
       let json = serde_json::to_string_pretty(report)
@@ -256,11 +251,10 @@ fn emit_report(report: &UatReport, args: &UatArgs, quiet: bool) -> CliResult {
       // Atomic-ish write: write to a sibling tmp file under the
       // parent dir, then rename onto the final path. Constructing
       // the tmp name with `with_extension` blows up on directory
-      // paths (`/tmp/` → `/tmp.json.tmp`); we precomputed
-      // `validate_report_out_path` rejected those, but the tmp
-      // suffix is still a stable pid-discriminated sibling so two
-      // concurrent UAT runs targeting the same final path don't
-      // clobber each other's tmp file.
+      // paths (`/tmp/` → `/tmp.json.tmp`); `validate_report_out_path`
+      // rejects those up front. The pid in the tmp name keeps two
+      // concurrent UAT runs targeting the same final path from
+      // clobbering each other's tmp file.
       let tmp = atomic_tmp_path_for(p);
       std::fs::write(&tmp, &json)
         .map_err(|e| CliExit::new(UNKNOWN, format!("uat: write {}: {e}", tmp.display())))?;
@@ -281,8 +275,7 @@ fn emit_report(report: &UatReport, args: &UatArgs, quiet: bool) -> CliResult {
   Ok(())
 }
 
-/// Build a pid-stable sibling tmp path for atomic file writes. The
-/// pid suffix gives concurrent UAT runs writing to the same final
+/// The pid suffix gives concurrent UAT runs writing to the same final
 /// path a unique scratch file each (the rename is atomic per the
 /// POSIX contract, so only the last writer's final report survives —
 /// but neither sees the other's truncated state mid-write).
@@ -311,15 +304,11 @@ fn rfc3339_now() -> String {
 }
 
 fn format_unix_seconds_as_rfc3339(secs: u64) -> String {
-  // Date arithmetic without a crate. Civil-from-days algorithm
-  // adapted from Howard Hinnant's "date algorithms" public-domain
-  // reference (`https://howardhinnant.github.io/date_algorithms.html`,
-  // §"days_from_civil"). The UAT report's only timestamp consumer is
-  // an offline JSON parser, not a wall-clock-precise scheduler, so
-  // dragging in `chrono` / `time` to format one string per run is
-  // not worth the dep weight. Inlining this routine keeps the
-  // release binary lean and lets the report layer stay free of
-  // crate-level time machinery.
+  // Date arithmetic without a crate, adapted from Howard Hinnant's
+  // public-domain "date algorithms" reference
+  // (`https://howardhinnant.github.io/date_algorithms.html`).
+  // Formatting one string per run does not justify a `chrono` / `time`
+  // dependency.
   const SECS_PER_DAY: u64 = 86_400;
   let days = secs / SECS_PER_DAY;
   let secs_of_day = secs % SECS_PER_DAY;

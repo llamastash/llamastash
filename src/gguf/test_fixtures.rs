@@ -1,15 +1,13 @@
 //! Synthetic GGUF byte-builder used by both inline unit tests in this crate
-//! and the integration tests under `tests/`. Marked `#[doc(hidden)]` because
-//! the surface is testing-only — it isn't part of llamastash's public API.
+//! and the integration tests under `tests/`.
 //!
 //! The builder emits a structurally valid GGUF v3 prefix (magic, version,
 //! counts, KV list, tensor info). It does **not** emit tensor data — the
 //! parser only consumes the header, and the supervisor doesn't read tensor
-//! data either, it just launches `llama-server` against the file path.
+//! data either, it just launches the engine against the file path.
 
 use crate::gguf::header::GgufValue;
 
-/// Fluent builder for synthetic GGUF headers. See module docs.
 #[derive(Debug, Default)]
 pub struct FixtureBuilder {
   metadata: Vec<(String, GgufValue)>,
@@ -25,7 +23,7 @@ struct TensorSpec {
 }
 
 impl FixtureBuilder {
-  /// New empty builder. Defaults to GGUF v3.
+  /// Defaults to GGUF v3.
   pub fn new() -> Self {
     FixtureBuilder {
       version: 3,
@@ -33,7 +31,7 @@ impl FixtureBuilder {
     }
   }
 
-  /// Override the GGUF version (used to exercise the unsupported-version error path).
+  /// Used to exercise the unsupported-version error path.
   pub fn with_version(mut self, version: u32) -> Self {
     self.version = version;
     self
@@ -49,8 +47,8 @@ impl FixtureBuilder {
     self
   }
 
-  /// Set `<arch>.context_length`. Architecture must have been set via
-  /// [`Self::with_arch`] before calling this.
+  /// Set `<arch>.context_length`. Falls back to `model` as the arch prefix
+  /// when [`Self::with_arch`] was not called first.
   pub fn with_context_length(mut self, ctx: u64) -> Self {
     let key = format!("{}.context_length", self.arch_or("model"));
     self.metadata.push((key, GgufValue::U64(ctx)));
@@ -103,15 +101,14 @@ impl FixtureBuilder {
     self
   }
 
-  /// Adds an arbitrary KV pair (used to test mode-hint heuristics and the
-  /// rare general.* keys that don't fit the helpers above).
+  /// Used to test mode-hint heuristics and the rare general.* keys that
+  /// don't fit the helpers above.
   pub fn with_kv(mut self, key: &str, value: GgufValue) -> Self {
     self.metadata.push((key.to_string(), value));
     self
   }
 
-  /// Adds a fake KV pair of arbitrary string length — used to exercise the
-  /// `cap_bytes` truncation path.
+  /// Used to exercise the `cap_bytes` truncation path.
   pub fn with_padding_kv(self, key: &str, len: usize) -> Self {
     let value = "x".repeat(len);
     self.with_kv(key, GgufValue::String(value))
@@ -128,8 +125,6 @@ impl FixtureBuilder {
     self
   }
 
-  /// Serialise to a structurally valid GGUF byte vector (header only — no
-  /// tensor data follows).
   pub fn build(self) -> Vec<u8> {
     let FixtureBuilder {
       metadata,

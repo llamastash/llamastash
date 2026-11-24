@@ -13,19 +13,11 @@
 //! different ports; the daemon disambiguates by a `launch_id`
 //! the supervisor generates).
 //!
-//! Process lifecycle:
-//! 1. Spawn child with `Stdio::piped` stdout/stderr; apply
-//!    `setsid` in `pre_exec` so the child survives daemon exit.
-//! 2. Spawn one tokio task per stream that tees lines to the log
-//!    file (rotating at 10 MiB, max 5 files per launch) and to a
-//!    bounded ring buffer of the last 4096 lines. A line longer than
-//!    8 KiB is split into 8 KiB lines, and bytes are decoded lossily,
-//!    so engine output that is not valid UTF-8 cannot stop the capture.
-//! 3. Hand the (pid, port) to `probe::poll_until_ready` with the
-//!    backend's readiness endpoint; on the ready status, transition
-//!    Loading → Ready. Timeout → Error.
-//! 4. `stop()` sends SIGTERM, waits 5 s, sends SIGKILL if still
-//!    alive. State transitions reflect each step.
+//! The child runs in its own process group (`setsid` in `pre_exec`) so it
+//! survives daemon exit. The probe task flips `Loading` to `Ready` or
+//! `Error` in the background. `stop()` escalates SIGTERM to SIGKILL after 5 s.
+//! The log pump splits a line longer than 8 KiB and decodes bytes lossily, so
+//! engine output that is not valid UTF-8 cannot stop the capture.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -38,7 +30,7 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, RwLock};
 
-/// Rotate logs at this byte size. Matches the module-level docstring.
+/// Rotate logs at this byte size.
 const LOG_ROTATE_BYTES: u64 = 10 * 1024 * 1024;
 /// Keep this many rotated segments (`<base>.1` … `<base>.N`).
 const LOG_KEEP_SEGMENTS: usize = 5;
@@ -62,9 +54,8 @@ pub enum ManagedState {
   Loading,
   /// `probe` saw 200 OK.
   Ready,
-  /// Either spawn failed, the probe timed out, or the child exited
-  /// before reaching Ready. `kind` names which, so a caller can tell a
-  /// child that died from one that simply never answered.
+  /// Spawn failed, the probe timed out, or the child exited before
+  /// reaching Ready. See [`ErrorKind`] for which.
   Error { cause: String, kind: ErrorKind },
   /// `stop()` issued SIGTERM; SIGKILL still pending or process
   /// exit not yet observed.
@@ -90,7 +81,7 @@ pub enum ErrorKind {
 
 impl ManagedState {
   /// Lowercase wire label (`"launching"`, `"ready"`, …). Stable —
-  /// pinned parsers depend on these strings (P2-16).
+  /// pinned parsers depend on these strings.
   pub fn label(&self) -> &'static str {
     match self {
       ManagedState::Launching => "launching",
@@ -114,12 +105,10 @@ impl ManagedState {
 /// Where a launch came from. Drives the proxy's idle-TTL sweeper:
 /// auto-started supervisors are evictable when idle; manually-started
 /// ones (TUI / CLI `start`) are treated as durable user intent and
-/// stay resident regardless. Mirrors LM Studio's "manually loaded
-/// models are exempt" rule.
+/// stay resident regardless.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LaunchOrigin {
-  /// User explicitly launched via `llamastash start`, the TUI Launch
-  /// action, or an IPC `start_model` call from any other client. Not
+  /// Explicit user launch (CLI, TUI, or IPC `start_model`). Not
   /// evictable by the idle sweeper.
   Manual,
   /// Proxy `auto_start` (an inbound `/v1/...` request landed on an
@@ -166,9 +155,6 @@ pub struct ManagedSpawn {
   pub port: u16,
   pub mode: LaunchMode,
   pub log_path: PathBuf,
-  /// The backend-produced process launch spec: binary, argv, env strip,
-  /// readiness, and probe budget. The supervisor is backend-agnostic —
-  /// it executes this spec without knowing which engine produced it.
   pub plan: ProcessLaunchSpec,
   /// How this launch entered the supervisor. Defaults to `Manual`
   /// (safe — never evicted) for callers that don't care.
@@ -224,28 +210,26 @@ struct ManagedInner {
   /// Wall-clock seconds-since-epoch the model entered `Ready`.
   /// `None` until that transition.
   ready_at: RwLock<Option<u64>>,
-  /// State machine head.
   state: RwLock<ManagedState>,
   /// PID, populated as soon as `spawn` returns. `None` only while
   /// the spawn call itself is still in flight.
   pid: RwLock<Option<u32>>,
   /// Bounded ring buffer for the TUI's Logs tab.
   ring: Mutex<RingBuffer>,
-  /// Stays alive for the lifetime of the child; dropped on
-  /// transition into `Stopped` or `Error`.
+  /// Child handle, held for the child's lifetime; `stop()` clears it
+  /// once the child has exited.
   child: Mutex<Option<Child>>,
   /// Latest per-PID resource reading (CPU% + RSS). `None` until the
   /// per-launch sampler has emitted at least one reading. Updated by
   /// the `resource_sampler` task spawned from [`spawn`].
   latest_resource: RwLock<Option<super::resources::ResourceReading>>,
-  /// What `--fit` actually resolved, captured once by the readiness gate
-  /// on the Loading → Ready transition (for fit-governed launches). The
-  /// `last_params` recorder reads this to stamp the running snapshot so the
-  /// backend's actuals are fetched at most once per launch. Empty until the
-  /// gate runs (or for launches the gate skips).
+  /// What `--fit` actually resolved, captured once on the Loading →
+  /// Ready transition. The `last_params` recorder reads this to stamp
+  /// the running snapshot so the backend's actuals are fetched at most
+  /// once per launch. Empty until that transition runs.
   actuals: RwLock<super::actuals::Actuals>,
-  /// Where the launch came from. Read by the idle-TTL sweeper so it
-  /// only ever evicts `AutoStart` supervisors.
+  /// Read by the idle-TTL sweeper so it only ever evicts `AutoStart`
+  /// supervisors.
   origin: LaunchOrigin,
   /// Concurrent-request counter incremented when the proxy starts
   /// forwarding a request to this supervisor and decremented when
@@ -364,9 +348,8 @@ impl ManagedModel {
     }
   }
 
-  /// Latest per-PID resource reading (CPU% + RSS). Mirrors the
-  /// shape `resources::sample()` returns. `None` until the per-launch
-  /// sampler has emitted its first non-priming reading.
+  /// Latest per-PID resource reading. `None` until the sampler task
+  /// spawned by [`spawn`] has emitted its first non-priming reading.
   pub async fn latest_resource(&self) -> Option<super::resources::ResourceReading> {
     *self.inner.latest_resource.read().await
   }
@@ -467,12 +450,8 @@ impl ManagedModel {
 /// it stamps the `ready_at` field and on a probe timeout flips to
 /// `Error{cause}`.
 pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
-  // The binary, argv, env-strip set, and readiness all come from the
-  // backend's `prepare_launch` (see `crate::backend`). The supervisor is
-  // backend-agnostic: it spawns `plan.binary` with `plan.argv`, removes
-  // `plan.env_remove`, and probes `plan.readiness` — without knowing
-  // which engine produced the spec. For llama.cpp `plan.argv` is exactly
-  // `backend::llama_cpp::compose`'s output (pinned by parity tests).
+  // Binary, argv, env-strip set, and readiness come from the backend's
+  // `prepare_launch`. The supervisor knows no engine.
   let mut cmd = Command::new(&input.plan.binary);
   cmd
     .args(&input.plan.argv)
@@ -497,7 +476,7 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
   }
   // Stamp an inheritance marker so a future daemon — possibly a
   // restart of this one, possibly an unrelated llamastash instance
-  // on the same machine — can recognise this `llama-server` as
+  // on the same machine — can recognise this child as
   // already-llamastash-launched on its boot sweep. The sweep reads
   // `/proc/<pid>/environ` (see `orphans::sweep`) and uses the
   // presence of this var to (a) treat the orphan's port as
@@ -505,8 +484,7 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
   // and (b) surface a "launched by llamastash" hint on the external
   // row. Value is intentionally `"1"` rather than the state-dir or
   // daemon pid — a stable marker is all the Tier A port-tracking
-  // path needs; richer attribution belongs in a future adoption
-  // pass that re-incorporates the orphan as a managed supervisor.
+  // path needs.
   cmd.env("LLAMASTASH_LAUNCHED", "1");
   // Process-group setup + spawn go through [`ProcessControl`] so
   // a future Windows backend can swap in `CREATE_NEW_PROCESS_GROUP`
@@ -588,9 +566,7 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
   }
 
   // Stream-pump tasks for stdout + stderr → ring buffer + log file.
-  // Each task is wrapped in `spawn_supervised` so a panic surfaces as
-  // a logged error instead of being silently swallowed by tokio. The
-  // watchdog task is cheap (one extra `.await` on the JoinHandle).
+  // `spawn_supervised` logs a task panic, which tokio would otherwise swallow.
   spawn_supervised(
     "pump_stdout",
     pump_stream(
@@ -610,9 +586,8 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
     ),
   );
 
-  // Transition to Loading and kick off the probe. The endpoint + ready
-  // status come from the backend's readiness declaration, not a
-  // hardcoded `/health`.
+  // The endpoint and ready status come from the backend's readiness
+  // declaration.
   model.transition(ManagedState::Loading).await;
   let probe_model = model.clone();
   let probe_opts = input.plan.probe;
@@ -624,15 +599,14 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
       expect_model_ids,
     } => (path.clone(), *ready_status, Some(expect_model_ids.clone())),
   };
-  // Strict-fit ctx-clamp gate: the caller populates this only for
-  // fit-governed launches; `None` leaves the readiness path unchanged.
+  // Set only for fit-governed launches. `None` leaves the readiness path
+  // unchanged.
   let fit_gate = input.fit_gate;
   // The launch's backend, already resolved on the supervisor, so the probe can
   // read actuals from the right engine with no endpoint hard-coded here.
   let probe_backend = model.backend().clone();
   spawn_supervised("probe", async move {
     let outcome = match &expect_model_ids {
-      // 200 on the readiness path plus a body advertising an expected id.
       Some(ids) => {
         probe::poll_until_ready_model_id(
           probe_model.inner.port,
@@ -655,15 +629,14 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
     };
     match outcome {
       ProbeOutcome::Ready => {
-        // Read what the backend resolved before declaring Ready: a fit gate
-        // needs it, and stashing it on the model lets the `last_params`
-        // recorder reuse it instead of fetching a second time. Best-effort —
-        // a failed fetch yields empty actuals and the gate simply can't fire.
-        // Unconditional, not just for fit-governed launches: `resolved_ctx` is
-        // reported on every running row, and gating the fetch on the gate left
-        // it permanently null for any backend that builds no gate. The default
-        // trait impl does no I/O, so a backend that exposes no such endpoint
-        // still pays nothing.
+        // Read what the backend resolved before declaring Ready: a fit
+        // gate needs it, and stashing it on the model lets the
+        // `last_params` recorder reuse it instead of fetching a second
+        // time. Best-effort: a failed fetch yields empty actuals and the
+        // gate simply can't fire. Unconditional, not gated on the gate:
+        // `resolved_ctx` is reported on every running row, so backends
+        // that build no gate still answer it. The default trait impl
+        // does no I/O, so a backend with no such endpoint pays nothing.
         let mut actuals = probe_backend
           .fetch_actuals(probe_model.inner.port, Duration::from_secs(5))
           .await;
@@ -689,7 +662,7 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
               return;
             }
             // Soft notice (non-strict): keep the model Ready but flag the
-            // clamp so the running surfaces can surface it.
+            // clamp so the running surfaces can show it.
             log::warn!(
               "supervisor: --fit clamped context to the floor ({} tokens, trained window {}) on \
                port {} under memory pressure",
@@ -764,7 +737,7 @@ pub async fn spawn(input: ManagedSpawn) -> Result<ManagedModel, SpawnError> {
           let mut state = watcher_model.inner.state.write().await;
           match &*state {
             ManagedState::Error { .. } | ManagedState::Stopped => {
-              // Already classified; preserve the more-specific cause.
+              // Already classified. Preserve the more specific cause.
             }
             ManagedState::Stopping => {
               *state = ManagedState::Stopped;
@@ -1044,9 +1017,9 @@ impl LogWriter {
   }
 }
 
-/// Shift `<base>.<N-1>` → `<base>.<N>` for N..=2, rename the active
-/// `<base>` → `<base>.1`, and unlink `<base>.<N+1>` (if any). Pure FS,
-/// no I/O against the open file.
+/// Unlink `<base>.<keep>`, shift `<base>.<n>` → `<base>.<n+1>` from
+/// n = keep-1 down to 1, then rename the active `<base>` → `<base>.1`.
+/// Pure FS, no I/O against the open file.
 fn rotate_segments(base: &Path, keep: usize) -> std::io::Result<()> {
   let segment = |n: usize| -> PathBuf {
     let mut name = base
@@ -1056,12 +1029,11 @@ fn rotate_segments(base: &Path, keep: usize) -> std::io::Result<()> {
     name.push(format!(".{n}"));
     base.with_file_name(name)
   };
-  // Drop the oldest if we'd otherwise exceed `keep`.
+  // Drop the oldest segment, then shift the rest up one slot.
   let oldest = segment(keep);
   if oldest.exists() {
     std::fs::remove_file(&oldest)?;
   }
-  // Shift remaining segments up: .keep-1 → .keep, .keep-2 → .keep-1, …, .1 → .2.
   for n in (1..keep).rev() {
     let from = segment(n);
     if from.exists() {
@@ -1069,7 +1041,6 @@ fn rotate_segments(base: &Path, keep: usize) -> std::io::Result<()> {
       std::fs::rename(&from, &to)?;
     }
   }
-  // Rename the active file to .1.
   if base.exists() {
     std::fs::rename(base, segment(1))?;
   }
@@ -1077,8 +1048,7 @@ fn rotate_segments(base: &Path, keep: usize) -> std::io::Result<()> {
 }
 
 /// Fixed-capacity ring buffer of stdout/stderr lines. Older lines
-/// drop off as new ones arrive — 4096 lines is plenty for the TUI
-/// Logs tab without bloating supervisor RAM.
+/// drop off as new ones arrive.
 #[derive(Debug)]
 struct RingBuffer {
   inner: VecDeque<String>,
@@ -1188,7 +1158,7 @@ mod tests {
 
   #[test]
   fn managed_state_label_and_cause_match_wire_shape() {
-    // The label table backs the IPC `status` projection (P2-16).
+    // The label table backs the IPC `status` projection.
     // `cause` is `Some` only for `Error{...}`.
     assert_eq!(ManagedState::Launching.label(), "launching");
     assert_eq!(ManagedState::Loading.label(), "loading");
@@ -1353,7 +1323,6 @@ mod tests {
     assert!(!m.transition(ManagedState::Ready).await);
     assert!(!m.transition(ManagedState::Stopped).await);
     assert!(!m.transition(ManagedState::Stopping).await);
-    // Original cause preserved.
     match m.state().await {
       ManagedState::Error { cause, .. } => assert_eq!(cause, "probe timeout"),
       other => panic!("expected Error, got {other:?}"),

@@ -1,12 +1,10 @@
 //! Boot-preload integration tests.
 //!
-//! Drives [`preload::run`] against a `MethodContext` wired like a real daemon:
+//! Drives `preload::run` against a `MethodContext` wired like a real daemon:
 //! a catalog with synthetic GGUF rows, a `LaunchEnv` whose binary is
 //! `fake_llama_server`, and a preset store. Asserts what the operator asked for
 //! actually comes up, in order, and that anything they did not ask for (an
 //! unknown reference) is skipped rather than fatal.
-//!
-//! Plan: docs/plans/2026-09-30-001-feat-model-residency-plan.md unit U3.
 
 #![cfg(feature = "test-fixtures")]
 

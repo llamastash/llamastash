@@ -7,8 +7,6 @@
 //! is started with `--metrics` and one without, which is how a real llama.cpp
 //! answers with and without the knob, so the case where an engine refuses to
 //! serve metrics is the real thing rather than a stub.
-//!
-//! Plan: docs/plans/2026-10-11-001-feat-proxy-metrics-plan.md.
 
 #![cfg(feature = "test-fixtures")]
 
@@ -568,7 +566,6 @@ async fn metrics_content_negotiation_matches_the_plan() {
   let (addr, shutdown, handle) = spawn_listener(state).await;
   let text_ct = "text/plain; version=0.0.4; charset=utf-8";
 
-  // The Accept table, in both directions.
   let cases: &[(&str, &str)] = &[
     ("", text_ct),
     ("*/*", text_ct),
@@ -1142,7 +1139,7 @@ async fn metrics_an_ambiguous_model_scope_is_a_400_not_a_404() {
   let v: Value = serde_json::from_slice(&body).expect("json");
   assert_eq!(v["error"]["type"], "ambiguous_model");
 
-  // A reference that names nothing is still the 404 it always was.
+  // A reference that names nothing is still a 404.
   let (status, _headers, body) = http_get(addr, "/metrics?model=definitely-absent", &[]).await;
   assert_eq!(status, 404);
   let v: Value = serde_json::from_slice(&body).expect("json");

@@ -131,7 +131,6 @@ pub enum WriterCmd {
   /// writer task's `warn!` log and the next `favorite_list` refresh
   /// snaps the row back to daemon truth.
   FavoriteAdd(PathBuf),
-  /// `favorite_remove` for the supplied model path.
   FavoriteRemove(PathBuf),
   /// `presets_save` — write the captured launch settings to
   /// `config.yaml` under `name` for `model_path` (`Ctrl+P`). `knobs`
@@ -209,8 +208,7 @@ pub fn pump_input_with_writer(
 ///   intentionally *not* in this gate: the picker is inlined into
 ///   the Settings tab, not a modal, and gating it here would lock
 ///   out the mouse the moment a wheel-driven field cycle auto-
-///   materialised the picker (the previous bug — the TUI looked
-///   hung even though keyboard input still worked).
+///   materialised the picker.
 fn handle_mouse(
   app: &mut App,
   m: crossterm::event::MouseEvent,
@@ -263,9 +261,7 @@ fn point_in_rect(x: u16, y: u16, rect: ratatui::layout::Rect) -> bool {
     && y < rect.y.saturating_add(rect.height)
 }
 
-/// Top-level key dispatcher.
-///
-/// **Esc walk-back precedence (R3 / item-8 contract):** the user
+/// **Esc walk-back precedence:** the user
 /// expects a single `Esc` to peel one layer off the navigation
 /// tree, no matter where they are. The order below resolves
 /// ambiguities so the highest-priority surface owns the chord:
@@ -281,9 +277,7 @@ fn point_in_rect(x: u16, y: u16, rect: ratatui::layout::Rect) -> bool {
 ///
 /// Layers 4–6 live inside the input field's state machine and only
 /// apply to inputs that have been migrated to [`InputField`]
-/// (currently `filter_input` and the HF dialog search field; the
-/// chat / embed / rerank composers + advanced-panel extras input
-/// migrate in a follow-up).
+/// (currently `filter_input` and the HF dialog search field).
 fn handle_key(app: &mut App, key: KeyEvent, writer: Option<&mpsc::Sender<WriterCmd>>) {
   // Help dialog owns Esc and `?` ahead of every focus-specific
   // routing: when it's open, the user expects Esc to dismiss it
@@ -434,8 +428,6 @@ fn handle_key(app: &mut App, key: KeyEvent, writer: Option<&mpsc::Sender<WriterC
   }
 }
 
-/// Open the inline edit on the focused Settings row.
-///
 /// Seeds the buffer with the row's current effective value so the user types
 /// from what they see rather than from blank. Rows with nothing to type into
 /// (the two selector rows, and boolean knobs, which cycle) are filtered out by
@@ -889,8 +881,7 @@ fn apply_action(app: &mut App, action: Action, writer: Option<&mpsc::Sender<Writ
       //    the `Esc` walk-back is wired up.
       //  - Settings on a running launch with no picker yet: stage
       //    the launch picker so the user can edit next-launch params
-      //    over the live read-only view (the arrow-keys path no
-      //    longer auto-stages — `e` is the explicit gate).
+      //    over the live read-only view.
       //  - Settings on the editable form: open the focused row's
       //    inline edit (numeric / enum row → typing buffer; extras
       //    row → free-text horizontal-scroll buffer).
@@ -994,9 +985,7 @@ enum ArrowDir {
   Down,
 }
 
-/// Per-pane policy for what an ↑/↓ arrow does. Centralises the five
-/// near-identical match arms `Action::MoveUp` and `Action::MoveDown`
-/// used to spell out.
+/// Per-pane policy for what an ↑/↓ arrow does.
 fn apply_arrow_in_pane(app: &mut App, dir: ArrowDir) {
   match app.focus {
     Focus::RightPane => match app.right_tab {
@@ -1031,7 +1020,7 @@ fn apply_arrow_in_pane(app: &mut App, dir: ArrowDir) {
           }
         }
       },
-      // Round-8: Chat/Embed/Rerank output viewports scroll on the
+      // Chat/Embed/Rerank output viewports scroll on the
       // same arrow keys as Logs while focus stays on the right
       // pane (no edit mode).
       RightTab::Chat => match dir {
@@ -1120,9 +1109,7 @@ fn apply_toggle_device(app: &mut App) {
 }
 
 /// Auto-materialise the inline Settings picker if absent, then run
-/// `f` against it. Collapses the three
-/// `if app.launch_picker.is_none() { app.open_launch_picker(); } if
-/// let Some(p) = app.launch_picker.as_mut() { ... }` blocks.
+/// `f` against it.
 fn with_picker<F: FnOnce(&mut crate::tui::launch_picker::LaunchPickerState)>(app: &mut App, f: F) {
   if app.launch_picker.is_none() {
     app.open_launch_picker();
@@ -1164,10 +1151,8 @@ fn apply_prev_field(app: &mut App) {
 /// True when the Settings tab is showing the read-only running-launch
 /// view (focused row has a managed launch + no picker is staged) —
 /// the case where arrow keys must NOT silently swap the pane to the
-/// next-launch editor. The user originally saw the live params and
-/// expected `↑/↓/←/→` to scroll or do nothing; auto-staging the
-/// picker hid the running params behind the form and surprised them.
-/// `e` (Action::EnterEdit) is the explicit opt-in to start editing.
+/// next-launch editor. `e` (Action::EnterEdit) is the explicit opt-in
+/// to start editing.
 fn running_view_is_locked(app: &App) -> bool {
   app.right_tab == RightTab::Settings
     && app.launch_picker.is_none()
@@ -1597,8 +1582,7 @@ fn apply_confirmed(app: &mut App, action: ConfirmAction, writer: Option<&mpsc::S
   }
 }
 
-/// Small helper to centralise the writer-channel try_send +
-/// toast-on-result pattern shared by stop-model and shutdown.
+/// Centralises the writer-channel try_send + toast-on-result pattern.
 fn dispatch_writer(
   app: &mut App,
   writer: Option<&mpsc::Sender<WriterCmd>>,
@@ -1616,9 +1600,9 @@ fn dispatch_writer(
   }
 }
 
-// `TabEvent` moved to `tui::tabs::TabEvent` to close the circular
-// import: tab modules now point downward to `tui::tabs` for the
-// event type instead of reaching back up into `tui::events`.
+// `TabEvent` lives in `tui::tabs::TabEvent` to close the circular
+// import: tab modules point downward to `tui::tabs` for the event
+// type instead of reaching back up into `tui::events`.
 pub use crate::tui::tabs::TabEvent;
 
 #[derive(Clone, Copy)]
@@ -1680,10 +1664,7 @@ fn edit_focus_for_tab(tab: RightTab) -> Option<Focus> {
 }
 
 /// Resolve the focused managed row or toast a context-specific
-/// "no Ready model focused for `<action>`" message. The same lookup +
-/// toast guard was duplicated across
-/// `apply_send_chat`, `apply_embed_submit`, `apply_rerank_submit`
-/// and the right-pane yank handlers.
+/// "no Ready model focused for `<action>`" message.
 fn focused_managed_or_toast(app: &mut App, action: &str) -> Option<crate::tui::app::ManagedRow> {
   match app.focused_managed() {
     Some(m) => Some(m.clone()),
@@ -2254,8 +2235,8 @@ pub fn spawn_writer(
           }
         }
         // Surface a successful `start_model`'s advisories (dropped knobs,
-        // deepseek4 KV-blind, ssd_streaming bypass) as a toast — the TUI leg
-        // of R6 / D-admission. Other methods carry no warnings.
+        // deepseek4 KV-blind, ssd_streaming bypass) as a toast.
+        // Other methods carry no warnings.
         Ok(resp) => {
           if method == "memory_reserve_set" {
             if let Some(fb) = &feedback {
@@ -2758,8 +2739,7 @@ fn handle_event(app: &mut App, evt: Event, writer_tx: &mpsc::Sender<WriterCmd>) 
       let hf_search_dispatched = service_hf_dialog_debounce(app);
       // Time-decay UI (toast TTL, strip error linger) needs a
       // periodic redraw so it visibly disappears even when no other
-      // events are landing. Bounded by `TICK_RATE` (4 Hz) so the
-      // idle-CPU win from the refactor is preserved.
+      // events are landing. Bounded by `TICK_RATE` (4 Hz).
       hf_search_dispatched || tick_has_time_decay_ui(app)
     }
     Event::Refresh(tick) => {
@@ -3053,10 +3033,7 @@ pub async fn launch(
   run(app, socket.to_path_buf(), daemon_opts).await
 }
 
-/// Apply one [`ChatStreamMsg`] to `app.chat`. Replaces the prior
-/// `drain_chat_stream(app)` polling helper: the unified `Event` loop
-/// hands each chunk in one at a time, so the receiver lives nowhere
-/// on app state.
+/// Apply one [`ChatStreamMsg`] to `app.chat`.
 pub fn apply_chat_stream(app: &mut App, msg: ChatStreamMsg) {
   match msg {
     ChatStreamMsg::Delta(s) => app.chat.append_delta(&s),
@@ -3066,8 +3043,6 @@ pub fn apply_chat_stream(app: &mut App, msg: ChatStreamMsg) {
 }
 
 /// Apply one [`TabEvent`] (embed or rerank result) to the right pane.
-/// Replaces `drain_embed_pending` / `drain_rerank_pending` — the
-/// unified loop hands one event in at a time.
 pub fn apply_tab_event(app: &mut App, evt: TabEvent) {
   match evt {
     TabEvent::EmbedOk(result) => app.embed.record(result),
@@ -4873,8 +4848,6 @@ mod tests {
     );
   }
 
-  // ── regression coverage for the round-3 fixes ──────────────────
-
   fn fake_model_for_events(path: &str, parent: &str) -> crate::discovery::DiscoveredModel {
     use crate::discovery::{DiscoveredModel, ModelSource};
     use crate::gguf::metadata::{ModeHint, ModelMetadata, Quant};
@@ -5288,7 +5261,7 @@ mod tests {
 
   #[test]
   fn up_down_in_settings_tab_cycle_picker_fields() {
-    // Round-7 navigation model: ↑/↓ in `Focus::RightPane` while
+    // Navigation model: ↑/↓ in `Focus::RightPane` while
     // right_tab == Settings cycle the launch-picker form fields
     // (ctx → reasoning → advanced → ctx). ←/→ are reserved for
     // value cycling on the focused field; Tab cycles panes.
@@ -5439,8 +5412,7 @@ mod tests {
   #[test]
   fn e_in_settings_opens_picker_over_running_launch() {
     // `e` (Action::EnterEdit) on the Settings tab is the explicit
-    // gate that replaces the old auto-stage-on-arrow behaviour.
-    // With a managed launch focused, it stages the picker so the
+    // gate. With a managed launch focused, it stages the picker so the
     // user can edit next-launch params over the read-only running
     // view.
     let mut app = App::new(Default::default());
@@ -5538,8 +5510,8 @@ mod tests {
 
   #[test]
   fn left_arrow_on_models_list_is_unbound() {
-    // Round-8 reintroduces an asymmetric arrow surface on the
-    // Models list: `→` enters the right pane (mirrors kdash-style
+    // The Models list has an asymmetric arrow surface: `→` enters the
+    // right pane (mirrors kdash-style
     // "open the panel to my right"); `←` stays unbound because
     // Esc handles the return path and pane-cycle still works via
     // Tab/⇧+Tab/h/l.
@@ -5571,7 +5543,7 @@ mod tests {
 
   #[test]
   fn tab_in_right_pane_logs_tab_cycles_to_next_pane() {
-    // Round-7 makes Tab universal: in any focus / tab combo, Tab
+    // Tab is universal: in any focus / tab combo, Tab
     // moves to the next pane. In Logs that means jumping past the
     // right pane back to the list.
     let mut app = App::new(Default::default());
@@ -5598,7 +5570,7 @@ mod tests {
 
   #[test]
   fn arrow_keys_in_right_pane_scroll_chat_output() {
-    // Round-8: Chat/Embed/Rerank output panes get arrow-key
+    // Chat/Embed/Rerank output panes get arrow-key
     // scroll mirroring the Logs pane. Editing focus is not
     // active, so ↑/↓ walk the response viewport. ↓ moves toward
     // the end (offset increments), ↑ back toward the top.
@@ -5635,7 +5607,7 @@ mod tests {
   #[test]
   fn chat_reset_for_send_clears_scroll_offset() {
     // Sending a new prompt resets the viewport to the top so the
-    // response streams from the beginning. Round-8 reset path.
+    // response streams from the beginning.
     let mut app = App::new(Default::default());
     app.chat.scroll_offset.set(7);
     app.chat.reset_for_send();
@@ -5709,7 +5681,7 @@ mod tests {
 
   #[test]
   fn s_on_chat_tab_does_not_flip_logs_auto_scroll() {
-    // F1 #1 (P0 regression fix): the fall-through `else` of
+    // Regression: the fall-through `else` of
     // `ToggleAutoScroll` used to flip `logs_state.auto_scroll` for
     // every RightPane focus that wasn't Settings — including Chat
     // / Embed / Rerank. Repro: focus a running model, switch to
@@ -5764,7 +5736,7 @@ mod tests {
 
   #[test]
   fn launch_submit_with_running_instance_stages_confirm_popup() {
-    // Round-8: pressing Enter on the Settings tab for a model
+    // Pressing Enter on the Settings tab for a model
     // that's already running stages a LaunchDuplicate confirm
     // popup instead of dispatching immediately. The writer must
     // not see StartModel until the user explicitly confirms.
@@ -5885,7 +5857,7 @@ mod tests {
 
   #[test]
   fn u_c_p_yanks_work_from_settings_tab() {
-    // Round-8: `p` always yanks the focused path; `u` and `c`
+    // `p` always yanks the focused path; `u` and `c`
     // need a running endpoint. Dispatch happens through the same
     // `apply_action` path as the Models list, so a successful
     // yank toast is enough to prove the binding routes. The toast

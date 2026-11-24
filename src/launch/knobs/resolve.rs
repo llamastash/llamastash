@@ -1,12 +1,7 @@
 //! The layered resolver, over [`KnobSet`].
 //!
-//! Same precedence chain as before — `user > default preset > last used > arch
-//! defaults > built-in` — but it now runs over *every* knob a backend declares
-//! rather than only the nineteen in the old llama.cpp-keyed IR. Backend-native
-//! tunables gain layering, arch defaults, and source chips, none of which the
-//! parallel `backend_knobs` channel had.
-//!
-//! Two behaviours are new:
+//! Precedence: `user > default preset > last used > arch defaults > built-in`,
+//! over every knob a backend declares.
 //!
 //! - **Concept carry-over.** A layer that stored a value under one backend's
 //!   spelling still reaches the resolved backend when both tag the same
@@ -14,9 +9,8 @@
 //!   destination knob, so a
 //!   kind mismatch is skipped rather than smuggled through.
 //! - **Explicit drops.** A value the resolved backend cannot honour is
-//!   reported in [`Resolved::dropped`] instead of vanishing, which is what R6
-//!   asks for: dropped, logged, surfaced — never silently ignored, never a
-//!   hard launch block.
+//!   reported in [`Resolved::dropped`] instead of vanishing: dropped, logged,
+//!   surfaced — never silently ignored, never a hard launch block.
 
 use std::collections::BTreeMap;
 
@@ -70,9 +64,9 @@ impl Resolved {
 
 /// Resolve `layers` for `backend_id`, most-specific first.
 ///
-/// Honours `LLAMASTASH_BENCH_DISABLE_DEFAULTS=1` the same way the old resolver
-/// did: collapse to User-labelled layers only, so the bench harness produces
-/// byte-identical argv to a raw engine invocation.
+/// Honours `LLAMASTASH_BENCH_DISABLE_DEFAULTS=1`: collapse to User-labelled
+/// layers only, so the bench harness produces byte-identical argv to a raw
+/// engine invocation.
 pub fn resolve_layered(backend_id: &str, layers: &[(LayerLabel, &KnobSet)]) -> Resolved {
   resolve_layered_with_disable_defaults(
     backend_id,
@@ -138,7 +132,7 @@ pub fn resolve_layered_with_disable_defaults(
   // A shared concept only counts as carried when the destination knob actually
   // ended up with a value. Sharing the concept is not enough: `carry_over`
   // re-parses into the destination's kind and skips a value that kind cannot
-  // hold, which used to leave the id neither set nor reported -- silently gone.
+  // hold.
   let mut dropped = Vec::new();
   for (_, layer) in layers {
     for id in layer.ids() {

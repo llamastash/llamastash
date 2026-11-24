@@ -163,11 +163,10 @@ impl KnobKind {
 
 /// What a knob's `auto` state *means* for this knob.
 ///
-/// This is the fix for the overload that forced MTP off the knob path
-/// (plan `2026-07-14-001` KD2): `Auto` used to mean exactly one thing —
-/// "delegate to llama-server's `--fit`" — which is a llama.cpp-ism baked into a
-/// supposedly neutral type, and nonsense for a knob like speculation enable.
-/// Making the meaning per-knob lets both live on the same path.
+/// One global meaning for `Auto` — "delegate to llama-server's `--fit`" — is
+/// a llama.cpp-ism baked into a supposedly neutral type, and nonsense for a
+/// knob like speculation enable. Making the meaning per-knob lets both live
+/// on the same path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutoKind {
   /// Emit nothing and let the engine's own fitter place this. Only the
@@ -202,7 +201,7 @@ pub enum Emit {
 ///
 /// The ring is part of the *declaration* because the editor is generated from
 /// it: a knob whose backend forgot to say how it cycles would render a dead
-/// row, which is exactly the drift the registry exists to make impossible.
+/// row.
 /// Three variants resolve against runtime state the declaration cannot know
 /// — offering a stop the host or model cannot honor is offering a launch that
 /// fails.
@@ -412,9 +411,9 @@ pub struct KnobDef {
   /// the launch that asked for it, and whenever its preset is named again; it
   /// is just not remembered on the user's behalf.
   ///
-  /// Declared here rather than in a separate id list because the two drifted:
-  /// the list kept pre-registry spellings after the ids changed, so it matched
-  /// nothing and the guard silently stopped guarding.
+  /// Declared here rather than in a separate id list because the two drift: a
+  /// list that keeps stale spellings matches nothing, and the guard silently
+  /// stops guarding.
   pub volatile: bool,
   /// Where the value comes from when *no* layer supplies one, which is what
   /// the editor renders as the origin chip. `ModelDefault` for knobs the
@@ -443,7 +442,6 @@ impl KnobDef {
     }
   }
 
-  /// Whether this knob offers an `Auto` state on any surface.
   pub fn has_auto(&self) -> bool {
     self.auto.is_some()
   }
@@ -463,8 +461,8 @@ impl KnobDef {
     }
   }
 
-  /// Whether a surface should open a text input on this knob. A ring and a
-  /// text input coexist — cycling is the quick path, typing the exact one.
+  /// A ring and a text input coexist — cycling is the quick path, typing the
+  /// exact one.
   pub fn is_editable(&self) -> bool {
     self.kind.is_editable()
   }

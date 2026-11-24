@@ -359,12 +359,10 @@ mod tests {
     assert_eq!(body["theme"], "opencode");
     assert_eq!(body["model"], "anthropic/claude");
     assert_eq!(body["provider"]["anthropic"]["name"], "Anthropic");
-    // Our provider landed.
     assert_eq!(
       body["provider"]["llamastash"]["options"]["baseURL"],
       "http://127.0.0.1:11435/v1"
     );
-    // No parallel .json sibling created.
     assert!(!dir.join("opencode.json").exists());
     std::fs::remove_dir_all(&dir).ok();
   }

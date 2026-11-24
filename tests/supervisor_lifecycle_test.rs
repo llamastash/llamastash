@@ -99,7 +99,7 @@ async fn launching_to_loading_to_ready_within_a_second() {
   std::fs::remove_dir_all(&dir).ok();
 }
 
-// Strict-fit ctx-clamp gate (R19). The fake server echoes `--fit-ctx`
+// Strict-fit ctx-clamp gate. The fake server echoes `--fit-ctx`
 // back as the resolved `/props` `n_ctx`, so launching with a floor and a
 // larger trained window reproduces a memory-driven clamp deterministically.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -143,7 +143,6 @@ async fn strict_fit_withholds_ready_when_ctx_clamped_to_floor() {
     ManagedState::Error { cause, .. } => assert!(cause.contains("strict-fit"), "cause: {cause}"),
     other => panic!("expected Error, got {other:?}"),
   }
-  // Ready was never declared.
   assert!(
     model.ready_at().await.is_none(),
     "strict refusal must not stamp ready_at"
@@ -425,7 +424,7 @@ async fn wait_for_log_contents(path: &Path, needle: &str, budget: Duration) -> b
 }
 
 /// A Ready child that dies without a stop request (the OOM killer's SIGKILL)
-/// becomes an error that says how it ended. It used to read as a clean
+/// becomes an error that says how it ended. Without this it reads as a clean
 /// `stopped` with a dead pid, indistinguishable from a user stop.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

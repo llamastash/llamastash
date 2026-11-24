@@ -1,39 +1,23 @@
-//! The `Backend` seam: everything currently hardwired to `llama-server`
-//! on the **launch / supervise / identify** side, expressed as a
-//! contract so other inference engines can plug in.
+//! The `Backend` seam: the contract on the **launch / supervise / identify**
+//! side that lets other inference engines plug in.
 //!
-//! This module + [`llama_cpp`] provide the contract with
-//! llama.cpp as the reference implementation. This module is the
-//! backend-agnostic foundation: a
-//! second engine plugs in by implementing [`Backend`], adding a variant to
+//! A second engine plugs in by implementing [`Backend`], adding a variant to
 //! [`Backends`] (+ its match arms), and registering its
 //! [`identity`]/selection arms — no change to the supervisor, proxy, or
-//! resolver. The generic process-supervision machinery in
-//! [`crate::daemon::supervisor`] (state machine, log rotation, ring buffer,
-//! resource sampler, exit watcher, signal handling) is shared by every
-//! backend — only the backend-specific spots live behind this seam:
+//! resolver. Only the backend-specific spots live behind this seam:
 //! argv/launch translation, the env strip, the readiness endpoint, and
 //! identity.
 //!
-//! See `docs/plans/2026-06-08-001-refactor-backend-trait-abstraction-plan.md`
-//! and the origin brainstorm
-//! `docs/brainstorms/2026-06-08-multi-backend-abstraction-requirements.md`.
-//!
-//! # One process per model
-//!
-//! Every backend runs one supervised child process per model ([`llama_cpp`] is
-//! the reference): llamastash spawns it, probes it, and owns its full
-//! lifecycle. [`Backend::prepare_launch`] is the synchronous translation to the
+//! Every backend runs one supervised child process per model: llamastash
+//! spawns it, probes it, and owns its full lifecycle.
+//! [`Backend::prepare_launch`] is the synchronous translation to the
 //! [`ProcessLaunchSpec`] the supervisor consumes; the heavy work (the spawn and
 //! the readiness probe) happens when that spec is executed.
-//!
-//! # Generalized identity
 //!
 //! [`Backend::identify`] returns the seam-level [`identity::ModelIdentity`]
 //! (GGUF or backend-registry), wrapping the unchanged GGUF
 //! [`crate::gguf::identity::ModelId`] so `state.json` is preserved. A
-//! file-less backend-registry model rides the same persisted maps as GGUF
-//! rows — reusable by any future backend.
+//! file-less backend-registry model rides the same persisted maps as GGUF rows.
 
 pub mod generic;
 pub mod identity;
@@ -98,15 +82,13 @@ pub struct DeclaredEffort {
 
 /// How to tell that a launched model is ready to serve.
 ///
-/// Currently only the HTTP-poll shape (llama.cpp's `/health`). The
-/// poll semantics live in [`crate::daemon::probe`]; this declares the
-/// endpoint + the status that means "ready" so the probe is no longer
-/// hardwired to `/health`.
+/// The poll semantics live in [`crate::daemon::probe`]; this declares the
+/// endpoint + the status that means "ready".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Readiness {
   /// Poll an HTTP path until it returns `ready_status`. Any other
   /// status (including the conventional `503` "still loading") keeps
-  /// the probe waiting until its timeout — matching today's behavior.
+  /// the probe waiting until its timeout.
   HttpPoll { path: String, ready_status: u16 },
   /// Poll `path` until it returns `ready_status` **and** the JSON body
   /// advertises a model id in `expect_model_ids`. For a server that leaves its
@@ -135,8 +117,7 @@ pub const CREDENTIAL_ENV_STRIP: &[&str] = &[
 
 /// A fully-resolved instruction for starting one model on a
 /// **process-per-model** backend. Everything
-/// [`crate::daemon::supervisor::spawn`] needs to launch + probe a child,
-/// with no llama.cpp specifics left in the supervisor.
+/// [`crate::daemon::supervisor::spawn`] needs to launch + probe a child.
 #[derive(Debug, Clone)]
 pub struct ProcessLaunchSpec {
   /// The executable to spawn (the device-owning binary, already chosen
@@ -150,7 +131,6 @@ pub struct ProcessLaunchSpec {
   /// credential contract: `LLAMA_ARG_*`, `HF_*`). Declared by the
   /// backend rather than hardcoded in the supervisor.
   pub env_remove: Vec<&'static str>,
-  /// How to detect readiness once spawned.
   pub readiness: Readiness,
   /// Probe budget (the caller has already applied `scale_for_model`).
   pub probe: ProbeOptions,
@@ -205,7 +185,6 @@ impl AcceleratorSupport {
     }
   }
 
-  /// Add an accelerator (idempotent).
   pub fn insert(&mut self, a: Accelerator) {
     self.set.insert(a);
   }
@@ -220,11 +199,6 @@ impl AcceleratorSupport {
   }
 }
 
-/// The set of knob IR fields a backend can honor.
-/// One inference backend. Everything that would otherwise be hardwired to one
-/// engine is expressed here, so each backend owns its own translation from the
-/// knobs it declares.
-///
 /// The outcome of a backend resolving its **Auto** native knobs for a launch
 /// with live host context. Default is no resolution.
 #[derive(Debug, Default, Clone)]
@@ -243,6 +217,10 @@ pub struct KnobResolution {
   pub refusal: Option<String>,
 }
 
+/// One inference backend. Everything that would otherwise be hardwired to one
+/// engine is expressed here, so each backend owns its own translation from the
+/// knobs it declares.
+///
 /// Dispatch is via the [`Backends`] enum (zero-cost, exhaustive) rather than
 /// `dyn Backend` — the backend set is small and closed. Because the trait is
 /// only ever reached through the enum (never as a generic bound or trait
@@ -349,7 +327,7 @@ pub trait Backend {
   }
 
   /// Whether `extras` already configures speculative decoding by hand, in which
-  /// case llamastash defers entirely and adds none of its own (KD3).
+  /// case llamastash defers entirely and adds none of its own.
   ///
   /// Default `false`. Only the backend knows its own flag spelling — and
   /// whether a second spec flag would stack rather than replace — so the
@@ -381,7 +359,7 @@ pub trait Backend {
   }
 
   /// The model ids a backend's `/v1/models` may advertise for one of its
-  /// launches — the adoption/readiness id contract (D-adopt / D-ready).
+  /// launches — the adoption/readiness id contract.
   /// Empty (the default) means "match by the recorded file path/basename"
   /// (llama.cpp's rule, applied by the orphan sweep). A server that reports a
   /// fixed alias instead of the path returns that alias set.
@@ -391,7 +369,7 @@ pub trait Backend {
 
   /// Whether the live process at `port` (with command line `argv`) is a
   /// re-adoptable instance of the launch recorded for `recorded_path` — the
-  /// identity factor of the orphan sweep's three-factor confirmation (D-adopt).
+  /// identity factor of the orphan sweep's three-factor confirmation.
   ///
   /// Default (llama.cpp): the `/v1/models` id matches the recorded path or its
   /// basename (`crate::daemon::orphans::models_endpoint_matches`); `argv` is
@@ -408,15 +386,6 @@ pub trait Backend {
     crate::daemon::orphans::models_endpoint_matches(port, recorded_path, probe_timeout).await
   }
 
-  /// Whether this backend **auto-claims** `header` beyond the default identity
-  /// rule — a header-level routing predicate (for example an arch plus a quant
-  /// contract).
-  ///
-  /// Default `false`: llama.cpp (runs every GGUF) and a registry backend
-  /// claim nothing *specially* here. Discovery records the first
-  /// claiming backend's id as the model's `routed_backend`, and the `list`
-  /// badge / launch routing read that — so a new special-routing backend needs
-  /// only override this, with no discovery edit.
   /// Config-only enablement, for boot decisions taken before the full
   /// [`MethodContext`] exists (the discovery task is spawned first, and the
   /// `daemon start` precheck runs before any daemon). Same predicate as
@@ -454,14 +423,23 @@ pub trait Backend {
     Vec::new()
   }
 
+  /// Whether this backend **auto-claims** `header` beyond the default identity
+  /// rule — a header-level routing predicate (for example an arch plus a quant
+  /// contract).
+  ///
+  /// Default `false`: llama.cpp (runs every GGUF) and a registry backend
+  /// claim nothing *specially* here. Discovery records the first
+  /// claiming backend's id as the model's `routed_backend`, and the `list`
+  /// badge / launch routing read that — so a new special-routing backend needs
+  /// only override this, with no discovery edit.
   fn auto_routes(&self, _header: &GgufHeader) -> bool {
     false
   }
 
   /// Whether a launch of `path` on `server` serves `mode`. Default serves the
   /// modes every engine is composed for — chat / embedding / rerank alike — and
-  /// refuses the media modes, which no built-in engine answers yet; a backend
-  /// that serves one overrides this. A backend that serves only some modes
+  /// refuses the media modes, which no built-in engine answers yet. A backend
+  /// that serves only some modes
   /// overrides it; an `Auto` launch in an unserved mode falls back to
   /// the identity default, a routing input, not an error. The proxy refuses an
   /// embeddings or rerank request bound for a launch that does not serve it.
@@ -851,9 +829,7 @@ pub trait Backend {
   /// concrete `(path, BLAKE3)` GGUF identity in
   /// [`ModelIdentity::Gguf`]; a managed-registry backend returns
   /// [`ModelIdentity::Backend`]. The `(path, header_bytes)` inputs are
-  /// the GGUF-discovery shape — registry backends ignore them for now and
-  /// will derive identity from their API when such a backend lands (see
-  /// [`identity`]).
+  /// the GGUF-discovery shape (see [`identity`]).
   fn identify(&self, path: &Path, header_bytes: &[u8]) -> ModelIdentity;
 
   /// Translate a fully-resolved [`LaunchParams`] into a [`ProcessLaunchSpec`].
@@ -879,9 +855,6 @@ pub trait Backend {
     ctx: &MethodContext,
     exec: crate::daemon::launch_service::LaunchExec,
   ) -> Result<crate::daemon::launch_service::StartedLaunch, crate::ipc::protocol::ErrorObject> {
-    // Default: a supervised child process. Resolve the executable + port (the
-    // pool port for a process-per-model backend), compose the argv, then run the
-    // generic admission-gated spawn.
     let (binary, port) =
       match self.resolve_launch_binary(ctx, exec.default_binary.clone(), exec.reserved_port) {
         Ok(bp) => bp,
@@ -980,7 +953,7 @@ macro_rules! for_each_backend {
 
 impl Backends {
   /// Every backend llamastash knows about, freshly constructed — the single
-  /// enumeration point (R3).
+  /// enumeration point.
   ///
   /// Consumers that need to survey all backends (the `status` backend rows,
   /// `doctor` advisories, the `--backend` value set, discovery routing) walk
@@ -1037,7 +1010,6 @@ pub fn supported_backends_for(header: &GgufHeader) -> Vec<String> {
     .into_iter()
     .filter(|b| b.auto_routes(header) || b.id() == DEFAULT_BACKEND_ID)
     .collect();
-  // Stable sort by priority descending.
   backends.sort_by_key(|b| std::cmp::Reverse(b.launch_priority()));
   backends.into_iter().map(|b| b.id().to_string()).collect()
 }
@@ -1419,7 +1391,7 @@ pub fn config_declares_models(config: &BackendConfig) -> bool {
 
 /// Map a model's [`ModelIdentity`] to the backend that runs it.
 ///
-/// The identity-keyed rule (the **auto** half of R17): a GGUF identity binds to
+/// The identity-keyed rule: a GGUF identity binds to
 /// the direct llama.cpp backend; a backend-registry identity binds to the
 /// registry backend whose [`Backend::id`] matches (found generically over
 /// [`Backends::all`], so no backend is named here). An unknown registry id
@@ -1454,8 +1426,7 @@ pub fn resolve_backend(identity: &ModelIdentity, choice: BackendChoice) -> Backe
 ///
 /// Iterates the registry so any backend can decline a header it recognizes but
 /// cannot load (e.g. an unloadable split file) *before* the expensive spawn.
-/// The launch path calls this only on `Auto`; an explicit `--backend` override
-/// skips it so the chosen engine can surface its own error. Names no backend.
+/// Names no backend.
 pub fn refusal_for_auto_launch(arch: Option<&str>, path: &Path) -> Option<String> {
   Backends::all()
     .into_iter()
@@ -1463,8 +1434,7 @@ pub fn refusal_for_auto_launch(arch: Option<&str>, path: &Path) -> Option<String
 }
 
 /// Mint the synthetic [`ModelIdentity`] for a **file-less** catalog `path`, plus
-/// the id of the backend that owns it. The generic replacement for hand-minting
-/// a backend-registry identity in the launch / status path: returns the
+/// the id of the backend that owns it. Returns the
 /// highest-priority backend whose [`Backend::synthetic_identity`] claims `path`
 /// (paired with that backend's [`Backend::id`], which callers stamp as
 /// `resolved_backend`), or `None` for a local-file (GGUF) path no backend
@@ -1482,9 +1452,8 @@ pub fn synthetic_identity_for_path(path: &Path) -> Option<(ModelIdentity, String
 /// The identity a claimed path mints picks its backend, so this has to be the
 /// **same** order [`supported_backends_for`] publishes for a GGUF row and
 /// `discovery_task` folds a multi-engine row in. Walking registration order
-/// here instead let a row advertise one engine as its auto default while
-/// routing silently chose another; the two agreed only because the engine that
-/// registered first also happened to outrank the others.
+/// here instead lets a row advertise one engine as its auto default while
+/// routing silently chooses another.
 fn claimants_by_priority() -> Vec<Backends> {
   let mut backends = Backends::all();
   backends.sort_by_key(|b| std::cmp::Reverse(b.launch_priority()));
@@ -1586,9 +1555,7 @@ pub struct ResolvedIdentity {
   pub native_ctx: Option<u32>,
   /// The model's own serving-mode hint, header-derived like `arch`. The
   /// launcher's *lowest* mode rung: it is what the model defaults to, so it
-  /// sits below an explicit `--mode` and below a preset's `mode:` pin. Callers
-  /// used to resolve it themselves and send it as if it were a choice, which
-  /// is how it shadowed both.
+  /// sits below an explicit `--mode` and below a preset's `mode:` pin.
   pub mode_hint: crate::gguf::metadata::ModeHint,
   pub supported_backends: Vec<String>,
   pub mtp_embedded: Option<u32>,
@@ -1622,14 +1589,8 @@ impl std::fmt::Display for IdentityError {
 
 /// **The** path → identity resolution. Every surface that turns a model path
 /// into an id goes through here: launch, proxy auto-start, favorites, presets.
-///
-/// Each of those used to do its own thing. Three read a GGUF header directly
-/// and one special-cased a single backend by name, so support for a
-/// directory-shaped model had to be added four times and was in fact added
-/// twice — the proxy's auto-start died with `Is a directory (os error 21)` on
-/// exactly the models the launch path had already learned to handle. A new
-/// model shape is now one predicate ([`Backend::synthetic_identity`]) and every
-/// surface follows.
+/// A new model shape is one predicate ([`Backend::synthetic_identity`]) and
+/// every surface follows.
 ///
 /// `ctx` gates on backend availability when a caller has one; clients without
 /// a context (and tests) pass `None` and get the ungated registry answer.
@@ -1696,13 +1657,11 @@ pub fn resolve_identity_for_path(
 /// An exact basename match, plus `<marker>-<suffix>` for **compound** markers
 /// only.
 ///
-/// A bare `contains` was safe while every marker was a long compound basename
-/// (`llama-server`), where a `-cuda` / `-vulkan` build suffix is
-/// certainly the same program and `comm`'s 15-char cap can truncate it. It
-/// stops being safe once a backend registers a short single-token marker: a
+/// A `-cuda` / `-vulkan` build suffix is
+/// certainly the same program and `comm`'s 15-char cap can truncate it. A
 /// four-character token is a substring of unrelated tools on the host, and
 /// claiming one makes it a legal `stop_external` target. Suffix tolerance is
-/// therefore extended only to markers already specific enough to earn it.
+/// extended only to markers already specific enough to earn it.
 pub fn basename_matches_marker(basename: &str, marker: &str) -> bool {
   if basename == marker {
     return true;
@@ -1751,13 +1710,12 @@ pub fn default_backend() -> Backends {
 pub fn adopted_process_name(backend_id: &str) -> &'static str {
   Backends::from_id(backend_id)
     .and_then(|b| b.process_markers().first().copied())
-    // Unknown / marker-less id falls back to the default backend's own marker.
     .or_else(|| default_backend().process_markers().first().copied())
     .unwrap_or_default()
 }
 
 /// Resolve the backend for a launch, honoring the per-model override **and**
-/// the header-level routing signal (D-route).
+/// the header-level routing signal.
 ///
 /// Precedence: an explicit [`BackendChoice`] wins verbatim. Otherwise `Auto`
 /// prefers the backend that auto-claimed the header — `routed_backend` is that
@@ -1777,9 +1735,8 @@ pub fn resolve_backend_for_launch(
 ) -> Backends {
   match choice {
     BackendChoice::Auto => {
-      // Walk the priority-ordered supported list; take the first backend that
-      // is available and serves this mode (so a model falls back to llama.cpp
-      // when its preferred engine is absent, or on an embedding/rerank launch).
+      // A model falls back to llama.cpp when its preferred engine is absent,
+      // or on an embedding/rerank launch.
       for id in supported_backends {
         if let Some(b) = Backends::from_id(id) {
           if b.available(ctx) && b.serves_mode(path, server, mode) {
@@ -1823,10 +1780,8 @@ mod tests {
     }
   }
 
-  /// A short single-token marker used to match any process whose name merely
-  /// contained it — even with that backend disabled, which made unrelated
-  /// tools legal `stop_external` targets. Compound markers keep their
-  /// build-suffix tolerance, which is what the loose check was buying.
+  /// A short single-token marker must not claim unrelated tools whose name
+  /// merely contains it. Compound markers keep their build-suffix tolerance.
   #[test]
   fn a_marker_matches_its_own_binary_not_neighbours_that_share_the_name() {
     for (basename, marker, want) in [
@@ -1893,7 +1848,7 @@ mod tests {
       name: "x".into(),
     });
 
-    // Auto runs the R13 identity rule; GGUF + explicit llama.cpp both bind
+    // Auto runs the identity rule; GGUF + explicit llama.cpp both bind
     // the direct backend.
     assert_eq!(resolve_backend(&gguf, BackendChoice::Auto).id(), "llamacpp");
     assert_eq!(
@@ -1906,11 +1861,10 @@ mod tests {
       "no concrete backend for an unknown registry identity → safe direct fallback"
     );
 
-    // The default choice is Auto.
     assert_eq!(BackendChoice::default(), BackendChoice::Auto);
   }
 
-  /// R13: a GGUF on disk binds the default backend, and that backend brings a
+  /// A GGUF on disk binds the default backend, and that backend brings a
   /// real tuning surface with it rather than an empty one.
   #[test]
   fn a_disk_gguf_resolves_to_the_default_backend_with_its_knobs() {

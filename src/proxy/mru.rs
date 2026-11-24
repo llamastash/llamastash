@@ -8,9 +8,8 @@
 //!
 //! Map lives in process memory only — a daemon restart wipes the
 //! data, which is fine because the supervisor registry restarts
-//! empty too. This is the explicit Key Decision in the plan: "No
-//! persistence value — recovered naturally on first request after
-//! restart."
+//! empty too. There is no persistence value; the ordering is
+//! recovered naturally on the first request after a restart.
 //!
 //! [`pick_fallback`] embodies the family-MRU policy:
 //!   1. Filter the supervisor snapshot to `Ready` entries.
@@ -20,12 +19,9 @@
 //!      first); entries with no recorded timestamp sort last in
 //!      each group.
 //!   3. If the requested arch is `None` (synthetic GGUF without
-//!      metadata — R155's unknown-arch fallthrough), skip the
-//!      family-prefer step and sort the whole list by
-//!      `last_request_at` descending.
+//!      metadata), skip the family-prefer step and sort the whole
+//!      list by `last_request_at` descending.
 //!   4. Pick the head. Empty list → caller emits 503.
-//!
-//! Plan: docs/plans/2026-05-21-001-feat-proxy-router-plan.md.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -89,8 +85,7 @@ impl MruTracker {
 ///
 /// `failed_arch` is the requested model's `general.architecture`.
 /// `None` means the requested model had no arch metadata; the
-/// family-prefer step is skipped in that case (R155 unknown-arch
-/// fallthrough).
+/// family-prefer step is skipped in that case.
 ///
 /// Selection rules — see the module docstring.
 pub(crate) fn pick_fallback(

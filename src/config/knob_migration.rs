@@ -1,8 +1,8 @@
-//! One-time `config.yaml` migration to the unified knob shape (plan D10).
-//!
-//! Users cannot hand-edit their way out of a shape change, and a compatibility
-//! reader that is deleted later is a delayed break rather than a migration. So
-//! the daemon rewrites the config once, on load, and says what it did.
+//! One-time `config.yaml` migration to the unified knob shape, run by the
+//! daemon on load. Users cannot hand-edit their way out of a shape change, and
+//! a compatibility reader that is deleted later is a delayed break rather than
+//! a migration. So the daemon rewrites the config once, on load, and says what
+//! it did.
 //!
 //! What moves, per preset entry:
 //!
@@ -22,26 +22,18 @@
 //! `arch_defaults` needs no migration: it was already a bare knob map and
 //! still is. Only the key spelling changed, and both spellings load.
 //!
-//! Four safety properties, in priority order:
-//!
-//! 1. **Comments survive** — the rewrite goes through
-//!    [`crate::config::yaml_edit`], which exists so app-driven writes preserve
-//!    hand-authored prose. Real configs carry measured tuning results and
-//!    "why this is pinned off" notes; losing those is worse than the break.
-//!
-//!    One boundary, chosen rather than stumbled into: a comment *above a key*
-//!    survives; a comment *between two knobs inside a migrated entry* does
-//!    not. `rewrite_entry` regenerates the entry body from the folded value,
-//!    and the keys it renames (`ctx` → `ctx-size`, `flash_attn` →
-//!    `flash-attn`) leave an in-body comment with nothing to anchor to.
-//!    `upsert_block` already documents the analogous key-line-comment loss.
-//!    The `.pre-knobs.bak` written in step 2 is what makes this recoverable
-//!    rather than lost. Pinned by `a_comment_inside_a_migrated_entry_is_lost`.
-//! 2. **The original is kept** — a `.pre-knobs.bak` sibling is written first,
-//!    and the migration aborts if it cannot be.
-//! 3. **It is announced** — the report names the backup and the entry count.
-//! 4. **It is idempotent** — a config already in the new shape is untouched,
-//!    so downgrading and upgrading again does not double-migrate.
+//! The rewrite goes through [`crate::config::yaml_edit`], which exists so
+//! app-driven writes preserve hand-authored prose. Real configs carry
+//! measured tuning results and "why this is pinned off" notes; losing those
+//! is worse than the break. A comment above a key survives the rewrite. A
+//! comment between two knobs inside a migrated entry does not: `rewrite_entry`
+//! regenerates the entry body, and the keys it renames (`ctx` → `ctx-size`,
+//! `flash_attn` → `flash-attn`) leave an in-body comment with nothing to
+//! anchor to. A `.pre-knobs.bak` sibling is written before the first edit,
+//! and the migration aborts if it cannot be; that backup is what makes the
+//! loss recoverable rather than lost. A config already in the new shape is
+//! untouched, so downgrading and upgrading again does not double-migrate.
+//! Pinned by `a_comment_inside_a_migrated_entry_is_lost_but_the_backup_keeps_it`.
 
 use std::path::{Path, PathBuf};
 
@@ -56,7 +48,7 @@ const ENTRIES_KEY: &str = "entries";
 const KNOBS_KEY: &str = "knobs";
 
 /// Keys inside a preset entry that are *not* knobs and stay where they are.
-/// `port` is absent by design (D7): presets have never carried one. The two
+/// `port` is absent by design: presets have never carried one. The two
 /// residency keys are here for the same reason as `backend` / `server`: they are
 /// entry policy, and dropping them from a migrated entry would silently unload
 /// a model's never-expire or boot-warm pin.
@@ -274,7 +266,6 @@ fn rewrite_entry(entry: &YamlValue) -> YamlValue {
     out.insert(YamlValue::from(KNOBS_KEY), YamlValue::Mapping(knobs));
   }
 
-  // Reserved keys keep their place and their value verbatim.
   if let Some(map) = entry.as_mapping() {
     for (k, v) in map {
       if let Some(k) = k.as_str() {
@@ -415,7 +406,7 @@ mod tests {
 
   #[test]
   fn comments_survive_the_rewrite() {
-    // The property that matters most: real configs carry load-bearing prose.
+    // Real configs carry load-bearing prose.
     let p = write(
       "comments",
       "# top of file\npresets:\n  # why this model is pinned\n  m.gguf:\n    entries:\n      fast:\n        ctx: 4096\n",
@@ -563,7 +554,7 @@ mod tests {
     assert!(after.contains("mtp: true"), "{after}");
   }
 
-  /// The documented comment boundary (module doc, safety property 1). This
+  /// The documented comment boundary (see the module doc). This
   /// asserts the *loss* on purpose: the behaviour is a consequence of
   /// regenerating the entry body, and a test that pins it keeps it a choice
   /// instead of something a later reader "fixes" by accident — or worse,

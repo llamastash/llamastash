@@ -1,33 +1,9 @@
 //! OS-aware path resolution for state, config, cache, and logs.
-//!
-//! Linux follows XDG; macOS follows the Apple convention (everything under
-//! `~/Library/...`). `state_dir` falls back to `data_dir` on macOS because
-//! the `directories` crate only exposes a distinct state directory on Linux.
-//!
-//! Env-var overrides (consulted as resolution step #1, all empty values
-//! treated as unset):
-//!
-//! * `LLAMASTASH_STATE_DIR` — verbatim override for `state_dir()`. The
-//!   daemon's `runtime.json` (URL + bearer token) lives here, so clients
-//!   attaching to a non-default daemon set this env var rather than
-//!   passing a socket path.
-//! * `LLAMASTASH_CONFIG_DIR` — verbatim override for `config_dir()`;
-//!   `user_config_file()` inherits because it is
-//!   `config_dir().join("config.yaml")`.
-//! * `LLAMASTASH_CACHE_DIR` — verbatim override for `cache_dir()`; `log_dir()`
-//!   inherits because it is `cache_dir().join("logs")`.
-//! * `LLAMASTASH_IPC_URL` + `LLAMASTASH_IPC_TOKEN` — direct overrides
-//!   for the IPC client's URL+bearer attach (see [`crate::ipc::client`]).
-//!   Both must be set together when used; partial overrides are
-//!   rejected.
-//! * HuggingFace, Ollama, and LM Studio model-cache paths are resolved
-//!   by [`crate::util::model_caches`] (single source of truth for both
-//!   writes via `init::download` and scans via `discovery::known_caches`).
-//!   That module honors `HF_HUB_CACHE`, `HUGGINGFACE_HUB_CACHE`,
-//!   `HF_HOME`, `XDG_CACHE_HOME`, and `OLLAMA_MODELS`. Not a `paths::*`
-//!   concern, but worth naming here because callers isolating a child
-//!   process need to clear or override them to fully sandbox the HF
-//!   cache alongside state, config, and cache/logs.
+//! Linux follows XDG. macOS follows the Apple convention. `state_dir` falls
+//! back to `data_dir` on macOS because the `directories` crate only exposes a
+//! distinct state directory on Linux. Env vars are consulted first and empty
+//! values count as unset. The full table is `docs/usage.md § Environment
+//! variables`. Model-cache paths live in [`crate::util::model_caches`].
 
 use std::path::{Path, PathBuf};
 
@@ -41,12 +17,6 @@ pub fn project_dirs() -> Option<ProjectDirs> {
   ProjectDirs::from(QUALIFIER, ORGANIZATION, APPLICATION)
 }
 
-/// Human-friendly short label derived from a model path. Falls back to
-/// `"model"` when the path has no readable `file_stem`. Used by every TUI
-/// surface that needs a short tag for the focused model (chat-tab `model`
-/// field, right-pane title, launch picker, logs) — the shared fallback when
-/// the live catalog has no `display_label` for the path.
-///
 /// A synthetic `<scheme>://<name>` path (`acme://qwen3.5-4b-FLM`) is not a
 /// file: the whole string after the scheme is the name, so `file_stem` is wrong
 /// there — it mistakes the `.5-4b-FLM` for a file extension and returns
@@ -69,16 +39,14 @@ pub fn model_display_name(path: &Path) -> String {
 /// split set's `-NNNNN-of-NNNNN` marker collapsed, so four shards read as one
 /// model (`Qwen3.8-Flash-Next-UD-Q4_K_XL.gguf`, not `…-00001-of-00004.gguf`).
 ///
-/// Also the per-model preset key the CLI and TUI write under, and the
-/// catalog-fallback name wherever a model is not in the live catalog. It has
-/// to collapse for those too: the `default:` preset silently stopped applying
-/// to split models when the key was derived raw here but collapsed elsewhere.
+/// Also the per-model preset key the CLI and TUI write under, so it has to
+/// collapse there too: the `default:` preset silently stopped applying to
+/// split models when the key was derived raw but collapsed elsewhere.
 ///
 /// This is the single place the shard collapse happens. `CatalogRow::name`,
-/// the CLI's running / external rows, and [`model_display_name`] (which is
-/// this minus the extension) all delegate here, so a split model cannot read
-/// one way in `list` and another in `status` — it did, before they each
-/// derived a basename of their own.
+/// the CLI's running / external rows, and [`model_display_name`] all delegate
+/// here, so a split model cannot read one way in `list` and another in
+/// `status`.
 pub fn model_file_label(path: &Path) -> String {
   let Some(file_name) = path.file_name().and_then(|s| s.to_str()) else {
     return path.to_string_lossy().into_owned();
@@ -88,14 +56,11 @@ pub fn model_file_label(path: &Path) -> String {
 }
 
 /// The one user-visible identifier for a model: `display_label` when the
-/// source supplies one, otherwise [`model_display_name`] over the path.
-///
-/// A GGUF row has no label, so it reads as the file stem
-/// (`Qwen2.5-Coder-7B-Q4_K_M`); a safetensors repo, an Ollama blob, and a
-/// registry entry all have opaque paths and carry a label instead
-/// (`Qwen/Qwen3-0.6B`, `llama3:8b`, `qwen3.5-4b-FLM`). This is the `id`
-/// `/v1/models` publishes and the string external tool configs must send
-/// back, so both go through here rather than deriving a name each.
+/// source supplies one, otherwise [`model_display_name`] over the path. A GGUF
+/// row has no label, so it reads as the file stem; a safetensors repo, an
+/// Ollama blob, and a registry entry have opaque paths and carry a label
+/// instead. This is the `id` `/v1/models` publishes and the string external
+/// tool configs must send back.
 pub fn model_public_id(path: &Path, display_label: Option<&str>) -> String {
   match display_label {
     Some(label) => label.to_string(),
@@ -124,12 +89,9 @@ pub fn model_qualified_id(path: &Path, display_label: Option<&str>) -> String {
 /// `huggingface/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-Q4_K_M`, where the head
 /// is a [`ModelSource`](crate::discovery::ModelSource) label.
 ///
-/// The rung the repo qualifier cannot cover: one repo cached by two different
-/// tools derives the *same* `owner/repo` from two different roots, so
-/// `models--lmstudio-community--gemma-4-E2B-it-GGUF` in the HF cache and
-/// `lmstudio-community/gemma-4-E2B-it-GGUF` under LM Studio qualify
-/// identically. That is the ordinary shape of a duplicate, not a corner case,
-/// and without this rung both fell through to absolute paths.
+/// Covers the case the repo qualifier cannot: one repo cached by two different
+/// tools derives the *same* `owner/repo` from two different roots, so without
+/// this rung both fall through to absolute paths.
 ///
 /// `display_label` sources are returned unchanged, like the rung below. An
 /// empty `source` (a row projected without one) degrades to that rung rather
@@ -163,10 +125,9 @@ fn id_ladder(path: &Path, display_label: Option<&str>, source: &str) -> Vec<Stri
 /// model in the catalog claims — plain [`model_public_id`], else
 /// [`model_qualified_id`], else [`model_source_qualified_id`] — and falls
 /// back to the canonical path, unique by construction, when even the longest
-/// collides. So every row `/v1/models` lists is reachable: before this, two
-/// same-named GGUFs in different roots published one id that 400'd with
-/// `ambiguous_model` for both, and an id already written into a tool config
-/// keeps working for as long as it stays unambiguous.
+/// collides. So every row `/v1/models` lists is reachable, and an id already
+/// written into a tool config keeps working for as long as it stays
+/// unambiguous.
 ///
 /// Every form shares one namespace, so a longer form can never shadow some
 /// other row's shorter one.
@@ -341,8 +302,7 @@ pub fn cache_dir() -> Option<PathBuf> {
 }
 
 /// Read an env var as a `PathBuf`, treating unset and empty values
-/// identically. Used by `state_dir` / `config_dir` / `cache_dir` to
-/// keep override semantics uniform.
+/// identically.
 fn env_path_override(name: &str) -> Option<PathBuf> {
   let raw = std::env::var_os(name)?;
   let p = PathBuf::from(raw);
@@ -357,22 +317,21 @@ pub fn log_dir() -> Option<PathBuf> {
   cache_dir().map(|d| d.join("logs"))
 }
 
-/// Convenience: return the canonical user config-file path.
 pub fn user_config_file() -> Option<PathBuf> {
   config_dir().map(|d| d.join("config.yaml"))
 }
 
-/// Convenience: state-store path (favorites, presets, last-params, running snapshot).
+/// State-store path (favorites, presets, last-params, running snapshot).
 pub fn state_file() -> Option<PathBuf> {
   state_dir().map(|d| d.join("state.json"))
 }
 
-/// Convenience: PID lockfile path used by the daemon to enforce single-instance.
+/// PID lockfile used by the daemon to enforce single-instance.
 pub fn daemon_pidfile() -> Option<PathBuf> {
   state_dir().map(|d| d.join("daemon.pid"))
 }
 
-/// Convenience: init-wizard snapshot file path. Sibling of
+/// Init-wizard snapshot file path. Sibling of
 /// `state.json` under the state dir; written and consumed only by the
 /// init wizard and `llamastash doctor` — the daemon ignores it.
 pub fn init_snapshot_file() -> Option<PathBuf> {
@@ -420,10 +379,10 @@ fn trailing_path_label(path: &Path, keep_segments: usize) -> String {
   }
 }
 
-/// Derive a short, human-friendly label for a model-directory parent
-/// path. Used by the list pane's section headers in place of the full
-/// raw parent so the user reads `owner/repo` instead of a 100-cell
-/// cache path. Detects three common cache layouts:
+/// Short, human-friendly label for a model-directory parent path, used by the
+/// list pane's section headers in place of the full raw parent so the user
+/// reads `owner/repo` instead of a 100-cell cache path. Detects three common
+/// cache layouts:
 ///
 /// * HuggingFace — `…/huggingface/hub/models--<owner>--<repo>/snapshots/<hash>`
 ///   → `<owner>/<repo>`
@@ -432,16 +391,15 @@ fn trailing_path_label(path: &Path, keep_segments: usize) -> String {
 /// * Ollama — `…/registry.ollama.ai/library/<name>/<tag>` → `<name>:<tag>`
 ///
 /// Anything that doesn't match falls back to the last two path segments
-/// (`…/models/qwen`) so user-configured `model_paths` stay scannable
-/// instead of burning the whole left-pane width on an absolute path.
+/// (`…/models/qwen`) so user-configured `model_paths` stay scannable.
 pub fn friendly_group_label(parent: &Path) -> String {
   cache_repo_label(parent).unwrap_or_else(|| trailing_path_label(parent, 2))
 }
 
 /// The `owner/repo`-shaped label for a path under a recognized model cache,
-/// or `None` for anything else. Split out of [`friendly_group_label`] so the
-/// id qualifier can fall back to a bare directory name instead of the
-/// elided `…/a/b` form, which a user cannot type back.
+/// or `None` for anything else. The id qualifier needs this separate from
+/// [`friendly_group_label`], whose elided `…/a/b` fallback a user cannot type
+/// back.
 fn cache_repo_label(parent: &Path) -> Option<String> {
   for comp in parent.components() {
     if let Some(s) = comp.as_os_str().to_str() {
@@ -801,8 +759,7 @@ mod tests {
   fn published_id_index_adds_the_source_when_the_repo_label_is_shared() {
     // The ordinary duplicate: one repo cached by both tools. Each root
     // derives the *same* `owner/repo`, so the repo rung cannot separate
-    // them and the source rung has to — these published as raw absolute
-    // paths before it existed.
+    // them and the source rung has to.
     let hf = Path::new(
       "/w/huggingface/hub/models--lmstudio-community--gemma-4-E2B-it-GGUF/snapshots/1/gemma-4-E2B-it-Q4_K_M.gguf",
     );

@@ -134,8 +134,8 @@ pub(crate) fn proxy_api_key(config: &Config) -> String {
     .unwrap_or_else(|| KEYLESS_STUB.to_string())
 }
 
-/// The tool's binary on `PATH`. The patcher names the program without a model in
-/// the way, so this can run before the pickers and before anything is started.
+/// The patcher names the program without a model in the way, so this can run
+/// before the pickers and before anything is started.
 fn lookup_program(tool: SessionTool) -> Result<PathBuf, CliExit> {
   let program = patcher_for(tool)
     .and_then(|p| p.session_program())

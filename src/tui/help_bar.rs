@@ -1,12 +1,5 @@
 //! Title-row global hint strip.
 //!
-//! Pre-relayout this module owned a focus-aware bottom help bar. After
-//! the kdash-style relayout, the bottom bar is gone and panel-specific
-//! hints live inside each panel's block title (`list_pane`,
-//! `right_pane`, etc.). What's left is the small strip of **global**
-//! keybindings — help, focus chain, kill-daemon, theme, quit — that
-//! the title row right-aligns over the accent background.
-//!
 //! Each chip's key label is resolved live through the App's `KeyMap`,
 //! so a `keybindings:` config override flows through to the title
 //! strip without code changes (`quit: ctrl+q` becomes `Ctrl+q:quit`).
@@ -25,8 +18,7 @@ use crate::tui::keybindings::{Action, Binding, Focus};
 
 /// One global chip — a stable description plus the action(s) whose
 /// live key labels populate the chip. `focus` is which binding table
-/// the resolver should consult (most chips share the same key across
-/// focuses, but `fields` is only registered in `Focus::RightPane`).
+/// the resolver should consult.
 /// Multiple actions are joined with `/` so the `panes` chip can
 /// carry both `NextFocus` and `PrevFocus` keys. `rank` is the
 /// drop priority under width pressure — lower wins (kept longest),
@@ -49,9 +41,8 @@ struct GlobalChip {
 const GLOBAL_CHIPS: &[GlobalChip] = &[
   // Surface the HF pull dialog opener first so first-time users see
   // the affordance without opening the help overlay. `OpenHfDialog`
-  // is a global (`FocusSet::NAV`) binding — it fires from the model
-  // list and the right pane alike; `focus: Focus::List` here just
-  // picks which binding table resolves the key label.
+  // is a global (`FocusSet::NAV`) binding; `focus: Focus::List` here
+  // just picks which binding table resolves the key label.
   GlobalChip {
     description: "pull",
     focus: Focus::List,
@@ -66,10 +57,6 @@ const GLOBAL_CHIPS: &[GlobalChip] = &[
     rank: 20,
     visible: None,
   },
-  // Tab cycles panes everywhere now. `panes` surfaces both
-  // directions; the picker prefers `Tab` for forward and
-  // `Shift+Tab` for backward (the canonical surface across every
-  // GUI/TUI).
   GlobalChip {
     description: "panes",
     focus: Focus::List,
@@ -77,11 +64,9 @@ const GLOBAL_CHIPS: &[GlobalChip] = &[
     rank: 40,
     visible: None,
   },
-  // `↑↓:scroll` mirrors the per-pane bottom-border scroll chip
-  // (`right_pane::bidirectional_chip`) but surfaces it always-on so
-  // the scroll affordance is discoverable before the user focuses a
-  // scrollable pane. Resolved from MoveUp/MoveDown so a rebind flows
-  // through; joined without a `/` so it reads as one affordance.
+  // Shown always-on, unlike the per-pane scroll chip, so the scroll
+  // affordance is discoverable before the user focuses a scrollable
+  // pane.
   GlobalChip {
     description: "scroll",
     focus: Focus::List,
@@ -161,17 +146,13 @@ fn chip_keys(app: &App, chip: &GlobalChip) -> Option<String> {
   Some(labels.join(sep))
 }
 
-/// Curated label picker for the `panes` chip. Walks the live
-/// bindings and emits, in order:
+/// Curated label picker for the `panes` chip. Prefers the `NextFocus`
+/// binding on `Tab` and the `PrevFocus` binding on `BackTab`
+/// (Shift+Tab).
 ///
-/// 1. The `NextFocus` binding on `Tab` if present — the canonical
-///    forward pane-cycle key across every GUI/TUI.
-/// 2. The `PrevFocus` binding on `BackTab` (Shift+Tab) if present
-///    — symmetric reverse.
-///
-/// Arrow keys are deliberately not picked here: round-7 reassigned
-/// ←/→ to value cycling in the Settings tab. Surfacing arrows in
-/// the `panes` chip would teach the wrong mental model.
+/// Arrow keys are deliberately not picked here: ←/→ cycle values in
+/// the Settings tab, so surfacing arrows would teach the wrong
+/// mental model.
 ///
 /// If neither Tab nor Shift+Tab is bound, fall back to first
 /// binding per action so a fully-rebound keymap still surfaces
@@ -310,7 +291,7 @@ mod tests {
       !text.contains("Shift+"),
       "Shift+ text must not appear: {text}"
     );
-    // Pre-round-7 surfaces must be gone.
+    // The fields chip must not appear.
     assert!(
       !text.contains(":fields"),
       "fields chip removed in round-7 (↑/↓ cycle fields now): {text}"
@@ -483,12 +464,8 @@ mod tests {
 
   #[test]
   fn chip_drops_silently_when_user_unbinds_the_action() {
-    // If a user removes every binding for an action, the chip drops
-    // — better an empty slot than a hint with no working key. We
-    // simulate this by rebinding `cycle_theme` onto `q` so the
-    // theme chip loses its `t` binding (the override path drops
-    // conflicting bindings of the other action; here CycleTheme's
-    // own `t` is replaced and Quit's `q` is claimed by CycleTheme).
+    // The theme chip must follow a rebind to the new key instead of
+    // showing the stale default.
     let mut keymap = KeyMap::default();
     // Use a key that doesn't already host a global action so we don't
     // accidentally drop a different chip.

@@ -16,9 +16,6 @@ const ALLOWED: &[&str] = &[
   "src/config/mod.rs",
   // The daemon force-flag is user-facing CLI surface, so it names the backend
   // by design — the same sanctioned exception `--vllm` / `--sglang` carry.
-  // `daemon/mod.rs` used to be here too, for re-appending that flag across the
-  // detached re-exec; it derives the flags from the force map now and names
-  // nothing.
   "src/cli/cli_args.rs",
   "src/cli/daemon.rs",
 ];
@@ -80,7 +77,6 @@ fn backend_id_does_not_leak_outside_its_module() {
 ///
 /// An entry for a file that no longer names the backend is a permanent hole:
 /// the guard above skips it forever, so a future leak into it passes silently.
-/// `src/config/loader.rs` had become exactly that.
 #[test]
 fn the_leak_allowlist_has_no_stale_entries() {
   let root = repo_root();
@@ -531,9 +527,8 @@ mod lifecycle {
 
 /// The detached `daemon start` re-exec must re-append `--vllm`, or a
 /// `--vllm` that overrides a config `enabled: false` is silently lost in the
-/// child. Caught in E2E after the unit tests passed: `LLAMASTASH_VLLM=1`
-/// worked (env survives exec) while the flag did not. Both re-exec sites
-/// carry it, which is why this asserts on the count.
+/// child. `LLAMASTASH_VLLM=1` keeps working because env survives exec, while
+/// the flag needs the re-append.
 #[test]
 fn force_flag_is_re_appended_on_the_detached_re_exec() {
   use llamastash::daemon::{backend_force_flags, DaemonOptions};
@@ -552,7 +547,7 @@ fn force_flag_is_re_appended_on_the_detached_re_exec() {
   );
 
   // Forced: the flag is rebuilt from the map, so both re-exec sites get it
-  // from one place instead of a copy-pasted block each.
+  // from one place.
   opts.backend_force.insert(id.to_string(), true);
   opts.backend_force.insert("sglang".to_string(), true);
   let flags = backend_force_flags(&opts);

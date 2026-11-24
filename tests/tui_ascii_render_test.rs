@@ -1,7 +1,7 @@
 //! End-to-end ASCII glyph-fallback render test.
 //!
 //! Runs the real binary's `--render` snapshot in both glyph modes and
-//! asserts the contract from the Unit 9 plan:
+//! asserts the contract:
 //!  - `LLAMASTASH_ASCII=1` drops the geometric / box-drawing house
 //!    style (status dots, severity triangles, gauge blocks, the logo
 //!    banner, box borders, the middot / divider chrome) to 7-bit ASCII.
@@ -10,7 +10,7 @@
 //! The only non-ASCII the ASCII frame may still carry are the
 //! keyboard-symbol labels (`↑ ↓ ← → ⏎ ⇧ ↹`), which belong to the
 //! keybinding-label source-of-truth system and are documented as
-//! present in every monospace terminal font — out of Unit 9's scope.
+//! present in every monospace terminal font.
 
 use std::collections::HashSet;
 use std::path::PathBuf;

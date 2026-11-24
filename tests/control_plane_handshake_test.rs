@@ -47,9 +47,8 @@ async fn wait_for_runtime_info(state_dir: &Path) -> runtime_file::RuntimeInfo {
 }
 
 async fn shutdown_via_socket(socket: &Path) {
-  // The Unix socket still runs during Phase A; use it for the
-  // shutdown signal so each test exits cleanly without coupling the
-  // teardown to the HTTP layer it's exercising.
+  // Shut down over the Unix socket so teardown does not couple to the
+  // HTTP layer under test.
   let mut client = Client::connect(socket).await.expect("attach for shutdown");
   let _ = client.call("shutdown", None).await.expect("shutdown rpc");
 }
@@ -204,7 +203,6 @@ async fn runtime_json_is_removed_on_shutdown() {
   let state_dir = opts.state_dir.clone();
   let handle = tokio::spawn(async move { run_foreground(opts).await });
 
-  // Confirm runtime.json was written…
   let _info = wait_for_runtime_info(&state_dir).await;
   let runtime_path = runtime_file::path(&state_dir);
   assert!(
@@ -212,7 +210,6 @@ async fn runtime_json_is_removed_on_shutdown() {
     "runtime.json must exist while daemon runs"
   );
 
-  // …then assert shutdown cleans it up.
   shutdown_via_socket(&socket).await;
   join_daemon(handle).await;
 

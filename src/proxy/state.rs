@@ -42,14 +42,13 @@ pub struct ProxyState {
   /// launch.
   pub(crate) coalesce: Coalesce,
   /// In-memory `last_request_at` tracker. The fallback selector
-  /// reads from it; `route::forward_request` writes to it as
-  /// forwarding starts (per the plan's "as it starts forwarding,
-  /// not on completion" rule).
+  /// reads from it; `router::forward_request` writes to it as
+  /// forwarding starts, not on completion.
   pub(crate) mru: MruTracker,
   /// Per-`ModelId` recent-failure log for the auto-start path. Once a
   /// model trips the threshold, further auto-start requests
   /// short-circuit with a clear cause instead of spawning another
-  /// llama-server child that will fail the same way. Cleared on a
+  /// engine child that will fail the same way. Cleared on a
   /// successful launch.
   pub(crate) failures: Arc<FailureTracker>,
   /// Full IPC context handle. Cheap to clone (every field is
@@ -78,7 +77,7 @@ pub struct ProxyState {
   /// returns `false`, so the router skips the check entirely. Set once
   /// at daemon startup; never mutated thereafter.
   pub(crate) auth: super::auth::ProxyAuth,
-  /// Whether the listener binds a loopback address; gates the router's `Host` check.
+  /// Gates the router's `Host` check.
   pub(crate) loopback_bind: bool,
   /// Inbound body size cap in bytes, applied to every body the proxy
   /// buffers before forwarding (data plane + `/ui`). From
@@ -90,27 +89,21 @@ pub struct ProxyState {
 }
 
 impl ProxyState {
-  /// Stamp `last_request_at` for `id`. Production use is the
-  /// proxy's auto-start path (`proxy::launch::drive_launch_as_leader`)
-  /// and the request-forward path (`proxy::router::forward_request`);
-  /// integration tests under the `test-fixtures` feature also reach
-  /// for this to seed the MRU before a manual `eviction::sweep_once`
-  /// call.
+  /// Production use is the proxy's auto-start path
+  /// (`proxy::launch::drive_launch_as_leader`) and the request-forward
+  /// path (`proxy::router::forward_request`); integration tests under
+  /// the `test-fixtures` feature also reach for this to seed the MRU
+  /// before a manual `eviction::sweep_once` call.
   pub async fn touch_mru(&self, id: &crate::gguf::identity::ModelId) {
     self.mru.touch(id).await;
   }
 
   /// Project the relevant handles out of an existing [`MethodContext`].
-  /// The proxy task receives this handle from `run_foreground` after
-  /// the rest of the daemon context has been assembled. `ollama_compat`
-  /// and `fallback_enabled` reflect the resolved bools from
-  /// `ProxyConfig` (after the CLI / env OR-chain); `max_body_size` the
-  /// resolved body cap. Auth is disabled (loopback, same-UID posture)
-  /// — production uses [`Self::from_context_with_auth`] to attach a
-  /// bearer key, and the bind is loopback. The `proxy.aliases` table rides
-  /// in `ctx` like every other
-  /// daemon-side handle, so the proxy and the `proxy_aliases` handler read one
-  /// table with one warn set.
+  /// Auth is disabled (loopback, same-UID posture) — production uses
+  /// [`Self::from_context_with_auth`] to attach a bearer key, and the
+  /// bind is loopback. The `proxy.aliases` table rides in `ctx` like
+  /// every other daemon-side handle, so the proxy and the
+  /// `proxy_aliases` handler read one table with one warn set.
   pub fn from_context(
     ctx: &MethodContext,
     ollama_compat: bool,
@@ -128,10 +121,10 @@ impl ProxyState {
   }
 
   /// Like [`Self::from_context`] but with a resolved bearer `api_key`
-  /// (`None` disables auth) and the resolved `loopback_bind` (whether the
-  /// listener binds a loopback address). The daemon's `run_foreground`
-  /// passes both from the loaded [`crate::config::loader::ProxyConfig`];
-  /// tests use the keyless [`Self::from_context`].
+  /// (`None` disables auth) and the resolved `loopback_bind`. The
+  /// daemon's `run_foreground` passes both from the loaded
+  /// [`crate::config::loader::ProxyConfig`]; tests use the keyless
+  /// [`Self::from_context`].
   pub fn from_context_with_auth(
     ctx: &MethodContext,
     ollama_compat: bool,
@@ -155,13 +148,12 @@ impl ProxyState {
   }
 }
 
-/// Build the proxy's pooled HTTP client. Single source so tests can
-/// reach into the same pool if they ever need to. The settings here
-/// target the loopback `llama-server` upstream: short-ish connect
-/// timeout (the child is on the same machine, anything > 5 s is a
-/// real bug), no request timeout (chat completions are arbitrarily
-/// long-running by design), pooling kept on so repeated requests
-/// against the same port reuse keep-alive.
+/// Single source so tests can reach into the same pool if they ever
+/// need to. The settings here target the loopback engine upstream:
+/// short-ish connect timeout (the child is on the same machine,
+/// anything > 5 s is a real bug), no request timeout (chat
+/// completions are arbitrarily long-running by design), pooling kept
+/// on so repeated requests against the same port reuse keep-alive.
 fn build_http_client() -> reqwest::Client {
   reqwest::Client::builder()
     .connect_timeout(Duration::from_secs(5))

@@ -10,9 +10,9 @@
 //!   primary surface — any agent that speaks the OpenAI REST shape
 //!   drives every discovered model through one stable URL here.
 //! - **Anthropic compat** (`/v1/messages`, `/v1/messages/count_tokens`):
-//!   byte-piped to llama-server's native Anthropic Messages endpoints
-//!   (it translates to its OpenAI pipeline internally), so Claude Code
-//!   and other Anthropic-shape clients attach via `ANTHROPIC_BASE_URL`.
+//!   byte-piped to the engine's native Anthropic Messages endpoints,
+//!   so Claude Code and other Anthropic-shape clients attach via
+//!   `ANTHROPIC_BASE_URL`.
 //! - **Ollama-discovery compat** (`/api/...`, Tier 1): `/api/tags`,
 //!   `/api/version`, `/api/ps`, `/api/show`. Read-only projections
 //!   of the catalog + supervisor registry into the Ollama wire shape,
@@ -67,14 +67,6 @@ pub type ProxyResponse = Result<Response<BoxBody<Bytes, BodyError>>, hyper::Erro
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ClientAddr(pub std::net::SocketAddr);
 
-/// The `POST` routes that reach a model, and the only ones the request log
-/// keeps a row for. The `/ui` surface matches its stripped paths against this
-/// list, so a chat sent from a web page is filed under the same path an API
-/// client sends — the row's `ui` flag is what tells them apart.
-///
-/// This is the whole forwarded surface: nothing else reaches an engine unless a
-/// generic entry declares the path (see `routes` in `docs/usage.md`), so engine
-/// admin and metrics paths stay unreachable through the proxy.
 /// Paths the proxy answers itself besides the forwarded routes in
 /// [`GENERATION_ROUTES`]: the ones it builds rather than pipes. The two together
 /// are what a generic entry may not claim as a declared `routes` prefix; the list
@@ -90,6 +82,14 @@ pub(crate) fn proxy_owned_paths() -> Vec<&'static str> {
     .collect()
 }
 
+/// The `POST` routes that reach a model, and the only ones the request log
+/// keeps a row for. The `/ui` surface matches its stripped paths against this
+/// list, so a chat sent from a web page is filed under the same path an API
+/// client sends — the row's `ui` flag is what tells them apart.
+///
+/// This is the whole forwarded surface: nothing else reaches an engine unless a
+/// generic entry declares the path (see `routes` in `docs/usage.md`), so engine
+/// admin and metrics paths stay unreachable through the proxy.
 pub(crate) const GENERATION_ROUTES: [&str; 15] = [
   "/v1/chat/completions",
   "/v1/completions",
@@ -205,9 +205,6 @@ pub async fn route(state: Arc<ProxyState>, req: Request<Incoming>) -> ProxyRespo
     };
   }
 
-  // Route table — OpenAI compat (`/v1/...`) is the primary surface;
-  // Ollama compat (`/api/...`, Tier 1) is the discovery surface so
-  // Ollama-shape clients recognise the proxy.
   match (&method, path.as_str()) {
     // Server-identity handshake. The official `ollama` CLI (and other
     // Ollama-Go-based clients) issue `HEAD /` before any `/api/*`
@@ -218,10 +215,6 @@ pub async fn route(state: Arc<ProxyState>, req: Request<Incoming>) -> ProxyRespo
     (&Method::GET | &Method::HEAD, "/") => root_identity(state),
     (&Method::GET, "/health") => health(state).await,
     (&Method::GET, "/v1/models") => list_models(state).await,
-    // Everything that reaches a model, and the only traffic the request log keeps
-    // a row for. The list is [`GENERATION_ROUTES`], shared with the `/ui` surface,
-    // which files a page's generation call under the same canonical path.
-    //
     // Anthropic Messages API: llama-server (b6961+) speaks `/v1/messages`
     // + `/v1/messages/count_tokens` natively, translating to its OpenAI
     // pipeline internally, so the proxy just byte-pipes them like any
@@ -252,7 +245,7 @@ pub async fn route(state: Arc<ProxyState>, req: Request<Incoming>) -> ProxyRespo
     // stock UI's relative base resolves); every `/ui/...` request —
     // any method, for assets + base-relative API calls — delegates to
     // the `ui` module, which strips the prefix and reverse-proxies to
-    // the chosen backend. See docs/plans/2026-06-15-001-...-plan.md.
+    // the chosen backend.
     (&Method::GET, "/ui") => super::ui::redirect_to_ui_slash(),
     (_, p) if p.starts_with("/ui/") => super::ui::serve(state, req).await,
     // A row's own API paths, declared by its entry rather than by this table, and
@@ -312,8 +305,7 @@ fn root_identity(state: Arc<ProxyState>) -> ProxyResponse {
 }
 
 /// 200-OK `text/plain` response. Carved out so the root-identity
-/// handler doesn't reach for `json_response` (wrong content-type) and
-/// future plain-text surfaces have an obvious helper to share.
+/// handler doesn't reach for `json_response` (wrong content-type).
 fn text_response(status: StatusCode, body: &'static str) -> Response<BoxBody<Bytes, BodyError>> {
   Response::builder()
     .status(status)
@@ -420,7 +412,7 @@ async fn forward_request(
   // a request bound for a backend that doesn't serve the mode with a clear JSON
   // error instead of forwarding into the backend's bare 404 — covering both a
   // *running* model (its real backend) and a *not-running* model that would
-  // auto-start (its would-be backend). Registry-driven via `serves_mode`.
+  // auto-start (its would-be backend).
   use crate::backend::Backend;
   let req_path = uri.path().to_string();
   if let Some(mode) = req_mode {
@@ -491,10 +483,7 @@ async fn forward_request(
       fallback_reason,
     } => {
       // MRU touch on the Ready path. Stamped *before* forwarding
-      // begins (per the plan's "as it starts forwarding, not on
-      // completion" rule) so long-running streams don't delay the
-      // timestamp. Direct touch by ModelId avoids the second
-      // supervisor snapshot the port-only path used to take.
+      // begins so long-running streams don't delay the timestamp.
       state.mru.touch(&served_model_key).await;
       let mode_match = fallback_reason.as_deref() == Some(route::MODE_MATCH);
       if mode_match {
@@ -603,9 +592,7 @@ async fn health(state: Arc<ProxyState>) -> ProxyResponse {
   // serving usefully" signal (e.g. for a systemd readiness gate or a
   // load-balancer probe), introduce a second endpoint rather than
   // overloading `/health` — agents that already pin against 200 on
-  // this path would break otherwise. See
-  // docs/plans/2026-05-21-001-feat-proxy-router-plan.md (Key
-  // Decisions: /health always-200).
+  // this path would break otherwise.
   //
   // `models_loaded` filters the supervisor snapshot to entries
   // currently in `ManagedState::Ready`. `models_discovered` is the
@@ -623,10 +610,9 @@ async fn health(state: Arc<ProxyState>) -> ProxyResponse {
   Ok(json_response(StatusCode::OK, bytes))
 }
 
-/// Count supervisors currently in `ManagedState::Ready`. Each
-/// `state()` call acquires a per-supervisor read lock, so the
+/// Each `state()` call acquires a per-supervisor read lock, so the
 /// snapshot is a sequence of cheap clones rather than one global
-/// lock — consistent with how `status_handler` walks the registry.
+/// lock.
 async fn count_ready(state: &ProxyState) -> usize {
   let snap = state.ctx.supervisors.snapshot().await;
   let mut ready = 0usize;
@@ -760,7 +746,7 @@ fn alias_rows<'a>(
 /// and `/api/tags` dress the same pairs in their own row type.
 ///
 /// The model half is read out of the same `published_ids` index the catalog
-/// rows use (D6). Deriving it from the path alone would publish the bare stem
+/// rows use. Deriving it from the path alone would publish the bare stem
 /// two same-basename GGUFs in different roots share, and a request for that id
 /// then 400s `ambiguous_model` on the model half — a listed id that cannot be
 /// reached.
@@ -792,9 +778,9 @@ fn named_launch_ids<'a>(
 
 // === Ollama-compat handlers ============================================
 //
-// Tier 1: read-only discovery endpoints. All four share `model_id_for`
-// with the OpenAI compat surface so a model has a single user-visible
-// identifier no matter which API a client probes against.
+// All four share `model_id_for` with the OpenAI compat surface so a
+// model has a single user-visible identifier no matter which API a
+// client probes against.
 
 /// `GET /api/tags` — list every discovered model in Ollama shape,
 /// sorted alphabetically by `name` (parity with `/v1/models`). Empty
@@ -840,8 +826,7 @@ async fn ollama_tags(state: Arc<ProxyState>) -> ProxyResponse {
 }
 
 /// `GET /api/version` — daemon build version. Same value
-/// `status.daemon.build` surfaces; cargo's `CARGO_PKG_VERSION` at
-/// compile time.
+/// `status.daemon.build` surfaces.
 fn ollama_version() -> ProxyResponse {
   let body = VersionResponse {
     version: env!("CARGO_PKG_VERSION"),
@@ -1093,14 +1078,9 @@ fn build_model_info(
 /// Derive the Ollama-shape `capabilities` list from the discovered
 /// model's mode hint. Ollama uses `"completion"` for chat/text models,
 /// `"embedding"` for embedding models, `"tools"` for tool-use-capable
-/// chat models. llamastash maps from [`ModeHint`]:
-///   - `Chat` → `["completion"]`
-///   - `Embedding` → `["embedding"]`
-///   - `Rerank` → `["rerank"]` (Ollama doesn't define this; emitted
-///     for parity with our own `/v1/rerank` surface)
-///   - `Image` / `Tts` / `Stt` → empty (the media routes are not Ollama
-///     capabilities, so a media row claims none)
-///   - `Unknown` → empty (catalog has no hint)
+/// chat models. `rerank` is not an Ollama capability. It is emitted
+/// for parity with our own `/v1/rerank` surface. Media modes claim
+/// none, and `Unknown` is empty because the catalog has no hint.
 fn capabilities_for(discovered: Option<&DiscoveredModel>) -> Vec<&'static str> {
   let mode = discovered
     .and_then(|d| d.metadata.as_ref())
@@ -1136,7 +1116,7 @@ fn unauthorized() -> ProxyResponse {
 /// body as [`unauthorized`], but the challenge is `Basic` so a browser
 /// navigating to `/ui` pops its native credential prompt; the user
 /// pastes the proxy key as the password and the browser resends it
-/// per-origin. See the proxy-UI plan §"LAN /ui + browser auth".
+/// per-origin.
 fn unauthorized_basic() -> ProxyResponse {
   let mut resp = json_response(StatusCode::UNAUTHORIZED, unauthorized_body());
   resp.headers_mut().insert(
@@ -1333,8 +1313,6 @@ mod tests {
 
   #[test]
   fn capabilities_for_maps_each_mode_hint() {
-    // Ollama-shape capabilities derived from the GGUF mode hint. Chat →
-    // completion, embedding/rerank pass through verbatim.
     assert_eq!(
       capabilities_for(Some(&discovered_with_mode(ModeHint::Chat))),
       vec!["completion"]

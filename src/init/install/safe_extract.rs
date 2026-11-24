@@ -1,6 +1,6 @@
 //! Archive-bomb defenses + safe `.tar.gz` extraction.
 //!
-//! Refuses, per the v2 Security Contract addendum:
+//! Refuses:
 //! - entries whose path resolves outside the destination directory
 //!   (`..`, absolute paths, FIFOs/devices, out-of-tree symlinks),
 //! - hardlinks (no in-tree hardlink ergonomics worth the risk),
@@ -9,7 +9,7 @@
 //! - archives with > 10 000 entries.
 //!
 //! The size caps scale with the asset the GitHub API declared (see
-//! [`ExtractLimits::for_asset`]), because llama.cpp's own blobs keep
+//! [`ExtractLimits::for_asset`]), because the engine's own blobs keep
 //! growing: `libggml-hip.so` alone declared 1.09 GiB at `b11804` and a
 //! flat 1 GiB per-entry cap refused the whole ROCm release (issue #119).
 //!
@@ -125,7 +125,7 @@ pub fn safe_extract_tar_gz<R: Read>(
   let gz = GzDecoder::new(archive);
   let mut tar = tar::Archive::new(gz);
   // Disable libtar's default permission setting (we override mode
-  // explicitly) and disable symlink/hardlink restoration (refused).
+  // explicitly).
   tar.set_preserve_permissions(false);
   tar.set_unpack_xattrs(false);
   tar.set_overwrite(false);
@@ -405,10 +405,9 @@ fn copy_capped(
   Ok(())
 }
 
-/// Dispatch on `archive_name`'s extension to either the tar.gz or
-/// (Windows-only) zip extraction codepath, reading the archive from
-/// `archive_path`. The picked filename's trailing extension drives the
-/// choice — `.zip` routes through the Windows backend, `.tar.gz` / `.tgz`
+/// Dispatch on `archive_name`'s extension to the tar.gz or the
+/// Windows-only zip extraction codepath, reading the archive from
+/// `archive_path`. `.zip` routes to the zip reader, `.tar.gz` / `.tgz`
 /// routes through the tar reader. Anything else surfaces an
 /// `UnsafeArchive` refusal so the caller can fall back to the
 /// manual-path install flow.

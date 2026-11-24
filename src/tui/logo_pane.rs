@@ -14,7 +14,6 @@ use ratatui::Frame;
 use crate::theme::Palette;
 use crate::tui::app::App;
 
-/// Render the Logo panel.
 pub fn render(frame: &mut Frame<'_>, area: Rect, _app: &App, palette: &Palette) {
   let block = palette.panel().build();
   let inner = block.inner(area);
@@ -83,8 +82,8 @@ mod tests {
 
   #[test]
   fn logo_panel_has_no_theme_tag_inside() {
-    // Theme tag now lives in the top header bar, not inside the
-    // logo panel. Assert the panel body contains no theme name.
+    // The theme tag lives in the top header bar, not inside the
+    // logo panel.
     let mut app = App::new(AppOptions::default());
     app.options.theme = ThemeName::Macchiato;
     let rows = render_lines(&app, 14, 7);

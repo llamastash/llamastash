@@ -1,17 +1,8 @@
 //! Backend-neutral HuggingFace snapshot-repo enumerator for **non-GGUF**
 //! model repos (directories of `config.json` + `*.safetensors`).
 //!
-//! This is the shared substrate half of the two-layer discovery design: it
-//! walks the same HF hub cache roots GGUF discovery scans and yields neutral
-//! [`HfRepoCandidate`] rows. A future safetensors/HF-format engine adopts the
-//! substrate by supplying only a small eligibility predicate + a projection
-//! that stamps its own [`crate::discovery::ModelSource`] — it never re-walks
-//! the cache or re-parses `config.json`.
-//!
-//! Most metadata parsing is generic HF-transformers shape, so it lives here in
-//! [`config_to_metadata`] and is reused verbatim by every consumer; only quant
-//! interpretation (affine bits/group-size) is engine-specific and stays in the
-//! leaf.
+//! Design and consumer contract: docs/architecture.md § Backend-neutral
+//! substrate seams.
 //!
 //! The module references no engine/backend symbols — that neutrality is the
 //! deliverable, pinned by `module_references_no_backend_symbols`.
@@ -239,7 +230,6 @@ fn parse_config_summary(snapshot: &Path) -> Option<ConfigSummary> {
     vocab_size: config.get("vocab_size").and_then(json_u64),
     intermediate_size: config.get("intermediate_size").and_then(json_u64),
     // The key is `quantization_config`, verified against a real AWQ repo.
-    // This read `quantization`, so it never fired on a quantized model.
     has_quantization: config
       .get("quantization_config")
       .map(|v| !v.is_null())
@@ -427,8 +417,7 @@ pub fn project_safetensors_row(candidate: &HfRepoCandidate, backend_id: &str) ->
       m.weights_bytes = weights;
       // No GGML tag on a safetensors repo. The quantisation method is the
       // quant where the repo declares one; an unquantized repo shows its
-      // weight precision instead, which beats the `Unknown` placeholder and
-      // is what most safetensors rows will render.
+      // weight precision instead.
       m.quant_label = candidate.config_summary.as_ref().and_then(|s| {
         s.quant_method
           .clone()
@@ -667,9 +656,7 @@ mod tests {
 
   #[test]
   fn empty_or_missing_root_yields_empty_vec() {
-    // Missing root: no panic, empty result.
     assert!(enumerate_repos(&[PathBuf::from("/no/such/llamastash/root")]).is_empty());
-    // Existing-but-empty root.
     let root = temp_root("empty");
     assert!(enumerate_repos(std::slice::from_ref(&root)).is_empty());
     fs::remove_dir_all(&root).ok();
@@ -741,7 +728,6 @@ mod tests {
     let m = config_to_metadata(&summary, "mlx-community/Anonymous");
     assert!(m.total_parameters.is_some());
     assert_eq!(m.parameter_label.as_deref(), Some("3.3B"));
-    // Helper still leaves quant unset.
     assert!(m.quant_label.is_none());
   }
 
@@ -770,9 +756,7 @@ mod tests {
     fs::write(snap.join("config.json"), "{}").unwrap();
     fs::write(snap.join("model.safetensors"), "st").unwrap();
     fs::create_dir_all(repo.join("refs")).unwrap();
-    // A refs/main that tries to escape the snapshots dir.
     fs::write(repo.join("refs/main"), "../../../../etc").unwrap();
-    // The traversal ref is rejected; the fallback finds the real snapshot dir.
     let got = enumerate_repos(std::slice::from_ref(&root));
     assert_eq!(got.len(), 1);
     assert_eq!(
@@ -801,8 +785,6 @@ mod tests {
 
   #[test]
   fn enumerate_hf_cache_resolves_roots_from_home() {
-    // The convenience entry point resolves `~/.cache/huggingface/hub` from the
-    // home dir (the same root GGUF discovery scans) and enumerates it.
     use std::fs;
     let _lock = crate::cli::test_lock::serialize();
     let saved: Vec<(&str, _)> = [
@@ -852,7 +834,6 @@ mod tests {
       ..Default::default()
     };
     assert_eq!(config_to_metadata(&cond, "o/m").mode_hint, ModeHint::Chat);
-    // No LM class, no chat template → Unknown.
     let unknown = ConfigSummary {
       architectures: vec!["BertModel".into()],
       ..Default::default()

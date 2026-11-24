@@ -1,10 +1,5 @@
 //! Argv emission from declared knobs.
 //!
-//! One generic emitter replaces the per-backend hand-written translators (the
-//! llama.cpp `argvify` match and `native_knobs::translate`), and applies the
-//! loopback/credential denylist to *every* channel rather than each one
-//! carrying its own guard.
-//!
 //! Emission order is the backend's declaration order, which is why the
 //! declarations are written in the engine's canonical flag order: argv diffs
 //! stay readable across releases.
@@ -64,7 +59,7 @@ pub fn emit_argv(backend_id: &str, knobs: &KnobSet, extra_forbidden: &[&str]) ->
 /// A knob's *flag* is registry-validated at build time, so only a free-text
 /// *value* can realistically trip this — a `--device` selector or a path knob
 /// carrying something like `--api-key`. Dropped and logged rather than
-/// emitted, matching what the pre-registry native-knob translator did.
+/// emitted.
 fn push(
   out: &mut Vec<OsString>,
   flag: &str,

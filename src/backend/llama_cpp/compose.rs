@@ -33,7 +33,7 @@ use crate::launch::params::LaunchParams;
 /// separately because allocation happens in the supervisor, not in
 /// `LaunchParams`.
 ///
-/// `params.knobs.str(crate::launch::knobs::kid("device"))`, when set, is a real `llama-server` device
+/// `params.knobs.text_by_name("device")`, when set, is a real `llama-server` device
 /// selector (`Vulkan0`, `CUDA0`, `ROCm0`) sourced from that binary's
 /// own `--list-devices` output (see [`crate::backend::llama_cpp::list_devices`]).
 /// It is emitted verbatim as a single `--device <selector>` — no index
@@ -78,9 +78,9 @@ pub(crate) fn compose(params: &LaunchParams, allocated_port: u16) -> Vec<OsStrin
     argv.push("deepseek".into());
   }
   // MTP speculative decoding — emitted BEFORE the ctx / `--fit-ctx` block so
-  // llama.cpp's `--fit` reserves the MTP draft context (KD6). The directive was
+  // llama.cpp's `--fit` reserves the MTP draft context. The directive was
   // resolved server-side (`compose_and_spawn` → `resolve_mtp_directive`) against
-  // the model's real capability and any user `--spec-type` in extras (KD1/KD3);
+  // the model's real capability and any user `--spec-type` in extras;
   // `None` means "not MTP this launch" and emits nothing.
   if let Some(mtp) = &params.mtp_directive {
     argv.push("--spec-type".into());
@@ -146,8 +146,7 @@ pub(crate) fn compose(params: &LaunchParams, allocated_port: u16) -> Vec<OsStrin
 /// `launch_config` (see `seed_binary_caps`).
 ///
 /// The legacy column is the inverse of the mapping the removal commit deleted:
-/// `--no-mmap` set `LLAMA_LOAD_MODE_NONE`, `--mlock` set `..._MLOCK`. `auto` is
-/// the engine default and emits nothing either way.
+/// `--no-mmap` set `LLAMA_LOAD_MODE_NONE`, `--mlock` set `..._MLOCK`.
 fn load_mode_argv(params: &LaunchParams) -> Vec<OsString> {
   let Some(mode) = params.knobs.text_by_name("load-mode") else {
     return Vec::new();
@@ -258,14 +257,10 @@ mod tests {
     assert_eq!(strs(&load_mode_argv(&p)), vec!["--no-mmap"]);
   }
 
-  /// **Golden argv (plan D9).** Pins the exact command line for a fully-set
+  /// Golden argv. Pins the exact command line for a fully-set
   /// launch, so any change to a knob's flag, value formatting or emission
   /// order shows up as a diff here rather than as a behaviour change nobody
   /// noticed. `scripts/bench/` depends on this argv being stable.
-  ///
-  /// Replaces the migration-era test that compared the registry emitter
-  /// against the hand-written `argvify`; with that function gone, the golden
-  /// is what carries the guarantee forward.
   #[test]
   fn composed_argv_matches_golden() {
     let mut p = base_params();
@@ -565,8 +560,6 @@ mod tests {
   }
 
   // ---- Device selector tests ----
-
-  /// Collect every `--device` value present in the argv.
 
   #[test]
   fn compose_skips_device_when_none() {

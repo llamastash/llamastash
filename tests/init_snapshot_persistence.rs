@@ -97,7 +97,6 @@ fn corrupted_snapshot_is_quarantined_and_recoverable() {
 #[test]
 fn schema_too_new_is_refused_with_typed_error() {
   let dir = temp_state_dir("schema-too-new");
-  // Hand-craft a JSON document declaring schema_version: 99.
   let body = serde_json::json!({
     "schema_version": 99,
     "remote_fetch_failures": 0,

@@ -1,14 +1,7 @@
-//! Family-MRU fallback for Unit 4's auto-start.
-//!
-//! Pattern: pre-launch a real supervisor for one model (the eventual
-//! fallback target), wire the catalog with a *second* entry whose
-//! disk path is missing (so `auto_start` fails at the header read),
-//! then request the missing model. The proxy should fall back to
-//! the Ready supervisor and stamp the `x-llamastash-served-by` +
-//! `x-llamastash-fallback-reason: launch_failed` headers.
-//!
-//! Plan: docs/plans/2026-05-21-001-feat-proxy-router-plan.md (Unit 4
-//! Test scenarios — error paths + family preference).
+//! Family-MRU fallback: pre-launch a Ready supervisor, add a catalog entry
+//! whose disk path is missing so `auto_start` fails at the header read, then
+//! request the missing model and check the proxy falls back to the Ready
+//! supervisor and stamps `x-llamastash-served-by` + `x-llamastash-fallback-reason`.
 
 #![cfg(feature = "test-fixtures")]
 
@@ -165,7 +158,6 @@ async fn build_state_with_fallback(
   (state, ctx)
 }
 
-/// A JSON `POST` against the test proxy, `(status, headers, body)`.
 async fn http_post(
   addr: SocketAddr,
   path: &str,
@@ -174,7 +166,6 @@ async fn http_post(
   llamastash::test_support::http_post(addr, path, body, &[]).await
 }
 
-/// A bare `GET` against the test proxy, `(status, headers, body)`.
 async fn stop_all(ctx: &MethodContext, extras: &[ManagedModel]) {
   let snap = ctx.supervisors.snapshot().await;
   let mut stopped_ports: std::collections::HashSet<u16> = std::collections::HashSet::new();
@@ -198,16 +189,13 @@ async fn stop_all(ctx: &MethodContext, extras: &[ManagedModel]) {
   }
 }
 
-// ---- Scenario 6: launch fails + matching-arch Ready model exists -------
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fallback_to_matching_arch_running_model_emits_headers() {
   let dir = unique_temp("match");
   let log_dir = dir.join("logs");
   std::fs::create_dir_all(&log_dir).unwrap();
-  // Pre-launch a Ready model with arch=qwen3. Its catalog path is
-  // a real synthetic GGUF so the proxy can resolve the discovered
-  // row to the supervisor via the same-path check.
+  // The catalog path is a real synthetic GGUF so the proxy can
+  // resolve the discovered row to the supervisor via the same-path check.
   let ready_path = write_gguf(&dir, "ready-qwen3.gguf", "qwen3");
   let registry = SupervisorRegistry::new();
   let live = pre_launch(&ready_path, &registry, &log_dir, LaunchMode::Chat).await;
@@ -252,12 +240,10 @@ async fn fallback_to_matching_arch_running_model_emits_headers() {
   std::fs::remove_dir_all(&dir).ok();
 }
 
-// ---- Scenario 7: launch fails + only different-arch Ready exists ------
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fallback_to_different_arch_model_when_no_family_match() {
-  // Family preference is a *soft* preference (not a requirement)
-  // per R155. With no family match available, any-MRU still
+  // Family preference is a *soft* preference (not a requirement).
+  // With no family match available, any-MRU still
   // delivers a fallback.
   let dir = unique_temp("crossarch");
   let log_dir = dir.join("logs");
@@ -296,11 +282,9 @@ async fn fallback_to_different_arch_model_when_no_family_match() {
   std::fs::remove_dir_all(&dir).ok();
 }
 
-// ---- Scenario 8: requested model has no arch metadata -----------------
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unknown_arch_requested_falls_back_to_any_mru() {
-  // R155 unknown-arch fallthrough: when the requested model row
+  // Unknown-arch fallthrough: when the requested model row
   // has no `general.architecture`, the family-prefer step is
   // skipped and we pick on MRU alone.
   let dir = unique_temp("unkarch");
@@ -341,11 +325,9 @@ async fn unknown_arch_requested_falls_back_to_any_mru() {
   std::fs::remove_dir_all(&dir).ok();
 }
 
-// ---- Scenario 10: per-request retry — no caching of the failure ------
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn second_request_after_launch_failure_falls_back_independently() {
-  // R155: per-request retry — no caching of the failure. After a
+  // Per-request retry — no caching of the failure. After a
   // failed auto-start, a subsequent request must independently
   // engage the fallback path (and ideally retry the auto-start;
   // the proxy's current behavior is "try again every time", which
@@ -389,8 +371,6 @@ async fn second_request_after_launch_failure_falls_back_independently() {
   std::fs::remove_dir_all(&dir).ok();
 }
 
-// ---- Scenario 11: fallback disabled — 503 instead of cross-model serve
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fallback_disabled_returns_503_instead_of_picking_other_model() {
   // When the operator sets `ProxyConfig::fallback_enabled = false`
@@ -402,7 +382,7 @@ async fn fallback_disabled_returns_503_instead_of_picking_other_model() {
   let dir = unique_temp("nofallback");
   let log_dir = dir.join("logs");
   std::fs::create_dir_all(&log_dir).unwrap();
-  // Same shape as Scenario 6: a Ready qwen3 model that would
+  // A Ready qwen3 model that would
   // otherwise be the fallback target, plus a catalog row for a
   // missing file whose auto-start will fail.
   let ready_path = write_gguf(&dir, "ready-qwen3.gguf", "qwen3");
@@ -430,7 +410,6 @@ async fn fallback_disabled_returns_503_instead_of_picking_other_model() {
     status, 503,
     "fallback disabled — launch_failed must return 503"
   );
-  // No fallback headers are stamped on the 503 path.
   assert_eq!(
     header_value(&headers, "x-llamastash-served-by"),
     None,
@@ -524,8 +503,6 @@ async fn chat_request_does_not_fall_back_to_an_embedding_mode_launch() {
   std::fs::remove_dir_all(&dir).ok();
 }
 
-// ---- D4: named request with no live launch auto-starts one carrying that name ----
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn named_request_auto_starts_launch_carrying_that_name() {
   let dir = unique_temp("d4-auto-start");
@@ -550,7 +527,6 @@ async fn named_request_auto_starts_launch_carrying_that_name() {
   let (status, _headers, _response) = http_post(addr, "/v1/chat/completions", body).await;
   assert_eq!(status, 200, "named auto-start must succeed");
 
-  // The auto-started launch must carry the name `coder` in the state snapshot.
   let snap = ctx.state.snapshot().await;
   let named: Vec<_> = snap
     .running
@@ -568,8 +544,6 @@ async fn named_request_auto_starts_launch_carrying_that_name() {
   shutdown_listener(shutdown, listener_handle).await;
   std::fs::remove_dir_all(&dir).ok();
 }
-
-// ---- A named request auto-starts under the preset the address names ----
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn named_auto_start_takes_the_preset_the_address_names() {
@@ -763,8 +737,6 @@ async fn named_auto_start_takes_the_backend_its_preset_pins() {
   std::fs::remove_dir_all(&dir).ok();
 }
 
-// ---- Two named launches of one model land on different ports ----
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_named_launches_of_one_model_land_on_different_ports() {
   let dir = unique_temp("two-named");
@@ -782,17 +754,14 @@ async fn two_named_launches_of_one_model_land_on_different_ports() {
   .await;
   let (addr, shutdown, listener_handle) = spawn_listener(state).await;
 
-  // First named request: auto-starts a launch named `coder`.
   let body1 = r#"{"model":"qwen3@coder","messages":[]}"#;
   let (status1, _, _) = http_post(addr, "/v1/chat/completions", body1).await;
   assert_eq!(status1, 200, "first named launch must succeed");
 
-  // Second named request: auto-starts a second launch named `writer`.
   let body2 = r#"{"model":"qwen3@writer","messages":[]}"#;
   let (status2, _, _) = http_post(addr, "/v1/chat/completions", body2).await;
   assert_eq!(status2, 200, "second named launch must succeed");
 
-  // Both launches must be running, on different ports, with their names.
   let snap = ctx.state.snapshot().await;
   let named: Vec<_> = snap.running.iter().filter(|r| r.name.is_some()).collect();
   assert_eq!(
@@ -814,8 +783,6 @@ async fn two_named_launches_of_one_model_land_on_different_ports() {
   shutdown_listener(shutdown, listener_handle).await;
   std::fs::remove_dir_all(&dir).ok();
 }
-
-// ---- RV1/RV4: a case variant of a live name reuses that launch ----
 
 /// The proxy used to match names exactly while the CLI matched them
 /// case-insensitively. One mistyped capitalization therefore missed the live
@@ -878,8 +845,6 @@ async fn case_variant_of_a_live_name_reuses_that_launch() {
   shutdown_listener(shutdown, listener_handle).await;
   std::fs::remove_dir_all(&dir).ok();
 }
-
-// ---- A named request reuses the model's only launch when it is unnamed ----
 
 /// `qwen3@other` with no launch named `other` would load a second copy with
 /// the same settings, so it goes to the lone unnamed launch. `qwen3@coder`
@@ -976,8 +941,6 @@ async fn named_request_reuses_the_lone_unnamed_launch_unless_it_names_a_preset()
   std::fs::remove_dir_all(&dir).ok();
 }
 
-// ---- /v1/models lists named row while live, drops it after stop ----
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn v1_models_lists_named_row_while_live_and_drops_after_stop() {
   let dir = unique_temp("v1-models-named");
@@ -1000,7 +963,6 @@ async fn v1_models_lists_named_row_while_live_and_drops_after_stop() {
   let (status, _, _) = http_post(addr, "/v1/chat/completions", body).await;
   assert_eq!(status, 200, "named auto-start must succeed");
 
-  // /v1/models must list the named row `qwen3@coder`.
   let (status, _, resp) = llamastash::test_support::http_get(addr, "/v1/models", &[]).await;
   assert_eq!(status, 200);
   let v: serde_json::Value = serde_json::from_slice(&resp).expect("json");
@@ -1019,7 +981,6 @@ async fn v1_models_lists_named_row_while_live_and_drops_after_stop() {
   stop_all(&ctx, &[]).await;
   tokio::time::sleep(Duration::from_millis(1000)).await;
 
-  // /v1/models must no longer list the named row.
   let (status, _, resp) = llamastash::test_support::http_get(addr, "/v1/models", &[]).await;
   assert_eq!(status, 200);
   let v: serde_json::Value = serde_json::from_slice(&resp).expect("json");
@@ -1055,7 +1016,6 @@ async fn concurrent_cold_requests_for_two_names_produce_two_launches() {
   .await;
   let (addr, shutdown, listener_handle) = spawn_listener(state).await;
 
-  // Fire two concurrent cold requests for different names.
   let body1 = r#"{"model":"qwen3@coder","messages":[]}"#;
   let body2 = r#"{"model":"qwen3@writer","messages":[]}"#;
   let (r1, r2) = tokio::join!(
@@ -1065,7 +1025,6 @@ async fn concurrent_cold_requests_for_two_names_produce_two_launches() {
   assert_eq!(r1.0, 200, "first concurrent request must succeed");
   assert_eq!(r2.0, 200, "second concurrent request must succeed");
 
-  // Both launches must be present in the state snapshot.
   let snap = ctx.state.snapshot().await;
   let named: Vec<&str> = snap
     .running

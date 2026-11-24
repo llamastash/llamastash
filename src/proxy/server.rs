@@ -1,10 +1,8 @@
 // Echo-verification:
 //
 // Pass-through forwarding relies on the upstream `llama-server`
-// echoing `request.body.model` back in `response.body.model`. The
-// inline tests below post a JSON request carrying
-// `"model":"sentinel-x42"` to `fake_llama_server` and assert the
-// echo on the response body. The fake fixture mirrors the real
+// echoing `request.body.model` back in `response.body.model`.
+// The fake fixture mirrors the real
 // `llama-server` behavior in this respect — see
 // `tests/fixtures/fake_llama_server.rs` (`/v1/chat/completions`).
 //
@@ -15,9 +13,6 @@
 
 //! TCP accept loop + per-connection hyper service.
 //!
-//! Mirrors the shape of [`crate::daemon::control_plane::serve`]: a
-//! `tokio::select!` between `listener.accept()` and the daemon's
-//! [`ShutdownToken`], with a bounded drain phase on shutdown.
 //! Unlike the IPC control plane we don't bearer-authenticate —
 //! loopback-only by default, the proxy is reachable by every
 //! same-host process by design.
@@ -83,8 +78,7 @@ pub enum ProxyStatus {
 /// reads from it.
 pub type StatusCell = Arc<RwLock<ProxyStatus>>;
 
-/// Construct a fresh cell seeded with `Disabled`. The daemon
-/// overrides it immediately if `proxy.enabled` is true.
+/// The daemon overrides it immediately if `proxy.enabled` is true.
 pub fn new_status_cell() -> StatusCell {
   Arc::new(RwLock::new(ProxyStatus::Disabled))
 }
@@ -104,8 +98,8 @@ pub const DEFAULT_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// stays on a predictable port the user can pin into agent configs.
 pub const DEFAULT_PORT_SCAN_MAX_OFFSET: u16 = 5;
 
-/// Tunable knobs for the listener. Kept as a struct so future
-/// additions don't churn the [`serve`] signature.
+/// Kept as a struct so future additions don't churn the [`serve`]
+/// signature.
 #[derive(Clone, Copy, Debug)]
 pub struct ServeOptions {
   pub header_read_timeout: Duration,
@@ -185,8 +179,7 @@ fn is_retriable_bind_error(e: &std::io::Error) -> bool {
 /// Retriable bind errors (see [`is_retriable_bind_error`]) advance to
 /// the next port; any other error is fatal (no point retrying e.g. an
 /// invalid-address error on the next port). A zero `max_offset`
-/// collapses to a single bind attempt — same shape as the v0 code
-/// path.
+/// collapses to a single bind attempt.
 ///
 /// If the whole window is exhausted by retriable errors, the outcome
 /// distinguishes a pure `AddrInUse` sweep ([`BindOutcome::AllPortsInUse`]
@@ -226,8 +219,7 @@ async fn bind_with_scan(base: SocketAddr, max_offset: u16) -> BindOutcome {
   }
 }
 
-/// `serve` plus per-listener tuning knobs. Same semantics as
-/// [`serve`]; lifted out so the daemon can forward
+/// Same semantics as [`serve`], so the daemon can forward
 /// `proxy.header_read_timeout_secs` without forcing every caller
 /// (tests, benches) to construct a full options bundle.
 pub async fn serve_with_options(
@@ -406,8 +398,7 @@ fn write_status(cell: &StatusCell, next: ProxyStatus) {
   *guard = next;
 }
 
-/// Build the `SocketAddr` the proxy listener binds from a `host` and
-/// `port`. `127.0.0.1` keeps the loopback-only posture; a routable
+/// `127.0.0.1` keeps the loopback-only posture; a routable
 /// address (`0.0.0.0`, a NIC IP, or IPv6) opts the proxy data plane
 /// into LAN exposure — gated by the bearer key in the daemon wiring,
 /// not here. The port-scan in `bind_with_scan` carries this host
@@ -416,7 +407,6 @@ pub fn listen_addr(host: IpAddr, port: u16) -> SocketAddr {
   SocketAddr::new(host, port)
 }
 
-/// Loopback `SocketAddr` for a port — `listen_addr(127.0.0.1, port)`.
 /// Retained for tests and callers that always bind loopback.
 pub fn loopback_addr(port: u16) -> SocketAddr {
   listen_addr(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
@@ -431,15 +421,12 @@ mod tests {
 
   #[test]
   fn listen_addr_builds_from_host_and_port() {
-    // loopback wrapper keeps the historical address.
     assert_eq!(
       loopback_addr(11435),
       SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 11435)
     );
-    // A routable IPv4 host is carried through verbatim.
     let v4: IpAddr = "0.0.0.0".parse().unwrap();
     assert_eq!(listen_addr(v4, 11435), SocketAddr::new(v4, 11435));
-    // IPv6 too.
     let v6: IpAddr = "::".parse().unwrap();
     assert_eq!(listen_addr(v6, 8080), SocketAddr::new(v6, 8080));
   }
@@ -447,8 +434,6 @@ mod tests {
   #[test]
   fn retriable_bind_errors_advance_the_scan() {
     use std::io::{Error, ErrorKind};
-    // Both an occupied port and a Windows excluded-range denial
-    // (WSAEACCES, surfaced as PermissionDenied) must advance the scan.
     assert!(is_retriable_bind_error(&Error::from(ErrorKind::AddrInUse)));
     assert!(is_retriable_bind_error(&Error::from(
       ErrorKind::PermissionDenied
@@ -459,7 +444,6 @@ mod tests {
     if wsaeacces.kind() == ErrorKind::PermissionDenied {
       assert!(is_retriable_bind_error(&wsaeacces));
     }
-    // Errors that won't fare better on the next port stay fatal.
     assert!(!is_retriable_bind_error(&Error::from(
       ErrorKind::AddrNotAvailable
     )));
@@ -468,8 +452,7 @@ mod tests {
     )));
   }
 
-  /// Spin up the proxy on an ephemeral port and return the bound
-  /// address + shutdown token + the JoinHandle. The caller drives
+  /// The caller drives
   /// shutdown via `shutdown.trigger()` and then `shutdown_proxy` so
   /// a hung serve loop fails the test loudly instead of leaving a
   /// detached task behind.
@@ -489,7 +472,6 @@ mod tests {
         .await
         .expect("proxy serve returns Ok even on bind failure");
     });
-    // Wait for the listener to record its bound address.
     let bound = wait_for_listening(&status, Duration::from_secs(2))
       .await
       .expect("proxy must reach Listening within 2s");
@@ -562,7 +544,6 @@ mod tests {
     let key = "sk-llamastash-testkey123";
     let (addr, shutdown, _status, handle) = spawn_proxy_with_key(key).await;
 
-    // Liveness / identity probes stay open with no Authorization.
     assert_eq!(http_get_auth(addr, "/", None).await.0, 200, "GET / exempt");
     assert_eq!(
       http_get_auth(addr, "/health", None).await.0,
@@ -576,7 +557,6 @@ mod tests {
     let parsed: serde_json::Value = serde_json::from_slice(&body).expect("json body");
     assert_eq!(parsed["error"]["code"], "invalid_api_key");
 
-    // Wrong bearer → 401.
     assert_eq!(
       http_get_auth(addr, "/v1/models", Some("Bearer wrong"))
         .await
@@ -585,14 +565,12 @@ mod tests {
       "wrong bearer → 401"
     );
 
-    // Correct bearer passes the gate and the route runs (200 + list).
     let (ok_status, _) = http_get_auth(addr, "/v1/models", Some(&format!("Bearer {key}"))).await;
     assert_eq!(ok_status, 200, "correct bearer → 200");
 
     shutdown_proxy(shutdown, handle).await;
   }
 
-  /// Trigger shutdown and join the serve task with a generous budget.
   /// Catches the failure mode where a serve loop never exits — without
   /// this, `drop(handle)` would silently leave a detached task and the
   /// hang would go unnoticed.
@@ -629,7 +607,7 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let req = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: keep-alive\r\n\r\n");
     sock.write_all(req.as_bytes()).await.expect("write");
-    // Read until we have headers + body. We control both sides so a
+    // We control both sides so a
     // simple read-until-content-length-bytes loop is enough.
     let mut buf = Vec::with_capacity(512);
     let mut tmp = [0u8; 1024];
@@ -639,7 +617,6 @@ mod tests {
         break;
       }
       buf.extend_from_slice(&tmp[..n]);
-      // Stop once the body is complete (Content-Length present).
       if let Some(body) = extract_body_when_complete(&buf) {
         return body;
       }
@@ -721,7 +698,6 @@ mod tests {
     assert_eq!(s1, 200, "first request status");
     let p1: serde_json::Value = serde_json::from_slice(&b1).expect("json");
     assert_eq!(p1["status"], "ok");
-    // Second GET reuses the same TCP socket.
     let (s2, b2) = http_get_keepalive(&mut sock, &host, "/health").await;
     assert_eq!(s2, 200, "second request status (keep-alive smoke)");
     let p2: serde_json::Value = serde_json::from_slice(&b2).expect("json");
@@ -731,13 +707,11 @@ mod tests {
 
   #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
   async fn bind_failure_records_port_in_use() {
-    // First listener camps on a real port.
     let camp = tokio::net::TcpListener::bind(loopback_addr(0))
       .await
       .expect("camp bind");
     let camp_addr = camp.local_addr().expect("camp addr");
-    // Now ask the proxy to bind the same port — must surface
-    // PortInUse and exit cleanly. Strict single-port mode
+    // Strict single-port mode
     // (`port_scan_max_offset: 0`) so the scan can't silently land on
     // an adjacent free port and turn the assertion green for the
     // wrong reason.
@@ -767,8 +741,7 @@ mod tests {
 
   #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
   async fn bind_scans_to_next_free_port_when_base_taken() {
-    // Camp on a real port; the proxy will try to bind the same port
-    // and must land one slot up. Bound to localhost ephemeral so the
+    // Bound to localhost ephemeral so the
     // test never collides with whatever's listening on 11434 on the
     // dev box.
     let camp = tokio::net::TcpListener::bind(loopback_addr(0))
@@ -779,7 +752,7 @@ mod tests {
     let state = ProxyState::from_context(&ctx, false, true, DEFAULT_BODY_LIMIT_BYTES);
     let token = ctx.shutdown.clone();
     let status = new_status_cell();
-    // Run the listener under a shutdown so the test can clean up; the
+    // The
     // scan should land on `camp_addr.port() + 1` (or higher if that
     // is also taken on the test host, but the assertion below only
     // requires "different from camp").

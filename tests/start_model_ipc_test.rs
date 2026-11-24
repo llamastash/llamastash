@@ -1,6 +1,5 @@
-//! Fixture-backed integration coverage for the Unit 5 IPC surface
-//! that lands in the U5-P1 review follow-up: `start_model`,
-//! `presets_*`, and `favorite_*` driven through the daemon against
+//! Fixture-backed integration coverage for the IPC surface:
+//! `start_model`, `presets_*`, and `favorite_*` driven through the daemon against
 //! the `fake_llama_server` fixture. Verifies that
 //! `status` / `logs_tail` / `stop_model` / `last_params`
 //! / preset CRUD / favorite toggle all work end-to-end through the
@@ -59,7 +58,7 @@ async fn start_model_drives_supervisor_status_logs_stop_and_last_params() {
   let model_dir = unique_temp("happy-models");
   let model_path = model_dir.join("m.gguf");
   std::fs::write(&model_path, build_minimal_gguf("llama")).unwrap();
-  // A multimodal projector companion next to the model (issue #13).
+  // A multimodal projector companion next to the model.
   // The daemon must auto-detect it and thread `--mmproj` into the spawn
   // params — asserted on the running snapshot below. Folded into this
   // happy-path test rather than a separate daemon-spawning test to
@@ -379,7 +378,6 @@ async fn start_model_drives_supervisor_status_logs_stop_and_last_params() {
   let final_state = state_store::load(&state_dir).expect("load state");
   assert!(final_state.favorites.is_empty(), "favorites cleared");
 
-  // Shutdown.
   let _ = client.call("shutdown", None).await;
   timeout(Duration::from_secs(3), daemon)
     .await
@@ -408,10 +406,8 @@ async fn prefer_port_falls_back_to_range_allocator_when_busy() {
 /// `prefer_port` is the soft preference the TUI uses to honour the
 /// user's previous binding. When the requested port is already
 /// taken by another launch, the daemon must auto-allocate from the
-/// configured range instead of refusing the launch — that's the
-/// "Daemon picks any free port, update memory" behaviour the user
-/// confirmed during planning. We force the collision by reusing
-/// the first launch's port as the second launch's preference.
+/// configured range instead of refusing the launch. We force the collision
+/// by reusing the first launch's port as the second launch's preference.
 ///
 /// The preferred port is free when the pool hands it out, but another process
 /// can still take it before the daemon binds it and push the first launch
@@ -719,10 +715,10 @@ async fn last_params_persists_only_user_supplied_knob_deltas() {
     .await
     .expect("start_model call 2");
 
-  // Poll for call 2's persistence — upsert promotes the entry to the
-  // front of the Vec, so once the marker lands at index 0
-  // we know the recorder fired for call 2. 60 s deadline matches the
-  // call-1 wait for the same runner-load reason.
+  // Poll for call 2's persistence — upsert promotes the entry to the front of
+  // the Vec, so once the marker lands at index 0 we know the recorder fired for
+  // call 2. The 60 s deadline matches the call-1 wait for the same runner-load
+  // reason.
   let deadline = std::time::Instant::now() + Duration::from_secs(60);
   let knobs = loop {
     let s = state_store::load(&state_dir).expect("load state");
@@ -780,9 +776,8 @@ async fn no_selection_start_inherits_last_params_extras() {
   // A no-selection launch (plain `start` / proxy auto-start) inherits the
   // model's effective default extras — last_params here, since no config
   // `default:` is set. This mirrors how knobs already inherit last_params on
-  // a plain start, and supersedes the old origin gate (which wrongly kept a
-  // plain manual launch from inheriting). The clean "inherit nothing" gesture
-  // is `selection: auto`, exercised separately.
+  // a plain start. The clean "inherit nothing" gesture is `selection: auto`,
+  // exercised separately.
   let state = unique_temp("no-selection-extras-inherit");
   let model_dir = unique_temp("no-selection-extras-inherit-models");
   let model_path = model_dir.join("m.gguf");
@@ -1182,11 +1177,10 @@ async fn auto_selection_start_inherits_nothing() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn named_preset_launch_does_not_inherit_stale_last_params() {
-  // The PR's namesake scenario, end-to-end: an inline launch persists a knob
-  // (`threads`) into `last_params`; a subsequent *named-preset* launch
-  // (`selection: explicit`, whose preset does not set `threads`) must NOT
-  // inherit that stale knob from the `LastUsed` layer. A preset is
-  // self-contained — before the fix it leaked `last_used` here. The unit test
+  // An inline launch persists a knob (`threads`) into `last_params`; a
+  // subsequent *named-preset* launch (`selection: explicit`, whose preset does
+  // not set `threads`) must NOT inherit that stale knob from the `LastUsed`
+  // layer. A preset is self-contained. The unit test
   // on `is_pure_fit` guards the gate in isolation; this drives the real
   // resolver + recorder through the daemon.
   let state = unique_temp("named-preset-no-leak");
@@ -1349,7 +1343,7 @@ async fn status_surfaces_resolved_ctx_actuals_from_props() {
   // A launch with no pinned ctx emits `--fit-ctx <floor>`; the fake
   // server's `/props` reports it as the resolved n_ctx; the daemon's
   // post-Ready actuals fetch stamps it on the running snapshot and
-  // `status` surfaces it (R6).
+  // `status` surfaces it.
   let state = unique_temp("actuals");
   let model_dir = unique_temp("actuals-models");
   let model_path = model_dir.join("m.gguf");

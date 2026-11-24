@@ -14,11 +14,12 @@
 //! the OpenAI surface uses. No rewriting, no vhost, no custom shell.
 //!
 //! Backend selection for any `/ui/...` request, in order:
-//!   1. Cookie `ls_ui_target=<launch_id>` present and still running →
-//!      that backend.
-//!   2. Else exactly one running model → that backend.
+//!   1. Cookie `ls_ui_target=<launch_id>` present, still running, and the
+//!      model has a UI → that backend.
+//!   2. Else exactly one running model with a UI → that backend.
 //!   3. Else zero running → a "no model running" page.
-//!   4. Else (>1, no valid cookie) → the chooser page.
+//!   4. Else (several models, a lone UI-less model, or no valid cookie) →
+//!      the chooser page.
 //!
 //! A chooser link is `/ui/?target=<launch_id>`: it sets the pin cookie
 //! and 302s to `/ui/`. The cookie keeps asset/API requests pinned to
@@ -59,8 +60,7 @@ struct RunningEntry {
 }
 
 /// Where a launch's browser UI comes from. Decided from the owning
-/// backend's `serves_web_ui` verdict and the launch mode, so no backend is
-/// named here.
+/// backend's `serves_web_ui` verdict and the launch mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UiSource {
   /// The backend serves its own UI; `/ui` reverse-proxies all of it.
@@ -174,7 +174,7 @@ fn active_pin(headers: &HeaderMap, running: &[RunningEntry]) -> Option<String> {
 }
 
 /// Apply the selection rule over the running list, honoring the UI-less
-/// exclusion (D-ui): a backend that serves no web UI is never
+/// exclusion: a backend that serves no web UI is never
 /// auto-pinned and never satisfies a cookie pin — it can only appear in the
 /// chooser as a non-selectable row. The "no model running" page stays
 /// reserved for *zero* running models, so a running UI-less model never reads as
@@ -183,7 +183,6 @@ fn resolve_target(headers: &HeaderMap, mut running: Vec<RunningEntry>) -> UiTarg
   if running.is_empty() {
     return UiTarget::None;
   }
-  // 1. Cookie pin → that backend, but only if it has a UI to serve.
   if let Some(pin) = read_target_cookie(headers) {
     if let Some(idx) = running
       .iter()
@@ -192,7 +191,7 @@ fn resolve_target(headers: &HeaderMap, mut running: Vec<RunningEntry>) -> UiTarg
       return UiTarget::Forward(running.swap_remove(idx));
     }
   }
-  // 2. Auto-forward only to a *lone* model with a UI; anything else (a lone
+  // Auto-forward only to a *lone* model with a UI; anything else (a lone
   //    UI-less model, or several models) shows the chooser — which renders
   //    UI-less rows non-selectable.
   if running.len() == 1 && running[0].ui.is_selectable() {
@@ -217,8 +216,7 @@ async fn collect_running(state: &Arc<ProxyState>) -> Vec<RunningEntry> {
     // GGUF can run on two servers at once, and only the launch on a UI-less
     // engine needs the bundle. Every row listed here came from the registry, so
     // a missing one means it stopped mid-flight; the default backend's verdict
-    // is what the resolver would have answered a moment earlier. Names no
-    // backend.
+    // is what the resolver would have answered a moment earlier.
     let serves_web_ui = {
       use crate::backend::Backend;
       match state
@@ -476,7 +474,6 @@ fn strip_ui_prefix(uri: &hyper::Uri) -> String {
 
 // ─── cookie + query helpers ───────────────────────────────────────────
 
-/// Read the `ls_ui_target` pin out of the `Cookie` header, if present.
 fn read_target_cookie(headers: &HeaderMap) -> Option<String> {
   let raw = headers.get(COOKIE)?.to_str().ok()?;
   raw.split(';').find_map(|pair| {
@@ -998,8 +995,6 @@ mod tests {
     }
   }
 
-  /// The chooser's colour contract: a model whose backend serves a web UI is
-  /// a green link, a model without one is red and is not a link.
   #[test]
   fn chooser_rows_are_green_with_a_ui_and_red_without() {
     let html = chooser_html(
@@ -1086,7 +1081,6 @@ mod tests {
       target_query_param(&uri("/ui/?target=L4")),
       Some("L4".to_string())
     );
-    // No target param.
     assert_eq!(target_query_param(&uri("/ui/?foo=bar")), None);
     // A value with header-illegal bytes is rejected (can't reach the
     // Set-Cookie builder). `%0d` stays literal since we don't decode,
@@ -1134,7 +1128,7 @@ mod tests {
   #[test]
   fn resolve_target_lone_ui_less_model_shows_chooser_not_none() {
     // A single running UI-less model must NOT auto-pin and must NOT
-    // read as "nothing running" — it renders the chooser (D-ui).
+    // read as "nothing running" — it renders the chooser.
     let running = vec![entry_ui("L1", 41100, "deepseek-v4-flash", false)];
     assert!(matches!(
       resolve_target(&HeaderMap::new(), running),
@@ -1218,7 +1212,6 @@ mod tests {
       active_pin(&headers_with_cookie("ls_ui_target=L9"), &running),
       None
     );
-    // No cookie at all.
     assert_eq!(active_pin(&HeaderMap::new(), &running), None);
   }
 

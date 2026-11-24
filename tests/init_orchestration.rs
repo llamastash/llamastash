@@ -1,4 +1,4 @@
-//! Integration coverage for `init` orchestration (plan Unit 10).
+//! Integration coverage for `init` orchestration.
 //!
 //! These tests drive `init::wizard::run` against an isolated XDG
 //! environment so the wizard's `--offline` short-circuits, step
@@ -10,8 +10,6 @@
 //! Releases asset, fetching the remote benchmark snapshot) are
 //! handled by `cli_init_parse.rs` (parsing) and the real-CDN
 //! integration tests `Cargo` defaults to ignoring with `--ignored`.
-//! This file covers the substantive behaviour gaps that the v2
-//! review surfaced.
 
 // The ENV_LOCK guard is intentionally held across `wizard::run(...).await`
 // — its job is to serialize env-var mutation across the entire async
@@ -70,7 +68,7 @@ fn cleanup_xdg(root: &std::path::PathBuf) {
 /// `--offline --only models` cannot satisfy the models step (it
 /// requires network for the HF download) and must therefore abort
 /// up-front with `INIT_ABORTED` rather than failing mid-step with
-/// `INIT_DOWNLOAD_FAILED`. Plan Unit 10 test scenario.
+/// `INIT_DOWNLOAD_FAILED`.
 #[tokio::test]
 async fn offline_only_models_refused_upfront_with_init_aborted() {
   let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -133,10 +131,10 @@ async fn offline_only_config_completes_without_network() {
 }
 
 /// `LLAMASTASH_OFFLINE=true` is the env-var equivalent of `--offline`.
-/// Note clap's `env = ...` binding for `ArgAction::SetTrue` (the
+/// clap's `env = ...` binding for `ArgAction::SetTrue` (the
 /// underlying action for a `bool` field) parses the env value as a
 /// boolean — only `true` and `false` are accepted; the truthy-set
-/// handling for `1`/`yes` is done by [`fetch::offline_requested`] at
+/// handling for `1`/`yes` is done by `fetch::offline_requested` at
 /// runtime, which `build_with_offline_check` consults orthogonally.
 #[tokio::test]
 async fn llamastash_offline_true_env_triggers_offline_only_models_refusal() {
@@ -309,13 +307,12 @@ async fn install_override_with_skipped_server_warns_and_continues() {
   cleanup_xdg(&root);
 }
 
-/// W3 contract: `--install` (per-step override) must beat
-/// `--recommended` (which would otherwise short-circuit through the
-/// existing-binary adoption shortcut in `run_install_step`). With a
-/// bad custom path supplied alongside `--recommended`, the wizard
-/// must hit the override path → `is_safe_to_adopt` failure →
-/// INIT_ABORTED, not silently fall back to recommended-mode
-/// adoption of a different binary on PATH.
+/// `--install` (per-step override) must beat `--recommended` (which
+/// would otherwise short-circuit through the existing-binary adoption
+/// shortcut in `run_install_step`). With a bad custom path supplied
+/// alongside `--recommended`, the wizard must hit the override path →
+/// `is_safe_to_adopt` failure → INIT_ABORTED, not silently fall back to
+/// recommended-mode adoption of a different binary on PATH.
 #[tokio::test]
 async fn install_override_wins_against_recommended_mode_shortcut() {
   let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());

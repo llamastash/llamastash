@@ -2,9 +2,7 @@
 //!
 //! Drops a sourceable POSIX-sh script with the OpenAI-shape vars
 //! (`OPENAI_BASE_URL` / `OPENAI_API_BASE` / `OPENAI_API_KEY` /
-//! `LLAMASTASH_API_KEY`). The one-liner the user adds to their rc
-//! (`source ~/.config/llamastash/env.sh`) is shell-agnostic at the
-//! call site — bash/zsh/dash/sh all source it cleanly.
+//! `LLAMASTASH_API_KEY`).
 //!
 //! Both `OPENAI_BASE_URL` (current OpenAI SDK name) and
 //! `OPENAI_API_BASE` (legacy / Aider) are set so a tool that reads

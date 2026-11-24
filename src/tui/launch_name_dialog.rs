@@ -4,7 +4,7 @@
 //! stage without the `Confirm` stage. `Esc` cancels, `Enter` accepts. On
 //! accept the picker that is already open launches carrying the typed name,
 //! so it is addressable as `<model-id>@<name>`. A plain `⏎` on the picker
-//! still launches unnamed, exactly as before.
+//! still launches unnamed.
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
@@ -20,18 +20,14 @@ use crate::tui::popup::{self, Button, Size, Spec};
 /// State for the `Alt+⏎` launch-name modal.
 #[derive(Debug, Clone)]
 pub struct LaunchNameDialog {
-  /// Display name shown in the dialog title.
   pub model_name: String,
-  /// The name-entry field.
   pub input: InputField,
-  /// Inline validation error (a name the `--name` flag would refuse too),
-  /// rendered under the input. Nothing typed at all is not an error — it
-  /// launches unnamed.
+  /// Inline validation error (a name the `--name` flag would refuse too).
+  /// Nothing typed at all is not an error — it launches unnamed.
   pub error: Option<String>,
 }
 
 impl LaunchNameDialog {
-  /// Open the dialog with the input ready for typing.
   pub fn open(model_name: String) -> Self {
     let mut input = InputField::new();
     input.enter_edit();

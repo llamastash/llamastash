@@ -1,9 +1,7 @@
 //! Shared CLI rendering helpers for padded/colored tables, key/value
 //! blocks, and section headers.
 //!
-//! Visual identity mirrors the init wizard (cliclack-inspired): bold
-//! headers, dim secondary text, semantic value colors from
-//! `cli::colors`. The global `console::colors_enabled()` flag set in
+//! The global `console::colors_enabled()` flag set in
 //! `cli::colors::init` doubles as the predicate that gates *both*
 //! ANSI styling and the padded-vs-TSV layout choice — so `--no-colors`,
 //! `NO_COLOR`, and a non-TTY stdout each silence color *and* fall back
@@ -11,8 +9,6 @@
 //!
 //! JSON output paths must never call these helpers — `--json` is a
 //! machine contract and stays byte-stable.
-//!
-//! Module is `pub(crate)`; nothing outside the binary consumes it.
 
 use console::measure_text_width;
 
@@ -21,21 +17,10 @@ use console::measure_text_width;
 /// narrow tables.
 const COL_GAP: &str = "  ";
 
-/// Render a table from a header row and per-row cell values.
-///
 /// When colors are disabled (the three off-conditions documented in
 /// `cli::colors::init`), output is byte-equivalent to today's
 /// `header.join("\t")` + per-row `cells.join("\t")` shape, so
 /// `awk -F\t` and `column -t` pipelines keep working.
-///
-/// When colors are enabled, the helper:
-/// - measures each column's display width (unicode-aware via
-///   `console::measure_text_width`, which strips ANSI before
-///   counting),
-/// - pads every cell to its column's max width,
-/// - emits a bold header row,
-/// - emits a dim `─` rule under the header,
-/// - emits each data row left-justified.
 ///
 /// Caller-supplied cells may already carry ANSI styling (e.g. a state
 /// cell wrapped by `colors::state(...)`); the measurement function
@@ -96,7 +81,7 @@ pub(crate) fn table(header: &[&str], rows: &[Vec<String>]) -> String {
   out
 }
 
-/// Pipe-friendly TSV form. Strips any ANSI a caller may have wrapped
+/// Strips any ANSI a caller may have wrapped
 /// cells in (defence in depth — the colors-disabled global already
 /// makes `console::style(...)` a no-op, but caller code that builds
 /// styled cells via raw escapes would otherwise leak).
@@ -135,7 +120,7 @@ fn pad_cell(cell: &str, width: usize) -> String {
   format!("{cell}{pad}")
 }
 
-/// Render a vertical key/value block. Keys are right-aligned (matching
+/// Keys are right-aligned (matching
 /// the init `intro` panel's visual identity), separated from values
 /// by a two-space gap, with a leading two-space indent on each line.
 ///
@@ -169,12 +154,6 @@ pub(crate) fn kv_block(items: &[(&str, String)]) -> String {
 }
 
 /// Render a section title with an optional dim count suffix.
-///
-/// Examples:
-/// - `section_header("list", Some((3, "models")))` →
-///   `"list (3 models)\n"` (bold title, dim count) when colors are
-///   enabled; plain `"list (3 models)\n"` when disabled.
-/// - `section_header("daemon", None)` → `"daemon\n"`.
 ///
 /// Like [`kv_block`], the output is human-facing — gate piped output
 /// to JSON / TSV branches that don't call this helper.

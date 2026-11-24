@@ -6,12 +6,10 @@
 //! `/health` + `200`); a non-ready status (e.g. llama.cpp's `503`
 //! "model still loading") keeps us polling until the timeout.
 //!
-//! The probe is hand-rolled HTTP/1.1 (the request is constant for a
-//! given launch — built once and reused across polls — and response
-//! decoding is just "find the status line") to avoid a `reqwest` /
-//! `hyper` dep just for this. Real `llama-server` supports keep-alive,
-//! but the probe always sends `Connection: close` so we don't fight
-//! pipelining.
+//! The probe is hand-rolled HTTP/1.1 — response decoding is just
+//! "find the status line" — to avoid a `reqwest` / `hyper` dep just
+//! for this. The engine supports keep-alive, but the probe always
+//! sends `Connection: close` so we don't fight pipelining.
 
 use std::time::{Duration, Instant};
 
@@ -21,15 +19,15 @@ use tokio::net::TcpStream;
 /// Outcome of a probe sequence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProbeOutcome {
-  /// `/health` responded `200` within the timeout.
+  /// The ready status arrived on the readiness path within the
+  /// timeout.
   Ready,
   /// Timeout elapsed without a 200. The last observation is
   /// captured for the supervisor's error cause string.
   Timeout { last_status: Option<u16> },
 }
 
-/// Tunables. Defaults mirror the plan: 500 ms poll interval, 120 s
-/// timeout.
+/// Poll interval and total timeout. Defaults: 500 ms, 120 s.
 #[derive(Debug, Clone, Copy)]
 pub struct ProbeOptions {
   pub interval: Duration,
@@ -47,23 +45,18 @@ impl Default for ProbeOptions {
 
 impl ProbeOptions {
   /// Bump `timeout` to give a large model enough wall-clock to load
-  /// its weights into VRAM before the supervisor declares the probe
-  /// failed. The default 120 s budget covers ~10 GB models on warm
-  /// NVMe + PCIe Gen4; an 80B Q5_K_M (~53 GB) on ROCm routinely needs
-  /// 4-6 minutes and used to hit `health probe timeout (last status
-  /// 503)` even though llama-server was still happily loading.
+  /// its weights before the supervisor declares the probe failed. The
+  /// default 120 s covers ~10 GB models on warm NVMe; an 80B Q5_K_M
+  /// (~53 GB) on ROCm routinely needs 4-6 minutes.
   ///
-  /// Formula: assume a conservative 30 MiB/s effective load rate
-  /// and add the derived seconds to the base. The 30 MiB/s floor is
-  /// where successive calibration rounds settled: a 53 GB Q5_K_M
-  /// model on HIP/ROCm needed ~30 min of probe time before `/health`
-  /// flipped to 200 — RSS grew at ~95 MiB/s but the load isn't done
+  /// Formula: assume a conservative 30 MiB/s effective load rate and
+  /// add the derived seconds to the base. The rate is calibrated on a
+  /// 53 GB model on HIP/ROCm that needed ~30 min before `/health`
+  /// flipped to 200: RSS grew at ~95 MiB/s but the load isn't done
   /// when the bytes are resident (VRAM upload + engine prime add
-  /// roughly as much again on top). Truly stuck processes still get
-  /// killed within the +2 hour cap. Fast NVMe + CUDA users see
-  /// generous headroom but the kill path is reachable.
-  /// `weights_bytes = 0` keeps the base timeout — typical for
-  /// metadata-only rows where the catalog has no estimate.
+  /// roughly as much again). Truly stuck processes still get killed
+  /// within the +2 hour cap. `weights_bytes = 0` keeps the base
+  /// timeout — metadata-only catalog rows have no estimate.
   pub fn scale_for_model(self, weights_bytes: u64) -> Self {
     const ASSUMED_LOAD_MIB_PER_SEC: u64 = 30;
     const MIB: u64 = 1024 * 1024;
@@ -80,9 +73,8 @@ impl ProbeOptions {
 }
 
 /// Poll `path` on the supplied port until `ready_status` is observed or
-/// the timeout fires. The endpoint + ready status are supplied by the
-/// backend's `Readiness` declaration (llama.cpp = `/health` + `200`) so
-/// the probe is no longer hardwired to llama-server's surface.
+/// the timeout fires. The endpoint and ready status come from the
+/// backend's `Readiness` declaration.
 pub async fn poll_until_ready(
   port: u16,
   opts: ProbeOptions,
@@ -266,7 +258,7 @@ async fn probe_once_body(
 /// Connect to `127.0.0.1:port` from a source port other than `port`.
 ///
 /// The launch pool sits inside Linux's ephemeral range (32768-60999), so while
-/// a child is still loading (gufo and ds4-server bind only after the load) the kernel
+/// a child is still loading (some engines bind only after the load) the kernel
 /// can pick `port` itself as the probe's source port. The SYN then reaches its
 /// own socket, the connection "succeeds", and the leftover socket holds the
 /// port so the child's `bind()` fails. Binding the source port first and
@@ -310,7 +302,6 @@ async fn probe_once(port: u16, op_timeout: Duration, request: &[u8]) -> std::io:
 fn parse_status(bytes: &[u8]) -> Option<u16> {
   let prefix = std::str::from_utf8(bytes).ok()?;
   let first_line = prefix.lines().next()?;
-  // "HTTP/1.1 200 OK"
   let mut iter = first_line.split_whitespace();
   let _version = iter.next()?;
   let status = iter.next()?;
@@ -413,10 +404,7 @@ mod tests {
       small_extra >= Duration::from_secs(330) && small_extra <= Duration::from_secs(360),
       "10 GiB should add ~341s, got {small_extra:?}"
     );
-    // 53 GiB (the Qwen3-Next 80B Q5_K_M case) → ~1808 extra seconds.
-    // Round-3 calibration: even 18 min wasn't enough with the
-    // 50 MiB/s assumption, so the rate is now 30 MiB/s — covers
-    // HIP/ROCm + cold disk + VRAM upload + engine prime.
+    // 53 GiB at 30 MiB/s → ~1808 extra seconds.
     let big = base.scale_for_model(53u64 * 1024 * 1024 * 1024);
     let big_extra = big.timeout - base.timeout;
     assert!(
@@ -477,7 +465,7 @@ mod tests {
   #[tokio::test]
   async fn poll_until_ready_honors_custom_path_and_ready_status() {
     // Backend-declared readiness of /custom/ready + 204 must be used
-    // verbatim — proving the probe is no longer hardwired to /health/200.
+    // verbatim, not /health/200.
     let (port, mut rx) = spawn_status_responder(204).await;
     let opts = ProbeOptions {
       interval: Duration::from_millis(20),

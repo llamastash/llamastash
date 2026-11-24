@@ -1,5 +1,4 @@
-//! Byte-pipe forwarding of `/v1/...` requests to a Ready upstream
-//! `llama-server`.
+//! Byte-pipe forwarding of `/v1/...` requests to a Ready upstream engine.
 //!
 //! Once [`super::route::decide`] produces a [`RouteDecision::ReadyAt`],
 //! the router hands the buffered body + the target port off to
@@ -12,8 +11,7 @@
 //!   serving backend needs for its engine
 //!   ([`crate::backend::Backend::rewrite_request_body`]). Both copy every
 //!   untouched entry as the client's own bytes — the body is never re-encoded.
-//!   The plan's Risks row "rewrites body.model" makes the case for this; the
-//!   `received_body` echo assertions in `tests/proxy_routing.rs` keep it
+//!   The `received_body` echo assertions in `tests/proxy_routing.rs` keep it
 //!   honest.
 //! - Stream the upstream response body through `http_body_util::StreamBody`
 //!   so SSE chunks land at the client as they arrive. No buffering,
@@ -81,9 +79,8 @@ pub(crate) struct Target<'a> {
   pub pin_request_model: bool,
 }
 
-/// Forward an inbound `hyper::Request` to the upstream
-/// `llama-server` on `target.port`, stream the response back to the
-/// caller.
+/// Forward an inbound `hyper::Request` to the upstream engine on
+/// `target.port`, stream the response back to the caller.
 ///
 /// `inbound.body_bytes` is the already-buffered (and length-checked)
 /// inbound body; the caller has run
@@ -135,7 +132,7 @@ pub(crate) async fn forward_to_upstream(
     record.publish();
   }
   // Compose upstream URL: path + query from the original request,
-  // host always 127.0.0.1 (loopback only — see plan §Scope Boundaries).
+  // host always 127.0.0.1 (loopback only).
   let path_and_query = inbound_uri
     .path_and_query()
     .map(|p| p.as_str())
@@ -243,10 +240,8 @@ fn unreachable_response(record: Option<RequestRecord>, message: &str) -> ProxyRe
 
 /// Find the supervisor that owns `expected_id` on `port`, take an
 /// inflight guard, and return it. Returns `None` when no Ready
-/// supervisor matches — same condition the legacy `verify_port_binding`
-/// caught, just folded into one snapshot walk so the gate and the
-/// guard acquisition can't race against an eviction landing in
-/// between.
+/// supervisor matches — the gate and the guard come from one snapshot
+/// walk so an eviction cannot land in between.
 async fn acquire_inflight_guard(
   state: &Arc<ProxyState>,
   port: u16,
@@ -297,8 +292,6 @@ fn outbound_body(
   content_type: Option<&str>,
 ) -> Bytes {
   use crate::backend::Backend as _;
-  // Two surgical edits, each copying every untouched entry as the client's own
-  // bytes.
   let body = match request_model {
     Some(model) => with_model(body, model, content_type),
     None => body,
@@ -309,8 +302,8 @@ fn outbound_body(
   }
 }
 
-/// The `Content-Type` of a request, for the two places that have to know which
-/// shape a body is.
+/// The `Content-Type` of a request, for the places that have to know
+/// which shape a body is.
 pub(crate) fn content_type_of(headers: &HeaderMap) -> Option<&str> {
   headers
     .get(hyper::header::CONTENT_TYPE)
@@ -416,7 +409,7 @@ fn build_streaming_response(
   // the proxy's wider `BodyError` type. When the upstream errors
   // mid-stream the StreamBody surfaces it as a frame error; hyper
   // drops the client connection in turn, which is the desired
-  // "mid-stream upstream death" behaviour the plan calls for.
+  // "mid-stream upstream death" behaviour.
   let stream = upstream
     .bytes_stream()
     .map_ok(Frame::data)
@@ -842,7 +835,6 @@ mod tests {
 
   #[test]
   fn sanitize_header_value_replaces_non_visible_ascii() {
-    // Visible ASCII passes through unchanged.
     assert_eq!(sanitize_header_value("gemma-3-4b"), "gemma-3-4b");
     // CJK, emoji, and ASCII controls all collapse to `_` so the header
     // stays `HeaderValue::from_str`-acceptable.
@@ -850,7 +842,6 @@ mod tests {
     assert_eq!(sanitize_header_value("a\tb\nc"), "a_b_c");
     // DEL (0x7f) is explicitly excluded from the visible range.
     assert_eq!(sanitize_header_value("x\u{007f}y"), "x_y");
-    // The result is always a valid header value.
     assert!(HeaderValue::from_str(&sanitize_header_value("模型 🚀")).is_ok());
   }
 

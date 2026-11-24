@@ -199,7 +199,7 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
     }
     models.push(row);
   }
-  // External — read-only rows for `llama-server` processes the
+  // External — read-only rows for engine processes the
   // daemon doesn't own. Populated by the boot sweep, then refreshed every
   // `orphans::RESWEEP_INTERVAL` by `orphans::spawn_resweep`.
   // Stable shape: `{pid, cmdline, model_path, port, launched_by_llamastash}`,
@@ -284,7 +284,7 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
   // its probed devices + derived id. The single launch-device surface the TUI
   // picker and CLI read — each server carries the `--device` selectors its own
   // binary accepts, sourced from that binary's `--list-devices` (not vendor
-  // tools), so what the picker offers is precisely what `llama-server` accepts.
+  // tools), so what the picker offers is precisely what the binary accepts.
   // Empty array when no binary is configured.
   let servers = match ctx.launch.as_ref() {
     Some(env) => serde_json::to_value(&*env.servers.current().await).unwrap_or(Value::Null),
@@ -333,8 +333,8 @@ pub(crate) async fn status_response(ctx: &MethodContext) -> Value {
 
 /// Build the `status.backends` array: one row per backend with
 /// whether its binary is installed on this host and which accelerators it
-/// can run on. llama.cpp's accelerator set unions its CPU floor with the
-/// GPU backends the live device catalog reveals.
+/// can run on. The default accelerator set unions each backend's CPU floor
+/// with the GPU backends the live device catalog reveals.
 async fn backends_status(ctx: &MethodContext) -> Value {
   use crate::backend::{Backend, Backends};
 
@@ -412,7 +412,7 @@ fn backend_row(id: &str, installed: bool, accelerators: Vec<String>) -> Value {
   })
 }
 
-/// Map a llama.cpp `--device` selector prefix to an accelerator class.
+/// Map a `--device` selector prefix to an accelerator class.
 fn accelerator_from_selector(selector: &str) -> Option<crate::backend::Accelerator> {
   use crate::backend::Accelerator;
   let s = selector.to_ascii_lowercase();

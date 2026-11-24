@@ -1,9 +1,4 @@
-//! Single-flight coalescing for Unit 4's auto-start.
-//!
-//! Plan: docs/plans/2026-05-21-001-feat-proxy-router-plan.md (Unit 4
-//! Test scenarios — "two concurrent requests for the same dormant
-//! model" and "three concurrent requests for three different
-//! dormant models").
+//! Single-flight coalescing for auto-start.
 //!
 //! Instrumentation: we observe single-flight by counting supervisor
 //! registry entries after both requests complete. If coalescing
@@ -108,17 +103,12 @@ async fn stop_all(ctx: &MethodContext) {
   }
 }
 
-// ---- Scenario 3: two concurrent requests for the same dormant model ---
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_concurrent_requests_for_same_model_share_one_launch() {
   let dir = unique_temp("same");
   let log_dir = dir.join("logs");
   std::fs::create_dir_all(&log_dir).unwrap();
   let model_path = write_gguf(&dir, "qwen3.gguf", "qwen3");
-  // Use a single-port range — if coalescing fails, the second
-  // launch will error on port allocation and the test catches
-  // either the failed 200 or the duplicate supervisor.
   let (state, ctx) = build_state(
     vec![discovered(&model_path, Some("qwen3"), "qwen3")],
     &log_dir,
@@ -151,8 +141,6 @@ async fn two_concurrent_requests_for_same_model_share_one_launch() {
   shutdown_listener(shutdown, listener_handle).await;
   std::fs::remove_dir_all(&dir).ok();
 }
-
-// ---- Scenario 4: three concurrent requests for three different models -
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn three_concurrent_requests_for_distinct_models_each_launch() {

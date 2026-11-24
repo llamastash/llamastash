@@ -14,8 +14,7 @@
 //! allowlist is operated by a known third party (GitHub, HuggingFace);
 //! a DNS-rebinding redirect to `127.0.0.1` would still need the
 //! resolved hostname to be on the allowlist. Add IP-class checking
-//! post-v2 if a real threat materialises (see plan §"Future
-//! Considerations").
+//! later if a real threat materialises.
 
 use std::collections::BTreeSet;
 
@@ -56,7 +55,6 @@ pub const MAX_REDIRECTS: usize = 3;
 /// the disk-space precheck.
 pub const DEFAULT_MAX_BYTES: u64 = 1024 * 1024 * 1024;
 
-/// The fetch contract's URL scheme requirement.
 pub const REQUIRED_SCHEME: &str = "https";
 
 /// Effective allowlist resolved at `FetchClient` build time. Combines
@@ -65,7 +63,7 @@ pub const REQUIRED_SCHEME: &str = "https";
 ///
 /// `subdomain_match` controls whether a listed host like
 /// `huggingface.co` should also accept `cdn-lfs.huggingface.co`,
-/// `*.huggingface.co`, etc. Off by default — the v2 FetchClient
+/// `*.huggingface.co`, etc. Off by default — the FetchClient
 /// allowlist enumerates each CDN host explicitly so DNS-rebinding
 /// surprises can't sneak through. Turned on for HF endpoint
 /// validation where any HF subdomain is acceptable.
@@ -76,7 +74,6 @@ pub struct HostAllowlist {
 }
 
 impl HostAllowlist {
-  /// Default allowlist for v2.
   pub fn default_v2() -> Self {
     let mut hosts = BTreeSet::new();
     for h in DEFAULT_ALLOWED_HOSTS {
@@ -88,8 +85,8 @@ impl HostAllowlist {
     }
   }
 
-  /// Build an allowlist from a fixed list of hosts. Used by callers
-  /// that don't want the v2 default set (e.g. HF endpoint validation,
+  /// Build an allowlist from a fixed list of hosts, for callers
+  /// that don't want the default set (e.g. HF endpoint validation,
   /// which has its own narrow allowlist + subdomain matching).
   pub fn from_hosts<I, S>(hosts: I) -> Self
   where
@@ -102,8 +99,8 @@ impl HostAllowlist {
     }
   }
 
-  /// Extend with additional hosts. Used by the snapshot fetcher to
-  /// reach the rolling-release host without bloating the default.
+  /// Extend with additional hosts, e.g. the snapshot host the CI workflow
+  /// publishes to.
   pub fn with_additional(mut self, extra: impl IntoIterator<Item = String>) -> Self {
     self.hosts.extend(extra);
     self

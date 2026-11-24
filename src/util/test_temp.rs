@@ -1,8 +1,4 @@
 //! Test-only helper that produces a unique temp directory per call.
-//! Several modules under `src/` had their own copy of this 10-line
-//! helper (`fn temp_dir(label) -> PathBuf`); consolidating reduces
-//! drift and gives one obvious place to harden the naming if a real
-//! filesystem ever races on `/tmp`.
 //!
 //! Gated `cfg(any(test, feature = "test-fixtures"))` so the helper
 //! is available from internal `#[cfg(test)] mod tests` blocks AND

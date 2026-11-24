@@ -5,15 +5,14 @@
 //! ([`resolve_layered`](crate::launch::knobs::resolve_layered),
 //! [`seed_layerless`](crate::launch::knobs::seed_layerless)) merges the
 //! precedence chain into a [`Resolved`](crate::launch::knobs::Resolved) set.
-//! The per-backend argv emitter lives with its backend — llama.cpp's is
-//! `crate::backend::llama_cpp::compose`.
+//! The per-backend argv emitter lives with its backend.
 //!
 //! `forbidden_in_extras` / `is_forbidden_head` enforce the loopback-only
 //! and same-UID contract: a curated denylist (`--host`, `--listen`,
 //! `--bind`, `--api-key`, `--ssl-*`) is refused. They live here, not in a
-//! backend, because both the llama.cpp extras strip and the native-knob
-//! translation reuse the same guard. llama-server honours the
-//! last-occurrence of a flag, so without this guard a trailing
+//! backend, because both the extras strip and the native-knob
+//! translation reuse the same guard. An engine honours the last
+//! occurrence of a flag, so without this guard a trailing
 //! `--host 0.0.0.0` in `extras` would expose the model to the LAN.
 
 use std::collections::BTreeMap;
@@ -255,11 +254,11 @@ pub fn redact_for_display(extras: &[OsString]) -> String {
 /// Which inference backend should run a launch.
 ///
 /// This is a *launch-level* choice, not a translated knob — "which backend"
-/// has no `llama-server` argv form, so it rides on [`LaunchParams`] rather
-/// than [`crate::launch::knobs::KnobSet`]. The default [`BackendChoice::Auto`] runs the R13
-/// identity rule (GGUF → llama.cpp, registry → its owning backend); an
-/// explicit variant overrides it. Resolved by
-/// [`crate::backend::resolve_backend`].
+/// has no argv form on the default engine, so it rides on [`LaunchParams`]
+/// rather than [`crate::launch::knobs::KnobSet`]. The default
+/// [`BackendChoice::Auto`] runs the identity rule (GGUF → the default backend,
+/// registry → its owning backend); an explicit variant overrides it. Resolved
+/// by [`crate::backend::resolve_backend`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum BackendChoice {
   /// Pick automatically from the model's identity + the header routing signal.
@@ -276,8 +275,7 @@ pub enum BackendChoice {
 impl BackendChoice {
   /// Stable lowercase label for CLI parsing / JSON projection — `"auto"` or the
   /// backend id. The wire form (the custom [`serde::Serialize`] below) is
-  /// exactly this string, so a persisted backend id round-trips
-  /// byte-for-byte with the old enum encoding.
+  /// exactly this string, so a persisted backend id round-trips byte-for-byte.
   /// The pinned backend id, or `None` when this is `Auto`. Callers that need
   /// "which backend's knobs apply" resolve `None` to the default themselves.
   pub fn explicit_id(&self) -> Option<&str> {
@@ -306,9 +304,8 @@ impl BackendChoice {
   }
 }
 
-// Persisted / wired as the bare id string (`"auto"`, a backend id, …),
-// identical to the old externally-tagged unit-variant encoding, so `state.json`
-// and preset rows stay byte-stable across this refactor.
+// Persisted and wired as the bare id string (`"auto"`, a backend id, …), so
+// `state.json` and preset rows stay byte-stable.
 impl serde::Serialize for BackendChoice {
   fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_str(self.label())
@@ -323,8 +320,8 @@ impl<'de> serde::Deserialize<'de> for BackendChoice {
 }
 
 /// The user's intent for MTP (multi-token prediction) speculative decoding on a
-/// launch. A launch-level, launch-only choice (no `config.yaml` entry
-/// — KD2); persisted in `last_params` / presets like any launch choice. The
+/// launch. A launch-level, launch-only choice (no `config.yaml` entry);
+/// persisted in `last_params` / presets like any launch choice. The
 /// resolved *directive* (what argv to emit) is [`MtpDirective`], computed
 /// server-side from this intent plus the model's real capability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -387,15 +384,15 @@ pub struct MtpDirective {
   pub draft_model: Option<PathBuf>,
 }
 
-/// Resolve the effective MTP directive (KD1 hard gate): fold the user's
-/// [`MtpEnable`] intent with the model's real capability. `Some` ⇒ this launch
+/// Resolve the effective MTP directive: fold the user's [`MtpEnable`] intent
+/// with the model's real capability. `Some` ⇒ this launch
 /// speculates; `None` ⇒ it doesn't.
 ///
 /// - `Off` ⇒ `None`. `Auto` ⇒ enable iff capable. `On` ⇒ enable if capable,
 ///   else push a warning and return `None` (warn + skip, never emit-and-brick).
 /// - An embedded head needs no separate drafter; a separate head names one.
 ///
-/// The KD3 deferral — a user already hand-driving speculation through `extras`
+/// The deferral — a user already hand-driving speculation through `extras`
 /// — is decided by the serving backend ([`crate::backend::Backend::
 /// speculation_set_in_extras`]) before this is called, since only it knows its
 /// own flag spelling.
@@ -443,12 +440,6 @@ pub fn extras_have_flag(extras: &[OsString], head: &str) -> bool {
 
 /// All launch knobs the supervisor reads. Persisted under
 /// `last_params: HashMap<ModelIdentity, LaunchParams>` in `state.json`.
-///
-/// Pre-1.0 schema flip: the old `advanced: Vec<OsString>` field has
-/// been replaced with `knobs: crate::launch::knobs::KnobSet` + `extras: Vec<OsString>`.
-/// Existing state files from before the flip parse-fail and
-/// quarantine to `state.json.broken-<ts>` per `daemon::mod`'s
-/// existing path.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LaunchParams {
   /// Absolute path to the GGUF the user picked (or shard 1 for split
@@ -456,7 +447,7 @@ pub struct LaunchParams {
   pub model_path: PathBuf,
   /// Chosen launch mode (chat / embedding / rerank).
   pub mode: LaunchMode,
-  /// Context length. `None` lets `llama-server` use the GGUF's
+  /// Context length. `None` lets the engine use the GGUF's
   /// native value (no `-c` flag).
   ///
   /// **Persistence note:** on a running launch this holds the
@@ -481,36 +472,34 @@ pub struct LaunchParams {
   /// (`crate::launch::knobs`). Emitted before `extras` in the backend's
   /// declaration order; unset ids emit nothing.
   ///
-  /// Replaces the old split between a llama.cpp-keyed `crate::launch::knobs::KnobSet` struct and
-  /// a parallel stringly-typed `backend_knobs` map. One map means one layering
-  /// engine, one persistence shape, and one generated surface per client.
+  /// One map means one layering engine, one persistence shape, and one
+  /// generated surface per client.
   #[serde(default)]
   pub knobs: crate::launch::knobs::KnobSet,
-  /// Free-form argv tail for `llama-server` flags the typed editor
+  /// Free-form argv tail for engine flags the typed editor
   /// doesn't model (e.g. `--rope-freq-base`, sampling params).
-  /// Emitted *after* `knobs` so the last-occurrence wins per
-  /// llama-server semantics — same "extras trump bundled" contract
-  /// documented on the Settings tab.
+  /// Emitted *after* `knobs` so the last-occurrence wins, the same
+  /// "extras trump bundled" contract documented on the Settings tab.
   #[serde(default)]
   pub extras: Vec<OsString>,
   /// Optional path to a multimodal projector (mmproj) file. When set,
-  /// the supervisor appends `--mmproj <path>` to the llama-server
-  /// argv. The file is auto-detected by scanning the parent directory
+  /// the supervisor appends `--mmproj <path>` to the engine argv. The file is
+  /// auto-detected by scanning the parent directory
   /// of the model for a `mmproj-<stem>.gguf` or `mmproj_<stem>.gguf`
   /// companion.
   #[serde(default)]
   pub mmproj_path: Option<PathBuf>,
   /// Which backend runs this launch. Defaults to
-  /// [`BackendChoice::Auto`] (the R13 identity rule); an explicit value
+  /// [`BackendChoice::Auto`] (the identity rule); an explicit value
   /// overrides per-model. Persisted in last-params like the other choices,
   /// so a returning user keeps their override. `#[serde(default)]` keeps
-  /// pre-Phase-2b `state.json` rows loading as `Auto`.
+  /// `state.json` rows without the field loading as `Auto`.
   #[serde(default)]
   pub backend: BackendChoice,
-  /// Chosen **server** id — a build/binary of a backend (`llamacpp·vulkan`,
+  /// Chosen **server** id — a build/binary of a backend (`llamacpp·vulkan`).
   /// Determines which binary the launch spawns; persisted in
   /// last-params so a relaunch reuses the build. `None` = no pick (default
-  /// binary). `#[serde(default)]` keeps pre-server-abstraction rows loading.
+  /// binary). `#[serde(default)]` keeps rows without the field loading.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub server: Option<String>,
   /// Config values a backend projects onto its own launch, keyed by the
@@ -606,7 +595,7 @@ impl LaunchParams {
 ///
 /// `ModelDefault` means the value comes from the model file itself
 /// (GGUF header for `ctx`, chat template for `reasoning`).
-/// `ServerDefault` means no flag is sent and llama-server falls back
+/// `ServerDefault` means no flag is sent and the engine falls back
 /// to its own hardcoded default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -688,8 +677,8 @@ mod tests {
 
   #[test]
   fn launch_params_without_backend_field_loads_as_auto() {
-    // A pre-Phase-2b last_params row has no `backend` key; #[serde(default)]
-    // must load it as Auto so existing state.json keeps working.
+    // A last_params row with no `backend` key must load as Auto so
+    // existing state.json keeps working.
     let mut v = serde_json::to_value(base_params()).unwrap();
     v.as_object_mut().unwrap().remove("backend");
     assert!(v.get("backend").is_none());
@@ -709,8 +698,8 @@ mod tests {
       let back: BackendChoice = serde_json::from_str(&s).unwrap();
       assert_eq!(c, back);
     }
-    // Wire value is the bare id string — byte-stable with the old unit-variant
-    // encoding, so existing `state.json` / preset rows keep parsing.
+    // Wire value is the bare id string, so existing `state.json` /
+    // preset rows keep parsing.
     assert_eq!(
       serde_json::to_string(&BackendChoice::Auto).unwrap(),
       "\"auto\""
@@ -803,8 +792,7 @@ mod tests {
       "auto writes the knob's Auto state"
     );
     assert_eq!(p.mtp_intent(), MtpEnable::Auto);
-    // An old row's top-level `mtp` key (the pre-collapse typed sibling) is
-    // ignored, not fatal.
+    // A top-level `mtp` key from an old row is ignored, not fatal.
     let mut v2 = serde_json::to_value(base_params()).unwrap();
     v2.as_object_mut()
       .unwrap()
@@ -815,8 +803,8 @@ mod tests {
 
   /// Regression: a `mtp` knob set through the knob channel — `-- --mtp off`
   /// passthrough, or a raw `knobs` map on the start request — must drive the
-  /// directive. It used to be dropped on the floor: the resolver read only the
-  /// typed `LaunchParams.mtp` sibling, which those paths never touched.
+  /// directive. Those paths never set a typed `mtp` sibling, so the resolver
+  /// must read the knob map.
   #[test]
   fn a_knob_set_mtp_drives_the_directive() {
     let mut warn = Vec::new();

@@ -1,11 +1,6 @@
 //! Civil-calendar arithmetic and ISO-8601 formatting without a chrono
 //! dependency. Algorithms from Howard Hinnant's date library (public
-//! domain). Used by `init/snapshot.rs` (RFC 3339 timestamps) and
-//! `init/doctor.rs` (YYYY-MM-DD age comparisons).
-//!
-//! Kept here so the two callers don't drift apart and so future
-//! consumers (init-trace.json, future doctor findings) can share one
-//! implementation.
+//! domain).
 
 use std::time::SystemTime;
 
@@ -20,8 +15,6 @@ pub fn iso8601(t: SystemTime) -> String {
   format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
 }
 
-/// Current wall-clock as an ISO-8601 string. Convenience wrapper for
-/// call sites that don't already have a `SystemTime`.
 pub fn iso8601_now() -> String {
   iso8601(SystemTime::now())
 }
@@ -36,7 +29,6 @@ pub fn now_ms() -> u64 {
     .unwrap_or(0)
 }
 
-/// Compact `YYYY-MM-DD` — used by doctor's snapshot-staleness check.
 pub fn yyyymmdd_from_secs(total_secs: u64) -> String {
   let days = (total_secs / 86_400) as i64;
   let (y, m, d) = civil_from_days(days);

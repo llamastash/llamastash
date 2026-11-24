@@ -1,12 +1,8 @@
 //! Requests tab — the proxy requests of the focused model.
 //!
 //! A summary strip on top (totals and averages the daemon computed) and
-//! below it a table of requests, newest first, one row per line. Table
-//! columns have a width and a rank; as the pane narrows the higher-rank
-//! ones drop out, `Route` first and `Time` last. The two free-text columns
-//! are the exception: `Note` is the last column, grows into the spare width
-//! and cuts to its first words with an ellipsis when the text is longer,
-//! while `Route` keeps its own width.
+//! below it a table of requests, newest first. Each column has a width and a
+//! rank; as the pane narrows the higher-rank ones drop out.
 
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -18,8 +14,7 @@ use crate::proxy::request_log::{Aggregates, RequestCells, RequestRow, RequestSum
 use crate::theme::Palette;
 use crate::tui::columns::{self, cell, cell_words, Column};
 
-/// Rows asked for on each poll. More than any pane shows at once, so a
-/// scroll has something to move through.
+/// More than any pane shows at once, so a scroll has something to move through.
 pub const POLL_ROWS: usize = 200;
 
 /// Cell text for a value the log does not have.
@@ -180,7 +175,6 @@ impl RequestsScope {
 }
 
 impl RequestsTabState {
-  /// Adopt a poll result.
   pub fn set(&mut self, scope: RequestsScope, summary: RequestSummary, rows: Vec<RequestRow>) {
     self.scope = Some(scope);
     self.summary = summary;
@@ -232,7 +226,7 @@ impl RequestsTabState {
   }
 }
 
-/// Render the tab body into `area`. The right pane owns the block.
+/// The right pane owns the block.
 pub fn render(frame: &mut Frame<'_>, area: Rect, state: &RequestsTabState, palette: &Palette) {
   // No poll has landed for this scope yet. Zeros and "no requests" would
   // read as an answer.
@@ -923,7 +917,7 @@ mod tests {
       state.scroll_down();
     }
     let ellipsis = crate::tui::glyphs::active().ellipsis();
-    // The page is counted in rows now, so the last page ends on the oldest
+    // The page is counted in rows, so the last page ends on the oldest
     // request and every line under the header is a row of its own.
     let lines = rendered(&state, 120, 7);
     let header = lines

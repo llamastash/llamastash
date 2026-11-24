@@ -7,8 +7,8 @@
 //! (when a GPU backend is available) GPU utilization, temperature,
 //! and VRAM aggregates.
 //!
-//! Multi-GPU strategy (matches the dashboard plan): mean util%, max
-//! temperature, summed VRAM. Per-card detail isn't surfaced here.
+//! Multi-GPU strategy: mean util%, max temperature, summed VRAM.
+//! Per-card detail isn't surfaced here.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -188,7 +188,6 @@ pub async fn sample_priming(prime_delay: Duration) -> HostMetricsSnapshot {
   let Ok(mut sys) = System::new_with_specifics(host_refresh_kind()) else {
     return HostMetricsSnapshot::default();
   };
-  // Prime the CPU delta.
   sys.refresh_cpu_specifics(CpuRefreshKind::nothing().with_usage());
   tokio::time::sleep(prime_delay).await;
   sys.refresh_cpu_specifics(CpuRefreshKind::nothing().with_usage());
@@ -197,14 +196,6 @@ pub async fn sample_priming(prime_delay: Duration) -> HostMetricsSnapshot {
   build_snapshot(&sys, components.as_ref(), probe_gpu_full().await)
 }
 
-/// Spawn the long-running sampler. Returns an `Arc<RwLock<…>>` whose
-/// contents the daemon's IPC `status` handler reads to populate the
-/// `host` field. The task exits when `shutdown` is triggered.
-///
-/// First reading lands `interval` after spawn (so CPU% has a real
-/// delta to report). The shared snapshot starts at `Default::default()`
-/// with `gpu_backend == "unsampled"`; callers should treat that
-/// sentinel as "no reading yet."
 /// Cells produced by [`spawn`]. The aggregated [`HostMetricsSnapshot`]
 /// powers the host stats pane; the live [`GpuInfo`] keeps `status.gpu`
 /// from diverging from `status.host` on driver hotplug or a driver
@@ -244,10 +235,13 @@ fn due_for_reprobe(since_last: Duration, every: Option<Duration>) -> bool {
   every.is_some_and(|every| since_last >= every)
 }
 
-/// Spawn the host-metrics sampler.
+/// Spawn the host-metrics sampler. The task exits when `shutdown` is
+/// triggered.
 ///
 /// `interval` is the tick cadence; `reprobe` is how often to re-run the
 /// full vendor probe chain, or `None` to only probe once at startup.
+/// The first reading lands `interval` after spawn, so CPU% has a real
+/// delta. Until then the snapshot carries the `"unsampled"` sentinel.
 pub fn spawn(
   shutdown: ShutdownToken,
   interval: Duration,
@@ -275,13 +269,9 @@ pub fn spawn(
     };
     // Prime sysinfo's CPU delta on first refresh.
     sys.refresh_cpu_specifics(CpuRefreshKind::nothing().with_usage());
-    // Hoist `Components` out of the per-tick path. The previous shape
-    // allocated a fresh `Components::new_with_refreshed_list()` every
-    // second *and* then called `components.refresh(true)` — the
-    // constructor already calls `refresh(true)` internally, so the
-    // second call was a redundant double-refresh. Keeping one
-    // long-lived instance and refreshing in place each tick avoids
-    // the allocation churn and the duplicate /sys/class/hwmon walk.
+    // One long-lived `Components` refreshed in place: the constructor
+    // already calls `refresh(true)`, so a rebuild on every tick would walk
+    // /sys/class/hwmon twice and allocate each time.
     let mut components = Components::new_with_refreshed_list().ok();
     // Cache the detected GPU backend so we only spawn the matching
     // vendor tool each tick instead of running the full
@@ -320,17 +310,12 @@ pub fn spawn(
         FULL_REPROBES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
       }
       if let Some(refreshed) = refresh_active_gpu(info.clone()).await {
-        // Fast path: only the active vendor's tool is spawned. No-op
-        // for backends without live metrics (CpuOnly, AppleMetal,
-        // Unknown/Vulkan).
         info = refreshed;
       }
       let next = build_snapshot(&sys, components.as_ref(), info.clone());
       *snapshot_for_task.write().await = next;
-      // Mirror the live GpuInfo so `status.gpu` follows hotplug /
-      // late driver loads. Without this, `ctx.gpu` would stay
-      // pinned to the startup snapshot forever even after the
-      // host pane has detected the new device.
+      // Without this, `ctx.gpu` stays pinned to the startup snapshot
+      // even after the sampler detects a new device.
       *gpu_for_task.write().await = info.clone();
     }
   });
@@ -373,7 +358,6 @@ fn build_snapshot(
   components: Option<&Components>,
   info: GpuInfo,
 ) -> HostMetricsSnapshot {
-  // Debug-build-only multi-GPU simulator; compiled out of release.
   #[cfg(debug_assertions)]
   let info = debug_fake_multi_gpu(info);
   let cpu_pct = host_cpu_pct(sys);
@@ -399,15 +383,13 @@ fn build_snapshot(
   }
 }
 
-/// Debug-only multi-GPU simulator, **compiled out of release builds**
-/// (`#[cfg(debug_assertions)]`). When `LLAMASTASH_DEBUG_FAKE_GPUS=N`
-/// (N >= 2) is set on the **daemon** process of a debug build, the
-/// detected GPU is fanned out into N synthetic cards so the multi-GPU
-/// host-pane rendering (the combined `GPU*` row + legend) can be
+/// Debug-only multi-GPU simulator (`#[cfg(debug_assertions)]`). When
+/// `LLAMASTASH_DEBUG_FAKE_GPUS=N` (N >= 2) is set on the **daemon**
+/// process of a debug build, the detected GPU is fanned out into N
+/// synthetic cards so the multi-GPU host-pane rendering can be
 /// exercised on a single-GPU machine. Each clone gets a distinct name
 /// (so `build_device_rows`' name-dedup keeps it) and stepped util/temp
 /// so the mean-usage / hottest-temp aggregation is actually visible.
-/// No-op unless the var is set — strictly a local testing aid.
 #[cfg(debug_assertions)]
 fn debug_fake_multi_gpu(info: GpuInfo) -> GpuInfo {
   let n: usize = match std::env::var("LLAMASTASH_DEBUG_FAKE_GPUS")
@@ -448,9 +430,8 @@ fn debug_fake_multi_gpu(info: GpuInfo) -> GpuInfo {
 /// the platform, take the max reading across any component whose
 /// label hints at CPU. `None` when no matching sensor exists.
 ///
-/// The caller hands in a refreshed `Components` — the sampler keeps
-/// one long-lived instance and refreshes it in place each tick, so
-/// no per-call allocation or /sys/class/hwmon re-walk happens here.
+/// The caller hands in a refreshed `Components`, so this does no walk of
+/// its own.
 fn host_cpu_temp_c(components: &Components) -> Option<f32> {
   let mut max: Option<f32> = None;
   for c in components.iter() {
@@ -495,7 +476,6 @@ struct GpuAggregate {
   uma_shared_used: Option<u64>,
 }
 
-/// Per the plan's multi-GPU strategy: mean util%, summed VRAM, max temp.
 fn aggregate_gpu(info: &GpuInfo) -> GpuAggregate {
   let all_devices: &[GpuDevice] = match info {
     GpuInfo::CpuOnly => return GpuAggregate::default(),
@@ -542,9 +522,8 @@ fn aggregate_gpu(info: &GpuInfo) -> GpuAggregate {
       Some(prev) => Some(prev.max(t)),
     },
   );
-  // Sum UMA-shared (GTT-on-AMD-APU) memory across devices so the
-  // host pane can subtract it from the RAM gauge. `None` when no
-  // device flagged a shared portion (discrete cards / non-UMA).
+  // Sum UMA-shared (GTT-on-AMD-APU) memory so the host pane can subtract
+  // it from the RAM gauge. `None` when no device flagged a shared portion.
   let uma_shared_total: u64 = all_devices
     .iter()
     .filter_map(|d| d.uma_shared_total_bytes)
@@ -570,10 +549,9 @@ fn aggregate_gpu(info: &GpuInfo) -> GpuAggregate {
 }
 
 /// Build per-device rows from the probe result for the host-stats
-/// pane. Each row carries the device name, VRAM (used/total),
-/// utilization, and temperature when the vendor tool surfaces them.
-/// The `selector` field is a display label only — the launch device
-/// list comes from [`crate::backend::llama_cpp::list_devices`], not from here.
+/// pane. The `selector` field is a display label only — the launch
+/// device list comes from [`crate::backend::llama_cpp::list_devices`],
+/// not from here.
 pub fn build_device_rows(info: &GpuInfo) -> Option<Vec<DeviceRow>> {
   let all: &[GpuDevice] = match info {
     GpuInfo::CpuOnly => return None,
@@ -595,10 +573,8 @@ pub fn build_device_rows(info: &GpuInfo) -> Option<Vec<DeviceRow>> {
     return None;
   }
 
-  // Deduplicate by device name, preferring native backends (nvidia /
-  // amd / apple_metal) over Vulkan fallback (unknown). Since native
-  // probes run before Vulkan, the first occurrence of each name is
-  // from a native backend — keep it, skip later Vulkan matches.
+  // Prefer native backends over the Vulkan fallback: native probes run
+  // first, so the first occurrence of each name is native.
   let native_names: Vec<String> = all
     .iter()
     .filter(|d| matches!(d.backend.as_str(), "nvidia" | "amd" | "apple_metal"))
@@ -648,9 +624,7 @@ mod tests {
 
   #[test]
   fn gpu_flavor_classifies_each_documented_label() {
-    // The wire string set is pinned (P2-16); the typed `flavor()`
-    // view collapses three open-coded `match string` ladders into
-    // one. Round-trip every documented label.
+    // Round-trip every documented wire label.
     assert_eq!(
       GpuFlavor::from_label(HostMetricsSnapshot::UNINITIALIZED_BACKEND),
       GpuFlavor::Unsampled
@@ -844,12 +818,9 @@ mod tests {
 
   #[tokio::test]
   async fn spawn_task_exits_when_shutdown_token_fires() {
-    // Triggering the shutdown token must terminate the sampler task
-    // so the `Arc<RwLock<...>>` clone it held is released — once the
-    // task drops, the strong count falls back to 1 (the local
-    // variable). A regression that removes the
-    // `wait_until_triggered` select arm would leave the task looping
-    // forever and the strong count stuck at 2.
+    // Triggering the token must terminate the task and release its Arc
+    // clones, dropping the strong count back to 1. Removing the
+    // `wait_until_triggered` select arm would leave the count at 2.
     let token = ShutdownToken::new();
     let handles = spawn(
       token.clone(),
@@ -971,7 +942,7 @@ mod tests {
     );
   }
 
-  /// A `Duration::ZERO` tick would busy-loop the task; [`MIN_TICK`]
+  /// A `Duration::ZERO` tick would busy-loop the task, so [`MIN_TICK`]
   /// floors it. The config layer clamps to 1 s, so this only guards
   /// direct callers.
   #[tokio::test]

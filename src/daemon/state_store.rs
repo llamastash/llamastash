@@ -2,7 +2,7 @@
 //!
 //! `state.json` lives under the XDG state dir and survives daemon
 //! restart. It captures:
-//! - `favorites` — the user's pinned models (R24 storage half).
+//! - `favorites` — the user's pinned models.
 //! - `last_params` — last successful launch params per model.
 //! - `running` — snapshot of every active supervised process so
 //!   orphan re-adoption on next daemon start has something to anchor
@@ -26,10 +26,9 @@ use crate::launch::params::LaunchParams;
 
 /// Top-level structure of `state.json`.
 ///
-/// `last_params` uses `Vec<(id, value)>` rather than a `BTreeMap` because
-/// `serde_json` can't serialise a map keyed by a struct: JSON object keys must
-/// be strings. In-memory consumers use [`DaemonState::last_params_for`] to look
-/// one up; the on-disk shape stays an explicit array of pairs.
+/// `last_params` is a `Vec` of pairs, not a map: `serde_json` can't
+/// serialise a map keyed by a struct. In-memory consumers look one
+/// up through [`DaemonState::last_params_for`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DaemonState {
   #[serde(default)]
@@ -52,12 +51,11 @@ pub struct LastParamsEntry {
   pub id: ModelIdentity,
   pub params: LaunchParams,
   /// The backend id this launch *resolved* to — the cross-backend
-  /// contamination guard (D-contamination). The
-  /// persisted `params.backend` choice stays `auto` for an auto-routed
-  /// launch, so it can't serve as the tag. `default`/`skip_serializing_if`
-  /// keep a llama.cpp row byte-stable: the field is omitted when it holds the
-  /// `llamacpp` default and reads back as `llamacpp`, so an older `state.json`
-  /// re-serializes identically (matching the `backend_knobs` pattern).
+  /// contamination guard. The persisted
+  /// `params.backend` choice stays `auto` for an auto-routed launch,
+  /// so it can't serve as the tag. Omitted when it holds the
+  /// `llamacpp` default and reads back as `llamacpp`, so an older
+  /// `state.json` re-serializes identically.
   #[serde(
     default = "default_resolved_backend",
     skip_serializing_if = "is_default_backend"
@@ -159,7 +157,7 @@ pub struct RunningSnapshot {
   pub params: LaunchParams,
   /// What `--fit` actually chose, read from the child's `/props` once
   /// on Ready. Empty for adopted/external rows and until
-  /// the fetch lands. `#[serde(default)]` keeps older rows loading.
+  /// the fetch lands.
   #[serde(default)]
   pub actuals: crate::daemon::actuals::Actuals,
   /// The backend id this launch *resolved* to. Stamped at spawn (unlike
@@ -246,11 +244,9 @@ pub fn load(state_dir: &Path) -> Result<DaemonState, LoadError> {
 /// every POSIX filesystem and guarantees the on-disk file is always
 /// either the old content or the new content, never partial.
 ///
-/// Implementation: `tempfile::NamedTempFile` handles the unique-name,
-/// O_EXCL, and 0o600 dance natively (replaces ~80
-/// lines of hand-rolled `write_tmp_safely` + `random_suffix`). The
-/// crate's mkstemp-style naming is unpredictable across processes,
-/// preserving the same-UID-symlink-DoS defence the manual code had.
+/// `tempfile::Builder` handles the unique name, O_EXCL, and 0o600. Its
+/// mkstemp-style naming is unpredictable across processes, which is the
+/// same-UID-symlink-DoS defence.
 pub fn save(state_dir: &Path, state: &DaemonState) -> Result<(), SaveError> {
   let final_path = path(state_dir);
   let body = serde_json::to_vec_pretty(state).map_err(|e| SaveError::Serialise(e.to_string()))?;
@@ -387,7 +383,7 @@ mod tests {
   #[test]
   fn resolved_backend_tag_round_trips_and_legacy_rows_default_to_llamacpp() {
     // A tagged row survives save→load; a legacy row (no `resolved_backend`
-    // key) reads back as `llamacpp` (D-contamination default).
+    // key) reads back as `llamacpp`.
     let dir = temp_state_dir("resolved-backend-tag");
     let mut s = DaemonState::default();
     s.upsert_last_params(
@@ -578,7 +574,7 @@ mod tests {
 
   #[test]
   fn legacy_gguf_state_json_loads_into_gguf_identities() {
-    // A state.json written by pre-Phase-2 code: every `id` is a bare
+    // A state.json written by older code: every `id` is a bare
     // ModelId object `{path, header_blake3}` with no enum tag. The
     // untagged `ModelIdentity` must load each one as `Gguf` — the
     // no-migration guarantee for existing users.
@@ -692,7 +688,7 @@ mod tests {
   fn gguf_identity_stays_wire_compatible_in_state_json() {
     // A GGUF identity must serialize as a bare `{path, header_blake3}`
     // object — no untagged-enum variant key — so a new daemon's
-    // state.json is byte-shape-identical to what the pre-Phase-2 code
+    // state.json is byte-shape-identical to what older daemons
     // wrote and read.
     let dir = temp_state_dir("wire-compat");
     let mut s = DaemonState::default();

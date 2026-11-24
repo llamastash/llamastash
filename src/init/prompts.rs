@@ -11,10 +11,6 @@
 //! The cliclack branch runs synchronously inside
 //! `tokio::task::spawn_blocking` so the wizard's async runtime stays
 //! responsive while the user reads the prompt.
-//!
-//! The wizard's step functions delegate to these helpers; raw
-//! `args.recommended` / `args.yes` reads live in `is_recommended`
-//! only.
 
 use std::io::IsTerminal;
 
@@ -36,10 +32,9 @@ pub fn is_recommended(args: &InitArgs) -> bool {
   args.recommended || args.yes
 }
 
-/// Wraps a cliclack spinner so wizard steps can give the user
-/// running narration ("Installing llama.cpp via Homebrew…",
-/// "Downloaded foo.gguf") without writing two code paths for the
-/// TTY and non-TTY cases.
+/// Wraps a cliclack spinner so wizard steps can give running
+/// narration without writing two code paths for the TTY and non-TTY
+/// cases.
 ///
 /// In TTY mode this drives an animated cliclack spinner. In non-TTY
 /// mode (piped output, CI) the spinner would be silent, so we fall
@@ -50,9 +45,7 @@ pub fn is_recommended(args: &InitArgs) -> bool {
 enum StepProgressInner {
   /// TTY-attached: animate a cliclack spinner.
   Spinner(cliclack::ProgressBar),
-  /// Non-TTY but human-facing: emit themed static lines via
-  /// `cliclack::log` so the script reading the logs still sees
-  /// "started → finished" pairs.
+  /// Non-TTY but human-facing: emit themed static lines via `cliclack::log`.
   Log,
   /// `--json` mode: callers don't want any narration on stderr.
   Quiet,
@@ -63,9 +56,8 @@ pub struct StepProgress {
 }
 
 impl StepProgress {
-  /// Start a step. Pass the present-tense label the user should see
-  /// while the work is running (e.g. `"Installing llama.cpp via
-  /// Homebrew"`).
+  /// Pass the present-tense label the user should see while the work
+  /// is running (e.g. `"Installing the engine via Homebrew"`).
   pub fn start(label: impl Into<String>) -> Self {
     let label = label.into();
     if std::io::stderr().is_terminal() {
@@ -91,8 +83,7 @@ impl StepProgress {
     }
   }
 
-  /// `start` if `emit` is true, otherwise `quiet`. Convenience for
-  /// wizard sites that already have an `args.json` boolean in scope.
+  /// Convenience for wizard sites that already have an `args.json` boolean in scope.
   pub fn start_if(emit: bool, label: impl Into<String>) -> Self {
     if emit {
       Self::start(label)
@@ -126,9 +117,8 @@ impl StepProgress {
     }
   }
 
-  /// Mark the step done with a failure message. The wizard usually
-  /// follows this immediately with a `return Err(...)` carrying the
-  /// matching exit code.
+  /// The wizard usually follows this immediately with a
+  /// `return Err(...)` carrying the matching exit code.
   pub fn fail(self, msg: impl Into<String>) {
     match self.inner {
       StepProgressInner::Spinner(b) => b.error(msg.into()),
@@ -180,10 +170,9 @@ pub fn render_diff_preview(diff: &[crate::init::config_writer::RedactedDiffEntry
   out
 }
 
-/// What `pick_model` returns. Mirrors the recommender's outcome but
-/// adds the `Skip` variant for `--model none`. `ModelEntry` does not
-/// implement `PartialEq` so this enum doesn't either — callers use
-/// pattern matching to branch.
+/// What `pick_model` returns. `Skip` means `--model none`.
+/// `ModelEntry` does not implement `PartialEq` so this enum doesn't
+/// either — callers use pattern matching to branch.
 //
 // `large_enum_variant`: ModelEntry is ~272 bytes after the
 // schema additions; the next-largest variant is 24 bytes. Boxing
@@ -212,7 +201,7 @@ pub fn intro(hardware: &HardwareSnapshot) {
 }
 
 /// Render the cliclack outro panel with the summary's headline plus
-/// the "what landed" lines from the existing `print_handoff` body.
+/// the "what landed" lines.
 ///
 /// The multi-line "what landed" block goes through `cliclack::note`
 /// so every line picks up the bordered-panel chrome (otherwise only
@@ -351,7 +340,6 @@ fn format_gpu_segment(hw: &HardwareSnapshot) -> String {
       format!("{name_segment}{mem}")
     }
     GpuInfo::Multi { devices } => {
-      // Show per-backend breakdown
       let mut nvidia = vec![];
       let mut amd = vec![];
       let mut unknown = vec![];
@@ -569,7 +557,7 @@ async fn prompt_custom_path() -> Result<InstallChoice, CliExit> {
 
 /// Picker outcome that distinguishes "I have a resolved `InstallChoice`"
 /// from "user picked the Custom path… sentinel and we need to prompt
-/// for a path next." Kept private — callers see only `InstallChoice`.
+/// for a path next."
 #[derive(Debug, Clone)]
 enum InstallPick {
   Resolved(InstallChoice),
@@ -612,8 +600,8 @@ pub async fn pick_model(
   }
   // Filter OnDisk entries out of the interactive list — they
   // represent "you already have this" rather than a download action.
-  // Selecting one used to silently map to `Skip` (a confusing UX);
-  // the recommender's analysis output still shows them, but the
+  // Selecting one would silently map to `Skip` (a confusing UX); the
+  // recommender's analysis output still shows them, but the
   // wizard prompt only offers actionable choices.
   let owned_recs: Vec<Recommendation> = recs
     .iter()
@@ -706,8 +694,8 @@ async fn show_model_menu(
   })
 }
 
-/// The existing "paste an owner/repo slug" prompt. Shared by the
-/// `Escape` menu item.
+/// The "paste an owner/repo slug" prompt. Shared by the `Escape`
+/// menu item.
 async fn prompt_paste_repo() -> Result<String, CliExit> {
   tokio::task::spawn_blocking(|| {
     cliclack::input("Paste an HF repo id")
@@ -720,8 +708,7 @@ async fn prompt_paste_repo() -> Result<String, CliExit> {
   .map_err(|e| CliExit::new(INIT_ABORTED, format!("init: paste prompt: {e}")))
 }
 
-/// `owner/repo` slug validator, shared by the paste prompt and the
-/// search query (which forbids the slash a query wouldn't carry).
+/// `owner/repo` slug validator for the paste prompt.
 fn validate_repo_slug(s: &str) -> Result<(), &'static str> {
   if !s.contains('/') {
     return Err("expected `owner/repo`");
@@ -802,9 +789,6 @@ async fn prompt_search_query(initial: Option<&str>) -> Result<String, CliExit> {
   .map_err(|e| CliExit::new(INIT_ABORTED, format!("init: search prompt: {e}")))
 }
 
-/// Render the search results as a cliclack list (plus "search again" /
-/// "back"). Each row's label is the repo id; the hint carries the
-/// reused params / size / downloads summary.
 async fn pick_search_result(
   query: &str,
   results: Vec<HfSearchResult>,
@@ -845,8 +829,7 @@ async fn pick_search_result(
 }
 
 /// One-line metadata hint for a search result row: params, approximate
-/// download size, downloads. Reuses [`format_param_count`]; sizes/counts
-/// are local display helpers.
+/// download size, downloads.
 fn search_result_hint(r: &HfSearchResult) -> String {
   let mut parts: Vec<String> = Vec::new();
   if let Some(p) = r.param_count() {
@@ -861,7 +844,6 @@ fn search_result_hint(r: &HfSearchResult) -> String {
   parts.join(" · ")
 }
 
-/// K/M/B short count for popularity totals.
 fn short_count(n: u64) -> String {
   match n {
     0..=999 => n.to_string(),
@@ -922,8 +904,8 @@ pub async fn confirm_config_write(args: &InitArgs, diff_render: &str) -> Result<
 /// Resolve whether `init` should hand off into the interactive TUI
 /// when the wizard completes successfully. Short-circuits keep
 /// non-interactive callers (agents piping `--json`, headless CI,
-/// users who passed `--no-tui`) on the legacy "print outro and exit"
-/// path; `--recommended` auto-launches without prompting; everything
+/// users who passed `--no-tui`) on the "print outro and exit" path;
+/// `--recommended` auto-launches without prompting; everything
 /// else gets a single Y/n cliclack confirm with default Y.
 pub async fn confirm_tui_handoff(args: &InitArgs) -> Result<bool, CliExit> {
   if args.no_tui || args.json {
@@ -1014,19 +996,15 @@ fn brew_offer_available() -> bool {
 }
 
 /// Build the cliclack-select items list for the install prompt and
-/// pick which index should be the initial cursor position. Returns
-/// `(initial_index, items)` where each item is
-/// `(pick, label, hint)`. The cliclack `Select` is keyed by `usize`
-/// index because `InstallPick` does not implement `Eq`. The trailing
+/// pick which index should be the initial cursor position. The
+/// cliclack `Select` is keyed by `usize` index because `InstallPick`
+/// does not implement `Eq`. The trailing
 /// "Custom path…" sentinel lets users adopt a self-built or otherwise-
 /// installed `llama-server` interactively (mirrors the `--install
 /// custom:PATH` CLI override).
 ///
-/// `brew_available` gates the Homebrew item: Homebrew is a macOS/Linux
-/// package manager, so we never list it on Windows, and even on
-/// macOS/Linux we only offer it when `brew` is actually on PATH —
-/// listing an install method the host can't run would just dead-end the
-/// wizard. Compute it via [`brew_offer_available`] at the call site.
+/// `brew_available` gates the Homebrew item. Compute it via
+/// [`brew_offer_available`] at the call site.
 fn build_install_items(
   default: &InstallChoice,
   existing: &BinaryPresence,
@@ -1217,7 +1195,7 @@ mod tests {
       line.contains("NVIDIA GeForce RTX 4090"),
       "expected NVIDIA + device name, got {line:?}"
     );
-    // Verdict vocabulary now matches `status` / `doctor`: a discrete
+    // Verdict vocabulary matches `status` / `doctor`: a discrete
     // card reads `(discrete)`, not the bare `VRAM` word.
     assert!(
       line.contains("24.0 GiB (discrete)"),
@@ -1547,11 +1525,10 @@ mod tests {
   #[tokio::test]
   async fn confirm_config_write_non_tty_without_consent_errors() {
     // With neither `--recommended` nor `--config-step` set, the wizard
-    // must refuse rather than silently auto-write (closes the
-    // regression that ADV-1 caught). Force non-TTY explicitly — an
-    // interactive `cargo test` leaves the binary's stdout attached to
-    // the user's terminal, so the natural fd check would fall through
-    // into a blocking cliclack prompt.
+    // must refuse rather than silently auto-write. Force non-TTY
+    // explicitly — an interactive `cargo test` leaves the binary's
+    // stdout attached to the user's terminal, so the natural fd check
+    // would fall through into a blocking cliclack prompt.
     std::env::set_var("LLAMASTASH_ASSUME_NON_TTY", "1");
     let args = empty_args();
     let result = confirm_config_write(&args, "").await;
@@ -1570,7 +1547,7 @@ mod tests {
 
   #[tokio::test]
   async fn pick_install_method_install_override_beats_recommended() {
-    // W3 contract: an explicit `--install` overrides recommended-mode
+    // An explicit `--install` overrides recommended-mode
     // adoption. The picker's arm-1 (override) fires before the arm-2
     // (recommended → default) check.
     let mut args = empty_args();
@@ -1694,7 +1671,7 @@ mod tests {
   #[tokio::test]
   async fn pick_install_method_non_tty_falls_back_silently() {
     // With neither override nor recommended set, the picker silently
-    // returns the default — the consolidated warning (#30) lives in
+    // returns the default — the consolidated warning lives in
     // wizard::run, not here. Force non-TTY explicitly so the test
     // still exercises the fallback when run interactively (cargo's
     // libtest captures at the print layer, not fd 1).

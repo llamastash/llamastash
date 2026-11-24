@@ -112,19 +112,14 @@ mod tests {
 
   #[test]
   fn resolved_ctx_reads_n_ctx_verbatim_ignoring_slots() {
-    // `default_generation_settings.n_ctx` is the per-request window; we
-    // report it as-is and never multiply by `total_slots`.
-    //
     // Non-unified (explicit `--parallel 4`, `-c 8192`): n_ctx is the
-    // per-slot 2048 — what one request gets — so we report 2048, not
-    // the 8192 aggregate.
+    // per-slot 2048 — what one request gets.
     let non_unified = b"HTTP/1.1 200 OK\r\n\r\n\
       {\"default_generation_settings\":{\"n_ctx\":2048},\"total_slots\":4}";
     assert_eq!(parse_actuals(non_unified).resolved_ctx, Some(2048));
     // Unified (auto `--parallel` → kv_unified, the default): `/props`
     // reports the full shared window. Verified live against `-c 8192`
-    // auto: n_ctx=8192, total_slots=4. The old `x slots` logic wrongly
-    // produced 32768 (and 524288 for the 80B); we now report 8192.
+    // auto: n_ctx=8192, total_slots=4.
     let unified = b"HTTP/1.1 200 OK\r\n\r\n\
       {\"default_generation_settings\":{\"n_ctx\":8192},\"total_slots\":4}";
     assert_eq!(parse_actuals(unified).resolved_ctx, Some(8192));

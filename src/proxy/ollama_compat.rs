@@ -1,16 +1,13 @@
 //! Ollama-compatible response shapes for the proxy's `/api/*`
-//! discovery endpoints.
-//!
-//! Tier 1 of the Ollama drop-in compatibility plan: read-only
-//! endpoints that let Ollama-shape discovery libraries
-//! (`ollama-python`, IDE plugins probing `GET /api/tags`, `OLLAMA_HOST`
-//! environment detection) recognise llamastash as an Ollama-compatible
-//! endpoint and fall through to the existing OpenAI-compat surface for
-//! inference. The Tier 2 inference surface (`/api/chat`,
-//! `/api/generate`, `/api/embed`) is tracked under TODO §Low priority as a
-//! separate brainstorm — those need request/response body translation
-//! and NDJSON-vs-SSE streaming-format handling, which doesn't fit the
-//! proxy's current byte-pure forward path.
+//! discovery endpoints. Read-only endpoints that let Ollama-shape
+//! discovery libraries (`ollama-python`, IDE plugins probing `GET /api/tags`,
+//! `OLLAMA_HOST` environment detection) recognise llamastash as an
+//! Ollama-compatible endpoint and fall through to the existing
+//! OpenAI-compat surface for inference. The Ollama inference surface
+//! (`/api/chat`, `/api/generate`, `/api/embed`) is not implemented: those
+//! need request/response body translation and NDJSON-vs-SSE
+//! streaming-format handling, which doesn't fit the proxy's byte-pure
+//! forward path (TODO §Low priority).
 //!
 //! Wire-shape references:
 //! - <https://github.com/ollama/ollama/blob/main/docs/api.md> §"List Local Models", §"List Running Models", §"Show Model Information", §"Version"
@@ -178,7 +175,7 @@ pub struct PsModel {
   pub digest: String,
   pub details: ModelDetails,
   /// Keep-alive deadline. Far-future placeholder
-  /// ([`FAR_FUTURE_EXPIRY`]) until idle-TTL eviction lands.
+  /// ([`FAR_FUTURE_EXPIRY`]): no per-launch deadline is exposed.
   pub expires_at: String,
   /// Per-PID VRAM footprint. `0` until the VRAM attribution TODO
   ///  lands.
@@ -219,7 +216,7 @@ pub struct ShowResponse {
   /// Modelfile body. Empty — llamastash has no Modelfile concept.
   pub modelfile: String,
   /// Stringified parameters block. Empty — last-params persistence
-  /// lives on the IPC side; Tier 1 doesn't surface it.
+  /// lives on the IPC side.
   pub parameters: String,
   /// Chat template (`tokenizer.chat_template` from the GGUF header).
   /// Empty string when absent.

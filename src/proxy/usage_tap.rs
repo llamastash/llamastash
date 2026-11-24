@@ -392,8 +392,8 @@ mod tests {
     tap.usage()
   }
 
-  // The bodies below are responses captured from llama-server b11390
-  // (2026-10-05), with the model path shortened.
+  // The bodies below are responses captured from llama-server b11390,
+  // with the model path shortened.
 
   #[test]
   fn chat_non_streamed() {
@@ -440,7 +440,7 @@ mod tests {
   #[test]
   fn a_speed_past_the_ceiling_is_no_speed() {
     // Reported, not estimated: a body can send anything under
-    // `predicted_per_second`, and one past the ceiling is not a speed.
+    // `predicted_per_second`.
     let body = r#"{"usage":{"prompt_tokens":41,"completion_tokens":3},"timings":{"cache_n":0,"prompt_n":41,"prompt_ms":0.00004,"predicted_n":3,"predicted_per_second":5e6}}"#;
     let usage = usage_of(body);
     assert_eq!(usage.tokens_per_second, None);
@@ -763,7 +763,7 @@ mod tests {
   }
 
   // The next two bodies are from a second engine (its own `timings`
-  // object, llama-server's field names), captured 2026-10-06 and cut down.
+  // object, llama-server's field names), cut down.
 
   #[test]
   fn timings_win_over_an_input_tokens_that_already_counts_the_cache() {
@@ -821,8 +821,8 @@ data: [DONE]
 
   #[test]
   fn speed_reported_under_usage_is_read_from_both_spellings() {
-    // A body captured from FastFlowLM on an AMD NPU: no `timings`, no
-    // `metrics`, and its own names for both speeds.
+    // A body captured from FastFlowLM on an AMD NPU: no `timings` and its
+    // own names for both speeds.
     let body = r#"{"model":"qwen3:0.6b","usage":{"prompt_tokens":14,
       "prompt_tokens_details":{"cached_tokens":0},"completion_tokens":12,
       "prefill_speed_tps":27.665165623284167,"decoding_speed_tps":97.59191938907458}}"#;

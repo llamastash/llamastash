@@ -1,18 +1,8 @@
 //! `llamastash start <model-ref>` — launch a model.
 //!
-//! Resolution order (per the plan):
-//! 1. resolve `<model-ref>` against the catalog (substring / path / id),
-//! 2. layer the named preset's params (if `--preset NAME`) onto the
-//!    daemon's last_params for this model,
-//! 3. apply per-invocation overrides (`--ctx`, `--port`, `--reasoning`,
-//!    `--mode`, and the trailing `-- <extra>` args),
-//! 4. send `start_model` to the daemon and report the result.
-//!
-//! Mode resolution is strict: when the catalog reports `mode_hint =
-//! unknown` and the user didn't pass `--mode`, we error out rather
-//! than silently default to chat. The plan's `cli_args::StartArgs`
-//! comment is the authority. A mode the hint merely implies is validated
-//! here but not *sent* — see `resolve_mode`.
+//! Preset flattening and mode resolution happen client-side, then one
+//! `start_model` call. Preset layering: docs/architecture.md § Named presets
+//! (config.yaml).
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -139,9 +129,7 @@ pub async fn handle(args: StartArgs, cli: &Cli, config: &Config) -> CliResult {
 
 /// `--wait`: poll `status` until the just-started launch reaches a
 /// terminal-ish state (Ready / Error / Stopped) or the budget runs out,
-/// then report the resolved context window. The daemon's own probe budget
-/// (size-scaled) guarantees a stuck load eventually flips to Error, so the
-/// 15-minute ceiling here is only a safety net for pathological cases.
+/// then report the resolved context window.
 async fn wait_and_emit(
   client: &mut Client,
   preset: Option<&str>,
@@ -191,8 +179,6 @@ async fn wait_and_emit(
     copy_warnings(resp, &mut body);
     println!("{}", crate::cli::output::pretty_json(&body));
   } else if !quiet {
-    // Headline first (reuses the standard "started ..." prose), then the
-    // readiness follow-up.
     emit_response(preset, row, resp, false, false);
     print_wait_followup(settled.as_ref());
   }
@@ -391,7 +377,7 @@ pub(crate) async fn start_payload(
   }
 
   // Warning surfaces (kept best-effort; never block the launch):
-  // ctx > native max should advise rather than refuse, per R12.
+  // ctx > native max should advise rather than refuse.
   // Gated on `!json` so the warning text doesn't mix into the
   // structured stderr stream agents read when capturing both streams.
   if !json {
@@ -440,8 +426,7 @@ pub(crate) async fn start_payload(
 }
 
 /// One-line readiness summary appended under the `start` headline when
-/// `--wait` settles. Covers Ready (with resolved ctx + clamp note),
-/// Error (with cause), and the timeout fallthrough.
+/// `--wait` settles.
 fn print_wait_followup(settled: Option<&crate::cli::resolve::RunningRow>) {
   use crate::cli::colors;
   let arrow = colors::dim("→");
@@ -532,9 +517,7 @@ fn direct_path_candidate(model: &str, args: &StartArgs) -> Result<Option<PathBuf
   }
   // A weight file, or a directory some backend claims as a model of its own.
   // The `is_file` assumption predates directory-shaped models: the daemon
-  // accepts them over IPC (that is what `synthetic_identity` is for), so
-  // refusing here left such a model with no launch route at all, reported as
-  // "no model matches" rather than "directories are unsupported".
+  // accepts them over IPC (that is what `synthetic_identity` is for).
   if !path.is_file() && crate::backend::synthetic_identity_for_path(&path).is_none() {
     return Ok(None);
   }
@@ -685,9 +668,8 @@ fn partial_params_from_launch(p: &crate::launch::params::LaunchParams) -> Partia
 
 /// Map one `presets_show` preset object onto the launch params `start` sends.
 ///
-/// Split out of the wire call so it is testable without a daemon: this is
-/// where a preset stops being config and becomes a launch, and every field it
-/// forgets is a preset that silently reproduces a different run.
+/// This is where a preset stops being config and becomes a launch, and every
+/// field it forgets is a preset that silently reproduces a different run.
 fn partial_params_from_preset(preset: &Value) -> PartialParams {
   let p = preset.get("params").cloned().unwrap_or(Value::Null);
   let knobs: KnobSet = p
@@ -840,7 +822,7 @@ pub(crate) fn map_start_error(e: crate::ipc::ClientError, row: &CatalogRow) -> C
       // Daemon distinguishes "binary missing" via the launch
       // environment guard; surface that as BINARY_NOT_FOUND so
       // scripts can react. The binary name is the default backend's *primary*
-      // process marker (`llama-server`) so this site names no backend; guard
+      // process marker so this site names no backend; guard
       // the empty-marker case so `contains("")` never matches everything. Only
       // the primary is matched — an alternate marker short enough to be a
       // substring of an unrelated message would misclassify the error.
@@ -944,8 +926,7 @@ fn emit_response(preset: Option<&str>, row: &CatalogRow, resp: &Value, json: boo
   let preset_label = preset
     .map(|p| format!(" (preset: {p})"))
     .unwrap_or_default();
-  // The headline ("started <name> ...") keeps the standard green
-  // success style. Trailing tokens (launch_id / port / pid) pick up
+  // Trailing tokens (launch_id / port / pid) pick up
   // semantic value colors so the actionable IDs stand out against the
   // green prose.
   use crate::cli::colors;

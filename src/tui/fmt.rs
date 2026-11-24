@@ -1,11 +1,4 @@
 //! Shared display helpers for the TUI panes.
-//!
-//! Centralizing these formatters avoids the silent drift that crept in
-//! when three panes each defined their own `format_bytes` with subtly
-//! different thresholds.
-
-// `panel_title` moved to `Palette::title_style()` / `Palette::panel_block`
-// during the Tier-B sweep — see `src/theme/palette.rs`.
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -14,11 +7,8 @@ use unicode_width::UnicodeWidthStr;
 use crate::theme::Palette;
 use crate::tui::launch_picker::INHERITED_LABEL;
 
-/// Single caret span (`▏` painted in `palette.accent` + REVERSED).
 /// Used by every single-line text input so the cursor reads
-/// identically across the TUI (replaces three
-/// open-coded `Span::styled("▏", …)` sites in `advanced_panel`,
-/// `list_pane`'s filter chip, and `tabs/input_pane`).
+/// identically across the TUI.
 pub(crate) fn caret(palette: &Palette) -> Span<'static> {
   Span::styled(
     crate::tui::glyphs::active().caret(),
@@ -223,12 +213,9 @@ pub(crate) fn take_tail_by_width(s: &str, budget: usize) -> String {
 /// in the first column, floored so short-label views keep the historical
 /// alignment, plus one column of gap between label and value.
 ///
-/// This used to be one build-wide constant derived from the labels statically
-/// registered backends (after two hand-set copies of it drifted — the
-/// `Trust remote codeinherited` collision). A build-wide value was still blind
-/// to knobs declared in a generic entry's `config.yaml`, so
-/// `halogen-cache-entries` rendered flush against its value; the column has
-/// to be sized from the rows actually being drawn.
+/// A build-wide constant is blind to knobs declared in a generic entry's
+/// `config.yaml`, so the column has to be sized from the rows actually
+/// being drawn.
 pub(crate) fn kv_label_width<'a>(labels: impl IntoIterator<Item = &'a str>) -> usize {
   labels
     .into_iter()
@@ -416,7 +403,6 @@ pub(crate) fn clip_line(line: Line<'static>, max_width: usize, palette: &Palette
 
 #[cfg(test)]
 mod tests {
-
   /// The label column is sized per view from the keys it renders, so even a
   /// config-declared generic knob gets its gap. Hand-sized columns broke this
   /// twice (`Trust remote codeinherited`, `KV cache dtype sizeinherited`),
@@ -528,9 +514,6 @@ mod tests {
 
   #[test]
   fn format_bytes_pair_shares_unit_suffix() {
-    // Regression: RAM / VRAM rows used to render `66G/121G` and
-    // `2.5G/4.0G` — unit repeated on both sides. Both values now share
-    // one trailing suffix taken from `total`.
     const GIB: u64 = 1024 * 1024 * 1024;
     assert_eq!(format_bytes_pair(66 * GIB, 121 * GIB), "66/121G");
     assert_eq!(
@@ -543,7 +526,7 @@ mod tests {
   #[test]
   fn format_bytes_pair_scales_used_to_total_unit() {
     // `500M/2.0G` would mix units; pair scales `used` down into the
-    // larger unit (`0.2/2.0G`) so the suffix stays consistent.
+    // larger unit (`0.5/2.0G`) so the suffix stays consistent.
     const MIB: u64 = 1024 * 1024;
     const GIB: u64 = 1024 * MIB;
     assert_eq!(format_bytes_pair(500 * MIB, 2 * GIB), "0.5/2.0G");

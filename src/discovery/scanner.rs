@@ -1,6 +1,6 @@
 //! Walk one or more scan roots, group split-GGUF shards, parse each
 //! launchable file's header on a bounded pool, and stream results to
-//! the caller over an `mpsc` channel (origin: R1, R5, R9).
+//! the caller over an `mpsc` channel.
 //!
 //! The walk uses the `ignore` crate so `.gitignore` rules and the
 //! caller's exclude globs are honoured for free. CPU-bound parsing
@@ -27,8 +27,8 @@ pub struct ScanRoot {
   pub source: ModelSource,
 }
 
-/// Options for [`scan`]. `excludes` are appended to the gitignore-
-/// derived ignores; absolute or relative-to-root globs both work.
+/// `excludes` are appended to the gitignore-derived ignores; absolute
+/// or relative-to-root globs both work.
 #[derive(Debug, Clone, Default)]
 pub struct ScanOptions {
   pub excludes: Vec<String>,
@@ -57,8 +57,7 @@ impl ScanOptions {
 /// Errors per-file (unreadable directories, parse failures) are
 /// surfaced via `DiscoveredModel.parse_error` rather than aborting the
 /// whole scan — a single bad model file should not blind the user to
-/// the rest of their library (origin: R9 "scan continues with other
-/// roots").
+/// the rest of their library.
 pub fn scan(roots: Vec<ScanRoot>, opts: ScanOptions) -> mpsc::Receiver<DiscoveredModel> {
   let (tx, rx) = mpsc::channel(opts.channel_capacity());
   let excludes = Arc::new(opts.excludes);
@@ -116,12 +115,10 @@ async fn walk_root(
 /// Is this `.gguf` file a multimodal projector companion (e.g.,
 /// `mmproj-model-f16.gguf`)? Projector files are not independently
 /// launchable — they are tensors that pair with a parent chat model
-/// for vision/audio input. The user policy is to hide them from the
-/// Models list unless they could be launched on their own, which they
-/// cannot. The filename prefix is the upstream convention (used by
-/// `llama.cpp`'s `convert_hf_to_gguf.py` and every published
-/// HuggingFace repo that ships a projector). Filtering on the name
-/// avoids paying the cost of a header re-read.
+/// for vision/audio input, so they stay hidden from the Models list.
+/// The filename prefix is the convention the engine's converter and
+/// published HuggingFace repos follow. Filtering on the name avoids
+/// paying the cost of a header re-read.
 pub(crate) fn is_projector_companion(path: &Path) -> bool {
   path
     .file_name()
@@ -236,7 +233,6 @@ pub(crate) fn is_mtp_head_header(header: &crate::gguf::header::GgufHeader) -> bo
 /// what remains is the arch of the model the head drafts for.
 const MTP_ARCH_SUFFIX: &str = "_mtp_support";
 
-/// Tensor namespace a draft head's weights live under.
 const MTP_TENSOR_PREFIX: &str = "mtp.";
 
 /// Is this `.gguf` an MTP draft head, by name where the name is conclusive and
@@ -881,10 +877,8 @@ fn warn_missing_root_once(root: &Path) {
   }
 }
 
-/// Synchronous file-system walk. Returns every `.gguf` file under
-/// `root` honouring gitignore semantics and the caller's exclude
-/// globs. Unreadable subdirectories are logged and skipped rather
-/// than aborting the walk.
+/// Unreadable subdirectories are logged and skipped rather than
+/// aborting the walk.
 fn collect_gguf_paths(root: &Path, excludes: &[String]) -> Vec<PathBuf> {
   if !root.exists() {
     warn_missing_root_once(root);
@@ -1721,19 +1715,15 @@ mod tests {
   fn symlinked_gguf_is_canonicalised_and_deduped() {
     let dir = temp_dir("symlinks");
     fs::write(dir.join("real.gguf"), build_minimal_gguf("llama")).unwrap();
-    // Alias the real file with a sibling symlink under the same root.
     let alias = dir.join("alias.gguf");
     std::os::unix::fs::symlink(dir.join("real.gguf"), &alias).unwrap();
 
     let paths = collect_gguf_paths(&dir, &[]);
-    // One canonical row, not two — the symlink collapses onto the
-    // real file via `canonicalize` + dedup.
     assert_eq!(
       paths.len(),
       1,
       "real + symlink should collapse to one canonical row, got {paths:?}"
     );
-    // The emitted path is the canonical (target) path, not the alias.
     let canon_real = fs::canonicalize(dir.join("real.gguf")).unwrap();
     assert_eq!(paths[0], canon_real);
     fs::remove_dir_all(&dir).ok();
@@ -2066,11 +2056,9 @@ mod tests {
       while rx.recv().await.is_some() {}
     }
 
-    // First scan: cache empty → one miss → one entry inserted.
     drain(scan(roots.clone(), opts.clone())).await;
     assert_eq!(cache.len().await, 1, "first scan populates cache");
 
-    // Second scan: cache hit → still one entry, parse skipped.
     drain(scan(roots.clone(), opts.clone())).await;
     assert_eq!(cache.len().await, 1, "second scan does not duplicate");
     fs::remove_dir_all(&dir).ok();
@@ -2083,7 +2071,6 @@ mod tests {
 
     let dir = temp_dir("cache-invalid");
     let path = dir.join("a.gguf");
-    // First write: minimal arch=llama header.
     fs::write(&path, build_minimal_gguf("llama")).unwrap();
     let cache = MetadataCache::new(8);
     let opts = ScanOptions {
@@ -2095,7 +2082,6 @@ mod tests {
       source: ModelSource::UserPath,
     }];
 
-    // Prime the cache.
     let mut first_rx = scan(roots.clone(), opts.clone());
     let first = first_rx.recv().await.expect("one model");
     while first_rx.recv().await.is_some() {}
@@ -2188,14 +2174,12 @@ mod tests {
   #[test]
   fn find_mmproj_handles_quants() {
     let dir = temp_dir("mmproj-quants");
-    // Model with quant
     fs::write(
       dir.join("Qwen2-7B-Q4_K_M.gguf"),
       build_minimal_gguf("llama"),
     )
     .unwrap();
 
-    // Matching projector with quant
     fs::write(
       dir.join("mmproj-Qwen2-7B-Q4_K_M.gguf"),
       build_minimal_gguf("llama"),
@@ -2208,7 +2192,6 @@ mod tests {
       Some("mmproj-Qwen2-7B-Q4_K_M.gguf")
     );
 
-    // Projector with different separator and quant
     fs::remove_file(dir.join("mmproj-Qwen2-7B-Q4_K_M.gguf")).unwrap();
     fs::write(
       dir.join("Qwen2-7B.mmproj.gguf"),
@@ -2429,8 +2412,6 @@ mod tests {
     fs::remove_dir_all(&dir).ok();
   }
 
-  /// Write a projector GGUF beside a model, optionally advertising the
-  /// vision / audio clip encoders.
   fn write_projector(path: &Path, vision: bool, audio: bool) {
     use crate::gguf::header::GgufValue;
     let mut b = crate::gguf::test_fixtures::FixtureBuilder::new();

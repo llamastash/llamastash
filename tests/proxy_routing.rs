@@ -1,4 +1,4 @@
-//! Integration tests for Unit 3 (name resolution + HTTP forwarding).
+//! Integration tests for proxy name resolution + HTTP forwarding.
 //!
 //! The fixture pattern:
 //!   1. Spawn `fake_llama_server` (the `test-fixtures` binary) via
@@ -6,14 +6,12 @@
 //!      fake answers 200, and we wait until `ManagedState::Ready`.
 //!   2. Register the resulting `ManagedModel` in a fresh
 //!      `SupervisorRegistry`. The catalog gets a matching
-//!      `DiscoveredModel` so `resolve_model` can find the row.
+//!      `DiscoveredModel` so `route::decide` can find the row.
 //!   3. Build a `ProxyState` pointing at that catalog + registry
 //!      and spawn the proxy listener on an ephemeral port.
 //!   4. Drive the proxy with a hand-rolled HTTP client (avoiding a
 //!      reqwest dep in the test crate) so we can assert byte
 //!      exactness of the forwarded body.
-//!
-//! Plan: docs/plans/2026-05-21-001-feat-proxy-router-plan.md (Unit 3).
 
 #![cfg(feature = "test-fixtures")]
 
@@ -143,9 +141,6 @@ async fn spawn_fake_supervisor(
   (model, port, id)
 }
 
-/// Build a ProxyState whose catalog has the supplied discovered
-/// models and whose supervisor registry is the provided one (default
-/// body cap).
 async fn proxy_state_with(
   models: Vec<DiscoveredModel>,
   supervisors: SupervisorRegistry,
@@ -217,7 +212,6 @@ async fn proxy_state_with_aliases_and_ctx(
 
 // --- happy paths --------------------------------------------------------
 
-/// A bare `GET` against the test proxy, `(status, headers, body)`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn chat_completion_streams_back_byte_identical() {
   let dir = unique_temp("chat");
@@ -228,7 +222,7 @@ async fn chat_completion_streams_back_byte_identical() {
   registry.insert(launch_id, model.clone()).await;
 
   // Catalog row whose path matches the supervisor's ModelId path
-  // (the proxy uses path equality to map `resolve_model`'s row to
+  // (the proxy uses path equality to map `route::decide`'s row to
   // the running supervisor).
   let state = proxy_state_with(
     vec![discovered(catalog_path, Some("qwen3"), "qwen3")],
@@ -255,10 +249,9 @@ async fn chat_completion_streams_back_byte_identical() {
     );
   }
 
-  // The body contains the echoed model name verbatim. We don't
-  // assert byte-exact equality against a direct curl here (would
-  // require routing reqwest into the test crate); instead we check
-  // the SSE frames contain the expected echo. Byte-exactness is
+  // We don't assert byte-exact equality against a direct curl here
+  // (would require routing reqwest into the test crate); instead we
+  // check the SSE frames contain the expected echo. Byte-exactness is
   // guaranteed by `forward.rs` piping `bytes_stream()` straight
   // through; the echo assertion confirms no rewrite happened.
   let text = String::from_utf8(response_body).expect("utf8 response body");
@@ -270,7 +263,7 @@ async fn chat_completion_streams_back_byte_identical() {
     text.contains("\"delta\":{\"content\":\"hi\"}"),
     "expected message frame in: {text}"
   );
-  // R-15: the fake fixture emits two SSE data frames (the message
+  // The fake fixture emits two SSE data frames (the message
   // and the finish_reason:stop terminator). Count them so a future
   // regression that silently drops the second frame surfaces here.
   let data_frames = text.matches("\ndata:").count() + usize::from(text.starts_with("data:"));
@@ -521,7 +514,7 @@ async fn unknown_model_name_returns_404_model_not_found() {
   shutdown_listener(shutdown, listener_handle).await;
 }
 
-// D2 fail-safe: a model file whose name contains `@` (e.g. `foo@bar.gguf`)
+// A model file whose name contains `@` (e.g. `foo@bar.gguf`)
 // must resolve as a plain model reference, not be split into `foo` + `bar.gguf`.
 // The whole reference is tried first; only when it does not resolve do we
 // fall back to the `model@name` split.
@@ -534,13 +527,10 @@ async fn model_file_with_at_in_name_resolves_as_plain_reference() {
   let launch_id = registry.next_id();
   registry.insert(launch_id, model.clone()).await;
 
-  // A local GGUF carries no display label, so its reference *is* the filename
-  // — the case D2's fail-safe exists for.
+  // A local GGUF carries no display label, so its reference *is* the filename.
   let state = proxy_state_with(vec![discovered(catalog_path, None, "qwen3")], registry).await;
   let (addr, shutdown, listener_handle) = spawn_listener(state).await;
 
-  // Request the full filename (with `@` in it). The D2 fail-safe must treat
-  // the whole string as a model reference, not split it on `@`.
   let body = r#"{"model":"foo@bar.gguf","messages":[]}"#;
   let (status, _headers, response) = http_post(addr, "/v1/chat/completions", body, &[]).await;
   assert_eq!(
@@ -913,7 +903,7 @@ async fn empty_model_string_returns_400_model_required() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn catalog_match_without_running_supervisor_returns_launch_failed() {
   // Catalog row exists but no supervisor is Ready *and* the path
-  // points at a non-existent file → Unit 4's auto-start fails at
+  // points at a non-existent file → auto-start fails at
   // the GGUF header read; no Ready fallback exists either → 503
   // `launch_failed` with `running: []`.
   let registry = SupervisorRegistry::new();
@@ -1001,7 +991,7 @@ async fn zero_cap_disables_the_body_check() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn body_between_old_and_new_default_passes_cap() {
-  // 3 MiB: the pre-#65 hard cap was 2 MiB (413), the new default is
+  // 3 MiB: the old hard cap was 2 MiB (413), the current default is
   // 16 MiB. No model is running, so the routing answer is 503
   // launch_failed — proof the body survived the cap and reached
   // routing, not the 413 path.
@@ -1086,7 +1076,6 @@ async fn hop_by_hop_headers_dont_break_forwarding() {
     !lowered.contains(&"transfer-encoding"),
     "hop-by-hop `transfer-encoding` must be stripped from response; got: {lowered:?}"
   );
-  // Body forwarded correctly (the echo lands here).
   let text = String::from_utf8(response_body).expect("utf8");
   assert!(text.contains("\"model\":\"hop\""), "body forwarded: {text}");
 
@@ -1095,7 +1084,7 @@ async fn hop_by_hop_headers_dont_break_forwarding() {
   std::fs::remove_dir_all(&dir).ok();
 }
 
-// --- upstream 500 pass-through ------------------------------------------
+// --- upstream error pass-through ----------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn upstream_400_passes_through_as_400() {
@@ -1132,7 +1121,7 @@ async fn upstream_400_passes_through_as_400() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn upstream_unreachable_after_stop_returns_structured_error() {
-  // R-14: lock the error envelope shape when the supervisor we
+  // Lock the error envelope shape when the supervisor we
   // picked dies before forwarding completes. Two valid responses:
   //   - 502 upstream_unreachable (if the proxy still has a stale
   //     Ready snapshot and reqwest fails to connect), OR
@@ -1175,7 +1164,7 @@ async fn upstream_unreachable_after_stop_returns_structured_error() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn partial_request_closes_within_header_read_timeout() {
-  // R-03 regression test: assert the inbound `header_read_timeout`
+  // Regression test: assert the inbound `header_read_timeout`
   // wired into hyper::server::conn::http1::Builder actually fires.
   // A client that opens a TCP socket, writes a partial request
   // line, then idles must have its connection closed by the proxy
@@ -1324,8 +1313,7 @@ async fn a_served_request_is_logged_and_reaches_requests_tail_and_status() {
   let stats = &status_body["models"][0]["request_stats"];
   assert_eq!(stats["requests"], 1, "{status_body}");
   assert!(stats["avg_duration_ms"].is_number());
-  // The prefill and cache figures `usage.md` lists for this object. The fake
-  // stream carried no usage and no timings, so they read as nothing reported.
+  // The fake stream carried no usage and no timings, so they read as nothing reported.
   assert!(stats["prefill_tokens_per_second"].is_null());
   assert_eq!(stats["cached_tokens"], 0);
   assert!(stats["cache_hit_ratio"].is_null());

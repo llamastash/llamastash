@@ -1,10 +1,6 @@
-//! The tests that keep knob parity from rotting.
-//!
-//! The 2026-08-25 audit that prompted the unified registry found a clean split:
-//! every setting on the generated path reached all three surfaces, and every
-//! setting off it was missing from at least one. Generation is what buys the
-//! guarantee, so these tests assert the generation still happens rather than
-//! re-listing the knobs (a list would be the fourth place to forget one).
+//! Knob parity tests. Generation is what buys the guarantee, so these tests
+//! assert the generation still happens rather than re-listing the knobs
+//! (a list would be the fourth place to forget one).
 //!
 //! Five checks, one per way parity can break:
 //!
@@ -228,16 +224,16 @@ fn two_device_server(backend_id: &str) -> Vec<llamastash::backend::Server> {
 ///
 /// These are not knobs — they say *what runs*, not how it is tuned — so they
 /// cannot be generated from the registry and are the one place a surface can
-/// still be forgotten. The uneven row is deliberate: `port` is CLI-only (D7),
-/// recorded here so dropping a surface is still a failure while the one
-/// exemption stays a decision rather than an oversight.
+/// still be forgotten. The uneven row is deliberate: `port` is CLI-only, the
+/// daemon reserves it, and a pinned port in a preset collides with a second
+/// instance instead of reproducing anything. It is recorded here so dropping
+/// a surface is still a failure while the one exemption stays a decision
+/// rather than an oversight.
 ///
 /// Reaching a surface is necessary and not sufficient: `backend` and `server`
 /// passed this check while `start --preset` still dropped them on the way to
 /// the daemon, because storing a field and *launching on it* are two things.
 /// The launch half is pinned next to the code that does it, by
-/// `launch_params_row_carries_a_pinned_backend_and_omits_an_auto_one`
-/// (`src/ipc/methods.rs`) and
 /// `a_presets_pinned_backend_and_server_survive_the_rebuild`
 /// (`src/cli/start.rs`).
 #[test]
@@ -319,7 +315,7 @@ fn every_identity_field_reaches_its_declared_surfaces() {
     "extras" => picker
       .ordered_fields()
       .contains(&llamastash::tui::launch_picker::PickerField::Extras),
-    "port" => false, // D7 — no row, by decision
+    "port" => false, // no row, by decision
     _ => unreachable!(),
   };
 
@@ -352,10 +348,10 @@ fn every_identity_field_reaches_its_declared_surfaces() {
 /// captured from.
 ///
 /// The structural check above proves the picker *owns* `backend` / `server`,
-/// which passed while the wire payload still dropped them — the exact
-/// 2026-08-30 regression (a TUI-saved preset read back `server: null` and
-/// fell to the daemon's default build). This pins the shape that actually
-/// leaves the TUI: a `SavePresetCmd` encoding to `presets_save` must carry
+/// which passed while the wire payload still dropped them (a TUI-saved preset
+/// read back `server: null` and fell to the daemon's default build). This
+/// pins the shape that actually leaves the TUI: a `SavePresetCmd` encoding to
+/// `presets_save` must carry
 /// the identity when it is set, and must not invent one when it is not.
 #[test]
 fn the_tui_save_payload_carries_the_launch_identity() {
@@ -383,7 +379,7 @@ fn the_tui_save_payload_carries_the_launch_identity() {
     Some(&serde_json::json!("llamacpp-vulkan")),
     "server must ride the save payload, or the preset falls to servers[0]"
   );
-  // The pre-existing fields are untouched by the identity addition.
+  // The pre-existing fields are untouched by the identity fields.
   assert_eq!(params.get("name"), Some(&serde_json::json!("pi-coding")));
   assert_eq!(
     params.get("extras"),
@@ -413,7 +409,7 @@ fn the_tui_save_payload_carries_the_launch_identity() {
   );
 }
 
-/// The TUI launch payload carries the preset name a `Named` cycle stop
+/// The TUI launch payload carries the preset name a Named cycle stop
 /// picked, and sends `null` (not a fabricated name) for the `last used` /
 /// `auto` stops — the daemon stamps the running row from exactly this.
 #[test]
@@ -510,13 +506,13 @@ fn every_backend_declares_resolvable_knobs() {
   }
 }
 
-/// **5.** A [`KnobDef`](knobs::KnobDef) declared outside a backend's own
-/// `knobs.rs` carries no flag spelling.
+/// **5.** A `KnobDef` declared outside a backend's own `knobs.rs` carries no
+/// flag spelling.
 ///
 /// Two backends that declare one neutral knob identically may share a single
-/// const rather than keeping copies in sync by hand — `MTP_ENABLE` is the only
-/// one today. That stays compatible with `AGENTS.md`'s "adding a backend"
-/// contract, which makes `src/backend/<id>/knobs.rs` the one place a backend's
+/// const rather than keeping copies in sync by hand (`MTP_ENABLE` is one).
+/// That stays compatible with `AGENTS.md`'s "adding a backend" contract,
+/// which makes `src/backend/<id>/knobs.rs` the one place a backend's
 /// flag spellings appear, only while the hoisted def has `flag: None`. A
 /// shared def carrying `--something` would move a spelling out of the module
 /// that owns it, and removing that backend would stop being one deletion.

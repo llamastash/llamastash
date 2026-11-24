@@ -12,8 +12,6 @@
 //!
 //! Every path returns a [`BinaryInstall`] the wizard records in
 //! `_init_snapshot` so `doctor` can flag drift.
-//! Integrity-check failures abort with `INIT_ABORTED` (72) per the
-//! non-interactive semantics in the plan.
 
 pub mod brew;
 pub mod custom_path;
@@ -75,7 +73,7 @@ pub enum InstallError {
   Io(String),
 }
 
-/// Compute the SHA-256 of `path`. Surfaced here so brew + custom-path
+/// Surfaced here so brew + custom-path
 /// + GH Releases all share the same digesting routine.
 pub fn sha256_file(path: &Path) -> Result<String, InstallError> {
   use sha2::{Digest, Sha256};
@@ -85,8 +83,7 @@ pub fn sha256_file(path: &Path) -> Result<String, InstallError> {
   Ok(crate::util::hex::encode(hasher.finalize().as_slice()))
 }
 
-/// Plan-time helper exposed for tests: which install method should the
-/// wizard pre-select given the host's hardware? Returns the choice the
+/// Returns the choice the
 /// non-interactive `--recommended` mode would accept.
 pub fn default_install_method(hw: &HardwareSnapshot) -> InstallChoice {
   use crate::gpu::GpuInfo;

@@ -1,51 +1,42 @@
-//! Per-daemon runtime info file — the URL and bearer token a fresh
-//! client needs to attach to the running daemon.
+//! Per-daemon runtime info file (`runtime.json` under the state directory):
+//! the URL and bearer token a client needs to attach to the running daemon.
 //!
-//! The file (`runtime.json` under the state directory) is rewritten on
-//! every daemon start, lives only as long as the daemon does, and
-//! holds the secret bearer token in plaintext — protected by file
-//! permissions only (0o600 on Unix, owner-only DACL on Windows). It
-//! is **separate** from `state.json` so the persistence lifetimes are
-//! independent: `state.json` survives across restarts; `runtime.json`
-//! is per-instance.
-//!
-//! Atomic write reuses `crate::util::atomic_write::write_secure`
-//! so the lifecycle (tempfile → fsync → chmod → atomic rename → fsync
-//! parent) matches every other state-dir consumer.
+//! The file is rewritten on every daemon start and lives only as long as the
+//! daemon does, which is why it stays separate from `state.json`. That one
+//! survives restarts. It holds the bearer token in plaintext, protected by file
+//! permissions only (0o600 on Unix, owner-only DACL on Windows). Writes go
+//! through `crate::util::atomic_write::write_secure`, the same secure atomic
+//! write every state-dir consumer uses.
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// Schema version. Bumped on a breaking change so a future daemon
-/// can refuse to load (or migrate from) an older shape.
+/// Schema version, bumped on a breaking change so a future daemon can refuse
+/// to load an older shape.
 const RUNTIME_SCHEMA_VERSION: u32 = 1;
 
-/// On-disk shape of `runtime.json`. The control plane writes this at
-/// startup; clients read it to attach.
+/// On-disk shape of `runtime.json`. The control plane writes it at startup, and
+/// clients read it to attach.
 ///
-/// `Debug` is implemented manually to elide `ipc_token` — wrapping the
-/// struct in `format!("{info:?}")` (panic formatters, debug logs,
-/// future telemetry) must not leak the bearer secret. Mirrors
-/// [`crate::daemon::auth::IpcToken`]'s posture.
+/// `Debug` is manual so `format!("{info:?}")` cannot leak the bearer secret.
+/// It mirrors [`crate::daemon::auth::IpcToken`]'s posture.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeInfo {
-  /// Schema version; bumps when breaking changes land.
   #[serde(default = "current_schema_version")]
   pub schema_version: u32,
   /// Full URL the daemon's control plane bound on, e.g.
   /// `"http://127.0.0.1:48134"`. Clients POST to `{ipc_url}/rpc`.
   pub ipc_url: String,
-  /// Per-daemon bearer token (base64url, no padding). Sent in
-  /// `Authorization: Bearer <token>` on every request except
-  /// `/health`. Rotated by daemon restart.
+  /// Per-daemon bearer token (base64url, no padding), sent in
+  /// `Authorization: Bearer <token>` on every request except `/health`.
+  /// Rotated by daemon restart.
   pub ipc_token: String,
-  /// Wall-clock seconds since the Unix epoch when this daemon
-  /// started. Surfaces in CLI/TUI "Daemon started at …" rendering;
-  /// not used for any decision logic.
+  /// Wall-clock seconds since the Unix epoch when this daemon started, used only
+  /// to display the start time. No decision reads it.
   pub started_at_unix: u64,
-  /// PID of the daemon that owns this file. Informational — the
-  /// authoritative liveness check is the lockfile.
+  /// PID of the daemon that owns this file. Informational, because the lockfile
+  /// is the authoritative liveness check.
   pub daemon_pid: i32,
 }
 
@@ -70,8 +61,8 @@ pub fn path(state_dir: &Path) -> PathBuf {
   state_dir.join("runtime.json")
 }
 
-/// Persist `info` to `state_dir/runtime.json` atomically with mode
-/// `0o600` on Unix. Creates `state_dir` if it doesn't exist.
+/// Persist `info` to `state_dir/runtime.json` atomically with mode `0o600` on
+/// Unix. Creates `state_dir` if it does not exist.
 pub fn save(state_dir: &Path, info: &RuntimeInfo) -> Result<(), SaveError> {
   let final_path = path(state_dir);
   let body = serde_json::to_vec_pretty(info).map_err(|e| SaveError::Serialise(e.to_string()))?;
@@ -110,9 +101,9 @@ pub fn load(state_dir: &Path) -> Result<Option<RuntimeInfo>, LoadError> {
   }
 }
 
-/// Best-effort removal at daemon shutdown. Silent on absent / IO
-/// error — the orphan re-adoption path tolerates a stale runtime.json
-/// (the lockfile is the authoritative liveness check).
+/// Best-effort removal at daemon shutdown, silent on any error. The orphan
+/// re-adoption path tolerates a stale runtime.json because the lockfile is the
+/// authoritative liveness check.
 pub fn remove(state_dir: &Path) {
   let p = path(state_dir);
   let _ = std::fs::remove_file(&p);

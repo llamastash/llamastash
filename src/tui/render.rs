@@ -1,19 +1,6 @@
-//! Single-frame renderer (kdash-style dashboard layout).
-//!
-//! Vertical:
-//! 1. **Title row** (1 line) — `LlamaStash v0.1.0 · ● daemon` left,
-//!    global hint strip (`?:help  t:theme  /:filter  q:quit`) right.
-//!    Both styled with `palette.accent` background and `palette.bg`
-//!    foreground.
-//! 2. **Info row** (7 lines) — `Host` (fixed 32 cols), `Daemon` (flex
-//!    middle), `Logo` (fixed ~25 cols when there's room). Skipped
-//!    entirely when `area.height < 18`.
-//! 3. **Body** — Models pane (60%) + right pane with tab strip (40%).
-//! 4. **Filter input** (1 line) — only rendered when
-//!    `Focus::Filter`. Sits above the body's last row.
-//!
-//! No bottom help bar — panel-specific hints live in each panel's
-//! block title. The global hint strip is on row 1.
+//! Single-frame renderer: lays out the title row, the optional info
+//! row and download strip, the Models and right panes, then the toast
+//! and modal overlays, in that order.
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -79,10 +66,6 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
   app.prime_rows_cache();
   let area = frame.area();
 
-  // Sub-minimum terminals: paint a clear "too small" message
-  // instead of silently clipping every panel. The placeholder
-  // still updates with the current size so the user knows when
-  // they've grown the terminal enough.
   if area.width < MIN_RENDER_WIDTH || area.height < MIN_RENDER_HEIGHT {
     render_too_small(frame, area, &palette);
     app.clear_rows_cache();
@@ -92,14 +75,12 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
   // Paint the root area with the theme's background first so light
   // palettes (Latte) actually show on a light surface — without this,
   // the terminal's native background bleeds through every gap between
-  // bordered Blocks. `Color::Reset` opts out (used by `mono`) so the
-  // terminal default keeps winning for that theme.
+  // bordered Blocks.
   paint_theme_bg(frame, area, &palette);
 
   let show_info_row = area.height >= MIN_HEIGHT_FOR_INFO_ROW;
 
-  // Vertical layout: title, [info,] [download strip,] body. The
-  // download strip is reserved only when active so the body keeps
+  // The download strip is reserved only when active so the body keeps
   // every available row when no pull is in flight.
   let show_strip = app.download_strip_active();
   let mut constraints: Vec<Constraint> = Vec::with_capacity(4);
@@ -153,18 +134,12 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
   render_body(frame, chunks[idx], app, &palette);
 
   // Transient toast bar — paints on top of the body so copy / theme /
-  // refusal confirmations are actually visible. The kdash refactor
-  // (commit 5005b4c) removed the bottom help-bar slot that used to
-  // display the toast; this
-  // restores a single-line floating bar above the bottom edge.
+  // refusal confirmations are actually visible.
   // Drawn before the modal overlays so a confirm/help popup still
   // wins focus while it is open.
   render_toast(frame, area, app, &palette);
 
-  // Overlays last. The launch picker no longer has a modal — the
-  // form lives inline in the right pane's Settings tab. The
-  // `launch_picker` module still owns the form state struct, but no
-  // dedicated overlay is painted.
+  // Overlays last.
   if app.hf_dialog.is_some() {
     super::hf_dialog::render(frame, area, app, &palette);
   }
@@ -236,7 +211,7 @@ fn render_toast(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette)
 }
 
 /// Placeholder shown when the terminal is below the `MIN_RENDER_*`
-/// floor. A multi-panel dashboard at sub-40×10 paints garbled or
+/// floor. A multi-panel dashboard below that floor paints garbled or
 /// truncated borders, so we replace it with a single centred line
 /// that tells the user what to do. The text updates with the live
 /// size so growing the terminal shows the change before the full
@@ -340,7 +315,6 @@ fn title_left_spans(width: u16, app: &App, palette: &Palette) -> Vec<Span<'stati
   let theme_name = app.options.theme.short_name();
   let on_accent = palette.on_accent;
 
-  // Leading space + always-present brand name.
   let lead: Vec<Span<'static>> = vec![
     Span::raw(" "),
     Span::styled(
@@ -353,8 +327,6 @@ fn title_left_spans(width: u16, app: &App, palette: &Palette) -> Vec<Span<'stati
   // Trailing segments in render order, each tagged with the plain text
   // it occupies (for width accounting). Each carries its own leading
   // separator so a dropped segment never strands a dangling ` · `.
-  // Drop order is the reverse of this list: theme is dropped first,
-  // then daemon, then version.
   let version_text = format!(" v{version}");
   let version_w = version_text.width();
   let version_seg = vec![Span::styled(version_text, Style::default().fg(on_accent))];
@@ -384,8 +356,6 @@ fn title_left_spans(width: u16, app: &App, palette: &Palette) -> Vec<Span<'stati
   // fit checks enforces the priority-drop order (theme → daemon →
   // version).
   let budget = width as usize;
-  // Reserve a 1-cell gap before the hint slot so the rightmost kept
-  // segment never butts up against it.
   let gap = 1usize;
 
   let mut spans = lead;
@@ -406,9 +376,6 @@ fn title_left_spans(width: u16, app: &App, palette: &Palette) -> Vec<Span<'stati
 
 /// Render the three-panel info row.
 fn render_info_row(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
-  // Reserve the Logo panel only when the terminal is wide enough that
-  // the Daemon middle pane won't get squeezed by it. Otherwise the
-  // Daemon panel claims the freed space.
   let show_logo = area.width >= LOGO_MIN_TOTAL_WIDTH;
   let constraints = if show_logo {
     vec![
@@ -445,9 +412,8 @@ fn render_body(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) 
   let show_list = split[0].width > 0;
   let show_right_pane = show_right && split.get(1).is_some_and(|r| r.width > 0);
   // Refresh the body-level hit-test rects for the mouse-focus
-  // dispatch. The list-pane rect is always populated; the right-pane
-  // rect is zeroed when the right pane is hidden so a stray click in
-  // that screen region doesn't match a stale frame's footprint.
+  // dispatch. A zeroed rect keeps a stray click in that screen region
+  // from matching a stale frame's footprint.
   {
     let mut hits = app.hit_rects.borrow_mut();
     hits.list_pane = if show_list { split[0] } else { Rect::default() };
@@ -580,8 +546,7 @@ fn build_models_title<'a>(
 /// Build the Models title chip strip, resolved live against the
 /// keymap so a `keybindings:` config override flows through to the
 /// title bar. Order matters: the first chip is never dropped under
-/// budget pressure, so put the most important keystroke first
-/// (`Enter:apply` while filtering, `Enter:launch` otherwise).
+/// budget pressure, so put the most important keystroke first.
 /// Filter-chip rendering mode. The chip strip differentiates three
 /// states so the InputField's modal contract (`e:edit / Esc:stop /
 /// 2nd-Esc:clear`) reads as a sequence of chips the user can follow
@@ -591,24 +556,16 @@ enum FilterChipMode {
   /// No filter — render the normal row-action chips.
   Inactive,
   /// Filter input has focus and is in edit mode (typing). Surface
-  /// the in-edit chord — `Esc:stop edit · Enter:apply` — instead of
+  /// the in-edit chord — `Esc:stop edit · Enter:launch` — instead of
   /// the row actions so the user can see how to exit edit.
   Editing,
   /// Filter has focus but is resting (Esc was pressed once, buffer
-  /// kept). Surface `e:edit · Esc:clear · Enter:apply` so the user
+  /// kept). Surface `e:edit · Esc:clear · Enter:launch` so the user
   /// can either re-enter edit, walk back one more step (clear), or
   /// apply the predicate they already typed.
   Resting,
 }
 
-/// Decide which filter-chip mode the title strip should render.
-/// Pure projection of the three relevant signals (`filter_active`,
-/// the focus, the InputField edit state). The
-/// `Editing` / `Resting` arms only fire when focus *is* the filter
-/// — once the user steps focus back to the list (filter buffer
-/// retained), the chip strip falls back to the normal model row
-/// chips and the filter-chip slot drops out so the model nav chord
-/// is the headline.
 fn filter_chip_mode(app: &App, filter_active: bool) -> FilterChipMode {
   if !filter_active || app.focus != Focus::Filter {
     return FilterChipMode::Inactive;
@@ -697,7 +654,7 @@ fn build_models_hints(
   // [`focused_row_is_deletable`] for the exact rule. Running
   // (Ready / Loading / Launching), Error, and External rows hide
   // the chip so we don't tempt the user toward a refusal or a
-  // delete that would crash an out-of-process llama-server. The
+  // delete that would crash an out-of-process engine. The
   // keybinding still fires on those rows (it toasts the reason it
   // refused) so muscle memory works — the chip is purely the
   // discovery surface.
@@ -844,10 +801,6 @@ mod tests {
 
   #[test]
   fn sub_minimum_size_renders_too_small_placeholder() {
-    // sub-`MIN_RENDER_*` terminals used to paint the
-    // full dashboard with clipped borders. The placeholder now
-    // surfaces "too small" instead so the user understands why
-    // the dashboard isn't drawing.
     let app = App::new(AppOptions::default());
     let rows = render_into(30, 8, app);
     let body = rows.join("\n");
@@ -859,7 +812,6 @@ mod tests {
       body.contains("30×8"),
       "placeholder must surface current size: {body}"
     );
-    // No panels should have been drawn.
     assert!(
       !body.contains("LlamaStash"),
       "panels must not render: {body}"
@@ -943,7 +895,7 @@ mod tests {
   fn mono_theme_skips_root_bg_paint() {
     // Mono opts out (`palette.bg == Color::Reset`) so the terminal's
     // own bg shows through — that's the whole point of the mono
-    // theme. Verify by confirming a body cell still has `Reset` bg.
+    // theme.
     use crate::theme::ThemeName;
     use crate::tui::keybindings::KeyMap;
     let app = App::new(AppOptions {
@@ -962,12 +914,12 @@ mod tests {
 
   #[test]
   fn help_overlay_paints_theme_bg_on_light_palette() {
-    // Regression: pre-fix, `frame.render_widget(Clear, rect)` reset
-    // the overlay cells to `Color::Reset`, so the help dialog on
-    // Latte (light theme) rendered as a dark patch where the
-    // terminal's default bg bled through. The overlay now follows
-    // `Clear` with `paint_theme_bg`, so cells inside the dialog
-    // must carry `palette.bg`.
+    // Without this, `frame.render_widget(Clear, rect)` resets the
+    // overlay cells to `Color::Reset`, so the help dialog on Latte
+    // (light theme) renders as a dark patch where the terminal's
+    // default bg bleeds through. The overlay follows `Clear` with
+    // `paint_theme_bg`, so cells inside the dialog must carry
+    // `palette.bg`.
     use crate::theme::{palette_for, ThemeName};
     use crate::tui::keybindings::KeyMap;
     let mut app = App::new(AppOptions {
@@ -1040,7 +992,7 @@ mod tests {
     // Anything below the 120-col threshold drops the logo so the
     // Daemon middle pane keeps its readouts uncramped. We assert the
     // banner glyph (the only thing the logo panel emits) is absent
-    // rather than greping for the theme tag — that tag now lives on
+    // rather than greping for the theme tag — that tag lives on
     // the top header bar regardless of the logo panel.
     let app = App::new(AppOptions::default());
     let rows = render_into(119, 30, app);
@@ -1075,12 +1027,10 @@ mod tests {
     app.filter_input.set_text("qwen");
     let rows = render_into(100, 30, app);
     let frame = rows.join("\n");
-    // The inline input renders inside the Models block title strip.
     assert!(
       frame.contains("/ qwen"),
       "expected inline `/ qwen` in Models title: {frame}"
     );
-    // The dedicated bottom filter row no longer exists.
     assert!(
       !rows.iter().any(|r| r.starts_with("/ ")),
       "no separate filter row should render: {rows:#?}"
@@ -1136,7 +1086,6 @@ mod tests {
   fn delete_chip_appears_only_when_focused_row_is_deletable() {
     use crate::discovery::{DiscoveredModel, ModelSource};
     use std::path::PathBuf;
-    // No focused row → chip hidden.
     let empty_app = App::new(AppOptions::default());
     let empty_hints = build_models_hints(&empty_app, FilterChipMode::Inactive, false, false);
     assert!(
@@ -1144,8 +1093,6 @@ mod tests {
       "no focused name = no delete chip: {empty_hints:?}"
     );
 
-    // Focused row + deletable=true (NotLaunched / Stopped) → chip
-    // appears.
     let mut focused_app = App::new(AppOptions::default());
     focused_app.models = vec![DiscoveredModel {
       path: PathBuf::from("/m/qwen.gguf"),
@@ -1166,7 +1113,6 @@ mod tests {
       "deletable focused row must surface delete chip: {deletable_hints:?}"
     );
 
-    // Same focused row but deletable=false → chip hidden.
     let non_deletable = build_models_hints(&focused_app, FilterChipMode::Inactive, false, false);
     assert!(
       !non_deletable.iter().any(|h| h.text.contains("delete")),
@@ -1228,7 +1174,6 @@ mod tests {
   #[test]
   fn filter_chip_mode_projects_focus_and_edit_state() {
     let mut app = App::new(AppOptions::default());
-    // No filter — Inactive.
     assert_eq!(filter_chip_mode(&app, false), FilterChipMode::Inactive);
     // Open filter (auto-enters edit) — Editing.
     app.open_filter();
@@ -1270,7 +1215,6 @@ mod tests {
       }
     }
     let app = App::new(AppOptions::default());
-    // Idle states allow delete.
     for s in [SurfaceState::NotLaunched, SurfaceState::Stopped] {
       let rows = vec![model_row(s)];
       assert!(
@@ -1278,7 +1222,6 @@ mod tests {
         "{s:?} should be deletable"
       );
     }
-    // In-use states refuse delete.
     for s in [
       SurfaceState::Launching,
       SurfaceState::Loading,
@@ -1332,7 +1275,6 @@ mod tests {
     app.daemon_connected = true;
     let palette = palette_for(app.options.theme);
 
-    // Wide: every segment present.
     let wide = spans_plain(&title_left_spans(120, &app, palette));
     assert!(wide.contains("LlamaStash"));
     assert!(wide.contains("v"), "version kept when wide: {wide:?}");
