@@ -1,6 +1,6 @@
-//! Read-only smoke for `llamastash doctor` (Unit 3 stub).
-//! Run binary as a subprocess and assert clap accepts the surface,
-//! plus the stub emits a parseable JSON envelope under `--json`.
+//! Smoke for `llamastash doctor`: runs the binary as a subprocess and
+//! asserts clap accepts the surface, `--json` emits a parseable
+//! envelope, and `--fix` repairs, reports, and withholds the right things.
 
 #[cfg(unix)]
 use std::path::PathBuf;

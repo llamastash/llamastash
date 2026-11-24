@@ -6,14 +6,12 @@
 //! `OLLAMA_HOST` env-based detection) recognise llamastash as
 //! Ollama-compatible and fall through to the OpenAI compat endpoints
 //! for inference. The Tier 2 inference surface (`/api/chat`,
-//! `/api/generate`, `/api/embed`) is deferred to a future plan — see
-//! TODO §Low priority.
+//! `/api/generate`, `/api/embed`) is deferred, see TODO §Low priority.
 //!
-//! Coverage shape mirrors `tests/proxy_models.rs`: hand-built
-//! [`ProxyState`] with a seeded [`ModelCatalog`], proxy listener on an
-//! ephemeral port, plain-TCP HTTP/1.1 client. No daemon bring-up
-//! because the four endpoints are pure projections of catalog +
-//! supervisor snapshots.
+//! Hand-built [`ProxyState`] with a seeded [`ModelCatalog`], proxy listener
+//! on an ephemeral port, plain-TCP HTTP/1.1 client. No daemon bring-up
+//! because these endpoints are pure projections of catalog + supervisor
+//! snapshots.
 
 #![cfg(feature = "test-fixtures")]
 
@@ -44,10 +42,8 @@ use serde_json::Value;
 use tokio::time::sleep;
 
 // --- shared helpers ------------------------------------------------------
-// Lifted from `proxy_models.rs` rather than shared via a `tests/common/`
-// module to keep the integration tests self-contained — the per-file
-// boilerplate is small enough that the duplication is cheaper than the
-// indirection.
+// Duplication with `proxy_models.rs` is deliberate: the per-file boilerplate
+// is small enough that it is cheaper than a shared `tests/common/` module.
 
 #[allow(dead_code)]
 fn unique_temp_dir(label: &str) -> PathBuf {
@@ -151,10 +147,8 @@ async fn proxy_state_with_models(models: Vec<DiscoveredModel>) -> Arc<ProxyState
   proxy_state_with_models_compat(models, false).await
 }
 
-/// One build seam for every state in this file: the catalog, the optional
-/// supervisor registry, Ollama drop-in mode, and the `proxy.aliases` table the
-/// daemon puts on the context behind `from_context_with_auth`. The wrappers
-/// below are what the tests call.
+/// One build seam for every state in this file. The wrappers below are what
+/// the tests call.
 async fn build_state(
   models: Vec<DiscoveredModel>,
   registry: Option<SupervisorRegistry>,
@@ -185,7 +179,6 @@ async fn build_state(
   )
 }
 
-/// Like [`proxy_state_with_models`] with a `proxy.aliases` entry.
 async fn proxy_state_with_alias(
   models: Vec<DiscoveredModel>,
   alias: (&str, &str),
@@ -259,7 +252,6 @@ async fn api_tags_returns_alphabetical_models_with_documented_fields() {
     ["gemma:2b", "llama", "qwen3"],
     "models sorted alphabetically"
   );
-  // Per-row shape check: required Ollama fields present.
   let first = &arr[0];
   assert!(first["name"].is_string());
   assert!(first["model"].is_string());
@@ -531,7 +523,6 @@ async fn api_show_returns_metadata_for_known_model() {
   let (status, body) = http_post(addr, "/api/show", r#"{"model":"qwen-coder:7b"}"#).await;
   assert_eq!(status, 200);
   let v: Value = serde_json::from_slice(&body).expect("json body");
-  // Documented top-level slots present.
   assert!(v["modelfile"].is_string(), "modelfile field present");
   assert!(v["parameters"].is_string(), "parameters field present");
   assert_eq!(v["template"], "{{ messages }}");
@@ -552,7 +543,6 @@ async fn api_show_returns_metadata_for_known_model() {
     Some(&Value::from("7B"))
   );
   assert_eq!(info.get("general.context_length"), Some(&Value::from(8192)));
-  // capabilities reflects Chat mode_hint.
   let caps = v["capabilities"].as_array().expect("capabilities array");
   let caps_str: Vec<&str> = caps.iter().filter_map(Value::as_str).collect();
   assert_eq!(caps_str, vec!["completion"]);
@@ -965,10 +955,9 @@ async fn api_show_capabilities_reflect_mode_hint() {
 // --- /api/ps Ready supervisor + cross-endpoint digest -------------------
 //
 // The Ready branch of `/api/ps` needs a live supervisor in the
-// registry. Pattern lifted from `tests/proxy_fallback.rs`: drop a
-// minimal GGUF on disk, spawn `fake_llama_server` against it,
-// register the resulting `ManagedModel` in a `SupervisorRegistry`,
-// then wire that registry into the `MethodContext` the proxy reads.
+// registry: drop a minimal GGUF on disk, spawn `fake_llama_server` against
+// it, register the resulting `ManagedModel` in a `SupervisorRegistry`, then
+// wire that registry into the `MethodContext` the proxy reads.
 
 fn fake_binary() -> PathBuf {
   PathBuf::from(env!("CARGO_BIN_EXE_fake_llama_server"))
@@ -1053,9 +1042,9 @@ async fn api_ps_returns_ready_supervisor_with_documented_fields() {
   let registry = SupervisorRegistry::new();
   let live = pre_launch(&qwen3, &registry, &log_dir, LaunchMode::Chat).await;
 
-  // Catalog entry that points at the same canonical path the
-  // supervisor's ModelId carries — that's how /api/ps joins
-  // supervisor rows back to catalog metadata.
+  // The catalog entry has to carry the same canonical path as the
+  // supervisor's ModelId — that is how /api/ps joins supervisor rows back
+  // to catalog metadata.
   let mut discovered = make_model(
     qwen3.to_str().unwrap(),
     Some("qwen3:7b"),
@@ -1150,9 +1139,9 @@ async fn digest_is_stable_across_tags_and_ps_for_same_model() {
 // --- GET / and HEAD / ----------------------------------------------------
 //
 // The server-identity handshake the official `ollama` CLI (and other
-// Ollama-Go clients) issue before any `/api/*` call. Pre-fix this
-// returned 404 and the CLI bailed with "something went wrong"; the
-// regression target is now `200 OK` + the mode-appropriate body.
+// Ollama-Go clients) issue before any `/api/*` call. A 404 here makes the
+// CLI bail with "something went wrong", so `/` answers `200 OK` with the
+// mode-appropriate body.
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn root_get_default_mode_identifies_as_llamastash() {
@@ -1189,8 +1178,7 @@ async fn root_get_ollama_compat_mode_identifies_as_ollama() {
 async fn root_head_returns_200_with_no_body_in_either_mode() {
   // Real Ollama responds to HEAD / with 200 and an empty body (hyper
   // strips the body for HEAD automatically). The CLI's handshake
-  // probe checks the status only — failing this is the bug that
-  // motivated the whole root-route addition.
+  // probe checks the status only.
   for compat in [false, true] {
     let state = proxy_state_with_models_compat(Vec::new(), compat).await;
     let (addr, shutdown, handle) = spawn_listener(state).await;

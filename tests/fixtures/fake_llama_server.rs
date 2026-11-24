@@ -1,4 +1,4 @@
-//! Minimal stand-in for `llama-server` used by Unit 5's integration
+//! Minimal stand-in for `llama-server` used by the integration
 //! tests. Hand-rolls just enough HTTP/1.1 over `tokio::TcpListener`
 //! to answer `GET /health`, `GET /v1/models`, `POST
 //! /v1/chat/completions` (streamed SSE), `POST /v1/embeddings`,
@@ -273,8 +273,7 @@ async fn main() {
   // `--help` is the daemon's capability probe (`caps::LoadModeDialect::probe`),
   // and like `--list-devices` it is one-shot: real llama-server prints and
   // exits. Without this the fixture would fall through and *serve*, so the
-  // probe would block until its timeout on every boot — which is exactly what
-  // it did, timing out the IPC calls in `cli_integration_test`.
+  // probe would block until its timeout on every boot.
   //
   // Advertising `--load-mode` puts the fixture on the current dialect, matching
   // the llama.cpp the project builds against. `FAKE_LLAMA_LEGACY_LOAD_FLAGS=1`
@@ -420,7 +419,6 @@ async fn handle(
   let method = parts.next().unwrap_or("").to_string();
   let path = parts.next().unwrap_or("").to_string();
 
-  // Drain headers.
   let mut content_length: usize = 0;
   let mut headers: HashMap<String, String> = HashMap::new();
   loop {
@@ -544,7 +542,7 @@ vllm:time_to_first_token_seconds_count{model_name=\"fake\"} 1\n",
     }
     ("GET", "/props") => {
       // Mirror llama-server's `/props`: the resolved context window the
-      // daemon reads back as post-launch actuals (R6). Reports `-c` when
+      // daemon reads back as post-launch actuals. Reports `-c` when
       // pinned, else the `--fit-ctx` floor, else a server-ish default.
       let resolved = args.ctx.or(args.fit_ctx).unwrap_or(4096);
       let body = serde_json::json!({
@@ -617,9 +615,7 @@ vllm:time_to_first_token_seconds_count{model_name=\"fake\"} 1\n",
       // Mirror real llama-server's OpenAI-compat behavior: echo
       // `body.model` into every emitted frame's `model` field so
       // proxy/router code paths can rely on the pass-through
-      // contract without per-chunk rewriting. See the proxy plan
-      // (docs/plans/2026-05-21-001-feat-proxy-router-plan.md)
-      // Risks row "rewrites body.model" for the falsifying outcome.
+      // contract without per-chunk rewriting.
       let echoed_model = extract_body_model(body_text).unwrap_or_else(|| args.model_path.clone());
       if want_fail {
         write_response(
@@ -828,8 +824,6 @@ vllm:time_to_first_token_seconds_count{model_name=\"fake\"} 1\n",
   Ok(())
 }
 
-/// Cheap `body.model` extractor.
-///
 /// Returns `None` if the body isn't valid JSON or no `model` field is
 /// present.
 fn extract_body_model(body: &str) -> Option<String> {

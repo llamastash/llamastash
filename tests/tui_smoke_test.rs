@@ -87,12 +87,10 @@ fn empty_app_renders_title_info_and_empty_state() {
     frame.contains("No GGUFs surfaced"),
     "empty-state hint missing: {frame}"
   );
-  // Global hint strip surfaces the canonical hotkeys on the title row.
   assert!(
     frame.contains("?:help") && frame.contains("q:quit"),
     "title row hint strip missing ?:help / q:quit: {frame}"
   );
-  // Info row renders the three side-by-side panels.
   assert!(frame.contains("Host"), "info row missing Host: {frame}");
   assert!(frame.contains("Daemon"), "info row missing Daemon: {frame}");
 }
@@ -161,9 +159,8 @@ fn slash_opens_filter_and_keystrokes_extend_buffer() {
 
 #[test]
 fn enter_on_model_opens_inline_launch_picker_in_settings_tab() {
-  // The launch picker no longer pops a centred modal — pressing
-  // Enter on a Models row parks focus on the right pane's Settings
-  // tab and renders the picker form inline (kdash-style). The
+  // Pressing Enter on a Models row parks focus on the right pane's Settings
+  // tab and renders the picker form inline. The
   // surrounding right pane (with the picker form) shares one frame
   // with the Models list, so assertions check the inline form
   // fields rather than a `Launch · qwen` modal title.
@@ -192,7 +189,7 @@ fn enter_on_model_opens_inline_launch_picker_in_settings_tab() {
 
 #[test]
 fn arrows_in_settings_tab_cycle_fields_and_values() {
-  // Round-7 navigation model: ↑/↓ in the Settings tab cycle the
+  // ↑/↓ in the Settings tab cycle the
   // form's fields (ctx → reasoning → typed knobs → extras), and ←/→ cycle
   // the focused field's value. Tab cycles panes universally.
   use llamastash::tui::keybindings::Focus;
@@ -210,7 +207,6 @@ fn arrows_in_settings_tab_cycle_fields_and_values() {
     PickerField::Preset,
     "default focus leads on the preset row"
   );
-  // ↓ moves the cursor onto the Ctx row.
   pump_input(&mut app, key(KeyCode::Down, KeyModifiers::NONE));
   assert_eq!(
     app.launch_picker.as_ref().unwrap().field,
@@ -226,7 +222,6 @@ fn arrows_in_settings_tab_cycle_fields_and_values() {
     None,
     "ctx defaults to native (no user override)"
   );
-  // → advances the focused field's value; the first ring stop is Auto.
   pump_input(&mut app, key(KeyCode::Right, KeyModifiers::NONE));
   assert!(
     app
@@ -237,7 +232,6 @@ fn arrows_in_settings_tab_cycle_fields_and_values() {
       .is_auto(llamastash::launch::knobs::kid("ctx-size")),
     "the first ring stop is Auto"
   );
-  // ← walks it back to inherited.
   pump_input(&mut app, key(KeyCode::Left, KeyModifiers::NONE));
   assert_eq!(
     app
@@ -248,7 +242,6 @@ fn arrows_in_settings_tab_cycle_fields_and_values() {
       .u32(llamastash::launch::knobs::kid("ctx-size")),
     None
   );
-  // ↓ moves the cursor to the next field.
   pump_input(&mut app, key(KeyCode::Down, KeyModifiers::NONE));
   assert_eq!(
     app.launch_picker.as_ref().unwrap().field,
@@ -279,7 +272,6 @@ fn arrow_on_settings_auto_stages_picker_when_none() {
   let mut app = App::new(AppOptions::default());
   app.models = vec![fake_model("/m/qwen.gguf", "/m")];
   app.go_top();
-  // Shift+S jump (focus settings) without going through Enter.
   pump_input(&mut app, key(KeyCode::Char('S'), KeyModifiers::SHIFT));
   assert_eq!(app.focus, Focus::RightPane);
   assert_eq!(app.right_tab, RightTab::Settings);
@@ -287,7 +279,6 @@ fn arrow_on_settings_auto_stages_picker_when_none() {
     app.launch_picker.is_none(),
     "Shift+S alone must not stage the picker"
   );
-  // ↓ (field-cycle) auto-stages.
   pump_input(&mut app, key(KeyCode::Down, KeyModifiers::NONE));
   assert!(
     app.launch_picker.is_some(),
@@ -304,9 +295,8 @@ fn arrow_on_settings_auto_stages_picker_when_none() {
 
 #[test]
 fn launch_picker_modal_no_longer_renders() {
-  // Round-6 removed the centred launch-picker overlay. Pressing
-  // Enter on a model stages the form inline in the Settings tab —
-  // the old `Launch · qwen` modal title must not appear in any
+  // Pressing Enter on a model stages the form inline in the Settings tab —
+  // the `Launch · qwen` modal title must not appear in any
   // rendered frame.
   let mut app = App::new(AppOptions::default());
   app.models = vec![fake_model("/m/qwen.gguf", "/m")];
@@ -317,7 +307,6 @@ fn launch_picker_modal_no_longer_renders() {
     !frame.contains("Launch · qwen"),
     "no centred modal should render: {frame}"
   );
-  // The inline Settings heading is the canonical surface.
   assert!(
     frame.contains("Launch settings"),
     "inline Settings heading must render instead: {frame}"
@@ -567,10 +556,9 @@ fn list_pane_renders_est_mem_badge() {
 
 #[test]
 fn typing_into_chat_input_extends_prompt_buffer() {
-  // Tab/Shift+Tab now cycle form fields rather than pane focus
-  // (see `kdash-style polish round 5`), so this test drives the
-  // pane chain with → / e instead: → moves Models → RightPane on
-  // the Chat tab, then `e` enters edit mode → ChatInput.
+  // Tab/Shift+Tab cycle form fields rather than pane focus, so this
+  // test jumps to the Chat tab with Shift+C and enters edit mode
+  // with `e` → ChatInput.
   use llamastash::tui::app::ManagedRow;
   use llamastash::tui::keybindings::Focus;
   use llamastash::tui::status_icons::SurfaceState;
@@ -618,7 +606,6 @@ fn r_toggles_think_collapse_across_chat_focus_modes() {
   let mut app = App::new(AppOptions::default());
   app.focus = Focus::RightPane;
   app.right_tab = RightTab::Chat;
-  // Browsing focus on Chat tab → `r` flips the toggle.
   assert!(!app.chat.collapse_thinks);
   pump_input(&mut app, key(KeyCode::Char('r'), KeyModifiers::NONE));
   assert!(app.chat.collapse_thinks);
@@ -656,8 +643,7 @@ fn s_in_right_pane_toggles_logs_auto_scroll() {
 
 #[test]
 fn rerank_enter_in_candidate_field_stages_buffer() {
-  // Round-9: the `+` / `=` dedicated stage chords retire. Enter
-  // in the candidate field now stages the typed candidate onto
+  // Enter in the candidate field stages the typed candidate onto
   // the list — no extra chord required. Enter in the query field
   // still dispatches `/v1/rerank`.
   use llamastash::tui::keybindings::Focus;
@@ -666,7 +652,6 @@ fn rerank_enter_in_candidate_field_stages_buffer() {
   app.focus = Focus::RerankInput;
   // Modal field needs edit mode before typing lands in the buffer.
   app.rerank.query.enter_edit();
-  // Type a query then ↓ to the candidate field.
   for ch in "what?".chars() {
     pump_input(&mut app, key(KeyCode::Char(ch), KeyModifiers::NONE));
   }
@@ -717,10 +702,7 @@ fn compact_width_hides_right_pane_and_keeps_only_name_ctx_size() {
   // whole 60 cells. With PREFERRED_NAME_W (33) reserved for the
   // model name first, the rank picker fits Ctx + Size only —
   // Quant (rank 30) overflows the 22-cell budget. The user's
-  // primary signal (name) gets ~40 cells; data shrinks to the
-  // two highest-priority columns. Pins three contracts from the
-  // rendered surface: compact pane mode, ranked drop, and the
-  // name-comfort priority over data density.
+  // primary signal (name) gets ~40 cells.
   let mut app = App::new(AppOptions::default());
   app.models = vec![fake_model("/m/qwen.gguf", "/m")];
   let frame = render_to_string(&mut app, 60, 20);
@@ -760,8 +742,6 @@ fn compact_width_opens_right_pane_when_focus_drills_in() {
   app.open_launch_picker();
   assert_eq!(app.focus, Focus::RightPane);
   let frame = render_to_string(&mut app, 60, 20);
-  // Settings tab is now visible — the drill-in surfaces the right
-  // pane.
   assert!(
     frame.contains("Settings"),
     "right pane should appear after open_launch_picker in compact mode: {frame}"
@@ -805,7 +785,7 @@ fn wide_width_always_shows_right_pane_regardless_of_focus() {
 
 #[test]
 fn show_toast_paints_visible_bar_near_bottom() {
-  // Regression: the kdash refactor (5005b4c) removed the bottom
+  // Regression: the kdash refactor removed the bottom
   // help-bar toast slot and nothing else painted the field, so every
   // copy / theme-cycle / refusal toast was silently invisible. The
   // current renderer floats a single-line accent bar above the
@@ -891,7 +871,7 @@ fn error_toast_paints_on_error_slot_not_accent() {
 
 #[test]
 fn narrow_terminal_truncates_long_model_names_with_ellipsis() {
-  // Plan edge case: a name wider than the list pane should render
+  // A name wider than the list pane should render
   // with `…` rather than wrapping. We use a synthetic super-long
   // name so the truncation kicks in regardless of theme padding.
   let mut app = App::new(AppOptions::default());

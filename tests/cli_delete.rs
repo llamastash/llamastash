@@ -28,7 +28,8 @@ fn free_port() -> u16 {
   llamastash::test_support::allocate_port_range(1).start
 }
 
-/// A daemon over a model dir holding one chat model and one that is running.
+/// A daemon over a model dir holding two chat models, `gone.gguf` and
+/// `busy.gguf`, neither running until a test starts one.
 struct Daemon {
   state: PathBuf,
   cache: PathBuf,

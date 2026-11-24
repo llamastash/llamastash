@@ -308,8 +308,7 @@ async fn sweep_skips_auto_start_within_ttl() {
 }
 
 // ---------------------------------------------------------------------------
-// Residency: per-preset idle TTL (U1) and unloading to make room (U2).
-// Plan: docs/plans/2026-09-30-001-feat-model-residency-plan.md.
+// Residency: per-preset idle TTL and unloading to make room.
 // ---------------------------------------------------------------------------
 
 use llamastash::config::{ConfigPresetBlock, PresetBody};

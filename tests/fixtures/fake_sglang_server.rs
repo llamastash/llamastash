@@ -1,8 +1,7 @@
 //! Minimal stand-in for the real `sglang` launcher, used by the SGLang
 //! integration tests. Hand-rolls just enough HTTP/1.1 over
 //! `tokio::TcpListener` to answer what llamastash's readiness probe, orphan
-//! sweep, actuals fetch and proxy touch, and reproduces the behaviours that
-//! shaped the backend:
+//! sweep, actuals fetch and proxy touch, and reproduces these behaviours:
 //!
 //! - **slow engine init**: weight load, CUDA graph capture and warmup keep
 //!   the real server unready for a long window. `--load-delay-ms <n>` models

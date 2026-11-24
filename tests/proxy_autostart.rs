@@ -1,4 +1,4 @@
-//! Integration tests for Unit 4's auto-start path.
+//! Integration tests for the proxy's auto-start path.
 //!
 //! Spawn the proxy against a `MethodContext` wired with a real
 //! `LaunchEnv` (the `fake_llama_server` test binary as the
@@ -6,9 +6,6 @@
 //! synthetic GGUF on disk. A request that names the dormant model
 //! must drive the launch in-process and forward against the live
 //! supervisor once Ready.
-//!
-//! Plan: docs/plans/2026-05-21-001-feat-proxy-router-plan.md (Unit 4
-//! Test scenarios — Happy path / Slow start).
 
 #![cfg(feature = "test-fixtures")]
 
@@ -178,7 +175,7 @@ async fn stop_all(ctx: &MethodContext) {
   }
 }
 
-// ---- Scenario 1: happy path — dormant model auto-starts ---------------
+// ---- Happy path: dormant model auto-starts -----------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dormant_model_auto_starts_and_forwards_without_fallback_headers() {
@@ -288,7 +285,7 @@ async fn an_auto_started_request_is_logged_as_an_alias() {
   std::fs::remove_dir_all(&dir).ok();
 }
 
-// ---- Scenario 2: slow start — request blocks for window then succeeds -
+// ---- Slow start: request blocks for a window then succeeds ---------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn slow_start_blocks_then_succeeds() {
@@ -332,7 +329,7 @@ async fn slow_start_blocks_then_succeeds() {
   std::fs::remove_dir_all(&dir).ok();
 }
 
-// ---- Scenario 11: launch + Ready transition observed simultaneously ---
+// ---- Launch + Ready transition observed simultaneously ------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn supervisor_state_visible_to_registry_after_auto_start() {
@@ -376,7 +373,7 @@ async fn supervisor_state_visible_to_registry_after_auto_start() {
   std::fs::remove_dir_all(&dir).ok();
 }
 
-// ---- Scenario 12: in-flight fallback while original becomes Ready ------
+// ---- In-flight fallback while the original becomes Ready -----------------
 //
 // Not directly testable without async injection — the proxy reads
 // the supervisor snapshot once at request time and commits to its
@@ -417,11 +414,8 @@ async fn second_request_for_same_model_skips_relaunch() {
   std::fs::remove_dir_all(&dir).ok();
 }
 
-// ---- Regression (#56): a Loading launch must be attached to, not duplicated -
+// ---- Regression: a Loading launch must be attached to, not duplicated ----
 
-/// Start a model through the IPC surface the way `llamastash start`
-/// does. Returns once the supervisor is registered — well before Ready,
-/// so the caller owns the load window.
 /// Poll until a `last_params` row carrying `mode` lands, or `budget`
 /// expires. The recorder runs in a background task off the supervisor's
 /// Loading → Ready transition, so it is never ready when `start_model`
@@ -448,6 +442,9 @@ async fn wait_for_last_params_mode(
   false
 }
 
+/// Start a model through the IPC surface the way `llamastash start`
+/// does. Returns once the supervisor is registered — well before Ready,
+/// so the caller owns the load window.
 async fn ipc_start_model(ctx: &MethodContext, params: Value) {
   let req = llamastash::ipc::protocol::Request::new(1, "start_model", Some(params));
   let resp = llamastash::ipc::methods::dispatch_request(ctx, req).await;
@@ -607,7 +604,7 @@ async fn named_request_during_load_window_attaches_to_the_unnamed_launch() {
   std::fs::remove_dir_all(&dir).ok();
 }
 
-// ---- Regression (#56): /v1/rerank auto-start must launch in rerank mode -
+// ---- Regression: /v1/rerank auto-start must launch in rerank mode --------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rerank_request_auto_starts_in_rerank_mode_not_embedding() {
@@ -758,14 +755,11 @@ async fn embeddings_request_does_not_force_a_chat_model_into_embedding_mode() {
   std::fs::remove_dir_all(&dir).ok();
 }
 
-// ---- Scenario 9 (partial): launch failure surfaces as 503 launch_failed -
+// ---- Launch failure surfaces as 503 launch_failed ------------------------
 //
-// We can't easily inject a `Error{cause:"probe timeout"}` without
-// stalling for the full probe deadline. The simpler form below
-// drives the path by handing the auto-start a synthetic-GGUF row
-// whose disk file *does* exist but whose canonical path won't
-// resolve to a launchable binary signal — see
-// `tests/proxy_fallback.rs` for the richer failure path.
+// A `probe timeout` error needs a stall for the full probe deadline, so
+// this drives the failure path with a catalog row whose file does not
+// exist. See `tests/proxy_fallback.rs` for the richer failure path.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn auto_start_failure_with_no_ready_models_returns_launch_failed() {
   let dir = unique_temp("fail");
@@ -796,7 +790,7 @@ async fn auto_start_failure_with_no_ready_models_returns_launch_failed() {
   std::fs::remove_dir_all(&dir).ok();
 }
 
-// ---- Scenario: an admission refusal makes room, then retries once ----
+// ---- An admission refusal makes room, then retries once ------------------
 
 /// Set the sampled free memory the admission gate reads, so a test can price a
 /// launch in or out without touching the real host.

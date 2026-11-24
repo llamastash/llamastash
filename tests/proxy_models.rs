@@ -1,18 +1,6 @@
-//! Integration tests for the proxy's `/v1/models` endpoint (Unit 2:
-//! docs/plans/2026-05-21-001-feat-proxy-router-plan.md).
-//!
-//! Two layers of coverage:
-//!
-//! 1. Direct: hand-build a [`ProxyState`] with a seeded
-//!    [`ModelCatalog`], spawn the proxy listener on an ephemeral
-//!    port, and call `/v1/models` over the wire. This is fast and
-//!    isolates routing/sorting/projection from the full daemon
-//!    bring-up. Used for the happy paths, the empty-catalog case,
-//!    the parse-error fallback, and the 200-row scale check.
-//! 2. End-to-end: a single test spins up `run_foreground` with a
-//!    fixture scan root containing two minimal GGUFs, then asserts
-//!    `/v1/models` and `/health` reflect the discovered catalog.
-//!    Mirrors the daemon-wiring smoke from `proxy_listener_test.rs`.
+//! Integration tests for the proxy's `/v1/models` and `/health` endpoints:
+//! direct listener tests over a seeded [`ModelCatalog`], plus one
+//! end-to-end `run_foreground` test with a fixture scan root.
 //!
 //! Schema parity: every test that inspects the response body asserts
 //! the documented OpenAI shape — `{"object":"list", "data":[...]}`
@@ -80,10 +68,8 @@ fn make_model(path: &str, display_label: Option<&str>) -> DiscoveredModel {
   }
 }
 
-/// Build a `ProxyState` whose catalog is pre-seeded with the given
-/// models. Other slots (`supervisors`, `state`, `launch`) come from
-/// a default-constructed `MethodContext` — Unit 2 only touches
-/// `catalog`.
+/// Other slots (`supervisors`, `state`, `launch`) come from
+/// a default-constructed `MethodContext`.
 async fn proxy_state_with_models(models: Vec<DiscoveredModel>) -> Arc<ProxyState> {
   let catalog = ModelCatalog::new();
   for m in models {
@@ -451,10 +437,9 @@ async fn two_hundred_models_stay_under_one_mib_and_sort_is_stable() {
     let label = format!("model-{i:03}");
     models.push(make_model(&format!("/m/{label}.gguf"), Some(&label)));
   }
-  // Shuffle by inserting under a non-sorted key. The catalog's
-  // BTreeMap stores by canonical path, so insertion order here
-  // doesn't matter — but we still want the response sort to be the
-  // *handler's* sort, not the BTreeMap's.
+  // The catalog's BTreeMap stores by canonical path, so insertion
+  // order here doesn't matter — but we still want the response sort
+  // to be the *handler's* sort, not the BTreeMap's.
   let state = proxy_state_with_models(models).await;
   let (addr, shutdown, listener_handle) = spawn_listener(state).await;
 
@@ -477,7 +462,6 @@ async fn two_hundred_models_stay_under_one_mib_and_sort_is_stable() {
   let v: Value = serde_json::from_slice(&b1).expect("json body");
   let data = v["data"].as_array().expect("data array");
   assert_eq!(data.len(), 200);
-  // Spot-check the alphabetical order at the boundaries.
   assert_eq!(data[0]["id"], "model-000");
   assert_eq!(data[199]["id"], "model-199");
 
@@ -486,7 +470,6 @@ async fn two_hundred_models_stay_under_one_mib_and_sort_is_stable() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn schema_parity_with_documented_openai_shape() {
-  // One row; verify every documented field has the documented type.
   // Recording a real OpenAI client fixture would be heavy; matching
   // the four-field shape inline is enough to lock the contract that
   // OpenAI's Python/Node SDKs deserialize against.
@@ -529,9 +512,7 @@ async fn health_reports_zero_when_catalog_and_supervisors_are_empty() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn health_models_discovered_matches_catalog_length() {
-  // Three discovered models. No supervisors are launched here (Unit
-  // 2 only needs to confirm the count is sourced from the catalog),
-  // so `models_loaded` stays 0 — exercised end-to-end in Unit 3+.
+  // No supervisors are launched here, so `models_loaded` stays 0.
   let models = vec![
     make_model("/m/a.gguf", None),
     make_model("/m/b.gguf", None),
@@ -580,9 +561,7 @@ async fn wait_for_proxy(addr: SocketAddr) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn end_to_end_proxy_models_matches_discovery_catalog() {
-  // Spin up the daemon with a scan root containing two minimal
-  // GGUFs. Once discovery finishes, `/v1/models` must return both
-  // rows. This is the parity check that the maintainer's manual
+  // This is the parity check that the maintainer's manual
   // verification line (`curl /v1/models | jq '.data | length' ==
   // llamastash list --json | jq '.models | length'`) is intended
   // to cover.
@@ -648,7 +627,6 @@ async fn end_to_end_proxy_models_matches_discovery_catalog() {
   // already a → b.
   assert_eq!(ids, vec!["alpha", "bravo"]);
 
-  // /health counts now reflect real values (R158 / R159):
   let (hs, hb) = http_get(proxy_addr, "/health").await;
   assert_eq!(hs, 200);
   let hv: Value = serde_json::from_slice(&hb).expect("json");
@@ -658,7 +636,6 @@ async fn end_to_end_proxy_models_matches_discovery_catalog() {
     "no supervisors launched in this test"
   );
 
-  // Shutdown.
   let mut client = Client::connect(&socket).await.expect("connect daemon");
   let _ = client.call("shutdown", None).await.expect("shutdown");
   let _ = timeout(Duration::from_secs(3), handle).await;

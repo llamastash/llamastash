@@ -1,14 +1,12 @@
-//! Integration coverage for `llamastash uat` (Unit 4).
+//! Integration coverage for `llamastash uat`.
 //!
 //! These tests cannot exercise the **happy path** (init → smoke chat
-//! → stop → doctor) without either (a) network access to HuggingFace
-//! and a real `llama-server` install or (b) a stubbed FetchClient
-//! that the orchestrator doesn't currently support. Per the plan
-//! §"Deferred to Implementation > Cold-mode dry-run timing", the
-//! happy path is the maintainer's local dry-run gate, NOT a CI
-//! gate.
+//! → stop → doctor) without network access to HuggingFace and a real
+//! `llama-server` install, or a stubbed FetchClient that the
+//! orchestrator doesn't support. The happy path is the maintainer's
+//! local dry-run gate, not a CI gate.
 //!
-//! What we *can* exercise here without network or hardware:
+//! What these tests exercise without network or hardware:
 //!
 //! * Pre-flight backend mismatch (`--host-backend nvidia` on a non-NVIDIA
 //!   host) — fails the first step, exits 1, populates
@@ -27,10 +25,8 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Per-test scratch dir under the system temp root. Mirrors the helper
-/// every other integration test uses (`unique_temp_dir(label)`) so the
-/// UAT suite stays consistent with the project's binding pattern
-/// documented in AGENTS.md §Common gotchas.
+/// Per-test scratch dir under the system temp root, mirroring the
+/// `unique_temp_dir(label)` helper every other integration test uses.
 fn unique_temp_dir(label: &str) -> PathBuf {
   static SEQ: AtomicU32 = AtomicU32::new(0);
   let seq = SEQ.fetch_add(1, Ordering::SeqCst);
@@ -185,7 +181,6 @@ fn uat_report_out_dash_emits_pure_json_to_stdout() {
   });
   assert_eq!(parsed["schema_version"], 1);
   assert_eq!(parsed["verdict"], "fail");
-  // Sanity: the TTY summary lands on stderr now, not stdout.
   let stderr = String::from_utf8_lossy(&out.stderr);
   assert!(
     stderr.contains("UAT verdict"),
@@ -195,9 +190,9 @@ fn uat_report_out_dash_emits_pure_json_to_stdout() {
 
 #[test]
 fn uat_report_out_rejects_directory_path() {
-  // A directory path used to produce a confusing EACCES error after
-  // the lifecycle ran. Now the validator refuses it up-front so a CI
-  // failure attributes correctly.
+  // A directory path would fail with a confusing EACCES after the
+  // lifecycle ran. The validator refuses it up-front so a CI failure
+  // attributes correctly.
   let dir = unique_temp_dir("report-out-dir");
   let out = bin()
     .args(["uat", "--host-backend", "nvidia", "--report-out"])
@@ -219,7 +214,6 @@ fn uat_report_out_rejects_directory_path() {
 fn uat_subcommand_help_documents_warm_default() {
   let out = bin().args(["uat", "--help"]).output().expect("run");
   let stdout = String::from_utf8_lossy(&out.stdout);
-  // Both modes appear; the default is "warm".
   assert!(stdout.contains("warm"), "warm mode must be advertised");
   assert!(stdout.contains("cold"), "cold mode must be advertised");
   assert!(

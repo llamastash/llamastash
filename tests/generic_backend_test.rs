@@ -291,7 +291,6 @@ servers:
     let _ = tokio::time::timeout(Duration::from_secs(30), daemon).await;
   }
 
-  /// Wait until the proxy can see an entry's catalog row.
   async fn wait_listed(client: &mut Client, entry: &str) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while !client
@@ -306,7 +305,6 @@ servers:
     }
   }
 
-  /// A whisper.cpp-shaped upload: a file part and a `model` field.
   /// A `GET` written straight onto the socket, so nothing resolves dot segments on
   /// the way: `reqwest` normalizes the path before it leaves, which is exactly the
   /// step a client trying to walk sideways skips. Returns the status and the body.
@@ -331,6 +329,7 @@ servers:
     (status, text)
   }
 
+  /// A whisper.cpp-shaped upload: a file part and a `model` field.
   fn transcription_body(model: &str) -> (Vec<u8>, String) {
     let b = "----lsTestBoundary";
     let body = format!(
@@ -762,9 +761,7 @@ servers:
     shutdown(client, daemon).await;
   }
 
-  /// A running media launch lists under the mode its entry declares, the way
-  /// `status` already prints it. The launch's own mode is `chat` (a media mode
-  /// changes no argv), which is what only the named row used to print.
+  /// The launch's own mode is `chat` (a media mode changes no argv).
   #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
   async fn a_running_media_launch_lists_under_its_declared_mode() {
     let proxy_port = llamastash::test_support::allocate_port_range(1).start;

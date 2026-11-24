@@ -1,19 +1,9 @@
-//! Release-blocking 16/20 corpus check for the recommender (R57).
+//! Release-blocking corpus check: 20 (GPU class, VRAM, task) cells, each with
+//! a predicate the recommender's top-3 must satisfy for at least 16 cells.
 //!
-//! Each fixture row is a (GPU class, VRAM, task) tuple plus a predicate
-//! describing what the maintainer considers a fitting pick for that
-//! cell. The recommender must surface at least one top-3 model that
-//! satisfies the predicate for ≥16 of the 20 cases. Below the
-//! threshold the gate fails the release, surfacing the mis-classified
-//! rows so the snapshot regen flow (Unit 7) can recalibrate.
-//!
-//! Predicate-based `expected` (Unit 5 of plan 2026-05-20-001): the
-//! corpus stays meaningful as the auto-regenerated catalog rotates.
-//! Previously `expected` was a hard-coded list of model ids, which
-//! quietly went stale every time `data/benchmark-snapshot.json` got a
-//! new row. With predicates the test now fails loudly when a tier
-//! loses every fitting model — exactly the regression we want to
-//! catch.
+//! Predicates instead of hard-coded model ids keep the corpus valid as the
+//! auto-regenerated catalog rotates. A cell fails only when its tier loses
+//! every fitting model.
 
 use llamastash::gpu::{GpuDevice, GpuInfo};
 use llamastash::init::benchmark::{load_bundled, ModelEntry};
@@ -25,21 +15,19 @@ use llamastash::init::recommender::{
 /// Predicate every corpus row checks against the recommender's top-3.
 /// At least one top-3 entry must satisfy *both* clauses:
 ///
-/// 1. `task_hints` contains [`task`]; and
+/// 1. `task_hints` contains `task`; and
 /// 2. the entry fits the size budget:
-///    - **Dense** rows: `params ≤ max_params_b * 1e9`.
-///    - **MoE** rows: `params_active ≤ max_params_b * 1e9`. A
+///    - **Dense** rows: `params <= max_params_b * 1e9`.
+///    - **MoE** rows: `params_active <= max_params_b * 1e9`. A
 ///      30B-A3B MoE with 3B active is functionally a 3B-class
-///      pick for this corpus's "max N billion" rubric — its VRAM
+///      pick for this corpus's "max N billion" rubric: its VRAM
 ///      and tok/s land near a 3B dense, even though the catalog
 ///      entry's `params` field reports 30B.
-///    - When [`prefer_moe`] is true, only the MoE branch counts —
-///      i.e. dense rows can never satisfy a prefer-MoE cell, even
-///      if they're small enough to fit.
+///    - When `prefer_moe` is true, only the MoE branch counts,
+///      so dense rows can never satisfy a prefer-MoE cell, even
+///      if they are small enough to fit.
 ///
-/// `task` is `None` when the cell doesn't care about a specific tag
-/// (no current rows use that, but the option exists for future
-/// general-purpose cells).
+/// `task` is `None` when the cell does not care about a specific tag.
 struct ExpectedFit {
   task: Option<&'static str>,
   max_params_b: f32,
@@ -436,7 +424,6 @@ fn corpus_passes_release_threshold() {
     }
   }
   assert_eq!(n_cases, 20, "corpus must have exactly 20 cases");
-  // Release-blocking threshold: 16/20 predicate hits in the top-3.
   assert!(
     hits >= 16,
     "recommender corpus regression: only {hits}/20 cases matched, threshold 16.\nMisses:\n  {}",

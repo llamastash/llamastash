@@ -1,4 +1,4 @@
-//! Unit 8 end-to-end coverage for the non-interactive subcommands.
+//! End-to-end coverage for the non-interactive subcommands.
 //!
 //! Drives the real `cli::dispatch` path against a daemon spun up via
 //! `run_foreground` at a per-test temp socket. Asserts on the
@@ -130,11 +130,11 @@ impl Drop for DaemonHandle {
     // `shutdown()` consumes `join`, so a still-present handle means
     // the test didn't reach its explicit cleanup — typically a panic
     // mid-test. Send a synchronous `shutdown` over the socket so the
-    // daemon's run_foreground hits its `stop_all_managed` step (the
-    // Fix #1 wiring) and SIGTERM→SIGKILLs every supervised
-    // `fake_llama_server` before the runtime tears it down. Without
-    // this, `setsid`-detached children become init-owned orphans —
-    // historically the source of hundreds of leaked test fixtures.
+    // daemon's run_foreground hits its `stop_all_managed` step and
+    // SIGTERM→SIGKILLs every supervised `fake_llama_server` before the
+    // runtime tears it down. Without this, `setsid`-detached children
+    // become init-owned orphans, the source of hundreds of leaked test
+    // fixtures.
     if let Some(join) = self.join.take() {
       let _ = best_effort_sync_shutdown(&self.socket);
       // Poll for the daemon to remove `runtime.json` (the last step of
@@ -458,7 +458,6 @@ async fn agent_script_round_trip_list_start_status_logs_stop() {
 async fn list_filter_and_unknown_ref_exit_codes() {
   let h = spawn_daemon_with_model("filter", "qwen.gguf", "qwen2").await;
 
-  // `list --filter qwen` exits zero.
   let code = run_dispatch_at(
     Some(&h.socket),
     &h.model_dir,
@@ -470,7 +469,6 @@ async fn list_filter_and_unknown_ref_exit_codes() {
   .await;
   assert_eq!(code, exit_codes::SUCCESS);
 
-  // `start phi` matches no model → MODEL_NOT_FOUND.
   let code = run_dispatch_at(
     Some(&h.socket),
     &h.model_dir,
@@ -497,7 +495,6 @@ async fn list_filter_and_unknown_ref_exit_codes() {
 async fn presets_save_list_delete_round_trip() {
   let h = spawn_daemon_with_model("presets", "m.gguf", "llama").await;
 
-  // save
   let code = run_dispatch_at(
     Some(&h.socket),
     &h.model_dir,
@@ -526,7 +523,7 @@ async fn presets_save_list_delete_round_trip() {
   .await;
   assert_eq!(code, exit_codes::SUCCESS);
 
-  // confirm via config.yaml (presets live there now, not state.json)
+  // confirm via config.yaml (presets live there, not state.json)
   let cfg = llamastash::config::load_config_from_path(&h.config_path).config;
   assert_eq!(
     cfg.presets["m.gguf"].entries["long-ctx"]
@@ -537,7 +534,6 @@ async fn presets_save_list_delete_round_trip() {
     cfg.presets
   );
 
-  // list
   let code = run_dispatch_at(
     Some(&h.socket),
     &h.model_dir,
@@ -549,7 +545,6 @@ async fn presets_save_list_delete_round_trip() {
   .await;
   assert_eq!(code, exit_codes::SUCCESS);
 
-  // delete
   let code = run_dispatch_at(
     Some(&h.socket),
     &h.model_dir,
@@ -836,8 +831,8 @@ async fn start_ctx_above_native_succeeds_and_duplicate_launch_uses_new_port() {
   let h = spawn_daemon_with_model_wide_range("dup", "m.gguf", "llama").await;
 
   // First launch: pass a deliberately huge ctx so we exercise the
-  // "ctx > native_ctx" path. The plan calls for the daemon to log
-  // a warning but still exit zero on the CLI side.
+  // "ctx > native_ctx" path. The daemon logs a warning but still
+  // exits zero on the CLI side.
   let code = run_dispatch_at(
     Some(&h.socket),
     &h.model_dir,
@@ -932,7 +927,6 @@ async fn logs_follow_returns_daemon_unreachable_when_daemon_dies() {
   .await;
   assert_eq!(code, exit_codes::SUCCESS);
 
-  // Resolve the launch id by talking to the daemon directly.
   let mut client = h.client().await;
   // 30 s headroom for slow CI runners — see `READY_TIMEOUT_NOTE`.
   let deadline = Instant::now() + READY_TIMEOUT;
@@ -999,9 +993,8 @@ async fn logs_follow_returns_daemon_unreachable_when_daemon_dies() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pull_subcommand_exits_pull_failed_until_unit_9_lands() {
-  // Unit 3 wires the CLI surface (positional + --json + exit code 69).
-  // Unit 9 implements the hf-hub download body. Until then the stub
-  // returns PULL_FAILED with an explanatory message.
+  // The hf-hub download body is not implemented yet. The stub returns
+  // PULL_FAILED with an explanatory message.
   let model_dir = unique_temp("pull-models");
   let code = run_dispatch_at(
     None,

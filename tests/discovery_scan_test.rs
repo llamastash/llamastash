@@ -1,6 +1,5 @@
 //! End-to-end discovery tests: walk a real temp filesystem tree and
-//! verify the streaming `mpsc` channel surfaces every model the way
-//! Unit 4's plan specifies.
+//! verify the streaming `mpsc` channel surfaces every model.
 #![cfg(feature = "test-fixtures")]
 
 use std::fs;
@@ -42,7 +41,6 @@ async fn scan_emits_three_models_grouped_under_parent_dirs() {
   }
   assert_eq!(seen.len(), 3, "three GGUFs across two dirs");
 
-  // Every row should have metadata since the fixture is structurally valid.
   for m in &seen {
     assert!(m.metadata.is_some(), "minimal gguf should parse");
     assert!(m.parse_error.is_none());

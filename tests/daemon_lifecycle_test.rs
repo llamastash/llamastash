@@ -159,11 +159,10 @@ async fn stale_runtime_file_is_overwritten_on_start() {
   std::fs::remove_dir_all(&dir).ok();
 }
 
-/// Regression: `start_detached` used to re-exec the child as plain
-/// `llamastash daemon start`, which rebuilt `DaemonOptions` from XDG
-/// defaults and silently ignored the caller's `state_dir`. With the
-/// hidden `--state-dir` flag wired through, the child must bind under
-/// the caller-supplied state directory, not the production default.
+/// Regression: `start_detached` rebuilds `DaemonOptions` in the re-execed
+/// child, so the caller's `state_dir` must ride the hidden `--state-dir`
+/// flag. Without it the child binds the production default instead of the
+/// caller-supplied state directory.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn start_detached_honours_caller_supplied_paths() {
   let dir = unique_temp_dir("detach-opts");

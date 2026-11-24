@@ -1,50 +1,21 @@
 //! Latency + throughput benchmark for the OpenAI-compat proxy.
 //!
-//! Plan: docs/plans/2026-05-21-001-feat-proxy-router-plan.md (Unit 7).
+//! Three benchmark groups (`routing_decision`, `first_token`,
+//! `throughput`), each with a direct and a proxied arm; the delta
+//! between the arms is the proxy overhead.
+//!
+//! There is no instrumentation hook in the proxy: a `bench-hooks`
+//! feature would force a new conditional on the hot path. Instead the
+//! bench measures client-side round-trips, and treats "client-side
+//! proxy roundtrip minus client-side direct roundtrip" as a
+//! close-enough proxy of routing overhead at our load level.
+//!
+//! Two consecutive bench runs on the same machine should land within
+//! ~10% of each other on p50 (criterion's `--quick` mode gives
+//! noisier numbers; the maintainer's reference run uses the default
+//! warm-up + sample budget). Outliers are reported by criterion's
+//! HTML output.
 //! Runbook: docs/runbooks/proxy-latency-bench.md.
-//!
-//! # What this bench measures
-//!
-//! Three axes, each with a "direct" arm (the bench client talking
-//! straight to `fake_llama_server`) and a "proxied" arm (the bench
-//! client talking to the in-process proxy, which forwards to the
-//! same fake instance). The delta between the two arms is the proxy
-//! overhead — R160's "negligible overhead" promise.
-//!
-//! 1. **Routing-decision latency** — proxied vs direct `POST
-//!    /v1/chat/completions` round-trip with a minimal non-streaming
-//!    payload. We don't add an instrumentation hook into the
-//!    production proxy code (a `bench-hooks` feature would force a
-//!    new conditional on the hot path); instead the bench treats
-//!    "client-side proxy roundtrip minus client-side direct
-//!    roundtrip" as a close-enough proxy of routing overhead at our
-//!    load level. The plan calls this fallback out explicitly.
-//!
-//! 2. **End-to-end first-token latency** — time from `POST` send to
-//!    first byte of the response head. Same `/v1/chat/completions`
-//!    request shape but the fake server emits an SSE stream. We
-//!    measure the moment the first `HTTP/1.1` line lands.
-//!
-//! 3. **Throughput** — same SSE request, but the inner loop reads
-//!    the entire body and divides "fake bytes returned" by elapsed
-//!    time. Both arms exercise the same upstream payload so the
-//!    direct/proxied throughput ratio is the proxy's add-on cost.
-//!
-//! # Reproducibility
-//!
-//! Two consecutive bench runs on the same machine should land
-//! within ~10% of each other on p50 (criterion's `--quick` mode
-//! gives noisier numbers; the maintainer's reference run uses the
-//! default warm-up + sample budget). Outliers are reported by
-//! criterion's HTML output.
-//!
-//! # Fallbacks documented in the runbook
-//!
-//! - If a target is missed, the runbook says to investigate before
-//!   either fixing or revising R160 in the brainstorm.
-//! - If this in-process scaffolding ever becomes too thin (e.g. the
-//!   proxy's `ProxyState` surface changes), the runbook's "Alternative
-//!   harness" section documents the daemon-subprocess fallback.
 
 #![cfg(feature = "test-fixtures")]
 
@@ -72,29 +43,20 @@ use tokio::runtime::Runtime;
 
 // --- shared harness ------------------------------------------------------
 
-/// Display name the bench uses for `body.model`. Catalog + registry
-/// agree on this; the resolver hits an exact-name match so there's no
-/// fuzzy-search noise in the numbers.
+/// Catalog + registry agree on this; the resolver hits an exact-name
+/// match so there's no fuzzy-search noise in the numbers.
 const BENCH_MODEL_NAME: &str = "bench-model";
 
-/// Canonical request body. Small + non-streaming so the
-/// routing-decision arm doesn't pay SSE framing costs; the streaming
-/// arms override `stream` below.
+/// Small + non-streaming so the routing-decision arm doesn't pay SSE
+/// framing costs.
 const BENCH_BODY_NONSTREAM: &str =
   r#"{"model":"bench-model","messages":[{"role":"user","content":"hi"}]}"#;
 const BENCH_BODY_STREAM: &str =
   r#"{"model":"bench-model","messages":[{"role":"user","content":"hi"}],"stream":true}"#;
 
-/// State the bench harness owns for the life of one
-/// criterion run. Holds the running fake_llama_server (via the
-/// supervisor), the in-process proxy listener, and the two endpoints
-/// the inner loops hit.
+/// State the bench harness owns for the life of one criterion run.
 struct Harness {
-  /// Endpoint of the in-process proxy. Bench client targets this for
-  /// the "proxied" arm.
   proxy_addr: SocketAddr,
-  /// Endpoint of the fake_llama_server. Bench client targets this
-  /// directly for the "direct" arm.
   upstream_addr: SocketAddr,
   /// Triggered on drop to tear down the proxy listener cleanly.
   shutdown: ShutdownToken,
@@ -113,8 +75,8 @@ impl Drop for Harness {
   fn drop(&mut self) {
     // Signal the proxy task to drain.
     self.shutdown.trigger();
-    // Stop the fake_llama_server. We block on the runtime for the
-    // stop call so drop is synchronous from the bench's perspective.
+    // We block on the runtime for the stop call so drop is
+    // synchronous from the bench's perspective.
     let sup = self.supervisor.clone();
     let _ = self
       .rt
@@ -144,8 +106,8 @@ fn build_harness() -> Harness {
   // runtime task so we can `block_on` once and get all three handles
   // back to the bench harness.
   let (proxy_addr, upstream_addr, shutdown, supervisor) = rt.block_on(async {
-    // 1) Spawn the fake_llama_server. The supervisor probes /health
-    //    and transitions to Ready before returning.
+    // The supervisor probes /health and transitions to Ready before
+    // returning.
     let upstream_port = pick_free_port();
     let model_id = ModelId {
       path: PathBuf::from(&catalog_path),
@@ -176,7 +138,6 @@ fn build_harness() -> Harness {
     .expect("spawn fake_llama_server");
     wait_for_ready(&supervisor).await;
 
-    // 2) Build the catalog + registry + proxy state.
     let catalog = ModelCatalog::new();
     catalog
       .upsert(discovered(&catalog_path, BENCH_MODEL_NAME, "qwen3"))
@@ -192,7 +153,6 @@ fn build_harness() -> Harness {
       llamastash::proxy::DEFAULT_BODY_LIMIT_BYTES,
     );
 
-    // 3) Spin up the proxy listener on an ephemeral port.
     let shutdown = ShutdownToken::new();
     let status: StatusCell = new_status_cell();
     let bind_addr = loopback_addr(0);
@@ -306,9 +266,8 @@ fn discovered(path: &str, display_label: &str, arch: &str) -> DiscoveredModel {
 
 // --- HTTP client primitives used by the bench inner loops ---------------
 
-/// Send `POST <path>` with `body` and read the entire response.
-/// Returns elapsed wall-clock time + response byte count. Bench's
-/// "full round-trip" measurement.
+/// Send `POST <path>` with `body`, read the entire response.
+/// Returns elapsed wall-clock time + response byte count.
 fn post_and_drain(addr: SocketAddr, path: &str, body: &str) -> (Duration, usize) {
   let mut sock = TcpStream::connect(addr).expect("connect");
   sock
@@ -363,10 +322,8 @@ fn build_request(addr: SocketAddr, path: &str, body: &str) -> String {
 // --- criterion benches ---------------------------------------------------
 
 fn bench_routing_decision(c: &mut Criterion) {
-  // "Routing decision" axis: time from the client's POST send to the
-  // full response arrival, on a minimal non-streaming body. The
-  // direct/proxied delta is the proxy's added work (resolve_model +
-  // supervisor lookup + reqwest forward).
+  // The direct/proxied delta is the proxy's added work
+  // (resolve_model + supervisor lookup + reqwest forward).
   let harness = build_harness();
   let mut group = c.benchmark_group("routing_decision");
   // Loopback is fast; cap measurement at ~5s to keep `cargo bench`
@@ -392,10 +349,9 @@ fn bench_routing_decision(c: &mut Criterion) {
 }
 
 fn bench_first_token(c: &mut Criterion) {
-  // First-byte-of-response axis. Both arms send `stream: true`; the
-  // fake emits SSE frames so the first byte lands as soon as the
-  // status line is flushed. R160's "<5% streaming first-token
-  // overhead" lives here.
+  // Both arms send `stream: true`; the fake emits SSE frames so the
+  // first byte lands as soon as the status line is flushed. The <5%
+  // streaming first-token overhead target lives here.
   let harness = build_harness();
   let mut group = c.benchmark_group("first_token");
   group.measurement_time(Duration::from_secs(5));
@@ -417,10 +373,7 @@ fn bench_first_token(c: &mut Criterion) {
 }
 
 fn bench_throughput(c: &mut Criterion) {
-  // Throughput axis: read the entire SSE body and divide bytes by
-  // wall-clock. Criterion's `Throughput::Bytes` lets the report show
-  // "MiB/s" which the runbook can directly compare against the direct
-  // arm. R160's "<2% throughput overhead" lives here.
+  // The <2% throughput overhead target lives here.
   //
   // We measure one full request per iteration — the fake server's
   // canonical SSE response is ~200 bytes, so this is genuinely a

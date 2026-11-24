@@ -1,16 +1,11 @@
 //! End-to-end coverage that the daemon honours `LoadedConfig` + CLI
 //! flags when resolving its discovery roots.
 //!
-//! Closes the Unit 4 follow-ups:
-//! - **P1** "Wire production daemon discovery roots from config + CLI" —
+//! One test supplies `model_paths` through config and asserts the
+//! catalog populates through `list_models`. The other seeds a fake
+//! Ollama layout under a temp home and proves the manifest-backed
+//! blob appears in `list_models` under `source: "ollama"`.
 #![cfg(feature = "test-fixtures")]
-//!   uses `cli::daemon::resolve_scan_roots` (via the public route the
-//!   real binary takes) and asserts the resulting catalog ends up
-//!   populated through `list_models`.
-//! - **P2** "Default-cache Ollama regression" — seeds a fake Ollama
-//!   layout under a temp home, runs the daemon against it, and proves
-//!   the manifest-backed blob appears in `list_models` under
-//!   `source: "ollama"`.
 
 use llamastash::test_support::DAEMON_STARTUP_TIMEOUT;
 use std::fs;
@@ -43,8 +38,7 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// RAII guard that snapshots, unsets, and restores cache-related env
 /// vars production code honours. Hold one of these for the lifetime of
-/// any test that calls into `default_set` / `default_ollama_paths` /
-/// `default_hf_paths`.
+/// any test that calls into `default_set`.
 struct EnvIsolation {
   _guard: std::sync::MutexGuard<'static, ()>,
   saved: Vec<(&'static str, Option<std::ffi::OsString>)>,

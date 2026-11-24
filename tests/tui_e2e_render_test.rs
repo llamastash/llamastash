@@ -1,4 +1,4 @@
-//! End-to-end TUI render test (KDash-style).
+//! End-to-end TUI render test.
 //!
 //! Renders the full dashboard into a fixed-size `TestBackend`, with a
 //! seeded App that exercises every visible region — title bar, host
@@ -7,10 +7,6 @@
 //! golden text file. The fixture lives at
 //! `tests/golden/dashboard-overview.txt`; refresh it with the env var
 //! `UPDATE_GOLDEN=1` after intentional UI changes.
-//!
-//! Modeled on KDash's `test_draw_overview_full_screen_fixture` in
-//! `kdash/src/ui/mod.rs` — same approach: feed a deterministic state,
-//! draw once, line-by-line compare against an embedded fixture.
 
 use std::path::PathBuf;
 
@@ -726,9 +722,7 @@ fn dashboard_render_carries_key_landmarks() {
   assert!(frame.contains("GPU"));
   assert!(frame.contains("VRAM"));
   assert!(frame.contains("NVIDIA"));
-  // Daemon pane: server row + always-on proxy row. The build
-  // version surfaces on the title bar (`render_title_left`) and is
-  // no longer repeated on the info pane.
+  // Daemon pane: server row + always-on proxy row.
   assert!(frame.contains("llamacpp (cuda)"));
   assert!(
     frame.contains("proxy"),

@@ -1,8 +1,7 @@
 //! Minimal stand-in for the real `vllm` launcher, used by the vLLM
 //! integration tests. Hand-rolls just enough HTTP/1.1 over
 //! `tokio::TcpListener` to answer what llamastash's readiness probe, orphan
-//! sweep and proxy touch — and to reproduce the two vLLM-specific behaviours
-//! that shaped the backend:
+//! sweep and proxy touch — and to reproduce the two vLLM-specific behaviours:
 //!
 //! - **slow engine init**: the real server profiles memory and builds the KV
 //!   cache before it serves, 10-27 s on a 0.5B and longer on real models.
@@ -144,9 +143,8 @@ fn parse_args() -> Config {
       "--bind-early" => bind_early = true,
       // A real launcher refuses an argv it cannot parse, and so must this: an
       // accept-everything fixture cannot detect a misspelled flag, a missing
-      // value, or a dropped tail, which is exactly how the extras tail came to
-      // be silently discarded while every test stayed green. Anything not in
-      // the tuning set below is a construction error and exits non-zero.
+      // value, or a dropped tail. Anything not in the tuning set below is a
+      // construction error and exits non-zero.
       other if other.starts_with('-') => {
         if !KNOWN_TUNING_FLAGS.contains(&other.split('=').next().unwrap_or(other)) {
           eprintln!("fake_vllm_server: unrecognised flag {other:?}");

@@ -3,11 +3,7 @@
 //! Spins up the daemon over a temp `DaemonOptions` whose discovery
 //! roots point at a seeded fixture directory; then calls the
 //! `list_models` method through the real IPC client and asserts the
-//! response shape matches the plan's documented surface.
-//!
-//! Also covers the integration verification line from Unit 4:
-//! "a newly-dropped `model.gguf` into a watched root appears via
-//! `list_models` within ~1 second."
+//! response shape.
 #![cfg(feature = "test-fixtures")]
 
 use llamastash::test_support::DAEMON_STARTUP_TIMEOUT;
@@ -109,7 +105,6 @@ async fn list_models_returns_seeded_fixtures() {
     assert_eq!(row["source"], serde_json::json!("user"));
   }
 
-  // Shutdown.
   let mut client = Client::connect(&socket).await.expect("connect to shutdown");
   let _ = client.call("shutdown", None).await.expect("shutdown");
   timeout(Duration::from_secs(3), handle)
@@ -149,8 +144,7 @@ async fn newly_dropped_gguf_appears_via_list_models_within_a_second() {
     tokio::time::sleep(Duration::from_millis(50)).await;
   }
 
-  // Now drop a new file and verify it surfaces. The plan calls for
-  // ~1 second; allow up to 5s under CI load.
+  // Allow up to 5s under CI load.
   fs::write(scan_root.join("dropped.gguf"), build_minimal_gguf("phi3")).unwrap();
   let deadline = std::time::Instant::now() + Duration::from_secs(5);
   loop {
@@ -170,7 +164,6 @@ async fn newly_dropped_gguf_appears_via_list_models_within_a_second() {
     tokio::time::sleep(Duration::from_millis(75)).await;
   }
 
-  // Shutdown.
   let mut client = Client::connect(&socket).await.expect("connect to shutdown");
   let _ = client.call("shutdown", None).await.expect("shutdown");
   timeout(Duration::from_secs(3), handle)

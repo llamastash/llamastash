@@ -1,10 +1,5 @@
 //! `config.example.yaml` is documentation users copy from, so it has to be
 //! config the loader actually honours.
-//!
-//! Nothing checked it before, and it drifted: the shipped `arch_defaults` and
-//! `presets` examples kept the pre-registry key shape after the ids changed.
-//! Copying them produced a file that parsed without complaint and then did
-//! nothing — the silent failure the whole knob refactor exists to remove.
 
 use std::path::PathBuf;
 
@@ -15,7 +10,6 @@ fn example_path() -> PathBuf {
   PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config.example.yaml")
 }
 
-/// It parses, with no warning and no relocated keys.
 #[test]
 fn the_shipped_example_config_loads_clean() {
   let loaded = load_config_from_path(&example_path());

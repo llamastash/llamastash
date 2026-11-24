@@ -1,6 +1,6 @@
 //! Integration coverage for the `init` clap surface — repeatable +
 //! comma-separated `--only`/`--skip`, mutual exclusion, the
-//! `--yes --json --offline` triple, and the new exit codes.
+//! `--yes --json --offline` triple, and the init exit codes.
 
 use std::path::PathBuf;
 
@@ -76,7 +76,7 @@ fn init_recommended_json_offline_combinable() {
 
 #[test]
 fn new_exit_codes_are_in_the_post_v1_range() {
-  // R78 fixed the codes at 72/73/74; the constants are part of the
+  // The codes are fixed at 72/73/74; the constants are part of the
   // public CLI contract.
   assert_eq!(INIT_ABORTED, 72);
   assert_eq!(INIT_DOWNLOAD_FAILED, 73);

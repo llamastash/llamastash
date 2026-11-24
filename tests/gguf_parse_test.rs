@@ -1,4 +1,4 @@
-//! End-to-end integration tests for the GGUF layer (Unit 3).
+//! End-to-end integration tests for the GGUF layer.
 //!
 //! Each test synthesises a GGUF byte sequence via the in-crate fixture
 //! builder, writes it to a temp file, and drives `read_path` / `summarise`
