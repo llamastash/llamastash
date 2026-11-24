@@ -92,9 +92,8 @@ fn render_prompt(frame: &mut Frame<'_>, area: Rect, field: &PromptField<'_>, pal
   let block = palette.panel_block(&format!(" {} ", field.title), field.active);
   let inner = block.inner(area);
   frame.render_widget(block, area);
-  // Round-8: drop the leading `▌ ` block; align the caret style
-  // with the Models pane filter (`▏` + REVERSED) so all single-line
-  // text inputs read the same.
+  // Caret style matches the Models pane filter (`▏` + REVERSED) so
+  // all single-line text inputs read the same.
   let mut spans = vec![Span::styled(field.text.to_string(), palette.text_style())];
   if field.active {
     spans.push(crate::tui::fmt::caret(palette));
@@ -172,15 +171,13 @@ mod tests {
 
   #[test]
   fn input_pane_render_applies_scroll_offset() {
-    // Round-8: the input pane carries a scroll offset for the body
-    // viewport. With content taller than the pane, a non-zero offset
-    // skips earlier lines without panicking or blanking the buffer.
+    // With content taller than the pane, a non-zero offset skips
+    // earlier lines without panicking or blanking the buffer.
     let body: Vec<Line<'static>> = (0..20)
       .map(|i| Line::from(Span::raw(format!("line {i}"))))
       .collect();
     let off = Cell::new(2);
     let frame = render_body_frame(body, &off);
-    // With offset 2 the first body row shown should be "line 2".
     assert!(
       frame.contains("line 2"),
       "scroll_offset must skip earlier lines: {frame}"

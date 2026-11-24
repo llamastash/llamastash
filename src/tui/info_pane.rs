@@ -1,12 +1,10 @@
-//! Top-middle info-row pane: daemon socket + pid + uptime,
-//! llama-server binary, OpenAI-compat proxy listener, discovery
-//! counters, and a one-line running summary.
+//! Top-middle info-row pane: daemon port + pid + uptime, backend
+//! server labels, proxy listener, model counts, and a one-line
+//! running summary.
 //!
-//! Five label-prefixed rows. Long paths left-truncate with `…/`. The
-//! `running` line collapses to `—` when nothing is supervised. Width
-//! is flexible — this panel takes whatever's between Host (fixed 32)
-//! and Logo (fixed 25 when present). Build version lives on the
-//! title row (`render_title_left`) and is not repeated here.
+//! Five label-prefixed rows. The panel takes whatever width is left
+//! between the fixed-width Host and Logo panels. Build version lives
+//! on the title row (`render_title_left`) and is not repeated here.
 
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -25,9 +23,7 @@ const LABEL_RUNNING: &str = "running ";
 const LABEL_PROXY: &str = "proxy   ";
 const LABEL_PORT: &str = "port    ";
 
-/// Render the Daemon info panel into `area`. The block title is
-/// `Daemon`; inner content is five label-prefixed rows (daemon,
-/// server, proxy, counts, running).
+/// Render the Daemon info panel into `area`.
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   let block = palette.panel_block(" Daemon ", true);
   let inner = block.inner(area);
@@ -44,14 +40,10 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// Render the proxy listener's state. Always on (the third row): when
-/// the proxy is up, the row reports `<listen> · webui <listen>/ui` so
-/// both the live OpenAI-compat endpoint and the browser web-UI entry
-/// point are one glance away; when disabled or absent, the row renders an
-/// explicit `disabled` / `—` so the reader can tell "off by config"
-/// from "not reported yet". Labels match the wire `status` values
-///  and the success/error palette signals liveness without
-/// forcing the user to read the endpoint.
+/// Always on (the third row). When disabled or absent, the row
+/// renders an explicit `disabled` / `—` so the reader can tell "off
+/// by config" from "not reported yet". Labels match the wire
+/// `status` values.
 fn proxy_row<'a>(app: &'a App, palette: &'a Palette) -> Line<'a> {
   let mut spans = vec![Span::styled(LABEL_PROXY, palette.label_style())];
   match app.daemon_info.proxy.as_ref() {
@@ -63,12 +55,10 @@ fn proxy_row<'a>(app: &'a App, palette: &'a Palette) -> Line<'a> {
       let listen = info.listen.as_deref().unwrap_or("");
       match info.status.as_str() {
         "listening" => {
-          // `<listen> (auth)? · webui <listen>/ui`. The endpoints render
-          // in the success tone (live); the ` · webui ` label rides the
-          // row's label colour so `webui` reads as a sibling of `proxy`,
-          // not part of the API endpoint. The `(auth)` flag sits right
-          // after the API endpoint so it reads as a listener property,
-          // not a UI one.
+          // The ` · webui ` label rides the row's label colour so
+          // `webui` reads as a sibling of `proxy`, not part of the API
+          // endpoint. The `(auth)` flag sits right after the API
+          // endpoint so it reads as a listener property, not a UI one.
           let mut endpoint = listen.to_string();
           if info.auth.as_deref() == Some("enforced") {
             endpoint.push_str(" (auth)");
@@ -114,14 +104,11 @@ fn proxy_row<'a>(app: &'a App, palette: &'a Palette) -> Line<'a> {
 }
 
 fn daemon_row<'a>(app: &'a App, _budget: usize, palette: &'a Palette) -> Line<'a> {
-  // Layout: `port    48134 · pid 1234 · up 3h12m`. The panel title is
-  // already "Daemon", so a leading `daemon  ` label would just
-  // repeat it. The full control-plane URL is loopback-only and the
-  // host half is always `127.0.0.1`, so we surface the port (the
-  // only operator-relevant chunk) directly. `port` is padded to
-  // LABEL_WIDTH so its value column lines up with the other rows;
-  // `port`, `pid`, and `up` render in the panel's label colour and
-  // numeric values render in text colour.
+  // The panel title is already "Daemon", so a leading `daemon  ` label
+  // would just repeat it. The full control-plane URL is loopback-only
+  // and the host half is always `127.0.0.1`, so we surface the port
+  // (the only operator-relevant chunk) directly. `port` is padded to
+  // LABEL_WIDTH so its value column lines up with the other rows.
   let dash = crate::tui::glyphs::active().placeholder();
   let port_val = app
     .daemon_info
@@ -156,9 +143,8 @@ fn daemon_row<'a>(app: &'a App, _budget: usize, palette: &'a Palette) -> Line<'a
   ])
 }
 
-/// Extract the port from an `http://host:port` URL. Returns `None`
-/// when the URL is malformed or no port is present — the caller
-/// renders `—` in that case rather than guessing.
+/// Returns `None` when the URL is malformed or no port is present —
+/// the caller renders `—` in that case rather than guessing.
 fn parse_port_from_url(url: &str) -> Option<u16> {
   let after_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
   let authority = after_scheme.split('/').next().unwrap_or("");
@@ -171,8 +157,8 @@ fn server_row<'a>(app: &'a App, budget: usize, palette: &'a Palette) -> Line<'a>
   // Startup auto-spawn was refused (backend fail-fast precheck) and no
   // daemon has answered since: this row carries the explanation. Takes
   // precedence over the stale `daemon_info` paths below — with no
-  // daemon, `server_path` is `None` and the generic "Not found" hint
-  // would mask the real, actionable failure.
+  // daemon, `backend_servers` is empty and the generic "Not found"
+  // hint would mask the real, actionable failure.
   if !app.daemon_connected {
     if let Some(err) = app.daemon_start_error.as_deref() {
       return server_error_row(err, budget, palette);
@@ -304,7 +290,7 @@ fn server_entry_spans<'a>(
 /// one single-line failure per backend (the precheck joins them with
 /// `\n`); every backend shares the row with an **equal** per-entry
 /// budget, each middle-truncated so a long engine message can't
-/// push a llama.cpp failure off-screen entirely.
+/// push another backend's failure off-screen entirely.
 fn server_error_row<'a>(err: &str, budget: usize, palette: &'a Palette) -> Line<'a> {
   let entries: Vec<&str> = err.lines().filter(|l| !l.trim().is_empty()).collect();
   let mut spans = vec![Span::styled(LABEL_SERVER, palette.label_style())];
@@ -326,9 +312,8 @@ fn server_error_row<'a>(err: &str, budget: usize, palette: &'a Palette) -> Line<
 }
 
 /// Split `budget` columns equally across `n` row entries separated by
-/// `sep_w`-wide separators. Shared by the multi-backend server row and
-/// the multi-failure error row so "equal share, none evicts another"
-/// stays one rule.
+/// `sep_w`-wide separators so "equal share, none evicts another" stays
+/// one rule.
 fn equal_entry_budget(budget: usize, n: usize, sep_w: usize) -> usize {
   budget.saturating_sub(sep_w * n.saturating_sub(1)) / n.max(1)
 }
@@ -359,7 +344,7 @@ fn middle_ellipsise(s: &str, budget: usize) -> String {
 }
 
 /// Take the longest prefix of `s` whose display width is `<= budget`.
-/// Mirrors [`take_tail_by_width`]; iterates forward so a wide
+/// Mirrors `take_tail_by_width`; iterates forward so a wide
 /// character that wouldn't fit is dropped rather than split.
 fn take_head_by_width(s: &str, budget: usize) -> String {
   let mut acc_w = 0usize;
@@ -378,7 +363,7 @@ fn take_head_by_width(s: &str, budget: usize) -> String {
 /// Right-truncate `s` to fit `budget` terminal columns, appending
 /// `…` when content was dropped. Use this for free-form text like
 /// hints/messages where leading characters carry the most signal;
-/// [`ellipsise`] keeps the tail (paths/launch-ids) instead.
+/// `take_tail_by_width` keeps the tail (paths/launch-ids) instead.
 fn right_ellipsise(s: &str, budget: usize) -> String {
   if budget == 0 {
     return String::new();
@@ -457,10 +442,8 @@ fn running_row<'a>(app: &'a App, budget: usize, palette: &'a Palette) -> Line<'a
       Span::styled("0", palette.muted_style()),
     ]);
   }
-  // Layout: `running 3 (name1 :port1 · name2 :port2 · …)`. The
-  // count prefix is fixed-width, the paren-list takes the rest and
-  // truncates with `…` (not `…/`) since model names read left-to-
-  // right; the right edge is the dispensable end.
+  // The paren-list truncates with `…` (not `…/`) since model names
+  // read left-to-right; the right edge is the dispensable end.
   let prefix = format!("{n} (");
   let suffix = ")";
   let prefix_w = prefix.width();
@@ -779,8 +762,8 @@ mod tests {
       "each pathless row must be named by its own pid, got: {running_row:?}"
     );
 
-    // The pid comes from the row's own field, not from the launch id the
-    // renderer no longer parses: with none recorded there is nothing to print.
+    // The pid comes from the row's own field, not from the launch id:
+    // with none recorded there is nothing to print.
     app.external = vec![ManagedRow {
       launch_id: "ext-41104".into(),
       pid: None,
@@ -1010,7 +993,7 @@ mod tests {
   #[test]
   fn daemon_row_uses_middot_separators() {
     // `port    48134 · pid 4242 · up 3h12m` — the chunks are joined by
-    // ` · ` (the TUI's separator convention), not the old double-space.
+    // ` · ` (the TUI's separator convention).
     let mut app = App::new(AppOptions::default());
     app.daemon_connected = true;
     app.daemon_info = DaemonInfo {
@@ -1029,8 +1012,8 @@ mod tests {
 
   #[test]
   fn daemon_row_renders_em_dash_port_when_ipc_url_missing() {
-    // A pre-Phase-A daemon (or a status response that hasn't landed
-    // yet) leaves `ipc_url = None`. The row must still render a
+    // A status response that hasn't landed yet leaves `ipc_url = None`.
+    // The row must still render a
     // placeholder rather than collapsing the `port` chunk away — the
     // reader needs the same five fixed rhythms to keep their eye on
     // pid + uptime.
@@ -1068,10 +1051,10 @@ mod tests {
 
   #[test]
   fn server_row_shows_actionable_hint_when_binary_unresolved() {
-    // When the daemon hasn't located a `llama-server` binary, the
-    // row tells the user what knobs to turn — rather than a bare
-    // `—` that reads as a bug. The hint mentions both the env var
-    // and the CLI flag so either fix is discoverable.
+    // When no backend binary resolved, the row tells the user what
+    // knobs to turn — rather than a bare `—` that reads as a bug. The
+    // hint mentions both the env var and the CLI flag so either fix
+    // is discoverable.
     let mut app = App::new(AppOptions::default());
     app.daemon_info = DaemonInfo {
       server_path: None,
@@ -1157,7 +1140,7 @@ mod tests {
   fn server_row_splits_budget_equally_across_backend_failures() {
     // Two backends failed (one precheck line each): both must stay
     // visible on the single row, equally truncated — a long engine
-    // message can't evict the llama.cpp one.
+    // message can't evict another backend's.
     let mut app = App::new(AppOptions::default());
     app.daemon_connected = false;
     app.daemon_start_error = Some(
@@ -1258,9 +1241,7 @@ mod tests {
       .iter()
       .find(|r| r.contains("proxy"))
       .expect("proxy row");
-    // `<listen> (auth) · webui <listen>/ui`: the auth flag sits on the
-    // API endpoint and the `· webui` segment opens the browser entry
-    // point. (The trailing webui URL is clipped by the narrow test panel.)
+    // The trailing webui URL is clipped by the narrow test panel.
     assert!(
       proxy_row.contains("0.0.0.0:11434 (auth)") && proxy_row.contains("· webui"),
       "expected LAN listener with auth marker + webui segment: {proxy_row:?}"
@@ -1283,8 +1264,6 @@ mod tests {
     };
     let palette = app.palette();
     let line = proxy_row(&app, palette);
-    // The ` · webui ` segment carries the label colour (same as the `proxy`
-    // row label, the first span), not the success endpoint tone.
     let ui_span = line
       .spans
       .iter()
@@ -1357,10 +1336,10 @@ mod tests {
   #[test]
   fn proxy_row_renders_em_dash_when_no_proxy_info() {
     // The proxy row is always present in the 5-row layout; when the
-    // daemon hasn't reported a proxy block yet (or a pre-Unit-5
-    // daemon omits it entirely), the row reads `proxy   —` instead
-    // of being hidden — so the reader can tell "not reported" apart
-    // from `disabled` (config off) or `listening` (live).
+    // daemon hasn't reported a proxy block yet, the row reads
+    // `proxy   —` instead of being hidden — so the reader can tell
+    // "not reported" apart from `disabled` (config off) or
+    // `listening` (live).
     let app = App::new(AppOptions::default());
     let rows = render_lines(&app);
     let proxy_row = rows

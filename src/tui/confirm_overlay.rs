@@ -14,8 +14,7 @@ use crate::tui::app::{App, ConfirmAction, ConfirmSeverity};
 use crate::tui::keybindings::{Action, Focus};
 use crate::tui::popup::{self, Button, Size, Spec};
 
-/// Render the confirmation popup. Caller should only invoke this
-/// when `app.confirm_dialog` is `Some(...)`.
+/// Caller should only invoke this when `app.confirm_dialog` is `Some(...)`.
 pub fn render(
   frame: &mut Frame<'_>,
   area: Rect,
@@ -25,14 +24,14 @@ pub fn render(
 ) {
   let (title, body) = describe(app, action);
 
-  // Tone the border/title off the action's severity: red for prompts
-  // that lose work (stop/kill/delete/cancel), the warning hue for
-  // neutral/additive prompts so red stays meaningful.
   // A notice takes no action, so its buttons must not say "confirm".
   let (confirm_label, cancel_label) = match action {
     ConfirmAction::DaemonBuildMismatch { .. } => ("ok", "close"),
     _ => ("confirm", "cancel"),
   };
+  // Tone the border/title off the action's severity: red for prompts
+  // that lose work (stop/kill/delete/cancel), the warning hue for
+  // neutral/additive prompts so red stays meaningful.
   let (tone, primary) = match action.severity() {
     ConfirmSeverity::Destructive => (palette.error, Button::destructive(confirm_label)),
     ConfirmSeverity::Neutral => (palette.warning, Button::submit(confirm_label)),
@@ -78,8 +77,7 @@ pub fn render(
 }
 
 /// Title + body text for a confirm action. Kept here so the action
-/// definition stays a pure data carrier — the renderer owns its
-/// copy of the human strings.
+/// definition stays a pure data carrier.
 fn describe(app: &App, action: &ConfirmAction) -> (&'static str, String) {
   match action {
     ConfirmAction::StopModel { name, .. } => (

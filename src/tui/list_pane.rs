@@ -1,23 +1,7 @@
 //! Model list rows for the left pane.
 //!
-//! Four row variants live here:
-//!  1. [`ListRow::TableHeader`] — the column-label row pinned to the
-//!     very top of the list. Always first, never selectable, kept in
-//!     lock-step with the per-model row layout so the columns align.
-//!  2. [`ListRow::Header`] — folder-group / `★ Favorites` section
-//!     header that introduces the rows beneath it.
-//!  3. [`ListRow::Model`] — one rendered row per discovered GGUF.
-//!  4. [`ListRow::Divider`] — thin horizontal rule injected between
-//!     sections that share content (e.g. after `★ Favorites` when
-//!     folder groups follow, since favorited models also appear in
-//!     their original folder).
-//!
-//! Per-state colour: rows pick their foreground from the surface
-//! state — `Ready` is rendered with `palette.success`, `Error` with
-//! `palette.error`, everything else with `palette.fg`. The selected
-//! row uses `Modifier::REVERSED` so fg/bg flip at the terminal layer,
-//! which means a running row stays visibly "green" even when it's
-//! the highlighted row (it just inverts).
+//! Per-state colour lives in `row_fg`, the selected-row paint in
+//! `highlight_style`.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -43,23 +27,23 @@ use crate::tui::status_icons::{colour_for, glyph_for, SurfaceState};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ListRow {
   /// Always-on column-label row pinned to the top of the list.
-  /// Renders the same fixed-width column grid as every model row so
-  /// the column labels align with their values.
+  /// Always first, never selectable. Renders the same fixed-width
+  /// column grid as every model row so the column labels align with
+  /// their values.
   TableHeader,
   /// Section header (Favorites, or one parent directory).
   Header { label: String },
   /// Visual separator (horizontal rule) between sections. Not
-  /// selectable. Currently injected only after the `★ Favorites`
-  /// block when folder groups follow, so the user can tell the
-  /// favorited rows above apart from the same favorited rows
-  /// reappearing in their parent folder below.
+  /// selectable. Injected only after the `★ Favorites` block when
+  /// folder groups follow, because favorited models also appear in
+  /// their parent folder below.
   Divider,
   /// One model row. `state` is the surface-level lifecycle for any
   /// active launch of this model, or `NotLaunched` when no
   /// supervisor has touched it.
   Model {
     /// Canonical path — `Model` rows match against the daemon's
-    /// `start_model` API which expects this same path.
+    /// launch API, which expects this same path.
     path: PathBuf,
     /// User-facing display name (file stem).
     name: String,
@@ -165,9 +149,7 @@ pub struct RunningLaunchRow {
 }
 
 /// Group `models` into:
-///  - [`ListRow::TableHeader`] (always row 0, even when there's
-///    nothing else; the renderer makes the column labels themselves
-///    a visible signal that the pane is loaded).
+///  - [`ListRow::TableHeader`] at row 0 whenever any model exists.
 ///  - `★ Favorites` (only when at least one favorited model is in
 ///    the list).
 ///  - One section per parent directory, alphabetical by parent.
@@ -204,11 +186,8 @@ pub fn build_rows(inputs: RowInputs<'_>) -> Vec<ListRow> {
       label: format!("{} Running", crate::tui::glyphs::active().section_marker()),
     });
     for launch in inputs.running {
-      // If the path doesn't appear in the catalog (e.g. an
-      // adopted external launch the discovery sweep hasn't yet
-      // surfaced), synthesise a thin row so the launch still
-      // shows up. Most launches resolve to the catalog and pull
-      // metadata cleanly.
+      // An adopted external launch can be missing from the catalog
+      // sweep. Synthesise a thin row so the launch still shows up.
       let row = match by_path.get(&launch.path) {
         Some(m) => running_row(m, launch),
         None => running_row_stub(launch),
@@ -248,11 +227,9 @@ pub fn build_rows(inputs: RowInputs<'_>) -> Vec<ListRow> {
   }
 
   // Pre-compute the folder grouping so we know whether to inject a
-  // divider after the Favorites section. Running paths drop out
-  // because the user already sees a live row up top — the catalog
-  // representation would be noise. Favorited paths are *kept*: the
-  // user expects to find them in their original folder, the
-  // `★ Favorites` section is an extra shortcut, not a relocation.
+  // divider after the Favorites section. Running paths drop out; the
+  // live row up top already shows them. Favorited paths are kept: the
+  // user expects to find them in their original folder.
   let mut grouped: BTreeMap<&PathBuf, Vec<&DiscoveredModel>> = BTreeMap::new();
   for m in inputs.models {
     if !running_paths.contains(&m.path) {
@@ -261,9 +238,8 @@ pub fn build_rows(inputs: RowInputs<'_>) -> Vec<ListRow> {
   }
   let has_folder_groups = !grouped.is_empty();
 
-  // Favorites section. Paths currently in the Running group drop
-  // out so a model never appears as both a live row and a starred
-  // shortcut — the user already sees the live row up top.
+  // Favorites section. Paths currently in the Running group drop out,
+  // so a model never appears as both a live row and a starred shortcut.
   let favorites: Vec<&DiscoveredModel> = inputs
     .models
     .iter()
@@ -288,18 +264,15 @@ pub fn build_rows(inputs: RowInputs<'_>) -> Vec<ListRow> {
         None,
       ));
     }
-    // Visual separator between favorites and folder groups —
-    // favorited rows reappear in their parent folder below, so a
-    // thin rule helps the eye tell the two surfaces apart. Skipped
-    // when there's nothing after to separate from.
+    // Favorited rows reappear in their folder group below, so a thin
+    // rule separates the two. Skipped when nothing follows.
     if has_folder_groups {
       rows.push(ListRow::Divider);
     }
   }
 
   // Folder groups — one section per parent directory, alphabetical
-  // by parent. Favorited rows reappear here with their `★` glyph
-  // preserved.
+  // by parent. Favorited rows keep their `★` glyph here.
   for (parent, mut entries) in grouped {
     rows.push(ListRow::Header {
       label: crate::util::paths::friendly_group_label(parent),
@@ -335,12 +308,8 @@ fn running_row(m: &DiscoveredModel, launch: &RunningLaunchRow) -> ListRow {
     launch.backend.clone().unwrap_or_default(),
     launch.launch_name.clone(),
   );
-  // The favorite glyph drops on Running rows so two launches of the
-  // same favorited model don't both wear a star — the original star
-  // still shows on the row in its folder group below (the dedicated
-  // `★ Favorites` section filters running paths out, so the folder
-  // group is the canonical home for a running favorite). Achieved by
-  // passing `favorite=false` above.
+  // A favorite glyph on a Running row would put two stars on the same
+  // model, because the folder group below already shows it.
   if let ListRow::Model { ref mut path, .. } = row {
     // `model_row` cloned the catalog path; preserve as-is.
     let _ = path;
@@ -351,9 +320,9 @@ fn running_row(m: &DiscoveredModel, launch: &RunningLaunchRow) -> ListRow {
 fn running_row_stub(launch: &RunningLaunchRow) -> ListRow {
   ListRow::Model {
     path: launch.path.clone(),
-    // Shared fallback: `file_stem` here would truncate a dotted registry
-    // name (`qwen3.5-4b` → `qwen3`); `model_display_name`
-    // keeps the full name for synthetic paths and still stems real GGUF files.
+    // `file_stem` would truncate a dotted registry name (`qwen3.5-4b`
+    // → `qwen3`). `model_display_name` keeps the full name for
+    // synthetic paths and still stems real GGUF files.
     name: crate::util::paths::model_display_name(&launch.path),
     arch: String::new(),
     params: String::new(),
@@ -383,10 +352,10 @@ fn surface_state_for(
 
 fn display_name(m: &DiscoveredModel) -> String {
   // Same rule as `App::model_label`, but with the `display_label` already in
-  // hand: prefer it (sources where the basename is hostile — Ollama's
+  // hand: prefer it (sources where the basename is hostile, such as Ollama's
   // content-addressed `sha256-<hex>` blobs, registry entry names), else the
-  // shared scheme-aware path fallback so the full weight identifier (quant,
-  // finetune, variant) shows and a dotted synthetic name isn't stem-truncated.
+  // shared scheme-aware path fallback. The fallback keeps the full weight
+  // identifier and is not stem-truncated.
   m.display_label
     .clone()
     .unwrap_or_else(|| crate::util::paths::model_display_name(&m.path))
@@ -421,10 +390,9 @@ fn model_row(
       None,
     ),
   };
-  // Same shard-aware on-disk total the CLI's `list` and `show`
-  // surface use. Reading from disk every refresh keeps the value
-  // accurate even when the daemon's cached `weights_bytes` predates
-  // a binary upgrade that fixed the split-shard aggregation; falls
+  // Same shard-aware on-disk total the CLI's `list` and `show` use. Read
+  // from disk each refresh, because the daemon's cached `weights_bytes`
+  // can predate a binary upgrade that fixed split-shard aggregation. Falls
   // back to the cached value when the path no longer exists.
   let weights_bytes = on_disk_total_or_cached(m, cached_weights_bytes);
   ListRow::Model {
@@ -476,30 +444,25 @@ fn mode_hint_label(hint: crate::gguf::metadata::ModeHint) -> String {
 // ── Table column geometry ────────────────────────────────────────
 //
 // The pane is wrapped in a bordered Block, so ratatui reserves 1
-// column on each side. Inside the borders the rendered widget then
-// reserves a 2-cell highlight gutter (for the `> ` selection
-// arrow). What remains is the budget the table grid lives in.
+// column on each side. What remains is the budget the table grid
+// lives in.
 //
-// All five right-side columns are fixed width so headers align with
+// All the right-side columns are fixed width so headers align with
 // values. The `Name` column flexes to fill whatever's left and is
 // ellipsised when the discovered name overflows it.
 
-// No external highlight symbol/gutter — rows render flush to the
-// inner edge. The selection cursor (`=>`) is painted INSIDE the
-// favorite-marker slot instead so we don't burn a column on a
-// near-always-empty gutter.
+// Rows render flush to the inner edge. Selection shows through the
+// `REVERSED` modifier, not a leading symbol.
 const HIGHLIGHT_SYMBOL: &str = "";
 const HIGHLIGHT_GUTTER: usize = 0;
-/// Single combined marker column: hosts the selection cursor, the
-/// launch-state glyph, or the favorite star depending on priority
-/// (see [`marker_span`]). Shape is `" {char} "` — leading space for
-/// border breathing room, glyph, trailing separator. Replaces the
-/// pre-split `STATUS_W + FAV_W = 6` chrome with a flat 3 cells.
+/// Single combined marker column: hosts the launch-state glyph or
+/// the favorite star (see [`marker_span`]). Shape is `" {char} "` —
+/// leading space for border breathing room, glyph, trailing separator.
 const MARKER_W: usize = 3;
 const COL_SEP_W: usize = 1; // space before each data column
 /// Minimum number of cells the Name column reserves at all widths.
-/// Hard floor — even a pane that's too narrow for any data column
-/// still gives the model name at least this much room.
+/// Even a pane too narrow for any data column gives the model name
+/// this much room.
 const MIN_NAME_W: usize = 8;
 /// Cells the `deleting…` marker takes ahead of the name: one glyph and `" deleting… "`.
 /// The Name cell gives them up so the row keeps the width the other rows have.
@@ -515,15 +478,14 @@ const DELETE_MARKER_W: usize = 12;
 ///
 /// Sized so that a 60-cell list pane (compact mode floor, content
 /// width 58) leaves a 22-cell column budget — enough for `Size`
-/// (10) + `Ctx` (20) but not the next-tier `Quant` (30). Small
-/// views show **Name + Ctx + Size** as the user's primary signal
-/// and nothing else.
+/// (rank 10) + `Ctx` (rank 20) but not the next-tier `Quant`
+/// (rank 30). Small views show **Name + Ctx + Size** and nothing
+/// else.
 const PREFERRED_NAME_W: usize = 33;
 
 /// Identifies which model field a data column renders. Lets the
 /// [`Column`] table stay `const` while the value extraction lives
-/// at the call site (the row's per-field data isn't in scope at
-/// table-definition time).
+/// at the call site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ColumnId {
   Device,
@@ -560,8 +522,7 @@ type Column = crate::tui::columns::Column<ColumnId>;
 ///   fit signal (`Size` already carries the real footprint), so it
 ///   is the first column to drop under width pressure.
 ///
-/// Source order is the display order. Picker reorders by rank only
-/// for the visibility decision.
+/// Source order is the display order.
 const COLUMNS: &[Column] = &[
   Column {
     id: ColumnId::Arch,
@@ -726,9 +687,9 @@ pub fn border_color(palette: &Palette, focused: bool) -> Color {
 
 /// Compose the bottom-edge status legend that explains every
 /// surface-state glyph used in the row list. Rendered into the
-/// block's bottom title so it's always visible without spending a
+/// block's bottom title so it stays visible without spending a
 /// content row. Each glyph carries its semantic palette colour;
-/// the labels are muted so the strip reads as a hint, not data.
+/// the labels are muted.
 fn build_status_legend(palette: &Palette) -> Line<'static> {
   use crate::tui::status_icons::{colour_for, glyph_for, SurfaceState};
   let entries: &[(SurfaceState, &str)] = &[
@@ -784,10 +745,9 @@ pub struct RenderInputs<'a> {
 
 /// Render `rows` into the supplied area using the active palette.
 pub fn render(frame: &mut Frame<'_>, area: Rect, palette: &Palette, input: RenderInputs<'_>) {
-  // Width inside the borders is `area.width - 2`. Subtract the
-  // highlight gutter ratatui reserves for the selection marker
-  // (`HIGHLIGHT_GUTTER` cells on every row, even unselected ones,
-  // so columns stay column-aligned).
+  // Width inside the borders is `area.width - 2`, minus the highlight
+  // gutter (`HIGHLIGHT_GUTTER` cells on every row, so columns stay
+  // aligned). It is 0 today, so rows render flush.
   let inner_w = area.width.saturating_sub(2) as usize;
   let content_w = inner_w.saturating_sub(HIGHLIGHT_GUTTER);
   let layout = layout_columns(content_w, input.show_device, input.show_backend);
@@ -824,14 +784,9 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, palette: &Palette, input: Rende
         .border(border_color)
         .build(),
     )
-    // KDash-style row highlight: paint the focused row with a
-    // saturated `highlight` background (gold/amber per theme) and
-    // flip the foreground to the panel `bg` so the row reads with
-    // strong contrast against the muted body. Themes that opt out
-    // (mono: `highlight = Color::Reset`) fall back to plain
-    // `Modifier::REVERSED` so the inverted-block idiom still works
-    // without colour. Each `ListItem` leaves its cell fg unset so
-    // the override here applies uniformly across the row.
+    // The focused row gets [`highlight_style`]: a pure REVERSED flip
+    // of the row's own colour. Each `ListItem` leaves its cell fg
+    // unset so the flip applies uniformly across the row.
     .highlight_style(highlight_style(palette))
     .highlight_symbol(HIGHLIGHT_SYMBOL);
   let mut state = ListState::default();
@@ -839,13 +794,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, palette: &Palette, input: Rende
   frame.render_stateful_widget(list, area, &mut state);
 }
 
-/// KDash-style selected-row paint: a pure `REVERSED` inversion of
-/// the row's own foreground. This is the "inverse of the row colour"
-/// effect — a Ready (green) row paints a green bar with the panel
+/// Selected-row paint: a pure `REVERSED` inversion of the row's own
+/// foreground. A Ready (green) row paints a green bar with the panel
 /// `bg` showing through the text; an Error (red) row paints red;
-/// normal rows paint with `palette.fg`. Works uniformly across every
-/// theme (including mono) because the swap is purely a modifier and
-/// doesn't depend on a `highlight` colour slot.
+/// normal rows paint with `palette.fg`. Works on every theme
+/// (including mono) because the swap is a modifier and needs no
+/// `highlight` colour slot.
 fn highlight_style(_palette: &Palette) -> Style {
   Style::default()
     .add_modifier(Modifier::REVERSED)
@@ -858,11 +812,11 @@ fn highlight_style(_palette: &Palette) -> Style {
 ///   · hint chips from `input.hints`.
 ///
 /// `input.hints` is pre-resolved against the live keymap by the
-/// caller, so config overrides flow through automatically. The
-/// filter slot itself comes from the `Focus::List` `OpenFilter`
+/// caller, so config overrides flow through. The
+/// filter slot comes from the `Focus::List` `OpenFilter`
 /// binding so its key label tracks user rebinds too. Hints drop
-/// from the tail under budget pressure; the count, the filter slot,
-/// and `hints[0]` are never dropped.
+/// from the tail under budget pressure; the count and the filter slot
+/// are never dropped.
 pub(crate) fn build_block_title(
   input: TitleInputs<'_>,
   filter_chip_label: &str,
@@ -890,7 +844,7 @@ pub(crate) fn build_block_title(
   let count = format!("Models [{}]", input.total);
   let structural_w = 1 + count.chars().count() + 3 + filter_text_width + 1;
   // ` · ` separator before the *first* hint plus its own width is
-  // accounted for inside `pick`. We reserve 3 cells for the leading
+  // accounted for inside `pick`. 3 cells are reserved for the leading
   // separator that joins the filter slot to the chip strip; if no
   // chip fits, no separator is emitted (the loop below predicates
   // on `!hints.is_empty()`).
@@ -906,9 +860,9 @@ pub(crate) fn build_block_title(
   // Now build the actual Line with styled spans.
   let mut spans: Vec<Span<'static>> = Vec::with_capacity(8);
   spans.push(Span::raw(" "));
-  // When unfocused, drop to `muted_style` so the heading recedes —
-  // the active pane wears the bold panel_title tone. Matches the
-  // inactive-tab treatment in `right_pane`.
+  // When unfocused, drop to `muted_style` so the heading recedes;
+  // the active pane wears the bold panel_title tone. Same treatment as
+  // the inactive tabs in `right_pane`.
   let title_style = if pane_focused {
     palette.title_style()
   } else {
@@ -917,8 +871,7 @@ pub(crate) fn build_block_title(
   // Underline the leading `M` (Shift+M re-focuses the list) only while
   // the pane is unfocused, so it reads as a press-this-letter mnemonic.
   // When focused, the bold panel_title already carries the heading, so
-  // the underline is dropped — matching the right pane's active tab,
-  // which is bold-not-underlined.
+  // the underline is dropped, like the right pane's active tab.
   let first_style = if pane_focused {
     title_style
   } else {
@@ -940,8 +893,8 @@ pub(crate) fn build_block_title(
     palette.muted_style(),
   ));
 
-  // Filter slot. Inactive chip uses the same muted style as the
-  // other hints so the title reads as a uniform hint strip.
+  // Filter slot. The inactive chip uses the same muted style as the
+  // other hints.
   match input.filter {
     FilterTitle::Inactive => {
       spans.push(Span::styled(
@@ -1099,7 +1052,7 @@ fn render_row<'a>(
   match row {
     ListRow::TableHeader => {
       // Label cells line up with model-row value cells: same widths,
-      // same separators, same marker gutter (rendered as blanks).
+      // same separators, same marker space (rendered as blanks).
       // Header is bolded and tinted with the accent colour to set it
       // apart from group headers and model rows.
       let mut line = String::with_capacity(content_w);
@@ -1117,12 +1070,11 @@ fn render_row<'a>(
       )))
     }
     ListRow::Header { label } => {
-      // Group header (favorites or folder path). Render across the
-      // full content width so it visibly separates groups; the label
-      // is ellipsised if the directory path is longer than the pane.
-      // Painted with `palette.label` (blue per theme) so folder
-      // names match the in-pane label convention rather than
-      // disappearing into the muted hint tone.
+      // Group header (favorites or folder path), rendered across the
+      // full content width. The label is ellipsised if the directory
+      // path is longer than the pane. `palette.label` keeps folder
+      // names on the in-pane label convention rather than the muted
+      // hint tone.
       let shown = cell(label.as_str(), content_w);
       ListItem::new(Line::from(Span::styled(
         shown,
@@ -1133,9 +1085,8 @@ fn render_row<'a>(
     }
     ListRow::Divider => {
       // Thin horizontal rule painted across the full inner width in
-      // the muted palette so it reads as ambient separation rather
-      // than data. Drawn with `─` (U+2500) so it lines up with the
-      // box-drawing border characters already on the block.
+      // the muted palette. Drawn with `─` (U+2500) so it lines up with
+      // the box-drawing border characters on the block.
       ListItem::new(Line::from(Span::styled(
         crate::tui::glyphs::active().hline().repeat(content_w),
         palette.muted_style(),
@@ -1150,13 +1101,13 @@ fn render_row<'a>(
     } => {
       // The whole row carries a single semantic foreground via
       // `ListItem::style`. Spans for name/columns/separators leave
-      // their fg unset so they inherit the row's colour — that way
-      // when the row gets `Modifier::REVERSED` on selection, every
-      // cell flips with the same source colour and the row reads
-      // as one inverted block instead of cell-by-cell splotches.
+      // their fg unset so they inherit the row's colour. On selection
+      // the `Modifier::REVERSED` flip then uses one source colour, so
+      // the row reads as one inverted block instead of cell-by-cell
+      // splotches.
       // The marker keeps its semantic colour (state glyph / favorite
-      // star) so the launch state stays scannable even on unselected
-      // rows; the selection cursor leaves fg unset so REVERSED
+      // star) so the launch state stays scannable on unselected
+      // rows; the blank marker leaves fg unset so REVERSED
       // flips it with the rest of the row.
       let fg = row_fg(*state, palette);
       let mut spans: Vec<Span<'a>> = Vec::with_capacity(2 + cols.len() * 2);
@@ -1172,13 +1123,12 @@ fn render_row<'a>(
         ));
         spans.push(Span::styled(" deleting… ", palette.muted_style()));
       }
-      // A named launch renders `<name>@<launch-name>` so the row reads the
-      // same addressable string the `list` table and proxy use. The `@name`
-      // suffix is muted so the model name stays the dominant token — but only
-      // while the row is unselected. `highlight_style` REVERSEs each cell
-      // against whatever fg it carries, so a muted span on the selected row
-      // would invert to a grey block mid-strip while the cells around it flip
-      // to the row colour. Unset there, it flips with everything else.
+      // A named launch renders `<name>@<launch-name>`, the same addressable
+      // string the `list` table and proxy use. The `@name` suffix is muted so
+      // the model name stays the dominant token, but only while the row is
+      // unselected: `highlight_style` REVERSEs each cell against whatever fg
+      // it carries, so a muted span on the selected row would invert to a
+      // grey block mid-strip. Unset there, it flips with everything else.
       let suffix_style = if selected {
         Style::default()
       } else {
@@ -1193,8 +1143,8 @@ fn render_row<'a>(
           let name_chars = name.chars().count();
           if name_chars + suffix_w <= name_w {
             // The suffix rides directly after the name (the address reads as
-            // one token) and the trailing pad stays unstyled so the row's
-            // single-fg selection flip still covers the whole strip.
+            // one token) and the trailing pad stays unstyled so the flip
+            // covers the whole strip.
             spans.push(Span::raw(name.as_str()));
             spans.push(Span::styled(suffix, suffix_style));
             spans.push(Span::raw(cell("", name_w - name_chars - suffix_w)));
@@ -1213,11 +1163,10 @@ fn render_row<'a>(
         spans.push(Span::raw(" "));
         spans.push(Span::raw(cell(&column_value(c.id, row), c.width)));
       }
-      // `ListItem::style` is the canonical place to apply
-      // `Modifier::REVERSED` to the *whole* row uniformly. Setting
-      // fg here makes every unset-fg span (name + columns +
-      // separator spaces) render in `fg`, so REVERSED flips the
-      // whole strip in one go.
+      // `ListItem::style` is where `Modifier::REVERSED` applies to the
+      // *whole* row. The fg here makes every unset-fg span (name +
+      // columns + separator spaces) render in `fg`, so REVERSED flips
+      // the whole strip in one go.
       ListItem::new(Line::from(spans)).style(Style::default().fg(fg))
     }
   }
@@ -1516,9 +1465,8 @@ mod tests {
 
   #[test]
   fn build_rows_places_running_section_at_top_with_per_launch_rows() {
-    // Two launches of the same model should produce two Running
-    // rows, each carrying its own `launch_id` and port. The section
-    // header sits above them so the user can scan kdash-style.
+    // Two launches of the same model produce two Running
+    // rows, each carrying its own `launch_id` and port.
     let m = fake("/m/a.gguf", "/m");
     let running = vec![
       RunningLaunchRow {
@@ -1578,7 +1526,7 @@ mod tests {
     let m = fake("/m/a.gguf", "/m");
     let dash = crate::tui::glyphs::active().placeholder();
     // A running llama.cpp launch with no explicit --device targets every GPU;
-    // the Device column reads `all` so it doesn't blank out inconsistently next
+    // the Device column reads `all` so it doesn't blank out next
     // to launches that pinned a selector.
     let running = RunningLaunchRow {
       launch_id: "L1".into(),
@@ -1602,8 +1550,8 @@ mod tests {
       column_value(ColumnId::Device, &running_row(&m, &pinned)),
       "Vulkan0,Vulkan1"
     );
-    // A not-launched catalog row keeps the dash placeholder (no launch → no
-    // device assignment).
+    // A not-launched catalog row keeps the dash placeholder (no launch,
+    // so no device assignment).
     let catalog = model_row(
       &m,
       false,
@@ -1629,9 +1577,8 @@ mod tests {
 
   #[test]
   fn build_rows_recent_section_skips_paths_currently_running() {
-    // The Recent group shouldn't duplicate rows that already
-    // appear in the Running section — that would clutter the list
-    // and mislead the user about how many instances are live.
+    // The Recent group must not repeat rows that already appear in the
+    // Running section.
     let a = fake("/m/a.gguf", "/m");
     let b = fake("/m/b.gguf", "/m");
     let running = vec![RunningLaunchRow {
@@ -1726,9 +1673,8 @@ mod tests {
   #[test]
   fn favorited_model_appears_in_both_favorites_and_its_folder_group() {
     // Running paths drop from the catalog groupings, but favorited
-    // paths *don't* — the user expects to find their model in its
-    // original folder, with the `★ Favorites` section just acting as
-    // a shortcut.
+    // paths don't — the user expects to find their model in its
+    // original folder.
     let a = fake("/m/x/a.gguf", "/m/x");
     let b = fake("/m/x/b.gguf", "/m/x");
     let rows = build_rows(RowInputs {
@@ -1748,8 +1694,8 @@ mod tests {
       a_rows, 2,
       "favorited model must surface in both Favorites and its folder, got {a_rows} rows"
     );
-    // The folder copy must still wear the favorite star so the user
-    // doesn't lose the favorited signal when scanning by folder.
+    // The folder copy keeps the favorite star, so scanning by folder
+    // does not lose the favorited signal.
     let folder_copy_is_favorite = rows.iter().any(|r| {
       matches!(
         r,
@@ -1765,9 +1711,8 @@ mod tests {
   #[test]
   fn divider_separates_favorites_from_folder_groups() {
     // A row layout with both Favorites and folder groups must carry
-    // a `Divider` between them so the eye can tell the shortcut
-    // section apart from the original-folder section (favorited rows
-    // appear in both now).
+    // a `Divider` between them, because favorited rows
+    // appear in both.
     let a = fake("/m/x/a.gguf", "/m/x");
     let b = fake("/m/y/b.gguf", "/m/y");
     let rows = build_rows(RowInputs {
@@ -1785,8 +1730,7 @@ mod tests {
       .expect("Divider must appear between Favorites and folder groups");
     // Whatever sits immediately before the divider must be a Model
     // row (the last favorite); whatever sits immediately after must
-    // be a Header (the first folder group). That's how we know the
-    // divider's neighbours are the two sections it's separating.
+    // be a Header (the first folder group).
     assert!(
       matches!(rows[divider_idx - 1], ListRow::Model { .. }),
       "row before divider must be the last Favorites entry"
@@ -1801,7 +1745,7 @@ mod tests {
   fn divider_is_omitted_when_no_folder_groups_follow_favorites() {
     // Edge case: every catalog entry is a favorite, so there are no
     // folder groups left to separate from. A trailing divider with
-    // nothing under it would just clutter the bottom of the list.
+    // nothing under it would clutter the bottom of the list.
     let a = fake("/m/x/a.gguf", "/m/x");
     let rows = build_rows(RowInputs {
       models: std::slice::from_ref(&a),
@@ -2192,9 +2136,7 @@ mod tests {
   }
 
   /// Total cost (cells) of every declared column, including its
-  /// leading separator. Pulled out of the inline tests so the
-  /// ranked picker (and any future budget calculation) can verify
-  /// against the same source of truth.
+  /// leading separator. The budget tests share this with the picker.
   fn all_columns_cost() -> usize {
     COLUMNS.iter().map(|c| c.width + COL_SEP_W).sum()
   }
@@ -2328,8 +2270,8 @@ mod tests {
   fn layout_preserves_declaration_order_when_high_rank_columns_drop() {
     // content_w = 76 (the 120-col golden's list pane). budget =
     // 76 - 3 - PREFERRED_NAME_W = 40 cells. Strict rank-tail cutoff
-    // takes Size (cost 7), Ctx (8), Quant (8), Arch (9) → sum 32 ≤ 40.
-    // Device (rank 40, cost 10) would be 42 > 40 → stop. Survivors
+    // takes Size (cost 7), Ctx (8), Quant (8), Arch (12) → sum 35.
+    // Device (rank 40, cost 10) would be 45 > 40 → stop. Survivors
     // keep their declaration order (Arch precedes Quant/Ctx/Size).
     let layout = layout_columns(76, true, false);
     let ids: Vec<ColumnId> = layout.visible.iter().map(|c| c.id).collect();
@@ -2349,10 +2291,9 @@ mod tests {
     // 60-cell terminal → list owns the full 60 cells → content
     // width = 58. PREFERRED_NAME_W=33 reserved up front leaves a
     // 22-cell budget. Size (cost 7) + Ctx (cost 8) = 15 ≤ 22;
-    // Quant (cost 8) → 23 > 22 → break. Result: the user's
-    // primary signal (name) gets ~40 cells, data shrinks to
-    // Ctx + Size only — Ctx wins over Quant because Ctx is rank
-    // 20 (use-case fit) and Quant is rank 30.
+    // Quant (cost 8) → 23 > 22 → break. Name gets the leftover
+    // ~40 cells, data shrinks to Ctx + Size. Ctx beats Quant
+    // because Ctx is rank 20 and Quant is rank 30.
     let layout = layout_columns(58, true, false);
     let ids: Vec<ColumnId> = layout.visible.iter().map(|c| c.id).collect();
     assert_eq!(ids, vec![ColumnId::Ctx, ColumnId::Size]);
@@ -2365,13 +2306,10 @@ mod tests {
 
   #[test]
   fn layout_drops_columns_in_strict_rank_order_no_skipping() {
-    // Once a column refuses to fit, the picker stops admitting
-    // even smaller higher-rank columns. content_w = 76 → budget
-    // = 40. Size, Ctx, Quant, Arch fit (sum 32); Device (rank 40,
-    // cost 10) → 42 > 40 → break. Port (rank 50, cost 7) is *not*
-    // smuggled in even though 32+7=39 would have fit, because the
-    // strict cutoff stops at the first overrun and never revisits
-    // higher ranks.
+    // Once a column refuses to fit, the picker admits nothing after
+    // it. content_w = 76 → budget = 40. Size, Ctx, Quant, Arch fit
+    // (sum 35); Device (rank 40, cost 10) → 45 > 40 → break. The
+    // picker never revisits a later rank, so Port stays out.
     let layout = layout_columns(76, true, false);
     let ids: Vec<ColumnId> = layout.visible.iter().map(|c| c.id).collect();
     assert!(
@@ -2384,17 +2322,16 @@ mod tests {
   fn layout_mode_and_port_drop_together_as_same_rank_tier() {
     // Mode and Port share rank 50. At a wide width they appear
     // together; at a width tight enough that Mode can't fit, Port
-    // drops with it (rather than slotting in because it's
-    // cheaper). Predictable visibility: ranks determine drops,
-    // not column widths.
+    // drops with it instead of slotting in because it's
+    // cheaper. Ranks decide drops, not column widths.
     let with_both = layout_columns(110, true, false);
     let with_both_ids: Vec<ColumnId> = with_both.visible.iter().map(|c| c.id).collect();
     assert!(
       with_both_ids.contains(&ColumnId::Mode) && with_both_ids.contains(&ColumnId::Port),
       "both Mode and Port should survive at 110 cells, got {with_both_ids:?}"
     );
-    // 76 cells = the golden width. Mode doesn't fit (budget=40,
-    // 32+11=43). Cutoff fires → Port drops too.
+    // 76 cells = the golden width. The cutoff fires at Device, and Mode
+    // would not fit either (35+7=42 > 40), so Port drops with it.
     let neither = layout_columns(76, true, false);
     let neither_ids: Vec<ColumnId> = neither.visible.iter().map(|c| c.id).collect();
     assert!(
@@ -2405,7 +2342,7 @@ mod tests {
 
   #[test]
   fn layout_grows_name_with_unspent_budget_on_wide_panes() {
-    // At 130 cells (typical wide-mode list pane in a 200-col
+    // At 130 cells (a wide-mode list pane in a 200-col
     // terminal) every column fits and Name absorbs the rest.
     let layout = layout_columns(130, true, true);
     assert_eq!(layout.visible.len(), COLUMNS.len(), "all columns visible");
@@ -2417,8 +2354,8 @@ mod tests {
   #[test]
   fn models_title_active_pane_first_char_not_underlined() {
     // When the Models pane is FOCUSED, the leading `M` is bold
-    // panel_title with NO underline — consistent with the right pane's
-    // active tab (bold-not-underlined). The underline is a mnemonic
+    // panel_title with no underline, like the right pane's
+    // active tab. The underline is a mnemonic
     // that only shows while the pane is unfocused.
     use crate::theme::{palette_for, ThemeName};
     let palette = palette_for(ThemeName::Macchiato);
@@ -2451,9 +2388,9 @@ mod tests {
   #[test]
   fn models_title_drops_to_muted_when_pane_is_not_focused() {
     // When the right pane owns focus, the `Models [N]` heading
-    // should recede to muted (no bold panel_title) so the active
-    // pane carries the visual weight. Mirrors right_pane's
-    // inactive-tab treatment.
+    // recedes to muted (no bold panel_title) so the active
+    // pane carries the visual weight, like right_pane's
+    // inactive tab.
     use crate::theme::{palette_for, ThemeName};
     let palette = palette_for(ThemeName::Macchiato);
     let inputs = || TitleInputs {
@@ -2486,7 +2423,7 @@ mod tests {
       "unfocused title must drop the bold modifier"
     );
     // The mnemonic underline shows only while unfocused; the focused
-    // (bold) heading drops it, matching the right pane's active tab.
+    // (bold) heading drops it, like the right pane's active tab.
     assert!(m_unfocused
       .style
       .add_modifier
@@ -2499,11 +2436,11 @@ mod tests {
 
   #[test]
   fn highlight_style_uses_reversed_so_selection_inverts_row_fg() {
-    // KDash-style: the highlight is a pure REVERSED modifier, so a
+    // The highlight is a pure REVERSED modifier, so a
     // Ready (green) row paints a green bar on selection, an Error
     // (red) row paints red, and normal rows paint with `palette.fg`.
-    // No concrete bg/fg colours are pinned — that's what makes the
-    // selection adopt the row's semantic colour uniformly.
+    // No concrete bg/fg colours are pinned, so the
+    // selection adopts the row's semantic colour uniformly.
     use crate::theme::{palette_for, ThemeName};
     for theme in [ThemeName::Macchiato, ThemeName::Latte, ThemeName::Mono] {
       let p = palette_for(theme);

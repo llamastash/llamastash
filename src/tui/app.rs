@@ -23,8 +23,7 @@ use crate::tui::list_pane::{build_rows, ListRow, RowInputs, RunningLaunchRow};
 use crate::tui::status_icons::SurfaceState;
 use crate::tui::tabs::{tabs_for_mode, tabs_without_mode, RightTab};
 
-/// Maximum age of a toast before the App auto-clears it. Keeps
-/// transient yank confirmations from sticking around forever.
+/// Keeps transient yank confirmations from sticking around forever.
 const TOAST_TTL: Duration = Duration::from_secs(3);
 
 /// Severity of a transient toast. Drives the colour the bar paints
@@ -68,9 +67,8 @@ fn ranked_vram_bytes(metrics: &HostMetricsSnapshot, backend: &str) -> Option<u64
 /// Map the daemon's wire-stable `gpu_backend` label
 /// (`"nvidia"`/`"amd"`/...) to the recommender's per-backend key
 /// (`"cuda"`/`"hip"`/...). Kept here so the dialog stays decoupled
-/// from the daemon's sampler vocabulary. R113: `"unknown"` and
-/// `"unsampled"` pass through verbatim so `vram_fit_for_file` can
-/// return `FileFit::Unknown`.
+/// from the daemon's sampler vocabulary. Unrecognised labels map to
+/// `"unknown"` so `vram_fit_for_file` returns `FileFit::Unknown`.
 fn recommender_backend_key(wire: &str) -> &'static str {
   use crate::daemon::host_metrics::HostMetricsSnapshot as H;
   match wire {
@@ -100,9 +98,9 @@ fn multi_recommender_backend(devices: &[crate::daemon::host_metrics::DeviceRow])
   }
 }
 
-/// How many entries the `↺ Recent` section surfaces. Five matches
-/// what the user picked during planning; the daemon's storage
-/// itself isn't capped — the cap is purely a render-side window.
+/// How many entries the `↺ Recent` section surfaces. The daemon's
+/// storage itself isn't capped — the cap is purely a render-side
+/// window.
 const RECENT_LIST_CAP: usize = 5;
 
 /// How many status ticks a bell watch survives with no row for its model, at
@@ -249,11 +247,11 @@ pub struct DaemonInfo {
   /// `http://127.0.0.1:48134`). Rendered in the Daemon info panel
   /// alongside pid + uptime so an operator can see at a glance where
   /// the IPC channel is. `None` when the daemon hasn't surfaced the
-  /// field (pre-Phase-A binaries don't).
+  /// field.
   pub ipc_url: Option<String>,
   /// Latest snapshot of the OpenAI-compat proxy listener.
-  /// `None` when talking to a pre-Unit-5 daemon that omits the
-  /// field — info_pane renders the proxy row as `proxy   —` in that case.
+  /// `None` when the daemon omits the field — info_pane renders the
+  /// proxy row as `proxy   —` in that case.
   pub proxy: Option<ProxyInfo>,
   /// One entry per *enabled* backend with at least one server, from the
   /// `status.backends` rows. The Daemon panel's server row renders each as
@@ -389,7 +387,7 @@ pub struct App {
   pub backend_by_path: std::collections::BTreeMap<PathBuf, String>,
   pub favorites: Vec<PathBuf>,
   pub managed: Vec<ManagedRow>,
-  /// External (unmanaged) `llama-server` processes the daemon's
+  /// External (unmanaged) engine server processes the daemon's
   /// sweep surfaced. Read-only — the TUI shows them with the `⇪`
   /// glyph; only `stop` is permitted on these rows.
   pub external: Vec<ManagedRow>,
@@ -413,10 +411,7 @@ pub struct App {
   /// in-progress prompt and the most recent response so the render
   /// path is purely synchronous.
   pub chat: crate::tui::tabs::chat::ChatTabState,
-  /// Embed-tab working state — single text input and latest
-  /// response payload.
   pub embed: crate::tui::tabs::embed::EmbedTabState,
-  /// Rerank-tab working state — query + candidate list.
   pub rerank: crate::tui::tabs::rerank::RerankTabState,
   /// Logs-tab buffer for the focused launch. Refreshed from the
   /// daemon's `logs_tail` IPC method on each tick.
@@ -523,16 +518,10 @@ pub struct App {
   /// are never watched, so they never ring here.
   pub bell_watch: Vec<BellWatch>,
   /// Per-frame memo of `rendered_rows()`. Primed at the top of
-  /// `render::render` and cleared at the bottom — the biggest single
-  /// per-frame perf win. The same `Vec<ListRow>`
-  /// used to be rebuilt 5+ times per frame via `focused_path`,
-  /// `focused_managed`, `focused_name`, and the right-pane render
-  /// helpers. None outside a frame so event handlers always see
-  /// fresh state.
+  /// `render::render` and cleared at the bottom. None outside a frame
+  /// so event handlers always see fresh state.
   pub(crate) rows_cache: Option<Vec<ListRow>>,
-  /// Per-frame memo of `available_right_tabs()`. Three calls per
-  /// frame used to walk `models` linearly + allocate a fresh
-  /// `Vec<RightTab>` each time. Same lifetime
+  /// Per-frame memo of `available_right_tabs()`. Same lifetime
   /// rules as `rows_cache`.
   pub(crate) right_tabs_cache: Option<Vec<RightTab>>,
   /// Hit-test rectangles refreshed every frame by the renderer.
@@ -551,10 +540,9 @@ pub struct App {
   pub events_tx: Option<tokio::sync::mpsc::Sender<crate::tui::events::Event>>,
   /// Previous observed `proxy.status` label. Used by
   /// [`Self::ingest_status`] to fire a one-shot toast on the
-  /// transition into `port_in_use` (plan §Approach: "flag on first
-  /// observation"). Reading the cell on every tick would surface a
-  /// toast each refresh; transitions keep the noise to once-per-
-  /// session-collision.
+  /// transition into `port_in_use`. Reading the cell on every tick
+  /// would surface a toast each refresh; transitions keep the noise to
+  /// once-per-session-collision.
   pub(crate) last_proxy_status: Option<String>,
   /// Live index into [`AppOptions::left_pane_ratios`] — the wide-mode split the
   /// `Alt+L` shortcut cycles. Session-only: starts at slot 0 each launch.
@@ -649,8 +637,8 @@ pub enum ConfirmAction {
     repo_id: String,
     friendly_name: String,
   },
-  /// `Enter:launch` on a model that already has a managed launch
-  /// (round-8). v1 supports duplicate launches on fresh ports, but
+  /// `Enter:launch` on a model that already has a managed launch.
+  /// v1 supports duplicate launches on fresh ports, but
   /// we ask the user to confirm so a stray Enter doesn't silently
   /// spin up another instance. The payload mirrors
   /// `WriterCmd::StartModel` — captured at popup time so the
@@ -802,7 +790,7 @@ impl App {
   /// Snapshot the inputs `vram_fit_for_file` needs into the dialog
   /// state at open time. Backend / VRAM / RAM come from the
   /// daemon's host-metrics sampler; the per-backend overhead band
-  /// is read from the bundled benchmark snapshot. R111 + R113.
+  /// is read from the bundled benchmark snapshot.
   pub(crate) fn hf_hardware_fit_ctx(
     &self,
     snapshot: &crate::init::benchmark::BenchmarkSnapshot,
@@ -946,10 +934,6 @@ impl App {
   }
 
   /// Resolve a `(focus, key, mods)` triple through the live keymap.
-  /// Drop-in replacement for the legacy `keybindings::action_for`
-  /// free function so renderers/events can pick up
-  /// `config.keybindings` overrides without re-implementing the
-  /// dispatcher.
   pub fn action_for(
     &self,
     focus: Focus,
@@ -1072,9 +1056,9 @@ impl App {
   }
 
   /// True when more than one backend is actually in play — any model routes to
-  /// something other than the default `llamacpp`. Gates the Models-list Backend
+  /// something other than the default backend. Gates the Models-list Backend
   /// column (like `multi_device` gates the Device column) so a single-backend
-  /// host never sees a redundant all-`llamacpp` column.
+  /// host never sees a column where every row reads the same.
   pub fn multi_backend(&self) -> bool {
     self
       .backend_by_path
@@ -1398,7 +1382,7 @@ impl App {
       None => return,
     };
     // Track the IPC response order separately — the daemon emits
-    // `last_params` newest-first now (see
+    // `last_params` newest-first (see
     // `state_store::upsert_last_params`), so we use that order to
     // populate `recent_paths` for the `↺ Recent` section.
     let mut next: BTreeMap<PathBuf, LastParamsRow> = BTreeMap::new();
@@ -1476,9 +1460,7 @@ impl App {
   }
 
   /// Build the list of rows the renderer should draw, applying any
-  /// active filter. Cached results aren't worth it: discovery
-  /// snapshots are small (hundreds of rows) and the filter is
-  /// hand-rolled subsequence matching.
+  /// active filter.
   pub fn rendered_rows(&self) -> Vec<ListRow> {
     if let Some(cached) = self.rows_cache.as_ref() {
       return cached.clone();
@@ -1486,8 +1468,8 @@ impl App {
     self.rendered_rows_uncached()
   }
 
-  /// The expensive `build_rows + apply_filter` walk. Public only
-  /// for the cache primer; every other caller goes through
+  /// The expensive `build_rows + apply_filter` walk. Called only by
+  /// the cache primer; every other caller goes through
   /// [`Self::rendered_rows`] so the per-frame memo applies.
   fn rendered_rows_uncached(&self) -> Vec<ListRow> {
     let model_states = self.surface_states();
@@ -1568,8 +1550,7 @@ impl App {
   /// Companion to [`Self::surface_states`] — collapses every active
   /// launch the daemon knows about into one `path → port` map for
   /// the Port column. The list pane is currently one row per
-  /// discovered path, so the duplicate-launch case (which lives in
-  /// the Running group after the next polish round) deliberately
+  /// discovered path, so the duplicate-launch case deliberately
   /// keeps just the last entry seen; the table cell still resolves
   /// to a useful port, just not a uniqueness-aware one.
   fn surface_ports(&self) -> BTreeMap<PathBuf, u16> {
@@ -1588,7 +1569,7 @@ impl App {
     out
   }
 
-  /// Rows for external `llama-server` processes the daemon detected
+  /// Rows for external engine server processes the daemon detected
   /// outside its supervisor. Surfaced read-only (stop is the only
   /// action allowed) — used by the right pane to show "this
   /// model is unmanaged" hints.
@@ -1596,7 +1577,6 @@ impl App {
     &self.external
   }
 
-  /// Move cursor down to the next selectable (model) row.
   pub fn move_down(&mut self) {
     let rows = self.rendered_rows();
     let before = self.focused_row_key();
@@ -1742,7 +1722,6 @@ impl App {
     }
   }
 
-  /// Path of the model the cursor sits on.
   pub fn focused_path(&self) -> Option<PathBuf> {
     let rows = self.rendered_rows();
     rows
@@ -1818,7 +1797,6 @@ impl App {
       .unwrap_or_else(|| crate::util::paths::model_display_name(path))
   }
 
-  /// Display name of the focused model.
   pub fn focused_name(&self) -> Option<String> {
     let rows = self.rendered_rows();
     match rows.get(self.list_cursor) {
@@ -2037,10 +2015,6 @@ impl App {
         // into `user_knobs` keeps the picker's source labels
         // honest — every persisted knob shows `(user)`, the rest
         // re-resolve from yaml / built-in / model default.
-        //
-        // `ctx` and `reasoning` are now part of `crate::launch::knobs::KnobSet`, so
-        // they ride along inside `last.knobs` without dedicated
-        // seeding paths.
         state.user_knobs = last.knobs.clone();
         // Seed extras here (before `set_presets`) so the preset cycle's
         // `last used` stop captures them as part of its baseline.
@@ -2240,8 +2214,6 @@ impl App {
       Some(p) => p,
       None => return,
     };
-    // `build_default_picker` seeds extras + the preset cycle and opens the
-    // cursor on the Preset row.
     self.launch_picker = Some(picker);
     self.running_view_scroll.set(0);
     self.right_tab = RightTab::Settings;
@@ -2271,7 +2243,7 @@ impl App {
       .unwrap_or_else(|| crate::util::paths::model_file_label(&path));
 
     // Capture knobs + extras + launch identity from whichever surface is in
-    // view. One map now, so a backend's own knobs ride with the
+    // view, so a backend's own knobs ride with the
     // rest, and the identity (which engine / build) pins the preset to the
     // run it was captured from. A running row carries the *resolved*
     // identity; a picker carries the *intended* one (its concrete engine and
@@ -2303,7 +2275,7 @@ impl App {
           .map(crate::launch::params::BackendChoice::from_id)
           // Mirror `build_default_picker`: pin the explicit default backend
           // (not `Auto`) when the row has no prediction yet, so the preset saves
-          // the llamacpp build actually shown instead of letting the daemon's
+          // the default backend's build actually shown instead of letting the daemon's
           // replay auto-routing pick another backend.
           .unwrap_or_else(|| {
             crate::launch::params::BackendChoice::from_id(crate::backend::DEFAULT_BACKEND_ID)
@@ -2374,9 +2346,7 @@ impl App {
     self.filter_input.enter_edit();
   }
 
-  /// Close the filter input entirely (matches the legacy
-  /// `Esc clears + leaves filter mode` behaviour for callers that
-  /// still want the one-shot reset). Distinct from
+  /// Close the filter input entirely. Distinct from
   /// [`crate::tui::input_field::InputField`]'s `Esc` walk-back, which only exits edit / clears
   /// the buffer; this resets both at once.
   pub fn clear_filter(&mut self) {
@@ -2399,7 +2369,6 @@ impl App {
     self.toast = Some((msg.into(), Instant::now(), ToastKind::Error));
   }
 
-  /// Drop the toast if it's older than `TOAST_TTL`.
   pub fn expire_toast(&mut self) {
     if let Some((_, at, _)) = &self.toast {
       if at.elapsed() > TOAST_TTL {
@@ -2419,8 +2388,7 @@ impl App {
   }
 
   /// The catalog mode hint for `path`, defaulting to chat when the row
-  /// is missing or carries no metadata (the historical default for the
-  /// right pane's mode surface).
+  /// is missing or carries no metadata.
   fn mode_hint_for(&self, path: &std::path::Path) -> crate::gguf::metadata::ModeHint {
     self
       .models
@@ -2447,7 +2415,7 @@ impl App {
     self.available_right_tabs_uncached()
   }
 
-  /// The expensive compute path. Public only for the cache primer.
+  /// The expensive compute path. Called only by the cache primer.
   fn available_right_tabs_uncached(&self) -> Vec<RightTab> {
     let managed = match self.focused_managed() {
       Some(m) => m,
@@ -2485,10 +2453,7 @@ impl App {
   /// Clamp `right_tab` back to a reachable choice if the focused
   /// model's available tabs shrink (e.g. the model dropped from
   /// Ready to Stopped, or the cursor moved to an unlaunched row).
-  /// Snaps to the first reachable tab — Round-8 fixed a latent bug
-  /// where the fallback was hardcoded to `Logs`, which isn't part
-  /// of the reachable set for unlaunched models, leaving the right
-  /// pane painting nothing for those rows. Called by the renderer
+  /// Snaps to the first reachable tab. Called by the renderer
   /// before drawing.
   pub fn ensure_right_tab_reachable(&mut self) {
     if !self.available_right_tabs().contains(&self.right_tab) {
@@ -2750,7 +2715,7 @@ fn parse_external_row(row: &Value) -> Option<ManagedRow> {
 
 /// Parse the daemon's `status.proxy` block into the TUI-side
 /// [`ProxyInfo`] struct. Returns `None` for non-object / missing
-/// shapes so an older daemon (pre-Unit-5) leaves the row off
+/// shapes so an older daemon leaves the row off
 /// instead of rendering a confusing "?" placeholder.
 fn parse_proxy_info(v: &Value) -> Option<ProxyInfo> {
   let obj = v.as_object()?;
@@ -2955,8 +2920,8 @@ mod tests {
   fn parse_list_models_row_maps_a_backend_registry_source() {
     // Regression: the parser's source match had no backend-registry arm, so
     // registry rows fell through to `UserPath`. Downstream that seeded
-    // the launch picker with `model_backend = LlamaCpp` — the full
-    // llama.cpp knob set rendered and the Backend chooser hid, even
+    // the launch picker with the default backend — the full
+    // default knob set rendered and the Backend chooser hid, even
     // though the daemon routes the launch to the registry backend.
     // The id comes from the registry so the test names no backend; any
     // non-default backend parses as a registry row.
@@ -2988,8 +2953,8 @@ mod tests {
     row.source = ModelSource::Backend("acme");
     row.display_label = Some("qwen3:0.6b".into());
     app.models = vec![row];
-    // The picker now reads the daemon's per-row prediction (as `ingest_list_models`
-    // records it), not a TUI-side source re-derivation.
+    // The picker reads the daemon's per-row prediction (as `ingest_list_models`
+    // records it).
     app
       .backend_by_path
       .insert(PathBuf::from("qwen3:0.6b"), "acme".into());
@@ -3368,7 +3333,7 @@ mod tests {
 
   #[test]
   fn ingest_status_toasts_once_on_port_in_use_transition() {
-    // Plan §Approach: toast fires on the *transition* into
+    // The toast fires on the *transition* into
     // port_in_use, not on every poll. A second consecutive
     // port_in_use observation must not re-fire the toast.
     let mut app = App::new(AppOptions::default());
@@ -3980,8 +3945,8 @@ mod tests {
     app.open_launch_picker();
     let picker = app.launch_picker.as_ref().expect("picker state");
     assert_eq!(picker.model_name, "a");
-    // New behaviour: launch picker no longer pops a centred modal;
-    // it parks focus on the right pane's Settings tab and forces
+    // The launch picker does not pop a centred modal; it parks focus on
+    // the right pane's Settings tab and forces
     // the pane open if no model is currently running.
     assert_eq!(app.focus, Focus::RightPane);
     assert_eq!(app.right_tab, RightTab::Settings);
@@ -4323,8 +4288,7 @@ mod tests {
     // without going through `stop` (external kill, OOM, post-Ready
     // crash) — a clean stop deregisters the launch and the row
     // disappears. Such an exit is recorded with no cause, so the log
-    // tail is the only place the reason shows up; the tab used to be
-    // unreachable, stranding it behind `llamastash logs`.
+    // tail is the only place the reason shows up.
     let mut app = App::new(AppOptions::default());
     app.models = vec![fake("/m/qwen.gguf", "/m")];
     app.ingest_status(&serde_json::json!({
@@ -4352,9 +4316,7 @@ mod tests {
   fn ingest_status_snaps_cursor_to_newly_appeared_launch() {
     // A new launch_id arriving in a status tick should pull the
     // cursor onto its Running row so the user sees the model they
-    // just launched selected — matches the kdash-style "latest
-    // run goes to top + becomes selection" behaviour the user
-    // confirmed during planning.
+    // just launched selected.
     let mut app = App::new(AppOptions::default());
     app.models = vec![fake("/m/qwen.gguf", "/m")];
     let body = serde_json::json!({
@@ -4623,7 +4585,7 @@ mod tests {
 
   #[test]
   fn cursor_move_clears_stale_launch_picker_when_path_changes() {
-    // Round-8: the right pane is tied to the focused row. A
+    // The right pane is tied to the focused row. A
     // picker staged for model A must not survive a scroll to
     // model B — otherwise the Settings tab paints A's name + ctx
     // form while the user is looking at B.
@@ -4672,10 +4634,9 @@ mod tests {
 
   #[test]
   fn ensure_right_tab_reachable_snaps_to_settings_for_unlaunched_focus() {
-    // Round-8 fix: the fallback used to be hardcoded to Logs even
-    // for unlaunched models — leaving `right_tab = Logs` while
-    // `available_right_tabs()` returns `[Settings]`. Now the
-    // fallback walks the reachable list and picks the first entry.
+    // The fallback must pick from the reachable list: an unlaunched
+    // model's reachable set is `[Settings]` only, so a hardcoded Logs
+    // left the right pane painting nothing.
     let mut app = App::new(AppOptions::default());
     app.models = vec![fake("/m/a.gguf", "/m")];
     app.list_cursor = 2;
@@ -4863,7 +4824,7 @@ mod tests {
 
   #[test]
   fn rendered_rows_cache_returns_memoized_value_inside_frame() {
-    // Tier-C hoist: `rendered_rows()` is memoized via `rows_cache`
+    // `rendered_rows()` is memoized via `rows_cache`
     // for the duration of a single render frame. The primer must
     // populate the cache, and subsequent calls must return the
     // memoized rows even if a state mutation lands between the
@@ -4893,12 +4854,10 @@ mod tests {
 
   #[test]
   fn snap_cursor_to_launch_clears_stale_launch_picker() {
-    // F1 #3: `snap_cursor_to_launch` is the only `list_cursor`
-    // writer that used to skip `sync_pane_to_focus`. When a
-    // status snapshot lands during launch and snaps to a different
-    // path than the picker was staged for, Settings would render
-    // ports/name for the *previous* path. Snap must now clear the
-    // stale picker just like `move_up` / `move_down` do.
+    // When a status snapshot lands during launch and snaps to a different
+    // path than the picker was staged for, Settings renders
+    // ports/name for the *previous* path. Snap clears the
+    // stale picker like `move_up` / `move_down` do.
     //
     // With managed = [b], the row layout is:
     //   0: TableHeader

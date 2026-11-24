@@ -1,10 +1,7 @@
 //! Settings tab — typed-knob launch editor for the focused model.
 //!
-//! Renders a vertical list of rows: `ctx`, `reasoning`, every
-//! `crate::launch::knobs::KnobSet` field with a per-row source label, and an `extras`
-//! free-text row at the bottom. When the focused model has a
-//! running launch and the picker isn't open, shows the live params
-//! (read-only).
+//! When the focused model has a running launch and the picker isn't open,
+//! shows the live params (read-only).
 
 use std::path::Path;
 
@@ -33,8 +30,6 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   };
   let editable = managed.is_none();
 
-  // The editable path resolves a picker (the live one, or a default built
-  // from the focused model); the read-only path reads `managed` directly.
   let default_picker: LaunchPickerState;
   let picker_view: Option<&LaunchPickerState> = if editable {
     Some(match app.launch_picker.as_ref() {
@@ -58,9 +53,9 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   let mut focused_line: Option<u16> = None;
 
   // Rows are generated from whichever backend is in scope: the picker's active
-  // one while editing, the launch's *actual* backend when read-only (not the
-  // routing prediction, so a compatible file launched with `--backend llamacpp`
-  // shows the llama.cpp knobs it ran with). Names no backend.
+  // one while editing, the launch's *actual* backend when read-only, not the
+  // routing prediction, so a file launched with an explicit `--backend` shows
+  // that backend's knobs.
   let groups: Vec<(
     crate::launch::knobs::Group,
     Vec<&'static crate::launch::knobs::KnobDef>,
@@ -146,9 +141,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
         label_w,
       ));
     }
-    // The preset this launch resolved, when one was in play — the answer to
-    // "what launched this", above the server row with the other identity
-    // rows. Absent for a plain launch, matching the status wire shape.
+    // Absent for a plain launch, matching the status wire shape.
     if let Some(p) = m.preset.as_deref() {
       lines.push(crate::tui::fmt::kv_row(
         "preset",
@@ -157,15 +150,10 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
         label_w,
       ));
     }
-    // Server (build/binary) the launch ran on — mirrors the editable picker's
-    // server row so the operator can see which build served the model. Shown
-    // only when the model has more than one compatible server (a real choice);
-    // a single-server model has nothing to disambiguate.
     if let Some(label) = running_server_label(app, m) {
       lines.push(crate::tui::fmt::kv_row("server", label, palette, label_w));
     }
   } else if let Some(pv) = picker_view {
-    // Editable: duplicate-launch heads-up, then the preset cycle row.
     if pv.active_instances > 0 {
       lines.push(
         Span::styled(
@@ -181,9 +169,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
         .into(),
       );
     }
-    // Preset cycle row leads the form. No source chip: it's a selector,
-    // not an inherited value. The label carries the count of named presets
-    // available for this model (`preset (0)` when none).
+    // No source chip: it's a selector, not an inherited value.
     let focused = pv.field == PickerField::Preset;
     if focused {
       focused_line = Some(lines.len() as u16);
@@ -198,9 +184,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
       show_source,
       label_w,
     ));
-    // Server (build/binary) cycle row, just under the preset row — shown only
-    // when the model has more than one compatible server (a real choice). No
-    // source chip: it's a selector, not an inherited value.
+    // No source chip: it's a selector, not an inherited value.
     if pv.field_visible(PickerField::Server) {
       let server_focused = pv.field == PickerField::Server;
       if server_focused {
@@ -288,8 +272,6 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
             (true, Some(v)) => v.to_string(),
             _ => format_persisted_knob_value(&m.knobs, id),
           };
-          // Not focused, not cyclable, no source chip — renders as a plain
-          // `label  value` row through the shared formatter.
           lines.push(crate::tui::fmt::kv_row_focused(
             def.id,
             value,
@@ -305,10 +287,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
     }
   }
 
-  // The extras row — always last.
   match picker_view {
     Some(pv) => {
-      // Extras row — always the last field.
       let extras_focused = pv.field == PickerField::Extras;
       if extras_focused {
         focused_line = Some(lines.len() as u16);
@@ -342,7 +322,6 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
           label_w,
         ));
       }
-      // Forbidden-flag warning under the extras row.
       if !crate::launch::params::forbidden_in_extras(&pv.extras).is_empty() {
         let redacted = crate::launch::params::redact_for_display(&pv.extras);
         lines.push(inline_warning_row(
@@ -407,7 +386,6 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
     .collect();
 
   let scroll = if let Some(pv) = picker_view {
-    // Editable: keep the focused row visible with ≥1 row of margin.
     let s = clamp_scroll_with_margin(
       pv.scroll_offset.get(),
       focused_line.unwrap_or(0),
@@ -417,7 +395,6 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
     pv.scroll_offset.set(s);
     s
   } else {
-    // Read-only: free scroll, clamped in-bounds.
     let s = app
       .running_view_scroll
       .get()
@@ -428,9 +405,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
 
   frame.render_widget(Paragraph::new(clipped).scroll((scroll, 0)), area);
 }
-/// Minimal scroll with margin: keep the focused row visible with
-/// `MARGIN` rows of context above and below where possible. Returns
-/// the new scroll offset. Clamped to `[0, max_scroll]`.
+/// Keep the focused row visible with `MARGIN` rows of context above and
+/// below where possible. Clamped to `[0, max_scroll]`.
 fn clamp_scroll_with_margin(current: u16, focused: u16, viewport: u16, total: u16) -> u16 {
   const MARGIN: u16 = 1;
   let max_scroll = total.saturating_sub(viewport);
@@ -505,9 +481,6 @@ fn heading<'a>(text: &'a str, palette: &Palette) -> Line<'a> {
   ))
 }
 
-/// Quiet divider above each knob cluster — `── Title`, indented to
-/// align with the rows below it and painted in the muted tone so it
-/// reads as a separator, not a value row.
 fn group_header(title: &str, palette: &Palette) -> Line<'static> {
   Line::from(Span::styled(
     format!(
@@ -848,9 +821,8 @@ mod tests {
       LastParamsRow {
         ctx: Some(16384),
         reasoning: true,
-        // ctx/reasoning now live inside `knobs`; the picker seeds
-        // `user_knobs` straight from `knobs` so a returning user
-        // sees their last-shipped values with `(user)` chips.
+        // The picker seeds `user_knobs` straight from `knobs` so a returning
+        // user sees their last-shipped values with `(user)` chips.
         knobs: crate::knobset! {
           ctx: 16384,
           reasoning: true
@@ -905,8 +877,8 @@ mod tests {
       .collect();
     let row_of = |needle: &str| rows.iter().position(|r| r.contains(needle));
     // A non-default backend's own tunables are ordinary rows: they sit under
-    // the same group headers llama.cpp's do, keyed by the flag it takes, with the
-    // free-text extras row last of all.
+    // the same group headers the default backend's do, keyed by the flag it
+    // takes, with the free-text extras row last of all.
     let header = row_of(crate::launch::knobs::Group::Memory.title())
       .expect("the shared group header its memory knobs declare");
     let ssd = row_of("kv-cache-memory-bytes").expect("its knob row");

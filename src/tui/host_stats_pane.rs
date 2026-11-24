@@ -47,14 +47,11 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, host: &HostMetricsSnapshot, pal
   let bar_width = bar_width_for(inner.width);
   let mut lines: Vec<Line<'_>> = Vec::with_capacity(5);
 
-  // CPU row is always present.
   lines.push(cpu_row(host, bar_width, palette));
-  // RAM row is always present (Apple Silicon labels it "(unified)").
   lines.push(ram_row(host, bar_width, palette));
-  // GPU rows depend on backend. The empty-string and "unsampled"
-  // values both mean "no readings yet" — render the same collapsed
-  // layout as cpu_only so the pre-first-tick window doesn't show
-  // four bars filled to 0%.
+  // The empty-string and "unsampled" values both mean "no readings
+  // yet" — render the same collapsed layout as cpu_only so the
+  // pre-first-tick window doesn't show four bars filled to 0%.
   match host.gpu_backend.as_str() {
     s if s == HostMetricsSnapshot::BACKEND_CPU_ONLY
       || s == HostMetricsSnapshot::UNINITIALIZED_BACKEND
@@ -103,8 +100,7 @@ fn cpu_row<'a>(host: &HostMetricsSnapshot, bar_width: usize, palette: &'a Palett
     Span::styled(value, palette.text_style()),
   ];
   // CPU temperature renders next to the percent so the row reads
-  // symmetrically with the GPU row, when sysinfo's component
-  // sensor surfaced a reading. Same colour tiers as GPU temp.
+  // symmetrically with the GPU row. Same colour tiers as GPU temp.
   if let Some(temp) = host.cpu_temp_c {
     spans.push(Span::raw(" "));
     spans.extend(temp_spans(temp, palette));
@@ -142,11 +138,11 @@ fn ram_row<'a>(host: &HostMetricsSnapshot, bar_width: usize, palette: &'a Palett
   ])
 }
 
-/// Single GPU utilization row. A multi-GPU host collapses to one `GPU*`
-/// row: combined usage (mean across the cards that report it) and the
-/// hottest temperature (max across cards). Single-GPU hosts read `GPU`
-/// straight from the aggregate snapshot fields. Same left-aligned-column
-/// treatment as the CPU row so values line up across CPU/MEM/GPU/VRAM.
+/// Multi-GPU hosts collapse to one `GPU*` row: mean usage across the
+/// cards that report it, hottest temperature across cards. Single-GPU
+/// hosts read `GPU` straight from the aggregate snapshot fields. Same
+/// left-aligned-column treatment as the CPU row so values line up
+/// across CPU/MEM/GPU/VRAM.
 fn gpu_summary_row<'a>(
   host: &HostMetricsSnapshot,
   bar_width: usize,
@@ -202,19 +198,13 @@ fn gpu_summary_row<'a>(
 /// `non_gpu_ram_use` adds the GPU's own shared bytes back before
 /// subtracting, because sysinfo already folds the shared allocation into
 /// `ram_used` (double-counting it would shrink the ceiling twice). On
-/// Linux the pool ≈ total RAM, so the `min` reduces to the old
+/// Linux the pool ≈ total RAM, so the `min` reduces to
 /// `pool − non_gpu_ram_use`; on Windows the pool is ~half RAM, so the
 /// `min` keeps the gauge at the full pool until RAM genuinely fills.
-/// Clamped to `>= used` so the gauge never reads over 100%.
-///
-/// Discrete cards keep `used / total`. Unified-memory hosts (Apple, AMD
-/// GTT, Windows DXGI — gated on `HostMetricsSnapshot::unified`, the same
-/// flag `launch::admission` uses) share one pool with the CPU, so the
-/// reachable ceiling is `min(pool_total, ram_total − non-GPU RAM use)`:
-/// the full pool when RAM is free, dropping toward free-RAM headroom under
-/// pressure. Clamped `>= used` so the bar never exceeds 100%.
-/// In an AMD Linux LXC container where container RAM limit is artificial,
-/// the real GPU pool is preserved without clamping against container RAM.
+/// Discrete cards keep `used / total`. Clamped to `>= used` so the
+/// gauge never reads over 100%. The unified gate is
+/// `HostMetricsSnapshot::unified`, the same flag `launch::admission`
+/// uses.
 fn vram_denominator(host: &HostMetricsSnapshot, used: u64, total: u64) -> u64 {
   vram_denominator_for_policy(
     host,
@@ -253,8 +243,6 @@ pub(crate) fn vram_denominator_for_policy(
 fn vram_row<'a>(host: &HostMetricsSnapshot, bar_width: usize, palette: &'a Palette) -> Line<'a> {
   let (pct, value) = match (host.gpu_mem_used_bytes, host.gpu_mem_total_bytes) {
     (Some(used), Some(total)) if total > 0 => {
-      // On UMA the denominator is the GPU's reachable ceiling given
-      // current RAM pressure, not the static GTT cap.
       let avail = vram_denominator(host, used, total);
       let pct = (used as f64 / avail as f64) as f32 * 100.0;
       (pct.clamp(0.0, 100.0), format_bytes_pair(used, avail))
@@ -354,7 +342,7 @@ fn pluralize_gpu(n: u32) -> String {
   }
 }
 
-/// Compute the bar width — 60% of the inner area, clamped to a usable
+/// Compute the bar width for the given inner area, clamped to a usable
 /// range so the trailing percent / units column always has room.
 fn bar_width_for(inner_width: u16) -> usize {
   let budget = inner_width as usize;
@@ -366,11 +354,10 @@ fn bar_width_for(inner_width: u16) -> usize {
   usable.clamp(4, 14)
 }
 
-/// Render a single bar `[████░░░░]` of `width` cells. Fill chars are
-/// `█`, trough chars `░`. We can't color two halves of one span
-/// without splitting, so the fill color owns the whole string — the
-/// trough chars naturally read as a dimmer shade of the fill because
-/// `░` is a 25%-density glyph. (Matches kdash's visual.)
+/// Render a single bar `[████░░░░]` of `width` cells. We can't color
+/// two halves of one span without splitting, so the fill color owns
+/// the whole string — the trough chars naturally read as a dimmer
+/// shade of the fill because `░` is a 25%-density glyph.
 fn bar(pct: f32, width: usize, fill: Color) -> Span<'static> {
   if width == 0 {
     return Span::raw("");
@@ -411,12 +398,11 @@ fn gpu_temp_color(temp: f32, palette: &Palette) -> Color {
   }
 }
 
-/// Severity glyph for a temperature reading. Returns `""` on the
-/// green tier (no glyph), the warning marker on yellow, the critical
-/// marker on red. Pairs with [`gpu_temp_color`] so themes that can't
-/// carry colour information (Mono) still differentiate `92°C` from
-/// `65°C` purely on glyph shape — the two markers stay distinct in both
-/// the Unicode (`△`/`▲`) and the ASCII (`!`/`*`) glyph sets.
+/// Severity glyph for a temperature reading. Pairs with
+/// [`gpu_temp_color`] so themes that can't carry colour information
+/// (Mono) still differentiate `92°C` from `65°C` purely on glyph
+/// shape — the two markers stay distinct in both the Unicode
+/// (`△`/`▲`) and the ASCII (`!`/`*`) glyph sets.
 fn temp_severity_glyph(temp: f32) -> &'static str {
   let glyphs = crate::tui::glyphs::active();
   if temp >= 82.0 {
@@ -428,8 +414,7 @@ fn temp_severity_glyph(temp: f32) -> &'static str {
   }
 }
 
-/// Build the `glyph + value` spans for a temperature reading. The
-/// glyph carries the severity tier so colour isn't load-bearing; both
+/// Build the `glyph + value` spans for a temperature reading. Both
 /// glyph and value share the tier colour so colour-capable themes
 /// double-encode the signal. Reserves zero cells on the green tier
 /// (no glyph) so the common case still renders compactly.
@@ -496,7 +481,6 @@ mod tests {
 
   #[test]
   fn temp_severity_glyph_tiers_match_color_tiers() {
-    // No glyph on the green tier (compact), `△` on yellow, `▲` on red.
     assert_eq!(temp_severity_glyph(0.0), "");
     assert_eq!(temp_severity_glyph(69.9), "");
     assert_eq!(temp_severity_glyph(70.0), "△");
@@ -721,12 +705,9 @@ mod tests {
 
   #[test]
   fn ram_row_shows_full_total_and_star_on_unified_memory() {
-    // Strix Halo / UMA APU: sysinfo sees the full 121 GiB pool. The RAM
-    // row must show that true total (the same number `init` reports) —
-    // NOT the total minus the shared/GTT portion. `sysinfo` already
-    // counts the GPU's pool usage in `used`, so subtracting produced a
-    // wrong value. The `RAM*` marker (from the `unified` flag) is what
-    // tells the user the pool is shared with the GPU.
+    // Strix Halo / UMA APU: sysinfo sees the full 121 GiB pool. The
+    // RAM row must show that true total, NOT the total minus the
+    // shared/GTT portion.
     const GIB: u64 = 1024 * 1024 * 1024;
     let snap = HostMetricsSnapshot {
       cpu_pct: 5.0,
@@ -780,9 +761,8 @@ mod tests {
 
   #[test]
   fn ram_and_vram_rows_render_unit_suffix_only_once() {
-    // Regression: rows used to render `66G/121G` and `2.5G/4.0G` —
-    // the `G` (or `M` / `K` / `B`) suffix appeared on both sides of
-    // the slash. Pair formatter shares one trailing suffix.
+    // Regression: the `G` (or `M` / `K` / `B`) suffix must appear
+    // once per row, not on both sides of the slash.
     const GIB: u64 = 1024 * 1024 * 1024;
     let snap = HostMetricsSnapshot {
       cpu_pct: 10.0,
@@ -810,11 +790,11 @@ mod tests {
 
   #[test]
   fn vram_gauge_uses_reachable_ceiling_on_unified_memory() {
-    // UMA: the GPU shares one pool with the CPU, so the gauge
-    // denominator is the reachable ceiling = pool − non-GPU RAM use,
-    // NOT the static GTT cap and NOT the double-counting `pool − ram_used`.
-    // pool 124, ram_used 71 (of which 43 is the GPU's GTT), so non-GPU
-    // RAM = 28 and the GPU can reach 124 − 28 = 96.
+    // UMA: the gauge denominator is the reachable ceiling = pool −
+    // non-GPU RAM use, NOT the static GTT cap and NOT the
+    // double-counting `pool − ram_used`. pool 124, ram_used 71 (of
+    // which 43 is the GPU's GTT), so non-GPU RAM = 28 and the GPU can
+    // reach 124 − 28 = 96.
     const GIB: u64 = 1024 * 1024 * 1024;
     let snap = HostMetricsSnapshot {
       cpu_pct: 5.0,
@@ -981,7 +961,7 @@ mod tests {
   #[test]
   fn unsampled_backend_collapses_gpu_rows_like_cpu_only() {
     // The pre-first-tick window emits `gpu_backend == "unsampled"`. The
-    // host panel must not render gpu_util_row/vram_row in that window
+    // host panel must not render GPU/VRAM rows in that window
     // (they would show bars filled to 0% / "—/—" placeholders that
     // misrepresent the actual GPU state).
     let snap = HostMetricsSnapshot {

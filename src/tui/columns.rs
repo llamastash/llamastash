@@ -6,8 +6,7 @@ use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr as _};
 /// One data column. `rank` decides which columns survive under width
 /// pressure (lower = stickier — see [`fit`]); the order columns are
 /// declared in is the left-to-right display order, so visible columns
-/// keep their familiar positions as the terminal resizes — only the
-/// less-important ones drop out.
+/// keep their familiar positions as the terminal resizes.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Column<Id> {
   pub id: Id,

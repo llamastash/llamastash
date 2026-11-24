@@ -1,10 +1,8 @@
 //! Single source of truth for every display glyph the TUI paints.
-//!
 //! Two variants ship: [`GlyphSet::unicode`] (the project's default
-//! house style — geometric status dots, severity triangles, box-drawing
-//! borders) and [`GlyphSet::ascii`] (a `7`-bit fallback for terminals
-//! or fonts that render the Unicode set as tofu — legacy conhost,
-//! minimal SSH fonts, some CI ptys).
+//! house style) and [`GlyphSet::ascii`] (a `7`-bit fallback for
+//! terminals or fonts that render the Unicode set as tofu — legacy
+//! conhost, minimal SSH fonts, some CI ptys).
 //!
 //! The fallback is **opt-in**: `LLAMASTASH_ASCII=1` (env wins, per the
 //! project's env-truthy convention) or the `ascii_glyphs` config key.
@@ -15,8 +13,7 @@
 //! Selected once at startup via [`init`]; render sites read the active
 //! set through [`active`]. Until `init` runs (unit tests, the golden
 //! render harness, any non-interactive caller) [`active`] returns the
-//! Unicode set, so the default path is identical to having no glyph
-//! indirection at all.
+//! Unicode set.
 //!
 //! Severity stays **double-encoded** (shape + colour) in both sets: the
 //! ASCII set keeps distinct warning (`!`) and critical (`*`) markers so
@@ -93,10 +90,7 @@ pub struct GlyphSet {
   compact_banner: &'static str,
 }
 
-/// Spinner frames for the Unicode set — the four-phase moon the model
-/// list already cycled.
 const UNICODE_SPINNER: &[&str] = &["◐", "◓", "◑", "◒"];
-/// ASCII spinner — the classic four-phase bar.
 const ASCII_SPINNER: &[&str] = &["|", "/", "-", "\\"];
 
 /// `+ - |` border set for the ASCII fallback. Mirrors ratatui's
@@ -286,9 +280,8 @@ impl GlyphSet {
   }
 
   /// Box-drawing set for `Borders::ALL` panels. Unicode returns
-  /// ratatui's `PLAIN` set (the implicit default every panel used
-  /// before this indirection, so the Unicode path is byte-identical);
-  /// ASCII returns a `+ - |` set.
+  /// ratatui's `PLAIN` set (the implicit default, so the Unicode path
+  /// is byte-identical); ASCII returns a `+ - |` set.
   pub fn border_set(&self) -> ratatui::symbols::border::Set<'static> {
     if self.rounded_borders {
       ratatui::symbols::border::PLAIN

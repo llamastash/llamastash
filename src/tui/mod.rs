@@ -1,12 +1,8 @@
 //! TUI shell.
 //!
-//! Module layout mirrors the plan's file list:
 //! - [`app`] — pure App state machine.
 //! - [`events`] — input → state pump and the async run loop.
 //! - [`render`] — single-frame composition of every panel.
-//! - [`layout`], [`list_pane`], [`help_bar`], [`filter`],
-//!   [`launch_picker`], [`status_icons`], [`keybindings`] — focused
-//!   widgets and helpers.
 
 pub mod app;
 pub(crate) mod columns;

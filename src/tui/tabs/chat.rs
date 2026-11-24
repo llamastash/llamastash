@@ -1,11 +1,8 @@
 //! Chat tab — single-shot smoke-test prompt against the focused
 //! model's `/v1/chat/completions` endpoint.
 //!
-//! v1 keeps the surface narrow:
-//! - one prompt buffer the user types into;
-//! - one output viewport the streamer appends to;
-//! - no conversation history (the plan calls v1 a single-shot
-//!   smoke test).
+//! The surface stays narrow on purpose: one prompt buffer, one output
+//! viewport the streamer appends to, no conversation history.
 //!
 //! When the model reports `reasoning` is on, `<think>...</think>`
 //! blocks collapse to a `⏵ reasoning (N tokens)` glyph in the
@@ -28,10 +25,8 @@ use crate::tui::tabs::input_pane::{self, InputPaneOpts, PromptField};
 /// so the streamer and the renderer share one buffer.
 #[derive(Debug, Default)]
 pub struct ChatTabState {
-  /// The user's current prompt input. Uses the modal
-  /// [`crate::tui::input_field::InputField`] component so the
-  /// `e:edit / Esc:stop / 2nd-Esc:clear` walk-back contract matches
-  /// every other text input in the TUI.
+  /// Modal input, so the `e:edit / Esc:stop / 2nd-Esc:clear`
+  /// walk-back contract matches every other text input in the TUI.
   pub prompt: crate::tui::input_field::InputField,
   /// Accumulated response from the most recent send.
   pub response: String,
@@ -41,13 +36,12 @@ pub struct ChatTabState {
   pub finish_reason: Option<String>,
   /// Last error message — empty when the previous send succeeded.
   pub last_error: Option<String>,
-  /// Collapse `<think>` blocks. Drives the same toggle the plan
-  /// calls out for reasoning-aware models.
+  /// Collapse `<think>` blocks in the rendered output.
   pub collapse_thinks: bool,
-  /// Top-of-viewport offset into the rendered response. 0 pins to
-  /// the top; ↑/↓ walk this (round-8). A cell so the renderer can
-  /// clamp it to the wrapped content height and write the clamp back
-  /// (see `input_pane::InputPaneOpts::scroll_offset`).
+  /// Top-of-viewport line index into the rendered response; 0 pins
+  /// to the top. A cell so the renderer can clamp it to the wrapped
+  /// content height and write the clamp back (see
+  /// `input_pane::InputPaneOpts::scroll_offset`).
   pub scroll_offset: Cell<u16>,
 }
 
@@ -74,20 +68,15 @@ impl ChatTabState {
     self.scroll_offset.set(0);
   }
 
-  /// Scroll the output viewport up by one line — toward the top of
-  /// the response. `scroll_offset` is the top-of-viewport line index
-  /// (0 = pinned to the start), so scrolling up *decreases* it;
-  /// saturating so presses at the top clamp at 0.
+  /// Scroll one line toward the top of the response; clamps at 0.
   pub fn scroll_up(&mut self) {
     self
       .scroll_offset
       .set(self.scroll_offset.get().saturating_sub(1));
   }
 
-  /// Scroll the output viewport down by one line — toward the end of
-  /// the response. Increases `scroll_offset`; the render clamps it to
-  /// the wrapped content height (and writes the clamp back) so it
-  /// can't run past the last line.
+  /// Scroll one line toward the end of the response; the render
+  /// clamps to the wrapped content height.
   pub fn scroll_down(&mut self) {
     self
       .scroll_offset
@@ -112,9 +101,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, palette: &Palette) {
   };
 
   // The status row carries only live-state messages (streaming /
-  // error / finished). Idle key-hint chips moved to the right
-  // pane's bottom border — keeps the in-body row from doubling up
-  // with the same information.
+  // error / finished); idle key-hint chips live on the right pane's
+  // bottom border.
   let status = match (state.streaming, &state.last_error, &state.finish_reason) {
     (true, _, _) => Line::from(Span::styled(
       "streaming…",
@@ -182,9 +170,8 @@ fn render_response_lines(text: &str, collapse: bool, palette: &Palette) -> Vec<L
         }
         rest = &rest[idx + needle.len()..];
         if in_think {
-          // Just closed a `<think>` block. Flush the trailing span
-          // for the reasoning trace, then emit an empty line as the
-          // visual separator before the answer.
+          // Flush the reasoning span, then emit the blank separator
+          // line before the answer.
           if !current.is_empty() {
             lines.push(Line::from(std::mem::take(&mut current)));
           }
