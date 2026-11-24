@@ -5,8 +5,7 @@
 
 #![warn(rust_2018_idioms)]
 #![deny(clippy::shadow_unrelated)]
-// No crate-wide `dead_code` allow — every scaffold module is now
-// consumed. If you add a new module that hasn't landed all of its
+// If you add a new module that hasn't landed all of its
 // consumers yet, narrow the allow to that item
 // (`#[allow(dead_code)] fn …`) rather than re-blanketing the crate.
 

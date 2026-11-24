@@ -8,15 +8,11 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// How long a test waits for an in-process daemon to come up.
-///
 /// Startup runs the real GPU probe. On a host with `nvidia-smi`, a dozen
 /// daemons booting at once under nextest queue on the driver and the probe
 /// takes ~4 s each (measured on an RTX 3050 Ti); alone it takes 10 ms.
 pub const DAEMON_STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Unique temp directory for an integration test.
-///
 /// macOS `sun_path` is 104 bytes; the default `temp_dir()` already
 /// eats ~50 of those, so we trim the time-based suffix and add a
 /// process-local atomic counter. Two tests running on the same
@@ -145,8 +141,8 @@ pub fn sync_shutdown_daemon(state_dir: &std::path::Path) -> std::io::Result<()> 
 /// actually varies.
 ///
 /// `RunningSnapshot` is constructed in a dozen inline test modules and four
-/// integration suites. Every field added to it used to mean editing each of
-/// those literals; here it means one default in one place.
+/// integration suites. Without this builder, a new field means editing each
+/// of those literals. Here it means one default in one place.
 ///
 /// ```ignore
 /// let row = running_row("/m/a.gguf").name("coder").launch_id("L2").build();
