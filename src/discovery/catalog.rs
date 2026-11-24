@@ -184,7 +184,6 @@ impl ModelCatalog {
     }
   }
 
-  /// Number of models currently surfaced.
   pub async fn len(&self) -> usize {
     self.inner.read().await.models.len()
   }
@@ -222,9 +221,8 @@ impl ModelCatalog {
   }
 
   /// Serialise the catalog into the JSON shape `list_models` returns.
-  /// Pulled out of the dispatcher so it can be unit-tested with
-  /// hand-built fixtures. The wire shape lives entirely in `CatalogRow`'s
-  /// serde impl — this only maps `DiscoveredModel` → `CatalogRow`.
+  /// The wire shape lives entirely in `CatalogRow`'s serde impl — this only
+  /// maps `DiscoveredModel` → `CatalogRow`.
   pub async fn to_list_response(&self, available_routed: &BTreeSet<String>) -> Value {
     let snap = self.snapshot().await;
     let rows: Vec<CatalogRow> = snap.iter().map(|m| list_row(m, available_routed)).collect();
@@ -232,8 +230,8 @@ impl ModelCatalog {
   }
 }
 
-/// A `list_models` row: [`catalog_row`] plus the primary backend badge
-/// (R14 / R13 routing), the highest-priority supported backend that is
+/// A `list_models` row: [`catalog_row`] plus the primary backend badge,
+/// the highest-priority supported backend that is
 /// available, else the source's default. Names no backend.
 fn list_row(m: &DiscoveredModel, available_routed: &BTreeSet<String>) -> CatalogRow {
   let backend = m
@@ -346,9 +344,9 @@ mod tests {
 
   #[test]
   fn model_row_tags_backend_by_source() {
-    // Disk (GGUF) rows report the direct llama.cpp backend — the R14 badge /
-    // R13 routing tag. GGUF JSON is otherwise unchanged (additive field). A
-    // backend-registry source adds its own tag.
+    // Disk (GGUF) rows report the direct llama.cpp backend. GGUF JSON is
+    // otherwise unchanged (additive field). A backend-registry source adds its
+    // own tag.
     let none = BTreeSet::new();
     let gguf = row_json(&fake_model("/m/a.gguf", ModelSource::UserPath), &none);
     assert_eq!(gguf["backend"], "llamacpp");

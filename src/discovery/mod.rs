@@ -1,19 +1,10 @@
 //! Filesystem discovery: scan roots for `.gguf` files, group split-shard
 //! sets, surface them on a streaming `mpsc::Receiver` so the TUI can
-//! render rows as they arrive (origin: R1, R9).
-//!
-//! Module layout mirrors the responsibilities in the v1 plan:
-//! - [`scanner`] — walk one or more roots and emit `DiscoveredModel`s.
-//! - [`split_gguf`] — collapse `*-NNNNN-of-MMMMM.gguf` sets into one
-//!   user-visible entry.
-//!
-//! Cache-aware enumerators (HuggingFace, Ollama, LM Studio), the
-//! filesystem watcher, and the HuggingFace pull worker live in the
-//! sibling modules.
+//! render rows as they arrive.
 //!
 //! [`hf_repos`] is the backend-neutral substrate for **non-GGUF**
-//! safetensors/HF-format model repos — a shared snapshot-repo enumerator a
-//! future safetensors engine adopts via a predicate + projection only.
+//! safetensors/HF-format model repos (docs/architecture.md
+//! § Backend-neutral substrate seams).
 
 pub mod catalog;
 pub mod delete;
@@ -50,7 +41,7 @@ pub struct DiscoveredModel {
   /// Directory the file (or shard set) lives in. Discovery groups by
   /// parent for the TUI's "Models / `dir`" rendering.
   pub parent: PathBuf,
-  /// Source cache the file was discovered through, if any. `None` for
+  /// Source cache the file was discovered through, if any. `UserPath` for
   /// user-configured `--model-path` roots that don't match a known
   /// cache layout.
   pub source: ModelSource,

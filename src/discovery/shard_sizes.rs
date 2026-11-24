@@ -17,10 +17,10 @@
 
 use std::path::{Path, PathBuf};
 
-/// One shard's path plus its on-disk byte count. `bytes` is `0` when
-/// the file is missing or unreadable so a temporarily-broken sibling
-/// shrinks the total rather than panicking the caller; the path is
-/// always preserved so the consumer can still surface it in a UI.
+/// `bytes` is `0` when the file is missing or unreadable so a
+/// temporarily-broken sibling shrinks the total rather than panicking the
+/// caller; the path is always preserved so the consumer can still surface it
+/// in a UI.
 #[derive(Debug, Clone)]
 pub struct ShardSize {
   pub path: PathBuf,

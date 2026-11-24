@@ -336,8 +336,8 @@ pub fn execute(plan: &DeletePlan) -> io::Result<String> {
       }
     }
   }
-  // Only the primary failing is fatal — a companion we could not unlink is
-  // reported but the model itself is gone, which is what the user asked for.
+  // Only the primary failing is fatal — a companion we could not unlink drops
+  // out of the count and the model itself is gone, which is what the user asked for.
   if !plan.primary.exists() {
     let name = plan
       .primary
@@ -1027,7 +1027,7 @@ mod tests {
   }
 
   /// A catalog row whose `path` is a whole snapshot directory rather than a
-  /// single file — the shape a safetensors backend produces. These four pin
+  /// single file — the shape a safetensors backend produces. These tests pin
   /// that the file-shaped assumptions in this module degrade safely.
   #[test]
   fn directory_row_resolves_no_companions() {

@@ -1,9 +1,9 @@
 //! Detect and group split-GGUF shards.
 //!
-//! When a model is too large to fit in a single file, `llama.cpp`'s
-//! conversion tools emit it as a sequence of shards named
-//! `<base>-NNNNN-of-MMMMM.gguf`. To `llama-server`, the shard set is
-//! launched by pointing it at shard 1; the loader follows the
+//! When a model is too large to fit in a single file, the conversion
+//! tools emit it as a sequence of shards named
+//! `<base>-NNNNN-of-MMMMM.gguf`. The engine launches the shard set by
+//! pointing it at shard 1; the loader follows the
 //! `-of-MMMMM` suffix to find siblings. Discovery collapses
 //! the shard set into a single user-visible row so the TUI shows one
 //! model entry rather than five lines of `*-00001-of-00005.gguf` …
@@ -71,7 +71,7 @@ pub enum DiscoveredEntry {
 }
 
 /// A group of shards that together form a single model. `launch_path`
-/// is the file the supervisor should pass to `llama-server` (`-m`); on
+/// is the file the supervisor should pass to the engine (`-m`); on
 /// a healthy set this is shard 1 (`*-00001-of-NNNNN.gguf`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SplitGroup {
@@ -83,7 +83,7 @@ pub struct SplitGroup {
   /// All shards in the set, sorted by index ascending. May be sparse
   /// if some shards are missing on disk.
   pub shards: Vec<PathBuf>,
-  /// File to hand to `llama-server`'s `-m` flag. Shard 1 when present;
+  /// File to hand to the engine's `-m` flag. Shard 1 when present;
   /// the lowest-index shard otherwise. The supervisor can warn if this
   /// isn't shard 1 (`complete == false`).
   pub launch_path: PathBuf,

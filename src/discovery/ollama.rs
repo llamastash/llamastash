@@ -48,7 +48,7 @@ struct ManifestLayer {
 /// Stream-enumerate every Ollama-managed model under `root`
 /// (the `~/.ollama/models` directory). Each [`DiscoveredModel`]
 /// reports the canonical blob path so the supervisor can launch
-/// `llama-server -m <blob-path>` without going through Ollama.
+/// the engine on it without going through Ollama.
 ///
 /// Errors per-manifest (malformed JSON, missing blob, unreadable
 /// file) are logged and skipped; the remaining manifests still

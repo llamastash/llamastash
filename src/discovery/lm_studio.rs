@@ -7,7 +7,7 @@
 //! handles the *enumeration*; this module only resolves *where* to
 //! point it.
 //!
-//! Resolution order, per the v1 plan:
+//! Resolution order:
 //! 1. `~/.lmstudio/models` (the documented default).
 //! 2. `~/.cache/lm-studio/models` (older installs).
 //! 3. `~/.lmstudio/settings.json` → `paths.models` (or similar key) —
@@ -46,8 +46,7 @@ pub fn resolve_models_dirs(home: &Path) -> Vec<PathBuf> {
   out
 }
 
-/// LM Studio's settings file. The shape varies between releases; the
-/// relevant key shifts across releases:
+/// LM Studio's settings file. The relevant key shifts across releases:
 /// - `paths.models` — older builds.
 /// - `modelsDirectory` — even older.
 /// - `downloadsFolder` — current top-level key (observed in
@@ -175,11 +174,6 @@ mod tests {
   fn downloads_folder_key_resolves_when_others_absent() {
     // LM Studio 0.3.x writes `downloadsFolder` (not `paths.models`)
     // when the user relocates the model directory via the GUI.
-    // Without this key the resolver missed real user installs that
-    // pointed at an external drive — observed on the test author's
-    // Strix Halo box where the default `.lmstudio/models` had a
-    // stale 2-model snapshot and `downloadsFolder` pointed at a
-    // 100+-model collection on a separate disk.
     let home = temp_home("downloads-folder");
     let custom = home.join("ExternalDrive/lmstudio-models");
     fs::create_dir_all(&custom).unwrap();

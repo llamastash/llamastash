@@ -1,9 +1,9 @@
 //! Live-update the discovered-model list via a debounced filesystem
-//! watcher (origin: R22).
+//! watcher.
 //!
 //! Events are coalesced (e.g., copying a split-shard set, or `hf-hub`
 //! writing many `.part` files in quick succession) into one event per
-//! debounce window — 500 ms by default per the plan. Each event surfaces
+//! debounce window. Each event surfaces
 //! to the caller as a [`WatchEvent`] over an `mpsc::Receiver`; the daemon's discovery task consumes
 //! these and re-runs the affected scan slice to refresh
 //! `list_models`.
@@ -88,13 +88,12 @@ impl WatchRoot {
   }
 }
 
-/// Tunables. Production defaults match the plan: 500 ms debounce,
-/// 5-minute periodic backstop. Tests shorten them for responsiveness.
+/// Tunables. Tests shorten them for responsiveness.
 #[derive(Debug, Clone, Copy)]
 pub struct WatcherOptions {
   pub debounce: Duration,
   pub periodic_rescan: Duration,
-  /// Buffer for the outbound event channel. Defaults to 64 so a slow
+  /// Buffer for the outbound event channel. Defaults to 256 so a slow
   /// consumer doesn't starve the watcher thread.
   pub channel_capacity: usize,
 }

@@ -23,20 +23,19 @@ use tokio::sync::RwLock;
 
 use crate::gguf::metadata::ModelMetadata;
 
-/// A parsed-once snapshot of one file's metadata. Either the parse
-/// succeeded (`metadata`) or it failed (`parse_error`); both shapes
-/// are cached so we don't keep re-parsing a file that's known-bad
-/// every time the watcher fires.
+/// Either the parse succeeded (`metadata`) or it failed (`parse_error`);
+/// both shapes are cached so we don't keep re-parsing a file that's
+/// known-bad every time the watcher fires.
 #[derive(Clone, Debug, Default)]
 pub struct CachedParse {
   pub metadata: Option<ModelMetadata>,
   pub parse_error: Option<String>,
   /// Multimodal capability of the model's mmproj projector companion,
   /// resolved once on the cache-miss path so warm rescans don't repeat
-  /// the sibling `read_dir` + projector header read. Keyed (like the
-  /// rest of this entry) on the *model* file, so a projector dropped in
-  /// alongside an already-cached model won't surface until that model
-  /// file changes or the daemon restarts — an accepted edge case.
+  /// the sibling `read_dir` + projector header read. Keyed on the *model*
+  /// file, so a projector dropped in alongside an already-cached model
+  /// won't surface until that model file changes or the daemon restarts —
+  /// an accepted edge case.
   pub multimodal: Option<crate::discovery::Multimodal>,
   /// The backends that can serve this model, priority-ordered (first = the
   /// auto-route default). Computed on the same cache-miss header parse as
@@ -44,10 +43,9 @@ pub struct CachedParse {
   /// tensor info. Determined generically over the backend registry — names no
   /// backend. See [`crate::backend::supported_backends_for`].
   pub supported_backends: Vec<String>,
-  /// Path to the model's separate MTP draft head, or `None`
-  /// for embedded-head / no-head models. Resolved on the same cache-miss
-  /// blocking hop as `multimodal` (a sibling `read_dir`), keyed on the *model*
-  /// file — same staleness caveat as `multimodal`.
+  /// Path to the model's separate MTP draft head, or `None` for
+  /// embedded-head / no-head models. Resolved on the same cache-miss
+  /// blocking hop as `multimodal` — same staleness caveat.
   pub mtp_head: Option<PathBuf>,
   /// The split siblings `metadata`'s shard-summed figures were read from. A hit
   /// with a different sibling list re-reads them; the entry is keyed on the
@@ -68,9 +66,9 @@ struct CacheEntry {
   last_access: AtomicU64,
 }
 
-/// Thread-safe LRU cache. Cheap to clone — the inner state is held
-/// in an `Arc<RwLock<…>>` so a single cache instance can be shared
-/// between the scanner and the discovery task.
+/// Cheap to clone — the inner state is held in an `Arc<RwLock<…>>` so a
+/// single cache instance can be shared between the scanner and the
+/// discovery task.
 #[derive(Debug, Clone)]
 pub struct MetadataCache {
   inner: Arc<RwLock<BTreeMap<PathBuf, Arc<CacheEntry>>>>,
@@ -82,8 +80,8 @@ pub struct MetadataCache {
 }
 
 impl MetadataCache {
-  /// New cache with the supplied capacity. `capacity == 0` is treated
-  /// as a degenerate (no-cache) configuration — gets always miss.
+  /// `capacity == 0` is treated as a degenerate (no-cache) configuration —
+  /// gets always miss.
   pub fn new(capacity: usize) -> Self {
     Self {
       inner: Arc::new(RwLock::new(BTreeMap::new())),
@@ -92,17 +90,15 @@ impl MetadataCache {
     }
   }
 
-  /// Sensible default for a v1 install: 2048 entries comfortably
-  /// covers the HF cache + Ollama + LM Studio of a power user
-  /// without bloating RAM. Plan didn't fix a specific number, so
-  /// this is the implementation choice.
+  /// 2048 entries comfortably covers the HF cache + Ollama + LM Studio of
+  /// a power user without bloating RAM.
   pub fn default_capacity() -> Self {
     Self::new(2048)
   }
 
   /// Returns the cached parse for `path` *if and only if* the
-  /// on-disk mtime and size still match the cached probe. Bumps the
-  /// LRU access counter on a hit. `None` covers miss + invalidation.
+  /// on-disk mtime and size still match the cached probe. `None` covers
+  /// miss + invalidation.
   pub async fn get(
     &self,
     path: &Path,
@@ -113,8 +109,7 @@ impl MetadataCache {
       return None;
     }
     // Read-only lookup. The hit path updates `last_access` via
-    // atomic store — concurrent scanner reads now scale, where they
-    // previously serialised on a write lock.
+    // atomic store — concurrent scanner reads scale.
     let guard = self.inner.read().await;
     let entry = guard.get(path)?;
     if entry.mtime != mtime || entry.size != size {
@@ -143,10 +138,8 @@ impl MetadataCache {
       }),
     );
     if guard.len() > self.capacity {
-      // Identify the LRU victim by smallest `last_access`. O(n) in
-      // capacity, which is fine for our bound (a few thousand entries
-      // at most). Documented here so a future move to a multi-million-
-      // entry cache knows to swap in a linked-list-keyed LRU.
+      // O(n) in capacity, which is fine for our bound (a few thousand
+      // entries at most).
       let victim = guard
         .iter()
         .min_by_key(|(_, e)| e.last_access.load(Ordering::Relaxed))
@@ -157,7 +150,6 @@ impl MetadataCache {
     }
   }
 
-  /// Current entry count. Useful in tests.
   pub async fn len(&self) -> usize {
     self.inner.read().await.len()
   }
@@ -173,8 +165,7 @@ impl Default for MetadataCache {
   }
 }
 
-/// Best-effort `(mtime, size)` probe for `path`. Returns
-/// `(None, 0)` on metadata failure rather than failing the lookup,
+/// Returns `(None, 0)` on metadata failure rather than failing the lookup,
 /// since a torn read can't recover anyway — the scanner will retry
 /// on the next pass.
 pub fn probe(path: &Path) -> (Option<SystemTime>, u64) {
