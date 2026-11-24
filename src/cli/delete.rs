@@ -112,7 +112,6 @@ fn plan_lines(plan: &Value) -> Vec<String> {
   lines
 }
 
-/// The `[y/N]` prompt, on the shared stdin reader.
 fn confirm(name: &str) -> Result<bool, CliExit> {
   crate::cli::picker::confirm_line(
     &mut io::stdin(),

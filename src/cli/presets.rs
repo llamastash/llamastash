@@ -31,7 +31,7 @@ pub async fn handle(args: PresetsArgs, cli: &Cli, config: &Config) -> CliResult 
         .unwrap_or_default();
       if as_json {
         // Wrapped object — same shape convention as `list --json`
-        // (now `{"models": [...]}`) so agent parsers can rely on a
+        // so agent parsers can rely on a
         // single "always object" rule across the CLI surface.
         println!("{}", pretty_json(&serde_json::json!({"presets": arr})));
       } else {
@@ -148,7 +148,6 @@ pub async fn handle(args: PresetsArgs, cli: &Cli, config: &Config) -> CliResult 
       let (flag_knobs, extras_os) = crate::cli::tail_args::parse_tail_args(&tokens)?;
       knobs.overlay(&flag_knobs);
 
-      // The knobs that keep a hand-written flag fold into the same map.
       match ctx {
         Some(crate::cli::cli_args::CtxArg::Value(n)) => {
           knobs.set_by_name("ctx", n.to_string());

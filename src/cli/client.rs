@@ -25,7 +25,7 @@ use crate::util::paths::state_dir;
 /// Detect a stale daemon: the PID lockfile is held by a live process,
 /// but `runtime.json` is missing (or unreadable). Means a daemon is
 /// running but didn't publish its HTTP control-plane URL+token — a
-/// pre-Phase-A binary, a crash between lock-acquire and runtime-file
+/// crash between lock-acquire and runtime-file
 /// save, or a manual `rm`. Auto-spawning would just fail the second
 /// time, so callers should surface an actionable error instead.
 ///
@@ -39,8 +39,8 @@ pub(crate) fn detect_stale_daemon(state_dir: &std::path::Path) -> Option<i32> {
   }
 }
 
-/// Error message rendered when `detect_stale_daemon` fires. Centralised
-/// so the wording stays consistent between `connect_or_spawn`, the
+/// Error message rendered when `detect_stale_daemon` fires. Shared so
+/// the wording stays consistent between `connect_or_spawn`, the
 /// post-spawn polling fallback, and any future call sites.
 fn stale_daemon_message(pid: i32, state_dir: &std::path::Path) -> String {
   format!(
@@ -56,8 +56,6 @@ fn stale_daemon_message(pid: i32, state_dir: &std::path::Path) -> String {
 /// Returns a `CliExit` shaped to the canonical exit codes so the
 /// caller doesn't have to map errors a second time.
 pub async fn connect_or_spawn(cli: &Cli, config: &Config) -> Result<Client, CliExit> {
-  // The HTTP control-plane client reads `runtime.json` (URL + bearer
-  // token) from the daemon's state directory.
   let attach_dir = state_dir()
     .ok_or_else(|| CliExit::new(DAEMON_UNREACHABLE, "could not resolve state directory"))?;
   match Client::connect(&attach_dir).await {
@@ -122,7 +120,7 @@ async fn spawn_and_attach(
   }
   let opts = build_spawn_options(cli, config)?;
   // Fail-fast: never auto-spawn a daemon that can't bring up an *indicated*
-  // backend (a missing `llama-server` with nothing else to launch). The
+  // backend (a missing engine binary with nothing else to launch). The
   // auto-spawn path has no `--force` knob, so a degraded start is never chosen
   // silently — the user resolves the issue or runs `daemon start --force`. The
   // TUI surfaces this message in its Daemon → server-info pane.
@@ -144,7 +142,7 @@ async fn spawn_and_attach(
   }
 }
 
-/// Detect a stale `llama-server` binding on an already-running
+/// Detect a stale engine binary binding on an already-running
 /// daemon and reconcile it. When `cli.llama_server` is set:
 ///  1. Query `status` to find the daemon's current `server_path`.
 ///  2. Resolve the CLI flag to its canonical path.

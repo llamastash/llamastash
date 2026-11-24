@@ -570,8 +570,7 @@ mod tests {
   }
 
   /// `mode:` is a knob now, so beside `knobs:` it is an unknown field. The
-  /// message says where it belongs, since `docs/architecture.md` said otherwise
-  /// until this fix.
+  /// message says where it belongs.
   #[test]
   fn a_knob_written_beside_knobs_is_usage_with_a_pointer() {
     let dir = tempfile::tempdir().unwrap();

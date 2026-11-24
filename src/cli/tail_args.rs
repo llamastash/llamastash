@@ -1,22 +1,22 @@
 //! `llamastash start <model> -- <flags>` tail-args parser.
 //!
-//! Walks tokens left-to-right. A flag any backend declares — by its canonical
+//! A flag any backend declares — by its canonical
 //! id, a declared alias (`-ngl`, `-c`), or a concept's neutral spelling — lands
 //! on that knob; everything else routes to `extras`. Type / range errors return
 //! `USAGE` (64); unrecognised flags route silently.
 //!
-//! Recognition reads the registry, not one backend's table. It used to read
-//! the default backend's alias list alone, so a knob any *other* backend
-//! declared had a generated `start` flag that parsed, appeared in `--help`, and
-//! then fell through to `extras` — reaching the engine as raw argv while
-//! skipping layering, persistence and presets entirely.
+//! Recognition reads the registry, not one backend's table. Reading
+//! one backend's alias list alone lets a knob any *other* backend
+//! declares fall through to `extras`. The generated `start` flag then
+//! parses and appears in `--help`, but reaches the engine as raw argv
+//! while skipping layering, persistence and presets entirely.
 
 use std::ffi::OsString;
 
 use crate::cli::exit_codes::{CliExit, USAGE};
 use crate::launch::knobs::{self, KnobDef, KnobKind};
 
-/// Walk `tokens` and split into (knobs, extras). Last-occurrence
+/// Last-occurrence
 /// wins for repeated knob flags.
 pub fn parse_tail_args(
   tokens: &[OsString],
@@ -51,9 +51,7 @@ pub fn parse_tail_args(
       // or the `auto` token (handled here, not by `parse_bool`, since it sets
       // the knob's `KnobValue::Auto` state rather than a boolean) — modern
       // llama-server's `--flash-attn` requires `on|off|auto`, so we mirror
-      // that. Anything else stays unconsumed and routes through extras. This
-      // fixes the prior `--flash-attn auto` bug where `auto` was left as a
-      // dangling positional in extras, producing broken argv.
+      // that. Anything else stays unconsumed and routes through extras.
       KnobKind::Bool => match inline {
         Some(v) => Some(v),
         None => match iter
@@ -94,9 +92,7 @@ where
   Ok(next.to_string_lossy().into_owned())
 }
 
-/// Write one recognised flag's value into the knob set.
-///
-/// One generic path replaces the per-field match this used to be: the value is
+/// The value is
 /// parsed against the knob's own declaration, so range checks, closed choice
 /// sets and the bool spellings all come from the registry rather than from a
 /// hand-maintained arm per knob.
@@ -409,14 +405,6 @@ mod tests {
       vec![OsString::from("--rope-freq-base"), OsString::from("10000")]
     );
   }
-  /// Recognition reads the registry, so a knob any backend declares lands on
-  /// the knob rather than in `extras`.
-  ///
-  /// It read the default backend's alias table alone before, so every knob
-  /// another backend declared had a generated `start` flag that parsed,
-  /// appeared in `--help`, and then fell through to the raw argv tail — no
-  /// layering, no persistence into `last_params`, and nothing for
-  /// `presets save` to record.
   #[test]
   fn a_knob_from_any_backend_lands_on_the_knob_not_in_extras() {
     let home = crate::backend::DEFAULT_BACKEND_ID;

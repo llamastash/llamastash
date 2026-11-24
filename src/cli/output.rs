@@ -1,12 +1,6 @@
 //! Human + JSON output formatters shared by the non-interactive
-//! subcommands.
-//!
-//! Two surfaces, one source of truth: every command supports `--json`
-//! whose shape is the public agent contract; the human-readable form
-//! is best-effort prettification.
-//!
-//! Tab-separated text is the default human format. Agents pin against
-//! `--json`; humans get something `column -t` friendly.
+//! subcommands. `--json` is the public agent contract. The human form
+//! is tab-separated by default, so `column -t` pipelines work.
 
 use std::collections::HashMap;
 
@@ -15,10 +9,8 @@ use serde_json::Value;
 use crate::cli::resolve::{CatalogRow, RunningRow, StatusSnapshot};
 use crate::tui::status_icons::{glyph_for, SurfaceState};
 
-/// Decode the canonical model path out of a daemon row's nested
-/// `id.path` shape. Centralised so the five CLI subcommands that
-/// project status / list_models / favorites / last_params rows
-/// stop respelling the same two-level `get`.
+/// Decode the canonical model path out of a daemon row's `id.path`
+/// or `params.model_path` shape.
 pub fn row_path(v: &Value) -> Option<&str> {
   v.get("id")
     .and_then(|id| id.get("path"))
@@ -38,41 +30,19 @@ pub fn row_path(v: &Value) -> Option<&str> {
 
 /// Render `list_models` rows as a padded table on TTY, or
 /// tab-separated rows when colors are disabled (piped / `--no-colors` /
-/// `NO_COLOR`). Columns: `NAME [REPO] ARCH PARAMS QUANT CTX SIZE MODE
-/// [BACKEND] STATUS [DEVICE]` — the bracketed three are conditional (see
-/// below).
-///
-/// REPO is the model's location in short form — `unsloth/Qwen3.8-27B-GGUF`
-/// for an HF cache entry, the parent directory's name for anything else. It
-/// replaces the PATH column that was dropped for width, and it is the
-/// prefix of the repo-qualified id the proxy publishes when two models
-/// share a basename. Omitted when no row has one.
-///
-/// SIZE displays the GGUF weights footprint (matches the TUI list
-/// pane's SIZE column) — PATH was dropped because the canonical paths
-/// dominated line width on real caches. `--json` still carries `path`
-/// for agent consumers.
-///
-/// MODE shows the catalog row's `mode_hint` (`chat` / `embedding` /
-/// `rerank`), matching the TUI list's Mode column.
-///
-/// DEVICE appears only when `multi_device` is set (some single server sees
-/// more than one *physical* GPU — the CLI mirror of the TUI's
-/// `App::multi_device` gate). Cell semantics mirror the TUI's
-/// `column_value`: an explicit `--device` selector renders verbatim,
-/// `all` for a running row on the device-selecting default backend
-/// with no override, and the `?` placeholder otherwise.
-///
-/// STATUS shows the live supervisor state when one exists for the
-/// row's path: a TUI-shared glyph (`● ready`, `◐ loading`, …) followed
-/// by `:<port>`. The column is empty for rows with no supervisor so
-/// the catalog stays uncluttered. `running` is the index produced by
-/// [`crate::cli::resolve::running_index`] — pass an empty map to opt out.
+/// `NO_COLOR`). The column set and its gating are documented in
+/// docs/usage.md. `running` is the index produced by
+/// [`crate::cli::resolve::running_index`]. Pass an empty map to opt out
+/// of the STATUS column.
 ///
 /// A model with more than one live launch gets **one line per launch**, and a
 /// named launch renders `<model>@<name>` in NAME — the whole string a client
 /// or `stop` takes. One line per model would have to pick a winner, which is
 /// the case named launches exist for.
+///
+/// `--json` still carries `path` for agent consumers; the human table has no
+/// PATH column because the canonical paths dominated line width on real
+/// caches.
 ///
 /// Footer line `(N models)` is appended on TTY only — the piped form
 /// stays byte-stable for `awk -F\t` / `column -t` pipelines.
@@ -85,10 +55,7 @@ pub fn list_human(
   if rows.is_empty() {
     return format!("{}\n", colors::dim("(no models discovered)"));
   }
-  // Show the BACKEND column when any model surfaces a backend beyond the
-  // default `llamacpp` — either a non-default primary or more than one supported
-  // backend (a file two backends claim lists both, `<other>|llamacpp`). Matches the TUI's
-  // `multi_backend` gate.
+  // Mirrors the TUI's `multi_backend` gate.
   let show_backend = rows.iter().any(|r| {
     r.supported_backends.len() > 1
       || r
@@ -100,11 +67,6 @@ pub fn list_human(
         .as_deref()
         .is_some_and(|b| b != crate::backend::DEFAULT_BACKEND_ID)
   });
-  // REPO is the short form of where the model lives (`unsloth/Qwen3.8-27B-GGUF`
-  // for an HF cache, the parent directory's name otherwise). Shown whenever
-  // any row has one — a catalog of registry-sourced rows only (Ollama,
-  // an engine) have nothing to put in it, since their `name` names the
-  // origin.
   let show_repo = rows.iter().any(|r| !r.group_label().is_empty());
   let mut header: Vec<&str> = vec!["NAME"];
   if show_repo {
@@ -120,9 +82,8 @@ pub fn list_human(
   }
   let mut body: Vec<Vec<String>> = Vec::with_capacity(rows.len());
   for r in rows {
-    // Shared `list_cell` so a missing Arch/Quant/Params reads as one
-    // placeholder (`?`), matching the TUI list — an unknown quant no longer
-    // leaks the literal `Unknown` while Arch shows `?`.
+    // Shared `list_cell` so a missing value reads as the `?` placeholder,
+    // matching the TUI list.
     let arch = crate::tui::fmt::list_cell(r.arch.as_deref(), "?");
     let params = crate::tui::fmt::list_cell(r.parameter_label.as_deref(), "?");
     let quant = crate::tui::fmt::list_cell(r.quant.as_deref(), "?");
@@ -175,8 +136,8 @@ pub fn list_human(
   out
 }
 
-/// Render the STATUS cell. Empty for non-running rows; for running
-/// rows: `<glyph> <state> :<port>`, reusing the TUI's `glyph_for`
+/// STATUS cell: empty for non-running rows; for running rows
+/// `<glyph> <state> :<port>`, reusing the TUI's `glyph_for`
 /// mapping so the two surfaces never drift.
 fn running_status_cell(row: Option<&RunningRow>) -> String {
   use crate::cli::colors;
@@ -214,7 +175,7 @@ fn addressable_name(row: &CatalogRow, run: Option<&RunningRow>) -> String {
 }
 
 /// Backend badge for a catalog row: every backend that can serve it,
-/// priority-ordered (`<other>|llamacpp`), else the daemon's single tag, else
+/// priority-ordered (`<other>|<default>`), else the daemon's single tag, else
 /// `placeholder`. Shared by the `list` BACKEND column and `show`'s header
 /// row so the two surfaces can never name different backends for one model.
 /// The table formatter clips the cell if it overflows.
@@ -227,7 +188,8 @@ pub(crate) fn backend_badge(row: &CatalogRow, placeholder: &str) -> String {
 
 /// The explicit `--device` selector a running launch was dispatched with,
 /// or `None` when it took the backend's default placement. One reader for
-/// the `knobs.str(crate::launch::knobs::kid("device"))` wire path, shared by the DEVICE cell and the
+/// the `knobs.str(crate::launch::knobs::kid("device"))` wire path.
+/// Shared by the DEVICE cell and the
 /// `list --json` per-row `status` object.
 fn device_selector(row: &RunningRow) -> Option<&str> {
   row
@@ -286,9 +248,9 @@ pub(crate) fn display_size(row: &CatalogRow) -> String {
 /// against this, so column drift requires deliberate intent. Wrapped
 /// in `{"models": [...]}` so every CLI `--json` surface lives behind
 /// the same "always object at the root" rule.
-/// JSON projection of `list`: the catalog rows the daemon published, the
-/// running state of each, and the `proxy.aliases` table as the catalog answers
-/// it (`[]` when none is configured, like every other `--json` key).
+///
+/// The `proxy.aliases` table comes as the catalog answers it (`[]` when none
+/// is configured, like every other `--json` key).
 ///
 /// `aliases` rows are the daemon's `proxy_aliases` objects, passed through
 /// verbatim — `{name, target, state}`, where `state` is `ok` or the reason the
@@ -309,9 +271,7 @@ pub fn list_json(
       let mut row = serde_json::to_value(r).unwrap_or_else(|_| serde_json::json!({}));
       // `status` is a small nested object so agents can pin
       // `models[i].status.state` / `.port`. Absent (not `null`) when the
-      // model has no live supervisor. `device` carries the raw selector
-      // (`null` when the launch took the backend default) so an agent reads
-      // the same fact the human table's DEVICE column renders as `all`.
+      // model has no live supervisor.
       let live = running.get(&r.path).map(Vec::as_slice).unwrap_or_default();
       let launches: Vec<Value> = live.iter().map(launch_status_json).collect();
       if let Some(first) = launches.first() {
@@ -371,8 +331,7 @@ pub fn favorites_json(rows: &[Value]) -> Value {
 }
 
 /// Filter catalog rows by case-insensitive substring against name,
-/// path, arch, and quant. Matches the `list --filter` semantics
-/// documented in the plan.
+/// path, arch, and quant.
 pub fn filter_rows(rows: &[CatalogRow], pattern: &str) -> Vec<CatalogRow> {
   let lower = pattern.to_lowercase();
   rows
@@ -395,27 +354,10 @@ pub fn filter_rows(rows: &[CatalogRow], pattern: &str) -> Vec<CatalogRow> {
     .collect()
 }
 
-/// Human rendering of `status`.
-///
-/// Two surfaces share one source:
-/// - On TTY (`colors_enabled()`): section header for the daemon, a
-///   `kv_block` for its fields, a padded launches table, and a dim
-///   GPU footer line.
-/// - On non-TTY / `--no-colors`: today's single-line daemon preamble
-///   plus byte-stable TSV rows — preserves `awk -F\t` / `column -t`
-///   pipelines.
-///
-/// Columns are stable across modes (LAUNCH_ID, STATE, MODE, PORT, PID,
-/// NAME). NAME is the file basename so narrow terminals don't get
-/// crushed by canonical paths; `--json` keeps the full `model_path`
-/// for agents. RSS/CPU% are intentionally not surfaced here even when
-/// the per-PID sampler has primed them — they belong in a future
-/// `--detail` view rather than always-on columns.
 /// Render the `status.backends` array into a concise section: per backend,
-/// its install state and the servers it can launch on (`rocm|vulkan`,
-/// `gufo|halogen`), or its accelerators when no server resolved. Returns
-/// `None` when the field is absent (older daemon) or empty so the caller skips
-/// the section entirely.
+/// its install state and the servers it can launch on, or its accelerators
+/// when no server resolved. Returns `None` when the field is absent (older
+/// daemon) or empty so the caller skips the section entirely.
 fn backends_human(backends: &serde_json::Value, tty: bool) -> Option<String> {
   use crate::cli::{colors, format};
   let arr = backends.as_array()?;
@@ -488,13 +430,21 @@ fn backends_human(backends: &serde_json::Value, tty: bool) -> Option<String> {
   Some(out)
 }
 
+/// Human rendering of `status`. Padded sections + table on TTY, byte-stable
+/// TSV rows when piped.
+///
+/// Columns are stable across modes (LAUNCH_ID, STATE, MODE, PORT, PID, CTX,
+/// NAME). NAME is the file basename so narrow terminals don't get
+/// crushed by canonical paths; `--json` keeps the full `model_path`
+/// for agents. RSS/CPU% are intentionally not surfaced here even when
+/// the per-PID sampler has primed them — they belong in a future
+/// `--detail` view rather than always-on columns.
 pub fn status_human(snap: &StatusSnapshot) -> String {
   use crate::cli::{colors, format};
 
   let tty = console::colors_enabled();
   let mut out = String::new();
 
-  // Daemon preamble.
   if let Some(d) = &snap.daemon {
     if tty {
       out.push_str(&format::section_header("daemon", None));
@@ -505,11 +455,8 @@ pub fn status_human(snap: &StatusSnapshot) -> String {
         ("uptime", uptime),
         ("connections", d.active_connections.to_string()),
       ];
-      // Proxy row — surfaced inline in the daemon block when the
-      // proxy is enabled. Skipped (per plan §Test scenarios edge
-      // case 3) when disabled. The label cycles through the same
-      // wire labels the IPC emits so a user grepping `status` text
-      // matches the same strings agents key on.
+      // The label uses the same wire labels the IPC emits so a user
+      // grepping `status` text matches the same strings agents key on.
       if let Some(line) = proxy_human_label(&snap.proxy) {
         rows.push(("proxy", line));
       }
@@ -551,12 +498,10 @@ pub fn status_human(snap: &StatusSnapshot) -> String {
     }
   }
 
-  // Backends section: installed state + server labels per backend.
   if let Some(block) = backends_human(&snap.backends, tty) {
     out.push_str(&block);
   }
 
-  // Launches table.
   if snap.models.is_empty() && snap.external.is_empty() {
     out.push_str(&colors::dim("(no managed launches)"));
     out.push('\n');
@@ -680,9 +625,8 @@ pub fn status_human(snap: &StatusSnapshot) -> String {
   // GPU footer — sourced from the live `host` snapshot (the same source
   // the TUI host pane reads) and formatted with the shared
   // `gpu_summary_line`, so `status`, `doctor`, and the TUI name the GPU
-  // identically. The separate `snap.gpu` GpuInfo field is no longer used
-  // here (it diverged: it showed "CPU only" during the pre-first-sample
-  // window while the TUI already saw the card).
+  // identically. `snap.gpu` diverged: it showed "CPU only" during the
+  // pre-first-sample window while the TUI already saw the card.
   if let Some(label) = host_gpu_label(&snap.host) {
     out.push('\n');
     if tty {
@@ -695,10 +639,9 @@ pub fn status_human(snap: &StatusSnapshot) -> String {
   out
 }
 
-/// One-line GPU summary for the `status` footer, sourced from the live
-/// `host` snapshot (the same source the TUI host pane reads) and
-/// formatted with the shared [`crate::init::detection::gpu_summary_line`]
-/// so `status`, `doctor`, and the TUI name the GPU identically. `None`
+/// One-line GPU summary for the `status` footer, formatted with the shared
+/// [`crate::init::detection::gpu_summary_line`] so `status`, `doctor`, and
+/// the TUI name the GPU identically. `None`
 /// only when `host` carries no backend at all.
 fn host_gpu_label(host: &Value) -> Option<String> {
   let backend = host.get("gpu_backend").and_then(Value::as_str)?;
@@ -714,8 +657,7 @@ fn host_gpu_label(host: &Value) -> Option<String> {
 /// Format the proxy block for the human-readable status table.
 /// Returns `None` when the proxy is disabled or the block is absent
 /// — the row is then skipped entirely so a config that turns the
-/// proxy off doesn't add noise to the table (plan §Test scenarios
-/// edge case 3).
+/// proxy off doesn't add noise to the table.
 ///
 /// Examples:
 /// - listening  → `listening 127.0.0.1:11434`
@@ -753,7 +695,6 @@ fn proxy_ui_url(proxy: &Value) -> Option<&str> {
 /// JSON projection of `status` (preserves the daemon's wire shape so
 /// agents that already parse `daemon status` keep working).
 ///
-/// Per the api-contract review:
 /// * Each row preserves the daemon's `id` object (`{path,
 ///   header_blake3}`) so consumers can key by the canonical
 ///   fingerprint, not just the path string. `model_path` survives as
@@ -771,7 +712,6 @@ pub fn status_json(snap: &StatusSnapshot) -> Value {
     .map(|r| {
       let mut obj = serde_json::Map::new();
       obj.insert("launch_id".into(), serde_json::json!(r.launch_id));
-      // Preserve full `id` object alongside the flat path.
       if let Some(id) = r.id.as_ref() {
         obj.insert("id".into(), id.clone());
       }
@@ -869,8 +809,8 @@ pub fn status_json(snap: &StatusSnapshot) -> Value {
   });
   // Proxy block — surfaced byte-for-byte from the IPC `status`
   // response so agents that parse `status --json` see the same
-  // shape as raw IPC clients. Pre-Unit-5 daemons emit no
-  // block; we mirror that by omitting the key entirely rather than
+  // shape as raw IPC clients. Older daemons emit no block; we
+  // mirror that by omitting the key entirely rather than
   // synthesising a placeholder.
   if !snap.proxy.is_null() {
     if let Some(obj) = body.as_object_mut() {
@@ -1074,7 +1014,6 @@ mod tests {
       multi.contains("MODE\tSTATUS\tDEVICE"),
       "multi-device host shows the column after STATUS: {multi:?}"
     );
-    // An idle row renders the `?` placeholder.
     assert!(
       multi.contains("\t?\n"),
       "idle row renders the placeholder: {multi:?}"
@@ -1123,7 +1062,7 @@ mod tests {
   #[test]
   fn list_human_backend_column_only_on_multi_backend() {
     let _g = ColorGuard::set(false);
-    // All-`llamacpp` (or no prediction) → no BACKEND column, old shape intact.
+    // Default backend (or no prediction) → no BACKEND column.
     let mut llama = row("qwen", "qwen2", "Q4_K", 8192);
     llama.backend = Some("llamacpp".to_string());
     let single = list_human(std::slice::from_ref(&llama), &HashMap::new(), false);
@@ -1131,7 +1070,7 @@ mod tests {
       !single.contains("BACKEND"),
       "single-backend host hides the column: {single:?}"
     );
-    // A non-`llamacpp` prediction flips it on.
+    // A non-default backend prediction flips it on.
     let mut other = row("qwen", "qwen3", "Q4_K", 4096);
     other.backend = Some("enginex".to_string());
     let multi = list_human(&[llama, other], &HashMap::new(), false);
@@ -1273,7 +1212,7 @@ mod tests {
       "no override serialises as null, not the human `all`"
     );
 
-    // No supervisor → no `status` object at all (unchanged).
+    // No supervisor → no `status` object at all.
     assert!(list_json(&rows, &HashMap::new(), &[])["models"][0]
       .get("status")
       .is_none());
@@ -1953,7 +1892,7 @@ mod tests {
     assert_eq!(launches.len(), 2);
     assert_eq!(launches[0]["name"], serde_json::json!("coder"));
     assert_eq!(launches[1]["name"], serde_json::json!("writer"));
-    // `status` keeps its pre-feature meaning: agents pin `status.state`.
+    // `status` is the first launch: agents pin `status.state`.
     assert_eq!(v["models"][0]["status"], launches[0]);
   }
 
@@ -2015,7 +1954,6 @@ mod tests {
       s.contains("L1 note: * ctx clamped to the fit-ctx floor under memory pressure"),
       "clamp note missing: {s:?}"
     );
-    // The un-clamped row gets no note.
     assert!(
       !s.contains("L2 note:"),
       "spurious note for healthy row: {s:?}"
@@ -2144,7 +2082,7 @@ mod tests {
 
   #[test]
   fn status_json_omits_proxy_block_when_absent() {
-    // Pre-Unit-5 daemons emit no `proxy` field. The CLI surface must
+    // Older daemons emit no `proxy` field. The CLI surface must
     // mirror that by omitting the key entirely, not synthesising a
     // null placeholder.
     let snap = StatusSnapshot {
@@ -2166,9 +2104,9 @@ mod tests {
 
   #[test]
   fn status_human_skips_proxy_row_when_disabled() {
-    // Plan §Test scenarios edge case 3: disabled config doesn't add a
-    // row. The label cycle includes `proxy` as a kv label otherwise;
-    // its absence is the signal that the proxy is off.
+    // A disabled config adds no row. The label cycle includes `proxy`
+    // as a kv label otherwise; its absence is the signal that the
+    // proxy is off.
     use crate::cli::resolve::DaemonHealth;
     let _g = ColorGuard::set(false);
     let snap = StatusSnapshot {

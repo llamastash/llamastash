@@ -1,11 +1,9 @@
 //! `llamastash show <model> [--json]`.
 //!
-//! One-stop projection of everything LlamaStash knows about a single
-//! model: catalog row, GGUF metadata, on-disk size (summed across
-//! split shards), the yaml + built-in `arch_defaults` that would
-//! feed a launch, and the last `start_model` params recorded for
-//! this file. Reuses the same resolver `start` and `/v1/...` use, so
-//! a reference that works on one surface works here.
+//! Catalog row, GGUF metadata, shard sizes, `arch_defaults`, the last
+//! launch params, and live launches for one model. Reuses the same
+//! resolver `start` and `/v1/...` use, so a reference that works on one
+//! surface works here.
 
 use serde_json::{json, Value};
 
@@ -227,11 +225,9 @@ fn assemble_envelope(
   envelope
 }
 
-/// Per-shard `(path, bytes)` breakdown for the resolved row. Always
-/// includes shard 1 (the catalog row's `path`); for split entries
-/// extends with each sibling. Delegates to the shared
-/// `discovery::shard_sizes` util so the byte counts here match the
-/// values the scanner folded into `metadata.weights_bytes`.
+/// Delegates to the shared `discovery::shard_sizes` util so the byte
+/// counts here match the values the scanner folded into
+/// `metadata.weights_bytes`.
 fn shard_breakdown(row: &CatalogRow) -> Vec<ShardSize> {
   let primary = PathBuf::from(&row.path);
   // A shard is a weight *file*. A whole-directory row (a safetensors snapshot)
@@ -352,8 +348,7 @@ fn render_human(row: &CatalogRow, shards: &[ShardSize], total_bytes: u64, env: &
   }
   size_rows.push(("on_disk_total".to_string(), fmt_bytes(total_bytes)));
   // Per-shard breakdown so a multi-shard model shows every file
-  // and its individual size, not just shard 1. Single-file models
-  // collapse to one row, keeping the human output tight.
+  // and its individual size, not just shard 1.
   for (idx, shard) in shards.iter().enumerate() {
     let size = if shard.bytes == 0 {
       colors::warning("missing")
@@ -365,9 +360,6 @@ fn render_human(row: &CatalogRow, shards: &[ShardSize], total_bytes: u64, env: &
   }
   out.push_str(&kv_block_owned(&size_rows));
 
-  // Live running block — only when a supervisor is up for this
-  // model. Shows the context window `--fit` actually resolved and flags
-  // a memory-driven clamp, so `show` reflects the running reality.
   // One block per live launch: a model can be running several times at once
   // under different names, and a single block had to pick one of them.
   let launches = env
@@ -453,9 +445,8 @@ fn render_human(row: &CatalogRow, shards: &[ShardSize], total_bytes: u64, env: &
   out
 }
 
-/// Join the facets of a capability block into one cell, or the dash when
-/// the model carries none. Shared by every capability label so an absent
-/// capability and an empty one read identically.
+/// Shared by every capability label so an absent capability and an empty
+/// one read identically.
 fn facets_or_dash(parts: Vec<String>) -> String {
   if parts.is_empty() {
     DASH_PLACEHOLDER.into()
@@ -626,10 +617,6 @@ mod tests {
 
   #[test]
   fn render_human_lists_every_shard_for_multipart() {
-    // Regression: previous render only emitted shard 1's path under
-    // the row header; siblings appeared as bare paths without sizes.
-    // The size section must now show one row per shard with its
-    // individual byte count.
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("m-00001-of-00002.gguf");
     std::fs::write(&p, vec![0u8; 1024 * 1024]).unwrap(); // 1 MiB

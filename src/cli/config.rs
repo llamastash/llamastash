@@ -9,7 +9,6 @@ use crate::{
   config::Config,
 };
 
-/// Handle the `config` command.
 pub fn handle(action: Option<ConfigAction>, cli: &Cli, config: &Config) -> CliResult {
   match action {
     None => edit(cli),

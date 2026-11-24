@@ -5,8 +5,7 @@
 //! a child, waits for the socket to bind, and returns control to the
 //! shell. `--foreground` (`-f`) keeps the daemon attached to the
 //! controlling terminal for `systemd` / supervisor wrappers that own
-//! stdout/stderr. The historical complaint was that bare `daemon start`
-//! ran in the foreground and looked stuck.
+//! stdout/stderr.
 //! `stop` — connect to the daemon and call `shutdown`.
 //! `restart` — the `stop` path, then the `start` path with the same flags.
 //! `status` — connect to the daemon and report PID + uptime; emits "not
@@ -87,7 +86,7 @@ fn start_build_args<'a>(
 }
 
 /// Migrate `config.yaml` to the unified knob shape, returning the re-parsed
-/// config when a rewrite happened (plan D10).
+/// config when a rewrite happened.
 ///
 /// Failure is never fatal: a config we could not rewrite still loads, because
 /// knob keys normalise on read either way. The user is told what happened, and
@@ -245,7 +244,7 @@ pub(crate) fn precheck_indicated_backends(opts: &DaemonOptions) -> std::result::
   }
 }
 
-/// "daemon: already running (pid N)" — emitted from both the `--detach`
+/// "daemon: already running (pid N)" — emitted from both the detached
 /// and the foreground branches of `handle_start` when the daemon is
 /// already up. "daemon: already running" stays dim; the pid lifts to
 /// bold so it's the scannable token in the otherwise dim line.
@@ -492,11 +491,11 @@ const FORCE_FLAG_ENV: &[(&str, &str)] = &[
 
 /// The `daemon start` overrides [`build_options`] folds over config and env.
 ///
-/// A struct rather than positional arguments: there were ten, four of them
+/// A struct rather than positional arguments: ten fields, four of them
 /// booleans that end up as entries in one map, threaded through three call
-/// layers. Adding the fifth backend meant counting `false`s at twenty call
-/// sites and getting the order right. `cli` / `config` are borrows, which
-/// rules out `#[derive(Default)]`, so [`BuildOptionsArgs::new`] is the base to
+/// layers. Adding a fifth backend means counting `false`s at twenty call
+/// sites and getting the order right. `cli` / `config` are borrows, which rules out
+/// `#[derive(Default)]`, so [`BuildOptionsArgs::new`] is the base to
 /// spread over: `BuildOptionsArgs { proxy_port: Some(1), ..new(&cli, &config) }`.
 pub(crate) struct BuildOptionsArgs<'a> {
   pub state_dir: Option<PathBuf>,
@@ -530,8 +529,8 @@ impl<'a> BuildOptionsArgs<'a> {
   }
 }
 
-/// Compose [`DaemonOptions`] from the parsed CLI overrides. Hidden
-/// `--state-dir` / `--socket-path` flags take precedence; unset fields
+/// Compose [`DaemonOptions`] from the parsed CLI overrides. The hidden
+/// `--state-dir` flag takes precedence; unset fields
 /// fall back to the platform-default XDG paths. Centralised so the
 /// re-exec'd child of `start_detached` honours the same priority order
 /// as a hand-typed `llamastash daemon start --state-dir ...` invocation.
@@ -656,13 +655,12 @@ pub(crate) fn build_options(args: BuildOptionsArgs<'_>) -> Result<DaemonOptions>
     );
     opts.backend.llamacpp.fit_ctx_floor = DEFAULT_FIT_CTX_FLOOR;
   }
-  // Strict-fit is an opt-in: config OR `LLAMASTASH_STRICT_FIT=1` (the
-  // strict-`"1"` env contract shared with the other boolean envs).
+  // Strict-fit is an opt-in: config OR the `LLAMASTASH_STRICT_FIT` env flag.
   opts.backend.llamacpp.strict_fit =
     config.backend.llamacpp.strict_fit || env_flag_truthy("LLAMASTASH_STRICT_FIT");
   // Proxy: config layer first, then CLI / env overrides. Without this
-  // thread-through the daemon silently ignored `proxy:` from the config
-  // file and ran with `ProxyConfig::default()` regardless.
+  // thread-through the daemon silently ignores `proxy:` from the config
+  // file and runs with `ProxyConfig::default()` regardless.
   opts.proxy = config.proxy.clone();
   if let Some(p) = proxy_port {
     opts.proxy.port = Some(p);
@@ -846,8 +844,7 @@ async fn handle_status(json: bool) -> Result<()> {
         .await?;
       if json {
         // Machine contract: the raw `version` IPC response, byte-stable
-        // across releases. Agents that previously piped `daemon status`
-        // to `jq` should pass `--json` to keep their parser working.
+        // across releases.
         println!(
           "{}",
           serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string())
@@ -903,9 +900,6 @@ fn render_daemon_status(body: &serde_json::Value) -> String {
   use serde_json::Value;
 
   let Some(obj) = body.as_object() else {
-    // Unexpected shape: emit a dim warning and the raw pretty-JSON so
-    // the user still sees what came back. Avoids silently swallowing
-    // info on an out-of-band response.
     let mut out = colors::dim("daemon: unexpected version response shape; raw body follows");
     out.push('\n');
     out.push_str(&serde_json::to_string_pretty(body).unwrap_or_else(|_| body.to_string()));
@@ -1075,11 +1069,6 @@ mod tests {
 
   #[test]
   fn propagated_cli_args_carry_model_paths_no_scan_and_overrides() {
-    // Regression: `start_detached` previously dropped every global
-    // flag on re-exec, so an auto-spawned daemon silently ignored
-    // the user's `-p /some/path` and `--no-scan`. `build_options`
-    // now stamps these onto `DaemonOptions::propagated_cli_args` so
-    // the child sees the same CLI surface as the parent.
     let cli = parse_cli(&[
       "--model-path",
       "/work/a",
@@ -1129,7 +1118,6 @@ mod tests {
     });
     let rendered = render_daemon_status(&body);
     let plain = console::strip_ansi_codes(&rendered);
-    // section header + 6 kv rows.
     assert!(
       plain.starts_with("daemon\n"),
       "missing section header: {plain:?}"
@@ -1147,7 +1135,6 @@ mod tests {
     let body = serde_json::json!({"name": "llamastash"});
     let rendered = render_daemon_status(&body);
     let plain = console::strip_ansi_codes(&rendered);
-    // pid / uptime / etc. all fall back to the "-" sentinel.
     assert!(plain.contains("name  llamastash"));
     assert!(plain.contains("pid  -"));
     assert!(plain.contains("uptime  -"));
@@ -1167,11 +1154,6 @@ mod tests {
   #[test]
   fn build_options_threads_config_proxy_block_into_daemon_options() {
     let _env = hermetic_env();
-    // Regression: before this wiring landed, config.proxy.port was
-    // parsed and validated but `build_options` never copied it onto
-    // DaemonOptions.proxy. The daemon silently ran with
-    // ProxyConfig::default() no matter what the user put in
-    // config.yaml.
     let cli = parse_cli(&["daemon", "start"]);
     let config = Config {
       proxy: crate::config::loader::ProxyConfig {
@@ -1379,7 +1361,6 @@ mod tests {
       },
       ..Config::default()
     };
-    // The CLI override (Some(8080)) beats config.proxy.port.
     let opts = build_options(BuildOptionsArgs {
       proxy_port: Some(8080),
       ..BuildOptionsArgs::new(&cli, &config)
@@ -1641,10 +1622,7 @@ mod tests {
   #[cfg(unix)]
   #[test]
   fn provision_detached_errors_when_key_cannot_persist() {
-    // Detached daemon re-reads the key from config; if the write fails
-    // the child can't see the key, hits the backstop, and drops the
-    // proxy. provision must refuse to start rather than print a dead
-    // key. Force a write failure with a world-writable config dir (the
+    // Force a write failure with a world-writable config dir (the
     // writer refuses to drop a 0600 file into a dir another user can write).
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1662,9 +1640,8 @@ mod tests {
   #[cfg(unix)]
   #[test]
   fn provision_foreground_tolerates_persist_failure() {
-    // Same write failure, but a --foreground daemon is the same process
-    // that holds the key, so it works for this run. provision keeps the
-    // key on opts and returns Ok (the banner flags it as unsaved).
+    // Same write failure as the detached case. A foreground run holds
+    // the key in this process, so provision keeps it on opts.
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
@@ -1711,7 +1688,6 @@ mod tests {
     let baseline =
       build_options(BuildOptionsArgs::new(&cli, &config)).expect("build_options baseline");
     assert!(baseline.proxy.fallback_enabled);
-    // CLI flag forces it off.
     let opts = build_options(BuildOptionsArgs {
       no_proxy_fallback: true,
       ..BuildOptionsArgs::new(&cli, &config)
@@ -1809,7 +1785,6 @@ mod tests {
   fn build_options_vllm_defaults_on_and_force_flag_captured() {
     let cli = parse_cli(&["daemon", "start"]);
     let config = Config::default();
-    // Read the vLLM force flag out of the per-backend force map.
     let force = |o: &DaemonOptions| {
       o.backend_force
         .get(crate::backend::vllm::VLLM_BACKEND_ID)
@@ -1958,9 +1933,6 @@ mod tests {
   fn build_options_rejects_disable_scan_with_no_paths() {
     let _env = hermetic_env();
     // The dead-end combo: scanning off, zero user paths anywhere.
-    // Today this would leave the catalog empty forever — the
-    // validator must turn it into a startup error so the user sees
-    // *why* the daemon refused.
     let cli = parse_cli(&["--no-scan", "daemon", "start"]);
     let config = Config::default();
     let err = build_options(BuildOptionsArgs::new(&cli, &config))

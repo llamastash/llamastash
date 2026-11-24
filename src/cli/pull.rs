@@ -1,4 +1,4 @@
-//! `llamastash pull <hf-repo>` — MVP for the HF pull primitive. Thin
+//! `llamastash pull <hf-repo>`. Thin
 //! shim into `init::download::run`, which owns the multi-shard
 //! download body, plus the terminal progress line.
 
@@ -283,7 +283,7 @@ mod tests {
     assert_eq!(s.rate.bps(), 0.0, "but no traffic was reported");
   }
 
-  /// `LineState` mid-pull, for the width cases.
+  /// Mid-pull `LineState`, for the width cases.
   fn state(file: &str, index: usize, files: usize) -> LineState {
     LineState {
       file: file.to_string(),

@@ -1,20 +1,6 @@
 //! Resolve user-supplied model / launch references against the
-//! daemon's catalog or active supervisor list.
-//!
-//! Model references (used by `start`, `presets`, `favorites`) accept:
-//! - an absolute path (matched verbatim against the canonical path),
-//! - a canonical model id (the BLAKE3 short fingerprint or full hex),
-//! - a substring matched case-insensitively against the file name and
-//!   the parent directory.
-//!
-//! `show` and `requests` take a model reference or a running-launch
-//! reference ([`resolve_model_or_launch`]).
-//!
-//! Running-launch references (used by `stop`, `logs`) accept a
-//! `LaunchId` (e.g. `L3`), a port number, or a case-insensitive
-//! substring of the running model's file name / parent directory.
-//! Multiple matches surface as `MODEL_NOT_FOUND` with a
-//! disambiguation hint.
+//! daemon's catalog or active supervisor list. Reference shapes:
+//! docs/usage.md §Concepts "Model references".
 
 use anyhow::Result;
 use serde_json::Value;
@@ -24,7 +10,7 @@ use crate::ipc::Client;
 
 // The catalog row + fuzzy matcher live in `crate::launch::resolve` (no
 // `clap`/IPC/`CliExit` coupling) so the HTTP proxy can share them without
-// importing "up" into `cli`. Re-exported here so existing
+// importing "up" into `cli`. Re-exported here so
 // `crate::cli::resolve::{CatalogRow, ResolveError, …}` call sites and the
 // IPC/`CliExit` wrappers below keep their shape.
 pub use crate::launch::resolve::{resolve_model_with_candidates, CatalogRow, ResolveError};
@@ -116,9 +102,7 @@ impl RunningRow {
 ///
 /// Delegates the actual naming rule to
 /// [`crate::util::paths::model_file_label`] so a `status` row and a `list`
-/// row cannot disagree: this used to derive its own basename and deliberately
-/// kept the `-NNNNN-of-NNNNN` suffix, which made one split model read two
-/// different ways depending on which command printed it.
+/// row cannot disagree.
 fn basename(path: &str) -> String {
   crate::util::paths::model_file_label(std::path::Path::new(path))
 }
@@ -198,13 +182,8 @@ pub async fn fetch_alias_rows(client: &mut Client) -> Vec<Value> {
     .unwrap_or_default()
 }
 
-/// Find a catalog row that matches `reference`. Disambiguation rules
-/// (in order):
-/// 1. exact canonical-path match,
-/// 2. exact name match (basename),
-/// 3. case-insensitive substring of name OR parent dir.
-///
-/// Returns `MODEL_NOT_FOUND` when zero or many rows match.
+/// Find a catalog row that matches `reference`. Returns
+/// `MODEL_NOT_FOUND` when zero or many rows match.
 pub fn resolve_model(rows: &[CatalogRow], reference: &str) -> Result<CatalogRow, CliExit> {
   resolve_model_with_candidates(rows, reference).map_err(|e| model_miss(e, reference, rows.len()))
 }
@@ -299,13 +278,14 @@ pub async fn fetch_status(client: &mut Client) -> Result<StatusSnapshot, CliExit
     .map(|a| a.iter().filter_map(parse_external_row).collect())
     .unwrap_or_default();
   let gpu = body.get("gpu").cloned().unwrap_or(Value::Null);
-  // AGENTS.md: `host` is always an object on the wire; preserve it
-  // verbatim so the CLI `status --json` mirrors the IPC contract.
+  // `host` is always an object on the wire (docs/architecture.md
+  // § `status` response shape); preserve it verbatim so the CLI
+  // `status --json` mirrors the IPC contract.
   let host = body.get("host").cloned().unwrap_or(Value::Null);
   let daemon = body.get("daemon").and_then(parse_daemon_health);
   // Preserve the proxy block verbatim — the CLI `status --json` is
-  // byte-shape-identical to the IPC wire format per the plan's
-  // R161 contract. Older daemons that don't surface the field land
+  // byte-shape-identical to the IPC wire format. Older daemons that
+  // don't surface the field land
   // as `Value::Null` and the projection in `status_json` drops the
   // key entirely.
   let proxy = body.get("proxy").cloned().unwrap_or(Value::Null);
@@ -335,7 +315,8 @@ pub struct StatusSnapshot {
   pub gpu: Value,
   /// Host-level metrics (CPU%, RAM, GPU util/temp/VRAM aggregates,
   /// sampler backend). Always an object on the wire per
-  /// `AGENTS.md::status IPC fields`; the CLI preserves it verbatim
+  /// `docs/architecture.md` § `status` response shape; the CLI preserves
+  /// it verbatim
   /// so `status --json` consumers see the same shape as raw IPC
   /// clients. `Value::Null` only when talking to a daemon that
   /// predates the field.
@@ -369,12 +350,12 @@ pub struct DaemonHealth {
   /// Daemon build version (cargo pkg version at compile time).
   /// `None` when an older daemon omits the field.
   pub build: Option<String>,
-  /// Path to the `llama-server` binary the daemon resolved at start.
+  /// Path to the engine's server binary the daemon resolved at start.
   /// `None` when the daemon doesn't expose it or hasn't resolved one.
   pub server_path: Option<String>,
   /// HTTP control-plane URL the daemon bound on startup
-  /// (e.g. `http://127.0.0.1:48134`). `None` when talking to a
-  /// pre-Phase-A daemon that doesn't surface the field.
+  /// (e.g. `http://127.0.0.1:48134`). `None` when talking to a daemon
+  /// that doesn't surface the field.
   pub ipc_url: Option<String>,
   /// Boot preload as configured: `{entries, presets}`. `None` against a daemon
   /// that predates the field.
@@ -579,10 +560,9 @@ fn parse_external_row(v: &Value) -> Option<ExternalRow> {
 /// 1. numeric → port match;
 /// 2. exact (case-insensitive) launch-id (`L<n>`);
 /// 3. case-insensitive substring of the model file name or its parent dir —
-///    the same reference shape `start` / `show` / `presets` / `favorites`
-///    accept against the catalog, here matched against the running launches
-///    (usage.md §Concepts "Model references"). So `logs gemma` / `stop qwen`
-///    work, not just `logs L3` / `stop 41100`.
+///    dir — the same reference shape `start` / `show` / `presets` /
+///    `favorites` accept against the catalog, here matched against the
+///    running launches (usage.md §Concepts "Model references").
 ///
 /// Multiple matches surface as `MODEL_NOT_FOUND` with the launch ids listed.
 pub fn resolve_running(rows: &[RunningRow], reference: &str) -> Result<RunningRow, CliExit> {
@@ -623,8 +603,6 @@ pub fn resolve_running(rows: &[RunningRow], reference: &str) -> Result<RunningRo
   if !by_launch_name.is_empty() {
     return single_or_error(by_launch_name, reference);
   }
-  // `model@name` reference: match a running launch by its user-chosen name.
-  // The model part is matched against the path (same as the fallback below).
   // The split is the shared one, so an empty half (`@coder`, `qwen3@`) is not a
   // name reference at all and falls through to the plain substring walk instead
   // of matching every row, since `"".contains("")` is true for all of them.
@@ -1097,7 +1075,6 @@ mod tests {
     assert!(!multi_device(&Value::Null));
     assert!(!multi_device(&serde_json::json!({})));
     assert!(!multi_device(&Value::Array(vec![])));
-    // A server row with no `devices` key at all.
     assert!(!multi_device(&serde_json::json!([{"id": "enginex"}])));
     assert!(!multi_device(
       &serde_json::json!([{"id": "enginex", "devices": null}])
@@ -1343,8 +1320,8 @@ mod tests {
       row("L1", "/cache/gemma-4-E2B-it-Q4_K_M.gguf", 41100),
       row("L2", "/cache/qwen3-reranker-0.6b-q8_0.gguf", 41101),
     ];
-    // File-name substring — the documented model reference — resolves the
-    // running launch (this is the F-04 regression: only L<n>/port worked).
+    // File-name substring — the documented model reference — resolves
+    // the running launch.
     assert_eq!(resolve_running(&rows, "gemma").unwrap().launch_id, "L1");
     assert_eq!(
       resolve_running(&rows, "GEMMA-4-E2B-it-Q4_K_M.gguf")
@@ -1353,7 +1330,7 @@ mod tests {
       "L1"
     );
     assert_eq!(resolve_running(&rows, "reranker").unwrap().launch_id, "L2");
-    // launch-id and port still take precedence and behave as before.
+    // launch-id and port still take precedence.
     assert_eq!(resolve_running(&rows, "L2").unwrap().launch_id, "L2");
     assert_eq!(resolve_running(&rows, "41100").unwrap().launch_id, "L1");
     // A substring matching multiple running launches (shared parent dir)
@@ -1362,7 +1339,6 @@ mod tests {
       resolve_running(&rows, "cache").unwrap_err().code,
       MODEL_NOT_FOUND
     );
-    // No match.
     assert_eq!(
       resolve_running(&rows, "nope").unwrap_err().code,
       MODEL_NOT_FOUND
@@ -1438,7 +1414,7 @@ mod tests {
 
   #[test]
   fn resolve_running_takes_a_bare_launch_name_over_a_path_substring() {
-    // D3: the name the user chose is the address they think in, so an exact
+    // The name the user chose is the address they think in, so an exact
     // name beats a filename that merely contains the word — the same
     // precedence an exact launch id already has.
     let rows = vec![

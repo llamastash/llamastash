@@ -3,14 +3,6 @@
 //! Schema is additive-only within v1; consumers ignore unknown fields.
 //! Bumping `SCHEMA_VERSION` signals a breaking shape change — pair with
 //! a CHANGELOG entry under the release the bump lands in.
-//!
-//! `backend.detected` is the actual `GpuInfo` value serialized verbatim
-//! via `serde_json::to_value`. That preserves the tagged-union shape so
-//! per-backend fields (NVIDIA `devices[]`, Metal `total_memory_bytes`)
-//! survive without a lossy scalar projection. `backend.expected` is the
-//! CLI's `--host-backend` value passed through as-is — the `UatBackend`
-//! value-enum already restricts the spelling set to canonical
-//! discriminants, so no normalization step is needed at the report layer.
 
 use std::fmt;
 use std::time::Duration;
@@ -307,8 +299,6 @@ impl UatReport {
     }
   }
 
-  /// Locate a step by name. The lifecycle uses this to flip a step's
-  /// verdict in-place as it advances.
   pub fn step_mut(&mut self, name: StepName) -> &mut StepResult {
     self
       .steps
@@ -342,7 +332,6 @@ impl UatReport {
     }
   }
 
-  /// Apply the total `duration_secs` from a `Duration`.
   pub fn set_duration(&mut self, d: Duration) {
     // Sub-millisecond precision is irrelevant for a wall-clock-minute
     // budget but we keep three decimal places so the JSON looks like
@@ -411,8 +400,7 @@ fn read_kernel() -> Option<String> {
   }
 }
 
-/// Render a human-readable summary of `report` for stdout. The
-/// orchestrator emits both the JSON (to `--report-out`) and this TTY
+/// The orchestrator emits both the JSON (to `--report-out`) and this TTY
 /// form unless `--quiet` is set. Single render site so the TTY form
 /// and the JSON can't drift.
 pub fn render_tty_summary(report: &UatReport) -> String {

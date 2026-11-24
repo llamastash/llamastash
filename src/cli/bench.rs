@@ -75,7 +75,6 @@ fn run_prompt(prompt: &str, run: u32) -> String {
   format!("Run {run}. {prompt}")
 }
 
-/// The prompt the runs send: the file, the flag, or the built-in one.
 fn resolve_prompt(args: &BenchArgs) -> Result<String, CliExit> {
   if let Some(path) = &args.prompt_file {
     let text = std::fs::read_to_string(path)
@@ -604,7 +603,6 @@ fn live_launch_of<'a>(rows: &'a [RunningRow], path: &str) -> Option<&'a RunningR
   rows.iter().find(|r| is_live_of(r, path))
 }
 
-/// How to point at a launch in a message: its id, plus its name when it has one.
 fn describe_launch(row: &RunningRow) -> String {
   match row.name.as_deref() {
     Some(name) => format!("{} ({})", row.launch_id, name),

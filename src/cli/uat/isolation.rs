@@ -9,14 +9,6 @@
 //! clients (TUI / CLI) read that file to attach. That keeps the
 //! sandbox single-rooted at `LLAMASTASH_STATE_DIR`.
 //!
-//! | env var | resolved by |
-//! |---|---|
-//! | `LLAMASTASH_STATE_DIR`  | `paths::state_dir()`; daemon writes `runtime.json` + `state.json` here |
-//! | `LLAMASTASH_CONFIG_DIR` | `paths::config_dir()`; `user_config_file()` inherits |
-//! | `LLAMASTASH_CACHE_DIR`  | `paths::cache_dir()`; `log_dir()` inherits |
-//! | `HF_HOME`              | `init::download::hf_cache_dir()` (HF convention) |
-//! | `HF_HUB_CACHE`         | `init::download::hf_cache_dir()` (takes precedence over `HF_HOME`) |
-//!
 //! `HF_HUB_CACHE` is set redundantly with `HF_HOME` so that a
 //! maintainer who exports `HF_HUB_CACHE` in their shell to redirect
 //! their daily-driver HF cache doesn't inherit it into the UAT child
@@ -49,10 +41,9 @@
 //! 3. Otherwise, leave the tempdir in place and emit one line to
 //!    stderr with the preserved path so the maintainer can post-mortem.
 //!
-//! SIGKILL of the orchestrator process itself bypasses Drop entirely;
-//! that's an acknowledged tradeoff (R448 §Risks). The natural OS
-//! behavior — tempdir survives, the maintainer has the diagnostic
-//! tree — is actually desirable in the SIGKILL case.
+//! SIGKILL of the orchestrator process itself bypasses Drop entirely.
+//! The natural OS behavior — tempdir survives, the maintainer has the
+//! diagnostic tree — is actually desirable in the SIGKILL case.
 
 use std::{
   path::{Path, PathBuf},
@@ -91,7 +82,7 @@ pub struct TempdirGuard {
   /// Root tempdir. `tempfile::TempDir` (mkdtemp with mode 0700) keeps
   /// the path TOCTOU-safe; we keep it inside an `Option` so `Drop` can
   /// either let `TempDir::drop` reap it (success) or move it out via
-  /// `into_path` to preserve the directory on failure.
+  /// `keep` to preserve the directory on failure.
   root: Option<TempDir>,
   /// Cached root path so `Path` accessors don't have to peek into the
   /// `Option<TempDir>` after `Drop` has taken it.
@@ -109,8 +100,7 @@ pub struct TempdirGuard {
 impl TempdirGuard {
   /// Create a new tempdir under the system temp root. The label is
   /// folded into the prefix so concurrent UAT runs (different shells,
-  /// two backends) don't collide. The actual directory creation goes
-  /// through `tempfile::Builder::tempdir_in` which uses mkdtemp(3) —
+  /// two backends) don't collide. Creation goes through mkdtemp(3):
   /// atomic 0700 creation, no TOCTOU race on a predictable name.
   pub fn new(label: &str) -> std::io::Result<Self> {
     // Short prefix to keep the socket path under the 104-byte sun_path
@@ -218,19 +208,14 @@ impl Drop for TempdirGuard {
     if pid > 0 {
       send_term_then_kill(pid);
     }
-    // Step 2 / 3: preserve or remove. On the preserve path we move
-    // the `TempDir` out via `into_path`, which deliberately leaks the
-    // ownership so the directory survives Drop for post-mortem
-    // inspection. On the success path, dropping `TempDir` removes the
-    // tree; we ignore errors because Drop can't return them and an
-    // unremovable tempdir is itself diagnostic.
+    // Step 2 / 3: preserve or remove. On the preserve path `TempDir::keep`
+    // returns the path and stops the directory being removed, so it
+    // survives Drop for post-mortem inspection. On the success path,
+    // dropping `TempDir` removes the tree; we ignore errors because
+    // Drop can't return them and an unremovable tempdir is itself
+    // diagnostic.
     if let Some(td) = self.root.take() {
       if self.preserve.load(Ordering::SeqCst) {
-        // `TempDir::keep` (was `into_path`) consumes the guard,
-        // returns the `PathBuf`, and prevents the underlying directory
-        // from being removed when the guard drops. Exactly the
-        // preserve-for-post-mortem behavior the cleanup contract
-        // documents.
         let path = td.keep();
         eprintln!(
           "llamastash uat: preserved tempdir at {} (run not successful — leave for post-mortem)",

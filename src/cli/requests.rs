@@ -66,7 +66,7 @@ fn tail_scope(
   Ok(json!({ "model_path": model.path }))
 }
 
-/// The summary and the table. The summary is terminal-only so piped output
+/// The summary is terminal-only so piped output
 /// stays one header line plus one line per request. `one_model` drops the
 /// MODEL column, which a model filter makes the same on every line.
 fn requests_human(body: &Value, one_model: bool) -> String {
@@ -179,7 +179,6 @@ fn fit_padded_table(header: &[&str], rows: Vec<Vec<String>>) -> Vec<Vec<String>>
 
 fn cells_for(row: &RequestRow, one_model: bool) -> Vec<String> {
   let c = row.cells(NONE);
-  // Red for an error row when colors are on.
   let status = if row.is_error() && console::colors_enabled() {
     console::style(c.status).red().to_string()
   } else {
